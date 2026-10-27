@@ -25,14 +25,14 @@ read from `docs/eval-report-kit/analyst/`, which now only points at the package.
 editor's system text: ANALYST.md §7's rubric (7 items scored 0 to 2; a pass is no 0 and at least 11 of 14), the
 findings it returns (`must_fix` or `should_fix`, by claim), and the fenced JSON review it answers with; code adds up
 the scores. `threetears.evals.analysis.analyst.skill` (new) reads it: `load_skill()` returns an `AnalystSkill`, which
-refuses a skill that is not whole (a module missing, a note the index does not name or names without a file, a
-structural fact code does not read) and has a `digest` over every file. `AnalystSkill.analyst(report_input,
-withhold=())` is the analyst's system text as a `SkillText` (`text`, `files`, `exemplars`, `structure`, `digest`):
-the role file and its modules, then the index and three notes chosen by the campaign's structure. Each note's index
-row names the structural facts of the campaign it was reasoned on (`control`, `margin`, `factors`,
-`cross_cutting_task` and the rest, each a condition on the report input's data), and a campaign is given the notes
-sharing most of its facts, never chosen by its kind, design shape, name or measure keys. `withhold` leaves out a note
-and its index row, as a blind run does. `AnalystSkill.editor()` is the editor's text. The module's `__all__` stays
+refuses a skill that is not whole (a module missing, a note the index does not name or names without a file) and has
+a `digest` over every Markdown file. `AnalystSkill.analyst(withhold=())` is the analyst's system text as a `SkillText`
+(`text`, `files`, `exemplars`, `digest`): the role file and its modules, then the whole index and every note, as the
+prototype runs read them. `withhold` (a collection of note file names; a bare string is refused) leaves out a note and
+its index row, as a blind run does. Nothing about a campaign chooses which notes its analyst reads; each index row's
+new Structure column records the campaign its note came from, for readers. `AnalystSkill.editor()` is the editor's
+text. A `README.md` beside the skill holds its maintainers' notes, which reach no system text; ANALYST.md's Appendix A
+now points at the shipped Kairo note rather than repeating it. The module's `__all__` stays
 empty until the report writer's sessions call these names, and `tests/test_analyst_skill_exports.py` lists them.
 
 ### evals: a chart of readings prints the level of the interval it draws

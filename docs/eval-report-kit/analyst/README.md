@@ -8,3 +8,4 @@ The analyst skill lives in the evals package as data, at [`packages/evals/src/th
 | `principles.md`, `stories.md`, `charts.md`, `statistics.md`, `writing.md` | The modules `SKILL.md` names |
 | `exemplars/INDEX.md`, `exemplars/*.md` | The reasoning notes, and the index that names each one's structure |
 | `editor.md` | The report editor's system text: the rubric and the review it returns |
+| `README.md` | Notes for the skill's maintainers; no system text holds it |

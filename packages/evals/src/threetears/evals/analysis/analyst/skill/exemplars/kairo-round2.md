@@ -1,6 +1,6 @@
 # Reasoning note: Kairo round 2
 
-The first reasoning note, from ANALYST.md Appendix A. This is the form every exemplar takes. The point is the thinking, not the page.
+The first reasoning note. This is the form every exemplar takes. The point is the thinking, not the page.
 
 **The eval.** Production persona model ("September") against two candidates on one aspect, character adherence. The question allowed a candidate to be up to 15 points worse. 299 cases, three repeats each, a judge with no human calibration, and four criteria set after the results were visible.
 
