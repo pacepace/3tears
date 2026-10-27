@@ -33,7 +33,10 @@ arithmetic and its design note are :mod:`~threetears.evals.analysis.separation`.
   interval, at its level, over the cases each arm ran); otherwise each arm's binomial spread from its own trials, read
   on its distinct cases where its scoreboard states them (the widest its repeats allow), combined as independent. The
   row cites each arm's usable trials and cases from the aspect's scoreboard, its repeats, and the basis: the count
-  basis the sizes rest on.
+  basis the sizes rest on, per arm where one arm's scoreboard states its cases and the other's does not. Its two
+  estimates are each arm's pooled rate on the scoreboard; on an independent row the difference is their difference,
+  and on a paired row it is the reading's own change (a mean of per-case shares over the cases it pairs), which need
+  not equal it: the basis says so, and the sizes rest on the reading's change.
 - *An assumed count* (``assumed``, a what-if the caller states): a slice whose figure states no count has no spread to
   read; read as if each such slice held that many cases, or (``share``) the arm's own distinct cases times the
   slice's traffic share (and, on a repeated design, its trials times the share). Every figure read under it is keyed ``assumed.<cases>.`` or ``assumed.share.``, so it reads as an assumption
@@ -225,7 +228,8 @@ class SettleRow(BaseModel):
     line: CitedFigure | None = Field(description="The line: the criterion's threshold or the hypothetical line.")
     distance: CitedFigure | None = Field(
         description="Against a line, the estimate's distance toward passing (negative where it misses); between arms, "
-        "the first minus the second."
+        "the first minus the second, except on a paired pass-rate row: there it is the reading's own change, which "
+        "need not equal the two estimates' difference (its basis says why)."
     )
     settles: Settles | None = Field(
         description="Against a line, which side today's estimate is on, so what the sizes would settle: clears (the "
@@ -538,8 +542,9 @@ _PASSED_SIDED = (
     "two-sided at the level, on each aspect's pass rate (trials passed over usable, its scoreboard's): each arm running "
     "cases_needed, an interval on the difference centred on today's excludes zero, half such designs at "
     "cases_needed and four in five at cases_needed_80 if the truth equals today's difference; basis says the count "
-    "the spread rests on: paired, the aspect's reading of a candidate against the control (its own interval, over "
-    "the cases each arm ran), else each arm's binomial spread from its own trials, read on its distinct cases where "
+    "the spread rests on: paired, the aspect's reading of a candidate against the control (its own change and "
+    "interval, over the cases each arm ran; the change need not equal the two pooled rates' difference, and the "
+    "sizes rest on it), else each arm's binomial spread from its own trials, read on its distinct cases where "
     "its scoreboard states them; trials_needed counts the trials that takes at today's repeats"
 )
 

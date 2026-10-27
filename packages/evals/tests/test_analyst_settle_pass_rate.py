@@ -12,7 +12,11 @@ Contracts held here (``threetears.evals.analysis.analyst.settle`` and the ``sett
 - **independent otherwise**: two candidates are read on each arm's binomial spread from its own trials, on its
   distinct cases where its scoreboard states them;
 - **the count basis is stated**: each row cites each arm's usable trials and cases from the aspect's scoreboard and
-  a basis naming what the spread rests on; the trials a size takes are read only where both arms ran each case alike;
+  a basis naming what the spread rests on, per arm where one arm's scoreboard states its cases and the other's does
+  not; the trials a size takes are read only where both arms ran each case alike;
+- **the estimates and the difference agree, or the row says why not**: on an independent row the difference is the
+  first estimate minus the second; on a paired row it is the reading's own change, and where that differs from the
+  two pooled rates' difference (Kairo's), the basis says the difference need not equal first minus second;
 - **teaching**: a two-arm call naming a measure the arms do not hold lists ``passed`` where an aspect states both
   pass rates, and never where none does.
 """
@@ -144,6 +148,81 @@ def _holds_its_count_basis(held: ReportInput, row: SettleRow, aspect: str, arms:
     for figure in [*row.estimate, *row.counts, *row.cases, *row.basis]:
         value = resolve(figure.key, held).value
         assert figure.value == (list(value) if isinstance(value, tuple) else value)
+
+
+def _rows_by_basis() -> dict[str, list[tuple[ReportInput, SettleRow]]]:
+    """Every pass-rate row two arms of a fixture settle, by its basis: paired or independent."""
+    inputs = dict(fixture_inputs())
+    inputs[KAIRO] = _kairo()
+    rows: dict[str, list[tuple[ReportInput, SettleRow]]] = {"paired": [], "independent": []}
+    for held in inputs.values():
+        ids = [arm.id for arm in held.arms]
+        for index, first in enumerate(ids):
+            for second in ids[index + 1 :]:
+                if not passed_aspects(held, [first, second]):
+                    continue
+                for row in settle_cases(held, [first, second], measure=PASSED, limit=50).rows:
+                    (basis,) = row.basis
+                    rows[str(basis.value).partition(":")[0]].append((held, row))
+    return rows
+
+
+def _apart(row: SettleRow) -> float:
+    first, second = (float(figure.value) for figure in row.estimate)  # type: ignore[arg-type]
+    return 100 * (first - second)
+
+
+def test_an_independent_rows_difference_is_its_first_estimate_minus_its_second() -> None:
+    rows = _rows_by_basis()["independent"]
+    assert rows
+    for _held, row in rows:
+        assert row.distance is not None and row.distance.value == pytest.approx(_apart(row))
+
+
+def test_a_paired_rows_difference_departing_from_its_estimates_is_said_in_its_basis() -> None:
+    """The W2c finding: a paired row printed two pooled rates and the reading's per-case change as their distance, with
+    nothing saying they differ. Kairo holds one that differs, so the basis that says so is read where it matters."""
+    rows = _rows_by_basis()["paired"]
+    departing = [
+        (held, row)
+        for held, row in rows
+        if row.distance is not None and float(row.distance.value) != pytest.approx(_apart(row))  # type: ignore[arg-type]
+    ]
+    assert departing, "the control: some fixture's paired row departs from its two pooled rates"
+    for _held, row in rows:
+        (basis,) = row.basis
+        assert "need not equal first minus second" in str(basis.value)
+        assert "pooled pass rate" in str(basis.value)
+
+
+def test_an_independent_basis_says_per_arm_which_was_read_on_its_cases() -> None:
+    """The W2c note: with one arm's scoreboard stating cases and the other's not, the basis said both were read on
+    trials. Each arm is now named with what its spread was read on."""
+    held = _kairo()
+    first, second = (arm.id for arm in held.arms if arm.role != "control")
+    aspect = passed_aspects(held, [first, second])[0]
+    (named,) = [candidate for candidate in held.aspects if candidate.id == aspect]
+    lead = next((candidate.id for candidate in held.aspects if candidate.asked), held.aspects[0].id)
+    data = held.model_dump(mode="json", by_alias=True)
+    if named.scoreboard is not None:
+        (index,) = [i for i, candidate in enumerate(held.aspects) if candidate.id == aspect]
+        data["aspects"][index]["scoreboard"][second]["cases"] = None
+    else:
+        assert aspect == lead
+        data["scoreboard"][second]["cases"] = None
+    one_on_cases = ReportInput.model_validate(data)
+    (row,) = [
+        row
+        for row in settle_cases(one_on_cases, [first, second], measure=PASSED, limit=50).rows
+        if row.where == f"aspects.{aspect}"
+    ]
+    (basis,) = row.basis
+    said = str(basis.value)
+    assert said.startswith("independent:")
+    assert f"for {first} on its distinct cases" in said
+    assert f"for {second}, whose scoreboard states no cases, on its usable trials" in said
+    both = settle_cases(held, [first, second], measure=PASSED, limit=50).rows[0].basis[0].value
+    assert "whose scoreboard states no cases" not in str(both) and "read on its distinct cases" in str(both)
 
 
 def test_a_two_arm_call_naming_no_held_measure_teaches_the_pass_rate_where_an_aspect_states_it() -> None:
