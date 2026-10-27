@@ -276,6 +276,56 @@ def test_a_pass_rate_with_a_count_gives_every_effect_the_binomial_interval_compa
         assert row.figures[1].value == pytest.approx((change - half, change + half))
 
 
+def _lead_contrast(held: ReportInput, arm: str, key: str) -> tuple[float, tuple[float, float]] | None:
+    """The arm's contrast against the control on the measure, read on the lead aspect (the first asked, else the
+    first; a contrast naming no aspect is read on it): its difference and interval, where it states both."""
+    asked = [aspect.id for aspect in held.aspects if aspect.asked]
+    lead = asked[0] if asked else next((aspect.id for aspect in held.aspects), None)
+    found = [
+        c
+        for c in held.contrasts
+        if c.arm == arm and c.measure == key and c.aspect in (None, lead) and c.delta is not None and c.interval
+    ]
+    if len(found) != 1:
+        return None
+    (contrast,) = found
+    assert contrast.delta is not None and contrast.interval is not None
+    return float(contrast.delta), (float(contrast.interval[0]), float(contrast.interval[1]))
+
+
+def test_an_effect_between_the_control_and_an_arm_it_contrasts_is_that_contrasts_paired_difference() -> None:
+    """Where a lever pair is the control and an arm the input contrasts against it overall (on the lead aspect), the
+    two ran the same cases: the effect is the contrast's difference and its interval the contrast's own, read the
+    move's way round (negated and mirrored where the move ends at the control), and its basis says paired."""
+    seen: set[str] = set()
+    for name, held in INPUTS.items():
+        if name.startswith("wide"):
+            continue
+        control = next((arm.id for arm in held.arms if arm.role == "control"), None)
+        for key in dict.fromkeys([*held.measures, *held.judged]):
+            try:
+                read = _all(held, key, None)
+            except RefusedInput:
+                continue
+            for row in read.effects:
+                first, second = str(row.from_arm.value), str(row.to_arm.value)
+                if control not in (first, second):
+                    continue
+                arm, sign = (second, 1.0) if first == control else (first, -1.0)
+                contrast = _lead_contrast(held, arm, key)
+                if contrast is None:
+                    continue
+                delta, (low, high) = contrast
+                ends = (low, high) if sign > 0 else (-high, -low)
+                figures = {figure.key.rsplit(".", 1)[1]: figure.value for figure in row.figures}
+                assert figures["effect"] == pytest.approx(sign * delta), (name, key, arm)
+                assert figures["interval"] == pytest.approx(ends), (name, key, arm)
+                basis = figures["basis"]
+                assert isinstance(basis, str) and basis.startswith("paired"), (name, key, arm, basis)
+                seen.add(name)
+    assert seen, "the control: some lever pair runs through the control to an arm it contrasts"
+
+
 def _moves(held: ReportInput, key: str, place: str | None) -> dict[str, list[frozenset[str]]]:
     """Every lever pair holding a mean on the measure, by setting, unordered."""
     settings = _settings(held)
