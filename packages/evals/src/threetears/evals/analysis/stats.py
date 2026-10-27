@@ -2455,6 +2455,9 @@ def lognormal_sum_prediction_band(history: Sequence[float], n_future: int) -> tu
     centre = math.fsum(logs) / n
     spread = math.fsum((value - centre) ** 2 for value in logs) / (n - 1)
     if spread == 0.0:
+        # Unequal draws whose logs are equal: where a log is 2 or more in magnitude (a value under about 0.14 or over
+        # about 7.4) its ulp is wider than the gap between two adjacent values, so 0.1 and the float after it share one
+        # log. The mixture below would divide by a zero scale.
         total = n_future * math.exp(centre)
         return total, total
     df = n - 1
