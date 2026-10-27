@@ -435,7 +435,10 @@ class ArmPrice:
         if self.predicted_usd is None and any(
             v is not None for v in (self.central_usd, self.low_usd, self.band_high_usd)
         ):
-            raise ValueError("a range has an upper end, which is the prediction; predicted_usd is None")
+            raise ValueError(
+                "a range's figures (low_usd, central_usd, band_high_usd) sit beside a cap figure, the prediction, "
+                "and there is none: predicted_usd is None"
+            )
         ordered = [v for v in (self.low_usd, self.central_usd, self.band_high_usd, self.predicted_usd) if v is not None]
         if ordered != sorted(ordered):
             raise ValueError(
