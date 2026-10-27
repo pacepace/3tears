@@ -22,7 +22,7 @@ and what HTML keeps beside the chart for a screen reader and a page whose script
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
@@ -896,6 +896,7 @@ class GateMatrixChart(_Drawable):
 
     def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = [self.row_header or "", *(column.label for column in self.columns)]
+        costs = _costs_alike(self.cost_fmt, self.cost_unit, [cell.cost for row in self.rows for cell in row.cells])
         body = []
         for row in self.rows:
             label = row.label + "".join(f" ({extra})" for extra in (row.detail, row.flag) if extra)
@@ -903,8 +904,8 @@ class GateMatrixChart(_Drawable):
             for cell in row.cells:
                 said = "; ".join(cell.reasons or [])
                 text = f"{cell.label}: {said}" if cell.label and said else cell.label or said
-                if cell.cost is not None and self.cost_fmt is not None:
-                    cost = _formatted(self.cost_fmt, cell.cost) + (f" {self.cost_unit}" if self.cost_unit else "")
+                cost = next(costs)
+                if cost:
                     text = f"{text}, {cost}" if text else cost
                 if cell.pick and self.pick_label:
                     text += f" ({self.pick_label})"
@@ -954,15 +955,15 @@ class LatticeChart(_Drawable):
 
     def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = ["", *(column.label for column in self.columns)]
+        costs = _costs_alike(self.cost_fmt, self.cost_unit, [cell.cost for row in self.rows for cell in row.cells])
         body = []
         for row in self.rows:
             cells = [row.label]
             for cell in row.cells:
                 parts = [_formatted(self.fmt, cell.value)]
-                if cell.cost is not None and self.cost_fmt is not None:
-                    parts.append(
-                        _formatted(self.cost_fmt, cell.cost) + (f" {self.cost_unit}" if self.cost_unit else "")
-                    )
+                cost = next(costs)
+                if cost:
+                    parts.append(cost)
                 if cell.latency is not None and self.latency_fmt is not None:
                     parts.append(_formatted(self.latency_fmt, cell.latency))
                 if cell.status_label:
@@ -970,6 +971,19 @@ class LatticeChart(_Drawable):
                 cells.append(" · ".join(parts))
             body.append(cells)
         return headers, body
+
+
+def _costs_alike(fmt: str | None, unit: str | None, costs: Sequence[float | None]) -> Iterator[str]:
+    """Each cell's cost as a matrix's table prints it, in cell order, every cost at one precision
+    (:func:`even_precision` over the costs alone): a cell's other words (its reasons, its pick) make it read unlike its
+    neighbours, so padding the whole cells would leave ``$41.0`` beside ``$17``. Empty for a cell with no cost, or
+    every cell where the block names no cost format."""
+    spelled = [
+        _formatted(fmt, cost) + (f" {unit}" if unit else "") if cost is not None and fmt is not None else ""
+        for cost in costs
+    ]
+    alike = iter(even_precision([[cost] for cost in spelled if cost]))
+    return iter([next(alike)[0] if cost else "" for cost in spelled])
 
 
 def _same_width(rows: Sequence[Any], width: int) -> None:

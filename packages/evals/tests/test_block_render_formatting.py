@@ -237,6 +237,25 @@ def test_a_settle_row_on_its_line_says_no_size_settles_it_and_what_would() -> No
 
 
 # =============================================================================
+# A matrix prints every cost at one precision
+# =============================================================================
+
+#: A cost as a matrix's cell prints it, before what it is per.
+_COST = re.compile(r"\$([\d,]+)(?:\.(\d+))? per ")
+
+
+def test_a_gate_matrix_prints_every_cost_at_one_precision_whatever_else_its_cell_says() -> None:
+    """r1's matrix: a pick's cell and a failing cell read unlike a passing one, and their costs still read alike."""
+    block = _drawn(_inputs()["r1"], "gate_matrix", _query("tasks"))
+    assert block is not None
+    costs = [found for row in block.rows for cell in row.cells[1:] for found in _COST.findall(cell)]
+    assert len(costs) > 1, "the control: r1's matrix prices its cells"
+    under_a_hundred = {len(decimals) for whole, decimals in costs if len(whole) < 3}
+    assert under_a_hundred == {1}, costs
+    assert any(cell.endswith("(Cheapest passing)") for row in block.rows for cell in row.cells), "the control"
+
+
+# =============================================================================
 # A compare chart says once where its interval may be too narrow
 # =============================================================================
 
