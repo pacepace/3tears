@@ -257,11 +257,11 @@ exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecide
 ```
 
 And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said: its first screen's
-warning, title and reading, the contrast row for `number`, the guardrail's row, and the trials' census:
+title, warning and reading, the contrast row for `number`, the guardrail's row, and the trials' census:
 
 ```text
-**Not yet shown safe on classify: v2 on no invented total.**
 # invoices
+**v2 is not yet shown safe on the no invented total guardrail on classify.**
 | classify | v2 | 30 | 73 of 90 | 88 of 90 | 16.7 | [-1.5, 25.9] | — | unclear, a lead |
 | Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-1.4, 34.7] pts | v2 and v1 not separated | 30 paired |
 | No invented total score | v2 | 98.9% | 98.9% | 30 paired | 0 pts | [-13.4, 13.4] pts | 2 pts | undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |

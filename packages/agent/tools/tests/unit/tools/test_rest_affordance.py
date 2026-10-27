@@ -637,3 +637,52 @@ class TestScopeNode:
         declaration = restored.tools[0].face_rest
         assert declaration is not None
         assert declaration.scope_node == "tools.enr.state"
+
+
+class TestScopeQualifierNode:
+    """a second node whose children narrow a scope: per-report access within the states a reader may read."""
+
+    def test_none_by_default(self) -> None:
+        assert RestAffordance(method="GET", path_template="/x").scope_qualifier_node is None
+
+    def test_it_needs_a_scope_node(self) -> None:
+        with pytest.raises(RestAffordanceError, match="needs a scope_node"):
+            RestAffordance(
+                method="GET", path_template="/x/{customer}/{scope}/index", cache_max_age=5, scope_qualifier_node="t.r"
+            )
+
+    @pytest.mark.parametrize("node", ["", "tools..report", " tools.report"])
+    def test_a_node_that_is_not_a_namespace_name_is_refused(self, node: str) -> None:
+        with pytest.raises(RestAffordanceError, match="scope_qualifier_node"):
+            RestAffordance(
+                method="GET",
+                path_template="/x/{customer}/{scope}/index",
+                cache_max_age=5,
+                scope_node="tools.enr.state",
+                scope_qualifier_node=node,
+            )
+
+    async def test_it_round_trips_through_the_manifest(self) -> None:
+        class _QualifiedTool(_StubTool):
+            """a short-lived read whose scopes a second node qualifies."""
+
+            face_rest = RestAffordance(
+                method="GET",
+                path_template="/surveys/{survey_id}",
+                cache=CacheClass.AUTHENTICATED,
+                cache_max_age=5,
+                scope_node="tools.enr.state",
+                scope_qualifier_node="tools.enr.report",
+            )
+
+            def __init__(self) -> None:
+                super().__init__(name="test.rest_qualified", properties=_SURVEY_PROPERTIES)
+
+        mock_nc = AsyncMock()
+        server = _server(mock_nc)
+        server.register(_QualifiedTool())
+        await server.publish_registration()
+        wire = mock_nc.publish.await_args.kwargs["message"].model_dump_json()
+        declaration = RegistrationManifest.model_validate_json(wire).tools[0].face_rest
+        assert declaration is not None
+        assert declaration.scope_qualifier_node == "tools.enr.report"

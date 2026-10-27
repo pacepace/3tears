@@ -1668,6 +1668,38 @@ class CalibrationRating(DurableDocumentModel):
 # EvalTemplate
 # =============================================================================
 
+#: The most characters a declared display name holds: an aspect's short name, a goal check's name. A count of
+#: characters rather than of words, since what a word is differs from one language to the next.
+DECLARED_NAME_CHARS: Final[int] = 32
+
+#: The fields of a template that say only how a page prints it, never what a run of it measures or reads: the one
+#: list every reader that must not see them reads. Left out of both template digests
+#: (:func:`~threetears.evals.run.definition_digests.template_digest`, ``measured_template_digest``), out of every
+#: bundle fingerprint (a bundle carries them under the same names), and an edit of these alone leaves the template's
+#: ``updated_at`` as it was, since that stamp decides which runs still read the template's criteria and intent.
+TEMPLATE_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"goal_check_names"})
+
+
+def declared_name(name: str, *, what: str) -> str:
+    """Refuse a declared display name that is blank or longer than :data:`DECLARED_NAME_CHARS`.
+
+    :param name: The name, as declared.
+    :ptype name: str
+    :param what: What it names, as the refusal says it.
+    :ptype what: str
+    :return: The name, unchanged.
+    :rtype: str
+    :raises ValueError: The name is blank, or longer than the cap.
+    """
+    if not name.strip():
+        raise ValueError(f"the name of {what} is blank; give it a name, or leave it out to print it whole")
+    if len(name) > DECLARED_NAME_CHARS:
+        raise ValueError(
+            f"the name {name!r} of {what} is {len(name)} characters, and a name holds at most {DECLARED_NAME_CHARS}; "
+            "shorten it, or leave it out to print it whole"
+        )
+    return name
+
 
 class EvalTemplate(DurableDocumentModel):
     """Abstract scenario blueprint — subject-agnostic, domain-level.
@@ -1804,6 +1836,18 @@ class EvalTemplate(DurableDocumentModel):
         ),
     )
     rubric: list[RubricDim] = Field(default_factory=list)
+    # What a page calls each goal check: presentation only, so it is no part of what a run measures
+    # (`measured_template_digest` leaves it out) and is written only when a name is declared.
+    goal_check_names: dict[str, str] = Field(
+        default_factory=dict,
+        exclude_if=lambda names: not names,
+        description=(
+            "A display name for a goal check, by the check's expression as `goal_state_checks` holds it: what a page "
+            f"prints for the check, at most {DECLARED_NAME_CHARS} characters, one name per check. Each key is one of this template's "
+            "goal checks. A check with no name here is printed as its whole expression. Read by no judge, simulator "
+            "or candidate, so naming a check changes nothing a run measures."
+        ),
+    )
 
     # Lifecycle
     revision: int = Field(
@@ -1860,6 +1904,58 @@ class EvalTemplate(DurableDocumentModel):
                 "writes a new value for every case; nominate an `enum` or `sample` axis"
             )
         return axes
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Self:
+        """The stored read, which drops a goal check's display name once the check itself is gone.
+
+        A build that predates the names (durable v16.1) keeps them opaquely and writes them back, and may rename or drop
+        a check while it does: the name it writes back then names no check. The stored read leaves such a name out,
+        logged, and the next write drops it, rather than refusing the whole template for how a page would have
+        printed a check it no longer has. Every other field is read as strictly as construction reads it, and an
+        author naming a check the template does not declare is still refused.
+
+        :param data: The stored document, as the store returned it.
+        :ptype data: dict[str, Any]
+        :return: The template.
+        :rtype: Self
+        :raises ValidationError: As :meth:`~threetears.evals.schema.base.CoreDocumentModel.from_dict`.
+        """
+        if isinstance(data, Mapping) and isinstance(names := data.get("goal_check_names"), Mapping):
+            checks = data.get("goal_state_checks")
+            held = set(checks) if isinstance(checks, list) else set()
+            if orphaned := sorted(check for check in names if check not in held):
+                log.warning(
+                    "eval.template_read template=%s dropped goal_check_names for %s: no such goal check now",
+                    data.get("id"),
+                    ", ".join(map(repr, orphaned)),
+                )
+                data = {**data, "goal_check_names": {check: name for check, name in names.items() if check in held}}
+        return super().from_dict(data)
+
+    @model_validator(mode="after")
+    def _names_its_own_checks_once(self) -> Self:
+        """Refuse a check name for a check the template does not declare, a blank or over-long one, or one name
+        given to two checks, which a page would print alike.
+
+        :return: The validated template.
+        :rtype: EvalTemplate
+        :raises ValueError: A name is keyed by no goal check of the template, is blank or too long, or is repeated.
+        """
+        if stray := sorted(set(self.goal_check_names) - set(self.goal_state_checks)):
+            raise ValueError(
+                f"goal_check_names names {', '.join(map(repr, stray))}, which "
+                + ("is not a goal check" if len(stray) == 1 else "are not goal checks")
+                + " of this template; key each name by a check exactly as goal_state_checks holds it"
+            )
+        for check, name in self.goal_check_names.items():
+            declared_name(name, what=f"goal check {check!r}")
+        names = list(self.goal_check_names.values())
+        if twice := sorted({name for name in names if names.count(name) > 1}):
+            raise ValueError(
+                f"goal_check_names gives {', '.join(map(repr, twice))} to more than one check; name each check apart"
+            )
+        return self
 
 
 def current_revision(revisions: Iterable[EvalTemplate]) -> EvalTemplate | None:

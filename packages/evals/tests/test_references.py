@@ -12,7 +12,7 @@ import pytest
 from threetears.evals.analysis import stats
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal, UnresolvableReference
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.references import (
     require_cell,
     resolve_reading,

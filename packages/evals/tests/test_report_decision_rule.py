@@ -248,7 +248,7 @@ def _floor_rows(report: Report) -> list[tuple[str, str]]:
 
 
 def _warnings(report: Report) -> list[str]:
-    """The broken floors' warnings the page opens with."""
+    """The broken floors' warnings, each a line under the verdict."""
     return [
         b.text
         for b in report.blocks
@@ -648,16 +648,14 @@ async def test_an_arrival_shaped_page_warns_of_nothing_and_says_why_on_the_floor
 
 async def test_a_drop_whose_whole_interval_is_past_the_margin_breaks_and_one_reaching_back_within_it_does_not() -> None:
     """One fixture shape, both directions: twenty cases, production passing every trial, the candidate failing some
-    cases outright. Ten failed, the drop's whole interval is past the margin: broken, the page's first line. Eight
+    cases outright. Ten failed, the drop's whole interval is past the margin: broken, a line under the verdict. Eight
     failed, the drop is still 40 points but its interval reaches back within the margin: unclear, and no warning."""
     shown = await _rate_only_page([3] * 20, [3] * 10 + [0] * 10)
     aspect = shown.bundle.aspect
     (warning,) = _warnings(shown)
-    assert warning.startswith(
-        f"Floor broken on {aspect}: candidate's pass rate falls past the 10-point margin on its whole interval, a drop "
-        "of "
-    ), warning
-    assert report_markdown(shown).startswith(f"**{warning}**\n\n# "), "the first line of the page, above the title"
+    assert warning == f"Adopting candidate overrides the 10-point floor it breaks on {aspect}."
+    markdown = report_markdown(shown)
+    assert markdown.startswith("# ") and f"\n**{warning}**\n" in markdown, "under the title, never above it"
     reading, status = _floor_rows(shown)[0]
     assert reading == "the pass rate" and status.startswith(
         "broken: candidate passed 30 of 60 to production's 60, a drop that exceeds the margin of 10 points on its "

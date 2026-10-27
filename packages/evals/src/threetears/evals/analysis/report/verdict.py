@@ -13,7 +13,7 @@
    reading``, never "no difference". A guardrail an arm is not shown safe on is a second sentence: ``Not yet shown
    safe: v2 on no invented total.``
 
-**No floor decides the verdict.** A floor only warns: a broken one is the page's first line, above this one
+**No floor decides the verdict.** A floor only warns: a broken one is a line under this one
 (:mod:`~threetears.evals.analysis.report.decision`), and the verdict says what the contrasts came to beside it.
 
 **A cause cannot exist without its words.** Every way a trial is lost (:data:`LOSS_CAUSE_WORDS`) and every way one
@@ -497,7 +497,11 @@ def _separated(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, aske
         for comparison in family.comparisons:
             if comparison.verdict in _SEPARATED:
                 heading = bundle.measure_catalog.get(comparison.name)
-                reading = measure_name(comparison.name, heading.reader_name if heading is not None else None)
+                reading = measure_name(
+                    comparison.name,
+                    heading.reader_name if heading is not None else None,
+                    declared=bundle.check_name(comparison.name),
+                )
                 if comparison.reading == "judged":
                     reading = f"{humanize('dimension', comparison.name)} (judged)"
                 elif comparison.reading == "trial":

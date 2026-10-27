@@ -39,6 +39,13 @@ names, so a later re-cut of the layers stays cheap.
 - `SearchTransport` -- the injected transport seam (SR-N1, P9). A thin
   host-side adapter over `threetears.core.http_client.TracedHttpClient`
   satisfies it structurally; this package never imports core.
+  `FetchTransport` (Extract's byte-capped read) and `StreamingTransport` (an
+  open-ended response read chunk by chunk, retried only before its first byte)
+  are separate protocols beside it, implemented by the standalone transport.
+- `AnswerRequest`, `GroundedAnswer`, `Anchor`, `AnswerCapabilities`,
+  `AnswerProvider` -- a provider's cited synthesis, carried and never produced:
+  the text as given, its sources as `Candidate`s, its spend as `Spend`, its
+  failures in the same taxonomy. No provider implements them yet.
 - `SEARCH_RESULTS_METADATA_KEY` and the versioned metadata projection (D13,
   D22).
 - `ProviderCapabilities` -- what a provider can express, declared and

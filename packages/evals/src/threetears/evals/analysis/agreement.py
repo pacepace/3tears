@@ -76,7 +76,7 @@ from typing import TYPE_CHECKING, Final, Literal, NamedTuple
 
 from pydantic import Field
 
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.stats import (
     KappaMoments,
     cohen_kappa,

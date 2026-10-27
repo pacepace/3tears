@@ -30,8 +30,8 @@ from threetears.evals.analysis.campaigns import (
     remove_runs_from_campaign,
     update_campaign,
 )
-from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.report import ReportBasis, analysis_verdict
+from threetears.evals.kernel.numbers import format_number
+from threetears.evals.analysis.report import ReportBasis, TrialDetail, analysis_verdict
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.service import (
     AnalysisGenerationEstimate,
@@ -74,7 +74,7 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id, generation_key
 from threetears.evals.run.curation import delete_analysis, delete_insight, set_analysis_archived, set_campaign_archived
-from threetears.evals.schema.models import utc_now_iso
+from threetears.evals.schema.models import DECLARED_NAME_CHARS, utc_now_iso
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_INSIGHT, FIND_RUN, WRITER_REMEDY
 
@@ -125,10 +125,11 @@ ARMS_DESCRIPTION = (
 
 #: What a campaign's aspects are, said once.
 ASPECTS_DESCRIPTION = (
-    "Where the question is measured, each {label?, template_id?, margin?, design?, run_ids?}. label omitted names the "
-    "aspect after the campaign's behavior, each / written - (tools/search is tools-search, as aspect_label_for writes "
-    "it); one aspect at most omits it. design is what the aspect "
-    "sets out to learn: axes (at least one: {axis_id, values: [{content, display}], rationale?}, each axis_id a lever "
+    "Where the question is measured, each {label?, short_name?, template_id?, margin?, design?, run_ids?}. label "
+    "omitted names the aspect after the campaign's behavior, each / written - (tools/search is tools-search, as "
+    "aspect_label_for writes it); one aspect at most omits it. short_name is what a page prints for the aspect in "
+    f"table cells and sentences, at most {DECLARED_NAME_CHARS} characters and no other aspect's label or short name; "
+    "omitted, the label is printed whole. design is what the aspect sets out to learn: axes (at least one: {axis_id, values: [{content, display}], rationale?}, each axis_id a lever "
     "or open-family member this host declares), held_fixed ({stimulus: controlled|uncontrolled, stimulus_reason "
     "(required when uncontrolled), apparatus: commissioned|witnessed}), and optionally merit_axes, bars "
     "([{measure_id, threshold, direction}], no looser than the registered ones), guardrail_margins, merit_priority and "
@@ -158,8 +159,16 @@ ASPECTS_FROM_DESCRIPTION = (
     "Campaigns of this scope whose aspects this one adopts whole — template, runs, design, margin, and when its design "
     "was declared and its question asked — with their floors and arms: each a campaign id, or {campaign_id, label} to "
     "adopt a campaign's one aspect under another label. An adopted aspect keeps its readings' standing; what this "
-    "campaign adds to it (a question, a floor, a margin, an arm) carries the time it was added. Two aspects under one "
-    "label, or one run in two of them, are refused."
+    "campaign adds to it (a question, a floor, a margin, an arm) carries the time it was added. An adopted aspect keeps "
+    "its short_name. Two aspects under one label or printed alike, or one run in two of them, are refused."
+)
+
+#: What naming a campaign's aspects is, said once.
+SHORT_NAMES_DESCRIPTION = (
+    "An aspect's label to its short name, what a page prints for it in table cells and sentences (at most "
+    f"{DECLARED_NAME_CHARS} characters, no other aspect's label or short name), or to null to print its label whole. An aspect "
+    "not named keeps its own. Editable once runs have joined, since it changes nothing any run measures; refused "
+    "beside aspects, whose own short_name says it."
 )
 
 #: What saying a campaign is exploratory means, said once for the operations and the actions that take it.
@@ -222,6 +231,7 @@ class CampaignChanges(EvalBaseModel):
     question: str | None = Field(default=None, description=QUESTION_DESCRIPTION)
     aspects: list[dict[str, Any]] | None = Field(default=None, description=ASPECTS_DESCRIPTION)
     floors: list[dict[str, Any]] | None = Field(default=None, description=FLOORS_DESCRIPTION)
+    short_names: dict[str, str | None] | None = Field(default=None, description=SHORT_NAMES_DESCRIPTION)
     exploratory: bool = Field(default=False, description=EXPLORATORY_DESCRIPTION)
     control_from_run_id: str | None = Field(default=None, min_length=1, description=CONTROL_RUN_DESCRIPTION)
 
@@ -954,7 +964,7 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
             await end_unrun("cancelled before any call, while the generation was being prepared", outcome="cancelled")
             raise
         except EvalJobTimeout as timed_out:
-            await end_unrun(f"preparation did not finish in {timed_out.budget_s:g} s")
+            await end_unrun(f"preparation did not finish in {format_number(timed_out.budget_s)} s")
             return None
         except EvalServiceError as refused:
             await end_unrun(str(refused), refused_by=refused)
@@ -1081,12 +1091,19 @@ def _claim_generation_slot(host: EvalHost, campaign_id: str, scope_id: str, atte
     )
 
 
-def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument:
+def report_read(
+    host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat, trials: TrialDetail = "table"
+) -> ReportDocument:
     """The campaign's report, serialized in one form — the same report the command line's ``report`` prints.
 
     What "the campaign's report" is has one answer,
     :func:`~threetears.evals.analysis.campaign_report`: its newest analysis that is not archived, else a
     code-only report of its evidence. ``basis`` on the result says which.
+
+    **The trials.** By default each aspect's trials section is the census line, the table of its failed and lost
+    trials, each row naming its stored result (read one with ``result_get``), and the table of its passed trials;
+    ``trials="all"`` adds each failed or lost trial's full record (what it asked, what the judge saw and said, and
+    why), which is most of a large campaign's page. The JSON form carries no trial records either way.
 
     :param host: The host whose store holds the campaign.
     :ptype host: EvalHost
@@ -1098,11 +1115,13 @@ def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: Repo
         readings across the campaign's aspects, the recommendation, the call, and each aspect's bundle by its
         fingerprint, as ``campaign.json`` beside a written page holds it).
     :ptype format: ReportFormat
+    :param trials: ``table`` (the default) or ``all``, which adds each failed or lost trial's full record.
+    :ptype trials: TrialDetail
     :return: The report in that form.
     :rtype: ReportDocument
     :raises NotFoundError: No campaign with that id in the scope.
     """
-    report = campaign_report(host, campaign_id, scope_id)
+    report = campaign_report(host, campaign_id, scope_id, trials=trials)
     return ReportDocument(
         campaign_id=campaign_id,
         basis=report.basis,

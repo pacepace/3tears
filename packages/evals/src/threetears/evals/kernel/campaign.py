@@ -28,7 +28,7 @@ from typing import Any, Literal, Self, get_args
 from pydantic import ConfigDict, Field, computed_field, field_validator, model_validator
 
 from threetears.evals.kernel.authored import AuthoredCampaignAnalysis, Confidence
-from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall, Floor
+from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall, Floor, printed_aspect_name
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgedTierRule, weakest_judged_tier
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
@@ -260,16 +260,30 @@ class EvalCampaign(DurableDocumentModel):
 
     @model_validator(mode="after")
     def _aspects_hold_their_runs_alone(self) -> Self:
-        """Each aspect's label is unique, and each run is held once, by one aspect.
+        """Each aspect's label is unique, so is what a page prints for it, and each run is held once, by one aspect.
 
         :return: The validated campaign.
         :rtype: EvalCampaign
-        :raises ValueError: Two aspects share a label, or a run is held twice — by one aspect or by two.
+        :raises ValueError: Two aspects share a label or would print alike, or a run is held twice — by one aspect or
+            by two.
         """
         labels = [aspect.label for aspect in self.aspects]
         if repeated := sorted({label for label in labels if labels.count(label) > 1}):
             raise ValueError(
                 f"aspect label(s) {', '.join(map(repr, repeated))} name more than one aspect; label each once"
+            )
+        # A short name is printed in place of its label, and the label stays every identifier (a fold, a floor's key,
+        # a recorded call's `bars_overridden`). So no name of one aspect, its label or its short name, may be a name
+        # of another: a reader copying a name from a table must reach the aspect the table meant.
+        owners: dict[str, set[str]] = {}
+        for aspect in self.aspects:
+            owners.setdefault(aspect.label, set()).add(aspect.label)
+            owners.setdefault(printed_aspect_name(aspect.label, aspect.short_name), set()).add(aspect.label)
+        if alike := sorted(name for name, held in owners.items() if len(held) > 1):
+            raise ValueError(
+                f"aspect name(s) {', '.join(map(repr, alike))} would name more than one aspect (a short name is "
+                "printed in place of its label, and may be no other aspect's label or short name); give each aspect "
+                "a short name no other aspect is labelled or named"
             )
         holder: dict[str, str] = {}
         for aspect in self.aspects:

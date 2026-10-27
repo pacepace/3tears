@@ -1,7 +1,7 @@
 """Pin the exact prose a model reads for free text in a web search listing.
 
 Titles, snippets, filter details, and notices are provider text of any number of
-lines. Each must stay under its own result or footnote: a snippet's lines all
+lines. Each must stay under its own result or note: a snippet's lines all
 indented, no blank line inside a result, a title or detail joined onto one line.
 """
 
@@ -73,7 +73,7 @@ def test_a_whitespace_only_snippet_still_shows_the_result_heading() -> None:
     assert prose == f"1. Capybara\n   URL: {CANDIDATE.identity}\n   {FACTS}"
 
 
-def test_an_unmet_filter_detail_is_joined_onto_its_footnote_line() -> None:
+def test_an_unmet_filter_detail_is_joined_onto_its_note_line() -> None:
     result = CandidateSet(
         dispositions=(
             CriterionDisposition(
@@ -84,25 +84,28 @@ def test_an_unmet_filter_detail_is_joined_onto_its_footnote_line() -> None:
         ),
     )
 
-    assert render_prose(result).endswith(
+    assert render_prose(result) == (
         "What this search could not do:\n- the time-range filter was not applied: the engine ignores dates entirely"
+        "\n\nNo results found."
     )
 
 
-def test_a_many_line_notice_is_joined_onto_its_footnote_line() -> None:
+def test_a_many_line_notice_is_joined_onto_its_note_line() -> None:
     candidate = CANDIDATE.model_copy(update={"title": "T", "snippet": None})
     result = CandidateSet(candidates=(candidate,), notices=("engines down:\n\n brave\n\twikidata",))
 
     assert render_prose(result) == (
-        f"1. T\n   URL: {CANDIDATE.identity}\n   {FACTS}\n\n"
         "What this search could not do:\n"
-        "- engines down: brave wikidata"
-    )
+        "- engines down: brave wikidata\n\n"
+        f"1. T\n   URL: {CANDIDATE.identity}\n   {FACTS}"
+    ), "the note comes before the results it qualifies"
 
 
-def test_a_filter_without_detail_still_shows_its_footnote_line() -> None:
+def test_a_filter_without_detail_still_shows_its_note_line() -> None:
     result = CandidateSet(
         dispositions=(CriterionDisposition(criterion_key="time-range", disposition="unsatisfied", detail=" \n "),),
     )
 
-    assert render_prose(result).endswith("What this search could not do:\n- the time-range filter was not applied")
+    assert render_prose(result).startswith(
+        "What this search could not do:\n- the time-range filter was not applied\n\n"
+    )
