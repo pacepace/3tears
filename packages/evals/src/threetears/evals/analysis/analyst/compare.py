@@ -32,9 +32,10 @@ either arm states no spread is listed with why, and no interval.
 no count, so the input does not say whether its interval counts cases or trials. Where what the interval counts is
 trials, observations or unstated, the spread was not read on distinct cases, and the arm ran more trials than cases
 (its scoreboard's usable or ran trials above its cases: replies of one conversation, or repeats of one case), the
-interval may be too narrow, since trials of one case are not independent: the row says so (``may_be_narrow``, a
-paired row's unstated unit ``counted_unstated``), cites each such arm's trials and cases (``nested``), and the page's
-notes say why, once. It never widens the interval itself *(inferred: the snapshot holds no
+interval may be too narrow if it counts trials nested in cases, since trials of one case are not independent: the row
+says so (``may_be_narrow``, a paired row's unstated unit ``counted_unstated``), cites each such arm's trials and cases
+(``nested``), and the page's notes say why, once, as a may: a paired row's unit is unstated, so its interval may
+already be read over the cases (Kairo's per-case contrasts are), and the note never says it would be wider. It never widens the interval itself *(inferred: the snapshot holds no
 per-case outcomes to read a clustered interval from)*.
 
 **What it refuses**, teaching the next call: anything but two distinct arms of the snapshot; a measure the snapshot
@@ -268,9 +269,11 @@ _PAIRED_COUNT = (
 
 #: Why an interval may be too narrow, in words.
 _MAY_BE_NARROW = (
-    "a row marked may_be_narrow may have too narrow an interval: it counts trials, observations or an unstated unit, "
-    "and the arms its nested figures name ran more trials than cases (replies of one conversation, or repeats of one "
-    "case), which are not independent; read on the cases it would be wider. Say so wherever it is cited"
+    "rows marked may_be_narrow may be too narrow if these intervals count trials nested in cases: the arms their "
+    "nested figures name ran more trials than cases (replies of one conversation, or repeats of one case), and trials "
+    "of one case are not independent. An independent row's counts say what its interval counts; a paired row's unit "
+    "is unstated, so it may already be read over the cases and be no narrower. Say so, as a may, "
+    "wherever it is cited"
 )
 
 
