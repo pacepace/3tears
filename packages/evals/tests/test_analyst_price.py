@@ -1144,3 +1144,21 @@ def test_a_price_within_a_slice_is_per_what_the_slices_own_cost_measure_counts()
                 assert per_count(noun) in spelled and REPLIES not in spelled, spelled
                 priced += 1
     assert priced, "the control: some move within the task is priced"
+
+
+def test_a_prices_blocks_level_is_read_off_the_lead_aspects_contrasts_alone() -> None:
+    """The W3 lookup the prices block shares: a step's paired interval is the lead aspect's contrast, so the level the
+    block prints is that contrast's, never another aspect's contrast of the same arm on the same measure key. r4 with
+    each persona contrast copied onto another aspect at another level prints the lead's level, where reading every
+    contrast on the key found two levels and refused the block."""
+    data = copy.deepcopy(_r4().model_dump(mode="json", by_alias=True))
+    lead = next(aspect["id"] for aspect in data["aspects"] if aspect["asked"])
+    other = next(aspect["id"] for aspect in data["aspects"] if aspect["id"] != lead)
+    on_key = [c for c in data["contrasts"] if c["measure"] == lead]
+    assert on_key and all(c["aspect"] in (None, lead) for c in on_key), "the control: the lead's contrasts on its key"
+    data["contrasts"] += [{**copy.deepcopy(c), "aspect": other, "level": "80%"} for c in on_key]
+    held = ReportInput.model_validate(data)
+    plain = block_render(_r4(), block_kind="bars", query=_prices_query([lead]))
+    assert plain.level and plain.level != "80%", "the control: r4's paired step prints its contrasts' own level"
+    tagged = block_render(held, block_kind="bars", query=_prices_query([lead]))
+    assert tagged.level == plain.level

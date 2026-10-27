@@ -366,9 +366,17 @@ def _is_lead(report_input: ReportInput, aspect_id: str) -> bool:
     return aspect_id == lead
 
 
-def _on_lead(report_input: ReportInput, contrast: Contrast) -> bool:
+def on_lead_aspect(report_input: ReportInput, contrast: Contrast) -> bool:
     """Whether a contrast is read on the lead aspect, the one an arm's overall figures (the by-arm maps) belong to: it
-    names that aspect, or none. A contrast on another aspect pairs another aspect's figures, never the overall ones."""
+    names that aspect, or none. A contrast on another aspect pairs another aspect's figures, never the overall ones.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param contrast: One of its contrasts.
+    :ptype contrast: Contrast
+    :return: Whether the contrast pairs the overall figures.
+    :rtype: bool
+    """
     return contrast.aspect is None or _is_lead(report_input, contrast.aspect)
 
 
@@ -1760,12 +1768,12 @@ def _gain_table(report_input: ReportInput, key: str) -> Measure | Judged:
 
 def _gain_contrasts(report_input: ReportInput, key: str, control: str) -> list[Contrast]:
     """The contrasts that state a candidate against the control on the axis, with their difference, on the lead aspect
-    the axis's own figures belong to (:func:`_on_lead`)."""
+    the axis's own figures belong to (:func:`on_lead_aspect`)."""
     return [
         contrast
         for contrast in report_input.contrasts
         if contrast.measure == key
-        and _on_lead(report_input, contrast)
+        and on_lead_aspect(report_input, contrast)
         and contrast.delta is not None
         and contrast.arm != control
         and contrast.control in (None, control)
@@ -2902,7 +2910,7 @@ def _family_level(report_input: ReportInput, contrast: Contrast) -> float | None
 
 def _paired(report_input: ReportInput, arm_id: str, other: str, key: str) -> Contrast | None:
     """The one contrast stating one of the two arms against the other (the control) on ``key``, with its difference
-    and interval, on the lead aspect whose figures ``overall`` reads (:func:`_on_lead`): the paired estimate, which the
+    and interval, on the lead aspect whose figures ``overall`` reads (:func:`on_lead_aspect`): the paired estimate, which the
     compare family reads overall in place of the arms' own spreads."""
     control = _control(report_input)
     if control is None or control.id not in (arm_id, other):
@@ -2913,7 +2921,7 @@ def _paired(report_input: ReportInput, arm_id: str, other: str, key: str) -> Con
         for contrast in report_input.contrasts
         if contrast.arm == candidate
         and contrast.measure == key
-        and _on_lead(report_input, contrast)
+        and on_lead_aspect(report_input, contrast)
         and contrast.control in (None, control.id)
         and contrast.delta is not None
         and contrast.interval is not None
@@ -5231,4 +5239,5 @@ __all__ = [
     "render",
     "resolve",
     "separation_wheres",
+    "on_lead_aspect",
 ]

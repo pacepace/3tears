@@ -71,6 +71,7 @@ from threetears.evals.analysis.report.charts import KIT_CHARTS
 from threetears.evals.analysis.report.figure_keys import (
     DIRECTION_WORDS,
     format_figure,
+    on_lead_aspect,
     parse_key,
     price_frontier,
     reader_names,
@@ -469,7 +470,11 @@ def _price_level(chart: PlannedChart, report_input: ReportInput, path: str, faul
         return ""
     key = steps[0].gain_key
     if steps[0].paired:
-        levels = (contrast_level(report_input, c) for c in report_input.contrasts if c.measure == key)
+        levels = (
+            contrast_level(report_input, c)
+            for c in report_input.contrasts
+            if c.measure == key and on_lead_aspect(report_input, c)
+        )
         return _one(path, "interval level", levels, faults)
     table = report_input.judged.get(key) or report_input.measures.get(key)
     own = table.level if table is not None and table.level else ""
