@@ -304,6 +304,47 @@ def test_a_compare_block_names_what_its_intervals_count_only_where_the_input_sta
     assert "unit is unstated" not in said, "the block holds no paired row"
 
 
+def _paired_reads(held: ReportInput) -> list[tuple[str, str, str, str]]:
+    """Each contrast a compare block overall reads as its paired estimate, with what its one family says of its
+    correction: its candidate, the control, the measure, and the correction (empty where none is stated)."""
+    control = next((arm.id for arm in held.arms if arm.role == "control"), None)
+    found = []
+    for contrast in held.contrasts:
+        families = [family for family in held.contrast_families if family.aspect == contrast.aspect]
+        if control is None or contrast.interval is None or len(families) != 1:
+            continue
+        try:
+            rows = arms_compare(held, [contrast.arm, control], contrast.measure, limit=_EVERY).rows
+        except RefusedInput:
+            continue  # a contrast on a measure the arms state no mean on: no compare block reads it
+        if rows and rows[0].paired_with == f"arm:{contrast.arm}":
+            found.append((contrast.arm, control, contrast.measure, (families[0].correction or "").strip()))
+    return found
+
+
+def test_a_compare_blocks_paired_interval_is_called_corrected_only_where_its_family_corrects() -> None:
+    """r4's family says its correction is none, so its paired interval is not corrected; a family naming a method
+    corrects. Both the chart's note and the table's basis column read the family, never assert the correction."""
+    kinds: set[str] = set()
+    for held in _inputs().values():
+        for arm, control, measure, correction in _paired_reads(held):
+            query = _query("compare", arms=[arm, control], measures=[measure], strata=["overall"])
+            chart, table = _drawn(held, "diverging_bars", query), _drawn(held, "table", query)
+            assert chart is not None and table is not None
+            (said,) = [note for note in chart.notes if note.startswith("The interval is paired:")]
+            (column,) = {cell for cell in _column(table, "Read as") if cell.startswith("paired:")}
+            for basis in (said, column):
+                if correction.lower() == "none":
+                    kinds.add("none")
+                    assert "corrected within" not in basis and "not corrected" in basis, basis
+                elif correction:
+                    kinds.add("named")
+                    assert f"corrected within its family ({correction})" in basis, basis
+                else:
+                    assert "corrected within" not in basis and "unstated" in basis, basis
+    assert kinds == {"none", "named"}, "the control: a family saying none and one naming its correction"
+
+
 def test_a_compare_block_whose_arms_ran_each_case_once_says_nothing_of_narrow_intervals() -> None:
     data = _inputs()["r4"].model_dump(mode="json", by_alias=True, exclude_none=True)
     data["scoreboard"] = {

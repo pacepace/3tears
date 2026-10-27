@@ -94,7 +94,7 @@ from threetears.evals.analysis.report.plan_page.words import (
 )
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.quantities import PERCENT, POINTS
-from threetears.evals.analysis.report.figure_keys import arm_settings
+from threetears.evals.analysis.report.figure_keys import arm_settings, correction_words, pairing_contrast
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_rows import lever_arms
 from threetears.evals.analysis.style import humanize
@@ -600,8 +600,9 @@ _SCOREBOARD = "scoreboard."
 
 def compare_basis(context: ChartContext, row: ComparisonRow, key: str) -> str:
     """How a compare row's interval was read, in reader words: the paired estimate (``paired_with``) names the
-    candidate a contrast reads against the control and the measure by their reader names, never by id or key; the
-    independent reading is the analysis's own words, which name neither.
+    candidate a contrast reads against the control and the measure by their reader names, never by id or key, and
+    whether it is corrected as the contrast's own family says (:func:`correction_words`: corrected only where the
+    family names a method); the independent reading is the analysis's own words, which name neither.
 
     :param context: The chart being resolved, over the compare source.
     :ptype context: ChartContext
@@ -617,8 +618,14 @@ def compare_basis(context: ChartContext, row: ComparisonRow, key: str) -> str:
     if row.paired_with is None:
         return str(row.basis.value)
     candidate = row.paired_with.removeprefix("arm:")
+    first, second = context.query.arms
+    contrast = pairing_contrast(context.report_input, first, second, key, row.where)
+    if contrast is None:
+        return str(row.basis.value)
     return PAIRED_BASIS_TEMPLATE.format(
-        arm=_arm_name(context, candidate), measure=measure_words(context.report_input, key)
+        arm=_arm_name(context, candidate),
+        measure=measure_words(context.report_input, key),
+        corrected=correction_words(context.report_input, contrast),
     )
 
 
