@@ -6,7 +6,8 @@ A row per selected row, in the input's order (the arms in the chart's order), co
 source          columns
 ==============  ===================================================================================================
 readings        the arm, its change in points with its interval, the pipeline's reading
-contrasts       the arm, the measure, the change (a rate's in points) with its interval, the verdict
+contrasts       the arm, the measure (naming the aspect where two aspects' contrasts share it), the change (a
+                rate's in points) with its interval, the verdict
 measures,       wide: a row per arm, a column per measure holding its figure (its mean, else the statistic a
 judged,         criterion on it reads) with its interval; money stated per 1,000 of what it counts (per 1,000
                 replies for money per reply)
@@ -49,6 +50,8 @@ from threetears.evals.analysis.report.plan_page.charting import (
     ChartContext,
     Drawn,
     KindResolver,
+    contrast_groups,
+    contrast_words,
     figure_unit,
     measure_words,
     slice_name,
@@ -157,15 +160,14 @@ def _readings(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
 def _contrasts(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     report_input = context.report_input
     contrasts = [row.item for row in context.rows() if isinstance(row.item, Contrast)]
-    for key in dict.fromkeys(contrast.measure for contrast in contrasts):
-        on_key = {contrast.arm: contrast for contrast in contrasts if contrast.measure == key}
+    for key, aspect, on_key in contrast_groups(context, contrasts):
         for arm in context.arm_order(on_key):
             contrast = on_key[arm]
             drawn = quantity(figure_unit(report_input, key, kind=contrast.kind), change=True)
             interval = contrast.interval
             yield {
                 "arm": _arm(context, arm),
-                "measure": _words(measure_words(report_input, key, kind=contrast.kind)),
+                "measure": _words(contrast_words(report_input, contrast, aspect)),
                 "change": _number(
                     float(contrast.delta) * drawn.factor if contrast.delta is not None else None,
                     drawn.unit,

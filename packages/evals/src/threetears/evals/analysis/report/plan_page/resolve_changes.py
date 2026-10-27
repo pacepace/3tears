@@ -5,7 +5,8 @@ about a centre).
 
 - *readings*: a row per candidate, its change and the interval the reading was read on, bold where separated
   (the interval clear of zero), its note in GENERATOR §3's words (worse, better, not separated);
-- *contrasts*: a row per arm and measure, grouped under the measure's reader name where the chart reads several, a
+- *contrasts*: a row per arm and measure, grouped under the measure's reader name where the chart reads several (and
+  under the aspect's too where two aspects' contrasts share a measure, a query naming no aspect selecting both), a
   rate's delta in points, bold where the contrast regressed or improved. A comparison the query asks for that the
   input holds no contrast of is named in a caption, never filled in.
 
@@ -37,6 +38,8 @@ from threetears.evals.analysis.report.plan_page.charting import (
     Drawn,
     KindResolver,
     chart_block,
+    contrast_groups,
+    contrast_words,
     figure_stat,
     figure_unit,
     interval_words,
@@ -133,16 +136,16 @@ def _reading_changes(context: ChartContext) -> tuple[list[_Change], Quantity]:
 
 
 def _contrast_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[str, ...]]:
-    """Each selected contrast as a change, a rate's delta in points, grouped by measure where there are several; and
+    """Each selected contrast as a change, a rate's delta in points, grouped by measure (and by aspect where two
+    aspects' contrasts share one) where there are several groups; and
     the caption naming each asked pair the input holds no contrast of."""
     report_input = context.report_input
     contrasts = [row.item for row in context.rows() if isinstance(row.item, Contrast)]
-    keys = list(dict.fromkeys([*context.query.measures, *(contrast.measure for contrast in contrasts)]))
-    grouped = len({contrast.measure for contrast in contrasts}) > 1
+    groups = contrast_groups(context, contrasts, context.query.measures)
+    grouped = len(groups) > 1
     drawn: Quantity | None = None
     changes: list[_Change] = []
-    for key in keys:
-        on_key = {contrast.arm: contrast for contrast in contrasts if contrast.measure == key}
+    for key, aspect, on_key in groups:
         for arm in context.arm_order(on_key):
             contrast = on_key[arm]
             if contrast.delta is None:
@@ -157,7 +160,7 @@ def _contrast_changes(context: ChartContext) -> tuple[list[_Change], Quantity, t
                 if contrast.interval is not None
                 else None
             )
-            words = measure_words(report_input, key, kind=contrast.kind)
+            words = contrast_words(report_input, contrast, aspect)
             direction = {"regressed": "worse", "improved": "better"}.get(contrast.verdict, "")
             tip = [look.name, words, figure_text(value, here)]
             if interval is not None:

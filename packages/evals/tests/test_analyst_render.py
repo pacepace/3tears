@@ -24,6 +24,7 @@ Contracts held here (``analysis.report.block_spec``, ``analysis.analyst.blocks``
 
 from __future__ import annotations
 
+from collections import Counter
 import functools
 import json
 import re
@@ -32,7 +33,7 @@ from typing import Any, get_args
 
 import pytest
 
-from packages.evals.tests.analyst_support import KAIRO, fixture_inputs, fixture_snapshots
+from packages.evals.tests.analyst_support import KAIRO, aspect_tagged, fixture_inputs, fixture_snapshots
 from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
@@ -47,7 +48,9 @@ from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, resolve
 from threetears.evals.analysis.report.plan_page.build import plan_page
-from threetears.evals.analysis.report_input import Cell, ReportInput, Stratum, Task
+from threetears.evals.analysis.report.plan_page.charting import measure_words
+from threetears.evals.analysis.report.plan_page.words import ASPECT_MEASURE_TEMPLATE
+from threetears.evals.analysis.report_input import Cell, Contrast, ReportInput, Stratum, Task
 from threetears.evals.analysis.report_plan_checks import raised_warnings
 from threetears.evals.analysis.report_plan_facts import complete_plan
 from threetears.evals.analysis.report_rows import SourceRow, query_rows
@@ -497,6 +500,44 @@ def test_a_table_over_several_measures_is_a_row_per_arm_with_a_column_per_measur
     assert drawn.total == len(arms), name
     measured = [column for column in drawn.columns if not column.endswith("interval")]
     assert len(measured) == 1 + len(keys), (name, drawn.columns)
+
+
+def test_a_contrasts_block_naming_no_aspect_keeps_each_aspects_contrast_and_names_the_aspect_where_two_share_a_key() -> (
+    None
+):
+    """A contrasts query naming no aspect selects every aspect's contrasts. Where two aspects hold a contrast of one
+    arm on one measure key, the table and the change chart keep both, each under the measure's words naming its
+    aspect, never one in place of the other; a measure whose contrasts sit on one aspect keeps its plain words."""
+    held, arm, key = aspect_tagged(_inputs()["r4"])
+    names = {aspect.id: aspect.name for aspect in held.aspects}
+    shared = [c for c in held.contrasts if (c.arm, c.measure) == (arm, key)]
+    assert len({c.aspect for c in shared}) == 2, "the control: two aspects hold the arm's contrast on the key"
+    assert all(c.aspect is not None and names[c.aspect] for c in held.contrasts), "the control: every aspect is named"
+    spans = {
+        measure: len({c.aspect for c in held.contrasts if c.measure == measure}) > 1
+        for measure in {c.measure for c in held.contrasts}
+    }
+    assert not all(spans.values()), "the control: some measure's contrasts sit on one aspect"
+
+    def words(contrast: Contrast) -> str:
+        plain = measure_words(held, contrast.measure, kind=contrast.kind)
+        assert contrast.aspect is not None
+        return (
+            ASPECT_MEASURE_TEMPLATE.format(measure=plain, aspect=names[contrast.aspect])
+            if spans[contrast.measure]
+            else plain
+        )
+
+    query = _query("contrasts")
+    table = block_render(held, block_kind="table", query=query, limit=200)
+    assert table.total == len(held.contrasts)
+    measured = table.columns.index("Measure")
+    assert Counter(row.cells[measured] for row in table.rows) == Counter(words(c) for c in held.contrasts)
+    bars = block_render(held, block_kind="diverging_bars", query=query, limit=200)
+    stated = [c for c in held.contrasts if c.delta is not None]
+    assert bars.total == len(stated)
+    grouped = bars.columns.index("Group")
+    assert Counter(row.cells[grouped] for row in bars.rows) == Counter(words(c) for c in stated)
 
 
 def _holds_intervals(held: ReportInput, query: ChartQuery) -> bool:

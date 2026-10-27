@@ -16,6 +16,7 @@ __all__ = [
     "ARM_ROLE_WORDS",
     "ARMS_EYEBROW",
     "ARMS_TAKEAWAY",
+    "ASPECT_MEASURE_TEMPLATE",
     "CONFIDENCE_LABEL",
     "CONFIDENCE_WORDS",
     "CONTRAST_VERDICT_WORDS",
@@ -235,6 +236,10 @@ CONTRAST_VERDICT_WORDS: dict[str, str] = {
     "not_separated": "Not separated",
     "untested": "Untested",
 }
+
+#: A contrast's measure, as a table or change chart names it where the measure's selected contrasts sit on more than one
+#: aspect: each is told apart by the aspect it was read on.
+ASPECT_MEASURE_TEMPLATE = "{measure}, on {aspect}"
 
 #: Where a criterion read on an arm's overall figure is read, in the gate matrix's Where column.
 OVERALL = "Overall"
