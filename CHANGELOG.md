@@ -35,15 +35,19 @@ the whole it holds before any `next:` line: `all 77 shown`, `rows 1 to 6 of 9 sh
 ### evals: analyses say how far they reach: a sweep that stops short, an estimate on its line, an aspect's pass rate, a contrast's correction and unit, and an arm as any result prints it
 
 **Added:** `decision_sensitivity` names each side of a caller's range past which the call or a routable task's pick
-changes (`Sensitivity.unswept`: the nearest such flip by its key, how many, the call past it, and whether that side
-loosens the line), and each arm a cross-cutting task's gate holds back from every per-task pick, with the gates it fails
+changes (`Sensitivity.unswept`: the nearest such flip by its key, each such flip by its key in `past`, a page's worth
+with `more_past` saying whether more lie beyond, the call past it, and whether that side loosens the line; a flip
+exactly on the range's end counts as past it where the change lies just beyond, and every flip's `call_changes` reads
+the side past the range too), and each arm a cross-cutting task's gate holds back from every per-task pick, with the gates it fails
 there by their keys and the tasks whose own gates it passes (`Sensitivity.barred`); a margin sweep over an aspect with
 no reading of a candidate says code never reads that candidate against a margin. `settle_cases` settles two arms apart
 on an aspect's pass rate (`measure_key` `passed`; keys `settle.passed.<aspect>.<arm>.<other>.<field>`), paired on the
 aspect's reading where one pairs a candidate with the control, else on each arm's binomial spread from its own trials,
-each row citing the arms' usable trials and cases and a basis naming the count it rests on. `arms_compare` rows say what
+each row citing the arms' usable trials and cases and a basis naming the count it rests on, per arm (a paired row's
+difference is the reading's own change, which its basis says need not equal the two pooled rates' difference). `arms_compare` rows say what
 their interval counts (`counts`, `counted_unstated`) and mark one that may be too narrow where trials nest in fewer
-cases (`may_be_narrow`, `nested`), with a note saying why once. Every analyst action names an arm by its id, as
+cases (`may_be_narrow`, `nested`), with a note saying, once, that such intervals may be too narrow if they count
+trials nested in cases (a paired row's unit is unstated, so it may already be over the cases). Every analyst action names an arm by its id, as
 `arm:<id>`, or as the key `{arm:<id>}` (`actions.params.written_arm`).
 
 **Changed:** an estimate exactly on its line is answered rather than refused: `settles` reads `on_the_line`,
@@ -51,7 +55,8 @@ cases (`may_be_narrow`, `nested`), with a note saying why once. Every analyst ac
 (`separation.wrong_side_share` returns one half at a distance of zero).
 
 **Fixed:** a paired comparison's basis said "corrected within its family" whatever its family said; it now reads the
-family's own correction (not corrected where it says none, unstated where it says nothing).
+family's own correction (not corrected where it says none, unstated where it says nothing). The planner prompt and
+the decision's docstrings read it the same way.
 
 ### evals: a multiple keeps its unit, a price its third figure; the key check pages without repeating the keys; a borderline gate's caveat and a bound on a cost some trials did not report
 
