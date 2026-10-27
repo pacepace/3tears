@@ -8,6 +8,15 @@ packages (bumped in lock-step).
 
 ## v0.80.0 -- 2026-10-26
 
+### agent-tools, core: an edge-cacheable read may narrow its scopes by a second namespace node
+
+**New:** `RestAffordance.scope_qualifier_node`, beside `scope_node`. A reader who sees every child tool node beneath
+it keeps the scopes `scope_node` names (`va`); any other reader's scopes are qualified by the children it sees,
+`<scope>.<fingerprint>` (`threetears.core.http_cache.scope_qualifier`, `qualified_scope`,
+`SCOPE_QUALIFIER_SEPARATOR`). The hub qualifies the scopes it puts in a reader's edge token the same way, so two
+readers of the same states and different reports never share a cached answer, and a reader of every report keeps
+today's scope names and cache. Refused without a `scope_node`, or when it is not a dotted namespace name.
+
 ### search, agent-tools: grounded answers (Brooks, #930)
 
 **Added:** an agent can ask a provider for a cited answer to a question, beside searching and fetching.
