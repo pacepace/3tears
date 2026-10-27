@@ -34,6 +34,7 @@ from uuid import UUID
 __all__ = [
     "DueSchedule",
     "FireStore",
+    "ImmediateFireStore",
     "ScheduleStore",
 ]
 
@@ -182,6 +183,39 @@ class ScheduleStore(Protocol):
             ``date_updated``
         :ptype now: datetime
         :return: ``True`` on successful claim, ``False`` on CAS miss
+        :rtype: bool
+        """
+        ...
+
+
+@runtime_checkable
+class ImmediateFireStore(Protocol):
+    """The schedule-side surface that makes a job due again without firing it.
+
+    :class:`~threetears.scheduled_jobs.background.BackgroundDispatch` uses it to bring back the
+    job of a fire it cancelled on shutdown: the claim had already advanced that job's
+    ``next_fire_at``, so without it the job waits a whole interval for work that never ran.
+    :meth:`ScheduledJobCollection.request_immediate_fire
+    <threetears.scheduled_jobs.collections.ScheduledJobCollection.request_immediate_fire>`
+    implements it.
+    """
+
+    async def request_immediate_fire(
+        self,
+        *,
+        partition_key: UUID,
+        job_id: UUID,
+        now: datetime,
+    ) -> bool:
+        """Set an active job's ``next_fire_at`` to ``now``; the tick claims it as usual.
+
+        :param partition_key: partition column value
+        :ptype partition_key: UUID
+        :param job_id: target job
+        :ptype job_id: UUID
+        :param now: the instant the job is due at
+        :ptype now: datetime
+        :return: ``True`` when the job was brought forward, ``False`` when no active row matched
         :rtype: bool
         """
         ...

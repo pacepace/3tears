@@ -40,7 +40,7 @@ from threetears.scheduled_jobs.background import (
 )
 from threetears.scheduled_jobs.config import DEFAULT_JOB_CONFIG
 from threetears.scheduled_jobs.events import EVENT_FIRE_WAITING_EXCLUSION_GROUP
-from threetears.scheduled_jobs.protocols import FireStore
+from threetears.scheduled_jobs.protocols import FireStore, ImmediateFireStore
 from threetears.scheduled_jobs.types import JobFireResult, JobTrigger
 
 
@@ -971,6 +971,143 @@ async def test_aclose_records_a_fire_whose_task_never_started() -> None:
         "poll:never: cancelled because BackgroundDispatch was closed before the fire finished"
     )
     assert fires.succeeded == []
+
+
+class _FakeScheduleStore(ImmediateFireStore):
+    """Records each job a dispatcher makes due again; ``raises`` models a DB outage at shutdown."""
+
+    def __init__(self, *, raises: bool = False, active: bool = True) -> None:
+        self.due_again: list[tuple[UUID, UUID, datetime]] = []
+        self._raises = raises
+        self._active = active
+
+    async def request_immediate_fire(self, *, partition_key: UUID, job_id: UUID, now: datetime) -> bool:
+        if self._raises:
+            raise ConnectionError("database unreachable")
+        if self._active:
+            self.due_again.append((partition_key, job_id, now))
+        return self._active
+
+
+async def _sleeps(_t: JobTrigger, _f: UUID) -> JobFireResult:
+    await asyncio.sleep(10)
+    return JobFireResult()
+
+
+async def test_a_fire_cancelled_by_close_makes_its_job_due_at_the_occurrence_it_was_running() -> None:
+    fires, schedules = _FakeFireStore(), _FakeScheduleStore()
+    dispatch = _dispatch(fires, schedule_store=schedules)
+    trigger = _trigger(kind="backup", fired_ago=5)
+
+    await dispatch.wrap(_sleeps)(trigger, uuid4())
+    await asyncio.sleep(0)
+    await dispatch.aclose()
+    assert len(fires.failed) == 1, "the cut-off fire is still recorded"
+    assert schedules.due_again == [(trigger.partition_key, trigger.job_id, trigger.scheduled_fire_at)]
+
+
+async def test_a_fire_closed_before_its_task_started_is_due_again_too() -> None:
+    fires, schedules = _FakeFireStore(), _FakeScheduleStore()
+    dispatch = _dispatch(fires, schedule_store=schedules)
+    trigger = _trigger(kind="backup")
+
+    await dispatch.wrap(_sleeps)(trigger, uuid4())
+    await dispatch.aclose()  # before the loop ever ran the task
+    assert [job for _, job, _ in schedules.due_again] == [trigger.job_id]
+
+
+async def test_a_fire_cancelled_while_waiting_for_its_turn_is_due_again() -> None:
+    schedules = _FakeScheduleStore()
+    dispatch = _dispatch(schedule_store=schedules, exclusion_groups={"a": "disk", "b": "disk"})
+    first, second = _trigger(kind="a"), _trigger(kind="b")
+
+    await dispatch.wrap(_sleeps)(first, uuid4())
+    await dispatch.wrap(_sleeps)(second, uuid4())
+    await asyncio.sleep(0.02)
+    await dispatch.aclose()
+    assert sorted(str(job) for _, job, _ in schedules.due_again) == sorted([str(first.job_id), str(second.job_id)])
+
+
+async def test_a_fire_that_failed_on_its_own_is_not_made_due_again() -> None:
+    schedules = _FakeScheduleStore()
+    dispatch = _dispatch(schedule_store=schedules)
+
+    async def _raises(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        raise RuntimeError("disk full")
+
+    async def _says_failed(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult(status="failed", error="upstream said no")
+
+    await dispatch.wrap(_raises)(_trigger(kind="raises"), uuid4())
+    await dispatch.wrap(_says_failed)(_trigger(kind="says_failed"), uuid4())
+    await dispatch.join()
+    await dispatch.aclose()
+    assert schedules.due_again == []
+
+
+async def test_a_fire_that_timed_out_is_not_made_due_again() -> None:
+    fires, schedules = _FakeFireStore(), _FakeScheduleStore()
+    dispatch = _dispatch(fires, schedule_store=schedules, fire_timeout_seconds=0.05)
+
+    await dispatch.wrap(_sleeps)(_trigger(kind="slow"), uuid4())
+    await dispatch.join()
+    await dispatch.aclose()
+    assert "exceeded its limit" in fires.failed[0]["error"]
+    assert schedules.due_again == []
+
+
+async def test_a_fire_cancelled_by_something_other_than_close_is_not_made_due_again() -> None:
+    fires, schedules = _FakeFireStore(), _FakeScheduleStore()
+    dispatch = _dispatch(fires, schedule_store=schedules)
+
+    await dispatch.wrap(_sleeps)(_trigger(kind="poll:a"), uuid4())
+    await asyncio.sleep(0.02)
+    [task] = [t for t in asyncio.all_tasks() if t.get_name() == "scheduled-jobs:poll:a"]
+    task.cancel()
+    await dispatch.join()
+    assert fires.failed[0]["error"] == "poll:a: cancelled before the fire finished"
+    assert schedules.due_again == []
+
+
+async def test_without_a_schedule_store_a_fire_cancelled_by_close_says_it_waits(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires)
+
+    await dispatch.wrap(_sleeps)(_trigger(kind="backup"), uuid4())
+    await asyncio.sleep(0)
+    with caplog.at_level("WARNING"):
+        await dispatch.aclose()
+    assert len(fires.failed) == 1
+    assert any("waits for its next scheduled run" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_schedule_store_that_fails_at_shutdown_does_not_stop_the_close(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires, schedule_store=_FakeScheduleStore(raises=True))
+
+    await dispatch.wrap(_sleeps)(_trigger(kind="backup"), uuid4())
+    await asyncio.sleep(0)
+    with caplog.at_level("ERROR"):
+        await asyncio.wait_for(dispatch.aclose(), timeout=5)
+    assert len(fires.failed) == 1
+    assert any("could not make a fire cancelled on close due again" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_job_no_longer_active_is_left_alone(caplog: pytest.LogCaptureFixture) -> None:
+    schedules = _FakeScheduleStore(active=False)
+    dispatch = _dispatch(schedule_store=schedules)
+
+    await dispatch.wrap(_sleeps)(_trigger(kind="backup"), uuid4())
+    await asyncio.sleep(0)
+    with caplog.at_level("INFO"):
+        await dispatch.aclose()
+    messages = [r.getMessage() for r in caplog.records]
+    assert "3tears.scheduled_jobs.fire.due_again" not in messages
+    assert any("its job is no longer active" in m for m in messages)
 
 
 # ---------------------------------------------------------------------------

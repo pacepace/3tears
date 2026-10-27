@@ -110,6 +110,27 @@ the next upgrade treats v003 as applied and the recreated `uq_identity_active_pe
 active version beside its block's; v003 is idempotent, so it runs cleanly again then. The package is agent-scoped,
 so run all of this in each agent's schema. The column and the per-variant indexes can stay.
 
+### agent-memory: a Dream pass no longer stops the event loop
+
+**Fixed:** a consolidation pass compared every pair of a scope's memory embeddings in pure Python on the event
+loop. Seen on production (2026-10-27): the loop was held for 16 seconds and every conversation turn on that
+worker waited behind it. The pairwise pass now runs in a worker thread (`asyncio.to_thread`), and each pair is
+a C-level `math.sumprod` instead of a Python generator. The clusters are the same: same pairs, same threshold,
+and vectors of two widths still pair over the shorter one.
+
+### scheduled-jobs: a fire cut off by a restart runs again on the next tick
+
+**Fixed:** `BackgroundDispatch.aclose` recorded each fire it cancelled as failed, but the claim had already
+advanced the job's `next_fire_at`, so the cut-off work waited a whole interval. Seen on production
+(2026-10-27): a deploy killed a 19-minute backup and nothing ran it again. Given the new `schedule_store`
+argument (an `ImmediateFireStore`, which `ScheduledJobCollection` already is through
+`request_immediate_fire`), `aclose` makes each cancelled fire's job due again at the occurrence it was
+running, so the first tick on any pod runs it and the schedule keeps its grid. It logs
+`EVENT_FIRE_DUE_AGAIN` (`3tears.scheduled_jobs.fire.due_again`). A fire that raised, reported a failure,
+timed out or was cancelled by anything but `aclose` keeps its advanced schedule. Without a `schedule_store`
+a cancelled fire's job waits as before, now with a WARNING saying so. A job paused or expired meanwhile is
+left alone.
+
 ## v0.80.0 -- 2026-10-27
 
 ### backup: a drill compares a naive-timestamp table against the backup's moment

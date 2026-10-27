@@ -332,3 +332,83 @@ async def _first_started(started: dict[str, asyncio.Event], kinds: tuple[str, ..
         task.cancel()
     assert done, f"none of {kinds} started"
     return waits[next(iter(done))]
+
+
+async def _next_fire_at(pool: asyncpg.Pool, job_id: UUID) -> datetime:
+    value = await pool.fetchval("SELECT next_fire_at FROM scheduled_jobs WHERE job_id = $1", job_id)
+    assert isinstance(value, datetime)
+    return value
+
+
+async def _fire_statuses(pool: asyncpg.Pool, job_id: UUID) -> list[str]:
+    rows = await pool.fetch("SELECT status FROM job_fires WHERE job_id = $1 ORDER BY actual_fired_at", job_id)
+    return [row["status"] for row in rows]
+
+
+async def test_a_fire_cancelled_by_close_is_due_again_on_the_first_tick_after_restart(pool: asyncpg.Pool) -> None:
+    """A deploy cut a 19-minute backup off and nothing ran it again until its next interval."""
+    schedule_store, fire_store = _stores(pool)
+    due = (datetime.now(UTC) - timedelta(seconds=5)).replace(microsecond=0)
+    _, job = await _seed_job(pool, "backup", next_fire_at=due)
+    started = asyncio.Event()
+
+    async def _long(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        started.set()
+        await asyncio.sleep(3600)
+        return JobFireResult()
+
+    before = BackgroundDispatch(fire_store, config=DEFAULT_JOB_CONFIG, schedule_store=schedule_store)
+    await asyncio.wait_for(scheduled_tick_job(schedule_store, fire_store, {"backup": before.wrap(_long)}), timeout=10)
+    await asyncio.wait_for(started.wait(), timeout=10)
+    assert await _next_fire_at(pool, job) == due + timedelta(seconds=60), "the claim advanced the job"
+
+    await before.aclose()
+    assert await _fire_statuses(pool, job) == ["failed"]
+    assert await _next_fire_at(pool, job) == due, "the job is due at the occurrence that was cut off"
+
+    ran: list[datetime] = []
+
+    async def _quick(trigger: JobTrigger, _f: UUID) -> JobFireResult:
+        ran.append(trigger.scheduled_fire_at)
+        return JobFireResult(output={"done": True})
+
+    after = BackgroundDispatch(fire_store, config=DEFAULT_JOB_CONFIG, schedule_store=schedule_store)
+    try:
+        await asyncio.wait_for(
+            scheduled_tick_job(schedule_store, fire_store, {"backup": after.wrap(_quick)}), timeout=10
+        )
+        await asyncio.wait_for(after.join(), timeout=10)
+    finally:
+        await after.aclose()
+    assert ran == [due]
+    assert await _fire_statuses(pool, job) == ["failed", "succeeded"]
+    assert await _next_fire_at(pool, job) == due + timedelta(seconds=60), "the schedule kept its grid"
+
+
+async def test_a_fire_that_failed_on_its_own_error_waits_for_its_next_interval(pool: asyncpg.Pool) -> None:
+    schedule_store, fire_store = _stores(pool)
+    due = (datetime.now(UTC) - timedelta(seconds=5)).replace(microsecond=0)
+    _, job = await _seed_job(pool, "backup", next_fire_at=due)
+
+    async def _broken(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        raise RuntimeError("disk full")
+
+    background = BackgroundDispatch(fire_store, config=DEFAULT_JOB_CONFIG, schedule_store=schedule_store)
+    routes = {"backup": background.wrap(_broken)}
+    try:
+        await asyncio.wait_for(scheduled_tick_job(schedule_store, fire_store, routes), timeout=10)
+        await asyncio.wait_for(background.join(), timeout=10)
+    finally:
+        await background.aclose()
+    assert await _fire_statuses(pool, job) == ["failed"]
+    assert await _next_fire_at(pool, job) == due + timedelta(seconds=60)
+
+    again = BackgroundDispatch(fire_store, config=DEFAULT_JOB_CONFIG, schedule_store=schedule_store)
+    try:
+        await asyncio.wait_for(
+            scheduled_tick_job(schedule_store, fire_store, {"backup": again.wrap(_broken)}), timeout=10
+        )
+        await asyncio.wait_for(again.join(), timeout=10)
+    finally:
+        await again.aclose()
+    assert await _fire_statuses(pool, job) == ["failed"], "the next tick has nothing due"

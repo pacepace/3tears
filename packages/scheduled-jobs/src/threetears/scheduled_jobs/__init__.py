@@ -68,6 +68,7 @@ from threetears.scheduled_jobs.events import (
     EVENT_FIRE_COMPLETED,
     EVENT_FIRE_DISPATCHED,
     EVENT_FIRE_DRIFT,
+    EVENT_FIRE_DUE_AGAIN,
     EVENT_FIRE_FAILED,
     EVENT_FIRE_HANDED_OFF,
     EVENT_FIRE_REAPED,
@@ -95,6 +96,7 @@ from threetears.scheduled_jobs.migrations import register
 from threetears.scheduled_jobs.protocols import (
     DueSchedule,
     FireStore,
+    ImmediateFireStore,
     ScheduleStore,
 )
 from threetears.scheduled_jobs.reschedule import compute_next_fire_at
@@ -127,6 +129,7 @@ __all__ = [
     "EVENT_FIRE_COMPLETED",
     "EVENT_FIRE_DISPATCHED",
     "EVENT_FIRE_DRIFT",
+    "EVENT_FIRE_DUE_AGAIN",
     "EVENT_FIRE_FAILED",
     "EVENT_FIRE_HANDED_OFF",
     "EVENT_FIRE_REAPED",
@@ -154,6 +157,7 @@ __all__ = [
     "DueSchedule",
     "FireNotRecordedError",
     "FireStore",
+    "ImmediateFireStore",
     "JobConfig",
     "JobFireCollection",
     "JobFireEntity",
