@@ -995,14 +995,14 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
     and **its prediction is the band's upper end**, since the launch holds that figure to the arm's cap
     (:class:`~threetears.evals.run.ArmPrice`): a central estimate admits an arm that then runs past its cap
     about as often as the run lands above the centre. The central estimate and the lower end ride along beside
-    it. **The prediction is never less than the central estimate plus**
-    the cost estimate's safety margin (``COST_BAND_SAFETY_MARGIN``) **of it**: a history with no
-    spread, or almost none, bands an arm at its estimate, which would cap it there. Where that floor stands above the
-    band's upper end, the prediction is the floor, the band's own upper end rides along as
-    :attr:`~threetears.evals.run.ArmPrice.band_high_usd`, and the basis states both: the band from history, with how
-    far each end sits from the estimate, and the cap the margin sets. A history too thin to band (fewer than :data:`~threetears.evals.analysis.COST_ESTIMATE_MIN_BASIS` priced
-    past results) bounds nothing, and predicts nothing, as does a scope with no priced history of the
-    condition — the launch reads both as unknown.
+    it. **The prediction is never less than the central estimate plus the cost estimate's safety margin**
+    (``COST_BAND_SAFETY_MARGIN``) of it: a history with no spread, or almost none, bands an arm at its estimate,
+    which would cap it there. Where that floor stands above the band's upper end, the prediction is the floor, the
+    band's own upper end rides along as :attr:`~threetears.evals.run.ArmPrice.band_high_usd`, and the basis states
+    both: the band from history, with how far each end sits from the estimate, and the cap the margin sets, with how
+    far it stands above the band's end. A history too thin to band (fewer than
+    :data:`~threetears.evals.analysis.COST_ESTIMATE_MIN_BASIS` priced past results) bounds nothing, and predicts
+    nothing, as does a scope with no priced history of the condition — the launch reads both as unknown.
 
     **A template's new revision prices from the revision before it** while it has no priced result of its own. A
     revision a reset writes (:func:`~threetears.evals.run.reset_definitions`) is a new record, so its own history

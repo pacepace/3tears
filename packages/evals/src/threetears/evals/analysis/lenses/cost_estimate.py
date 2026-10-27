@@ -113,13 +113,13 @@ _BAND_ROUNDING_REL_TOL = 1e-9
 
 #: The least headroom, as a share of the estimate, that a cap is judged with: the figure a launch holds to an arm's cap
 #: is never below the estimate times one plus this (:func:`~threetears.evals.ops.history_launch_pricer`), however
-#: narrow the band. A history with no spread or almost none gives a band of no width or almost none, and an arm held to
-#: it is capped at its estimate, so a sweep costing a hair more meets its cap partway. The floor is a safety margin, not
-#: a measurement: a spread of zero over any number of observations bounds nothing (it says how often past costs differed,
-#: never how far a sweep's could), and nothing else the estimate reads gives a margin, since it reads each result's
-#: total alone. So it applies only where a cap is judged, and the band itself stays what the history computes wherever
-#: it is shown: a reader may judge one or two percent significant (owner ruling, 2026-10-27). Three percent is the
-#: owner's figure.
+#: narrow the band. A history with no spread or almost none gives a band of no width or almost none, and an arm held
+#: to it is capped at its estimate, so a sweep costing a hair more meets its cap partway. The floor is a safety margin,
+#: not a measurement: a spread of zero over any number of observations bounds nothing (it says how often past costs
+#: differed, never how far a sweep's could), and nothing else the estimate reads gives a margin, since it reads each
+#: result's total alone. So it applies only where a cap is judged, and the band itself stays what the history computes
+#: wherever it is shown: a reader may judge one or two percent significant (owner ruling, 2026-10-27). Three percent
+#: is the owner's figure.
 COST_BAND_SAFETY_MARGIN = 0.03
 
 

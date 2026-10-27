@@ -458,7 +458,8 @@ class LaunchPricer(Protocol):
     A port on :class:`LaunchHost` because the prediction is a read over history — an analysis — and the
     run package imports no analysis (bar the number rule, a leaf, loaded when a refusal is written): the host
     composes one. ``threetears.evals.ops.history_launch_pricer`` is the engine's own, over the scope's
-    per-observation usage history; a host with a rate card of its own prices from that instead. Called off the event loop, through the host's blocking executor.
+    per-observation usage history; a host with a rate card of its own prices from that instead. Called off the
+    event loop, through the host's blocking executor.
     """
 
     def __call__(self, quote: ArmQuote, /) -> ArmPrice:
