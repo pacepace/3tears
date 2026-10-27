@@ -25,6 +25,13 @@ selects (:func:`~threetears.evals.analysis.report_rows.query_rows`, the one owne
   p95, else its p50. **Its interval** (:func:`stat_interval`): its ``ci``, else its mean plus or minus its half-width.
   **Intervals are drawn only where the chart states a level** (``ChartSpec.level``): the kit refuses intervals
   without one.
+- **An interval computed here** (:func:`computed_interval`, :func:`figure_interval`): an arm's overall figure that
+  states no interval, half-width or standard error, but is a pass/fail rate with a count (a rate graded pass/fail or
+  by class label), has the interval its binomial spread gives at its level, the ``spread.<arm>.<key>.overall.interval``
+  figure key (:func:`~threetears.evals.analysis.separation.spread_interval`: a normal approximation, held to none to
+  all; none for a rate of none or all). A chart draws it only where its stored level says so (``95% computed``,
+  :data:`COMPUTED`), which code completes a dot strip, bars or a table of arms' figures with where none of its
+  figures states an interval: so a stored chart draws as it was stored, and the level names the interval as code's.
 - **Reference lines** (:func:`reference_line`): the stored reference's figure key read off the input, in display
   units: a margin as minus the margin on a change axis, a floor or budget at the criterion's threshold. A kind that
   draws its criterion's line where the plan stores none (a dot strip's floor, range bars' budget, a heatmap's cell
@@ -61,6 +68,7 @@ from threetears.evals.analysis.report.plan_page.look import PageLook, Quantity, 
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
 from threetears.evals.analysis.report.plan_page.words import (
     ASPECT_MEASURE_TEMPLATE,
+    COMPUTED_NOTE,
     MISSING_TEMPLATE,
     REFERENCE_TEMPLATE,
 )
@@ -72,6 +80,7 @@ from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec
 
 __all__ = [
+    "COMPUTED",
     "STORED_SPAN_REFUSAL",
     "ChartContext",
     "CriterionWhere",
@@ -82,13 +91,17 @@ __all__ = [
     "contrast_unit",
     "contrast_words",
     "count_text",
+    "computed_interval",
+    "computed_notes",
     "criterion_line",
     "drawn_keys",
     "factor_legend",
     "factor_token",
+    "figure_interval",
     "figure_stat",
     "figure_unit",
     "interval_words",
+    "lead_aspect",
     "measure_words",
     "misses_line",
     "missing_note",
@@ -411,6 +424,89 @@ def stat_value(report_input: ReportInput, key: str, stat: Stat) -> tuple[float, 
         if value is not None:
             return float(value), name
     return None
+
+
+#: The word a chart's level carries where its intervals are computed here, each from its rate's count.
+COMPUTED = "computed"
+
+
+def lead_aspect(report_input: ReportInput) -> str | None:
+    """The aspect an arm's overall figures belong to: the first asked, else the first; None where the input holds none.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The aspect's id.
+    :rtype: str | None
+    """
+    asked = [aspect.id for aspect in report_input.aspects if aspect.asked]
+    return asked[0] if asked else next((aspect.id for aspect in report_input.aspects), None)
+
+
+def computed_interval(
+    report_input: ReportInput, key: str, arm: str, stat: Stat
+) -> tuple[tuple[float, float], float] | None:
+    """The interval code computes for an arm's overall figure that states none (this module's interval computed
+    here), in the figure's units, and its level as a share; None where the figure states a spread of its own, is not
+    the arm's overall figure, or reads none (no count, no rate, a rate of none or all).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param key: The measure or judged dimension.
+    :ptype key: str
+    :param arm: The arm.
+    :ptype arm: str
+    :param stat: The figure a chart draws.
+    :ptype stat: Stat
+    :return: ``((low, high), level)``; None for none.
+    :rtype: tuple[tuple[float, float], float] | None
+    """
+    if stat.mean is None or stat.ci is not None or stat.half_width is not None or stat.sem is not None:
+        return None
+    table = report_input.measures.get(key) or report_input.judged.get(key)
+    if table is None or table.per_arm.get(arm) is not stat:
+        return None
+    try:
+        interval = resolve(f"spread.{arm}.{key}.overall.interval", report_input).value
+        level = resolve(f"spread.{arm}.{key}.overall.level", report_input).value
+    except UnresolvableReference:
+        # NOSILENT: a figure with no count, no rate, or a rate of none or all reads no interval: the chart draws its
+        # dot or bar with none, as it draws any figure that states none.
+        return None
+    assert isinstance(interval, tuple) and isinstance(level, float), (interval, level)
+    return (float(interval[0]), float(interval[1])), level
+
+
+def computed_notes(context: ChartContext) -> tuple[str, ...]:
+    """What a chart whose intervals are computed here says of them (:data:`COMPUTED`); nothing otherwise.
+
+    :param context: The chart being resolved.
+    :ptype context: ChartContext
+    :return: The note, or none.
+    :rtype: tuple[str, ...]
+    """
+    return (COMPUTED_NOTE,) if context.level.endswith(COMPUTED) else ()
+
+
+def figure_interval(context: ChartContext, key: str, arm: str, stat: Stat) -> tuple[float, float] | None:
+    """The interval a chart draws on an arm's figure: its own (:func:`stat_interval`), else, where the chart's level
+    is computed here (:data:`COMPUTED`), the one code computes (:func:`computed_interval`); None for neither.
+
+    :param context: The chart being resolved.
+    :ptype context: ChartContext
+    :param key: The measure or judged dimension.
+    :ptype key: str
+    :param arm: The arm.
+    :ptype arm: str
+    :param stat: The figure.
+    :ptype stat: Stat
+    :return: ``(low, high)``, in the figure's units; None for none.
+    :rtype: tuple[float, float] | None
+    """
+    own = stat_interval(stat)
+    if own is not None or not context.level.endswith(COMPUTED):
+        return own
+    found = computed_interval(context.report_input, key, arm, stat)
+    return found[0] if found is not None else None
 
 
 def stat_interval(stat: Stat) -> tuple[float, float] | None:

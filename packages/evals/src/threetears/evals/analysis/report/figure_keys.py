@@ -106,6 +106,7 @@ from threetears.evals.analysis.separation import (
     cases_to_separate,
     independent_difference,
     level_share,
+    spread_interval,
     stat_spread,
     wrong_side_share,
 )
@@ -2678,9 +2679,11 @@ def _named_reading_arms(report_input: ReportInput, prior: tuple[str, ...]) -> li
 _OVERALL = "overall"
 
 #: What an arm's spread on a figure reads: its mean, its standard error, the spread of one case, the count it rests on
-#: and what that count counts (cases, trials or observations), the level a result read from it is stated at, and what
-#: the standard error was read from.
-_SPREAD_FIELDS = ("mean", "se", "per_case", "n", "counts", "level", "basis")
+#: and what that count counts (cases, trials or observations), the level a result read from it is stated at, what the
+#: standard error was read from, and the interval it gives at that level and its two ends (the mean plus and minus the
+#: normal quantile times the standard error, a rate's ends held to none to all:
+#: :func:`~threetears.evals.analysis.separation.spread_interval`).
+_SPREAD_FIELDS = ("mean", "se", "per_case", "n", "counts", "level", "basis", "interval", "low", "high")
 
 #: What two arms' difference reads: the first minus the second, its interval, the interval's ends and half-width, its
 #: level, and whether it is the paired estimate a contrast states or two independent arms' spreads combined.
@@ -2905,6 +2908,15 @@ def _spread_figure(report_input: ReportInput, values: tuple[str, ...], path: str
         return Figure(path=path, kind="text", value=counted)
     if field == "level":
         return _level(path, spread.level, "the level a result read from it is stated at")
+    if field in ("interval", "low", "high"):
+        try:
+            low, high = spread_interval(spread, rate=_rate_of(report_input, key))
+        except NoSpread as none:
+            raise _unstated(path, str(none)) from none
+        scale, unit = _scale_of(report_input, key)
+        if field == "interval":
+            return _interval(path, (low, high), "the interval", scale, unit=unit)
+        return _number(path, low if field == "low" else high, f"the interval's {field} end", scale, unit=unit)
     return Figure(path=path, kind="text", value=_BASIS_WORDS[spread.basis])
 
 
@@ -3260,7 +3272,9 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         "`trials`, where a repeated case counts again; or `observations`, a statistic's own n that says neither); "
         "`level` the level a result read from it is stated at; `basis` what the standard error was read from (a "
         "stated interval or half-width at a stated level, a standard error, or a pass/fail rate's binomial spread "
-        "from its count)",
+        "from its count); `interval`, `low` and `high` the interval it gives at that level (the mean plus and minus "
+        "the normal quantile times `se`, a rate's ends held to none to all; none for a rate of none or all), which a "
+        "chart of a rate draws where the input states no interval",
         resolve=_spread_figure,
         derived=True,
         derived_note=_SEPARATION_NOTE,

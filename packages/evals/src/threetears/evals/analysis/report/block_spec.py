@@ -31,7 +31,11 @@ What the chart reads is :mod:`~threetears.evals.analysis.report_rows`' selection
 :func:`query_rows`), the one the checks and the page read too.
 
 **A chart's interval level** is the one its rows carry: a reading's confidence, a contrast's family level
-(:func:`contrast_level`), a measure's or judged dimension's declared level (a stratum's with "uncorrected"). A
+(:func:`contrast_level`), a measure's or judged dimension's declared level (a stratum's with "uncorrected"). A dot
+strip, bars or a table of arms' figures (measures, judged dimensions, configs) none of which states an interval, where
+some is a pass/fail rate with a count, is completed at the level of the interval code computes from that count, marked
+"computed" (``95% computed``): the page then draws those intervals, and names them as code's
+(:func:`~threetears.evals.analysis.report.plan_page.charting.computed_interval`). A
 diverging chart over judged figures or strata whose figures carry a standard error and no interval is drawn at the
 descriptive level, "95% uncorrected" (:data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`): a bar is separated
 from zero where its change exceeds 1.96 times the two arms' standard errors combined (GENERATOR §5.2).
@@ -80,7 +84,13 @@ from threetears.evals.analysis.report.figure_keys import (
     reader_names,
     resolve,
 )
-from threetears.evals.analysis.report.plan_page.charting import contrast_unit, drawn_keys, unit_refusal
+from threetears.evals.analysis.report.plan_page.charting import (
+    COMPUTED,
+    computed_interval,
+    contrast_unit,
+    drawn_keys,
+    unit_refusal,
+)
 from threetears.evals.analysis.report.plan_page.look import PageLook, page_look
 from threetears.evals.analysis.report_decision import control_arm, surviving_options
 from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, Reading, ReportInput, Stat, Stratum, Task
@@ -441,7 +451,7 @@ def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
         measures = set(chart.query.measures)
         levels = [figures.level or "" for key, figures in table.items() if not measures or key in measures]
         level = _one(path, "interval level", levels, faults)
-        return level or _descriptive_level(chart, report_input)
+        return level or _descriptive_level(chart, report_input) or _computed_level(chart, report_input, path, faults)
     if source == "strata":
         level = _one(path, "interval level", _figure_levels(chart, report_input), faults)
         return f"{level} {_UNCORRECTED}" if level else _descriptive_level(chart, report_input)
@@ -453,9 +463,9 @@ def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
         declared = {key: m.level or "" for key, m in report_input.measures.items()}
         declared |= {key: j.level or "" for key, j in report_input.judged.items()}
         level = _one(path, "interval level", (declared.get(key, "") for key in held), faults)
-        if not level or source == "configs":
-            return level
-        return f"{level} {_UNCORRECTED}"
+        if source == "configs":
+            return level or _computed_level(chart, report_input, path, faults)
+        return f"{level} {_UNCORRECTED}" if level else ""
     if source == "prices":
         return _price_level(chart, report_input, path, faults)
     return ""
@@ -507,6 +517,29 @@ def _interval_keys(chart: PlannedChart, report_input: ReportInput) -> list[str]:
             if (shown is None or key in shown) and (stat.ci is not None or stat.half_width is not None)
         ]
     return list(dict.fromkeys(held))
+
+
+#: The kinds that draw an arm's figure with its interval, which code may compute where the input states none.
+_COMPUTED_KINDS = frozenset({"dot_interval", "bars", "table"})
+
+
+def _computed_level(chart: PlannedChart, report_input: ReportInput, path: str, faults: list[_Fault]) -> str:
+    """The level a dot strip, bars or a table of arms' figures prints where no figure it reads states an interval and
+    some carries one computed here (:func:`~threetears.evals.analysis.report.plan_page.charting.computed_interval`):
+    the computed intervals' level, marked computed (``95% computed``); empty otherwise."""
+    if chart.kind not in _COMPUTED_KINDS:
+        return ""
+    figures = [
+        (row.key, row.arm, row.item) for row in query_rows(chart.query, report_input) if isinstance(row.item, Stat)
+    ]
+    if any(stat.ci is not None or stat.half_width is not None for _, _, stat in figures):
+        return ""
+    levels = [
+        f"{_percent(found[1])} {COMPUTED}"
+        for key, arm, stat in figures
+        if (found := computed_interval(report_input, key, arm, stat)) is not None
+    ]
+    return _one(path, "interval level", levels, faults)
 
 
 def _descriptive_level(chart: PlannedChart, report_input: ReportInput) -> str:

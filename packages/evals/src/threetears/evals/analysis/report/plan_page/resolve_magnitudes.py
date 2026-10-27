@@ -51,7 +51,9 @@ from threetears.evals.analysis.report.plan_page.charting import (
     KindResolver,
     STORED_SPAN_REFUSAL,
     chart_block,
+    computed_notes,
     drawn_keys,
+    figure_interval,
     figure_stat,
     figure_unit,
     interval_words,
@@ -164,7 +166,7 @@ def _figure_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[str]]
             if read is None:
                 continue
             statistics.add(read[1])
-            interval = stat_interval(stat) if read[1] == "mean" else None
+            interval = figure_interval(context, key, arm, stat) if read[1] == "mean" else None
             picked.append((key, arm, read[0], interval))
     quantities = unit_quantities(report_input, {key: [one[2] for one in picked if one[0] == key] for key in keys})
     bars: list[_Bar] = []
@@ -496,7 +498,7 @@ def _bars(context: ChartContext) -> Drawn:
         reference=reference,
         emphasis=context.emphasis,
     )
-    notes = (*_statistic_note(statistics), *((LOG_BARS_NOTE,) if logged else ()))
+    notes = (*_statistic_note(statistics), *((LOG_BARS_NOTE,) if logged else ()), *computed_notes(context))
     if source == "prices":
         notes = (
             *notes,

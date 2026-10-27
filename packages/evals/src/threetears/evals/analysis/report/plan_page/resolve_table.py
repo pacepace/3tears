@@ -50,8 +50,10 @@ from threetears.evals.analysis.report.plan_page.charting import (
     ChartContext,
     Drawn,
     KindResolver,
+    computed_notes,
     contrast_groups,
     contrast_words,
+    figure_interval,
     figure_unit,
     measure_words,
     slice_name,
@@ -124,8 +126,9 @@ def _kept_arms(context: ChartContext, held: Iterator[str]) -> list[str]:
     return context.arm_order(arm for arm in held if arm in allowed)
 
 
-def _figure_cell(context: ChartContext, key: str, stat: Stat | None) -> tuple[TableCell, str]:
-    """A figure's cell, and its measure's name as the table writes it (per 1,000 replies for money per reply)."""
+def _figure_cell(context: ChartContext, key: str, stat: Stat | None, arm: str = "") -> tuple[TableCell, str]:
+    """A figure's cell, and its measure's name as the table writes it (per 1,000 replies for money per reply); an
+    arm's overall figure carries the interval code computes where the table's level is computed here."""
     report_input = context.report_input
     name = measure_words(report_input, key)
     read = stat_value(report_input, key, stat) if stat is not None else None
@@ -135,7 +138,10 @@ def _figure_cell(context: ChartContext, key: str, stat: Stat | None) -> tuple[Ta
         name = TABLE_PER_THOUSAND.format(name=name, per=per_count(per_noun(measure)))
     if stat is None or read is None:
         return TableCell(value=None), name
-    interval = stat_interval(stat) if read[1] == "mean" else None
+    if read[1] != "mean":
+        interval = None
+    else:
+        interval = figure_interval(context, key, arm, stat) if arm else stat_interval(stat)
     shown = (interval[0] * drawn.factor, interval[1] * drawn.factor) if interval is not None else None
     return _number(read[0] * drawn.factor, drawn.unit, shown), name
 
@@ -180,16 +186,19 @@ def _contrasts(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
             }
 
 
-def _wide(context: ChartContext, places: list[tuple[_Row, dict[str, Stat]]], laid: _Laid) -> Iterator[_Row]:
+def _wide(
+    context: ChartContext, places: list[tuple[_Row, dict[str, Stat]]], laid: _Laid, arms: list[str] | None = None
+) -> Iterator[_Row]:
     """Each place's row (its own cells, then a cell per measure it holds a figure on, a dash where it holds none),
-    each measure's column added to ``laid`` once, in the order the places first hold it."""
+    each measure's column added to ``laid`` once, in the order the places first hold it; ``arms`` names the arm each
+    place is, where it is an arm's overall figures."""
     keys = list(dict.fromkeys(key for _, figures in places for key in figures))
     named: dict[str, str] = {}
     built: list[_Row] = []
-    for own, figures in places:
+    for index, (own, figures) in enumerate(places):
         row = dict(own)
         for key in keys:
-            cell, name = _figure_cell(context, key, figures.get(key))
+            cell, name = _figure_cell(context, key, figures.get(key), arms[index] if arms is not None else "")
             named.setdefault(key, name)
             row[f"{_MEASURE_COLUMN}{key}"] = cell
         built.append(row)
@@ -204,7 +213,7 @@ def _figures(context: ChartContext, laid: _Laid) -> Iterator[_Row]:
     places = [
         ({"arm": _arm(context, arm)}, {key: stat for (key, on), stat in figures.items() if on == arm}) for arm in arms
     ]
-    yield from _wide(context, places, laid)
+    yield from _wide(context, places, laid, arms)
 
 
 def _scoreboard(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
@@ -431,7 +440,7 @@ def _table(context: ChartContext) -> Drawn:
         else:
             columns.append(TableColumn(key=key, header=TABLE_HEADERS[key]))
     columns, rows = _with_intervals(columns, rows, context.spec.level)
-    notes = price_notes(context) if context.query.source == "prices" else ()
+    notes = price_notes(context) if context.query.source == "prices" else computed_notes(context)
     table = TableBlock(
         section=PLANNED_SECTION,
         name=context.query.source,

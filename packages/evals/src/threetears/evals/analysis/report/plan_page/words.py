@@ -18,6 +18,7 @@ __all__ = [
     "ARMS_TAKEAWAY",
     "ASPECT_MEASURE_TEMPLATE",
     "CONFIDENCE_LABEL",
+    "COMPUTED_NOTE",
     "CONFIDENCE_WORDS",
     "CONTRAST_VERDICT_WORDS",
     "EXPECTED_TERM",
@@ -311,6 +312,12 @@ UNCORRECTED_NOTE = (
 LEVER_NOTE = (
     "Each level against its factor's first level, averaged over every combination of the other factors that ran "
     "both: descriptive, uncorrected."
+)
+
+#: A chart whose intervals code computed from each rate's count, where the input states none.
+COMPUTED_NOTE = (
+    "Each interval is computed here from the rate's count: its binomial spread, by the normal approximation, held to "
+    "0 to 100%; the input states none. A rate of none or all has none."
 )
 
 #: A chart of blind human preference, about the no-preference point.

@@ -65,10 +65,12 @@ from threetears.evals.analysis.report.plan_page.charting import (
     Drawn,
     KindResolver,
     chart_block,
+    computed_notes,
     criterion_line,
     drawn_keys,
     factor_legend,
     factor_token,
+    figure_interval,
     figure_unit,
     interval_words,
     measure_words,
@@ -248,7 +250,7 @@ def _figure_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str,
         dots = []
         for arm in context.arm_order(arm for (on, arm) in reads if on == key):
             value, statistic = reads[key, arm]
-            interval = stat_interval(figures[key, arm]) if level and statistic == "mean" else None
+            interval = figure_interval(context, key, arm, figures[key, arm]) if level and statistic == "mean" else None
             shown = (interval[0] * drawn.factor, interval[1] * drawn.factor) if interval is not None else None
             dot = _dot(
                 context,
@@ -261,7 +263,7 @@ def _figure_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str,
             )
             dots.append(dataclasses.replace(dot, tip=_with_line(dot.tip, dot.value, line)))
         strips.append(_Strip(title=measure_words(report_input, key), arm="", dots=dots, line=line, drawn=drawn))
-    return strips, level, (), False
+    return strips, level, computed_notes(context), False
 
 
 def _slice_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, ...], bool]:

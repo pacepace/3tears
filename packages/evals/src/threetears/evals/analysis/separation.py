@@ -22,6 +22,13 @@ case (``per_case``) is the standard error times the square root of the count, wh
 is ``sqrt(p(1 - p))`` directly. An interval that is not symmetric about the mean (a Wilson interval on a rate near an
 end) is read by its half-width, a normal approximation.
 
+**An arm's own interval** (:func:`spread_interval`): its mean plus and minus its standard error times the two-sided
+normal quantile at the spread's level, a normal approximation. Read off a stated interval it restates that interval
+symmetrically; read off a pass/fail rate's count it is the interval the input never stated, which a chart of the rate
+draws where the input states none. A rate's ends are held to its scale (none to all): the normal approximation runs
+past them near an end, and a rate never does. A rate of none or all reads a binomial spread of zero, which gives no
+interval: :class:`NoSpread`, since a zero-width interval would read as certain.
+
 **The difference between two arms** (:func:`independent_difference`). Without a paired estimate the two arms are read
 as independent samples: the standard error of the difference is the root of the sum of the two squared standard
 errors, and its interval is that times the two-sided quantile at the level, about the difference. Two arms that ran
@@ -77,6 +84,7 @@ __all__ = [
     "cases_to_separate",
     "independent_difference",
     "level_share",
+    "spread_interval",
     "stat_spread",
     "wrong_side_share",
 ]
@@ -223,6 +231,28 @@ def stat_spread(
         raise NoSpread("its interval reads no spread")
     spread = se * math.sqrt(count) if count is not None else None
     return Spread(mean, se, count, spread, level, basis)
+
+
+def spread_interval(spread: Spread, *, rate: Literal["share", "percent"] | None = None) -> tuple[float, float]:
+    """An arm's interval at its spread's level: its mean plus and minus the two-sided normal quantile times its standard
+    error, a rate's ends held to its scale (this module's An arm's own interval).
+
+    :param spread: The arm's spread (:func:`stat_spread`).
+    :ptype spread: Spread
+    :param rate: For a pass/fail rate, the scale its mean is on (a share, or a percent); None for any other figure.
+    :ptype rate: Literal["share", "percent"] | None
+    :return: The interval, low then high, in the mean's units.
+    :rtype: tuple[float, float]
+    :raises NoSpread: A rate's binomial spread is zero (a rate of none or all).
+    """
+    if spread.basis == "binomial" and spread.se == 0:
+        raise NoSpread("its rate is none or all, so its binomial spread is zero and reads no interval")
+    half = _z_two_sided(spread.level) * spread.se
+    low, high = spread.mean - half, spread.mean + half
+    if rate is None:
+        return low, high
+    top = 100.0 if rate == "percent" else 1.0
+    return max(low, 0.0), min(high, top)
 
 
 def independent_difference(first: Spread, second: Spread, level: float) -> tuple[float, float]:
