@@ -368,6 +368,10 @@ def render_export(export: ScoreExport) -> str:
     if page is None or page.next_after_run_id is None:
         return export_text(export)
     hint = f"More: action='scope_export', export_after_run_id='{page.next_after_run_id}'"
+    if page.next_after_case_id is not None:
+        hint += f", export_after_case_id='{page.next_after_case_id}'"
+    if page.named_run_ids is not None:
+        hint += f", export_run_ids=[{', '.join(f"'{run_id}'" for run_id in page.named_run_ids)}]"
     if export.format != "csv":
         hint += f", export_format='{export.format}'"
     if page.run_status != "completed":
