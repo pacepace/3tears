@@ -17,6 +17,11 @@ which (``basis``). Two arms that ran the same cases are read as if they had not,
 paired one: a separation it shows holds, one it misses may still be there *(inferred: a paired interval needs each
 case's difference, which the snapshot does not hold)*.
 
+**An assumed count** (``assumed``, a what-if the caller states): a slice where an arm's figure states no count has no
+binomial spread to read, so no interval. Read as if each such slice held that many cases, or (``share``) the arm's own
+count times the slice's traffic share; every figure read under it is keyed ``assumed.<cases>.compare.``, so it reads
+as an assumption wherever it is cited, and a place whose figures state their count is read as they state it.
+
 **What a row says.** The two means, the difference (in points for a rate), its interval and level, whether the
 interval excludes zero, and, where it does and the measure states which way is better, the arm ahead. A slice where
 either arm states no spread is listed with why, and no interval.
@@ -40,7 +45,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite
 from threetears.evals.analysis.errors import UnstatedFigure
-from threetears.evals.analysis.report.figure_keys import separation_wheres
+from threetears.evals.analysis.report.figure_keys import ASSUMED_SHARE, assumable, separation_wheres
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput
 
@@ -208,6 +213,10 @@ class ArmsComparison(BaseModel):
     better: Literal["higher_is_better", "lower_is_better", "unstated"] = Field(
         description="Which way the measure is better; unstated: no arm is named ahead."
     )
+    assumed: str = Field(
+        description="The count the caller assumed for each slice stating none, and the key prefix its figures carry; "
+        "empty where none is assumed."
+    )
     rows: list[ComparisonRow] = Field(description="The places on this page: overall first, then each slice.")
     total: int = Field(description="The places both arms hold the measure at.")
     offset: int = Field(description="The first place this page holds.")
@@ -215,8 +224,11 @@ class ArmsComparison(BaseModel):
     notes: list[str] = Field(description="What could not be read, and why.")
 
 
-def _row(report_input: ReportInput, first: str, second: str, key: str, where: str) -> ComparisonRow:
-    prefix = f"compare.{first}.{second}.{key}.{where}"
+def _row(
+    report_input: ReportInput, first: str, second: str, key: str, where: str, assumed: int | str | None = None
+) -> ComparisonRow:
+    head = f"assumed.{assumed}." if assumed is not None and assumable(report_input, (first, second), key, where) else ""
+    prefix = f"{head}compare.{first}.{second}.{key}.{where}"
     interval, why = cite_or_why(f"{prefix}.interval", report_input)
     level, _level_why = cite_or_why(f"{prefix}.level", report_input) if interval is not None else (None, "")
     excludes: bool | None = None
@@ -259,6 +271,7 @@ def arms_compare(
     arms: Sequence[str],
     measure: str,
     *,
+    assumed: int | str | None = None,
     limit: int = COMPARE_PAGE,
     offset: int = 0,
 ) -> ArmsComparison:
@@ -270,6 +283,9 @@ def arms_compare(
     :ptype arms: Sequence[str]
     :param measure: The measure or judged dimension, by key.
     :ptype measure: str
+    :param assumed: A what-if: the cases each slice stating no count of its own is read as holding, or ``share``
+        (each arm's own count times the slice's traffic share); its figures are keyed ``assumed.<cases>.``.
+    :ptype assumed: int | str | None
     :param limit: The most places one page holds.
     :ptype limit: int
     :param offset: The first place the page holds.
@@ -296,7 +312,15 @@ def arms_compare(
             parameters=("measure_key",),
             valid_values=shared,
         )
-    rows = [_row(report_input, first, second, measure, where) for where in wheres]
+    if assumed is not None and not any(assumable(report_input, (first, second), measure, where) for where in wheres):
+        raise RefusedInput(
+            f"assumed is {assumed!r}, and every place both arms hold {measure!r} at states its count: there is "
+            "nothing to assume",
+            remedy="omit assumed; it fills a slice whose figure states no count (measure_read with by=task, stratum "
+            "or cell shows which state n or n_cases)",
+            parameters=("assumed",),
+        )
+    rows = [_row(report_input, first, second, measure, where, assumed) for where in wheres]
     if all(row.interval is None for row in rows):
         spread = _spread_keys(report_input, first, second)
         raise RefusedInput(
@@ -317,11 +341,29 @@ def arms_compare(
         second=_arm(second),
         measure=measure,
         better=better_direction(report_input, measure),
+        assumed=assumed_words(assumed),
         rows=page,
         total=len(rows),
         offset=offset,
         next_offset=end if end < len(rows) else None,
         notes=unkeyed_strata(report_input),
+    )
+
+
+def assumed_words(assumed: int | str | None) -> str:
+    """What an assumed count is, as a result says it; empty for none.
+
+    :param assumed: The cases each slice stating no count is read as holding, ``share``, or None.
+    :ptype assumed: int | str | None
+    :return: The words.
+    :rtype: str
+    """
+    if assumed is None:
+        return ""
+    how = "the arm's own count times the slice's traffic share" if assumed == ASSUMED_SHARE else f"{assumed} cases"
+    return (
+        f"a what-if: each slice whose figure states no count read as holding {how}; its figures are keyed "
+        f"assumed.{assumed}., and a place whose figures state their count is read as they state it"
     )
 
 

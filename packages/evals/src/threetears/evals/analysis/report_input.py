@@ -22,6 +22,12 @@ lead aspect: the first the campaign asks about, else the first. Every other aspe
 own ``Aspect.scoreboard`` and each measure's ``by_aspect``; a contrast, contrast family, stratum and example names
 its aspect, and so does a criterion declared on one aspect, which reads that aspect's figures. A choice's pair
 readings sit on their aspect (``Aspect.pairs``).
+
+**Counted off the bundle, for an analyst.** ``failed_trials`` (each slice's failed trials, the pool its examples are
+kept from) and ``case_overlap`` (which cases each two aspects share, by stored case id) are tallies of the bundle's
+trials, not statistics: an analyst's snapshot counts them
+(:func:`~threetears.evals.analysis.analyst.snapshot.analyst_input`). A planner's input and a bare one leave them
+``None``, which reads as not known, never as none.
 """
 
 from __future__ import annotations
@@ -396,6 +402,24 @@ class Example(_Part):
     expected: str | None = Field(default=None, description="What the case expected.")
 
 
+class FailedTrials(_Part):
+    """How many trials of one slice of the run failed: the pool its examples are kept from."""
+
+    aspect: str = Field(description="The aspect the slice ran on.")
+    arm: str = Field(description="The arm that ran it.")
+    stratum: str | None = Field(default=None, description="The stratum or task it falls in; none for none.")
+    failed: int = Field(ge=0, description="The trials of the slice that failed, as the examples count a failure.")
+
+
+class CaseOverlap(_Part):
+    """Whether two aspects ran the same cases: the distinct cases each ran, by their stored ids, shared or not."""
+
+    aspects: tuple[str, str] = Field(description="The two aspects' ids, in the input's aspect order.")
+    shared: int = Field(ge=0, description="The cases both aspects ran.")
+    only_first: int = Field(ge=0, description="The cases only the first ran.")
+    only_second: int = Field(ge=0, description="The cases only the second ran.")
+
+
 class LateCriterion(_Part):
     """A criterion set after the results were visible."""
 
@@ -553,3 +577,13 @@ class ReportInput(_Part):
         default_factory=dict, description="Each label axis's confusion, by axis id."
     )
     human_pref: HumanPreference | None = Field(default=None, description="Blind human ratings.")
+    failed_trials: list[FailedTrials] | None = Field(
+        default=None,
+        description="The failed trials the run holds per aspect, arm and stratum, which the examples are kept from; "
+        "none where the input does not count them.",
+    )
+    case_overlap: list[CaseOverlap] | None = Field(
+        default=None,
+        description="For each two aspects, the cases both ran and the cases only one ran; none where the input does "
+        "not hold the aspects' case ids.",
+    )

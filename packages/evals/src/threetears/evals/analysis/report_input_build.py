@@ -16,6 +16,13 @@ slice, every slice's first before any slice's second, a slice's other cases befo
 ``excerpt="failure"`` cuts each excerpt around the failure rather than from the start: centred on the longest passage
 the judge's reason quotes that the text holds, else the text's end, where the reply ends.
 
+**Counted.** An analyst's input (``counted``) also carries tallies of the bundle's trials, never statistics: each
+slice's failed trials (aspect, arm and stratum, a failure as the examples count one), so a page of examples can say
+how many it was kept from; each example's case input; and, for each two aspects, the cases both ran and those only
+one ran, by stored case id. A tally is left out where the bundle's trials cannot give it whole: an aspect the bundle
+capped before every failure was kept, a pair of aspects either of which left trials out. Left out reads as not
+counted, never as none.
+
 **Every arm, reading, contrast and caveat the bundle holds reaches the input.** An arm is named by its campaign label
 everywhere, and carries the short name it declares (``Arm.short_name``), which ``{arm:<id>}`` prints. A choice's pair readings sit on their aspect, a measurement's readings on its measures, and a contrast
 the pipeline could not test is carried with its reason rather than dropped. On more than one aspect the by-arm maps
@@ -62,12 +69,14 @@ from threetears.evals.analysis.report_input import (
     Arm,
     Aspect,
     BarRead,
+    CaseOverlap,
     Caveats,
     Contrast,
     ContrastFamily,
     Criterion,
     Depth,
     Example,
+    FailedTrials,
     FloorRead,
     Judged,
     LateCriterion,
@@ -153,6 +162,7 @@ def report_input(
     examples: int = EXAMPLES,
     per_slice: int = 1,
     excerpt: ExcerptAt = "start",
+    counted: bool = False,
 ) -> ReportInput:
     """The report input for one campaign, read off its bundle.
 
@@ -167,10 +177,16 @@ def report_input(
     :param excerpt: Where each shown trial's excerpt is cut from: the start of what the judge read, or around the
         failure.
     :ptype excerpt: ExcerptAt
+    :param counted: Whether the input also carries what is counted off the bundle's trials for an analyst (this
+        module's Counted): each slice's failed trials, each example's case input, and which cases each two aspects
+        share. A planner's input carries none of them, so its view is unchanged.
+    :ptype counted: bool
     :return: The input.
     :rtype: ReportInput
     """
-    return _Builder(bundle).build(provenance=provenance, examples=examples, per_slice=per_slice, excerpt=excerpt)
+    return _Builder(bundle).build(
+        provenance=provenance, examples=examples, per_slice=per_slice, excerpt=excerpt, counted=counted
+    )
 
 
 class _Builder:
@@ -195,12 +211,18 @@ class _Builder:
             self.labels[variant_key] = self.bundle.label_of(variant_key)
         return self.labels[variant_key]
 
-    def build(self, *, provenance: str | None, examples: int, per_slice: int, excerpt: ExcerptAt) -> ReportInput:
+    def build(
+        self, *, provenance: str | None, examples: int, per_slice: int, excerpt: ExcerptAt, counted: bool
+    ) -> ReportInput:
         """The whole input."""
         bundle = self.bundle
         judged = self.judged()
         primary = self.primary_judged(judged)
         strata = self.strata()
+        shown = self.examples(primary, strata, examples, per_slice=per_slice, excerpt=excerpt, inputs=counted)
+        tallies: dict[str, object] = (
+            {"failed_trials": self.failed_trials(primary), "case_overlap": self.case_overlap()} if counted else {}
+        )
         return ReportInput.model_validate(
             {
                 "schema": "report-input/1",
@@ -218,12 +240,13 @@ class _Builder:
                 "contrasts": self.contrasts(),
                 "contrast_families": self.families(),
                 "strata": strata,
-                "examples": self.examples(primary, strata, examples, per_slice=per_slice, excerpt=excerpt),
+                "examples": shown,
                 "caveats": self.caveats(),
                 "prior_insights": [
                     PriorInsight(statement=insight.statement, confidence=insight.confidence)
                     for insight in bundle.aspects[0].prior_insights
                 ],
+                **tallies,
             }
         )
 
@@ -719,21 +742,27 @@ class _Builder:
         return sorted(strata, key=lambda stratum: -(stratum.n_cases or 0))
 
     def examples(
-        self, primary: str | None, strata: Sequence[Stratum], limit: int, *, per_slice: int = 1, excerpt: ExcerptAt
+        self,
+        primary: str | None,
+        strata: Sequence[Stratum],
+        limit: int,
+        *,
+        per_slice: int = 1,
+        excerpt: ExcerptAt,
+        inputs: bool = False,
     ) -> list[Example]:
         """Failed trials to show: on the primary judged dimension, up to ``per_slice`` per arm and stratum, candidates
         first and the strata where the candidates lose most on it first; with no judged dimension, failed trials, up
         to ``per_slice`` per arm, stratum and cause, candidates first. Every slice's first comes before any slice's
-        second, and a slice's other cases before another repeat of a case it shows."""
+        second, and a slice's other cases before another repeat of a case it shows. With ``inputs``, each carries the
+        start of what its case asked."""
         control = self.bundle.control()
         control_label = control.label if control is not None else None
         loss = _loss(strata, primary, control_label) if primary is not None else {}
         trials = [(aspect, trial) for aspect in self.ordered for trial in aspect.trials]
 
         def failed(trial: TrialRow) -> bool:
-            if primary is not None:
-                return trial.judged.get(primary) == 0
-            return trial.state == "failed"
+            return _failed(trial, primary)
 
         def order(item: tuple[AnalysisContextBundle, TrialRow]) -> tuple[bool, float, str]:
             aspect, trial = item
@@ -750,13 +779,17 @@ class _Builder:
                 by_slice.setdefault(key, []).append((aspect, trial))
         picks = [_distinct_cases_first(held)[:per_slice] for held in by_slice.values()]
         rounds = (pick[turn] for turn in range(per_slice) for pick in picks if turn < len(pick))
-        return [self.example(aspect, trial, primary, excerpt) for aspect, trial in rounds][:limit]
+        return [self.example(aspect, trial, primary, excerpt, inputs=inputs) for aspect, trial in rounds][:limit]
 
-    def example(self, aspect: AnalysisContextBundle, trial: TrialRow, primary: str | None, at: ExcerptAt) -> Example:
-        """One failed trial as an example, its excerpt cut where ``at`` says."""
+    def example(
+        self, aspect: AnalysisContextBundle, trial: TrialRow, primary: str | None, at: ExcerptAt, *, inputs: bool
+    ) -> Example:
+        """One failed trial as an example, its excerpt cut where ``at`` says; with ``inputs``, the start of what its
+        case asked."""
         reason = _reason(trial, primary)
         text = _unescaped(trial.excerpt)
         cut = text[:EXAMPLE_EXCERPT_CHARS] if at == "start" else _failure_excerpt(text, reason, EXAMPLE_EXCERPT_CHARS)
+        asked = _unescaped(trial.first_input) if inputs else ""
         return Example(
             trial=self.trial_ids.get((aspect.aspect, trial.trial_id), trial.trial_id),
             case=trial.case_label,
@@ -767,7 +800,47 @@ class _Builder:
             reason=reason,
             excerpt=cut or None,
             outcome=trial.cause,
+            input=_started(asked, EXAMPLE_EXCERPT_CHARS) or None,
         )
+
+    # ------------------------------------------------------------------ counted off the trials
+
+    def failed_trials(self, primary: str | None) -> list[FailedTrials]:
+        """Each slice's failed trials, as the examples count a failure, on every aspect whose trials the bundle holds
+        whole (:func:`_holds_every_failure`); a slice of an aspect it does not is left out, so it reads as not
+        counted."""
+        arms = {arm.id: index for index, arm in enumerate(self.arms())}
+        counts: dict[tuple[str, str, str | None], int] = {}
+        for aspect in self.ordered:
+            if not _holds_every_failure(aspect, primary):
+                continue
+            for trial in aspect.trials:
+                key = (aspect.aspect, self.arm(trial.arm), trial.stratum)
+                counts[key] = counts.get(key, 0) + int(_failed(trial, primary))
+        place = {aspect.aspect: index for index, aspect in enumerate(self.ordered)}
+        ordered = sorted(counts, key=lambda key: (place[key[0]], arms.get(key[1], len(arms)), key[1], key[2] or ""))
+        return [
+            FailedTrials(aspect=aspect, arm=arm, stratum=stratum, failed=counts[aspect, arm, stratum])
+            for aspect, arm, stratum in ordered
+        ]
+
+    def case_overlap(self) -> list[CaseOverlap]:
+        """For each two aspects, in the input's aspect order, the distinct cases both ran and those only one ran, by
+        stored case id; a pair either of whose aspects left trials out of the bundle is left out, since a case all
+        of whose trials were left out is missing from its set."""
+        aspects = self.bundle.aspects
+        cases = {aspect.aspect: {trial.case_id for trial in aspect.trials} for aspect in aspects}
+        whole = [aspect.aspect for aspect in aspects if aspect.trials_omitted == 0]
+        return [
+            CaseOverlap(
+                aspects=(first, second),
+                shared=len(cases[first] & cases[second]),
+                only_first=len(cases[first] - cases[second]),
+                only_second=len(cases[second] - cases[first]),
+            )
+            for index, first in enumerate(whole)
+            for second in whole[index + 1 :]
+        ]
 
     # ------------------------------------------------------------------ caveats
 
@@ -912,6 +985,30 @@ def _failure_excerpt(text: str, reason: str | None, chars: int) -> str:
     start = low if high - low > width else max(0, min((low + high - width) // 2, len(text) - width))
     end = min(len(text), start + width)
     return (_CUT if start > 0 else "") + text[start:end] + (_CUT if end < len(text) else "")
+
+
+def _failed(trial: TrialRow, primary: str | None) -> bool:
+    """Whether a trial is a failure the examples show: a nought on the primary judged dimension where there is one,
+    else a failed trial."""
+    if primary is not None:
+        return trial.judged.get(primary) == 0
+    return trial.state == "failed"
+
+
+def _holds_every_failure(aspect: AnalysisContextBundle, primary: str | None) -> bool:
+    """Whether an aspect's trials hold every failure its run had: none was left out of the bundle, or the cap kept a
+    trial that passed, so every failed and lost trial, which it keeps first, was kept *(inferred: a trial that passed
+    overall is no failure on the primary judged dimension either, so none the cap left out is one; a kept trial
+    that is reads as not held)*."""
+    if aspect.trials_omitted == 0:
+        return True
+    passed = [trial for trial in aspect.trials if trial.state == "passed"]
+    return bool(passed) and not any(_failed(trial, primary) for trial in passed)
+
+
+def _started(text: str, chars: int) -> str:
+    """At most ``chars`` of a text from its start, the cut end marked."""
+    return text if len(text) <= chars else text[: chars - len(_CUT)] + _CUT
 
 
 def _reason(trial: TrialRow, primary: str | None) -> str | None:

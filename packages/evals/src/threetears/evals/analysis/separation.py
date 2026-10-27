@@ -18,8 +18,9 @@ An interval or a half-width is read only at a stated level: a level nobody state
 guess, so such a statistic is read by its ``sem`` or as a rate, or not at all *(inferred)*. A standard error or a
 binomial spread carries no level of its own, so the result is read at the snapshot's stated level where it has one,
 else at :data:`DEFAULT_LEVEL` (95%) *(inferred: the convention the pipeline's own intervals use)*. The spread of one
-case (``per_case``) is the standard error times the square root of the count, which needs the count; for a rate it
-is ``sqrt(p(1 - p))`` directly. An interval that is not symmetric about the mean (a Wilson interval on a rate near an
+case (``per_case``) is the standard error times the square root of the number of cases it rests on, which needs the
+count: the count itself where it counts cases, and the distinct cases where it counts trials and the figure states its
+cases (see *What a case is*). An interval that is not symmetric about the mean (a Wilson interval on a rate near an
 end) is read by its half-width, a normal approximation.
 
 **The difference between two arms** (:func:`independent_difference`). Without a paired estimate the two arms are read
@@ -47,10 +48,20 @@ a one-sided bound at a level is a two-sided interval at a lower one (95% one-sid
 size is smaller than the size at which the interval the page prints clears. A caller therefore states the sidedness
 with every level it reports, and against a line gives the two-sided size beside the one-sided one (``sided=2``).
 
-*What a case is.* The count a spread rests on is whatever count the figure states: distinct cases, or trials where a
-design repeats a case. A design size read from it counts the same thing, so on a repeated design it is a count of
-trials, not of cases; and it reads each trial as independent, which understates the spread where a case's repeats
-agree. A caller says which the count counts.
+*What a case is.* A fresh run adds cases, each run as often as today's design runs one, so a size counts cases. The
+count a spread rests on may be trials, where a design repeats a case; where the figure also states its distinct cases,
+one case's spread is that of its mean over today's repeats, ``se * sqrt(cases)``, and the size counts cases at today's
+repeats (the trials it takes are that times the repeats). The standard error carries its own reading of repeats: a
+stated one is the pipeline's; a binomial spread read from a count of trials treats each repeat as independent, so
+where a case's repeats agree the cases needed are more, at most the trials it takes (every repeat agreeing, a case
+counts once whatever its repeats). Where the figure states no distinct cases the size counts what its count counts,
+and a caller says which.
+
+**A stated difference** (:func:`difference_spread`): a candidate's reading against the control states its change and
+an interval at its own level, from paired cases; its standard error is the interval's half-width over the two-sided
+quantile at that level, and one case's spread that times the root of the harmonic mean of the arms' cases, so a size
+read from it is the cases each arm runs. Against a margin it is settled as any figure against a line (the line minus
+the margin, in points).
 
 **How often today's design lands on the wrong side** (:func:`wrong_side_share`): if the truth equals today's estimate,
 a fresh run of today's size reads its estimate on the other side of the line (or the other arm ahead) with probability
@@ -75,6 +86,7 @@ __all__ = [
     "NoSpread",
     "Spread",
     "cases_to_separate",
+    "difference_spread",
     "independent_difference",
     "level_share",
     "stat_spread",
@@ -107,7 +119,8 @@ class Spread:
     :ivar mean: The arm's mean, in its figure's units.
     :ivar se: The standard error of the mean, in the same units.
     :ivar n: The count the spread rests on; None where none is stated.
-    :ivar per_case: The spread of one case, ``se * sqrt(n)`` (for a rate, ``sqrt(p(1 - p))``); None without a count.
+    :ivar per_case: The spread of one case, ``se * sqrt(cases)`` where the count is trials over stated cases, else
+        ``se * sqrt(n)`` (for a rate on cases, ``sqrt(p(1 - p))``); None without a count.
     :ivar level: The level a result read from this spread is stated at, as a share.
     :ivar basis: What the standard error was read from.
     """
@@ -118,6 +131,12 @@ class Spread:
     per_case: float | None
     level: float
     basis: SpreadBasis
+    cases: float | None = None
+
+    @property
+    def repeats(self) -> float | None:
+        """The trials per case today, where the count is trials over stated cases; None otherwise."""
+        return None if self.cases is None or self.n is None else self.n / self.cases
 
 
 def level_share(text: str | float | None) -> float | None:
@@ -171,6 +190,7 @@ def stat_spread(
     n: float | None = None,
     stated_level: float | None = None,
     rate: Literal["share", "percent"] | None = None,
+    cases: float | None = None,
 ) -> Spread:
     """One arm's mean and the standard error it carries, read from the first of its interval, half-width, standard
     error, or (for a pass/fail rate with a count) its binomial spread.
@@ -189,6 +209,9 @@ def stat_spread(
     :ptype stated_level: float | None
     :param rate: For a pass/fail rate, the scale its mean is on (a share, or a percent); None for any other figure.
     :ptype rate: Literal["share", "percent"] | None
+    :param cases: The distinct cases behind a count of trials, where the figure states them and they are fewer: one
+        case's spread is then its mean's over today's repeats. None where the count counts cases, or says neither.
+    :ptype cases: float | None
     :return: The spread.
     :rtype: Spread
     :raises NoSpread: The mean is absent, or nothing it states gives a spread.
@@ -196,6 +219,7 @@ def stat_spread(
     if mean is None or not math.isfinite(mean):
         raise NoSpread("it states no mean")
     count = float(n) if n is not None and n > 0 else None
+    distinct = float(cases) if cases is not None and count is not None and 0 < cases < count else None
     level = stated_level if stated_level is not None else DEFAULT_LEVEL
     se: float | None = None
     basis: SpreadBasis
@@ -210,8 +234,8 @@ def stat_spread(
         share = mean / scale
         if not 0.0 <= share <= 1.0:
             raise NoSpread(f"its mean is no rate between none and all ({rate} scale), so no binomial spread is read")
-        per_case = math.sqrt(share * (1.0 - share)) * scale
-        return Spread(mean, per_case / math.sqrt(count), count, per_case, level, "binomial")
+        se = math.sqrt(share * (1.0 - share)) * scale / math.sqrt(count)
+        return Spread(mean, se, count, se * math.sqrt(distinct or count), level, "binomial", distinct)
     else:
         if ci is not None or half_width is not None:
             what = "it states an interval at no stated level, and no standard error"
@@ -221,8 +245,41 @@ def stat_spread(
         raise NoSpread(what + tail)
     if not math.isfinite(se) or se < 0:
         raise NoSpread("its interval reads no spread")
-    spread = se * math.sqrt(count) if count is not None else None
-    return Spread(mean, se, count, spread, level, basis)
+    spread = se * math.sqrt(distinct or count) if count is not None else None
+    return Spread(mean, se, count, spread, level, basis, distinct)
+
+
+def difference_spread(
+    change: float, interval: tuple[float, float], level: float | None, counts: tuple[float, ...]
+) -> Spread:
+    """The spread of a stated difference between an arm and the control (a reading's change), read from its own
+    interval at its stated level, with the cases each arm ran.
+
+    One case's spread is the standard error times the root of the harmonic mean of the arms' cases: each arm running
+    that many reads the same standard error where the two arms' spreads are alike, so a size read from it counts the
+    cases each arm runs *(inferred: the reading states no per-arm spread to weigh the two by)*.
+
+    :param change: The difference, in its own units (points for a rate).
+    :ptype change: float
+    :param interval: Its interval, low then high, in the same units.
+    :ptype interval: tuple[float, float]
+    :param level: The interval's stated level, as a share; None where none is stated.
+    :ptype level: float | None
+    :param counts: The cases each arm ran; empty where none is stated.
+    :ptype counts: tuple[float, ...]
+    :return: The spread, its count the harmonic mean of the arms' cases.
+    :rtype: Spread
+    :raises NoSpread: No level is stated, or the interval reads no spread.
+    """
+    if level is None:
+        raise NoSpread("its interval is at no stated level")
+    se = (float(interval[1]) - float(interval[0])) / 2.0 / _z_two_sided(level)
+    if not math.isfinite(se) or se < 0:
+        raise NoSpread("its interval reads no spread")
+    usable = [float(count) for count in counts if count > 0]
+    cases = len(usable) / sum(1.0 / count for count in usable) if usable else None
+    per_case = se * math.sqrt(cases) if cases is not None else None
+    return Spread(float(change), se, cases, per_case, level, "interval")
 
 
 def independent_difference(first: Spread, second: Spread, level: float) -> tuple[float, float]:

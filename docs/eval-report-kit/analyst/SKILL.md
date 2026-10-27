@@ -45,19 +45,19 @@ One tool, `evals_analyst`; each call is `{"action": "<name>", ...}` and, but for
 | Workflow | Action | Key parameters | Use it for |
 |---|---|---|---|
 | snapshot | `report_snapshot_freeze` | `campaign_id` or `analysis_id` | Freeze the evidence, unless you were handed a `snapshot_id` |
-| facts | `campaign_overview` | | Call first: arms, aspects, measure keys, criteria, caveats, prior insights |
+| facts | `campaign_overview` | | Call first: arms, aspects (and whether each two ran the same cases), measure keys, criteria, caveats, prior insights |
 | | `readings_list` | `aspect_filter`, `arm_filter` | Readings against the control, pairs, floors, bars |
 | | `contrasts_list` | `arm_filter`, `measure_filter`, `aspect_filter` | Corrected contrasts and their families |
 | | `measure_read` | `measure_key`, `by` (arm, stratum, task, cell), `statistics` | One measure's figures; without `statistics`, every one held, its interval (`ci` or `half_width`) and level among them |
-| | `examples_list` | `arm_filter`, `stratum_filter`, `outcome_filter` | Failed trials (up to three per arm and stratum), reasons, excerpts cut around the failure |
+| | `examples_list` | `arm_filter`, `stratum_filter`, `outcome_filter` | Failed trials (up to three per arm and stratum), reasons, excerpts cut around the failure, what each case asked; how many were kept of how many failed, per aspect and arm |
 | | `caveats_list` | | Every caveat, stated or implied (`source`), with `matters_if` and what it touches; cite each by its id |
 | | `figure_keys_check` | `keys` | Read each key a draft cites, as the page prints it through its filters, or why it reads nothing; check a whole draft before you submit |
 | analyses | `options_dominance` | `axes`, `bars_as` | Which options survive the gates, which dominate, and each gate figure an option fails or borders, by its keys; options a gate has no figure for are undecided, never failed; each bar a survivor misses is a warning; no dominance call where cost is the only axis declared (`withheld`), with `axes` weighed beside cost |
 | | `decision_sensitivity` | `parameter` (`margin:<aspect>`, `floor:<aspect>/<floor>`, `threshold:<criterion>` (a bar's too), or `hypothetical:<measure>[/<statistic>]` for a line nobody declared), `range_low`, `range_high`, `bars_as` | Where the call, and each routable task's pick, flips |
 | | `measure_breakdown` | `measure_key`, `slice_by` | Where a difference concentrates; exploratory |
 | | `price_tradeoff` | `gain_key`, `arm_filter`, `slice_filter`, `what_if` | Price per point among measured options, overall or within one task, stratum or cell; a gated option as a labelled what-if; never a mix nobody ran |
-| | `arms_compare` | `arm_ids` (two), `measure_key` | Any two arms, control or not: the difference overall and per slice, with its interval (paired where a contrast holds one, else independent), whether it excludes zero |
-| | `settle_cases` | `arm_ids` (one or two), `measure_key`, `criterion_id`, `hypothetical_line`, `bars_as` | The cases that would settle an arm against its line, or two arms apart, and how often today's design reads the wrong way |
+| | `arms_compare` | `arm_ids` (two), `measure_key`, `assumed_cases` | Any two arms, control or not: the difference overall and per slice, with its interval (paired where a contrast holds one, else independent), whether it excludes zero; a what-if count for slices that state none |
+| | `settle_cases` | `arm_ids` (one or two), `measure_key`, `criterion_id`, `against`, `hypothetical_line`, `assumed_cases`, `bars_as` | The cases (and, on a repeated design, trials) that would settle an arm against its criteria, margins and floors, or two arms apart, and how often today's design reads the wrong way; bars read as warnings or as gates (`bars_as`); a what-if count for slices that state none |
 | | `levers_effects` | `measure_key`, `setting_filter`, `place_filter` | What one setting buys between arms differing in it alone, with an interval, and whether it reverses or differs across another setting |
 | blocks | `block_catalog` | | Block kinds, sources, figure key forms |
 | | `block_render` | `block_kind`, `query`, `reference`, `emphasis` | One block's values table, each figure's interval at the block's level where held; echoes `reference_line` and `emphasis` for the claim's evidence; `bars` or `table` over source `prices` (one gain axis in `query.measures`) draws the price frontier's steps |

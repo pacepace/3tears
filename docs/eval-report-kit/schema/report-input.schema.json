@@ -94,6 +94,14 @@
   "human_pref": {
    "anyOf": [{"$ref": "#/$defs/HumanPreference"}, {"type": "null"}],
    "description": "Blind human ratings."
+  },
+  "failed_trials": {
+   "anyOf": [{"type": "array", "items": {"$ref": "#/$defs/FailedTrials"}}, {"type": "null"}],
+   "description": "The failed trials the run holds per aspect, arm and stratum, which the examples are kept from; none where the input does not count them."
+  },
+  "case_overlap": {
+   "anyOf": [{"type": "array", "items": {"$ref": "#/$defs/CaseOverlap"}}, {"type": "null"}],
+   "description": "For each two aspects, the cases both ran and the cases only one ran; none where the input does not hold the aspects' case ids."
   }
  },
  "additionalProperties": false,
@@ -244,6 +252,24 @@
    },
    "additionalProperties": false,
    "description": "One arm against one absolute bar: met, missed or unclear, as the pipeline read it."
+  },
+  "CaseOverlap": {
+   "type": "object",
+   "required": ["aspects", "shared", "only_first", "only_second"],
+   "properties": {
+    "aspects": {
+     "type": "array",
+     "items": {"type": "string"},
+     "minItems": 2,
+     "maxItems": 2,
+     "description": "The two aspects' ids, in the input's aspect order."
+    },
+    "shared": {"type": "integer", "minimum": 0, "description": "The cases both aspects ran."},
+    "only_first": {"type": "integer", "minimum": 0, "description": "The cases only the first ran."},
+    "only_second": {"type": "integer", "minimum": 0, "description": "The cases only the second ran."}
+   },
+   "additionalProperties": false,
+   "description": "Whether two aspects ran the same cases: the distinct cases each ran, by their stored ids, shared or not."
   },
   "Caveats": {
    "type": "object",
@@ -508,6 +534,22 @@
    },
    "additionalProperties": false,
    "description": "One factor of a factorial grid, or one axis of a target matrix, with its levels in order."
+  },
+  "FailedTrials": {
+   "type": "object",
+   "required": ["aspect", "arm", "failed"],
+   "properties": {
+    "aspect": {"type": "string", "description": "The aspect the slice ran on."},
+    "arm": {"type": "string", "description": "The arm that ran it."},
+    "stratum": {"type": ["string", "null"], "description": "The stratum or task it falls in; none for none."},
+    "failed": {
+     "type": "integer",
+     "minimum": 0,
+     "description": "The trials of the slice that failed, as the examples count a failure."
+    }
+   },
+   "additionalProperties": false,
+   "description": "How many trials of one slice of the run failed: the pool its examples are kept from."
   },
   "FloorRead": {
    "type": "object",

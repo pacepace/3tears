@@ -3,7 +3,8 @@
 The cards are the examples the query selects (:func:`~threetears.evals.analysis.report_rows.query_rows`: the arms,
 strata and aspect it keeps, the first ``limit``, in the input's order), so the cards are the ones the section's
 headline speaks of. Each card's meta line holds the trial and the case (mono, as ids a reader can look up), the
-stratum or task by its reader name, the arm as its chip, the failure class as a pill where the example names one, and
+aspect by its reader name where the input holds more than one (so a block over two aspects' failures says which each
+is), the stratum or task by its reader name, the arm as its chip, the failure class as a pill where the example names one, and
 the repeat; then the case's input and what it expected, where the example carries them; then the judge's reason, or
 code's line saying none was recorded; then the excerpt.
 """
@@ -43,6 +44,8 @@ def _place(context: ChartContext, stratum: str) -> str:
 def _card(context: ChartContext, example: Example) -> ExampleCard:
     meta: list[ExampleMetaText | ExampleMetaStatus | ExampleMetaArm] = []
     meta += [ExampleMetaText(text=one, mono=True) for one in (example.trial, example.case) if one]
+    if example.aspect and len(context.report_input.aspects) > 1:
+        meta.append(ExampleMetaText(text=context.look.reader("aspect", example.aspect)))
     if example.stratum:
         meta.append(ExampleMetaText(text=_place(context, example.stratum)))
     if example.arm is not None and example.arm in context.look.arms:

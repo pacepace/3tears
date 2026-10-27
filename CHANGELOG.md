@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an analyst's examples say what they are a sample of; settle sizes cases and reaches margins, floors and uncounted slices; keys for confusion cells, two arms' costs, pairs and shared cases
+
+**Added:** a snapshot's report input counts each slice's failed trials (`ReportInput.failed_trials`, per aspect, arm and
+stratum) and, for each two aspects, the cases both ran and those only one ran (`ReportInput.case_overlap`, by stored
+case id), and each example carries the start of what its case asked. A planner's input and a bare one leave them
+unset, and they read as not known. `examples_list` says, per aspect and arm, how many failures it kept of how many the
+run had (`kept_from`); `campaign_overview` says whether each aspect ran the same cases as each later one. Keys:
+`count.examples`, `count.failures` (and per `<aspect>.<arm>[.<stratum>]`), `count.pairs`, `count.arm_pairs`,
+`overlap.<aspect>.<aspect>.<same|shared|only_first|only_second>`, `confusion.<axis>.<arm>.<expected>.<predicted>`, and
+`cost.gap.<arm>.<arm>.<per_1k|monthly|multiple>`. An example card names its aspect where the input holds more than one.
+Freezing unchanged evidence writes a new snapshot id.
+
+**Changed:** `settle_cases` sizes cases on a repeated design, each case run as often as today (one case's spread is its
+mean's over its repeats), and gives the trials that takes beside each size (`trials_needed` and its siblings;
+`spread.*.cases`, `spread.*.repeats`, and `repeats` on `settle.criteria.` keys, on the criterion's aspect). Before, a size on a repeated design counted trials read as independent. With one
+arm and nothing named it reads every margin a reading of the arm is read against and every floor read on it, beside
+its criteria; `against` (`margin:<aspect>`, `floor:<aspect>/<floor>`) names one, keyed `settle.margin.*` and
+`settle.floor.*`. `settle_cases` and `arms_compare` take `assumed_cases`, a what-if count for a slice whose figure states
+none (a number, or `share` for the arm's own count times the slice's traffic share), keyed `assumed.<cases>.*`. A
+binomial spread's basis names where its count was read (its own, the slice's stated cases, or the arm's scoreboard).
 ### evals: a criterion reads its own aspect's figures; a gate with no figure is unknown, not a fail; the analyst chooses how bars read
 
 **Fixed:** a bar declared on one aspect read the lead aspect's figure in every reader of criteria. On a campaign with a
