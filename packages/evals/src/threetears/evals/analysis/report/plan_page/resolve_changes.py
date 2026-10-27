@@ -28,9 +28,15 @@ about a centre).
   where the interval clears zero; a caption names the two arms and how the interval was read (paired or independent);
 - *levers*: each lever effect, grouped by its setting, then each interaction, grouped by its setting and the setting
   it crosses, as ``lever_effects`` reads them: bold where an effect's interval clears zero, or an interaction reverses
-  or differs. A row's short label names its arms by their tags.
+  or differs. An effect is labelled by the arm it starts from and the value it moves to, as the input states it (a
+  declared level's name, else the value, a whole number whole: :func:`setting_value`); an interaction by its two
+  moves, the second's effect less the first's, so no two rows read alike (:func:`lever_label`). A row's short label
+  names its arms by their tags. The caption speaks of interactions only where the chart draws one. A lever's effect,
+  which its key states as a share where the measure is a rate, is drawn in points, as a comparison is.
 
-Every interval is drawn only where the chart states a level; every note is written by the package's number rule.
+Every interval is drawn only where the chart states a level; every note is written by the package's number rule. A
+chart of what an analysis computes (compare, levers) spells its values table at its quantity's precision, a point to
+one decimal, as the rows' keys read (:func:`~threetears.evals.analysis.report.plan_page.charting.chart_block`).
 """
 
 from __future__ import annotations
@@ -67,6 +73,8 @@ from threetears.evals.analysis.report.plan_page.charting import (
 from threetears.evals.analysis.report.plan_page.look import Quantity, centred_domain, figure_text, quantity
 from threetears.evals.analysis.report.plan_page.words import (
     BASIS_NOTE,
+    COMPARE_NARROW_NOTE,
+    COMPARE_NESTED_TEMPLATE,
     COMPARE_NOTE,
     HUMAN_PREF_NOTE,
     LEVER_CROSS_GROUP,
@@ -74,17 +82,25 @@ from threetears.evals.analysis.report.plan_page.words import (
     LEVER_EFFECT_GROUP,
     LEVER_MOVE_TEMPLATE,
     LEVER_NOTE,
+    LEVERS_INTERACTION_NOTE,
     LEVERS_NOTE,
+    LEVERS_READ_NOTE,
     OVERALL_WORD,
     PAIRED_BASIS_TEMPLATE,
     UNCORRECTED_NOTE,
     change_words,
 )
-from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, Stat, Stratum, Task
+from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.quantities import PERCENT, POINTS
+from threetears.evals.analysis.report.figure_keys import arm_settings
+from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_rows import lever_arms
 from threetears.evals.analysis.style import humanize
 
 __all__ = ["RESOLVERS"]
+
+#: The sources whose rows an analysis computes, unrounded: a values table spells them at their quantity's precision.
+_COMPUTED = frozenset({"compare", "levers"})
 
 #: The contrast verdicts that separate an arm from the control in a direction.
 _DIRECTED = frozenset({"improved", "regressed"})
@@ -444,14 +460,30 @@ def _arm_tag(context: ChartContext, arm: str) -> str:
     return context.look.arm(arm).tag if arm in context.look.arms else arm
 
 
+def _factor(figure: CitedFigure, drawn: Quantity) -> float:
+    """What a computed figure's number is multiplied by to be drawn: a rate's change by the scale the figure states
+    it on (a share's, 0 to 1, a hundred times, to the points the chart draws; one in points or percent as it is), so
+    a lever's effect, which its key states as a share, draws in points as a comparison's does; any other by the
+    chart's own factor."""
+    if drawn.unit in (POINTS, PERCENT):
+        if figure.scale == "share":
+            return 100.0
+        if figure.scale in ("points", "percent"):
+            return 1.0
+    return drawn.factor
+
+
 def _figure_value(figure: CitedFigure | None, drawn: Quantity) -> float | None:
-    return float(figure.value) * drawn.factor if figure is not None and isinstance(figure.value, float) else None
+    if figure is None or not isinstance(figure.value, float):
+        return None
+    return float(figure.value) * _factor(figure, drawn)
 
 
 def _figure_ends(figure: CitedFigure | None, drawn: Quantity) -> tuple[float, float] | None:
     if figure is None or not isinstance(figure.value, tuple):
         return None
-    return float(figure.value[0]) * drawn.factor, float(figure.value[1]) * drawn.factor
+    factor = _factor(figure, drawn)
+    return float(figure.value[0]) * factor, float(figure.value[1]) * factor
 
 
 def _analysed_change(
@@ -522,7 +554,37 @@ def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tu
         measure=measure_words(context.report_input, key),
     )
     basis = tuple(dict.fromkeys(BASIS_NOTE.format(basis=basis) for basis in bases))
-    return changes, drawn, (named, *basis)
+    return changes, drawn, (named, *basis, *narrow_notes(context))
+
+
+def narrow_notes(context: ChartContext) -> tuple[str, ...]:
+    """What a compare chart or table says, once, where a row's interval may be too narrow (``may_be_narrow``): each
+    arm that ran more trials than cases, by its reader name and the trials and cases its key reads; empty where no
+    row is marked.
+
+    :param context: The chart being resolved, over the compare source.
+    :ptype context: ChartContext
+    :return: The note, or none.
+    :rtype: tuple[str, ...]
+    """
+    nested: dict[str, str] = {}
+    for row in context.rows():
+        item = row.item
+        if not isinstance(item, ComparisonRow) or not item.may_be_narrow:
+            continue
+        by_arm: dict[str, list[str]] = {}
+        for figure in item.nested:
+            arm = figure.key.removeprefix(_SCOREBOARD).rpartition(".")[0]
+            by_arm.setdefault(arm, []).append(figure.reads)
+        for arm, (trials, cases, *_rest) in ((arm, reads) for arm, reads in by_arm.items() if len(reads) >= 2):
+            nested.setdefault(
+                arm, COMPARE_NESTED_TEMPLATE.format(arm=_arm_name(context, arm), trials=trials, cases=cases)
+            )
+    return (COMPARE_NARROW_NOTE.format(nested="; ".join(nested.values())),) if nested else ()
+
+
+#: How a scoreboard figure's key opens, before its arm: ``scoreboard.<arm>.<field>``.
+_SCOREBOARD = "scoreboard."
 
 
 def compare_basis(context: ChartContext, row: ComparisonRow, key: str) -> str:
@@ -549,19 +611,63 @@ def compare_basis(context: ChartContext, row: ComparisonRow, key: str) -> str:
     )
 
 
-def _lever_label(context: ChartContext, row: EffectRow | InteractionRow) -> tuple[str, str, str]:
-    """A lever row's label, short label and group: an effect by the arm it moves from and the value it moves to,
-    under its setting; an interaction by the two contexts, under its setting and the other setting it crosses."""
+def setting_value(report_input: ReportInput, setting: str, arm: str) -> str | None:
+    """One arm's value of a setting as the input states it: the name its declared factor gives that level (a level
+    matched by its id or name, as a lattice matches one), else the value itself, a number by the package's number rule
+    (``1``, never ``1.0``); None where the arm states none.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param setting: The setting, by id.
+    :ptype setting: str
+    :param arm: The arm, by id.
+    :ptype arm: str
+    :return: The value as a reader reads it, or None.
+    :rtype: str | None
+    """
+    value = arm_settings(report_input).get(arm, {}).get(setting)
+    if value is None:
+        return None
+    spelled = value if isinstance(value, str) else format_number(float(value))
+    factor = next((factor for factor in report_input.factors if factor.id == setting), None)
+    for level in factor.levels if factor is not None else []:
+        if spelled.casefold() in {level.id.casefold(), (level.name or level.id).casefold()}:
+            return level.name or level.id
+    return spelled
+
+
+def lever_label(context: ChartContext, row: EffectRow | InteractionRow) -> tuple[str, str, str]:
+    """A lever row's label, short label and group: an effect by the arm it moves from and the value it moves to (as
+    :func:`setting_value` names it), under its setting; an interaction as its second move's effect less its first's,
+    each move named as an effect is, under its setting and the other setting it crosses. Every row's label is its
+    own: two effects differ in where they start or where they end, and two interactions in a move.
+
+    :param context: The chart being resolved, over the levers source.
+    :ptype context: ChartContext
+    :param row: One ``lever_effects`` row.
+    :ptype row: EffectRow | InteractionRow
+    :return: ``(label, short label, group)``.
+    :rtype: tuple[str, str, str]
+    """
     arms = lever_arms(row, context.report_input)
+
+    def moved(start: str, end: str, *, short: bool) -> str:
+        value = setting_value(context.report_input, row.setting, end)
+        first = _arm_tag(context, start) if short else _arm_name(context, start)
+        return LEVER_MOVE_TEMPLATE.format(start=first, value=value if value is not None else _arm_name(context, end))
+
     if isinstance(row, EffectRow):
         start, end = arms
-        to_value = str(row.to_value.value) if row.to_value is not None else _arm_name(context, end)
-        label = LEVER_MOVE_TEMPLATE.format(start=_arm_name(context, start), value=to_value)
+        label = moved(start, end, short=False)
         short = LEVER_MOVE_TEMPLATE.format(start=_arm_tag(context, start), value=_arm_tag(context, end))
         return label, short, LEVER_EFFECT_GROUP.format(setting=humanize("dimension", row.setting))
-    first_from, _first_to, second_from, _second_to = (arms + ["", "", "", ""])[:4]
-    label = LEVER_CROSS_TEMPLATE.format(second=_arm_name(context, second_from), first=_arm_name(context, first_from))
-    short = LEVER_CROSS_TEMPLATE.format(second=_arm_tag(context, second_from), first=_arm_tag(context, first_from))
+    first_from, first_to, second_from, second_to = (arms + ["", "", "", ""])[:4]
+    label = LEVER_CROSS_TEMPLATE.format(
+        second=moved(second_from, second_to, short=False), first=moved(first_from, first_to, short=False)
+    )
+    short = LEVER_CROSS_TEMPLATE.format(
+        second=moved(second_from, second_to, short=True), first=moved(first_from, first_to, short=True)
+    )
     group = LEVER_CROSS_GROUP.format(
         setting=humanize("dimension", row.setting), across=humanize("dimension", row.across)
     )
@@ -583,7 +689,7 @@ def _lever_rows(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[s
         if value is None:
             continue
         interval = _figure_ends(item.figures[1], drawn) if len(item.figures) > 1 else None
-        label, short, group = _lever_label(context, item)
+        label, short, group = lever_label(context, item)
         if isinstance(item, InteractionRow):
             strong: bool | None = item.verdict in ("reverses", "differs") if item.verdict != "no_interval" else None
         else:
@@ -603,7 +709,9 @@ def _lever_rows(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[s
         )
     if len({change.group for change in changes}) == 1:
         changes = [_with_group(change, None) for change in changes]
-    return changes, drawn, (LEVERS_NOTE.format(measure=measure_words(context.report_input, key)),)
+    crossed = LEVERS_INTERACTION_NOTE if any(isinstance(row.item, InteractionRow) for row in rows) else ""
+    note = LEVERS_NOTE.format(measure=measure_words(context.report_input, key), interactions=crossed)
+    return changes, drawn, (f"{note} {LEVERS_READ_NOTE}",)
 
 
 # --- the charts ----------------------------------------------------------------------------------------------------
@@ -743,6 +851,7 @@ def _diverging(context: ChartContext) -> Drawn:
         reference = reference_line(context, drawn)
     ends = list(_ends(changes, reference, intervals=bool(level)))
     domain = context.spec.domain or centred_domain(ends, drawn, centre=centre)
+    read_at = drawn.unit if source in _COMPUTED else ""
     if panels is not None:
         data = BarsChart(
             domain=(domain[0], domain[1]),
@@ -769,7 +878,7 @@ def _diverging(context: ChartContext) -> Drawn:
             reference=reference,
             emphasis=context.emphasis,
         )
-    return Drawn(chart_block(context, data), notes)
+    return Drawn(chart_block(context, data, read_at=read_at), notes)
 
 
 #: The kinds this module resolves.

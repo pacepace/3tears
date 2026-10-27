@@ -12,7 +12,8 @@ Every string a mounted tool returns is made here, so the conventions hold in one
 - **A page names the call to the next.** A paged action's result (:attr:`~threetears.evals.actions.Action.paged`)
   ends with ``next: action='…', …, offset=N`` — the arguments the caller sent, ``offset`` advanced — and carries the
   same call as ``next`` in its structured result; its last page carries neither, and no ``next_offset``
-  (:func:`render_page`).
+  (:func:`render_page`). Every page says in words how much of the whole it holds: ``all 77 shown`` on a page holding
+  every row, else which rows it holds and how many follow, so a complete result never reads as a cut one.
 - **A result reads as every fact it carries.** One generic renderer prints any result model field by field
   (:func:`render_model`); a few results keep their own: a started job says how to poll it and a finished one
   what to read next, a page of results how to read the next, one result its counted goal verdicts, and a report
@@ -473,15 +474,42 @@ def render_page(action: str, params: BaseModel, text: str, structured: dict[str,
     :ptype text: str
     :param structured: The result's JSON.
     :ptype structured: dict[str, Any]
-    :return: The text, with ``next: …`` as its last line while a page follows; the JSON, with ``next`` (the next
-        call's arguments) beside ``next_offset`` while a page follows, and neither on the last page.
+    :return: The text, with how much of the whole it holds in words (``all 77 shown``; ``rows 1 to 40 of 77 shown;
+        37 follow``), then ``next: …`` as its last line while a page follows; the JSON, with ``next`` (the next call's
+        arguments) beside ``next_offset`` while a page follows, and neither on the last page.
     :rtype: tuple[str, dict[str, Any]]
     """
     offset = structured.get(_NEXT_OFFSET)
+    shown = _shown_line(structured.get("total"), structured.get("offset"), offset)
+    text = f"{text}\n{shown}" if shown else text
     if offset is None:
         return text, {key: value for key, value in structured.items() if key != _NEXT_OFFSET}
     call = _next_page_call(action, params, offset)
     return f"{text}\n{_next_page_line(call)}", {**structured, "next": call}
+
+
+#: How a page says how much of the whole it holds (:func:`_shown_line`).
+_ALL_SHOWN: Final = "all {total} shown"
+_NONE_SHOWN: Final = "none to show"
+_SOME_SHOWN: Final = "rows {first} to {last} of {total} shown; {left} follow"
+_LAST_SHOWN: Final = "rows {first} to {total} of {total} shown; none follow"
+_PAST_SHOWN: Final = "none from row {first}: {total} in all"
+
+
+def _shown_line(total: Any, offset: Any, next_offset: int | None) -> str:
+    """How much of the whole a page holds, in words: every row (``all 77 shown``), else its rows and how many follow;
+    empty for a result that states no total and offset."""
+    if not isinstance(total, int) or not isinstance(offset, int):
+        return ""
+    if next_offset is not None:
+        return _SOME_SHOWN.format(first=offset + 1, last=next_offset, total=total, left=total - next_offset)
+    if total == 0:
+        return _NONE_SHOWN
+    if offset >= total:
+        return _PAST_SHOWN.format(first=offset + 1, total=total)
+    if offset == 0:
+        return _ALL_SHOWN.format(total=total)
+    return _LAST_SHOWN.format(first=offset + 1, total=total)
 
 
 #: The most characters a page a caller does not size runs to: what one tool result may take of an analyst's context.
@@ -508,12 +536,29 @@ def page_sizing(action: str, params: BaseModel, default: int) -> tuple[int, Call
     named = getattr(params, "limit", None)
     if named is not None:
         return int(named), None
+    return default, page_fits(action, params)
+
+
+def page_fits(action: str, params: BaseModel) -> Callable[[BaseModel], bool]:
+    """The test of length a page is sized by: whether it fits within 12,000 characters (what one tool result may take
+    of an analyst's context) as the tool writes it (:func:`render_cited`, then :func:`render_page`, the next page's
+    call included). :func:`page_sizing` applies it where the caller names no size; an action whose rows run long
+    whatever its limit (a block's example cards) applies it to a named limit too, so a page holds the limit's rows
+    where they fit and says how many follow where they do not.
+
+    :param action: The action, as the next page's call names it.
+    :ptype action: str
+    :param params: The call's parameters.
+    :ptype params: BaseModel
+    :return: The test.
+    :rtype: Callable[[BaseModel], bool]
+    """
 
     def fits(page: BaseModel) -> bool:
         text, _structured = render_page(action, params, render_cited(page), page.model_dump(mode="json"))
         return len(text) <= _PAGE_TEXT
 
-    return default, fits
+    return fits
 
 
 def _cited_field(name: str, value: Any, indent: str) -> list[str]:
@@ -805,6 +850,7 @@ __all__ = [
     "render_job_status",
     "render_jobs_started",
     "render_model",
+    "page_fits",
     "render_page",
     "render_primer",
     "render_report",

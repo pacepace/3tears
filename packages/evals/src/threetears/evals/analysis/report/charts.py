@@ -28,7 +28,7 @@ from typing import Annotated, Any, ClassVar, Literal, Self
 from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from threetears.evals.analysis.numbers import WHOLE_FROM, format_number, group_thousands
-from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, signed_with_unit, with_unit
+from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
 from threetears.evals.schema.base import EvalDocumentModel
 
 #: A colour as the kit takes one: the name of one of its tokens, never a literal colour.
@@ -81,15 +81,23 @@ _FORMAT_UNITS: dict[str, str] = {
 _FORMAT_SPEC = re.compile(r"^(\+?)([a-z]+)(?::\d)?$")
 
 
-def _formatted(spec: str, value: float) -> str:
+def _formatted(spec: str, value: float, read_at: str = "") -> str:
     """``value`` as a chart's table prints it: in the unit the kit's named format ``spec`` states it in, by the
     package's one number rule, signed where the spec signs it; whatever digits the spec rounds its axis to, a table
     never rounds away what the value holds.
+
+    Where the format names no unit (``num``) and its block says the unit its values are read at (``read_at``, a
+    chart of what an analysis computes: two arms' difference, a lever's effect, in points), the value is spelled at
+    that unit's precision (:func:`~threetears.evals.analysis.quantities.number_in`: a point to one decimal), the unit
+    itself left to the note beside it, so a computed figure prints as its key and its note read it, never at the
+    float's four figures.
 
     :param spec: A kit format (:data:`Fmt`).
     :ptype spec: str
     :param value: The value, in display units.
     :ptype value: float
+    :param read_at: The unit the block's values are read at, where its format names none; empty for the format's.
+    :ptype read_at: str
     :return: The value as text.
     :rtype: str
     :raises ValueError: ``spec`` is not a format the kit names.
@@ -98,6 +106,10 @@ def _formatted(spec: str, value: float) -> str:
     if match is None or match[2] not in _FORMAT_UNITS:
         raise ValueError(f"fmt {spec!r} is not one of {', '.join(_FORMAT_UNITS)}")
     unit = _FORMAT_UNITS[match[2]]
+    if not unit and read_at:
+        text = number_in(value, read_at)
+        # Signed as format_signed signs a change: a positive value carries its "+", a bound its own direction.
+        return f"+{text}" if match[1] and value > 0 and not text.startswith("<") else text
     return signed_with_unit(value, unit) if match[1] else with_unit(value, unit)
 
 
@@ -165,8 +177,9 @@ class _Kind(_KitModel):
         if missing := [name for name in self.REQUIRED if getattr(self, name) is None]:
             raise ValueError(f"{', '.join(repr(name) for name in missing)} required")
 
-    def table(self, legend: Sequence[LegendItem]) -> tuple[list[str], list[list[str]]]:
-        """The kind's values as ``(headers, rows)`` of text."""
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
+        """The kind's values as ``(headers, rows)`` of text; ``read_at`` the unit its values are read at where its
+        format names none (:func:`_formatted`), which a kind drawing computed changes spells them at."""
         raise NotImplementedError
 
     @property
@@ -201,16 +214,19 @@ class _Drawable(_Kind):
                 raise ValueError(f"{where}{exc}") from exc
         return self
 
-    def values_table(self) -> tuple[list[str], list[list[str]]]:
+    def values_table(self, read_at: str = "") -> tuple[list[str], list[list[str]]]:
         """The chart's values as a table a reader without the chart can read: small multiples one after another under
         a Panel column, a text card as its title and line.
 
+        :param read_at: The unit its values are read at where its format names none (:func:`_formatted`); empty for
+            the format's own.
+        :ptype read_at: str
         :return: ``(headers, rows)``, each cell text.
         :rtype: tuple[list[str], list[list[str]]]
         """
         legend: list[LegendItem] = getattr(self, "legend", None) or []
         if getattr(self, "panels", None) is None:
-            return self.table(legend)
+            return self.table(legend, read_at)
         drawn = _drawn(self)
         headers: list[str] = []
         body: list[list[str]] = []
@@ -221,7 +237,7 @@ class _Drawable(_Kind):
             if one is None:
                 cards.append(panel)
                 continue
-            own_headers, rows = one.table(legend)
+            own_headers, rows = one.table(legend, read_at)
             headers = headers or ["Panel", *own_headers]
             body += [[_panel_name(panel), *row] for row in rows]
         headers = headers or ["Panel", ""]
@@ -230,9 +246,19 @@ class _Drawable(_Kind):
 
 
 def _panel_name(panel: _PanelText) -> str:
-    """A small multiple as a values table's Panel column names it: its title, then its subtitle where it has one (an
-    arm's panel names the axis or measure it draws), so no two panels read alike that the picture tells apart."""
-    return " · ".join(part for part in (panel.title, panel.subtitle) if part)
+    """A small multiple as a values table's Panel column names it: its title (after its arm's letter tag, where it is
+    an arm's panel, as every arm's row is named: :func:`_tagged`), then its subtitle where it has one (an arm's panel
+    names the axis or measure it draws), so no two panels read alike that the picture tells apart."""
+    return " · ".join(part for part in (_tagged(panel.tag, panel.title or ""), panel.subtitle) if part)
+
+
+def _tagged(tag: str | None, label: str) -> str:
+    """An arm's row or panel as a values table names it: its letter tag, then its name (``A · f64``), as a chart
+    whose rows carry no tag of their own labels them (an arm's look's label), so one arm reads alike in every
+    block; a label without a tag, or one already opening with its tag, as it is."""
+    if not tag or not label or label.startswith(f"{tag} · "):
+        return label
+    return f"{tag} · {label}"
 
 
 #: A number in a table cell: its sign, its digits with any thousands separators, and its decimals; never inside a
@@ -313,22 +339,23 @@ def _padded_cell(cell: str, most: Sequence[int]) -> str:
     return _CELL_NUMBER.sub(pad, cell)
 
 
-def _interval(spec: str, low: float | None, high: float | None) -> str:
-    """An interval as a table cell: its two ends under the chart's format, empty without one."""
+def _interval(spec: str, low: float | None, high: float | None, read_at: str = "") -> str:
+    """An interval as a table cell: its two ends under the chart's format (at ``read_at``'s precision where it names
+    one: :func:`_formatted`), empty without one."""
     if low is None or high is None:
         return ""
-    return f"{_formatted(spec, low)} to {_formatted(spec, high)}"
+    return f"{_formatted(spec, low, read_at)} to {_formatted(spec, high, read_at)}"
 
 
 #: An interval open above, as a table cell or a tooltip writes it: its low end, and no upper bound.
 OPEN_ABOVE = "from {low} up, no upper bound"
 
 
-def _bar_interval(spec: str, low: float | None, high: float | None) -> str:
+def _bar_interval(spec: str, low: float | None, high: float | None, read_at: str = "") -> str:
     """A bar's interval as a table cell: :func:`_interval`'s, or one open above (a low end alone) in words."""
     if low is not None and high is None:
-        return OPEN_ABOVE.format(low=_formatted(spec, low))
-    return _interval(spec, low, high)
+        return OPEN_ABOVE.format(low=_formatted(spec, low, read_at))
+    return _interval(spec, low, high, read_at)
 
 
 def _reference_row(reference: ChartReference | None, spec: str, width: int) -> list[list[str]]:
@@ -424,7 +451,7 @@ class _BarsFields(_Kind):
         super().check_drawable()
         _need_level(self.level, any(row.lo is not None or row.hi is not None for row in self.rows or []))
 
-    def table(self, legend: Sequence[LegendItem]) -> tuple[list[str], list[list[str]]]:
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         rows = self.rows or []
         names: dict[tuple[str | None, ChartPattern | None], str] = {
             (item.color, item.pattern): item.label for item in legend if item.color is not None
@@ -451,10 +478,10 @@ class _BarsFields(_Kind):
             body.append(
                 [
                     *([row.group or ""] if grouped else []),
-                    row.label,
-                    _formatted(self._format, row.total),
+                    _tagged(row.tag, row.label),
+                    _formatted(self._format, row.total, read_at),
                     *([parts] if stacked else []),
-                    *([_bar_interval(self._format, row.lo, row.hi)] if intervals else []),
+                    *([_bar_interval(self._format, row.lo, row.hi, read_at)] if intervals else []),
                     *([row.note or ""] if notes else []),
                 ]
             )
@@ -508,7 +535,7 @@ class ForestChart(_Drawable):
     label_width_narrow: float | None = Field(default=None, description="The label column in px below 480 px.")
     row_height: float | None = Field(default=None, description="The row pitch in px.")
 
-    def table(self, legend: Sequence[LegendItem]) -> tuple[list[str], list[list[str]]]:
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         grouped = any(row.group is not None for row in self.rows)
         notes = any(row.note for row in self.rows)
         headers = [
@@ -522,8 +549,8 @@ class ForestChart(_Drawable):
             [
                 *([row.group or ""] if grouped else []),
                 row.label,
-                _formatted(self.fmt, row.value),
-                _interval(self.fmt, row.lo, row.hi),
+                _formatted(self.fmt, row.value, read_at),
+                _interval(self.fmt, row.lo, row.hi, read_at),
                 *([row.note or ""] if notes else []),
             ]
             for row in self.rows
@@ -569,7 +596,7 @@ class LinesChart(_Drawable):
                 if ends is not None and len(ends) != len(self.categories):
                     raise ValueError(f"series {series.name!r} has {len(ends)} values for {len(self.categories)} x")
 
-    def table(self, legend: Sequence[LegendItem]) -> tuple[list[str], list[list[str]]]:
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = [self.x_title or "", *(series.name for series in self.series)]
         body = []
         for index, category in enumerate(self.categories):
@@ -649,7 +676,7 @@ class _ScatterFields(_Kind):
             if missing := [one for one in path.ids if one not in ids]:
                 raise ValueError(f"a path names points not in `points`: {', '.join(missing)}")
 
-    def table(self, legend: Sequence[LegendItem]) -> tuple[list[str], list[list[str]]]:
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         x_fmt, y_fmt = self.x_fmt or "num", self.y_fmt or "num"
         headers = ["Point", self.x_title or "x", self.y_title or "y"]
         body = [
@@ -748,14 +775,18 @@ class _DotIntervalFields(_Kind):
         super().check_drawable()
         _need_level(self.level, any(row.lo is not None or row.hi is not None for row in self.rows or []))
 
-    def table(self, legend: Sequence[LegendItem]) -> tuple[list[str], list[list[str]]]:
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         if not self.level:
             headers = ["Row", "Value"]
-            body = [[row.label, _formatted(self._format, row.value)] for row in self.rows or []]
+            body = [[row.label, _formatted(self._format, row.value, read_at)] for row in self.rows or []]
             return headers, body + _reference_row(self.reference, self._format, len(headers))
         headers = ["Row", "Value", f"{self.level} interval"]
         body = [
-            [row.label, _formatted(self._format, row.value), _interval(self._format, row.lo, row.hi)]
+            [
+                row.label,
+                _formatted(self._format, row.value, read_at),
+                _interval(self._format, row.lo, row.hi, read_at),
+            ]
             for row in self.rows or []
         ]
         return headers, body + _reference_row(self.reference, self._format, len(headers))
@@ -812,7 +843,7 @@ class RangeBarsChart(_Drawable):
     reference: ChartReference | None = Field(default=None, description="The budget.")
     legend: list[LegendItem] | None = Field(default=None, description="Drawn above the chart.")
 
-    def table(self, legend: Sequence[LegendItem]) -> tuple[list[str], list[list[str]]]:
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = ["Group", "Row", "From", "To"]
         body = [
             [group.label, row.label, _formatted(self.fmt, row.from_), _formatted(self.fmt, row.to)]
@@ -863,7 +894,7 @@ class GateMatrixChart(_Drawable):
             if self.cost_fmt is None and any(cell.cost is not None for cell in row.cells):
                 raise ValueError('cells carry "cost", so "cost_fmt" is required')
 
-    def table(self, legend: Sequence[LegendItem]) -> tuple[list[str], list[list[str]]]:
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = [self.row_header or "", *(column.label for column in self.columns)]
         body = []
         for row in self.rows:
@@ -921,7 +952,7 @@ class LatticeChart(_Drawable):
         super().check_drawable()
         _same_width(self.rows, len(self.columns))
 
-    def table(self, legend: Sequence[LegendItem]) -> tuple[list[str], list[list[str]]]:
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = ["", *(column.label for column in self.columns)]
         body = []
         for row in self.rows:
@@ -987,7 +1018,7 @@ class _HeatmapFields(_Kind):
         super().check_drawable()
         _same_width(self.rows or [], len(self.columns or []))
 
-    def table(self, legend: Sequence[LegendItem]) -> tuple[list[str], list[list[str]]]:
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = ["", *(column.label for column in self.columns or [])]
         body = [
             [
@@ -1053,7 +1084,7 @@ class DiffHeatmapChart(_Drawable):
         super().check_drawable()
         _same_width(self.rows, len(self.columns))
 
-    def table(self, legend: Sequence[LegendItem]) -> tuple[list[str], list[list[str]]]:
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         headers = ["", *(column.label for column in self.columns)]
         detail = self.detail_fmt
         body = [
@@ -1100,7 +1131,7 @@ class _ConfusionFields(_Kind):
             return rows
         return [[value / total * 100 if (total := sum(row)) else 0.0 for value in row] for row in rows]
 
-    def table(self, legend: Sequence[LegendItem]) -> tuple[list[str], list[list[str]]]:
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         spec = self.fmt or "pct:1"
         labels = self.labels or []
         headers = ["", *labels]
@@ -1125,9 +1156,9 @@ class ConfusionChart(_ConfusionFields, _Drawable):
     panels: list[ConfusionPanel] | None = Field(default=None, description="Small multiples, one per label axis.")
     panel_min_rem: float | None = Field(default=None, description="The narrowest panel before a column drops.")
 
-    def values_table(self) -> tuple[list[str], list[list[str]]]:
+    def values_table(self, read_at: str = "") -> tuple[list[str], list[list[str]]]:
         if self.panels is None:
-            return super().values_table()
+            return super().values_table(read_at)
         body: list[list[str]] = []
         for panel, one in _drawn(self):
             if panel is None or not isinstance(one, _ConfusionFields):
@@ -1194,7 +1225,7 @@ class ExamplesChart(_Drawable):
     cards: list[ExampleCard] = Field(description="The cards, in order.")
     card_min_rem: float | None = Field(default=None, description="The narrowest card before a column drops.")
 
-    def table(self, legend: Sequence[LegendItem]) -> tuple[list[str], list[list[str]]]:
+    def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         def meta(card: ExampleCard) -> str:
             return " · ".join(
                 item.text if isinstance(item, ExampleMetaText) else item.label for item in card.meta or []

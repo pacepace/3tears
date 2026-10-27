@@ -41,6 +41,11 @@ measure's column headed by its reader name, rather than three rows a reader pair
 each interval's ends, headed by the chart's interval level (``95% interval``), so a reader without the glyph (the
 Markdown page, a values table) reads the interval and its level too.
 
+**A source's own column no row fills is left out** (:func:`_filled`): a source's fixed columns are every figure its
+rows can hold, and one that is a dash in every row (a settle table's trial sizes on a design that repeats no case, an
+interaction's verdict on a table of effects alone) says nothing a reader needs. The label column stays whatever it
+holds, and so does a measure's column the query names: a dash there says the input holds no figure of it.
+
 An arm is the kit's chip (its tag and name); every number is spelled by the package's number rule, an absent one a dash;
 a row an analysis computed (compare, settle, levers) prints each figure as its key reads it, so the table and prose
 citing the key read alike.
@@ -74,7 +79,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
 )
 from threetears.evals.analysis.report.plan_page.look import quantity
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
-from threetears.evals.analysis.report.plan_page.resolve_changes import compare_basis
+from threetears.evals.analysis.report.plan_page.resolve_changes import compare_basis, lever_label, narrow_notes
 from threetears.evals.analysis.report.plan_page.resolve_magnitudes import price_notes, settle_label, settle_notes
 from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.compare import ComparisonRow
@@ -100,6 +105,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     CELL_TEMPLATE,
     INTERVAL_HEADER,
     CASES_WORD,
+    SETTLE_NO_SIZE,
     OVERALL_WORD,
     TABLE_HEADERS,
     TABLE_ORDER,
@@ -426,10 +432,14 @@ def _sizes(row: SettleRow) -> _Row:
     count = row.counts[0] if row.counts else None
     counted = str(row.count_of[0].value) if row.count_of else None
     cases = row.cases[0] if row.cases else None
+    # An estimate exactly on its line has no size that settles it there: the cell says so, never a bare dash.
+    unsized = _words(SETTLE_NO_SIZE) if row.settles == "on_the_line" else None
     return {
         "counted": _words(CASES_WORD if cases is not None else counted),
-        "cases_needed": _read(row.cases_needed),
-        "cases_needed_two_sided": _read(row.cases_needed_two_sided),
+        "cases_needed": unsized if unsized is not None and row.cases_needed is None else _read(row.cases_needed),
+        "cases_needed_two_sided": unsized
+        if unsized is not None and row.cases_needed_two_sided is None
+        else _read(row.cases_needed_two_sided),
         "today": _read(cases if cases is not None else count),
         "trials_needed": _read(row.trials_needed),
         "trials_needed_two_sided": _read(row.trials_needed_two_sided),
@@ -448,8 +458,9 @@ def _levers(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
             moved = PRICE_STEP_TEMPLATE.format(first=_arm(context, start).text, second=_arm(context, end).text)
             what = humanize("dimension", item.setting)
         else:
-            arms = lever_arms(item, context.report_input)
-            moved = " vs ".join(_arm(context, arm).text for arm in arms[::2])
+            # The second move's effect less the first's, each move named as the chart names it, so two interactions
+            # between the same two contexts read apart by their moves.
+            moved, _short, _group = lever_label(context, item)
             what = f"{humanize('dimension', item.setting)} × {humanize('dimension', item.across)}"
         yield {
             "setting": _words(what),
@@ -576,6 +587,17 @@ def _with_intervals(columns: list[TableColumn], rows: list[_Row], level: str) ->
     return laid, [{column.key: row[column.key] for column in laid if column.key in row} for row in filled]
 
 
+def _filled(columns: list[TableColumn], rows: list[_Row], *, keep: set[str]) -> tuple[list[TableColumn], list[_Row]]:
+    """The columns some row fills (a value that is not absent), the first, the row's label, and those in ``keep`` (the
+    measures a query names) always among them; the rows with only those (this module's columns no row fills)."""
+    kept = [
+        column
+        for at, column in enumerate(columns)
+        if at == 0 or column.key in keep or any(row[column.key].value is not None for row in rows if column.key in row)
+    ]
+    return kept, [{column.key: row[column.key] for column in kept if column.key in row} for row in rows]
+
+
 def _table(context: ChartContext) -> Drawn:
     reader, keys = _SOURCES[context.query.source]
     measured: _Laid = []
@@ -589,11 +611,14 @@ def _table(context: ChartContext) -> Drawn:
         else:
             columns.append(TableColumn(key=key, header=TABLE_HEADERS[key]))
     columns, rows = _with_intervals(columns, rows, context.spec.level)
+    columns, rows = _filled(columns, rows, keep={on for on, _header in measured})
     notes = (
         price_notes(context)
         if context.query.source == "prices"
         else settle_notes(context)
         if context.query.source == "settle"
+        else narrow_notes(context)
+        if context.query.source == "compare"
         else computed_notes(context)
     )
     table = TableBlock(

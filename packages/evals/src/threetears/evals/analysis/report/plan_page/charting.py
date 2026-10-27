@@ -36,7 +36,9 @@ selects (:func:`~threetears.evals.analysis.report_rows.query_rows`, the one owne
   units: a margin as minus the margin on a change axis, a floor or budget at the criterion's threshold. A kind that
   draws its criterion's line where the plan stores none (a dot strip's floor, range bars' budget, a heatmap's cell
   floor) reads it by :func:`criterion_line`: the one criterion on the measure, at the statistic drawn, read where the
-  chart reads it.
+  chart reads it. A criterion's line is named by its criterion (:func:`criterion_label`: its reader name, its
+  declared kind, the side that passes), and says ``overall`` where an overall criterion is drawn on each task's,
+  stratum's or cell's figures, so no reader takes it for a line a task declared.
 - **A config's colour** (:func:`factor_token`, :func:`factor_legend`): a chart of a factorial grid's configs colours
   each by its first factor's level, the kit's series in that factor's order, and its legend names the levels.
 - **A scatter's labels** (:func:`point_labels`): every point's name where a chart draws at most eight, else only the
@@ -70,6 +72,9 @@ from threetears.evals.analysis.report.plan_page.words import (
     ASPECT_MEASURE_TEMPLATE,
     COMPUTED_NOTE,
     COMPUTED_REPEATS_NOTE,
+    CRITERION_LINE_TEMPLATE,
+    CRITERION_LINE_WHERE,
+    LINE_TEMPLATES,
     MISSING_TEMPLATE,
     REFERENCE_TEMPLATE,
 )
@@ -95,6 +100,7 @@ __all__ = [
     "count_text",
     "computed_interval",
     "computed_notes",
+    "criterion_label",
     "criterion_line",
     "drawn_keys",
     "factor_legend",
@@ -209,20 +215,24 @@ class Drawn:
 KindResolver = Callable[[ChartContext], Drawn]
 
 
-def chart_block(context: ChartContext, data: KitChart) -> ChartBlock:
+def chart_block(context: ChartContext, data: KitChart, *, read_at: str = "") -> ChartBlock:
     """The chart's block: its kind, its title and the kit's data, on the planned page's fixed section.
 
     :param context: The chart being resolved.
     :ptype context: ChartContext
     :param data: The kit's chart data.
     :ptype data: KitChart
+    :param read_at: The unit its values table spells values at where the format names none: a chart of what an
+        analysis computes (two arms' difference, a lever's effect) reads them at its quantity's unit, so a point
+        prints to one decimal as its key and note do, never at the float's four figures; empty for the format's.
+    :ptype read_at: str
     :return: The block.
     :rtype: ChartBlock
     """
     kind = context.spec.kind
     if kind == "table":
         raise context.refuse("a table is laid out as a table block, not drawn as a chart")
-    return ChartBlock(section=PLANNED_SECTION, chart=kind, title=context.title, data=data)
+    return ChartBlock(section=PLANNED_SECTION, chart=kind, title=context.title, data=data, unit=read_at)
 
 
 def _held_means(report_input: ReportInput, key: str) -> list[float]:
@@ -600,8 +610,67 @@ def reference_line(context: ChartContext, drawn: Quantity) -> ChartReference | N
         label = REFERENCE_TEMPLATE.format(kind=stored.kind, value=figure_text(value, quantity("points")))
     else:
         value = figure.value * drawn.factor
-        label = REFERENCE_TEMPLATE.format(kind=stored.kind, value=figure_text(value, drawn))
+        criterion = _keyed_criterion(stored.key, context.report_input)
+        label = (
+            criterion_label(context, criterion, value, drawn)
+            if criterion is not None
+            else REFERENCE_TEMPLATE.format(kind=stored.kind, value=figure_text(value, drawn))
+        )
     return ChartReference(value=value, label=label, kind=stored.kind)
+
+
+#: How a criterion's threshold is keyed: ``criteria.<id>.threshold``, the key a floor or budget line is stored at.
+_CRITERIA, _THRESHOLD = "criteria.", ".threshold"
+
+#: The sources a chart reads each slice's figure from, apart from an arm's overall one: a task's, a stratum's, a cell's.
+_PER_SLICE = frozenset({"tasks", "strata", "cells"})
+
+
+def _keyed_criterion(key: str, report_input: ReportInput) -> Criterion | None:
+    """The criterion whose threshold a line's key reads; None for a key reading no criterion's."""
+    if not (key.startswith(_CRITERIA) and key.endswith(_THRESHOLD)):
+        return None
+    named = key.removeprefix(_CRITERIA).removesuffix(_THRESHOLD)
+    return next((criterion for criterion in report_input.criteria if criterion.id == named), None)
+
+
+def criterion_label(context: ChartContext, criterion: Criterion, value: float, drawn: Quantity) -> str:
+    """A declared criterion's line as a chart labels it (``Overall accuracy gate, at least 90%``): its reader name and
+    its kind as the input declares it (a gate, floor, bar or guardrail, never the kit's floor or budget, which only
+    say which side passes), the side that passes and its threshold; and where it reads its figure, where that is not
+    where the chart reads (an overall criterion's line on a chart of tasks, strata or cells reads ``overall``: it is
+    no line any task declared; a task's criterion on a chart of overall figures names its task, or each task).
+
+    :param context: The chart being resolved.
+    :ptype context: ChartContext
+    :param criterion: The criterion the line sits at.
+    :ptype criterion: Criterion
+    :param value: Its threshold, in display units.
+    :ptype value: float
+    :param drawn: The quantity the chart draws.
+    :ptype drawn: Quantity
+    :return: The label.
+    :rtype: str
+    """
+    place = criterion_place(criterion)
+    per_slice = context.query.source in _PER_SLICE
+    where = ""
+    if per_slice and place == "overall":
+        where = CRITERION_LINE_WHERE["overall"]
+    elif not per_slice and place == "cell":
+        where = CRITERION_LINE_WHERE["cell"]
+    elif not per_slice and place == "task":
+        where = (
+            CRITERION_LINE_WHERE["task"].format(task=context.look.reader("task", criterion.task))
+            if criterion.task is not None
+            else CRITERION_LINE_WHERE["each_task"]
+        )
+    return CRITERION_LINE_TEMPLATE.format(
+        name=context.look.reader("criterion", criterion.id),
+        kind=criterion.kind,
+        side=LINE_TEMPLATES[criterion.direction].format(line=figure_text(value, drawn)),
+        where=where,
+    )
 
 
 #: Where a chart reads a measure, for the criterion whose line it draws (:func:`criterion_line`): its overall figures,
@@ -649,22 +718,27 @@ def criterion_line(
     """
     held = context.report_input
     aspect = context.query.aspect or lead_aspect(held)
-    lines = {
-        (float(criterion.threshold), criterion.direction)
+    reading = [
+        criterion
         for criterion in held.criteria
         if criterion.measure == key
         and criterion.statistic == statistic
         and criterion_aspect(held, criterion) == aspect
         and _reads_there(criterion, where)
-    }
+    ]
+    lines = {(float(criterion.threshold), criterion.direction) for criterion in reading}
     if len(lines) != 1:
         return None
     ((threshold, direction),) = lines
     kind: Literal["floor", "budget"] = "floor" if direction == "higher_is_better" else "budget"
     value = threshold * drawn.factor
-    return ChartReference(
-        value=value, label=REFERENCE_TEMPLATE.format(kind=kind, value=figure_text(value, drawn)), kind=kind
+    # One criterion's line is named as that criterion; several sharing one threshold, by the side that passes.
+    label = (
+        criterion_label(context, reading[0], value, drawn)
+        if len(reading) == 1
+        else REFERENCE_TEMPLATE.format(kind=kind, value=figure_text(value, drawn))
     )
+    return ChartReference(value=value, label=label, kind=kind)
 
 
 def misses_line(value: float, line: ChartReference | None) -> bool:
