@@ -73,6 +73,7 @@ from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec
 __all__ = [
     "STORED_SPAN_REFUSAL",
     "ChartContext",
+    "ContrastGroup",
     "CriterionWhere",
     "Drawn",
     "KindResolver",
@@ -289,12 +290,26 @@ def measure_words(report_input: ReportInput, key: str, *, kind: str | None = Non
     return measure_name(key)
 
 
+@dataclass(frozen=True)
+class ContrastGroup:
+    """One measure's selected contrasts read on one aspect, by arm (:func:`contrast_groups`).
+
+    :ivar key: The measure.
+    :ivar aspect: The reader name of the aspect they were read on; None where the input names no aspect.
+    :ivar split: Whether the measure's selected contrasts sit on more than one aspect, so a reader is told which.
+    :ivar by_arm: The contrasts, by arm.
+    """
+
+    key: str
+    aspect: str | None
+    split: bool
+    by_arm: dict[str, Contrast]
+
+
 def contrast_groups(
     context: ChartContext, contrasts: Sequence[Contrast], keys: Iterable[str] = ()
-) -> list[tuple[str, str | None, dict[str, Contrast]]]:
-    """The selected contrasts by measure, then by the aspect each was read on where one measure's sit on several:
-    each group's measure, the reader name of its aspect (None where the measure's contrasts sit on one aspect), and its
-    contrasts by arm.
+) -> list[ContrastGroup]:
+    """The selected contrasts by measure, then by the aspect each was read on.
 
     A query naming no aspect selects every aspect's contrasts, so two aspects may each hold a contrast of one arm on
     one measure key; keyed by arm alone, one would replace the other unseen. A contrast naming no aspect is read on
@@ -307,29 +322,35 @@ def contrast_groups(
     :param keys: Measures to take first, in this order; the rest follow in the contrasts' order.
     :ptype keys: Iterable[str]
     :return: The groups, a measure's together, its aspects in the contrasts' order.
-    :rtype: list[tuple[str, str | None, dict[str, Contrast]]]
+    :rtype: list[ContrastGroup]
     """
     aspects = context.report_input.aspects
     lead = next((aspect.id for aspect in aspects if aspect.asked), next((aspect.id for aspect in aspects), None))
-    groups: list[tuple[str, str | None, dict[str, Contrast]]] = []
+    groups: list[ContrastGroup] = []
     for key in dict.fromkeys([*keys, *(contrast.measure for contrast in contrasts)]):
         on_key = [contrast for contrast in contrasts if contrast.measure == key]
         read_on = list(dict.fromkeys(contrast.aspect or lead for contrast in on_key))
         for aspect in read_on:
-            named = context.look.reader("aspect", aspect) if len(read_on) > 1 and aspect is not None else None
-            groups.append((key, named, {c.arm: c for c in on_key if (c.aspect or lead) == aspect}))
+            groups.append(
+                ContrastGroup(
+                    key=key,
+                    aspect=context.look.reader("aspect", aspect) if aspect is not None else None,
+                    split=len(read_on) > 1,
+                    by_arm={c.arm: c for c in on_key if (c.aspect or lead) == aspect},
+                )
+            )
     return groups
 
 
 def contrast_words(report_input: ReportInput, contrast: Contrast, aspect: str | None) -> str:
-    """What a reader calls a contrast's measure, naming the aspect it was read on where its group names one
-    (:func:`contrast_groups`).
+    """What a reader calls a contrast's measure, naming the aspect it was read on where one is given
+    (:class:`ContrastGroup`).
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
     :param contrast: The contrast.
     :ptype contrast: Contrast
-    :param aspect: Its group's aspect reader name; None where the group names none.
+    :param aspect: The aspect's reader name, where the reader is told it; None where not.
     :ptype aspect: str | None
     :return: The words.
     :rtype: str

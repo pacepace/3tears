@@ -33,7 +33,7 @@ from typing import Any, get_args
 
 import pytest
 
-from packages.evals.tests.analyst_support import KAIRO, aspect_tagged, fixture_inputs, fixture_snapshots
+from packages.evals.tests.analyst_support import KAIRO, aspect_tagged, budget_inputs, fixture_inputs, fixture_snapshots
 from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
@@ -502,42 +502,63 @@ def test_a_table_over_several_measures_is_a_row_per_arm_with_a_column_per_measur
     assert len(measured) == 1 + len(keys), (name, drawn.columns)
 
 
-def test_a_contrasts_block_naming_no_aspect_keeps_each_aspects_contrast_and_names_the_aspect_where_two_share_a_key() -> (
-    None
-):
+def _aspect_contrasts() -> dict[str, ReportInput]:
+    """Inputs whose contrasts are read on several aspects: r4 with one arm's contrast on one measure key held on two
+    (the lead aspect's untested), and the shape campaign s1, three asked aspects each contrasting every arm."""
+    return {"r4 tagged": aspect_tagged(_inputs()["r4"])[0], "s1": budget_inputs()["s1"]}
+
+
+@pytest.mark.parametrize("name", list(_aspect_contrasts()))
+def test_a_contrasts_block_keeps_each_aspects_contrast_and_names_the_aspect_where_two_share_a_key(name: str) -> None:
     """A contrasts query naming no aspect selects every aspect's contrasts. Where two aspects hold a contrast of one
-    arm on one measure key, the table and the change chart keep both, each under the measure's words naming its
-    aspect, never one in place of the other; a measure whose contrasts sit on one aspect keeps its plain words."""
-    held, arm, key = aspect_tagged(_inputs()["r4"])
+    arm on one measure key, the table and the change charts keep both, each under the measure's words naming its
+    aspect, never one in place of the other; a measure whose contrasts sit on one aspect keeps its plain words. Bars
+    asked for in panels by aspect draw a panel per aspect the measure's contrasts sit on, each titled by its name; a
+    dot strip asked for them draws a strip per aspect, each naming it."""
+    held = _aspect_contrasts()[name]
     names = {aspect.id: aspect.name for aspect in held.aspects}
-    shared = [c for c in held.contrasts if (c.arm, c.measure) == (arm, key)]
-    assert len({c.aspect for c in shared}) == 2, "the control: two aspects hold the arm's contrast on the key"
     assert all(c.aspect is not None and names[c.aspect] for c in held.contrasts), "the control: every aspect is named"
-    spans = {
-        measure: len({c.aspect for c in held.contrasts if c.measure == measure}) > 1
-        for measure in {c.measure for c in held.contrasts}
+    on = {
+        measure: {c.aspect for c in held.contrasts if c.measure == measure}
+        for measure in dict.fromkeys(c.measure for c in held.contrasts)
     }
-    assert not all(spans.values()), "the control: some measure's contrasts sit on one aspect"
+    shared = Counter((c.arm, c.measure) for c in held.contrasts)
+    assert max(shared.values()) > 1, "the control: two aspects hold one arm's contrast on one key"
 
     def words(contrast: Contrast) -> str:
         plain = measure_words(held, contrast.measure, kind=contrast.kind)
         assert contrast.aspect is not None
-        return (
-            ASPECT_MEASURE_TEMPLATE.format(measure=plain, aspect=names[contrast.aspect])
-            if spans[contrast.measure]
-            else plain
-        )
+        split = len(on[contrast.measure]) > 1
+        return ASPECT_MEASURE_TEMPLATE.format(measure=plain, aspect=names[contrast.aspect]) if split else plain
 
-    query = _query("contrasts")
-    table = block_render(held, block_kind="table", query=query, limit=200)
+    table = block_render(held, block_kind="table", query=_query("contrasts"), limit=200)
     assert table.total == len(held.contrasts)
     measured = table.columns.index("Measure")
     assert Counter(row.cells[measured] for row in table.rows) == Counter(words(c) for c in held.contrasts)
-    bars = block_render(held, block_kind="diverging_bars", query=query, limit=200)
-    stated = [c for c in held.contrasts if c.delta is not None]
-    assert bars.total == len(stated)
-    grouped = bars.columns.index("Group")
-    assert Counter(row.cells[grouped] for row in bars.rows) == Counter(words(c) for c in stated)
+    for key, aspects in on.items():
+        stated = [c for c in held.contrasts if c.measure == key and c.delta is not None]
+        if not stated:
+            continue
+        bars = block_render(held, block_kind="diverging_bars", query=_query("contrasts", measures=[key]), limit=200)
+        assert bars.total == len(stated), key
+        if len(aspects) > 1:
+            grouped = bars.columns.index("Group")
+            assert Counter(row.cells[grouped] for row in bars.rows) == Counter(words(c) for c in stated), key
+        else:
+            assert "Group" not in bars.columns, key
+        query = _query("contrasts", measures=[key], small_multiples_by="aspect")
+        panelled = block_render(held, block_kind="diverging_bars", query=query, limit=200)
+        assert panelled.total == len(stated), key
+        if len({c.aspect for c in stated}) > 1:
+            titled = panelled.columns.index("Panel")
+            assert Counter(row.cells[titled] for row in panelled.rows) == Counter(
+                names[c.aspect] for c in stated if c.aspect is not None
+            ), key
+        strips = block_render(held, block_kind="dot_interval", query=query, limit=200)
+        assert strips.total == len(stated), key
+        if len(aspects) > 1:
+            stripped = strips.columns.index("Panel")
+            assert Counter(row.cells[stripped] for row in strips.rows) == Counter(words(c) for c in stated), key
 
 
 def _holds_intervals(held: ReportInput, query: ChartQuery) -> bool:

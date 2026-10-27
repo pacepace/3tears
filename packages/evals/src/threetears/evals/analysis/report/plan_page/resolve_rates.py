@@ -189,8 +189,13 @@ def _dot(
 
 
 def _change_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, ...], bool]:
-    """readings or contrasts: the diverging chart's rows as dots, a strip per group (a measure, where several)."""
-    as_bars = dataclasses.replace(context, spec=context.spec.model_copy(update={"kind": "diverging_bars"}))
+    """readings or contrasts: the diverging chart's rows as dots, a strip per group (a measure, where several, and the
+    aspect too where a measure's contrasts sit on several). The strips are the small multiples, so the bars are read
+    unpanelled: a strip already names the aspect wherever two aspects' contrasts share it."""
+    query = context.spec.query.model_copy(update={"small_multiples_by": "none"})
+    as_bars = dataclasses.replace(
+        context, spec=context.spec.model_copy(update={"kind": "diverging_bars", "query": query})
+    )
     drawn = resolve_changes.RESOLVERS["diverging_bars"](as_bars)
     data = drawn.block.data if isinstance(drawn.block, ChartBlock) else None
     assert isinstance(data, BarsChart) and data.rows is not None, "readings and contrasts diverge as rows"

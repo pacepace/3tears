@@ -160,14 +160,15 @@ def _readings(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
 def _contrasts(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     report_input = context.report_input
     contrasts = [row.item for row in context.rows() if isinstance(row.item, Contrast)]
-    for key, aspect, on_key in contrast_groups(context, contrasts):
-        for arm in context.arm_order(on_key):
-            contrast = on_key[arm]
+    for group in contrast_groups(context, contrasts):
+        key = group.key
+        for arm in context.arm_order(group.by_arm):
+            contrast = group.by_arm[arm]
             drawn = quantity(figure_unit(report_input, key, kind=contrast.kind), change=True)
             interval = contrast.interval
             yield {
                 "arm": _arm(context, arm),
-                "measure": _words(contrast_words(report_input, contrast, aspect)),
+                "measure": _words(contrast_words(report_input, contrast, group.aspect if group.split else None)),
                 "change": _number(
                     float(contrast.delta) * drawn.factor if contrast.delta is not None else None,
                     drawn.unit,
