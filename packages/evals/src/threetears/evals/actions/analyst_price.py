@@ -11,11 +11,11 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 
 from threetears.evals.actions.analyst_analyses import ANALYSES_WORKFLOW
 from threetears.evals.actions.catalogue import Action, Caller
-from threetears.evals.actions.params import ArmFilter, Offset, SizedLimit, SnapshotId
+from threetears.evals.actions.params import ARM_FORMS, ArmFilter, Offset, SizedLimit, SnapshotId, written_arm
 from threetears.evals.actions.render import page_sizing, render_cited
 from threetears.evals.ops.analyst_price import PRICE_PAGE, PriceTradeoff, price_tradeoff
 from threetears.evals.ops.host import OpsHost
@@ -49,10 +49,12 @@ class PriceParams(EvalBaseModel):
     ] = None
     what_if: Annotated[
         str | None,
+        BeforeValidator(written_arm),
         Field(
             min_length=1,
-            description="Also price this option the gates remove or leave undecided, as if it passed: a labelled "
-            "what-if, never a recommendation; omitted for none.",
+            description="Also price this option the gates remove or leave undecided, as if it passed, named "
+            + ARM_FORMS
+            + ": a labelled what-if, never a recommendation; omitted for none.",
         ),
     ] = None
     limit: SizedLimit = None

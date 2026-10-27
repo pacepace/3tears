@@ -25,7 +25,16 @@ from typing import Annotated, Literal, get_args
 from pydantic import Field
 
 from threetears.evals.actions.catalogue import Action, Caller
-from threetears.evals.actions.params import ArmFilter, AspectFilter, MeasureKey, Offset, SizedLimit, SnapshotId
+from threetears.evals.actions.params import (
+    ARM_FORMS,
+    ArmFilter,
+    ArmId,
+    AspectFilter,
+    MeasureKey,
+    Offset,
+    SizedLimit,
+    SnapshotId,
+)
 from threetears.evals.actions.render import page_sizing, render_cited
 from threetears.evals.ops.analyst_analyses import (
     BREAKDOWN_PAGE,
@@ -129,11 +138,11 @@ class BreakdownParams(EvalBaseModel):
 
 #: The arms a separation reads: one meaning for both actions that take them.
 ArmIds = Annotated[
-    list[str],
+    list[ArmId],
     Field(
         min_length=1,
         max_length=2,
-        description="One arm or two, by their ids in the snapshot: arms_compare reads two, the first minus the "
+        description="One arm or two, each " + ARM_FORMS + ": arms_compare reads two, the first minus the "
         "second; settle_cases reads one against a line, or two apart.",
     ),
 ]
