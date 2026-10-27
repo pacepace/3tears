@@ -51,8 +51,8 @@ class PriceParams(EvalBaseModel):
         str | None,
         Field(
             min_length=1,
-            description="Also price this option the gates remove, as if it survived: a labelled what-if, never a "
-            "recommendation; omitted for none.",
+            description="Also price this option the gates remove or leave undecided, as if it passed: a labelled "
+            "what-if, never a recommendation; omitted for none.",
         ),
     ] = None
     limit: SizedLimit = None
@@ -103,7 +103,9 @@ def analyst_price_actions() -> tuple[Action, ...]:
                 "combined (an end an interval leaves open is unbounded, said in words). Where no option states an "
                 "overall figure on the axis, each is pooled over its slices, by traffic share where stated, else "
                 "equally (a caveat says so). slice_filter prices within one task, stratum or cell; what_if prices "
-                "one option the gates remove, labelled, never a recommendation. Every option is also priced against "
+                "one option the gates remove or leave undecided, labelled, never a recommendation. An option a gate "
+                "has no figure for somewhere, while none it has fails, is listed off the frontier as undecided with "
+                "its unknown places, never as removed. Every option is also priced against "
                 "the control, or against arm_filter. Pages cover a window of the options, the frontier and its "
                 "steps among them, and state the whole frontier's size; without a limit a page holds as many "
                 f"options as fit one result, up to {PRICE_PAGE}. Monthly figures appear only at the declared "

@@ -46,7 +46,7 @@ async def price_tradeoff(
     :ptype arm: str | None
     :param slice_filter: The one task, stratum or cell to price within, by id; None prices overall.
     :ptype slice_filter: str | None
-    :param what_if: An option the gates remove, to price as a labelled what-if; None for none.
+    :param what_if: An option the gates remove or leave undecided, to price as a labelled what-if; None for none.
     :ptype what_if: str | None
     :param limit: The most options one page covers.
     :ptype limit: int
@@ -61,7 +61,7 @@ async def price_tradeoff(
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read; the gain key names no measure or judged dimension with
         a direction; no arm has a cost; ``arm`` names no priced option; ``slice_filter`` names no one slice; or
-        ``what_if`` names no option the gates remove.
+        ``what_if`` names no option the gates remove or leave undecided.
     """
     held = await snapshot_input(host, scope_id, snapshot_id)
     try:

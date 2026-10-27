@@ -11,8 +11,11 @@ Design note. What the spec left open and this module decided is marked *(inferre
 **The options priced, and the frontier**, are :func:`~threetears.evals.analysis.report.figure_keys.price_frontier`'s,
 the one owner of that rule, so the count keys, a ``prices`` block and this tool read one frontier. Only options that
 survive the gates are priced: an option a gate or a guardrail removes is never priced beside the others, since a trade
-that includes it would weigh a broken policy as a cost. Of the survivors, an option is priced when the cost rule states
-its cost per 1,000 of what the cost counts and the gain axis places it. An option is dominated when another costs no
+that includes it would weigh a broken policy as a cost. An option a gate has no figure for somewhere, while none it has
+fails, is *undecided* (:func:`~threetears.evals.analysis.report_margins.undecided_arms`): not shown to pass, so not
+priced, and not removed either. It is listed off the frontier as ``undecided`` with each place the input states no
+figure for it, never as removed by the gates, as ``options_dominance`` reads it. Of the survivors, an option is priced
+when the cost rule states its cost per 1,000 of what the cost counts and the gain axis places it. An option is dominated when another costs no
 more and reads no worse, and is ahead on one of the two. Of the undominated options, ordered by cost, the frontier is
 the upper hull: the options that are best at some price per point. Each step from one frontier option to the next is
 priced by ``price.<cheaper>.<dearer>.<gain>.per_point``, the price per point at which the best option moves from the one
@@ -55,8 +58,9 @@ as good on both axes has no price per point: the key refuses it, and the result 
 **Against one option.** Beside the steps, every priced option is priced against one: the control, or ``arm_filter``,
 each move written from the cheaper option to the dearer.
 
-**A what-if** (``what_if``): an option a gate or guardrail removes, priced as if it survived, and labelled so: never a
-recommendation, its label naming each gate figure it fails (by keys) and each guardrail read breached. It shows the
+**A what-if** (``what_if``): an option a gate or guardrail removes, or an undecided one, priced as if it survived, and
+labelled so: never a recommendation, its label naming each gate figure it fails (by keys) and each guardrail read
+breached, or, for an undecided option, saying it is undecided and naming each place with no figure (``unknown``). It shows the
 frontier with that option admitted, each step touching it, and its move against the option the others are priced
 against. Its figures are the same price keys, which resolve for any costed option.
 
@@ -100,6 +104,7 @@ from threetears.evals.analysis.report.figure_keys import (
 )
 from threetears.evals.analysis.report_decision import control_arm, surviving_options
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_margins import undecided_arms
 from threetears.evals.kernel.errors import RefusedInput
 
 __all__ = ["PRICE_PAGE", "PriceTradeoff", "price_tradeoff"]
@@ -136,6 +141,18 @@ _WHAT_IF = (
     "figure it fails is under gates"
 )
 
+#: How a what-if on an undecided option is labelled: it is not removed, so the label never says it is.
+_WHAT_IF_UNDECIDED = (
+    "a what-if, never a recommendation: {arm} is undecided (no gate figure fails it, and a gate has no figure for it "
+    "somewhere), and is priced here as if it passed; each place with no figure is under unknown"
+)
+
+#: Why an undecided option is off the frontier, in words.
+_UNDECIDED_SAYS = (
+    "undecided: no gate figure fails it, and a gate has no figure for it somewhere, so it is shown neither to pass nor "
+    "to fail, and is not priced; each place with no figure is under unknown"
+)
+
 #: How an option is named in a refusal's list of what a parameter takes.
 _SLICE_KINDS: tuple[SliceKind, ...] = ("task", "strata", "cells")
 
@@ -143,7 +160,7 @@ _SLICE_KINDS: tuple[SliceKind, ...] = ("task", "strata", "cells")
 Bounds = Literal["bounded", "unbounded_above", "unstated", "no_price"]
 
 #: Why an option is off the frontier.
-OffReason = Literal["gated", "no_cost", "no_gain_figure", "dominated", "never_best"]
+OffReason = Literal["gated", "undecided", "no_cost", "no_gain_figure", "dominated", "never_best"]
 
 _MODEL = ConfigDict(frozen=True, extra="forbid")
 
@@ -225,8 +242,10 @@ class OffFrontier(BaseModel):
 
     arm: str = Field(description="The option, as arm:<id>.")
     reason: OffReason = Field(
-        description="gated, no_cost, no_gain_figure, dominated (another is at least as good on both axes) or "
-        "never_best (under the frontier: best at no single price per point)."
+        description="gated (a gate figure fails it, or a guardrail read breached), undecided (no gate figure fails "
+        "it and a gate has no figure for it somewhere: neither passed nor removed), no_cost, no_gain_figure, dominated "
+        "(another is at least as good on both axes) or never_best (under the frontier: best at no single price per "
+        "point)."
     )
     by: list[str] = Field(description="The options that put it off: the one dominating it, or the two passing it.")
     says: list[str] = Field(description="Why, in words: what the gates, or the figures below, show.")
@@ -234,10 +253,16 @@ class OffFrontier(BaseModel):
         description="For a gated option, each gate or guardrail figure it fails on, by the keys that state it."
     )
     figures: list[CitedFigure] = Field(description="The figures that show it, where a figure does.")
+    unknown: list[GateRead] = Field(
+        default_factory=list,
+        description="For a gated or undecided option, each place a gate or guardrail has no figure for it: unknown "
+        "there, never among what removes it.",
+    )
 
 
 class WhatIf(BaseModel):
-    """An option the gates remove, priced as if it survived: a labelled what-if, never a recommendation."""
+    """An option the gates remove, or an undecided one, priced as if it survived: a labelled what-if, never a
+    recommendation."""
 
     model_config = _MODEL
 
@@ -245,6 +270,10 @@ class WhatIf(BaseModel):
     label: str = Field(description="What this is: a what-if, never a recommendation, and why the option is out.")
     gates: list[GateRead] = Field(description="Each gate or guardrail figure it fails, by the keys that state it.")
     breached: list[str] = Field(description="Each guardrail the pipeline read breached on it, by name.")
+    unknown: list[GateRead] = Field(
+        default_factory=list,
+        description="Each place a gate or guardrail has no figure for it: what leaves an undecided option out.",
+    )
     frontier: list[str] = Field(description="The frontier with it admitted, cheapest first, as arm:<id>.")
     steps: list[Price] = Field(description="Each step of that frontier that starts or ends at it.")
     against: Price | None = Field(description="It priced against the option the others are priced against.")
@@ -274,7 +303,9 @@ class PriceTradeoff(BaseModel):
     against_arm: str | None = Field(description="The option the others are priced against, as arm:<id>.")
     against: list[Price] = Field(description="Each priced option on this page, priced against against_arm.")
     off_frontier: list[OffFrontier] = Field(description="Each option on this page off the frontier, and why.")
-    what_if: WhatIf | None = Field(description="The what-if asked for: an option the gates remove, priced as if not.")
+    what_if: WhatIf | None = Field(
+        description="The what-if asked for: an option the gates remove or leave undecided, priced as if it passed."
+    )
     total: int = Field(description="The options paged: the frontier's, cheapest first, then every other arm.")
     offset: int = Field(description="The first option this page covers.")
     next_offset: int | None = Field(description="The offset of the next page; None when this is the last.")
@@ -313,7 +344,8 @@ def _unpaired(
         return cite(frontier.key(first, second, field), report_input)
 
     ends = interval.value
-    assert isinstance(ends, tuple)
+    if not isinstance(ends, tuple):
+        raise TypeError(f"{interval.key} reads {ends!r}, not an interval")
     gained = _number(cite(frontier.key(first, second, "gain"), report_input))
     if (ends[1] if gained > 0 else ends[0]) * gained <= 0:
         return UnpairedInterval(
@@ -363,7 +395,8 @@ def _price(report_input: ReportInput, frontier: PriceFrontier, first: str, secon
             bounds, says = "unstated", "no interval paired by a contrast: the input states none on this gain"
         else:
             ends = interval.value
-            assert isinstance(ends, tuple)
+            if not isinstance(ends, tuple):
+                raise TypeError(f"{interval.key} reads {ends!r}, not an interval")
             low = at("per_point_low")
             monthly_low = at("monthly_per_point_low") if monthly else None
             bounds, says = _say_bounds(gained, ends)
@@ -390,11 +423,21 @@ def _price(report_input: ReportInput, frontier: PriceFrontier, first: str, secon
 
 
 def _gated(report_input: ReportInput, arm: str) -> OffFrontier:
-    """An option the gates or a guardrail removed, with each failing figure by the keys that state it."""
+    """An option the gates or a guardrail removed, with each failing figure by the keys that state it, and each place
+    with no figure apart."""
     says = ["removed by the gates: each figure it fails on is under gates"]
     says += [f"guardrail {named} read breached" for named in breached_guardrails(report_input, arm)]
     gates = gate_reads(report_input, arm, "fail")
-    return OffFrontier(arm=_arm(arm), reason="gated", by=[], says=says, gates=gates, figures=[])
+    unknown = gate_reads(report_input, arm, "unknown")
+    return OffFrontier(arm=_arm(arm), reason="gated", by=[], says=says, gates=gates, figures=[], unknown=unknown)
+
+
+def _undecided(report_input: ReportInput, arm: str) -> OffFrontier:
+    """An option neither shown to pass nor removed, with each place a gate has no figure for it."""
+    unknown = gate_reads(report_input, arm, "unknown")
+    return OffFrontier(
+        arm=_arm(arm), reason="undecided", by=[], says=[_UNDECIDED_SAYS], gates=[], figures=[], unknown=unknown
+    )
 
 
 def _off(report_input: ReportInput, frontier: PriceFrontier, arm: str) -> OffFrontier | None:
@@ -403,6 +446,8 @@ def _off(report_input: ReportInput, frontier: PriceFrontier, arm: str) -> OffFro
     reason = frontier.unpriced.get(arm)
     if reason == "gated":
         return _gated(report_input, arm)
+    if reason == "undecided":
+        return _undecided(report_input, arm)
     if reason == "no_cost":
         says = f"the cost rule states no cost {per_count(cost_basis(report_input).noun)} for it"
         return OffFrontier(arm=_arm(arm), reason="no_cost", by=[], says=[says], gates=[], figures=[])
@@ -527,8 +572,8 @@ def _refuse_what_if(report_input: ReportInput, what_if: str) -> None:
         survives = what_if in {arm.id for arm in report_input.arms}
         why = "survives the gates, so it is priced already" if survives else "names no option this snapshot holds"
         raise RefusedInput(
-            f"what_if {what_if!r} {why}: a what-if prices an option the gates remove",
-            remedy=f"name an option the gates remove: {_listed(gated)}, or omit what_if",
+            f"what_if {what_if!r} {why}: a what-if prices an option the gates remove or leave undecided",
+            remedy=f"name an option the gates remove or leave undecided: {_listed(gated)}, or omit what_if",
             parameters=("what_if",),
             valid_values=gated,
         )
@@ -556,7 +601,7 @@ def price_tradeoff(
     :param slice_filter: The one task, stratum or cell to price within, by id (a cell as ``<row>.<column>``); None
         prices overall.
     :ptype slice_filter: str | None
-    :param what_if: An option the gates remove, to price as a labelled what-if; None for none.
+    :param what_if: An option the gates remove or leave undecided, to price as a labelled what-if; None for none.
     :ptype what_if: str | None
     :param limit: The most options one page covers: the frontier's first, cheapest first, then the others.
     :ptype limit: int
@@ -565,7 +610,8 @@ def price_tradeoff(
     :return: The trade, priced.
     :rtype: PriceTradeoff
     :raises RefusedInput: The gain key names no measure or judged dimension, or one with no direction; no arm has a
-        cost; ``arm`` names no priced option; ``slice_filter`` names no one slice; ``what_if`` names no gated option.
+        cost; ``arm`` names no priced option; ``slice_filter`` names no one slice; ``what_if`` names no option the
+        gates remove or leave undecided.
     """
     _refuse_unknown(report_input, gain_key)
     within = _within(report_input, slice_filter)
@@ -606,8 +652,18 @@ def price_tradeoff(
             "because the input states no traffic share for every slice; a traffic mix would move every price"
         )
     survivors = set(surviving_options(report_input))
+    undecided = undecided_arms(report_input)
+    if undecided:
+        notes.append(
+            f"undecided, so not priced and not removed: {_listed(undecided)}; a gate has no figure for each somewhere "
+            "and none it has fails (each off the frontier with its unknown places)"
+        )
     if not survivors:
-        notes.append("no option survives the gates: there is nothing to price")
+        notes.append(
+            "no option is shown to pass the gates: there is nothing to price"
+            if undecided
+            else "no option survives the gates: there is nothing to price"
+        )
     elif len(priced) == 1:
         notes.append("one option is priced: there is no trade to price")
     monthly = volume is not None
@@ -698,7 +754,7 @@ def _what_if(
     baseline: str | None,
     monthly: bool,
 ) -> WhatIf:
-    """The option the gates remove, priced as if it survived, labelled so."""
+    """The option the gates remove, or an undecided one, priced as if it survived, labelled so."""
     admitted = price_frontier(report_input, frontier.gain_key, within=within, admit=(what_if,))
     off = _off(report_input, admitted, what_if)
     against = None
@@ -706,11 +762,13 @@ def _what_if(
         cheaper = admitted.costs[what_if] < admitted.costs[baseline]
         first, second = (what_if, baseline) if cheaper else (baseline, what_if)
         against = _price(report_input, admitted, first, second, monthly)
+    label = _WHAT_IF_UNDECIDED if what_if in undecided_arms(report_input) else _WHAT_IF
     return WhatIf(
         arm=_arm(what_if),
-        label=_WHAT_IF.format(arm=_arm(what_if)),
+        label=label.format(arm=_arm(what_if)),
         gates=gate_reads(report_input, what_if, "fail"),
         breached=breached_guardrails(report_input, what_if),
+        unknown=gate_reads(report_input, what_if, "unknown"),
         frontier=[_arm(held) for held in admitted.frontier],
         steps=[
             _price(report_input, admitted, cheaper, dearer, monthly)

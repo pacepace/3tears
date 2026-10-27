@@ -2110,9 +2110,10 @@ def _cost_per_month(report_input: ReportInput, values: tuple[str, ...], path: st
 
 # --- the price frontier: the options best at some price per point --------------------------------------------------
 
-#: Why an option is not priced: a gate or guardrail removes it, the cost rule states no cost for it, or the gain axis
-#: places it nowhere.
-Unpriced = Literal["gated", "no_cost", "no_gain_figure"]
+#: Why an option is not priced: a gate or guardrail removes it, a gate has no figure for it somewhere while none it has
+#: fails (undecided: neither shown to pass nor removed), the cost rule states no cost for it, or the gain axis places it
+#: nowhere.
+Unpriced = Literal["gated", "undecided", "no_cost", "no_gain_figure"]
 
 
 @dataclass(frozen=True)
@@ -2231,10 +2232,11 @@ def price_frontier(
     point.
 
     An option is priced when it survives every gate and guardrail (:func:`~threetears.evals.analysis.report_margins.
-    surviving_arms`) or is admitted as a what-if, holds a cost per 1,000 (of what the cost counts), and is placed on
-    the axis (overall,
-    :func:`gain_axis`; within a slice, its mean there, at the slice's own cost where the slice states one for every
-    option it places). An option is dominated when another costs no more and reads no worse, ahead on one of the two;
+    surviving_arms`) or is admitted as a what-if; one that does not is unpriced as ``gated`` where a figure it has
+    fails, or a guardrail read breached removes it, and as ``undecided`` where a gate has no figure for it somewhere
+    and none it has fails (:func:`~threetears.evals.analysis.report_margins.undecided_arms`). It is priced when it also
+    holds a cost per 1,000 (of what the cost counts), and is placed on the axis (overall, :func:`gain_axis`; within a
+    slice, its mean there, at the slice's own cost where the slice states one for every option it places). An option is dominated when another costs no more and reads no worse, ahead on one of the two;
     of the undominated, the frontier is the upper hull, the options best at some price per point, where an option's
     net value at a price ``p`` is ``p`` times its position less its cost.
 
@@ -2257,12 +2259,13 @@ def price_frontier(
         kind, slice_id = within
         basis = _slice_basis(report_input, kind, slice_id, gain_key, f"{kind}.{slice_id}.price")
     survivors = set(surviving_arms(report_input))
+    undecided = set(undecided_arms(report_input))
     admitted = tuple(arm.id for arm in report_input.arms if arm.id in admit and arm.id not in survivors)
     unpriced: dict[str, Unpriced] = {}
     options: dict[str, tuple[float, float]] = {}
     for arm in report_input.arms:
         if arm.id not in survivors and arm.id not in admitted:
-            unpriced[arm.id] = "gated"
+            unpriced[arm.id] = "undecided" if arm.id in undecided else "gated"
         elif arm.id not in basis.costs:
             unpriced[arm.id] = "no_cost"
         elif arm.id not in basis.axis.positions:
@@ -3591,7 +3594,8 @@ def _settle_margin_figure(report_input: ReportInput, values: tuple[str, ...], pa
     aspect_id, arm_id, field = values
     aspect = _aspect_by_id(report_input, aspect_id)
     margin = _reading_margin(aspect, _reading(aspect, arm_id))
-    assert margin is not None
+    if margin is None:
+        raise _unstated(path, f"reads {arm_id}'s reading on {aspect_id} against its margin, and none is declared")
     if field == "line":
         return _number(path, -margin, "the margin's line: the drop the reading may show", "points", change=True)
     spread = _reading_spread(aspect, arm_id, path)
@@ -3610,8 +3614,14 @@ def _floored_keys(report_input: ReportInput, prior: tuple[str, ...]) -> list[str
 
 
 def _floored_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    """The arms a floor is read on with a margin stated, which a ``settle.floor.`` key settles against; an arm whose
+    read states no margin has no line to settle against."""
     aspect_id, floor = prior[-2:]
-    return [read.arm for read in report_input.floors if (read.aspect, read.floor) == (aspect_id, floor)]
+    return [
+        read.arm
+        for read in report_input.floors
+        if (read.aspect, read.floor) == (aspect_id, floor) and read.margin is not None
+    ]
 
 
 def _floor_measure(report_input: ReportInput, rate: str, path: str) -> str:
@@ -3688,7 +3698,10 @@ def _settle_floor_figure(report_input: ReportInput, values: tuple[str, ...], pat
     read = next(
         held for held in report_input.floors if (held.aspect, held.floor, held.arm) == (aspect_id, floor, arm_id)
     )
-    assert read.margin is not None
+    if read.margin is None:
+        raise _unstated(
+            path, f"reads {arm_id}'s read of floor {floor} against its margin, which the read does not state"
+        )
     if field == "line":
         return _number(path, -float(read.margin), "the floor's line: the drop it allows", "points", change=True)
     spread = _floor_spread(report_input, aspect_id, floor, arm_id, path)
@@ -5541,10 +5554,12 @@ def format_figure(figure: Figure, filters: Sequence[str] = ()) -> str:
     if figure.kind == "number":
         if "interval" in chosen:
             raise _refuse(figure.path, "is one number, and `interval` reads an interval")
-        assert isinstance(figure.value, float)
+        if not isinstance(figure.value, float):
+            raise TypeError(f"{figure.path} is a number figure holding {figure.value!r}, not a float")
         spelled = _spell(figure.value, figure, spelling, absolute)
         return spelled.number + spelled.suffix
-    assert isinstance(figure.value, tuple)
+    if not isinstance(figure.value, tuple):
+        raise TypeError(f"{figure.path} is an interval figure holding {figure.value!r}, not a pair")
     low, high = figure.value
     if absolute:
         low, high = sorted((abs(low), abs(high)))
@@ -5576,7 +5591,8 @@ def render(text: str, report_input: ReportInput, arm_names: Mapping[str, str]) -
     pieces: list[str] = []
     at = 0
     for key in keys_in(text):
-        assert key.span is not None
+        if key.span is None:
+            raise TypeError(f"{key.path} was found in the text with no span")
         start, end = key.span
         figure = resolve(key.path, report_input)
         if figure.kind == "arm":

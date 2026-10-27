@@ -91,12 +91,12 @@ from threetears.evals.analysis.report.figure_keys import (
 )
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import criterion_aspect, lead_aspect
-
-#: The criterion kinds that remove an option that misses them, as declared.
-_GATING = frozenset({"gate", "guardrail"})
 from threetears.evals.kernel.errors import RefusedInput
 
 __all__ = ["SETTLE_PAGE", "Assumed", "Settle", "settle_cases"]
+
+#: The criterion kinds that remove an option that misses them, as declared.
+_GATING = frozenset({"gate", "guardrail"})
 
 #: The rows one page holds unless the caller asks for more.
 SETTLE_PAGE = 10

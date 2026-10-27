@@ -12,6 +12,8 @@ the misfits, Kairo round 2, s1 to s3), with expectations read off the input's ow
   labelled inferred and never a verdict;
 - **the counts** tell a miss from an unknown: ``count.failing`` counts figures that miss, ``count.unknown`` places with
   none, ``count.failed`` gates missed on a figure, ``count.undecided`` the undecided options;
+- **price_tradeoff** lists an undecided option off the frontier as undecided, with its unknown places, never as
+  removed by the gates, and a what-if on one says so;
 - **a sweep and a refusal** say so: a threshold sweep names the options with no figure where it reads, settle refuses a
   criterion with no figure for the arm as unknown there, and the weakest-margin refusal names the undecided options.
 
@@ -26,7 +28,8 @@ import math
 import pytest
 
 from packages.evals.tests.analyst_support import KAIRO, budget_inputs, fixture_inputs, fixture_snapshots
-from threetears.evals.analysis.analyst.analyses import dominance, sensitivity
+from threetears.evals.analysis.analyst.analyses import dominance, gate_reads, sensitivity
+from threetears.evals.analysis.analyst.price import price_tradeoff
 from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -195,3 +198,38 @@ def test_the_weakest_margin_refusal_names_the_undecided_options() -> None:
         resolve("weakest.value", held)
     assert "undecided" in str(refused.value)
     assert all(f"`{arm}`" in str(refused.value) for arm in _undecided(held)[:5])
+
+
+def test_price_tradeoff_lists_an_undecided_option_as_undecided_with_its_unknown_places_never_as_removed() -> None:
+    held = INPUTS[EACH_TASK]
+    undecided = _undecided(held)
+    trade = price_tradeoff(held, "pass_rate", limit=len(held.arms))
+    off = {row.arm.removeprefix("arm:"): row for row in trade.off_frontier}
+    for arm in undecided:
+        row = off[arm]
+        assert row.reason == "undecided" and row.gates == []
+        assert row.unknown == gate_reads(held, arm, "unknown") and row.unknown
+        assert not any("removed" in said for said in row.says) and any("undecided" in said for said in row.says)
+    for arm, row in off.items():
+        if arm not in undecided and row.reason == "gated":
+            assert row.gates, f"{arm} is removed by a figure it fails"
+    assert {arm for arm, row in off.items() if row.reason == "undecided"} == set(undecided)
+    assert any("undecided" in note for note in trade.notes)
+    what_if = price_tradeoff(held, "pass_rate", what_if=undecided[0]).what_if
+    assert what_if is not None and "undecided" in what_if.label and "removed" not in what_if.label
+    assert what_if.unknown == gate_reads(held, undecided[0], "unknown") and what_if.gates == []
+
+
+def test_a_floor_read_stating_no_margin_for_one_arm_is_refused_as_a_key_never_an_internal_error() -> None:
+    """A floor whose reads state a margin for some arms and not others: the arm without one has no line to settle
+    against, so its ``settle.floor.`` key is refused with a reason, as a key naming no figure is."""
+    held = fixture_inputs()["r5"]
+    first = held.floors[0]
+    floors = [read.model_copy(update={"margin": None}) if read is first else read for read in held.floors]
+    mixed = held.model_copy(update={"floors": floors})
+    others = [read for read in mixed.floors if read.floor == first.floor and read.margin is not None]
+    assert others, "the control: another arm's read of the floor states its margin"
+    with pytest.raises(UnresolvableReference):
+        resolve(f"settle.floor.{first.aspect}.{first.floor}.{first.arm}.line", mixed)
+    other = others[0]
+    assert resolve(f"settle.floor.{other.aspect}.{other.floor}.{other.arm}.line", mixed).value == -float(other.margin)
