@@ -155,16 +155,26 @@ class TestTheBandBracketsItsOwnEstimate:
     @pytest.mark.parametrize("cost", _REPEATED_COSTS[:-1])
     @pytest.mark.parametrize("n_history", [3, 5, 11])
     @pytest.mark.parametrize("n_test_cases", [1, 3, 10])
+    @pytest.mark.parametrize("odd_one", ["one float step up", "a hundred-millionth up"])
     def test_a_history_varying_by_rounding_alone_has_a_band_that_still_brackets_its_estimate(
-        self, cost: float, n_history: int, n_test_cases: int
+        self, cost: float, n_history: int, n_test_cases: int, odd_one: str
     ) -> None:
-        """One cost a single ulp off the rest: the log-scale ends and the arithmetic centre are different sums."""
-        history = [cost] * (n_history - 1) + [math.nextafter(cost, math.inf)]
+        """One cost a hair off the rest: the log-scale ends and the arithmetic centre are different sums."""
+        odd = math.nextafter(cost, math.inf) if odd_one == "one float step up" else cost * (1 + 1e-8)
+        history = [cost] * (n_history - 1) + [odd]
 
         predicted = _band_of(history, n_test_cases=n_test_cases)
 
         assert predicted.interval_low is not None and predicted.interval_high is not None
         assert predicted.interval_low <= predicted.value <= predicted.interval_high
+
+    @pytest.mark.parametrize("cost", [0.1, 1 / 3, 2.5])
+    def test_a_history_one_float_step_apart_says_it_saw_no_spread(self, cost: float) -> None:
+        cell = _cell_of([cost, cost, math.nextafter(cost, math.inf)], n_test_cases=3)
+
+        assert cell.predicted is not None
+        assert cell.predicted.interval_low == cell.predicted.value == cell.predicted.interval_high
+        assert cell.band_basis is not None and cell.band_basis.startswith("No spread in 3 past observations")
 
     def test_the_total_of_bands_of_no_width_brackets_the_total_estimate(self) -> None:
         runs_and_results = [_history(model, [cost] * 4) for model, cost in (("a", 0.0015), ("b", 0.1), ("c", 1 / 3))]
@@ -203,9 +213,12 @@ class TestTheBandBracketsItsOwnEstimate:
         assert predicted.interval_high > fit_high and predicted.interval_high > 2 * predicted.value
         assert predicted.interval_low <= fit_low
         assert cell.band_basis is not None and "spanning two fits that disagree" in cell.band_basis
+        assert cell.band_basis.startswith("At least 95% prediction band")
         assert "a lognormal fit put its upper end $0.5052, 15% below the $0.595 the observations' mean predicts" in (
             cell.band_basis
         )
+        assert predicted.interval_low == 0.0
+        assert "Its lower end is $0: the normal-theory band reaches below zero there" in cell.band_basis
 
     def test_a_low_outlier_the_log_scale_fit_inflates_never_pulls_the_lower_end_to_the_estimate(self) -> None:
         """One near-free result among 99 at $1: the fit's lower end sits above the mean's prediction."""
@@ -223,6 +236,22 @@ class TestTheBandBracketsItsOwnEstimate:
         assert "a lognormal fit put its lower end $126.9, 28% above the $99 the observations' mean predicts" in (
             cell.band_basis
         )
+
+    def test_a_dear_arms_disagreement_is_spelled_in_whole_dollars_never_an_exponent(self) -> None:
+        cell = _cell_of([100.0] * 99 + [1e-4], n_test_cases=100)
+
+        assert cell.band_basis is not None
+        assert "a lognormal fit put its lower end $12686, 28% above the $9900 the observations' mean predicts" in (
+            cell.band_basis
+        )
+        assert "e+" not in cell.band_basis and "lower end is $0" not in cell.band_basis
+
+    def test_a_disagreement_under_one_percent_is_said_as_less_than_one_percent_never_zero(self) -> None:
+        cell = _cell_of([1.0] * 19 + [45.0], n_test_cases=1000)
+
+        assert cell.band_basis is not None and "spanning two fits that disagree" in cell.band_basis
+        assert "less than 1% below the $3200 the observations' mean predicts" in cell.band_basis
+        assert " 0% " not in cell.band_basis
 
     def test_a_varied_history_holding_a_zero_takes_a_normal_theory_band_centred_on_its_estimate(self) -> None:
         cell = _cell_of([0.0, 1.0, 1.1, 1.2, 0.9], n_test_cases=50)
