@@ -13,15 +13,17 @@ building the arm's `ArmPrice` when every priced past result of the arm cost the 
 arm, three results at $0.0015 each). The cost band (`compute_estimate_cost`) read that history on the log scale, whose
 ends are `exp` of a mean of logs and round away from the arithmetic mean the central estimate is drawn from: both ends
 landed an ulp off the centre, here below it. The band now brackets its estimate, and never moves an end onto it by
-more than rounding. A history whose costs are all equal has a band of no width at exactly the estimate (each cell's
-and the total's), and its `band_basis` says no spread was seen and that a sweep varying at all lands outside it. A
-log-scale end that misses the estimate by rounding alone (within a billionth of it) is set to it. A log-scale band
-that misses it by more, where the lognormal fit contradicts the history's mean (one outlier among near-equal costs),
-becomes the outer envelope of that band and the normal-theory band around the mean, and its `band_basis` names the end
-the fit put where: the upper end a launch is capped at is never the bare mean of a history that varied. The
-normal-theory band (a history holding a zero cost) is centred on the same estimate. `lognormal_sum_prediction_band`
-gives observations all equal a band of no width at exactly `n_future` times their value; read through their logs,
-eleven or more of them had a spread a few ulps above zero.
+more than rounding. A history whose costs are all equal, or apart by rounding alone, has a band of no width at exactly
+the estimate (each cell's and the total's), and its `band_basis` says no spread was seen and that a sweep varying at
+all lands outside it. A log-scale end that misses the estimate by rounding alone (within a billionth of it) is set to
+it. A log-scale band that misses it by more, where the lognormal fit contradicts the history's mean (one outlier among
+near-equal costs), becomes the outer envelope of that band and the normal-theory band around the mean; its
+`band_basis` calls it an at-least-95% band, wider than either fit's because neither can be trusted alone, names the
+end the fit put where, and says why a lower end of $0 is $0. The upper end a launch is capped at is never the bare
+mean of a history that varied. Every figure in a basis is spelled by the package's one rule (`format_number`), never
+as an exponent. The normal-theory band (a history holding a zero cost) is centred on the same estimate.
+`lognormal_sum_prediction_band` gives observations all equal a band of no width at exactly `n_future` times their
+value; read through their logs, eleven or more of them had a spread a few ulps above zero.
 
 ### evals: a page and the writer's view say once that a cost is its runs' provider routing's
 
