@@ -203,7 +203,7 @@ def test_settle_bars_draw_how_often_a_fresh_run_reads_the_other_side_for_every_r
             row.wrong_side.value
             for arm in arms
             for row in settle_cases(held, [arm], limit=_EVERY).rows
-            if row.wrong_side is not None and row.against.startswith("criterion ")
+            if row.wrong_side is not None
         ]
         data = _data(held, "bars", _query("settle", arms=arms))
         assert isinstance(data, BarsChart) and data.rows is not None

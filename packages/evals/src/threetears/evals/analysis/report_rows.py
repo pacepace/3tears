@@ -46,8 +46,9 @@ again here: :func:`~threetears.evals.analysis.analyst.compare.arms_compare`,
 :func:`~threetears.evals.analysis.analyst.levers.lever_effects`, each figure in them a cited figure key. A ``compare``
 query names two arms, in order (every row the first less the second), and one measure; ``strata`` keeps places
 (``overall``, a task, a stratum or a cell by id). A ``settle`` query keeps the arms each settled against every
-criterion reading it (``arms``, empty for all; an arm no criterion reads has no row), the criteria on the measures it
-names, and the places. A ``levers`` query names one measure and at most one place (empty for overall); ``arms`` keeps
+line ``settle_cases`` reads it against (``arms``, empty for all): each criterion reading it, else the margins and
+floors its readings are read against; ``measures`` keeps the criteria on those measures (a margin's or floor's row,
+on no one measure, only where it names none), and ``strata`` the places. A ``levers`` query names one measure and at most one place (empty for overall); ``arms`` keeps
 the effects and interactions every arm of which it keeps. A call the function refuses selects no row, and the chart
 checks name the function's reason. A ``bar_reads`` row is an arm against one absolute bar, as the pipeline read it.
 
@@ -587,11 +588,12 @@ def _settle(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow]
             continue
         for row in read.rows:
             criterion = by_id.get(row.against.removeprefix("criterion "))
-            if criterion is None or (measures and criterion.measure not in measures):
+            # A margin's or a floor's row reads a change, on no one measure: kept where the query names none.
+            key = criterion.measure if criterion is not None else ""
+            if (measures and key not in measures) or not _kept_place(row.where, query, report_input):
                 continue
-            if _kept_place(row.where, query, report_input):
-                place = place_of(row.where, report_input)
-                yield SourceRow(f"{arm}/{criterion.id}/{place}", row, arm=arm, key=criterion.measure)
+            against = criterion.id if criterion is not None else row.against
+            yield SourceRow(f"{arm}/{against}/{place_of(row.where, report_input)}", row, arm=arm, key=key)
 
 
 def lever_place(query: ChartQuery, report_input: ReportInput) -> str | None:

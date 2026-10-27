@@ -10,6 +10,8 @@ heads and status words. Held here so a translation replaces them in one place.
 from __future__ import annotations
 
 __all__ = [
+    "SETTLE_FLOOR_TEMPLATE",
+    "SETTLE_MARGIN_TEMPLATE",
     "SETTLE_NOTE",
     "BAR_WORD",
     "BAR_STRIP_NOTE",
@@ -334,6 +336,10 @@ SETTLE_NOTE = (
     "Each bar is how often a fresh run of today's size would read the figure on the other side of its line, if the "
     "truth is today's estimate ({level}); it plans a run and tests nothing."
 )
+
+#: What a settle row against an aspect's margin, or a floor, is settled against.
+SETTLE_MARGIN_TEMPLATE = "the margin on {aspect}"
+SETTLE_FLOOR_TEMPLATE = "the floor {floor} on {aspect}"
 
 #: A compare chart's caption: whose difference each row is, and on what.
 COMPARE_NOTE = "Each row is {first} less {second} on {measure}, overall and in each place both hold it."

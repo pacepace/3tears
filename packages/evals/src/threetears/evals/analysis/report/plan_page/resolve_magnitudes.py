@@ -86,11 +86,14 @@ from threetears.evals.analysis.report.plan_page.words import (
     PRICE_OPEN_NOTE,
     PRICE_STEP_NOTES,
     PRICE_STEP_TEMPLATE,
+    SETTLE_FLOOR_TEMPLATE,
+    SETTLE_MARGIN_TEMPLATE,
     SETTLE_NOTE,
     STATISTIC_NOTE,
 )
 from threetears.evals.analysis.analyst.settle import SettleRow
 from threetears.evals.analysis.report_rows import PriceStep
+from threetears.evals.analysis.style import humanize
 from threetears.evals.analysis.report_input import (
     Measure,
     PreferenceRow,
@@ -330,8 +333,20 @@ def settle_label(context: ChartContext, row: SettleRow) -> str:
     :return: The label.
     :rtype: str
     """
-    criterion = row.against.removeprefix("criterion ")
-    parts = [context.look.reader("criterion", criterion)]
+    kind, _colon, line = row.against.partition(":")
+    if row.against.startswith("criterion "):
+        parts = [context.look.reader("criterion", row.against.removeprefix("criterion "))]
+    elif kind == "margin":
+        parts = [SETTLE_MARGIN_TEMPLATE.format(aspect=context.look.reader("aspect", line))]
+    elif kind == "floor":
+        aspect, _slash, floor = line.partition("/")
+        parts = [
+            SETTLE_FLOOR_TEMPLATE.format(
+                floor=humanize("dimension", floor), aspect=context.look.reader("aspect", aspect)
+            )
+        ]
+    else:
+        parts = [row.against]
     if row.name is not None:
         parts.append(str(row.name.value))
     return " · ".join(parts)
