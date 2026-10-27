@@ -382,8 +382,10 @@ class CaveatRef(_Fact):
 class RigRow(_Fact):
     """The runs measured with one rig: every field of their apparatus but the execution modes alike, which are summed."""
 
-    runs: list[str] = Field(description="The runs measured with it, by id, in the input's order.")
-    arms: list[str] = Field(description="The arms those runs ran, by id; a run the design placed in no arm names none.")
+    runs: dict[str, str | None] = Field(
+        description="The runs measured with it, in the input's order, each by id to the arm it ran; none for a run the "
+        "design placed in no arm."
+    )
     aspects: list[str] = Field(description="The aspects those runs ran, by id.")
     judges: dict[str, str] | None = Field(
         description="The model each judged dimension was asked of; none: not recorded."
@@ -404,7 +406,7 @@ class RigRow(_Fact):
 
 def _rigs(report_input: ReportInput) -> list[RigRow]:
     """The input's run rigs, one row per rig in first-seen order: runs alike in every field but their execution modes
-    share one row, which names them and sums those."""
+    share one row, which names each with the arm it ran and sums those."""
     grouped: dict[str, tuple[RunRig, list[RunRig]]] = {}
     for rig in report_input.apparatus or ():
         shape = rig.model_dump_json(exclude={"run", "arm", "aspect", "execution_modes"})
@@ -417,8 +419,7 @@ def _rigs(report_input: ReportInput) -> list[RigRow]:
                 modes[mode] = modes.get(mode, 0) + count
         rows.append(
             RigRow(
-                runs=[member.run for member in members],
-                arms=list(dict.fromkeys(member.arm for member in members if member.arm is not None)),
+                runs={member.run: member.arm for member in members},
                 aspects=list(dict.fromkeys(member.aspect for member in members)),
                 judges=first.judges,
                 judge_asked=first.judge_asked,

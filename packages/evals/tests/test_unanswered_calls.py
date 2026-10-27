@@ -215,6 +215,40 @@ def test_an_arm_no_row_counted_for_carries_no_key_and_its_census_dumps_as_before
     assert all("unanswered" not in row.to_dict() for row in bundle.scoreboard)
 
 
+def test_a_bundle_over_counting_rows_reports_neither_count_as_a_lost_measurement_nor_summarises_it() -> None:
+    """Both names are core measures beside ``call_count``: the walk reads a counting row's leaves as described, so it
+    reports no lost observation of either, and neither has a direction, so no measure surface summarises them."""
+    usage = [[_counting(retried=1, lost=1, reasons={"timeout": 1})]] * CASES
+    _, bundle, _ = aspect_bundle(_trials(usage))
+    collections = [
+        bundle.telemetry.measures,
+        *(summary.measures for summary in bundle.run_summaries),
+        *(cell.measures for cell in bundle.cell_measures),
+    ]
+    names = ("unanswered_retried", "unanswered_lost")
+    assert not [
+        observation
+        for collection in collections
+        for observation in collection.unreported_observations
+        if observation.startswith(names)
+    ]
+    assert not [measure.name for collection in collections for measure in collection.measures if measure.name in names]
+
+
+def test_a_role_one_of_whose_rows_counted_one_kind_states_no_share_and_no_bare_count() -> None:
+    """Row by row: one counted retried alone, the rest lost alone. The sums are both set, yet no row counted both, so
+    the bundle stores no share and the keys refuse the two together as not counted."""
+    usage = [[_counting(retried=1, lost=None)], *([[_counting(retried=None, lost=1)]] * (CASES - 1))]
+    _, bundle, _ = aspect_bundle(_trials(usage))
+    (fast,) = [row for row in bundle.scoreboard if row.unanswered]
+    assert (fast.unanswered[0].retried, fast.unanswered[0].lost, fast.unanswered[0].share) == (1, CASES - 1, None)
+    held = report_input(campaign_over(_trials(usage)))
+    for key in (f"calls.unanswered.{FAST}", f"calls.unanswered.{FAST}.share"):
+        with pytest.raises(UnstatedFigure, match="not counted"):
+            resolve(key, held)
+    assert format_figure(resolve(f"calls.unanswered.{FAST}.lost", held)) == str(CASES - 1)
+
+
 # --- the report input and its keys ----------------------------------------------------------------------------------
 
 
@@ -298,9 +332,9 @@ def test_the_overview_of_an_arm_whose_calls_all_came_back_cites_none() -> None:
     assert all(not row.unanswered for row in campaign_overview(held, "snap").arms)
 
 
-def _flag_change(unanswered: Unanswered) -> tuple[str | None, str | None]:
-    """On the Kairo reference plan, whose options table has a cost column: the one cost flag that changes when its
-    first arm is given ``unanswered``, before and after."""
+def _flag_changes(unanswered: Unanswered) -> list[tuple[str | None, str | None]]:
+    """On the Kairo reference plan, whose options table has a cost column: each cost flag that changes when its first
+    arm is given ``unanswered``, before and after."""
     plan = dataset.load_plan(dataset.HERE / "r5" / "anchor.plan.json")
     held = dataset.report_input_of("r5")
     arm = next(iter(held.scoreboard))
@@ -309,9 +343,7 @@ def _flag_change(unanswered: Unanswered) -> tuple[str | None, str | None]:
     unflagged = plan_page(plan, held)
     flags = [row["cost_per_1k"].flag for row in flagged.options.table.rows]
     before = [row["cost_per_1k"].flag for row in unflagged.options.table.rows]
-    changed = [(old, new) for old, new in zip(before, flags, strict=True) if old != new]
-    assert len(changed) == 1
-    return changed[0]
+    return [(old, new) for old, new in zip(before, flags, strict=True) if old != new]
 
 
 @pytest.mark.parametrize(
@@ -324,14 +356,13 @@ def _flag_change(unanswered: Unanswered) -> tuple[str | None, str | None]:
     ids=["several", "one", "lost-only"],
 )
 def test_the_options_table_flags_them_on_the_cost_cell(unanswered: Unanswered, said: str) -> None:
-    old, new = _flag_change(unanswered)
+    ((old, new),) = _flag_changes(unanswered)
     assert new is not None and new.endswith(said)
     assert old is None or new == f"{old}; {said}"
 
 
 def test_the_options_table_flags_nothing_where_none_went_unanswered() -> None:
-    with pytest.raises(AssertionError):
-        _flag_change(Unanswered(retried=0, lost=0, calls=300, share=0.0))
+    assert _flag_changes(Unanswered(retried=0, lost=0, calls=300, share=0.0)) == []
 
 
 def test_the_bare_count_and_the_share_are_not_counted_where_a_role_counted_one_kind() -> None:

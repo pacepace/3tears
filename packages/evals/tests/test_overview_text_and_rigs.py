@@ -71,7 +71,7 @@ def test_an_overview_with_both_writes_the_arms_unanswered_calls_and_the_rigs() -
     assert "calls.unanswered.fast = 6" in text
     assert "calls.unanswered.base" not in text
     assert "\napparatus (1):\n" in text
-    assert "runs: [run-base, run-fast]" in text
+    assert "runs: {" in text and '"run-base": "base"' in text
 
 
 # --- one row per rig -------------------------------------------------------------------------------------------------
@@ -79,13 +79,15 @@ def test_an_overview_with_both_writes_the_arms_unanswered_calls_and_the_rigs() -
 
 def test_runs_measured_alike_share_one_row_and_runs_measured_apart_are_a_row_each() -> None:
     alike = campaign_overview(report_input(campaign_over(_trials(judge_model=JUDGE))), SNAPSHOT).apparatus
-    assert [row.runs for row in alike] == [["run-base", "run-fast"]]
-    assert alike[0].arms == ["base", "fast"]
+    assert [row.runs for row in alike] == [{"run-base": "base", "run-fast": "fast"}]
     base, fast = run_of("base", judge_model=JUDGE), run_of("fast", judge_model=JUDGE, cell_concurrency=4)
     apart = report_input(
         campaign_over([(run, [result_of(run, index) for index in range(CASES)]) for run in (base, fast)])
     )
-    assert [row.runs for row in campaign_overview(apart, SNAPSHOT).apparatus] == [["run-base"], ["run-fast"]]
+    assert [row.runs for row in campaign_overview(apart, SNAPSHOT).apparatus] == [
+        {"run-base": "base"},
+        {"run-fast": "fast"},
+    ]
 
 
 def test_a_rows_execution_modes_are_its_runs_summed() -> None:
@@ -139,11 +141,14 @@ def test_eight_host_shaped_runs_sharing_a_rig_fit_one_page_as_one_row() -> None:
 
 def test_eight_host_shaped_rigs_are_paged_every_page_within_the_budget_and_each_read_once() -> None:
     held = _host_shaped(apart=True)
-    read: list[list[str]] = []
+    read: list[dict[str, str | None]] = []
+    pages = 0
     offset: int | None = 0
     while offset is not None:
         page, text = _page(held, offset)
+        pages += 1
         assert len(text) <= BUDGET, (offset, len(text))
         read += [row.runs for row in page.apparatus]
         offset = page.next_offset
-    assert sorted(read) == sorted([[f"run-arm-{index}"] for index in range(8)])
+    assert pages > 1
+    assert sorted(read, key=str) == sorted(({f"run-arm-{index}": f"arm-{index}"} for index in range(8)), key=str)

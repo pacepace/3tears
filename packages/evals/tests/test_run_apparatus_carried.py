@@ -164,6 +164,7 @@ def test_the_overview_shows_each_rig_once_naming_its_runs() -> None:
     assert held.apparatus is not None
     rows = campaign_overview(held, "snap").apparatus
     assert sorted(run for row in rows for run in row.runs) == sorted(rig.run for rig in held.apparatus)
+    assert {run: arm for row in rows for run, arm in row.runs.items()} == {rig.run: rig.arm for rig in held.apparatus}
     by_run = {rig.run: rig for rig in held.apparatus}
     for row in rows:
         (first, *_) = (by_run[run] for run in row.runs)

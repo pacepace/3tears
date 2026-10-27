@@ -37,8 +37,8 @@ row, and the options table flags them on the cost cell ("1 call unanswered"), on
 (`threetears.evals.analysis.RunApparatus`: `effective_judges`, `judge_asked_settings`, `judge_temperature`,
 `simulator_model`, `measure_latency`, `arm_schedule`, `cell_concurrency`, `rubric_scales`, and the results by
 `execution_mode`), and the report input lists each run's (`apparatus`, the report-input part `RunRig`, with
-`RequestSettings`) by run, arm and aspect. `campaign_overview` shows the rigs as paged rows, one per rig naming the runs
-measured with it (`RigRow`; the runs' execution modes summed). A run that recorded nothing past a serial run pinning and
+`RequestSettings`) by run, arm and aspect. `campaign_overview` shows the rigs as paged rows, one per rig naming each
+run measured with it beside the arm it ran (`RigRow`; the runs' execution modes summed). A run that recorded nothing past a serial run pinning and
 declaring nothing carries none.
 
 **Added:** `AsyncDelivery.served_model`, the model the work's responses named, folded into the `inner_agent` row's
@@ -63,7 +63,10 @@ moves onto the rows it was summed from. Reasons are a map of word to count (`{"t
 more than the row's counts, and set only beside a count; a list of distinct words is no longer the shape. Leave a count
 None where it was not counted: 0 says it was counted and none went unanswered. The fields a host writes are
 `RoleUsage.unanswered_retried`, `RoleUsage.unanswered_lost`, `RoleUsage.unanswered_reasons` and
-`AsyncDelivery.served_model`, all additive and optional.
+`AsyncDelivery.served_model`, all additive and optional. `unanswered_retried` and `unanswered_lost` are now core
+measures (`METRIC_DESCRIPTORS`, beside `call_count`), so the measure walk reads them as described, never as a lost
+measurement: a host can no longer declare a measure by either name, and a kind's `host_measures` or covariates under
+either name are dropped as engine-owned.
 
 ### evals: an overall that is the plain mean of its cells reads an interval derived from theirs
 

@@ -2711,11 +2711,18 @@ def _unanswered_figure(rows: Sequence[Unanswered], field: str | None, path: str)
     if field in (None, "share"):
         # Both kinds together, so a kind some role did not count is not counted there, never a zero beside the other.
         uncounted = sorted({kind for row in rows for kind in ("retried", "lost") if getattr(row, kind) is None})
+        # A role whose calls are counted, that sent some and states no share: one of its rows counted one kind only,
+        # which its sums hide, so the two together are not counted there either (the bundle's own reading).
+        if not uncounted and any(
+            row.share is None and row.calls is not None and row.calls + (row.retried or 0) + (row.lost or 0) > 0
+            for row in rows
+        ):
+            uncounted = ["retried", "lost"]
         if uncounted:
             raise _unstated(
                 path,
                 f"counts the retried and lost calls together, and a role of the arm did not count its "
-                f"{' or '.join(uncounted)} ones: not counted; read `.retried` and `.lost` apart",
+                f"{' or '.join(uncounted)} ones on every row: not counted; read `.retried` and `.lost` apart",
             )
     if field is None:
         return _count(path, (retried or 0) + (lost or 0))
