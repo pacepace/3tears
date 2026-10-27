@@ -457,9 +457,9 @@ class LaunchPricer(Protocol):
     launch generates alike (:attr:`ArmQuote.case_source`) — so one launch never prices two arms by two rules.
 
     A port on :class:`LaunchHost` because the prediction is a read over history — an analysis — and the
-    run package imports no analysis: the host composes one. ``threetears.evals.ops.history_launch_pricer`` is the engine's own, over the scope's
-    per-observation usage history; a host with a rate card of its own prices from that instead. Called off the
-    event loop, through the host's blocking executor.
+    run package imports no analysis: the host composes one. ``threetears.evals.ops.history_launch_pricer`` is
+    the engine's own, over the scope's per-observation usage history; a host with a rate card of its own prices
+    from that instead. Called off the event loop, through the host's blocking executor.
     """
 
     def __call__(self, quote: ArmQuote, /) -> ArmPrice:
@@ -3005,8 +3005,8 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
 
     First, an arm is refused when its largest call's ceiling (:attr:`ArmPlan.call_ceiling`) is above its cap on
     its own: its run reserves that ceiling before making the call and refuses the call, so the run could never
-    complete it, whatever the arm is predicted to cost in all. Then an arm is refused when its predicted cost is
-    above the cap its run will be held to, or when nothing
+    complete it, whatever the arm is predicted to cost in all. Then an arm is refused when its cap figure
+    (:attr:`ArmPrice.predicted_usd`) is above the cap its run will be held to, or when nothing
     predicts it and that cap is one the run would merely inherit (the host's configured ceiling, which nobody
     chose for this run): unknown is not $0. An arm with a cap the launch named and no prediction goes ahead —
     the named cap is the most the operator chose to risk on a run nobody could price, and the run's own cost
