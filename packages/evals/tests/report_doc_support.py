@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots, shape_snapshots
-from threetears.evals.analysis.report_decision import implied_caveats, report_caveats
+from threetears.evals.analysis.report_decision import every_caveat
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
 
@@ -118,5 +118,4 @@ def snapshot_caveats(name: str) -> set[str]:
     :return: The caveat ids.
     :rtype: set[str]
     """
-    held = _input(name)
-    return {caveat.id for caveat in report_caveats(held)} | {caveat.id for caveat in implied_caveats(held)}
+    return {caveat.id for caveat in every_caveat(_input(name))}

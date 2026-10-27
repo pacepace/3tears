@@ -11,7 +11,14 @@ out, which a test holds byte-identical to this model.
 a block's kind to decide anything: each is a choice the renderer draws as written. ``story`` is read by no code at all,
 so a page and its checks are byte-identical when only it changes. What the renderer adds (the masthead, the arms key,
 the options table with ``recommends`` marked, the form words, each block's level, unit and axis, the full-results
-appendix, the omitted list and the made line) is computed, never written here.
+appendix, the omitted list and the made line) is computed, never written here. ``recommends`` holds only the arms the
+report recommends: a tradeoff's lean stays in its prose, and an empty list (no call) is valid.
+
+**Where the prose is.** :data:`REPORT_DOC_PROSE_FIELDS` names every field a reader reads as prose, by path. Three of
+them (``explore[].outcome``, ``next[].settles``, ``confidence.caveats[].label``) are not typed :data:`ModelProse`,
+because the prose scan reads by attribute name and other models read a structured ``outcome``, ``settles`` and
+``label`` by value; so a check over a document's prose (the invariants' typed digits and internal ids) walks this
+tuple, never the type alone.
 
 **Three layers of refusal, each with its own owner:**
 
@@ -40,6 +47,14 @@ by id. A caveat is open, with the condition that would make it material (``mater
 :class:`ReportDoc` on every construction and read, beside the snapshot it was written from, how the writing loop
 ended, the editor's unresolved findings and the loop's tally. Derived and regenerable like its snapshot: writing the
 report again makes a new one, ``EvalStorage.drop_derived`` sweeps it, and a regenerable schema bump refuses it on read.
+
+**Reads are strict, so every change to the document's shape ships with a regenerable bump.** A stored document is
+never half-read: one this build's :class:`ReportDoc` does not accept is refused whole. That is safe only because a
+change to :class:`ReportDoc` (or to anything it holds) always moves
+:data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`, so a stale document is refused by its version
+first, before its body is read, with the remedy to drop it and write the report again; and a document at the current
+version always reads. The degraded read of plan §2.3 ("a doc that no longer validates") therefore arises only as that
+version refusal.
 """
 
 from __future__ import annotations
@@ -51,7 +66,7 @@ from typing import Annotated, Any, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
-from threetears.evals.kernel.report_plan import ChartKind, ChartQuery, ReferenceKind
+from threetears.evals.kernel.report_plan import ChartQuery, PlanChartKind, ReferenceKind
 from threetears.evals.schema.base import EvalDocumentModel, VerbatimJsonObject
 from threetears.evals.schema.models import SchemaVersion, utc_now_iso
 from threetears.evals.schema.prose import ModelProse
@@ -102,6 +117,30 @@ class _Doc(BaseModel):
     """A closed object: an unknown field is refused, on a submission and on a stored read alike."""
 
     model_config = ConfigDict(extra="forbid")
+
+
+#: Every field of a report document a reader reads as prose, by path (``[]`` marks a list's items), in document
+#: order. The module docstring says why a check over prose walks this rather than the :data:`ModelProse` type; a test
+#: holds it to every text field of :class:`ReportDoc` that is not an id.
+REPORT_DOC_PROSE_FIELDS: Final[tuple[str, ...]] = (
+    "headline",
+    "lede",
+    "flag",
+    "confidence.caveats[].label",
+    "confidence.caveats[].material_if",
+    "decision[].text",
+    "claims[].text",
+    "claims[].evidence[].caption",
+    "explore[].control",
+    "explore[].binds",
+    "explore[].outcome",
+    "omitted[].what",
+    "omitted[].why",
+    "next[].text",
+    "next[].settles",
+    "method[].term",
+    "method[].text",
+)
 
 
 def is_analyst_caveat(caveat_id: str) -> bool:
@@ -180,7 +219,7 @@ class DecisionEntry(_Doc):
 class Evidence(_Doc):
     """One evidence block under a claim: a kind of block over a query of the snapshot, as ``block_render`` draws it."""
 
-    block: ChartKind = Field(description="The kind of block, as block_catalog lists it.")
+    block: PlanChartKind = Field(description="The kind of block, as block_catalog lists it.")
     query: ChartQuery = Field(
         description="What the block reads, every field filled, as block_render returns it: an empty list or string "
         "is no filter, `limit` 0 no limit."
@@ -336,7 +375,8 @@ def report_doc_validity(doc: ReportDoc, *, arms: Collection[str], caveats: Colle
     """What a well-shaped document names that its snapshot does not hold (this module's account of validity).
 
     The kernel does not read the report input, so its caller passes the snapshot's arm ids and the caveat ids code
-    assigns on it (stated and implied). Emphasis and every query are the invariants' to check, since a block names
+    assigns on it, stated and implied: the ids of
+    :func:`~threetears.evals.analysis.report_decision.every_caveat`, the one set ``caveats_list`` pages too. Emphasis and every query are the invariants' to check, since a block names
     strata and tasks too and its query's names are read where it is drawn.
 
     :param doc: The document.
@@ -426,6 +466,29 @@ class EvalReportDoc(EvalDocumentModel):
     created_by: str = Field(min_length=1, description="Who asked for the report, as the host named the caller.")
     created_at: str = Field(default_factory=utc_now_iso)
 
+    @model_validator(mode="before")
+    @classmethod
+    def check_version_first(cls, data: Any) -> Any:
+        """Refuse a document written under another regenerable version by its version alone, before its body is read.
+
+        A document from before a shape change would otherwise be refused for its body too, field by field, which reads
+        as a fault to fix rather than a document to make again (the module docstring's strict-read decision).
+
+        :param data: The input under validation; only a mapping is read.
+        :ptype data: Any
+        :return: The input, unchanged.
+        :rtype: Any
+        :raises ValueError: Its ``schema_version`` is not this build's regenerable version.
+        """
+        if isinstance(data, dict) and "schema_version" in data and data["schema_version"] != REGENERABLE_SCHEMA_VERSION:
+            raise ValueError(
+                f"schema_version: this report document was written under eval schema v{data['schema_version']} and "
+                f"this build reads v{REGENERABLE_SCHEMA_VERSION} only; a report document is regenerated across a schema "
+                "change, never migrated or half-read. An operator clears every old one in a scope with "
+                "EvalStorage.drop_derived(scopes), then writes each report again from a fresh snapshot"
+            )
+        return data
+
     @field_validator("doc_type")
     @classmethod
     def check_doc_type(cls, v: str) -> str:
@@ -460,7 +523,8 @@ class EvalReportDoc(EvalDocumentModel):
         :return: This document, unchanged.
         :rtype: EvalReportDoc
         :raises ValueError: A finding names a claim id the document does not hold; a ``stored`` document carries a
-            ``must_fix`` finding; a ``stored_with_findings`` one carries none.
+            ``must_fix`` finding. A ``stored_with_findings`` one may carry none, since a review fails on its scores
+            alone too.
         """
         claims = {claim.id for claim in ReportDoc.model_validate(self.doc).claims}
         findings = [ReportFinding.model_validate(finding) for finding in self.findings]
@@ -469,8 +533,6 @@ class EvalReportDoc(EvalDocumentModel):
                 raise ValueError(f"a finding names claim {finding.claim!r}, which the document does not hold")
         if self.ending == "stored" and any(finding.severity == "must_fix" for finding in findings):
             raise ValueError("a report stored after a passing review carries no must_fix finding")
-        if self.ending == "stored_with_findings" and not findings:
-            raise ValueError("a report stored with findings carries the findings left open")
         return self
 
 

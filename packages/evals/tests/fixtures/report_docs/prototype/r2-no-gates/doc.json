@@ -4,9 +4,7 @@
   "headline": "Past {arm:brisk-s.low.r1}, a point of pass rate costs {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month, not {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point}; the owner picks where to stop.",
   "lede": "A single retry raises pass rate at every model and reasoning level for little cost and a longer p95 tail, and every Atlas-M setting but the most expensive is matched or beaten by a cheaper Brisk-S one. A pass-rate floor above {measure.pass_rate.brisk-s.low.r1.mean} or a p95 budget under {measure.latency_ms.brisk-s.low.r1.p95} would move the lean.",
   "flag": "No pass-rate floor, latency budget or value per point was declared before the run, and no configuration served as a control. The lean below is the analyst's, not a rule.",
-  "recommends": [
-    "brisk-s.low.r1"
-  ],
+  "recommends": [],
   "confidence": {
     "form": "high_if_immaterial",
     "caveats": [

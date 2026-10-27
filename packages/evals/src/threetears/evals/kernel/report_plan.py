@@ -81,7 +81,7 @@ _SlotKey = Literal[
 _OptionRole = Literal["recommended", "lean", "control", "near_miss", "most_accurate", "cheapest", "alternative"]
 #: The kit's chart kinds (``analysis.report.charts.KIT_CHARTS``, one name each) plus a plain table: what a plan's chart
 #: and a report document's evidence block (:mod:`threetears.evals.kernel.report_doc`) may be drawn as.
-ChartKind = Literal[
+PlanChartKind = Literal[
     "forest",
     "bars",
     "diverging_bars",
@@ -326,7 +326,7 @@ class ChartReference(_PlannedChartReference):
 class PlannedChart(_Plan):
     """A chart as the planner chooses it: kind, title, what it reads, a reference line and the one thing it stresses."""
 
-    kind: ChartKind
+    kind: PlanChartKind
     title: ModelProse = Field(description="The chart's title; empty when the section headline says it.")
     query: ChartQuery
     reference: Sequence[_PlannedChartReference] = Field(max_length=1, description="At most one reference line.")
@@ -560,7 +560,7 @@ class StructureChart(_Plan):
     """A chart as the structure call chooses it: kind, what it reads, a reference line and the one thing it stresses.
     Its title is prose, written by the prose call."""
 
-    kind: ChartKind
+    kind: PlanChartKind
     query: ChartQuery
     reference: list[_PlannedChartReference] = Field(max_length=1, description="At most one reference line.")
     emphasis: str = Field(description="The one arm or row bolded or ringed, by id; empty for none.")
@@ -664,7 +664,6 @@ def prose_response_format() -> dict[str, Any]:
 __all__ = [
     "REPORT_PLAN_SCHEMA",
     "CaveatClause",
-    "ChartKind",
     "ChartQuery",
     "ChartReference",
     "ChartSpec",
@@ -680,6 +679,7 @@ __all__ = [
     "OptionRow",
     "Options",
     "PlanArm",
+    "PlanChartKind",
     "PlanProse",
     "PlanStructure",
     "PlannedChart",

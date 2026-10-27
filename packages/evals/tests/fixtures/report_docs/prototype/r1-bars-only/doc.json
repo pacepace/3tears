@@ -1,12 +1,10 @@
 {
   "schema": "report-doc/1",
   "story": "tradeoff",
-  "headline": "{arm:atlas-m} costs {cost_per_1k.atlas-m} per thousand conversations against {arm:atlas-l}'s {cost_per_1k.atlas-l} and trails it most in troubleshooting; the cheaper two trail {arm:atlas-m} on most judged behaviours.",
+  "headline": "{arm:atlas-m} costs {cost_per_1k.atlas-m} a thousand conversations to {arm:atlas-l}'s {cost_per_1k.atlas-l} and trails it most in troubleshooting; the cheaper two trail it on most behaviours, {arm:open-70b} level only in persona small talk.",
   "lede": "{arm:brisk-s} sits below {arm:atlas-m} on most judged behaviours, widest on declining speculation bait, at {task.specul.brisk-s.declines.mean|pct}. Nothing was declared, neither a floor nor a price per point of quality, so which of these losses rules a model out is the owner's call.",
   "flag": "Nothing was declared before the run: no control, no quality floor and no exchange rate between cost and quality. Code's dominance call names {arm:brisk-s} because it weighs cost alone; this page does not follow it, since no quality axis was declared for it to weigh.",
-  "recommends": [
-    "atlas-m"
-  ],
+  "recommends": [],
   "confidence": {
     "form": "high_if_immaterial",
     "caveats": [

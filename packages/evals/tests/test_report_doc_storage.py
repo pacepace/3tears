@@ -141,7 +141,6 @@ def test_a_stored_document_in_a_shape_this_build_no_longer_reads_is_refused_on_r
             {"ending": "stored", "findings": [{"claim": "", "severity": "must_fix", "finding": "Wrong call."}]},
             "no must_fix finding",
         ),
-        ({"ending": "stored_with_findings", "findings": []}, "carries the findings left open"),
         ({"findings": [{"claim": "c1", "severity": "nit", "finding": "Tighten it."}]}, "severity"),
         ({"ending": "refused"}, "ending"),
         ({"doc": {"schema": "report-plan/1"}}, "doc"),
@@ -149,7 +148,6 @@ def test_a_stored_document_in_a_shape_this_build_no_longer_reads_is_refused_on_r
     ids=[
         "finding on an unknown claim",
         "stored with a must_fix",
-        "stored with findings but none",
         "a finding out of shape",
         "unstored ending",
         "not a report document",
@@ -159,6 +157,35 @@ def test_a_stored_document_that_contradicts_itself_is_refused(fields: dict[str, 
     """A finding names a claim the document holds, and the ending agrees with the findings left open."""
     with pytest.raises(ValidationError, match=refusal):
         _stored(**fields)
+
+
+def test_a_report_stored_with_findings_may_carry_none_since_a_review_fails_on_its_scores_too() -> None:
+    """The revisions ran out on a review that failed by its scores alone, with no finding listed: it is kept."""
+    report = _stored(ending="stored_with_findings", findings=[])
+
+    assert (report.ending, report.findings) == ("stored_with_findings", [])
+
+
+def test_a_document_from_an_older_regenerable_version_is_refused_by_its_version_before_its_body() -> None:
+    """A stale record is refused on read for its version alone, with the remedy to regenerate, whatever its body is.
+
+    Its body is in a shape this build no longer reads too, which the refusal does not report: a stale document is one to
+    make again, never a fault to fix field by field.
+    """
+    storage, store = memory_storage()
+    old = _stored().to_dict() | {"schema_version": REGENERABLE_SCHEMA_VERSION - 1}
+    old["doc"] = {"schema": "report-doc/0", "sections": []}
+    old["ending"] = "an ending no build wrote"
+    store.upsert(old)
+
+    with pytest.raises(ValidationError) as refused:
+        storage.load_report_doc(old["id"], _SCOPE)
+
+    errors = refused.value.errors()
+    assert len(errors) == 1
+    message = str(errors[0]["msg"])
+    assert f"written under eval schema v{REGENERABLE_SCHEMA_VERSION - 1}" in message
+    assert "EvalStorage.drop_derived(scopes), then writes each report again from a fresh snapshot" in message
 
 
 def test_a_page_wide_finding_names_no_claim() -> None:

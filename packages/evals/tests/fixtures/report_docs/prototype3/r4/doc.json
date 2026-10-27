@@ -1,12 +1,10 @@
 {
   "schema": "report-doc/1",
   "story": "tradeoff",
-  "headline": "Switching to {arm:f64} cuts reply cost by {cost.uplift.f64|abs|pct} but stays in character {contrast.f64.persona.delta|abs|pts} points less often; nothing declared says which matters more.",
+  "headline": "Switching to {arm:f64} cuts reply cost by {cost.uplift.f64|abs|pct}, about {price.f64.prod.persona.monthly_cost_gap|abs|usd_whole} a month, but loses {contrast.f64.persona.delta|abs|pts} points of character; nothing declared ranks the two.",
   "lede": "{arm:f64} is the only cheaper candidate that holds both guardrails, and it is clearly worse at staying in character ({contrast.f64.persona.interval|interval} points against {arm:prod}). Whether to switch turns on what a point of character is worth: keeping {arm:prod} costs {price.f64.prod.persona.monthly_per_point|usd_whole} a month per point.",
   "flag": "Nothing was declared in advance for weighing cost against staying in character, and no margin says how much worse in character is acceptable. The choice below is the product owner's.",
-  "recommends": [
-    "prod"
-  ],
+  "recommends": [],
   "confidence": {
     "form": "high_if_immaterial",
     "caveats": [

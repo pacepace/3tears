@@ -26,11 +26,11 @@ The editor read values tables, not a rendered page.
 ## Converted documents (`doc.json`)
 
 Each directory's `doc.json` is its `report.json` converted to `report-doc/1` as `threetears.evals.kernel.report_doc.ReportDoc` stores it (`tests/test_report_doc_model.py` validates every one). `report.json` and the rest of the record are kept as the run left them. The conversion:
-- adds `recommends`, read by hand from the call this README and the report's decision state: a tradeoff's is the arm its lean names, and a report that ships nothing yet recommends none;
+- adds `recommends`, read by hand from the call this README and the report's decision state. It holds only an arm the report recommends: a tradeoff's lean ("our lean, not a recommendation") stays in its prose and recommends none, as does a report that ships nothing yet;
 - fills every evidence query's omitted fields with their empty values, as `block_render` returns a query;
 - drops `snapshot_id` where the draft carried one: the stored record names its snapshot;
 - writes every field the model defaults (`flag: null`, a claim's `caveats` and `durable`, a block's `reference` and `emphasis`).
 
 This prototype's conversion also:
-- tightens r4's headline (267 characters) and r3's lede (469) to the 240 and 420 the schema allows, keeping their keys and their findings;
+- rewrites r4's headline (267 characters) and r3's lede (469) within the 240 and 420 the schema allows, each keeping every key it cited and its finding;
 - drops `point_estimate:overall` from r3: code no longer assigns it there, since an overall that is the plain mean of its cells now reads an interval derived from theirs. The analyst's notes logged that interval as a capability gap.

@@ -2,11 +2,9 @@
   "schema": "report-doc/1",
   "story": "tradeoff",
   "headline": "Switching to {arm:f64} saves {price.f64.prod.persona.monthly_cost_gap|abs} a month but stays in character {contrast.f64.persona.delta|abs|pts} points less often, with most of the loss in long conversations.",
-  "lede": "On point estimates f64 is the only challenger inside both guardrails, and it loses character clearly ({contrast.f64.persona.interval|interval} points against {arm:prod}). Those readings are thin: f64 clears speculation narrowly, and {arm:f16} misses music facts by only {criteria.facts.f16.gap|abs|pts} points; if it clears that and holds speculation, it replaces f64 as Production's rival.",
+  "lede": "On point estimates f64 is the one challenger inside both guardrails, and it loses character clearly ({contrast.f64.persona.interval|interval} points against {arm:prod}). Both readings are thin: f64 clears speculation narrowly, and {arm:f16} misses music facts by {criteria.facts.f16.gap|abs|pts} points and clears speculation by {criteria.specul.f16.gap|abs|pts}; if it clears both it replaces f64 as Production's rival.",
   "flag": "Nothing declared before the run says what a point of staying in character is worth against cost, so the choice is the persona owner's to make.",
-  "recommends": [
-    "prod"
-  ],
+  "recommends": [],
   "confidence": {
     "form": "high_if_immaterial",
     "caveats": [

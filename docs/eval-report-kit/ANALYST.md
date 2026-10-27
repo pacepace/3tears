@@ -108,7 +108,7 @@ What the analyst writes, and what is stored: `report-doc/1`. It replaces the slo
 |---|---|---|
 | `story` | one of five | The analyst's label for its story (§3). No code reads it: the page and the checks are the same whatever it says. |
 | `headline`, `lede`, `flag` | ≤240, ≤420, ≤300 characters; `flag` optional | The first screen. `flag` sits above the decision, for what a reader must know first. |
-| `recommends` | 0 or more arm ids, each once | The call as data. The options table marks these arms. Code reads the call; it never chooses it. Empty is no call. |
+| `recommends` | 0 or more arm ids, each once | The call as data. The options table marks these arms. Code reads the call; it never chooses it. It holds only arms the report recommends: a tradeoff's lean stays in its prose, and an empty list is valid. |
 | `confidence` | one form; each caveat once | How sure the call is. Each caveat is open, with `material_if`, or `checked: "immaterial"`, never both. |
 | `decision` | 1–8 entries; a slot may repeat | Titled by the slot word, in list order. The analyst picks the words that fit the story. A diagnosis uses *What is tangled*, *Known despite it*, *What settles it* and *Next*. |
 | `claims` | 1–12, unique ids | The story, in page order. `weight` sets type size and nothing else. `durable` marks a claim later campaigns should read as an insight. |
@@ -125,6 +125,7 @@ What the analyst writes, and what is stored: `report-doc/1`. It replaces the slo
 - **Validity comes before the invariants.** The document must name only arms and caveats its snapshot holds, or `analyst:` caveats.
 - **The renderer adds the rest:** the masthead, the arms key, the options table (every arm, with `recommends` marked), the form words and the checked lines, each block's level, unit, axis and reference key, the full-results appendix, the omitted list, unresolved editor findings in Method, and the made line.
 - **Stored** as `eval_report_doc`, beside the snapshot it reads, how the writing ended, the editor's unresolved findings and the cost tally. It is derived and regenerable, like its snapshot.
+- **Reads are strict.** A stored document is read whole or refused, never half-read. So every change to the document's shape ships with a regenerable schema bump: a document from before it is refused by its version, before its body is read, and is dropped and written again from a fresh snapshot.
 
 ## 6. Tools (MCP)
 

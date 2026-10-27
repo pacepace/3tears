@@ -59,6 +59,7 @@ from threetears.evals.analysis.report_decision import (
     ImpliedCaveat,
     Materiality,
     caveat_materiality,
+    every_caveat,
     implied_caveats,
     report_caveats,
     unsettled_arms,
@@ -1607,7 +1608,7 @@ def caveats_list(report_input: ReportInput, *, limit: int | None = None, offset:
     """
     materiality = caveat_materiality(report_input)
     unsettled = unsettled_arms(report_input)
-    every: list[Caveat | ImpliedCaveat] = [*report_caveats(report_input), *implied_caveats(report_input)]
+    every = every_caveat(report_input)
     shown, next_offset = _page(every, len(every) if limit is None else limit, offset)
     rows: list[CaveatRow] = []
     for caveat in shown:
