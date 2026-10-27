@@ -2,7 +2,7 @@
 
 **Status:** agreed with the owner, 2026-10-26. It supersedes the shape table as a rule (GENERATOR §1), the mandatory spine check, and two review items from the deviations page: "mode from code" and "the two-call planner". Everything else in GENERATOR remains as guidance the analyst reads.
 
-**Terminology** (owner, 2026-10-26): the role this document calls the *critic* is named the **report editor** (`report_editor`) in code and in every plan. In this repository "Critic" means only the prawduct review of code changes.
+**Terminology** (owner, 2026-10-26): the role that reviews a report before it is stored is the **report editor** (`report_editor`), here, in code and in every plan. In this repository "Critic" means only the prawduct review of code changes.
 
 ## 1. The decision
 
@@ -25,10 +25,10 @@ A review question for every PR: *does this add a condition on what kind of eval 
 | Role | Model | Job |
 |---|---|---|
 | Analyst | Opus | Investigate, outline, write, render, revise |
-| Critic | Opus, separate context | Review the rendered report against the rubric (§7) before it's stored; send it back with findings or pass it |
+| Editor | Opus, separate context | Review the rendered report against the rubric (§7) before it's stored; send it back with findings or pass it |
 | Scorers | Cheaper models | Score stored reports on the rubric at scale for the calibration dataset; never gate a report |
 
-The analyst and critic never share context. The critic sees what a reader would see: the rendered page, its values tables, and the report input. It doesn't see the analyst's reasoning.
+The analyst and the editor never share context. The editor sees what a reader would see: the rendered page, its values tables, and the report input. It doesn't see the analyst's reasoning.
 
 ## 3. The analyst skill
 
@@ -74,35 +74,57 @@ Reports can mix forms: for example, a decision on cost with a diagnosis on the j
 3. **Outline.** The headline, then the claims in reading order, each with the evidence it needs. Decide what to omit and why.
 4. **Draft.** Write the report document (§5) with figure keys, never typed numbers.
 5. **Render and look.** Render the page. Read the check results and the screenshots at desktop and phone width. Fix what's unclear, crowded or misleading. Repeat until clean, at most three rounds. Not in MVP (owner, 2026-10-26): no browser at storage time; check.py runs in integration tests.
-6. **Critic.** Submit the report. If the critic returns findings, address them and resubmit, at most two rounds. Unresolved findings are stored with the report and shown in Method.
+6. **Editor.** Submit the report. If the editor returns findings, address them and resubmit, at most two rounds. Unresolved findings are stored with the report and shown in Method.
 
 ## 5. The report document
 
-What the analyst writes, and what is stored. It replaces the slot-based plan.
+What the analyst writes, and what is stored: `report-doc/1`. It replaces the slot-based plan. The model is `threetears.evals.kernel.report_doc.ReportDoc`, and [`schema/report-doc.schema.json`](schema/report-doc.schema.json) is its JSON schema, generated from it and held to it by a test. Every prose field names figures by key, never by typed number.
 
 ```json
 {
   "schema": "report-doc/1",
   "story": "decision | tradeoff | diagnosis | status | exploratory",
-  "headline": "{figure-keyed prose}",
-  "lede": "…",
-  "confidence": {"form": "high | high_if_immaterial | low", "caveats": [{"id": "…", "material_if": "…"}]},
+  "headline": "{figure-keyed prose}, at most 240 characters",
+  "lede": "…, at most 420 characters",
+  "flag": "… (optional), at most 300 characters",
+  "recommends": ["<arm id>"],
+  "confidence": {"form": "high | high_if_immaterial | low",
+                 "caveats": [{"id": "<code caveat id> | analyst:<slug>", "label": "…", "material_if": "…"},
+                             {"id": "late:margin", "checked": "immaterial"}]},
   "decision": [{"slot": "recommendation | why_not | watch | next | the_trade | where_it_flips | our_lean | what_settles_it | what_is_tangled | known_despite_it", "text": "…"}],
   "claims": [
     {"id": "c1", "text": "…", "weight": "lead | support | detail",
-     "evidence": {"block": "<block kind>", "query": {"…": "…"}, "caption": "…"}}
+     "evidence": [{"block": "<block kind>", "query": {"source": "…", "…": "…"}, "reference": "margin", "emphasis": "<arm id>", "caption": "…"}],
+     "caveats": ["<caveat id>"], "durable": false}
   ],
   "explore": [{"control": "…", "binds": "…", "outcome": "…"}],
   "omitted": [{"what": "…", "why": "…"}],
   "next": [{"text": "…", "settles": "…"}],
-  "method": [{"term": "…", "text": "…"}]
+  "method": [{"term": "…", "text": "…", "caveats": ["<caveat id>"]}]
 }
 ```
 
-- **`claims` is the story.** Its order is the page order. The first claim is whatever best carries the headline, chosen by the analyst and judged by the critic. Code never checks what kind of block it is.
-- **`decision` slots** come from a shared vocabulary. The analyst picks the four that fit the story. A diagnosis uses *What is tangled*, *Known despite it*, *What settles it* and *Next*.
-- **`omitted` makes elision accountable.** Anything substantial the analyst saw and chose not to show gets a one-line reason. The critic checks those reasons. The appendix still holds the omitted data.
+| Field | Bounds | What it is |
+|---|---|---|
+| `story` | one of five | The analyst's label for its story (§3). No code reads it: the page and the checks are the same whatever it says. |
+| `headline`, `lede`, `flag` | ≤240, ≤420, ≤300 characters; `flag` optional | The first screen. `flag` sits above the decision, for what a reader must know first. |
+| `recommends` | 0 or more arm ids, each once | The call as data. The options table marks these arms. Code reads the call; it never chooses it. Empty is no call. |
+| `confidence` | one form; each caveat once | How sure the call is. Each caveat is open, with `material_if`, or `checked: "immaterial"`, never both. |
+| `decision` | 1–8 entries; a slot may repeat | Titled by the slot word, in list order. The analyst picks the words that fit the story. A diagnosis uses *What is tangled*, *Known despite it*, *What settles it* and *Next*. |
+| `claims` | 1–12, unique ids | The story, in page order. `weight` sets type size and nothing else. `durable` marks a claim later campaigns should read as an insight. |
+| `claims[].evidence` | 1 or 2 blocks | A block kind over a query, as `block_render` draws it, with every query field filled. `reference` and `emphasis` sit beside the query. |
+| `explore` | 0–3 rows | What a reader could change, and what it would do, in prose. |
+| `omitted` | any | What the analyst saw and left out, and why. |
+| `next` | 0–6 | Each step and what it would settle. |
+| `method` | 1–12 | The method appendix's terms. A caveat whose reach is the method lands here. |
+
+- **`claims` is the story.** Its order is the page order. The first claim is whatever best carries the headline, chosen by the analyst and judged by the editor. Code never checks what kind of block it is.
+- **`omitted` makes elision accountable.** Anything substantial the analyst saw and chose not to show gets a one-line reason. The editor checks those reasons. The appendix still holds the omitted data.
 - **`evidence.query`** names data through the tools' query language (§6). The renderer resolves it, so a block can never show data that doesn't exist.
+- **Caveats** are named by the id code assigns (`caveats_list` lists them), or `analyst:<slug>` for one code doesn't assign. Code labels its own caveats, so their `label` is optional. An analyst caveat carries its own `label` and is declared once in `confidence`; a claim or a method item names it by id.
+- **Validity comes before the invariants.** The document must name only arms and caveats its snapshot holds, or `analyst:` caveats.
+- **The renderer adds the rest:** the masthead, the arms key, the options table (every arm, with `recommends` marked), the form words and the checked lines, each block's level, unit, axis and reference key, the full-results appendix, the omitted list, unresolved editor findings in Method, and the made line.
+- **Stored** as `eval_report_doc`, beside the snapshot it reads, how the writing ended, the editor's unresolved findings and the cost tally. It is derived and regenerable, like its snapshot.
 
 ## 6. Tools (MCP)
 
@@ -132,7 +154,7 @@ One domain tool, `evals_analyst`, with one action per capability (owner, 2026-10
 
 Add an action when an analyst run shows it reasoning around a missing capability. Never add one to handle a specific eval type.
 
-## 7. Invariants and the critic
+## 7. Invariants and the editor
 
 ### Invariants (code; refuse to store on failure)
 
@@ -146,7 +168,7 @@ This list is fixed. It doesn't grow with new eval types.
 6. The full-results appendix and Method are present.
 7. `check.py` passes at 1200 and 390 px, in light and dark. Not in MVP (owner, 2026-10-26): no browser at storage time; check.py runs in integration tests.
 
-### Critic rubric (Opus; each item scored 0–2 with a reason)
+### Editor rubric (Opus; each item scored 0–2 with a reason)
 
 1. **First screen.** From the headline, decision block and first claim alone, a reader can say what to do (or what's unresolved), why, and the main risk.
 2. **Coherent story.** The claims follow from one another, and nothing important contradicts the headline unaddressed.
@@ -156,7 +178,7 @@ This list is fixed. It doesn't grow with new eval types.
 6. **Actionable next steps.** Each names an experiment or a declaration and says what it would settle.
 7. **Evidence fits claims.** Each block is the clearest way to show its claim, and the counterfactual holds: if the values flipped, the claim would have to change.
 
-The critic passes a report when no item scores 0 and the total is at least 11 of 14. These thresholds are starting points; the calibration dataset sets them.
+The editor passes a report when no item scores 0 and the total is at least 11 of 14. These thresholds are starting points; the calibration dataset sets them.
 
 ## 8. Migration from what's built
 
@@ -172,18 +194,18 @@ Order of work:
 
 1. **Tools.** Wrap the existing computations as MCP tools. Most already exist as code: readings, contrasts, flip margins, dominance.
 2. **Skill.** Move GENERATOR's content into the skill files. Write the five reasoning notes; Appendix A is the first.
-3. **Analyst loop.** Run it on the five references and on the misfit inputs from the spines doc. Compare the results with the references by critic score, not by structure.
-4. **Critic and invariants.** Wire both in as the storage gate.
+3. **Analyst loop.** Run it on the five references and on the misfit inputs from the spines doc. Compare the results with the references by editor score, not by structure.
+4. **Editor and invariants.** Wire both in as the storage gate.
 5. **Calibration.** Score every stored report. Review the owner-labeled anchors. Tune the rubric thresholds.
 
 **Acceptance.**
-- Kairo round 2 reaches the reference's decision, confidence form and caveats, and scores at least 12 of 14 with the critic.
-- Every misfit input from the spines doc produces a stored, rendered report that the critic passes.
+- Kairo round 2 reaches the reference's decision, confidence form and caveats, and scores at least 12 of 14 with the editor.
+- Every misfit input from the spines doc produces a stored, rendered report that the editor passes.
 - No PR in the work adds a branch on eval kind.
 
 ## 9. Open items
 
-- **Cost and latency.** An Opus analyst plus critic costs more per report than a single planner call. Measure it on the references in step 3 before deciding whether long reports need a budget.
+- **Cost and latency.** An Opus analyst plus editor costs more per report than a single planner call. Measure it on the references in step 3 before deciding whether long reports need a budget.
 - **Determinism.** Two runs can write different but equally good reports. Stored reports are what readers see; regenerating one is a deliberate act and keeps the previous version.
 - **When there's no good story.** The analyst may conclude the campaign can't support any reading. That is a valid report: a diagnosis or exploratory story whose next steps name what to declare or run. It is not a failure.
 
