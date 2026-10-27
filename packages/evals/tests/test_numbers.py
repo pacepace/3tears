@@ -223,7 +223,7 @@ class TestThereIsOneImplementation:
 #: :func:`~threetears.evals.analysis.numbers.format_number` / :func:`~threetears.evals.analysis.numbers.format_signed` or is
 #: named below as a deliberate fixed spelling. A module sits here by itself, rather than its whole
 #: directory, where the rest of that directory is not read as a report.
-_SPELLING_TREES = ("threetears/evals/analysis",)
+_SPELLING_TREES = ("threetears/evals/analysis", "threetears/evals/ops")
 
 #: What sits inside :data:`_SPELLING_TREES` and is not read as a report, so is not walked:
 #: ``numbers.py`` is the rule itself, and ``report/svg.py`` spells only a chart's drawing coordinates (to a tenth

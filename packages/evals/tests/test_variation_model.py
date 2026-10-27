@@ -30,6 +30,7 @@ import pytest
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import COST_ESTIMATE_MIN_BASIS
 from threetears.evals.analysis.lenses.cost_estimate import COST_BAND_SAFETY_MARGIN
+from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import lognormal_sum_prediction_band
 from threetears.evals.schema import EvalRun
 from threetears.evals.kernel import (
@@ -829,7 +830,7 @@ def test_the_history_pricer_bounds_an_arm_by_the_upper_band_of_its_template_and_
 
     centre = 0.20 * 5 * 2
     assert price.predicted_usd is not None and price.predicted_usd > centre, "above the mean x cases x repeats"
-    assert f"around ${centre:.2f}" in price.basis and "upper end of the band" in price.basis
+    assert f"around {format_number(centre, prefix='$')}," in price.basis and "upper end of the band" in price.basis
     assert "usage-history" in price.basis and "3 priced past result(s)" in price.basis
     assert price.predicted_usd < 9.0, "another template's history is not drawn on"
     assert price.central_usd == pytest.approx(centre), "the centre rides beside the held-to figure, never as it"
@@ -853,6 +854,20 @@ def test_the_history_pricer_prices_an_arm_whose_every_past_result_cost_the_same(
     assert price.predicted_usd == pytest.approx(price.central_usd * (1 + COST_BAND_SAFETY_MARGIN), rel=1e-12)
     assert price.low_usd == pytest.approx(price.central_usd * (1 - COST_BAND_SAFETY_MARGIN), rel=1e-12)
     assert "upper end of the band" in price.basis and "safety margin either side" in price.basis
+
+
+def test_a_sub_cent_arms_price_spells_its_band_and_centre_by_the_one_rule():
+    """In cents, three results at $0.0015 priced a three-case arm "$0.00-$0.00 around $0.00", hiding its margin."""
+    host, storage = _priced_host()
+    _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.0015] * 3)
+
+    price = history_launch_pricer(host)(_quote(k_runs=1, case_count=3))
+
+    assert price.low_usd is not None and price.central_usd is not None and price.predicted_usd is not None
+    low, centre, high = (format_number(v, prefix="$") for v in (price.low_usd, price.central_usd, price.predicted_usd))
+    assert len({low, centre, high}) == 3, "three figures, three spellings"
+    assert f"the upper end of the band {low}-{high} around {centre}, method usage-history" in price.basis
+    assert centre == "$0.0045"
 
 
 def test_the_history_pricer_never_holds_an_arm_to_its_mean_where_the_log_scale_fit_disagrees_with_it():
@@ -903,7 +918,9 @@ def test_the_history_pricer_predicts_nothing_from_a_history_too_thin_to_bound():
 
     assert price.predicted_usd is None
     assert "2 priced past result(s)" in price.basis and "too few to bound the arm" in price.basis
-    assert f"a band needs {COST_ESTIMATE_MIN_BASIS}" in price.basis
+    assert f"a band needs {COST_ESTIMATE_MIN_BASIS}; their mean alone puts it at {format_number(1.5, prefix='$')})" in (
+        price.basis
+    )
 
 
 def _judged_by(pin: str, **per_dim: str) -> PlannedJudge:

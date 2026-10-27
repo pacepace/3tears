@@ -1010,7 +1010,8 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
                 predicted_usd=None,
                 basis=(
                     f"{drawn_on}{cell.n_historical} priced past result(s) of {condition} are too few to bound the arm "
-                    f"(a band needs {COST_ESTIMATE_MIN_BASIS}; their mean alone puts it at ${predicted.value:.2f})"
+                    f"(a band needs {COST_ESTIMATE_MIN_BASIS}; their mean alone puts it at "
+                    f"{format_number(predicted.value, prefix='$')})"
                 ),
             )
         return ArmPrice(
@@ -1019,8 +1020,9 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
             low_usd=predicted.interval_low,
             method_id=predicted.method_id,
             basis=(
-                f"{drawn_on}the upper end of the band ${predicted.interval_low or 0.0:.2f}-"
-                f"${predicted.interval_high:.2f} around ${predicted.value:.2f}, method {predicted.method_id}, from "
+                f"{drawn_on}the upper end of the band {format_number(predicted.interval_low or 0.0, prefix='$')}-"
+                f"{format_number(predicted.interval_high, prefix='$')} around "
+                f"{format_number(predicted.value, prefix='$')}, method {predicted.method_id}, from "
                 f"{cell.n_historical} priced past result(s) of {condition}"
                 + (f" ({cell.band_basis})" if cell.band_basis else "")
             ),

@@ -964,7 +964,7 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
             await end_unrun("cancelled before any call, while the generation was being prepared", outcome="cancelled")
             raise
         except EvalJobTimeout as timed_out:
-            await end_unrun(f"preparation did not finish in {timed_out.budget_s:g} s")
+            await end_unrun(f"preparation did not finish in {format_number(timed_out.budget_s)} s")
             return None
         except EvalServiceError as refused:
             await end_unrun(str(refused), refused_by=refused)
