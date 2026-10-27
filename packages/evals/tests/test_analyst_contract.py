@@ -636,6 +636,25 @@ def test_a_result_reads_back_as_each_figures_key_and_reading_under_its_row() -> 
     _held_to_figures(listing.model_dump(mode="json"), held)
 
 
+async def test_a_measure_read_lists_the_interval_derived_from_the_cells_and_every_number_by_its_key() -> None:
+    """r3's balanced accuracy states no interval and is the plain mean of its nine cells: read by arm through the
+    analyst's tool, each arm's row carries the interval derived from theirs, marked derived, and every number the
+    action returns resolves to its key."""
+    fixture, snapshots = off_loop(_seeded)
+    snapshot = snapshots["r3"]
+    held = frozen_input(snapshot)
+    arguments = {"action": "measure_read", "snapshot_id": snapshot.id, "measure_key": "balanced_accuracy"}
+    outcome = await _call(_analyst_tool(), fixture, arguments)
+    assert outcome.ending == "ok", outcome.text
+    assert outcome.structured is not None
+    _held_to_figures(outcome.structured, held)
+    cited = {figure["key"]: figure for figure in _figure_nodes(outcome.structured)}
+    for arm in (arm.id for arm in held.arms):
+        for field in ("interval", "half_width", "level"):
+            assert cited[f"overall_interval.balanced_accuracy.{arm}.{field}"]["derived"] is True, (arm, field)
+        assert cited[f"measure.balanced_accuracy.{arm}.mean"]["derived"] is False
+
+
 def test_a_cited_figure_says_whether_code_derived_it_as_its_key_resolves() -> None:
     held = fixture_inputs()["r5"]
     aspect = next(aspect for aspect in held.aspects if aspect.readings)

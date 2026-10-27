@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an overall that is the plain mean of its cells reads an interval derived from theirs
+
+**Added:** an arm's overall figure that states no interval, and is by the numbers the input states the unweighted
+mean of one measure's target-matrix cells, each stating its own spread (a balanced accuracy beside its cells'
+accuracies), gets the interval derived from theirs: standard error `sqrt(sum(se_i^2)) / k` at the cells' stated level,
+the cells read as independent because the target matrix partitions the cases (`threetears.evals.analysis.cell_mean`).
+Its key is `overall_interval.<measure>.<arm>.<field>` (`mean`, `se`, `half_width`, `interval`, `low`, `high`,
+`level`, `of`, `cells`, `basis`), every figure marked derived; `measure_read` by arm lists it in a row's `derived`
+(`FigureRow.derived`). A gate on the figure reads it (`CriterionFigure.derived`; `criteria.<criterion>.<arm>.low` and
+`.high` read its ends, marked derived, and a borderline reason says `derived interval`), so `point_estimate:<criterion>`
+is no longer implied there. Nothing is derived where any cell states no spread, the figure is a weighted mean or no
+plain mean of its cells, the cells do not cover the matrix once each, or their level is unstated or differs from the
+one the overall states. The analyst's principles say that confidence reads the method and the evidence's variance,
+never the result alone.
+
 ### evals: blocks print computed changes as their keys read them, name each line by its criterion, and page what fits
 
 **Fixed:** a compare or lever chart printed its values and interval ends at a float's four figures (`-2.163 to

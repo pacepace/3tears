@@ -76,3 +76,5 @@ A judged figure is only as good as the judge. Read its tier, calibration state, 
 ## Derived figures
 
 Some figures are arithmetic on point estimates: cost uplift against the control, a stratum's share of the loss, price per point. They carry no interval. Don't present them with an interval's authority, and don't test them. They describe; the readings and contrasts infer.
+
+One interval is derived: an overall figure that states none but is the plain mean of its target-matrix cells, each with its own interval (a balanced accuracy beside its cells' accuracies). Its standard error is the root of the cells' squared standard errors over their count, at the cells' level, the cells read as independent because no case falls in two. `overall_interval.<measure>.<arm>.*` names it, and a gate on the figure reads it. Cite its `basis` once and call it derived. Where any cell states no interval, or the figure is a weighted mean, none is derived and the figure stays a point estimate.
