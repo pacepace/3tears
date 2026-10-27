@@ -98,8 +98,9 @@ dev-dependencies = [
     "httpx2",
     # testcontainers used by the migration runner integration tests to
     # exercise real Postgres (rollback semantics cannot be verified
-    # against the in-memory FakeDataStore).
-    "testcontainers[postgres]>=4.0",
+    # against the in-memory FakeDataStore). 4.15.0 is the first release with
+    # testcontainers.community, where the containers now live.
+    "testcontainers[postgres]>=4.15.0",
     # prometheus-client installed in dev so packages/models tracking +
     # callbacks tests exercise the real prometheus integration rather
     # than getting skipped. declared in models as an optional extra
@@ -316,6 +317,11 @@ ignore = ["N818", "N811"]
 # tree -- collecting it here fails at import on a ``nodriver`` that the
 # workspace venv will never install.
 addopts = "--import-mode=importlib --ignore=packages/scrape/sidecar"
+# A test that runs past this fails with every thread's stack printed, instead of spinning a run
+# for hours: a test double that re-raised one stored exception made each logged traceback longer
+# than the last, and a 4,097-call loop held a CPU at 99% until it was killed. Well above any
+# single test's runtime; a test that needs longer says so with @pytest.mark.timeout.
+timeout = 600
 # Multiple packages carry a same-named ``tests`` package (e.g.
 # ``packages/agent/workspace/tests`` and ``packages/datasources/tests``
 # both define ``tests/integration/conftest.py``). Under importlib mode
@@ -378,6 +384,15 @@ filterwarnings = [
     # waits the supported way. An error, so a test that reaches for the deprecated path again
     # fails instead of adding a warning nobody reads.
     'error::DeprecationWarning:testcontainers\..*',
+    # 4.15.0 moved every container to ``testcontainers.community.*`` and left a shim at the old
+    # path whose warning is attributed to the IMPORTING module (stacklevel=2), so the filter above
+    # never sees it. An error too, so an import of the old path fails rather than warns.
+    'error:testcontainers\.[a-z_]+ is deprecated:DeprecationWarning',
+    # FastMCP 4 reads MCP SDK 2's snake_case fields and warns on the old camelCase ones
+    # (``readOnlyHint``, ``inputSchema``); shapely 2.2 deprecates ``shapely.ops.transform``.
+    # Both were moved off; errors, so a return to either fails rather than warns.
+    "error:Accessing `[A-Za-z.]+` is deprecated; MCP SDK v2 renamed:DeprecationWarning",
+    "error:The 'shapely.ops.transform\\(\\)' function is deprecated:DeprecationWarning",
     # discord.py 2.7.1, the newest release, calls ``asyncio.iscoroutinefunction`` inside its own
     # ``Client.event``; nothing on our side can change the call. Remove when discord.py does.
     "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:discord.client",

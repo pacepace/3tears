@@ -29,6 +29,7 @@ from threetears.evals.ops import report_read
 from threetears.evals.transports.fastmcp import CallTimedOut, mount_fastmcp
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import CALLER, RUN_MODELS, TOYHOST_SUBJECT, OpsFixture, ops_fixture
+from packages.evals.tests.mcp_wire import wire
 from packages.evals.tests.off_loop import off_loop
 
 
@@ -197,14 +198,18 @@ async def test_each_tool_shows_a_client_its_hints_schema_and_help() -> None:
         help_text, _, _ = await _text(client, "evals", {"action": "help"})
     evals, admin = tools["evals"], tools["evals_admin"]
     assert evals.annotations is not None and admin.annotations is not None
-    assert (evals.annotations.readOnlyHint, evals.annotations.destructiveHint, evals.annotations.openWorldHint) == (
-        False,
-        False,
-        True,
-    )
-    assert admin.annotations.destructiveHint is True
-    assert evals.inputSchema["properties"]["action"]["enum"][:2] == ["help", "templates_list"]
-    assert set(admin.inputSchema["properties"]) == {"action", "topic", "run_id", "analysis_id", "insight_id", "confirm"}
+    hints = wire(evals.annotations)
+    assert (hints["readOnlyHint"], hints["destructiveHint"], hints["openWorldHint"]) == (False, False, True)
+    assert wire(admin.annotations)["destructiveHint"] is True
+    assert wire(evals)["inputSchema"]["properties"]["action"]["enum"][:2] == ["help", "templates_list"]
+    assert set(wire(admin)["inputSchema"]["properties"]) == {
+        "action",
+        "topic",
+        "run_id",
+        "analysis_id",
+        "insight_id",
+        "confirm",
+    }
     assert evals.description is not None and "action='help'" in evals.description
     assert "## Run and watch" in help_text
 
@@ -213,7 +218,7 @@ async def test_a_host_mounts_a_read_only_tool_under_its_own_prefix() -> None:
     async with Client(_served(off_loop(ops_fixture), tools=read_only_tools("lab"))) as client:
         (tool,) = await client.list_tools()
         text, _, is_error = await _text(client, "lab", {"action": "run_launch", "template_id": "t", "subject_id": "s"})
-    assert tool.name == "lab" and tool.annotations is not None and tool.annotations.readOnlyHint is True
+    assert tool.name == "lab" and tool.annotations is not None and wire(tool.annotations)["readOnlyHint"] is True
     assert is_error and "run_launch is a spend action, and tool lab carries read actions only" in text
 
 
@@ -316,7 +321,7 @@ async def test_an_eval_host_is_served_in_one_line_read_only_in_one_scope() -> No
             client, "evals", {"action": "run_launch", "template_id": "t", "subject_id": "s"}
         )
     assert server.name == "evals" and tool.name == "evals" and tool.annotations is not None
-    assert tool.annotations.readOnlyHint is True
+    assert wire(tool.annotations)["readOnlyHint"] is True
     assert toyhost_template().id in listed, "the scope named, over the eval host's own storage"
     assert is_error and "carries read actions only" in refused
 
