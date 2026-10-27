@@ -251,17 +251,14 @@ _SOURCE_ROWS: dict[str, tuple[str, str, bool, tuple[str, ...]]] = {
                "point a month at the declared volume, else per thousand of what the cost counts, ends off its gain's "
                "interval",
                "from→to", True, ("measures", "arms")),
-    "bar_reads": ("an arm against an absolute bar, as the pipeline read it: its value, the interval it was read on, "
-                  "the bar and its status", "measure/arm", True, ("arms", "measures", "aspect")),
-    "compare": ("arms_compare's row at one place: the query's first arm less its second (query.arms names the two, "
-                "in order) on its one measure, with its interval; query.strata keeps places ('overall', a task, a "
-                "stratum or a cell)", "its place", True, ("arms", "measures", "strata")),
-    "settle": ("settle_cases' row for one arm against one criterion reading it, at one place: how often a fresh run "
-               "reads it on the other side of its line, and the cases that would settle it; query.measures keeps the "
-               "criteria on those measures", "arm/criterion/place", False, ("arms", "measures", "strata")),
-    "levers": ("a levers_effects effect or interaction on the query's one measure, at the one place query.strata "
-               "names (none or 'overall' for overall), with its interval; query.arms keeps the rows all of whose arms "
-               "it keeps", "the move", True, ("arms", "measures", "strata")),
+    "bar_reads": ("an arm against an absolute bar, its value and interval", "measure/arm", True,
+                  ("arms", "measures", "aspect")),
+    "compare": ("arms_compare's row: query.arms' first less its second on its one measure, at one place (strata: "
+                "'overall', a slice)", "its place", True, ("arms", "measures", "strata")),
+    "settle": ("settle_cases' row: one arm against one line it is read by, at one place", "arm/line/place", False,
+               ("arms", "measures", "strata")),
+    "levers": ("a levers_effects effect or interaction on the one measure, at the one place strata names",
+               "the move", True, ("arms", "measures", "strata")),
 }  # fmt: skip
 
 
