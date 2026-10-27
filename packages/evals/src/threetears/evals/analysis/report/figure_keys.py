@@ -3126,6 +3126,11 @@ _BASIS_WORDS: dict[str, str] = {
     "half_width": "its stated half-width",
     "sem": "its standard error",
     "binomial": "a pass/fail rate's binomial spread, from its count",
+    "cells": (
+        "the standard error derived from its target-matrix cells, the figure being their plain mean: the root of "
+        "the cells' squared standard errors over their count, the cells read as independent, at the cells' stated "
+        "level; a size read from it counts cases at today's mix of cells"
+    ),
 }
 
 
@@ -3323,6 +3328,10 @@ def _read_spread(report_input: ReportInput, arm_id: str, key: str, where: str, a
     if held is None:
         raise NoSpread(f"names {arm_id}'s mean on {key!r} {_where_words(where)}, which the input does not state")
     stat = held.stat
+    if where == _OVERALL and aspect is None and stat.ci is None and stat.half_width is None and stat.sem is None:
+        cells = _cells_spread(report_input, arm_id, key, held)
+        if cells is not None:
+            return cells
     try:
         return stat_spread(
             float(stat.mean) if stat.mean is not None else None,
@@ -3338,6 +3347,22 @@ def _read_spread(report_input: ReportInput, arm_id: str, key: str, where: str, a
         raise NoSpread(
             f"reads {arm_id}'s spread on {key!r} {_where_words(where)}, and the figure has none: {none}"
         ) from none
+
+
+def _cells_spread(report_input: ReportInput, arm_id: str, key: str, held: _Held) -> Spread | None:
+    """An arm's overall spread read off its target-matrix cells, where the overall states none of its own and is the
+    plain mean of its cells (:func:`~threetears.evals.analysis.cell_mean.cell_mean_interval`, the interval a gate on it
+    reads): its standard error the cells', combined; one case's spread that times the root of the overall's count. None
+    where the overall does not qualify, so its spread is read as before."""
+    try:
+        derived = cell_mean_interval(report_input, key, arm_id)
+    except NoCellMean:
+        # NOSILENT: an overall that is no plain mean of its cells is the input's shape, not a fault: its spread is
+        # read from what it states, as before, which is what None tells the caller.
+        return None
+    count, distinct = held.count, held.cases
+    per_case = derived.se * math.sqrt(distinct or count) if count is not None else None
+    return Spread(derived.mean, derived.se, count, per_case, derived.level, "cells", distinct)
 
 
 def _spread(

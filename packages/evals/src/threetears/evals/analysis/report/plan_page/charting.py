@@ -32,6 +32,9 @@ selects (:func:`~threetears.evals.analysis.report_rows.query_rows`, the one owne
   all; none for a rate of none or all). A chart draws it only where its stored level says so (``95% computed``,
   :data:`COMPUTED`), which code completes a dot strip, bars or a table of arms' figures with where none of its
   figures states an interval: so a stored chart draws as it was stored, and the level names the interval as code's.
+  An overall that is the plain mean of its target-matrix cells reads its spread off theirs instead
+  (:mod:`~threetears.evals.analysis.cell_mean`), which no binomial note describes, so no interval is computed for it
+  here: its interval is cited by its ``overall_interval.`` key.
 - **Reference lines** (:func:`reference_line`): the stored reference's figure key read off the input, in display
   units: a margin as minus the margin on a change axis, a floor or budget at the criterion's threshold. A kind that
   draws its criterion's line where the plan stores none (a dot strip's floor, range bars' budget, a heatmap's cell
@@ -62,6 +65,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
+from threetears.evals.analysis.cell_mean import NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import ChartReference, KitChart, LegendItem
@@ -462,7 +466,7 @@ def computed_interval(
     if stat.mean is None or stat.ci is not None or stat.half_width is not None or stat.sem is not None:
         return None
     table = report_input.measures.get(key) or report_input.judged.get(key)
-    if table is None or table.per_arm.get(arm) is not stat:
+    if table is None or table.per_arm.get(arm) is not stat or _cells_derive(report_input, key, arm):
         return None
     try:
         interval = resolve(f"spread.{arm}.{key}.overall.interval", report_input).value
@@ -474,6 +478,18 @@ def computed_interval(
     if not isinstance(interval, tuple) or not isinstance(level, float):
         raise TypeError(f"spread.{arm}.{key}.overall read as {interval!r} at {level!r}, not an interval at a level")
     return (float(interval[0]), float(interval[1])), level
+
+
+def _cells_derive(report_input: ReportInput, key: str, arm: str) -> bool:
+    """Whether an arm's overall figure is the plain mean of its target-matrix cells, its spread read off theirs, which
+    the computed interval's binomial note does not describe."""
+    try:
+        cell_mean_interval(report_input, key, arm)
+    except NoCellMean:
+        # NOSILENT: an overall that is no plain mean of its cells is the usual case, not a fault: its interval is
+        # computed as before, which is what False tells the caller.
+        return False
+    return True
 
 
 def computed_notes(context: ChartContext) -> tuple[str, ...]:

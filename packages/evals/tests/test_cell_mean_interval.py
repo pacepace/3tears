@@ -14,7 +14,10 @@ decision's implied caveats):
 - **nothing is derived without every cell's spread**: one cell stating none for every arm derives nothing and the
   caveat stays; one cell stating none for one arm derives nothing for that arm alone;
 - **refusals**: cells at a level other than the overall's, cells whose level is unstated, and cells that do not cover
-  the target matrix are refused, each saying why.
+  the target matrix are refused, each saying why;
+- **settling reads it too**: Nano-XS few-shot's borderline on the overall gate, which rests on the derived interval,
+  gets settling sizes and a wrong-side share checked by hand, its spread's basis naming the cells; an overall that
+  does not qualify still finds no spread.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ import pytest
 
 from packages.evals.tests.analyst_support import fixture_inputs
 from threetears.evals.analysis.analyst.cited import cite, cite_if
+from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report_decision import implied_caveats
@@ -195,3 +199,44 @@ def test_cells_that_do_not_cover_the_target_matrix_are_refused() -> None:
 
     with pytest.raises(UnstatedFigure, match="do not cover the target matrix once each"):
         resolve(_key("brisk-s.few", "interval"), _changed(drop))
+
+
+#: Nano-XS few-shot's overall cases (its scoreboard's, what its spread's count is) and the one- and two-sided normal
+#: quantiles at 95%, as a hand calculation writes them.
+NANO_CASES = 48210
+Z95_ONE_SIDED = 1.644854
+
+
+def test_a_borderline_on_the_derived_interval_gets_a_settling_size() -> None:
+    """Nano-XS few-shot reads 90.1 against the 90 gate, borderline on the interval its cells give. By hand: one case's
+    spread is se * sqrt(48210) with se = hw / 1.96 and hw**2 = 7.86 / 81, so a two-sided interval clears the line at
+    48210 * (hw / 0.1)**2 = 48210 * 7.86 / 0.81 = 467,815.6 cases (467,816), a one-sided bound at that times
+    (1.644854 / 1.959964)**2 (329,482.8, so 329,483), and a fresh run of today's size reads under the line with
+    probability Phi(-0.1 / se) = Phi(-0.6292) = 0.2646."""
+    held = _r3()
+    (row,) = settle_cases(held, arms=["nano-xs.few"], criterion="overall").rows
+    two_sided = NANO_CASES * 7.86 / 0.81
+    assert row.cases_needed_two_sided is not None and row.cases_needed is not None and row.wrong_side is not None
+    assert row.cases_needed_two_sided.value == math.ceil(two_sided) == 467_816
+    assert row.cases_needed.value == pytest.approx(two_sided * (Z95_ONE_SIDED / Z95) ** 2, abs=1)
+    se = math.sqrt(7.86) / 9 / Z95
+    assert row.wrong_side.value == pytest.approx(0.5 * math.erfc(0.1 / se / math.sqrt(2)), abs=1e-5)
+    assert row.wrong_side.value == pytest.approx(0.2646, abs=1e-4)
+    assert [figure.value for figure in row.counts] == [NANO_CASES]
+    (basis,) = row.basis
+    assert basis.derived and isinstance(basis.value, str) and "derived from its target-matrix cells" in basis.value
+    assert all(figure.derived for figure in (row.cases_needed, row.cases_needed_two_sided, row.wrong_side))
+    spread = cite("spread.nano-xs.few.balanced_accuracy.overall.se", held)
+    assert spread.derived and spread.value == pytest.approx(se, abs=1e-6)
+    interval = cite("spread.nano-xs.few.balanced_accuracy.overall.interval", held).value
+    assert interval == pytest.approx(cite(_key("nano-xs.few", "interval"), held).value), "the gate's interval"
+
+
+def test_an_overall_that_does_not_qualify_still_finds_no_spread() -> None:
+    held = _r3()
+    assert cite("spread.nano-xs.few.balanced_accuracy.overall.se", held).derived, "the control: r3's qualifies"
+    for measure in ("traffic_accuracy", "macro_f1"):
+        assert cite_if(f"spread.nano-xs.few.{measure}.overall.se", held) is None, measure
+    stripped = _without_spread("complex|news")
+    assert cite_if("spread.nano-xs.few.balanced_accuracy.overall.se", stripped) is None
+    assert cite_if("settle.criteria.overall.nano-xs.few.overall.cases_needed", stripped) is None

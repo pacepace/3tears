@@ -16,7 +16,10 @@ Its key is `overall_interval.<measure>.<arm>.<field>` (`mean`, `se`, `half_width
 `level`, `of`, `cells`, `basis`), every figure marked derived; `measure_read` by arm lists it in a row's `derived`
 (`FigureRow.derived`). A gate on the figure reads it (`CriterionFigure.derived`; `criteria.<criterion>.<arm>.low` and
 `.high` read its ends, marked derived, and a borderline reason says `derived interval`), so `point_estimate:<criterion>`
-is no longer implied there. Nothing is derived where any cell states no spread, the figure is a weighted mean or no
+is no longer implied there. An arm's overall spread reads the same standard error (`spread.<arm>.<measure>.overall.*`,
+basis naming the cells; one case's spread is it times the root of the overall's count), so `settle_cases` and
+`compare.*` read it too: a borderline on the derived interval gets its settling sizes. A chart computes no interval
+for such an overall, since its note would call it binomial. Nothing is derived where any cell states no spread, the figure is a weighted mean or no
 plain mean of its cells, the cells do not cover the matrix once each, or their level is unstated or differs from the
 one the overall states. The analyst's principles say that confidence reads the method and the evidence's variance,
 never the result alone.

@@ -195,6 +195,10 @@ def _spread_se(held: ReportInput, arm: str, key: str, where: str) -> float | Non
         assert stat.half_width is not None and se == pytest.approx(stat.half_width / z * points)
     elif basis == "its standard error":
         assert stat.sem is not None and se == pytest.approx(stat.sem * points)
+    elif isinstance(basis, str) and basis.startswith("the standard error derived from its target-matrix cells"):
+        # An overall that is the plain mean of its cells reads the standard error the gate's interval is built from.
+        assert where == "overall" and stat.ci is None and stat.half_width is None and stat.sem is None
+        assert se == pytest.approx(_number(resolve(f"overall_interval.{key}.{arm}.se", held).value))
     else:
         # A binomial spread rests on the distinct cases where the count is trials over fewer stated cases (each case
         # counted once: the widest its repeats allow), else on the count.
