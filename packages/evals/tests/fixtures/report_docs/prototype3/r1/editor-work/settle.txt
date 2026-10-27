@@ -1,0 +1,3 @@
+refused: settle_cases: nothing named can be settled: has no figure: the estimate sits exactly on its line, so no number of cases separates it
+remedy: settle a mean that states its spread and count (measure_read lists each arm's statistics), or name another criterion or measure
+recovery: {"parameters":["measure_key","criterion_id"],"accepted":["snapshot_id","arm_ids","measure_key","criterion_id","hypothetical_line","against","assumed_cases","bars_as","limit","offset"],"see":{"action":"help","topic":"settle_cases"}}

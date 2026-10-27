@@ -1,0 +1,37 @@
+[
+  {
+    "need": "Read a gate on its interval (lower bound for a higher-is-better line) instead of the point estimate, in options_dominance and decision_sensitivity",
+    "why": "The sole survivor clears the pass-rate gate by a tenth of a point; the decider needs to see what survives if the gate is read on the whole interval (nothing, on this snapshot) and whether the latency budget then decides",
+    "workaround": "dot_interval of pass rate with computed intervals for the configurations near the line, plus a sentence; the 'nothing survives' reading is stated as an inference from two blocks, not a computed call"
+  },
+  {
+    "need": "levers_effects and arms_compare on a percentile statistic (p95 latency), and settle_cases against a p95 budget",
+    "why": "What retry and reasoning cost in tail latency, and how sure the pick's 87 ms clearance is, are both part of the call; levers_effects refuses latency_ms (no mean) and settle_cases says a p95 states no spread",
+    "workaround": "range_bars of p50 to p95 per configuration against the budget, read by eye; the p95 clearance is carried as an open caveat with no size"
+  },
+  {
+    "need": "Failure-mode counts per arm and task (the outcome measure) and kept_from for the example cards",
+    "why": "To say where the pick's misses concentrate and which fix buys headroom; the outcome and extra_calls measures hold no statistics and examples_list returns an empty kept_from",
+    "workaround": "Three example cards, one per task, stated as illustrations with no claim about how many failures they stand for; task pass rates carry the where"
+  },
+  {
+    "need": "Case counts per task, so task pass rates carry intervals",
+    "why": "The pick's multi-hop rate is its weakest task and the lead for a fix, but tasks state no count, so the block draws bare points and nothing says whether multi-hop is separated from the others",
+    "workaround": "Task bars without intervals, called descriptive and uncorrected in the claim; no assumed_cases what-if, since no basis for a count exists"
+  },
+  {
+    "need": "render_report: the whole page rendered from a draft report document",
+    "why": "To reread the first screen as a reader and see how five claims, seven blocks and the explore controls sit together",
+    "workaround": "Each block drawn alone with block_render and its values table read; the first screen reread from the JSON"
+  },
+  {
+    "need": "A two-gate picture with intervals: gate_scatter whose points carry each axis's interval, or a dot_interval that reads two gated measures",
+    "why": "The lead block shows the pick inside the shaded corner, but its pass-rate interval crosses the line, which only a second block shows",
+    "workaround": "The lead gate_scatter, then a dot_interval of pass rate with computed intervals as its own claim"
+  },
+  {
+    "need": "decision_sensitivity that, with no range given, walks the whole ladder of a threshold (every figure where the call changes), or warns that the swept range stops short of a flip on the side that loosens the line",
+    "why": "Round one swept the pass-rate line from 95 to 99 and wrote an explore band that was wrong below 94.8%, where Nano-XS high reasoning with one retry takes the pick at a third of the cost; the only hint was a generic note that flips outside the range are not listed",
+    "workaround": "Re-swept from 80 to 99 and wrote the full ladder into the explore control"
+  }
+]

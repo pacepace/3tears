@@ -1,0 +1,6 @@
+example listing
+examples: []
+pool: the failed trials frozen with the snapshot: up to three per aspect, arm and stratum, every slice's first before any slice's second and its other cases before a repeat; each excerpt cut around the failure (centred on the passage the judge's reason quotes, else the reply's end), with the judge's or the check's reason. They are a sample: kept_from says, per aspect and arm, how many were kept of how many failed, so a pattern read in them names the share of the failures it rests on
+kept_from: []
+total: 0
+offset: 0

@@ -1,0 +1,26 @@
+rendered block
+block_kind: bars
+query:
+  source: measures
+  aspect: 
+  measures: [cost_per_1k]
+  arms: [prod, f64]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: usd_per_1k
+domain: 
+reference: none
+columns: [Row, Value, Note]
+rows (2):
+  - cells: [Production, $2.10, $2.10]
+  - cells: [f64, $1.47, $1.47]
+total: 2
+offset: 0
+truncated: False
+notes: []

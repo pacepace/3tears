@@ -1,0 +1,85 @@
+{
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline names the pick (Atlas-M) and the risk (resolve rate exactly on its 90% line). The decision block gives why each other model is out: Atlas-L over p95 in four of five tasks, Brisk-S under the quality floor in four, Open-70B at 89% against 95% on speculation. c1 and its gate matrix show Atlas-M as the only column with no Fails cell. A reader can act from this screen alone and knows which result to watch."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "c1 says Atlas-M is the only option that passes. c2 and c3 show its two thin gates: resolves at 90% on the line, and research p95 at 2.84 s against 3 s. c4 shows its cost, 2 to 5 points of overall quality below Atlas-L. Nothing contradicts the headline. The explore rows match decision_sensitivity: no model passes below 2.84 s, Atlas-L becomes eligible from 4.86 s, and any resolve line above 90% leaves the troubleshooting task with no passing model."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 1,
+      "reason": "Atlas-M's weak axes are all shown: it sits on the resolve line, its research p95 margin has no interval, and it is lower on quality. The fallback is overstated, though. The lede calls Atlas-L 'the only other model that resolves troubleshooting issues at or above the line' and frames the fallback as 'a trade between resolving issues and speed'. Atlas-L leads Atlas-M on resolves by only 1 point, with an interval of -5.1 to +7.1 (arms_compare). Atlas-L's own interval, 86.8% to 95.2%, also straddles the line. The 'watch' slot says a re-run is 'as likely to land below it as above', but the best_of_n caveat says a fresh run tends to read lower. c4 says Atlas-M is lower 'in every task but speculation bait', yet it is lower there too (-1); that gap is just within noise."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "I checked each omission against the snapshot. Atlas-M's other gate gaps are all at least 3 points or 0.16 s, and its quality half-widths are 1.1 to 1.8, so none is borderline. The cheaper single-task routes and Open-70B's borderline billing quality are moot because both models fail speculation, which applies to all traffic. count.examples = 0, so the 'no failure examples' omission is true. One gap: the 'no model passes' fallback hides that only troubleshooting (19% of traffic) would lose its passing model. Atlas-M still passes billing, persona and research when the resolve line rises (decision_sensitivity on threshold:trouble.resolves). This does not change today's call."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "All four snapshot caveats (best_of_n, judge_unstated, point_estimate:p95, no_control) are shown. Each has a specific material_if that says what would move the call, and each except no_control has a matching next step: a fresh larger set, judge calibration, and a p95 interval. no_control is scoped correctly to the quality comparison, not to the gate-based call."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "All five next steps name an experiment or a declaration and what it would settle. These are: improve and re-run troubleshooting, a larger fresh set, naming and calibrating the resolve judge, a p95 interval, and declaring volume and a price per point. The second step gives no case count. settle_cases refuses to size it because the estimate sits exactly on the line, so that omission is defensible. The parenthetical '(clear steps, escalation)' in the first step suggests a cause the data does not show: Atlas-M clears both gates by 5 points."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 2,
+      "reason": "Each block is the right form for its claim. c1 uses a gate matrix for a pass/fail-by-task claim. c2 uses a dot-interval with the floor for an on-the-line claim, and its interval of 85.6% to 94.4% is the interval cited. c3 uses range bars with the budget, and 2.84 s is the nearest Atlas-M bar end. c4 uses diverging bars with unpaired intervals for the quality gap, where troubleshooting at -5 is the largest. Each counterfactual holds: for example, if Atlas-M's troubleshooting dot sat at 93%, c2 and the headline's risk would change."
+    }
+  ],
+  "total": 13,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The lede and the next/watch slots frame the fallback as 'a trade between resolving issues and speed', with Atlas-L as the model that resolves at or above the line. Atlas-L leads Atlas-M on troubleshooting resolves by +1 point (interval -5.1 to +7.1), and its own interval of 86.8% to 95.2% also straddles 90%. If Atlas-M's true rate is under the line, Atlas-L's may be too, so the fallback is not clearly a resolve-for-latency trade. Say that Atlas-L is level with Atlas-M on resolving, and that only its higher quality and slower p95 separate them."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "'No model passes' in the lede, the caveats and the explore rows hides the scope of the failure. Above a 90% resolve line, only troubleshooting (19% of traffic) loses its passing model, and Atlas-M still passes billing, persona and research (decision_sensitivity on threshold:trouble.resolves). The contingency a reader needs is about the troubleshooting task, not a whole-traffic re-choice."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The watch slot says a re-run 'is as likely to land below it as above'. The best_of_n caveat says a fresh run 'tends to read it lower'. Reconcile them: as the pick of four, a re-run is more likely to land below than above."
+    },
+    {
+      "claim": "c4",
+      "severity": "should_fix",
+      "finding": "The c4 text says Atlas-M scores lower 'in every task but speculation bait'. It is lower there too (-1). The interval of -3.546 to +1.546 spans zero, so the gap is within noise. Write 'clearly lower in every task but speculation bait, where the gap is within noise'."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The explore price row prints the center as {price...per_point|usd_per_1k} ($14.76 per 1,000 conversations) and the ends as |usd ($11.09, $22.05), with no unit. Use |usd_per_1k on the low and high keys too; it reads as '$11.09 per 1,000 conversations'."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The first next step's '(clear steps, escalation)' suggests a cause the data does not support: Atlas-M clears both of those gates by 5 points. Either drop the parenthetical or ground it in failure examples, of which none were kept."
+    }
+  ],
+  "invariant_concerns": [
+    "None blocking. All 34 cited figure keys read on the snapshot (figure_keys_check, none unstated or refused). All four snapshot caveats are shown with material_if, and the confidence form high_if_immaterial matches open caveats. Method is present. Above the appendix, the only ids are caveat ids in their structural field.",
+    "Rendering note, not the report's text: in the gate matrix, Atlas-L persona prints '$41.0' and Atlas-M speculation prints '$19.0', while other cells drop the trailing .0. The cost precision is inconsistent within one block."
+  ],
+  "calls": 20
+}

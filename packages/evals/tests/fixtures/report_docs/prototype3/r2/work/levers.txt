@@ -1,0 +1,39 @@
+rendered block
+block_kind: diverging_bars
+query:
+  source: levers
+  aspect: 
+  measures: [pass_rate]
+  arms: [brisk-s.off.r0, brisk-s.off.r1, brisk-s.low.r0, brisk-s.low.r1, brisk-s.high.r0, brisk-s.high.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: brisk-s.low.r1
+title: 
+level: 95% unpaired
+unit: points
+domain: 
+reference: none
+columns: [Group, Row, Value, 95% unpaired interval, Note]
+rows (15):
+  - cells: [reasoning, Brisk-S · reasoning off · no retry → low, +4.17, +2.161 to +6.179, +4.2 pts]
+  - cells: [reasoning, Brisk-S · reasoning off · no retry → high, +5.54, +3.633 to +7.447, +5.5 pts]
+  - cells: [reasoning, Brisk-S · reasoning off · 1 retry → low, +2.52, +0.9329 to +4.107, +2.5 pts]
+  - cells: [reasoning, Brisk-S · reasoning off · 1 retry → high, +3.35, +1.845 to +4.855, +3.3 pts]
+  - cells: [reasoning, Brisk-S · reasoning low · no retry → high, +1.37, -0.2054 to +2.945, +1.4 pts]
+  - cells: [reasoning, Brisk-S · reasoning low · 1 retry → high, +0.83, -0.4053 to +2.065, +0.8 pts]
+  - cells: [retry, Brisk-S · reasoning off · no retry → 1.0, +3.52, +1.464 to +5.576, +3.5 pts]
+  - cells: [retry, Brisk-S · reasoning low · no retry → 1.0, +1.87, +0.3429 to +3.397, +1.9 pts]
+  - cells: [retry, Brisk-S · reasoning high · no retry → 1.0, +1.33, +0.03535 to +2.625, +1.3 pts]
+  - cells: [reasoning effect, across retry, at Brisk-S · reasoning off · 1 retry less at Brisk-S · reasoning off · no retry, -1.65, -4.211 to +0.9107, -1.7 pts]
+  - cells: [reasoning effect, across retry, at Brisk-S · reasoning off · 1 retry less at Brisk-S · reasoning off · no retry, -2.19, -4.619 to +0.2392, -2.2 pts]
+  - cells: [reasoning effect, across retry, at Brisk-S · reasoning low · 1 retry less at Brisk-S · reasoning low · no retry, -0.54, -2.542 to +1.462, -0.5 pts]
+  - cells: [retry effect, across reasoning, at Brisk-S · reasoning low · no retry less at Brisk-S · reasoning off · no retry, -1.65, -4.211 to +0.9107, -1.7 pts]
+  - cells: [retry effect, across reasoning, at Brisk-S · reasoning high · no retry less at Brisk-S · reasoning off · no retry, -2.19, -4.619 to +0.2392, -2.2 pts]
+  - cells: [retry effect, across reasoning, at Brisk-S · reasoning high · no retry less at Brisk-S · reasoning low · no retry, -0.54, -2.542 to +1.462, -0.5 pts]
+total: 15
+offset: 0
+truncated: False
+notes: [Each effect is one setting moved between two arms that differ in it alone, on Pass rate; each interaction is how that effect changes across another setting. Descriptive: read as two arms' own spreads, never a test.]

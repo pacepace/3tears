@@ -1,0 +1,28 @@
+rendered block
+block_kind: range_bars
+query:
+  source: measures
+  aspect: 
+  measures: [latency_s]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: s
+domain: 
+reference: none
+columns: [Group, Row, From, To]
+rows (4):
+  - cells: [Latency, P · Production, 1.1 s, 2.4 s]
+  - cells: [Latency, A · f64, 0.7 s, 1.6 s]
+  - cells: [Latency, B · f16, 0.6 s, 1.3 s]
+  - cells: [Latency, C · cor, 1.3 s, 2.9 s]
+total: 4
+offset: 0
+truncated: False
+notes: []

@@ -1,0 +1,128 @@
+{
+  "resolutions": [
+    {
+      "finding": "Explore row 2 ('any narrower margin leaves the trade open') contradicts next[0] and what_settles_it; rewrite the margin outcome with all three bands using contrast.f64.persona.interval.",
+      "status": "partially resolved",
+      "evidence": "Explore row 2 now gives the three bands as asked: a margin wider than the far end of -7.3 to -4.9 makes f64 acceptable, one narrower than the near end keeps Production, and one between leaves the call open. But next[0]'s settles clause still says a declaration 'turns the trade into a decision at once, with no further run'. That is wrong for the middle band (Explore row 1 and where_it_flips both say this run can't tell between $1,036 and $1,543). It is also wrong for the low band, where our_lean keeps Production until a re-run confirms f64's guardrails."
+    },
+    {
+      "finding": "The headline states 'with the loss deepest in long conversations' as fact while the depth claim calls it a lead.",
+      "status": "resolved",
+      "evidence": "The headline now gives only cost (30%, $7,560 a month), character (6.1 points) and that nothing declared weighs them. The depth pattern sits in c2, which opens 'A lead, not a finding', says the loss 'appears to grow', and its caption drops the per-reply intervals."
+    },
+    {
+      "finding": "our_lean rests on the unconfirmed depth pattern and asserts what a persona is for; ground it in the guardrail risk instead.",
+      "status": "resolved",
+      "evidence": "our_lean now rests on the guardrail re-run risk (8.9% wrong-side on music facts, 9.7% on declining to speculate) and gives its reversal condition: both guardrails hold and a point is worth under $1,036. It no longer mentions depth or what a persona is for."
+    },
+    {
+      "finding": "Settle table shows 'Needed, two-sided' 634/681 while next[1] cites 1,295/1,390; six all-dash columns; '447.0'-style counts.",
+      "status": "resolved",
+      "evidence": "c4's block is now a two-row settle bar of wrong-side rates only (8.9%, 9.7%), with no size columns to conflict. next[1] cites both sizes and names each: 634 and 681 for half of re-runs, 1,295 and 1,390 for four in five. All four keys read on the snapshot."
+    },
+    {
+      "finding": "Depth-band interval ends print at four significant figures.",
+      "status": "resolved",
+      "evidence": "c2's diverging_bars draws no intervals. Its values print to one decimal (-2.0, -4.5, -11.0, -17.5; cor -1.0 to -4.5)."
+    },
+    {
+      "finding": "The model-and-settings confound appears only in Method; add a run of flash with Production's reasoning setting and output cap.",
+      "status": "resolved",
+      "evidence": "next[3] runs Meridian-4.1-flash with Production's settings ({settings.prod.reasoning} = medium, {settings.prod.max_output_tokens} = 32k) on the same cases. Its settles clause is that run's purpose: how much of f64's loss is the model and how much its settings. Method's 'Not compared' row still names the confound. levers_effects confirms the model is not isolated (prod and f64 also differ in max_output_tokens)."
+    },
+    {
+      "finding": "One-row bar chart of the monthly price per point is not the clearest evidence.",
+      "status": "resolved",
+      "evidence": "The block is gone. The price per point with its band ($1,239, $1,036 to $1,543) is stated in where_it_flips and Explore row 1, and omitted row 10 accounts for dropping the chart."
+    },
+    {
+      "finding": "The cor next step should carry cor's flat depth figure.",
+      "status": "resolved",
+      "evidence": "next[4] now cites cor's overall loss (2.2) and its loss at 11+ (4.5, against f64's 17.5), plus its 23% lower cost. c2 also shows cor at every depth."
+    },
+    {
+      "finding": "Invariant 1: typed candidate count and typed output-cap settings.",
+      "status": "resolved",
+      "evidence": "The candidate count is cited as {n_candidates|words} (reads 'three') in the c1 caption, c3, the best_of_n caveat and Method. Omitted row 3 cites {settings.f64.max_output_tokens} (64k) and {settings.f16.max_output_tokens} (16k)."
+    }
+  ],
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline gives the trade both ways: 30% cheaper, $7,560 a month, 6.1 points less in character, and nothing declared to weigh them. The flag gives the choice to the product owner. The decision slots give the price per point with its band ($1,239, $1,036 to $1,543) and which way each side goes. They add a labelled lean (keep Production until a re-run confirms f64's guardrails, at 8.9% and 9.7% wrong-side) and the main risks in Watch: specul cleared by 1.4 points, character loss unmeasured on listeners. c1 shows both axes."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 1,
+      "reason": "c1 to c5 run in order: the trade, where the loss may sit (a lead), why f64 is the only option, how thin its clearance is, and minor gains. The headline is no longer contradicted. Two pieces still disagree. (a) next[0] says a declared price or margin 'turns the trade into a decision at once, with no further run'. where_it_flips and Explore row 1 leave the $1,036 to $1,543 band undecided, and our_lean keeps Production even below $1,036 until a re-run confirms the guardrails. (b) Method says a rate that clears its line while its interval crosses it 'goes in Watch'. f64's music-facts rate (92.1%, interval 89.0% to 95.2%, line 90%) is such a rate. Watch names only declining to speculate, as f64's 'nearest line'."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 1,
+      "reason": "Both options' weak axes are visible: Production's $7,560 a month, and f64's 6.1-point loss and thin clearances of 2.1 and 1.4 points (c3, c4). The depth pattern is now a lead. One framing is stronger than the page supports. where_it_flips and both Explore rows rest on the paired interval -7.3 to -4.9, half-width 1.2. The report argues that per-reply intervals read too narrow because replies share conversations (c2 caption, Method 'Intervals'), yet it never says what unit this interval counts. The snapshot does not state it. Its own case-level spread (settle_cases: n = 300 cases per arm, about 8 replies each) gives roughly -11.2 to -1.0 unpaired. A clustered paired interval would fall between the two. The direction holds either way (settle wrong_side 0.9%), but the flip band could be several times wider than $1,036 to $1,543."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "I checked the omitted rows against the snapshot, and none changes the decision. The scenario strata hold no counts or shares (measure_breakdown returns none). The output-cap lever is -1.3 points (-7 to +4.4) between f64 and f16, not separated. No failure examples were kept (examples_list is empty). f16 and cor are out by the declared gates (options_dominance: f16 fails facts at -0.6, cor fails specul at -3). Production's own depth decline (93.5% to 87.5%) is descriptive. One small gap: omitted row 7 says the trial count behind each depth band is in Method, but Method gives only 300 cases and 2,400 replies per arm, not the band counts (912, 768, 480, 240)."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "The model-and-settings confound is named in Method ('Not compared') and carried into next[3]. That step runs the flash model with Production's medium reasoning and 32k cap, and says what it would separate. Within-conversation dependence is carried into c2's caption, Method and next[5]. The unstated music-facts judge is a caveat with material_if, and Method names it. cor's different reasoning setting (high) is not drawn out, but cor is not an option."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "All six steps name a declaration or a run, and each says what it settles: the owner declares a price or margin; f64 is re-run at 634 and 681 cases (half of re-runs) or 1,295 and 1,390 (four in five); a mix routes conversations to Production from the 6–10 depth band; flash runs with Production's settings; cor gets a speculation guard; and failure examples are kept for depth 11+, banter and taking a correction. The overclaim in next[0]'s settles clause is scored under item 2."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 2,
+      "reason": "Each block fits its claim, and each counterfactual holds. c1: the cost bars and the persona forest would contradict the claim if f64 were dearer or its interval crossed zero. c3: the guardrail dot-intervals against their floors would contradict it if f64's dots fell under 90% or 95%. c4: the settle bars carry exactly the 8.9% and 9.7% the claim cites. c5: the latency range bars. One defect remains, listed in findings. c2's caption says no intervals are drawn because per-reply intervals overstate how settled each band is. Its rendered note still says 'Bold rows are separated at 95% before any correction', which marks rows as separated using exactly those intervals."
+    }
+  ],
+  "total": 12,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The flip band rests on an interval whose unit the page never states. where_it_flips ($1,036 to $1,543) and Explore rows 1 and 2 (4.9 to 7.3 points) both come from the paired contrast -7.3 to -4.9. The report itself argues that per-reply intervals read too narrow because about 8 replies share each of 300 conversations, but it applies that argument only to the depth bands. The snapshot does not say whether this contrast counts conversations or replies. Read on cases, the unpaired spread is about -11.2 to -1.0. The direction holds either way (wrong_side 0.9%), but the band could be several times wider. Say in Method and where_it_flips that the band is the pipeline's paired interval with its unit unstated, and that it would widen if it counts replies."
+    },
+    {
+      "claim": "next",
+      "severity": "should_fix",
+      "finding": "next[0]'s settles clause, 'Turns the trade into a decision at once, with no further run', contradicts the page. Between $1,036 and $1,543 a point (or a 4.9 to 7.3 point margin), where_it_flips and Explore say this run can't tell. Below $1,036, our_lean still keeps Production until a re-run confirms the guardrails. Say that a declaration settles the call outright only above the high end. Elsewhere it settles the call once next[1]'s re-run confirms f64, or it narrows the call to the middle band."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Method says a rate that clears its line while its interval crosses it 'goes in Watch'. f64's music-facts rate (92.1%, 89.0% to 95.2%, line 90%) is borderline by that rule, but Watch names only declining to speculate, as the 'nearest line'. Add music facts, cleared by {criteria.facts.f64.gap|abs|pts}, to Watch, or soften Method's rule."
+    },
+    {
+      "claim": "c2",
+      "severity": "should_fix",
+      "finding": "The caption says no intervals are drawn because per-reply intervals overstate how settled each band is. The block's own note says 'Bold rows are separated at 95% before any correction', and those bold marks come from the same per-reply intervals. A reader sees the page disown intervals and then use them. Drop the separation marking for this block, or say in the caption that the bold marks rest on per-reply intervals and are as unsettled as the bands."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Omitted row 7 says the trial count behind each depth band is in Method, but it is not there. Method gives 300 cases and 2,400 replies per arm, not the band counts (912, 768, 480, 240 replies, or 38%, 32%, 20% and 10%). Those shares also matter to next[2]'s mix: the 6–10 and 11+ bands hold 30% of replies but about two thirds of f64's 6.1-point loss."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 1: next[3] types the model name 'Meridian-4.1-flash', which contains a number, instead of citing {settings.f64.model}.",
+    "Invariant 1 (minor): stratum labels are typed in prose ('turn depth 1–2', '11+', 'the 6–10 depth band') rather than cited by key. strata.<id>.name reads them. These are labels, not measured figures.",
+    "All 46 figure keys the report cites read on the snapshot (figure_keys_check: 46 reads, 0 unstated, 0 refused). All four snapshot caveats are shown with material_if clauses, and the confidence form high_if_immaterial is not a plain high. No internal ids or measure keys appear above the appendix."
+  ],
+  "calls": 18
+}

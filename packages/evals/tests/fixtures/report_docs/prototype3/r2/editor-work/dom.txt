@@ -1,0 +1,162 @@
+dominance
+survivors (1):
+  - arm: arm:brisk-s.low.r1; gate_status: pass; borders: []; warnings: []; standing: not_behind; behind: []; why: []; dominated_by: []; dominated_with_axes: []
+    figures (3):
+      cost_per_1k.brisk-s.low.r1 = $0.30
+      criteria.pass_rate.brisk-s.low.r1.gap = 0.1
+      criteria.p95.brisk-s.low.r1.gap = 87 ms
+out (17):
+  - arm: arm:atlas-m.off.r0; breached: []; unknown: []
+    gates (2):
+      - criterion: pass_rate; place: none; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.atlas-m.off.r0.value = 94%
+          criteria.pass_rate.atlas-m.off.r0.gap = -3
+      - criterion: p95; place: none; status: fail
+        figures (3):
+          criteria.p95.threshold = 600 ms
+          criteria.p95.atlas-m.off.r0.value = 900 ms
+          criteria.p95.atlas-m.off.r0.gap = -300 ms
+  - arm: arm:atlas-m.off.r1; breached: []; unknown: []
+    gates (2):
+      - criterion: pass_rate; place: none; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.atlas-m.off.r1.value = 96.4%
+          criteria.pass_rate.atlas-m.off.r1.gap = -0.6
+      - criterion: p95; place: none; status: fail
+        figures (3):
+          criteria.p95.threshold = 600 ms
+          criteria.p95.atlas-m.off.r1.value = 1019 ms
+          criteria.p95.atlas-m.off.r1.gap = -419 ms
+  - arm: arm:atlas-m.low.r0; breached: []; unknown: []
+    gates (2):
+      - criterion: pass_rate; place: none; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.atlas-m.low.r0.value = 96.6%
+          criteria.pass_rate.atlas-m.low.r0.gap = -0.4
+      - criterion: p95; place: none; status: fail
+        figures (3):
+          criteria.p95.threshold = 600 ms
+          criteria.p95.atlas-m.low.r0.value = 1395 ms
+          criteria.p95.atlas-m.low.r0.gap = -795 ms
+  - arm: arm:atlas-m.low.r1; breached: []; unknown: []
+    gates (1):
+      - criterion: p95; place: none; status: fail
+        figures (3):
+          criteria.p95.threshold = 600 ms
+          criteria.p95.atlas-m.low.r1.value = 1500 ms
+          criteria.p95.atlas-m.low.r1.gap = -900 ms
+  - arm: arm:atlas-m.high.r0; breached: []; unknown: []
+    gates (1):
+      - criterion: p95; place: none; status: fail
+        figures (3):
+          criteria.p95.threshold = 600 ms
+          criteria.p95.atlas-m.high.r0.value = 2430 ms
+          criteria.p95.atlas-m.high.r0.gap = -1830 ms
+  - arm: arm:atlas-m.high.r1; breached: []; unknown: []
+    gates (1):
+      - criterion: p95; place: none; status: fail
+        figures (3):
+          criteria.p95.threshold = 600 ms
+          criteria.p95.atlas-m.high.r1.value = 2551 ms
+          criteria.p95.atlas-m.high.r1.gap = -1951 ms
+  - arm: arm:brisk-s.off.r0; breached: []; unknown: []
+    gates (1):
+      - criterion: pass_rate; place: none; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.off.r0.value = 91.1%
+          criteria.pass_rate.brisk-s.off.r0.gap = -5.9
+  - arm: arm:brisk-s.off.r1; breached: []; unknown: []
+    gates (1):
+      - criterion: pass_rate; place: none; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.off.r1.value = 94.6%
+          criteria.pass_rate.brisk-s.off.r1.gap = -2.4
+  - arm: arm:brisk-s.low.r0; breached: []; unknown: []
+    gates (1):
+      - criterion: pass_rate; place: none; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.low.r0.value = 95.3%
+          criteria.pass_rate.brisk-s.low.r0.gap = -1.7
+  - arm: arm:brisk-s.high.r0; breached: []; unknown: []
+    gates (2):
+      - criterion: pass_rate; place: none; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.brisk-s.high.r0.value = 96.6%
+          criteria.pass_rate.brisk-s.high.r0.gap = -0.4
+      - criterion: p95; place: none; status: fail
+        figures (3):
+          criteria.p95.threshold = 600 ms
+          criteria.p95.brisk-s.high.r0.value = 810 ms
+          criteria.p95.brisk-s.high.r0.gap = -210 ms
+  - arm: arm:brisk-s.high.r1; breached: []; unknown: []
+    gates (1):
+      - criterion: p95; place: none; status: fail
+        figures (3):
+          criteria.p95.threshold = 600 ms
+          criteria.p95.brisk-s.high.r1.value = 870 ms
+          criteria.p95.brisk-s.high.r1.gap = -270 ms
+  - arm: arm:nano-xs.off.r0; breached: []; unknown: []
+    gates (1):
+      - criterion: pass_rate; place: none; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.off.r0.value = 81%
+          criteria.pass_rate.nano-xs.off.r0.gap = -16
+  - arm: arm:nano-xs.off.r1; breached: []; unknown: []
+    gates (1):
+      - criterion: pass_rate; place: none; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.off.r1.value = 88.5%
+          criteria.pass_rate.nano-xs.off.r1.gap = -8.5
+  - arm: arm:nano-xs.low.r0; breached: []; unknown: []
+    gates (1):
+      - criterion: pass_rate; place: none; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.low.r0.value = 87.9%
+          criteria.pass_rate.nano-xs.low.r0.gap = -9.1
+  - arm: arm:nano-xs.low.r1; breached: []; unknown: []
+    gates (1):
+      - criterion: pass_rate; place: none; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.low.r1.value = 92.7%
+          criteria.pass_rate.nano-xs.low.r1.gap = -4.3
+  - arm: arm:nano-xs.high.r0; breached: []; unknown: []
+    gates (1):
+      - criterion: pass_rate; place: none; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.high.r0.value = 91.3%
+          criteria.pass_rate.nano-xs.high.r0.gap = -5.7
+  - arm: arm:nano-xs.high.r1; breached: []; unknown: []
+    gates (1):
+      - criterion: pass_rate; place: none; status: fail
+        figures (3):
+          criteria.pass_rate.threshold = 97%
+          criteria.pass_rate.nano-xs.high.r1.value = 94.8%
+          criteria.pass_rate.nano-xs.high.r1.gap = -2.2
+undecided: []
+bars_as: warnings
+weighs: [gates, cost]
+dominant: [arm:brisk-s.low.r1]
+axes: []
+dominant_with_axes: [arm:brisk-s.low.r1]
+code_call:
+  reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+  modes: [decide]
+  dominant: [arm:brisk-s.low.r1]
+  ranking_rule: []
+  withheld: 
+total: 18
+offset: 0
+notes: []

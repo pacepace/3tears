@@ -1,0 +1,143 @@
+{
+  "schema": "report-doc/1",
+  "story": "decision",
+  "flag": "No control and no interval in the declared gates: each configuration is read on its point estimate against two lines set in advance, and the pick clears the pass-rate line by less than its own noise.",
+  "headline": "Ship {arm:brisk-s.low.r1}, the only configuration inside both gates, knowing its pass rate sits on the line: it clears {criteria.pass_rate.threshold} by {criteria.pass_rate.brisk-s.low.r1.gap|abs|pts} points.",
+  "lede": "Every configuration with room above the pass-rate line misses the latency budget, so nothing measured clears both lines with margin. A fresh run of today's size would read the pick below the pass-rate line {settle.criteria.pass_rate.brisk-s.low.r1.overall.wrong_side} of the time.",
+  "confidence": {
+    "form": "high_if_immaterial",
+    "caveats": [
+      {"id": "point_estimate:pass_rate", "material_if": "Only if the pick's true pass rate is below the line, which its interval allows: then no configuration measured passes both gates, and the choice becomes which gate to relax."},
+      {"id": "best_of_n", "material_if": "Only if the pick's clearance is chance: the best of {n_candidates|words} configurations near a line reads high, and this pushes the same way as the pass-rate caveat, so a fresh run is more likely to read it lower than higher."},
+      {"id": "point_estimate:p95", "material_if": "Only if the pick's p95 runs past the budget on a fresh run; its clearance of {criteria.p95.brisk-s.low.r1.gap} carries no stated spread, so nothing sizes how sure it is."},
+      {"id": "no_control", "material_if": "Only for the comparisons between settings, which are read unpaired and so err wide; the call reads each configuration against the declared lines and rests on no comparison."}
+    ]
+  },
+  "decision": [
+    {"slot": "recommendation", "text": "Ship {arm:brisk-s.low.r1}. It is the only configuration that meets both declared gates, read as declared on the point estimate, at {cost_per_1k.brisk-s.low.r1|usd_per_1k}, or {cost_per_month.brisk-s.low.r1|usd_whole} a month at the declared volume."},
+    {"slot": "why_not", "text": "Of the {n_candidates|words} configurations, {count.passing.pass_rate|words} reach the pass-rate line and {count.passing.p95|words} stay inside the latency budget; only the pick does both. The Atlas-M settings and the high-reasoning Brisk-S settings miss the latency budget, and every Nano-XS setting and the remaining Brisk-S settings miss the pass-rate line."},
+    {"slot": "watch", "text": "The pick's pass rate of {criteria.pass_rate.brisk-s.low.r1.value} has an interval of {spread.brisk-s.low.r1.pass_rate.overall.interval|interval}, crossing the line, and as the one survivor of {n_candidates|words} it likely reads high. More cases will not settle it at a practical size: a two-sided reading would need {settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided|int} cases against {spread.brisk-s.low.r1.pass_rate.overall.n|int} today."},
+    {"slot": "next", "text": "Buy headroom on the pick rather than more cases: a second retry or a multi-hop fix on Brisk-S with low reasoning, re-run on fresh cases, could clear the line with its whole interval. Failing that, the latency budget is the one lever that opens a safer option."}
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "weight": "lead",
+      "text": "{arm:brisk-s.low.r1} is the only one of {n_candidates|words} configurations inside both the pass-rate line and the latency budget.",
+      "evidence": [
+        {
+          "block": "gate_scatter",
+          "query": {"source": "measures", "measures": ["pass_rate", "latency_ms"]},
+          "emphasis": "brisk-s.low.r1",
+          "caption": "Pass rate against p95 latency, one point per configuration, with both declared lines; latency is on a log scale because it spans more than tenfold."
+        }
+      ]
+    },
+    {
+      "id": "c2",
+      "weight": "support",
+      "text": "The pick clears the pass-rate line by {criteria.pass_rate.brisk-s.low.r1.gap|abs|pts} points, inside its own noise: its computed interval reaches down to {spread.brisk-s.low.r1.pass_rate.overall.low}, and a run of today's size reads it below the line {settle.criteria.pass_rate.brisk-s.low.r1.overall.wrong_side} of the time.",
+      "evidence": [
+        {
+          "block": "dot_interval",
+          "query": {"source": "measures", "measures": ["pass_rate"], "arms": ["brisk-s.low.r1", "brisk-s.high.r1", "atlas-m.low.r1", "atlas-m.high.r0", "atlas-m.high.r1"]},
+          "reference": "floor",
+          "emphasis": "brisk-s.low.r1",
+          "caption": "Pass rate of each configuration at or above the line, with a computed interval; only the pick's interval crosses the line."
+        },
+        {
+          "block": "table",
+          "query": {"source": "settle", "arms": ["brisk-s.low.r1"], "measures": ["pass_rate"]},
+          "caption": "Cases a re-run of the pick would need for its interval to sit wholly above the line, if its true rate is today's."
+        }
+      ]
+    },
+    {
+      "id": "c3",
+      "weight": "support",
+      "text": "Every configuration whose pass-rate interval clears the line misses the latency budget; the nearest, {arm:brisk-s.high.r1}, runs a p95 of {criteria.p95.brisk-s.high.r1.value}.",
+      "evidence": [
+        {
+          "block": "range_bars",
+          "query": {"source": "measures", "measures": ["latency_ms"], "arms": ["brisk-s.low.r1", "brisk-s.high.r1", "atlas-m.low.r1", "atlas-m.high.r0", "atlas-m.high.r1"]},
+          "reference": "budget",
+          "emphasis": "brisk-s.low.r1",
+          "caption": "Latency from p50 to p95 for the same configurations, against the declared budget."
+        }
+      ]
+    },
+    {
+      "id": "c4",
+      "weight": "detail",
+      "text": "One retry is what lifts the pick over the line, adding {lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.effect|pts} points ({lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.interval|pts}); high reasoning on top adds {lever.reasoning.brisk-s.low.r1.brisk-s.high.r1.pass_rate.effect|pts} points ({lever.reasoning.brisk-s.low.r1.brisk-s.high.r1.pass_rate.interval|pts}), not separated from zero.",
+      "evidence": [
+        {
+          "block": "diverging_bars",
+          "query": {"source": "levers", "measures": ["pass_rate"], "arms": ["brisk-s.low.r0", "brisk-s.low.r1", "brisk-s.high.r1"]},
+          "emphasis": "brisk-s.low.r1",
+          "caption": "Change in pass rate from moving one setting on Brisk-S, read on the two configurations' own spreads."
+        }
+      ]
+    },
+    {
+      "id": "c5",
+      "weight": "detail",
+      "text": "Multi-hop questions are the pick's weakest task at {task.multihop.brisk-s.low.r1.pass_rate.mean}, a descriptive lead for where headroom could come from, since the task figures carry no case counts.",
+      "evidence": [
+        {
+          "block": "bars",
+          "query": {"source": "tasks", "measures": ["pass_rate"], "arms": ["brisk-s.low.r0", "brisk-s.low.r1"]},
+          "emphasis": "brisk-s.low.r1",
+          "caption": "Pass rate by task for Brisk-S with low reasoning, without and with one retry."
+        },
+        {
+          "block": "examples",
+          "query": {"source": "examples", "arms": ["brisk-s.low.r1"]},
+          "caption": "One kept failure of the pick per task; how many failures each stands for is not recorded."
+        }
+      ]
+    }
+  ],
+  "explore": [
+    {
+      "control": "Pass-rate line",
+      "binds": "Which configurations survive the pass-rate gate.",
+      "outcome": "Lowered to {criteria.pass_rate.brisk-s.low.r0.value} or below, {arm:brisk-s.low.r0} becomes the pick. Raised past {criteria.pass_rate.brisk-s.low.r1.value}, no configuration passes both gates."
+    },
+    {
+      "control": "Latency budget",
+      "binds": "Which configurations survive the latency gate.",
+      "outcome": "Raising it never changes the pick, because every configuration it admits costs more. Lowered below {criteria.p95.brisk-s.low.r1.value}, no configuration passes both gates."
+    },
+    {
+      "control": "How the pass-rate line is read",
+      "binds": "Whether a configuration passes on its point estimate or on its whole interval.",
+      "outcome": "On the whole interval the pick fails, and nothing passes both gates unless the latency budget rises to {criteria.p95.brisk-s.high.r1.value}, where {arm:brisk-s.high.r1} passes both at {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_cost_gap|abs|usd_whole} a month more than the pick."
+    }
+  ],
+  "omitted": [
+    {"what": "A cost chart across all configurations", "why": "Cost ranks only the configurations that pass both gates; with one survivor it decides nothing. The pick's cost and the monthly step to the high-reasoning variant are stated in text."},
+    {"what": "The Nano-XS configurations", "why": "Every Nano-XS configuration misses the pass-rate line and none is near the call; they stay in the full tables."},
+    {"what": "Retry helping the weaker models more (the retry effect differs across models)", "why": "A real interaction, but it bears only on tuning Nano-XS, which no setting brings to the line; it does not change the call."},
+    {"what": "The reasoning effects from off to low on each model", "why": "They explain why the off settings miss the line, which the gates already show; the one reasoning move that bears on the call (low to high on the pick) is in c4."},
+    {"what": "Calls per task", "why": "Describes how each planner works; no line was declared on it and it does not change the call."},
+    {"what": "p50 latency as a figure of its own", "why": "The gate reads p95; p50 appears only as the left end of the range bars."},
+    {"what": "Per-task pass rates of configurations other than the pick", "why": "The gate is overall; task figures carry no counts, and showing every configuration by task would invite reading a per-task gate nobody declared."},
+    {"what": "The outcome and extra-call measures", "why": "The snapshot holds no figures for either."}
+  ],
+  "next": [
+    {"text": "Declare how the pass-rate gate reads: on the point estimate, as now, or on the whole interval.", "settles": "Whether the pick passes today. On the whole interval nothing passes both gates, and the latency budget becomes the decision."},
+    {"text": "Run Brisk-S with low reasoning and a second retry, or with a multi-hop fix, on fresh cases, watching the tail: one retry already moved its p95 from {measure.latency_ms.brisk-s.low.r0.p95} to {criteria.p95.brisk-s.low.r1.value}.", "settles": "Whether a cheap configuration can clear the pass-rate line with its whole interval while staying inside the latency budget, and how much of today's clearance was the luck of picking the best of {n_candidates|words}."},
+    {"text": "The latency owner says whether the budget could rise to {criteria.p95.brisk-s.high.r1.value}.", "settles": "Whether {arm:brisk-s.high.r1}, whose whole interval clears the pass-rate line, becomes the safer pick at {cost_per_month.brisk-s.high.r1|usd_whole} a month; its pass-rate gain over the pick is not separated, so the case for it is the margin, not a measured lead."}
+  ],
+  "method": [
+    {"term": "Configurations", "text": "There are {n_candidates|words} configurations: {count.levels.model|words} models, each at {count.levels.reasoning|words} reasoning levels, each with and without one retry. Each ran {spread.brisk-s.low.r1.pass_rate.overall.n|int} cases once. There is no control."},
+    {"term": "Pass", "text": "The campaign does not state what makes a trial pass. Recorded failures are a missing call, wrong arguments or the wrong tool."},
+    {"term": "Gates", "text": "Pass rate at least {criteria.pass_rate.threshold} and p95 latency at most {criteria.p95.threshold}, both over all tasks, declared before the run and read on point estimates."},
+    {"term": "Intervals", "text": "Pass-rate intervals are computed at {spread.brisk-s.low.r1.pass_rate.overall.level} from each rate's count, not stated by the pipeline. Setting effects compare two configurations' own spreads, unpaired, which errs wide where they ran the same cases. Task figures and latency carry no interval."},
+    {"term": "Settling a line", "text": "The cases a re-run needs for its interval to sit wholly on today's side of a line, if the true figure equals today's, and how often a run of today's size would land on the other side."},
+    {"term": "Cost", "text": "Cost per 1,000 calls, and a month at the declared volume of {meta.volume_per_month|int}."},
+    {"term": "Not compared", "text": "No mix of configurations was run, and no configuration was compared against a production baseline."},
+    {"term": "Source", "text": "Synthetic example data, run {meta.run_date}."}
+  ]
+}

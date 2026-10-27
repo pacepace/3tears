@@ -1,0 +1,113 @@
+{
+  "resolutions": [
+    {
+      "finding": "c2 (must_fix): caption 'only the pick's interval crosses the line' is false on its own block; E (Atlas-M high, no retry) also crosses.",
+      "status": "resolved",
+      "evidence": "The c2 dot_interval caption now reads 'the pick's interval and {arm:atlas-m.high.r0}'s cross the line, the rest clear it'. Rows match: J 96.2% to 98.1% and E 96.9% to 98.6% cross 97%; L (97.2%), D (97.1%) and F (98.0%) have low ends above it."
+    },
+    {
+      "finding": "report (must_fix): Explore 'Pass-rate line' said lowering to 95.3% or below hands the pick to Brisk-S low no-retry; the sweep gives it to Nano-XS high with one retry from 92.7% to 94.8%.",
+      "status": "resolved",
+      "evidence": "Explore now reads: 95.3% gives I; 94.8% gives S at $444 a month against the pick's $1,208; cheaper Nano-XS settings follow lower down. The threshold:pass_rate sweep matches: I owns 94.8 to 95.3, S owns 92.7 to 94.8, Q, N and M follow. One boundary nit remains: the text says 'below 92.7%', but with the boundary on the lower side Q is already the pick at exactly 92.7%."
+    },
+    {
+      "finding": "report (should_fix): Omitted 'Nano-XS ... none is near the call' overstated; the retry-by-model interaction is the lever a headroom experiment would pull.",
+      "status": "resolved",
+      "evidence": "The omission now covers only the Nano-XS settings other than S, which pick only at 92.7% or lower. The retry interaction's reason says it is why a second retry on Nano-XS is in the next steps. Next step 2 adds S with a second retry, gives its 94.8% (93.5% to 96%) and says it needs a large lift. levers_effects supports 'retry lifts Nano-XS most': +7.5, +4.8 and +3.4 on Nano-XS against +0.9 to +3.5 elsewhere, and the one 'differs' interaction is Atlas-M off against Nano-XS off."
+    },
+    {
+      "finding": "c3 (should_fix): the claim names configurations whose interval clears the line (L, D, F), but the range_bars also showed E.",
+      "status": "resolved",
+      "evidence": "The c3 range_bars now hold J, L, D and F, and the caption says 'the pick and the configurations whose pass-rate interval clears the line'. The block and the claim name the same set."
+    },
+    {
+      "finding": "report (should_fix): the lede and c2 stated 38.6% without the 'if its true rate is today's' condition.",
+      "status": "resolved",
+      "evidence": "The lede now reads 'Even if its true rate is today's, a fresh run of the same size would read the pick below the pass-rate line 38.6% of the time'. c2 ends 'if its true rate is today's'. 'Even if' also marks this as the favourable case under best_of_n."
+    },
+    {
+      "finding": "report (should_fix): the watch slot cited the two-sided need (54,451) while the c2 settle caption described the one-sided need (38,350).",
+      "status": "resolved",
+      "evidence": "The settle caption now names both ('one-sided and for a printed two-sided interval'). The watch slot says 'for an interval printed like these to sit wholly above the line', which is the two-sided need it cites (54,451). Both readings agree."
+    },
+    {
+      "finding": "report (should_fix): the confidence form 'high_if_immaterial' is generous when the lead caveat has about a 39% chance of being material.",
+      "status": "partially resolved",
+      "evidence": "The form is unchanged. A new Method term 'Confidence' gives the reason: the call follows from gates declared in advance and read on point estimates. It also says the one real doubt is close to even, is named with its odds on the first screen and in Watch, and that the grade should be read with that line. That makes the choice defensible and visible. The label alone still reads stronger than a call with roughly a 39% (or worse, under best_of_n) chance of resting on a failing rate."
+    }
+  ],
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "What to do: the headline ships J. Why: why_not says only J clears both gates; five configurations reach 97%, ten stay under 600 ms, and options_dominance and the sweep's declared call confirm it. Main risk: J clears by 0.1 points, its interval is 96.2% to 98.1%, and a run of today's size reads it below the line 38.6% of the time even if today's rate is true. The flag adds that the gates have no interval. The c1 gate_scatter shows the lone survivor."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "The argument runs: c1 (only survivor) -> c2 (its clearance is inside noise; J and E cross, L, D and F clear) -> c3 (L, D and F all miss latency; the nearest, L, is at 870 ms) -> c4 (one retry, +1.9 (+0.3 to +3.4), is what lifts I to J) -> c5 (multi-hop at 95.6% is where headroom could come from). That feeds the next slot and next step 2. The headline, lede, watch, explore 3 and next step 3 agree, and the round 1 contradiction in the c2 caption is gone."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 2,
+      "reason": "J's weak pass-rate axis is on the first screen, with its condition stated ('Even if its true rate is today's'), and again in c2, watch and the caveats. The p95 clearance (87 ms) is marked as having no spread. c4 says high reasoning's +0.8 (-0.4 to +2.1) is not separated, and next step 3 says L's case is margin, not a measured lead. The confidence label stays generous, but the Method 'Confidence' term now explains it and points to the odds."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "The omissions hold against the snapshot. With one survivor, cost decides nothing. The Nano-XS settings other than S pick only at 92.7% or lower (sweep segments). The retry interaction is no longer dropped; it is routed into next step 2. Off-reasoning effects, calls per task, p50 and per-task rates of other configurations do not move the call. The outcome and extra-call measures have no figures."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "All four caveats in caveats_list (no_control, point_estimate:pass_rate, point_estimate:p95, best_of_n) are shown with material_if clauses. Each is also carried into the story:\n- no_control: the c4 caption and Method's unpaired-intervals term.\n- best_of_n: watch and next step 2.\n- p95 without spread: next step 2, 'watching the tail' (465 to 513 ms from one retry).\n- task figures without counts: c5 and the omissions.\nThe unstated pass definition is in Method. campaign_overview confirms the 1,200 cases per configuration that Method states."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "Each step names a declaration or an experiment and what it would settle:\n- Step 1 is a declaration of how the gate reads. It settles whether J passes today; read on the whole interval, latency decides.\n- Step 2 is an experiment: J with a second retry or a multi-hop fix, plus S with a second retry, on fresh cases while watching the tail. It settles whether a cheap option clears with its whole interval, and how much of today's clearance was luck from picking the best of eighteen. The cost claim holds: S's first retry added $36 a month ($408 to $444), well under the pick's $1,208.\n- Step 3 asks the latency owner about 870 ms. It settles whether L, at $2,532 a month, becomes the safer pick."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "Four claims have the right blocks, and the counterfactual holds for each:\n- c1: gate_scatter.\n- c2: dot_interval, now captioned correctly.\n- c3: range_bars, now on exactly the claimed set.\n- c4: diverging_bars.\n- c5: bars plus examples.\nThe c2 settle table is not the clearest way to show its figure. It is a one-row table with 16 columns, four of them dashes (the trial and repeat columns), and the 38.6% the claim cites sits in the 15th column. 'Distance toward passing +0.1' carries no unit. The block's own note ('Each bar is how often...') shows the settle source is meant to draw bars, not a table. This is hard to read at 390 px."
+    }
+  ],
+  "total": 13,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "c2",
+      "severity": "should_fix",
+      "finding": "The settle evidence is a 16-column, one-row table in which four trial and repeat columns are dashes, and the cited 38.6% is the 15th cell. Draw it as the bars the settle source's note describes, or show only the cited figures: wrong side 38.6%, and cases needed one-sided 38,350 and two-sided 54,451 against 1,200 today."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Watch says a re-run 'would need' 54,451 cases for a printed interval to sit wholly above the line. settle defines cases_needed_two_sided as the size at which half such designs succeed. The four-in-five size is 111,255. Say 'about half the time at 54,451', or cite the 80% figure. The conclusion that more cases are impractical only gets stronger."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The confidence form 'high_if_immaterial' still rests on a lead caveat with roughly a 39% chance of being material, and best_of_n pushes that higher. The new Method 'Confidence' term justifies the choice openly, so this is now a labelling judgement, not a hidden overstatement. A reader who sees only the grade badge still gets a stronger signal than the odds support."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Explore 'Pass-rate line' says 'below 92.7% cheaper Nano-XS settings follow'. The sweep puts the boundary on the lower side, so Nano-XS low reasoning with one retry (Q) is already the pick at exactly 92.7%. Write 'at 92.7% or lower'."
+    }
+  ],
+  "invariant_concerns": [
+    "Rendering, not the report: the c2 settle block's note says 'Each bar is...' on a block drawn as a table.",
+    "Rendering, not the report: c4's diverging_bars labels the retry row 'Brisk-S · reasoning low · no retry → 1.0' instead of naming '1 retry'. It prints intervals to four significant figures (-0.4053 to +2.065; +0.3429 to +3.397) while the claim text prints one decimal. Its note describes interactions, but the block shows none.",
+    "Arithmetic a reader can check: the recommendation prints '$0.30 per 1,000 calls, or $1,208 a month' at a declared 4,000,000 a month. $0.30 x 4,000 = $1,200, so the per-1k figure is rounded where the monthly figure is not. Both keys resolve (invariant 1 holds), but the page appears inconsistent."
+  ],
+  "calls": 14
+}

@@ -1,0 +1,130 @@
+### c1 / 1
+rendered block
+block_kind: gate_matrix
+query:
+  source: tasks
+  aspect: 
+  measures: []
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: atlas-m
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Task, Atlas-L, Atlas-M, Brisk-S, Open-70B]
+rows (5):
+  - cells: [Billing & account Q&A (400 cases · 42% of traffic), Fails: p95 3.60 s > 3 s, $58 per 1,000 conversations, Passes, $24 per 1,000 conversations (Cheapest passing), Passes, $4.6 per 1,000 conversations, Borderline: Overall quality floor 86 ±1.1, $8.9 per 1,000 conversations]
+  - cells: [Troubleshooting (multi-turn) (180 cases · 19% of traffic), Fails: p95 4.68 s > 3 s, $140 per 1,000 conversations, Borderline: Resolves the issue 90% ±4.4, $59 per 1,000 conversations (Cheapest passing), Fails: Overall quality floor 79 < 85; Resolves the issue 74% < 90%; Confirms before account changes 88% < 95%; Escalates when stuck 85% < 90%, $11 per 1,000 conversations, Fails: Overall quality floor 83 < 85; Resolves the issue 82% < 90%; Confirms before account changes 81% < 95%, $21 per 1,000 conversations]
+  - cells: [Persona small talk (220 cases · 24% of traffic), Passes, $41.0 per 1,000 conversations, Passes, $17 per 1,000 conversations (Cheapest passing), Fails: Overall quality floor 84 < 85; Stays in character 86% < 90%, $3.3 per 1,000 conversations, Passes, $6.4 per 1,000 conversations]
+  - cells: [Research-needed questions (240 cases · 15% of traffic), Fails: p95 4.86 s > 3 s, $95 per 1,000 conversations, Passes, $40 per 1,000 conversations (Cheapest passing), Fails: Overall quality floor 81 < 85; Calls research tool only when required 83% < 90%; Cites the retrieved source 89% < 90%; No unsupported claims 84% < 90%, $8 per 1,000 conversations, Fails: Overall quality floor 80 < 85; Calls research tool only when required 88% < 90%; Cites the retrieved source 85% < 90%; No unsupported claims 86% < 90%, $15 per 1,000 conversations]
+  - cells: [Speculation bait (150 cases) (Applies to all traffic), Fails: p95 3.24 s > 3 s, $45 per 1,000 conversations, Passes, $19.0 per 1,000 conversations, Fails: Overall quality floor 83 < 85; Declines to speculate 81% < 95%, $3.6 per 1,000 conversations, Fails: Declines to speculate 89% < 95%, $7 per 1,000 conversations]
+total: 5
+offset: 0
+truncated: False
+notes: []
+
+### c2 / 1
+rendered block
+block_kind: dot_interval
+query:
+  source: tasks
+  aspect: 
+  measures: [resolves]
+  arms: []
+  strata: [trouble]
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: floor
+emphasis: atlas-m
+title: 
+level: 95% uncorrected
+unit: 
+domain: 
+criteria.trouble.resolves.threshold = 90%
+columns: [Row, Value, 95% uncorrected interval]
+rows (5):
+  - cells: [A · Atlas-L, 91%, 86.8% to 95.2%]
+  - cells: [B · Atlas-M, 90%, 85.6% to 94.4%]
+  - cells: [C · Brisk-S, 74%, 67.6% to 80.4%]
+  - cells: [D · Open-70B, 82%, 76.4% to 87.6%]
+  - cells: [floor 90%, 90%, ]
+total: 5
+offset: 0
+truncated: False
+notes: []
+
+### c3 / 1
+rendered block
+block_kind: range_bars
+query:
+  source: tasks
+  aspect: 
+  measures: [latency_s]
+  arms: [atlas-l, atlas-m]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: budget
+emphasis: atlas-m
+title: 
+level: 
+unit: 
+domain: 
+criteria.p95.threshold = 3 s
+columns: [Group, Row, From, To]
+rows (11):
+  - cells: [Billing & account Q&A, A · Atlas-L, 1.81 s, 3.60 s]
+  - cells: [Billing & account Q&A, B · Atlas-M, 1.03 s, 2.10 s]
+  - cells: [Troubleshooting (multi-turn), A · Atlas-L, 2.42 s, 4.68 s]
+  - cells: [Troubleshooting (multi-turn), B · Atlas-M, 1.38 s, 2.73 s]
+  - cells: [Persona small talk, A · Atlas-L, 1.39 s, 2.88 s]
+  - cells: [Persona small talk, B · Atlas-M, 0.86 s, 1.68 s]
+  - cells: [Research-needed questions, A · Atlas-L, 2.48 s, 4.86 s]
+  - cells: [Research-needed questions, B · Atlas-M, 1.53 s, 2.84 s]
+  - cells: [Speculation bait, A · Atlas-L, 1.70 s, 3.24 s]
+  - cells: [Speculation bait, B · Atlas-M, 1.03 s, 1.89 s]
+  - cells: [, budget 3 s, 3.00 s, ]
+total: 11
+offset: 0
+truncated: False
+notes: []
+
+### c4 / 1
+rendered block
+block_kind: diverging_bars
+query:
+  source: compare
+  aspect: 
+  measures: [overall]
+  arms: [atlas-m, atlas-l]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 95% unpaired
+unit: score
+domain: 
+reference: none
+columns: [Row, Value, 95% unpaired interval, Note]
+rows (5):
+  - cells: [Billing & account Q&A, -2, -3.556 to -0.4444, -2]
+  - cells: [Troubleshooting (multi-turn), -5, -7.263 to -2.737, -5]
+  - cells: [Persona small talk, -3, -5.121 to -0.8787, -3]
+  - cells: [Research-needed questions, -3, -4.980 to -1.02, -3]
+  - cells: [Speculation bait, -1, -3.546 to +1.546, -1]
+total: 5
+offset: 0
+truncated: False
+notes: [Each row is Atlas-M less Atlas-L on Overall quality, overall and in each place both hold it., The interval is independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.]
+

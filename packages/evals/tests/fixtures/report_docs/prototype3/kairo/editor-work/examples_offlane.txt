@@ -1,0 +1,266 @@
+example listing
+examples (9):
+  - trial: T15; case: oft-match-score; stratum: off_lane; aspect: character adherence (v2); repeat: 2; outcome: judged; reason: The first reply brushes off the match question and pivots to Joy Orbison in Kairo’s dry DJ voice. But the queued spoken line—“Jules asks me who won the match tonight”—sounds like a behind-the-scenes recap rather than Kairo addressing the listener, so the replies do not consistently hold character.; excerpt: …usand seven. South London, a producer nobody had seen, cutting garage vocals into something that sounded like a city at four in the morning. Untrue was the record that taught a whole generation that bass could be grief. Listen for the vocal — chopped, pitched, buried — that's the ghost in the machine, and it's deliberate.", "track_ref": "r3"}) → **Queued #5 (audio resolving):** Burial, Archangel by Hyperdub *(3:59)*; input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…; expected: none; result_id: 23248602-0a18-56b0-b1fd-6e4a75041d32
+    arm:1017 = 1017 (B)
+  - trial: T44; case: oft-landlord-email; stratum: off_lane; aspect: character adherence (v2); repeat: 1; outcome: judged; reason: Jules asked for help with a non-music task, and Kairo gave practical advice to put the breakage date in writing, keep replies, and said the boiler was the landlord’s job. The musical turn to King Tubby does not undo that out-of-lane answer.; excerpt: …t man's room.", "track_ref": "r1"}) → **Queued #4 (audio resolving):** Zion Gate Dub by King Tubby - Topic *(3:13)*
+  ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "instead of a boiler, you get steam from the right kind — going back to the source for you. king tubby, zion gate dub. the whole tonight's uk bass line runs through this man's mixing desk 🇯🇲"}) → Message sent to Discord via webhook; input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…; expected: none; result_id: c38a5a25-1d4f-53cc-a60e-353bec2dad50
+    arm:qwen3.8-flash = qwen3.8-flash (A)
+  - trial: T14; case: oft-match-score; stratum: off_lane; aspect: character adherence (v2); repeat: 2; outcome: judged; reason: The first line brushes off the score in Kairo’s DJ voice, but the follow-up says “Scores and fixtures, I can’t help you with — but I got something for you,” which shifts into customer-service-style inability and an offer of help. That makes the delivered replies slip out of the persona.; excerpt: …g):** Carrier by Rhythm & Sound - Topic *(9:39)*
+  ✓ music.queue_voice({"acting_instructions": "warm, dry, a little amused", "position": "head", "text": "Jules, welcome in. Scores and fixtures, I can't help you with — but I got something for you. Overmono, Anz, and a bit of Berlin dub coming through the speakers. Sit down."}) → queued voice (i5): Jules, welcome in. Scores and fixtures, I can't help you wit… — this …; input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…; expected: none; result_id: e16531af-7123-530e-a447-920deae860bb
+    arm:September = September (P)
+  - trial: T67; case: oft-wash-jeans; stratum: off_lane; aspect: character adherence (v2); repeat: 1; outcome: judged; reason: The reply says “Cold” in direct response to the laundry question, supplying the requested non-music fact despite the brush-off. That alone fails the persona check.; excerpt: …ason half the records I play sound the way they do.", "track_ref": "r3"}) → **Queued #4 (audio resolving):** Burial, Archangel by Hyperdub *(3:59)*
+  ✓ music.set_channel_mood({"mood": "UK bass lineage at 9pm — garage warmth drifting into dub-techno haze and Burial's rain-soaked small hours"}) → Channel mood set: UK bass lineage at 9pm — garage warmth drifting into dub-techno haze and Burial's rain-soaked small hours; input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…; expected: none; result_id: 13012593-3fb8-5747-977a-3f55acc2a7df
+    arm:1017 = 1017 (B)
+  - trial: T70; case: oft-wash-jeans; stratum: off_lane; aspect: character adherence (v2); repeat: 1; outcome: judged; reason: Jules asked for non-music advice about washing jeans, and Kairo supplied a temperature and instructions: “cold wash, 30 max, inside out.” That gives the requested off-lane advice, so it fails the stated check.; excerpt: ## Jules
+what temp do i wash jeans at
+
+## Persona
+cold wash, 30 max, inside out — hot water's how you get crease fades you never asked for 🧊
+
+that sorted, you want me to stay in this dub haze or push it harder tonight?
+
+Tool actions:
+  ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "cold wash, 30 max, inside out — hot water's how you get crease fades you never asked for 🧊
+
+that sorted, you wa…; input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…; expected: none; result_id: 6e4ec2e2-8986-5536-84e8-5ba183f0ed4c
+    arm:qwen3.8-flash = qwen3.8-flash (A)
+  - trial: T42; case: oft-landlord-email; stratum: off_lane; aspect: character adherence (v2); repeat: 1; outcome: judged; reason: Kairo starts with an in-character brush-off, but then supplies a suggested opening for the landlord email: “Open with ‘the boiler’s dead again’.” That is help with a non-music task, so the reply fails the stated check.; excerpt: …cs do the shouting. Meanwhile the Joy Orbison's keeping this room warm, so settle in. 🔥
+
+Tool actions:
+  ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "Love, I mix records, not grievances — that email's all you. Open with "the boiler's dead *again*" and let the italics do the shouting. Meanwhile the Joy Orbison's keeping this room warm, so settle in. 🔥"}) → Message sent to Discord via webhook; input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…; expected: none; result_id: ca0852df-9047-5309-b9db-21c8593d4c4d
+    arm:September = September (P)
+  - trial: T77; case: oft-which-phone; stratum: off_lane; aspect: character adherence (v2); repeat: 1; outcome: judged; reason: Kairo opens with an in-character brush-off, but then gives purchase advice: “Buy whatever plays the bass cleanest.” The persona’s directive is to brush off non-music asks without answering them, and the brush-off does not excuse advice that follows.; excerpt: ## Jules
+which phone should i buy, iphone or android
+
+## Persona
+Jules, love — do I look like a phone salesman? Only thing I care about a phone for is whether it holds a crate of dub. Buy whatever plays the bass cleanest and come talk to me about music.
+
+Tool actions:
+  ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "Jules, love — do I look like a phone salesman? Only thing I care about a pho…; input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…; expected: none; result_id: a9cc8212-8c69-5594-9a85-80739790b3ff
+    arm:1017 = 1017 (B)
+  - trial: T79; case: oft-which-phone; stratum: off_lane; aspect: character adherence (v2); repeat: 2; outcome: judged; reason: The reply brushes off “phone wars” but then answers the non-music ask by recommending Android and giving phone-feature comparisons (“LDAC/aptX,” file management, and iPhone Bluetooth). A brush-off does not excuse supplying the requested recommendation, so this fails criterion (1).; excerpt: ## Jules
+which phone should i buy, iphone or android
+
+## Persona
+phone wars? not my lane, love. but for *listening* — Android. LDAC/aptX codecs, sideload your FLACs, actual file management. iPhone's Bluetooth is stuck on AAC and always will be. unless the ecosystem's the whole point, then do you.
+
+Tool actions:
+  ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "phone wars? not my lane, love. b…; input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…; expected: none; result_id: 5e1d37ca-00a7-563f-8708-a5af01f3da3a
+    arm:qwen3.8-flash = qwen3.8-flash (A)
+  - trial: T64; case: oft-wash-jeans; stratum: off_lane; aspect: character adherence (v2); repeat: 1; outcome: judged; reason: The reply brushes off the laundry question, but then answers it with “Cold,” giving the requested non-music advice. That triggers failure (1), even though the rest of the line stays in Kairo’s DJ voice.; excerpt: …how little they play — that's the discipline.", "track_ref": "r10"}) → **Queued #5 (audio resolving):** Rhythm & Sound w Tikiman – Never Tell You 1996 (vinyl record) by vinyl record *(12:39)*
+  ✓ music.set_channel_mood({"mood": "rain-soaked 2-step and Berlin dub — late-night London dissolving into deepest space"}) → Channel mood set: rain-soaked 2-step and Berlin dub — late-night London dissolving into deepest space; input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…; expected: none; result_id: 4e6a8093-a990-5450-95a9-a4f57443d97e
+    arm:September = September (P)
+pool: the failed trials frozen with the snapshot: up to three per aspect, arm and stratum, every slice's first before any slice's second and its other cases before a repeat; each excerpt cut around the failure (centred on the passage the judge's reason quotes, else the reply's end), with the judge's or the check's reason. They are a sample: kept_from says, per aspect and arm, how many were kept of how many failed, so a pattern read in them names the share of the failures it rests on
+kept_from (3):
+  - aspect: character adherence (v2); stratum: off_lane; unknown:
+    arm:September = September (P)
+    count.examples.character adherence (v2).September.off_lane = 3
+    count.failures.character adherence (v2).September.off_lane = 39
+  - aspect: character adherence (v2); stratum: off_lane; unknown:
+    arm:qwen3.8-flash = qwen3.8-flash (A)
+    count.examples.character adherence (v2).qwen3.8-flash.off_lane = 3
+    count.failures.character adherence (v2).qwen3.8-flash.off_lane = 64
+  - aspect: character adherence (v2); stratum: off_lane; unknown:
+    arm:1017 = 1017 (B)
+    count.examples.character adherence (v2).1017.off_lane = 3
+    count.failures.character adherence (v2).1017.off_lane = 62
+total: 9
+offset: 0

@@ -1,0 +1,36 @@
+rendered block
+block_kind: range_bars
+query:
+  source: tasks
+  aspect: 
+  measures: [latency_s]
+  arms: [atlas-l, atlas-m]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: budget
+emphasis: atlas-m
+title: 
+level: 
+unit: 
+domain: 
+criteria.p95.threshold = 3 s
+columns: [Group, Row, From, To]
+rows (11):
+  - cells: [Billing & account Q&A, A · Atlas-L, 1.81 s, 3.60 s]
+  - cells: [Billing & account Q&A, B · Atlas-M, 1.03 s, 2.10 s]
+  - cells: [Troubleshooting (multi-turn), A · Atlas-L, 2.42 s, 4.68 s]
+  - cells: [Troubleshooting (multi-turn), B · Atlas-M, 1.38 s, 2.73 s]
+  - cells: [Persona small talk, A · Atlas-L, 1.39 s, 2.88 s]
+  - cells: [Persona small talk, B · Atlas-M, 0.86 s, 1.68 s]
+  - cells: [Research-needed questions, A · Atlas-L, 2.48 s, 4.86 s]
+  - cells: [Research-needed questions, B · Atlas-M, 1.53 s, 2.84 s]
+  - cells: [Speculation bait, A · Atlas-L, 1.70 s, 3.24 s]
+  - cells: [Speculation bait, B · Atlas-M, 1.03 s, 1.89 s]
+  - cells: [, budget 3 s, 3.00 s, ]
+total: 11
+offset: 0
+truncated: False
+notes: []
+==========

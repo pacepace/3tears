@@ -1,0 +1,86 @@
+sensitivity
+parameter: threshold:pass_rate
+hypothetical: False
+swept: every threshold from range_low to range_high, on criterion pass_rate
+criteria.pass_rate.threshold = 97%
+boundary_belongs_to: below
+declared_call:
+  modes: [decide]
+  dominant: [arm:brisk-s.low.r1]
+reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+declared_picks: []
+segments (7):
+  - low: none; modes: [decide]; dominant: [arm:nano-xs.off.r0]; picks: []
+    high:
+      criteria.pass_rate.nano-xs.off.r0.value = 81%
+  - modes: [decide]; dominant: [arm:nano-xs.off.r1]; picks: []
+    low:
+      criteria.pass_rate.nano-xs.off.r0.value = 81%
+    high:
+      criteria.pass_rate.nano-xs.off.r1.value = 88.5%
+  - modes: [decide]; dominant: [arm:nano-xs.low.r1]; picks: []
+    low:
+      criteria.pass_rate.nano-xs.off.r1.value = 88.5%
+    high:
+      criteria.pass_rate.nano-xs.low.r1.value = 92.7%
+  - modes: [decide]; dominant: [arm:nano-xs.high.r1]; picks: []
+    low:
+      criteria.pass_rate.nano-xs.low.r1.value = 92.7%
+    high:
+      criteria.pass_rate.nano-xs.high.r1.value = 94.8%
+  - modes: [decide]; dominant: [arm:brisk-s.low.r0]; picks: []
+    low:
+      criteria.pass_rate.nano-xs.high.r1.value = 94.8%
+    high:
+      criteria.pass_rate.brisk-s.low.r0.value = 95.3%
+  - modes: [decide]; dominant: [arm:brisk-s.low.r1]; picks: []
+    low:
+      criteria.pass_rate.brisk-s.low.r0.value = 95.3%
+    high:
+      criteria.pass_rate.brisk-s.low.r1.value = 97.1%
+  - high: none; modes: [no_call]; dominant: []; picks: []
+    low:
+      criteria.pass_rate.brisk-s.low.r1.value = 97.1%
+holds: False
+picks_hold: True
+flips (18):
+  - arm: arm:nano-xs.off.r0; where: none; call_changes: True; picks_change: False
+    criteria.pass_rate.nano-xs.off.r0.value = 81%
+  - arm: arm:nano-xs.low.r0; where: none; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.low.r0.value = 87.9%
+  - arm: arm:nano-xs.off.r1; where: none; call_changes: True; picks_change: False
+    criteria.pass_rate.nano-xs.off.r1.value = 88.5%
+  - arm: arm:brisk-s.off.r0; where: none; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.off.r0.value = 91.1%
+  - arm: arm:nano-xs.high.r0; where: none; call_changes: False; picks_change: False
+    criteria.pass_rate.nano-xs.high.r0.value = 91.3%
+  - arm: arm:nano-xs.low.r1; where: none; call_changes: True; picks_change: False
+    criteria.pass_rate.nano-xs.low.r1.value = 92.7%
+  - arm: arm:atlas-m.off.r0; where: none; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.off.r0.value = 94%
+  - arm: arm:brisk-s.off.r1; where: none; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.off.r1.value = 94.6%
+  - arm: arm:nano-xs.high.r1; where: none; call_changes: True; picks_change: False
+    criteria.pass_rate.nano-xs.high.r1.value = 94.8%
+  - arm: arm:brisk-s.low.r0; where: none; call_changes: True; picks_change: False
+    criteria.pass_rate.brisk-s.low.r0.value = 95.3%
+  - arm: arm:atlas-m.off.r1; where: none; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.off.r1.value = 96.4%
+  - arm: arm:atlas-m.low.r0; where: none; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.low.r0.value = 96.6%
+  - arm: arm:brisk-s.high.r0; where: none; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.high.r0.value = 96.6%
+  - arm: arm:brisk-s.low.r1; where: none; call_changes: True; picks_change: False
+    criteria.pass_rate.brisk-s.low.r1.value = 97.1%
+  - arm: arm:atlas-m.high.r0; where: none; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.high.r0.value = 97.7%
+  - arm: arm:atlas-m.low.r1; where: none; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.low.r1.value = 97.9%
+  - arm: arm:brisk-s.high.r1; where: none; call_changes: False; picks_change: False
+    criteria.pass_rate.brisk-s.high.r1.value = 98%
+  - arm: arm:atlas-m.high.r1; where: none; call_changes: False; picks_change: False
+    criteria.pass_rate.atlas-m.high.r1.value = 98.6%
+total: 18
+offset: 0
+notes: []
+bars_as: warnings

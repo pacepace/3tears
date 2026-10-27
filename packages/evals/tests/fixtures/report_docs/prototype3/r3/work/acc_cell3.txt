@@ -1,0 +1,19 @@
+measure figures
+measure: accuracy
+by: cell
+level: 95%
+held: [mean, half_width]
+not_shown: []
+slices (1):
+  - slice: complex.news; aspect: none
+    cells.complex.news.name = Complex × News
+    cells.complex.news.n_cases = 3600
+rows (1):
+  - aspect: none; slice: complex.news
+    arm:nano-xs.rubric = Nano-XS · Rubric + reasoning (I)
+    figures (2):
+      cells.complex.news.nano-xs.rubric.accuracy.mean = 70.9%
+      cells.complex.news.nano-xs.rubric.accuracy.half_width = 1.5%
+total: 81
+offset: 80
+=====
