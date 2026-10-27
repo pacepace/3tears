@@ -343,13 +343,14 @@ class LateRow(_Fact):
 #: What a caveat's kind is, as a row's field describes it: the kinds the input states, then the kinds its figures imply.
 _CAVEAT_KINDS = (
     "stated: late, judge_uncalibrated, confound, apparatus, short_run, unsettled, latency or unreported; implied: "
-    "judge_unstated, judge_partly_uncalibrated, no_control, nothing_declared, point_estimate or best_of_n."
+    "judge_unstated, judge_partly_uncalibrated, no_control, nothing_declared, point_estimate, borderline or best_of_n."
 )
 
 #: Where a caveat comes from, as a row's field describes it.
 _CAVEAT_SOURCE = (
     "stated: the input states it as a caveat; implied: what the input holds implies it (a judge it does not describe, "
-    "no control, nothing declared, a gate cleared on a point estimate, a pick among many)."
+    "no control, nothing declared, a gate cleared on a point estimate or on a figure whose interval reaches past it, a "
+    "pick among many)."
 )
 
 
@@ -1529,13 +1530,14 @@ def _touch(report_input: ReportInput, caveat: Caveat, unsettled: Mapping[str, tu
 
 def _implied_touch(report_input: ReportInput, caveat: ImpliedCaveat) -> _Touch:
     """What an implied caveat touches, and the keys of the figures it rests on: a judge's stated figures, the
-    candidates counted, a gate's threshold and each surviving option's clearance with no interval."""
+    candidates counted, a gate's threshold and each surviving option's clearance with no interval, or with one that
+    reaches past the line."""
     keys: list[str] = []
     if caveat.kind == "judge_partly_uncalibrated":
         keys = [key for dimension in caveat.measures for key in _judge_keys(dimension)]
     elif caveat.kind in ("no_control", "best_of_n"):
         keys = ["n_candidates"]
-    elif caveat.kind == "point_estimate":
+    elif caveat.kind in ("point_estimate", "borderline"):
         criterion = caveat.id.partition(":")[2]
         keys = [f"criteria.{criterion}.threshold"]
         for arm, task, cell in caveat.at:
