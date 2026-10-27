@@ -12,7 +12,11 @@ Contracts held here (``analysis.report_rows`` selectors ``compare``, ``settle``,
 - **bar_reads** draws an arm against its absolute bar: its value, the interval it was read on and the bar's line;
 - **a lattice draws from the arms' settings** where the snapshot holds no configs rows, its tiles the same as the
   lattice of the snapshot that holds them;
-- **no number is recomputed**: every number a table of these prints is the figure its key reads.
+- **no number is recomputed**: every number a table of these prints is the figure its key reads;
+- **reader words**: a compare block names its arms and measure by reader names, never by id or key, even where its
+  interval is the paired estimate a contrast states;
+- **one unit per size**: a settle table sets the cases and the trials a design needs beside today's cases and trials,
+  and the repeats of a case.
 
 Every expectation is read off the analysis functions' own results on the input (r1 to r5, the misfits, the shapes).
 """
@@ -33,6 +37,7 @@ from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import BarsChart, DotIntervalChart
+from threetears.evals.analysis.report.plan_page.charting import measure_words
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_facts import fact_arms
@@ -339,3 +344,69 @@ def test_the_grid_the_settings_make_is_the_configs_the_snapshot_holds() -> None:
         (config.arm, config.levels) for config in with_configs.configs
     ]
     assert config_grid(with_configs) is with_configs
+
+
+# =============================================================================
+# reader words, and sizes beside today's count in one unit
+# =============================================================================
+
+
+def _paired_pairs() -> list[tuple[ReportInput, str, str, str]]:
+    """Each input's pairs whose overall compare row is the paired estimate a contrast states: input, arms, measure."""
+    found = []
+    for held in _inputs().values():
+        control = next((arm.id for arm in held.arms if arm.role == "control"), None)
+        if control is None:
+            continue
+        for contrast in held.contrasts:
+            try:
+                read = arms_compare(held, [control, contrast.arm], contrast.measure)
+            except RefusedInput:
+                continue
+            if any(row.basis is not None and str(row.basis.value).startswith("paired") for row in read.rows):
+                found.append((held, control, contrast.arm, contrast.measure))
+    assert found, "no fixture pairs two arms by a contrast"
+    return found
+
+
+@pytest.mark.parametrize("kind", ["dot_interval", "table"])
+def test_a_compare_block_names_its_arms_and_measure_by_reader_names_never_by_id_or_key(kind: str) -> None:
+    for held, control, candidate, key in _paired_pairs():
+        query = _query("compare", arms=[control, candidate], measures=[key], strata=["overall"])
+        block = block_render(held, block_kind=kind, query=query)
+        printed = " ".join([*block.notes, *(cell for row in block.rows for cell in row.cells)])
+        assert "paired" in printed
+        names = block_look(held, fact_arms(held))
+        for arm in (control, candidate):
+            if arm != names.arm(arm).name and re.search(r"[_.:/=]", arm):
+                assert not re.search(rf"(?<![\w.]){re.escape(arm)}(?![\w.])", printed), (arm, printed)
+        # An id reads as an id where it holds a mark no reader name carries (the plan checks' own rule); a plain word
+        # may also sit inside a reader name.
+        if re.search(r"[_.:/=]", key) and key != measure_words(held, key):
+            assert key not in printed, (key, printed)
+
+
+def _repeated() -> ReportInput:
+    """r2 with one gate, each arm's pass rate a count of trials over a third as many cases (three repeats each)."""
+    held = _inputs()["r2 with one gate"]
+    data = held.model_dump(mode="json", by_alias=True, exclude_none=True)
+    for stat in data["measures"]["pass_rate"]["per_arm"].values():
+        stat["n"], stat["n_cases"] = 1200, 400
+    return ReportInput.model_validate(data)
+
+
+def test_a_settle_table_sets_each_size_beside_todays_count_in_its_own_unit() -> None:
+    held = _repeated()
+    arm = held.arms[0].id
+    rows = settle_cases(held, [arm], limit=_EVERY).rows
+    block = block_render(held, block_kind="table", query=_query("settle", arms=[arm]), limit=_EVERY)
+    at = {column: block.columns.index(column) for column in block.columns}
+    for printed, row in zip(block.rows, rows, strict=True):
+        cells = printed.cells
+        assert row.trials_needed is not None and row.repeats and row.cases_needed is not None
+        assert _numbers(cells[at["Cases needed, one-sided"]]) == _numbers(row.cases_needed.reads)
+        assert _numbers(cells[at["Trials needed, one-sided"]]) == _numbers(row.trials_needed.reads)
+        assert _numbers(cells[at["Repeats of a case"]]) == _numbers(row.repeats[0].reads)
+        stat = held.measures["pass_rate"].per_arm[arm]
+        assert _numbers(cells[at["Cases today"]]) == [float(stat.n_cases or 0)]
+        assert _numbers(cells[at["Trials today"]]) == [float(stat.n or 0)]

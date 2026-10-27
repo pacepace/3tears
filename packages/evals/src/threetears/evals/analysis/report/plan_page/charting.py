@@ -69,6 +69,7 @@ from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
 from threetears.evals.analysis.report.plan_page.words import (
     ASPECT_MEASURE_TEMPLATE,
     COMPUTED_NOTE,
+    COMPUTED_REPEATS_NOTE,
     MISSING_TEMPLATE,
     REFERENCE_TEMPLATE,
 )
@@ -466,14 +467,33 @@ def computed_interval(
 
 
 def computed_notes(context: ChartContext) -> tuple[str, ...]:
-    """What a chart whose intervals are computed here says of them (:data:`COMPUTED`); nothing otherwise.
+    """What a chart whose intervals are computed here says of them (:data:`COMPUTED`), and, where a case ran more than
+    once, that the interval is read on the distinct cases, at the widest spread the repeats allow; nothing otherwise.
 
     :param context: The chart being resolved.
     :ptype context: ChartContext
     :return: The note, or none.
     :rtype: tuple[str, ...]
     """
-    return (COMPUTED_NOTE,) if context.level.endswith(COMPUTED) else ()
+    if not context.level.endswith(COMPUTED):
+        return ()
+    repeated = any(
+        _counts_trials(context.report_input, row.arm, row.key)
+        for row in context.rows()
+        if isinstance(row.item, Stat) and computed_interval(context.report_input, row.key, row.arm, row.item)
+    )
+    return (COMPUTED_NOTE, *((COMPUTED_REPEATS_NOTE,) if repeated else ()))
+
+
+def _counts_trials(report_input: ReportInput, arm: str, key: str) -> bool:
+    """Whether an arm's overall spread on a figure was read where a case ran more than once (its ``repeats`` key
+    reads only on such a design), so on the distinct cases, each counted once."""
+    try:
+        resolve(f"spread.{arm}.{key}.overall.repeats", report_input)
+    except UnresolvableReference:
+        # NOSILENT: a figure whose cases each ran once has no repeats; its interval needs no word on them.
+        return False
+    return True
 
 
 def figure_interval(context: ChartContext, key: str, arm: str, stat: Stat) -> tuple[float, float] | None:

@@ -66,7 +66,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue, computed_field, model_val
 
 from threetears.evals.analysis.agreement import InterJudgeDimension, inter_judge_agreement
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
-from threetears.evals.analysis.numbers import format_number, group_thousands
+from threetears.evals.analysis.numbers import format_number, spell_dollars
 from threetears.evals.analysis.reporting import (
     RequestSettingsReading,
     UnconfirmedModelIdentity,
@@ -151,14 +151,7 @@ def dollars_text(amount: float | None) -> str:
     """
     if amount is None:
         return UNPRICED
-    if amount == 0:
-        return "$0"
-    sign = "-" if amount < 0 else ""
-    amount = abs(amount)
-    if amount >= 0.1:
-        return f"{sign}${group_thousands(f'{amount:.2f}')}"
-    decimals = 2 - math.floor(math.log10(amount))
-    return f"{sign}${amount:.{decimals}f}"
+    return spell_dollars(amount)
 
 
 def _plural(count: int, noun: str) -> str:

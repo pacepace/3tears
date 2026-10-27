@@ -9,7 +9,9 @@ Contracts held here (``analysis.separation.spread_interval``, the ``spread.<arm>
 - **the block**: a dot strip, bars or a table of arms' figures none of which states an interval, where some is a
   pass/fail rate with a count, is completed at the computed intervals' level, marked computed, draws each one as its
   key reads it, and says so in a note; a chart whose figures state their own interval draws theirs, as before;
-- **a stored chart draws as it was stored**: one completed before (its level empty) draws no computed interval.
+- **a stored chart draws as it was stored**: one completed before (its level empty) draws no computed interval;
+- **repeats are said**: where a case ran more than once, the note says the interval is read on the distinct cases, at
+  the widest spread the repeats allow.
 
 Every expectation is computed from the input the block reads (r1 to r5, the misfits and the shape campaigns).
 """
@@ -31,7 +33,7 @@ from threetears.evals.analysis.report.block_spec import block_look, complete_cha
 from threetears.evals.analysis.report.charts import DotIntervalChart
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
-from threetears.evals.analysis.report.plan_page.words import COMPUTED_NOTE
+from threetears.evals.analysis.report.plan_page.words import COMPUTED_NOTE, COMPUTED_REPEATS_NOTE
 from threetears.evals.analysis.report_input import ReportInput, Stat
 from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.kernel.report_plan import ChartQuery, PlannedChart
@@ -213,3 +215,17 @@ def test_a_chart_stored_before_its_intervals_were_computed_draws_as_it_was_store
         assert isinstance(chart.data, DotIntervalChart)
         rows = [row for panel in (chart.data.panels or [chart.data]) for row in (panel.rows or [])]
         assert rows and all(row.lo is None and row.hi is None for row in rows)
+
+
+def test_a_computed_interval_on_repeated_cases_says_it_is_read_on_the_distinct_cases() -> None:
+    name, key, arms = next((name, key, arms) for name, key, arms in _computed() if key in _inputs()[name].measures)
+    held = _inputs()[name]
+    plain = block_render(held, block_kind="dot_interval", query=_query("measures", measures=[key], arms=arms))
+    assert COMPUTED_NOTE in plain.notes and COMPUTED_REPEATS_NOTE not in plain.notes
+    data = held.model_dump(mode="json", by_alias=True, exclude_none=True)
+    for arm in arms:
+        stat = data["measures"][key]["per_arm"][arm]
+        stat["n"], stat["n_cases"] = 1200, 400
+    repeated = ReportInput.model_validate(data)
+    block = block_render(repeated, block_kind="dot_interval", query=_query("measures", measures=[key], arms=arms))
+    assert block.notes[-2:] == [COMPUTED_NOTE, COMPUTED_REPEATS_NOTE]

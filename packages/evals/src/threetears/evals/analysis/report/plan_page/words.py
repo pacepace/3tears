@@ -10,6 +10,8 @@ heads and status words. Held here so a translation replaces them in one place.
 from __future__ import annotations
 
 __all__ = [
+    "COMPUTED_REPEATS_NOTE",
+    "PAIRED_BASIS_TEMPLATE",
     "SETTLE_FLOOR_TEMPLATE",
     "SETTLE_MARGIN_TEMPLATE",
     "SETTLE_NOTE",
@@ -347,6 +349,11 @@ COMPARE_NOTE = "Each row is {first} less {second} on {measure}, overall and in e
 #: How a compare chart's intervals were read, in the analysis's own words.
 BASIS_NOTE = "The interval is {basis}."
 
+#: How a compare row's interval reads where a contrast pairs the two arms, in reader names.
+PAIRED_BASIS_TEMPLATE = (
+    "paired: the contrast of {arm} against the control on {measure}, its own interval, corrected within its family"
+)
+
 #: What a compare row overall is called, beside the slices' names.
 OVERALL_WORD = "Overall"
 
@@ -364,10 +371,16 @@ LEVER_EFFECT_GROUP = "{setting}"
 LEVER_CROSS_TEMPLATE = "at {second} less at {first}"
 LEVER_CROSS_GROUP = "{setting} effect, across {across}"
 
-#: A chart whose intervals code computed from each rate's count, where the input states none.
+#: A chart whose intervals code computed from each rate's binomial spread, where its figures state none.
 COMPUTED_NOTE = (
-    "Each interval is computed here from the rate's count: its binomial spread, by the normal approximation, held to "
-    "0 to 100%; the input states none. A rate of none or all has none."
+    "Each interval is computed here from the rate's binomial spread, by the normal approximation, held to 0 to 100%. "
+    "A rate of none or all has none."
+)
+
+#: Beside it, where a case ran more than once: what count the spread was read on.
+COMPUTED_REPEATS_NOTE = (
+    "Where a case ran more than once, the interval is read on the distinct cases, each counted once: the widest "
+    "spread its repeats allow."
 )
 
 #: A chart of blind human preference, about the no-preference point.
@@ -546,10 +559,12 @@ TABLE_HEADERS = {
     "line": "Line",
     "distance": "Distance toward passing",
     "settles": "Settles",
-    "cases_needed": "Needed, one-sided",
-    "cases_needed_two_sided": "Needed, two-sided",
-    "counts": "Today's count",
-    "count_of": "Counts",
+    "cases_needed": "Cases needed, one-sided",
+    "cases_needed_two_sided": "Cases needed, two-sided",
+    "trials_needed": "Trials needed, one-sided",
+    "repeats": "Repeats of a case",
+    "today_cases": "Cases today",
+    "today_trials": "Trials today",
     "wrong_side": "A fresh run reads the other side",
     "setting": "Setting",
     "move": "Move",

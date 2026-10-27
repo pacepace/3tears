@@ -252,9 +252,8 @@ _FIXED_SPELLINGS: dict[tuple[str, str, str], str] = {
     # figures below 10 are what a sentence can use, and the tables beside it keep the one rule.
     ("threetears/evals/analysis/prose_refs.py", "value", ".2g"): "a figure in a sentence",
     ("threetears/evals/analysis/prose_refs.py", "value", ".{}f"): "a figure in a sentence below 1e-4, written out",
-    # Money is spelled in cents from ten cents up, and to three significant figures below.
-    ("threetears/evals/analysis/summary.py", "amount", ".2f"): "dollars, in cents",
-    ("threetears/evals/analysis/summary.py", "amount", ".{}f"): "dollars below ten cents, three figures",
+    # Money's spelling (cents from ten cents up, three significant figures below) is numbers.spell_dollars, in the
+    # rule's own module.
 }
 
 _PRECISION = re.compile(r"\.(\d+|\{\})")

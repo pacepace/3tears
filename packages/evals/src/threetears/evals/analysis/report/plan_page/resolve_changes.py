@@ -76,11 +76,12 @@ from threetears.evals.analysis.report.plan_page.words import (
     LEVER_NOTE,
     LEVERS_NOTE,
     OVERALL_WORD,
+    PAIRED_BASIS_TEMPLATE,
     UNCORRECTED_NOTE,
     change_words,
 )
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, Stat, Stratum, Task
-from threetears.evals.analysis.report_rows import lever_arms
+from threetears.evals.analysis.report_rows import lever_arms, place_of
 from threetears.evals.analysis.style import humanize
 
 __all__ = ["RESOLVERS"]
@@ -502,10 +503,10 @@ def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tu
         place = str(item.name.value) if item.name is not None else OVERALL_WORD
         interval = _figure_ends(item.interval, drawn)
         if item.basis is not None:
-            bases.append(str(item.basis.value))
+            bases.append(compare_basis(context, item, key))
         changes.append(
             _analysed_change(
-                row_id=row.label,
+                row_id=place_of(item.where, context.report_input),
                 label=place,
                 short=place,
                 value=value,
@@ -522,6 +523,37 @@ def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tu
     )
     basis = tuple(dict.fromkeys(BASIS_NOTE.format(basis=basis) for basis in bases))
     return changes, drawn, (named, *basis)
+
+
+def compare_basis(context: ChartContext, row: ComparisonRow, key: str) -> str:
+    """How a compare row's interval was read, in reader words: the paired estimate names the candidate a contrast
+    reads against the control and the measure by their reader names, never by id or key; the independent reading is
+    the analysis's own words, which name neither.
+
+    :param context: The chart being resolved, over the compare source.
+    :ptype context: ChartContext
+    :param row: One ``arms_compare`` row.
+    :ptype row: ComparisonRow
+    :param key: The measure it reads.
+    :ptype key: str
+    :return: The words; empty where the row reads no interval.
+    :rtype: str
+    """
+    if row.basis is None:
+        return ""
+    said = str(row.basis.value)
+    if not said.startswith(_PAIRED):
+        return said
+    control = context.look.control
+    first, second = context.query.arms
+    candidate = second if control is not None and first == control.id else first
+    return PAIRED_BASIS_TEMPLATE.format(
+        arm=_arm_name(context, candidate), measure=measure_words(context.report_input, key)
+    )
+
+
+#: How a compare row's basis opens where it is the paired estimate a contrast states.
+_PAIRED = "paired"
 
 
 def _lever_label(context: ChartContext, row: EffectRow | InteractionRow) -> tuple[str, str, str]:
