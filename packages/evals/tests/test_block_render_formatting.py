@@ -62,6 +62,9 @@ _EMPTY: dict[str, Any] = {
     "small_multiples_by": "none",
 }
 
+#: How a compare block says its interval may be too narrow: as a may, on what the interval counts.
+NARROW_IF = "may be too narrow if these intervals count trials nested in cases"
+
 #: More rows than any fixture's block holds: one page of all of them.
 _EVERY = 200
 
@@ -258,6 +261,28 @@ def test_a_compare_block_whose_interval_may_be_too_narrow_says_so_once_with_each
         assert len(said) == 1, (kind, block.notes)
         for figure in narrow[0].nested:
             assert figure.reads in said[0], (kind, figure.reads, said[0])
+        # A may, never a fact: the paired row's unit is unstated, so the note neither calls it counting trials nor
+        # says reading it on the cases would widen it.
+        assert NARROW_IF in said[0], said[0]
+        assert "unit is unstated" in said[0], said[0]
+        assert "would be wider" not in said[0] and "counting trials" not in said[0], said[0]
+        assert "observations" not in said[0], "the control: no unpaired row on this block states a unit"
+
+
+def test_a_compare_block_names_what_its_intervals_count_only_where_the_input_states_it() -> None:
+    held = _inputs()["r4"]
+    first, second, key = _paired(held)
+    read = arms_compare(held, [first, second], key, limit=_EVERY)
+    unpaired = [row for row in read.rows if row.may_be_narrow and not row.counted_unstated]
+    assert unpaired, "the control: r4's slices read the two arms' own spreads"
+    stated = {str(figure.value) for row in unpaired for figure in row.counts if figure.value != "cases"}
+    assert stated == {"observations"}, stated
+    place = unpaired[0].where.removeprefix("strata.")
+    block = _drawn(held, "table", _query("compare", arms=[first, second], measures=[key], strata=[place]))
+    assert block is not None
+    (said,) = [note for note in block.notes if "too narrow" in note]
+    assert NARROW_IF in said and "count: observations" in said, said
+    assert "unit is unstated" not in said, "the block holds no paired row"
 
 
 def test_a_compare_block_whose_arms_ran_each_case_once_says_nothing_of_narrow_intervals() -> None:

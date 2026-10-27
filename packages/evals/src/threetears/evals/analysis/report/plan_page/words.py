@@ -19,6 +19,8 @@ __all__ = [
     "SETTLE_NO_SIZE",
     "COMPARE_NARROW_NOTE",
     "COMPARE_NESTED_TEMPLATE",
+    "COMPARE_STATED_COUNT",
+    "COMPARE_UNSTATED_COUNT",
     "SETTLE_NOTE",
     "BAR_WORD",
     "BAR_STRIP_NOTE",
@@ -368,13 +370,20 @@ SETTLE_FLOOR_TEMPLATE = "the floor {floor} on {aspect}"
 #: A compare chart's caption: whose difference each row is, and on what.
 COMPARE_NOTE = "Each row is {first} less {second} on {measure}, overall and in each place both hold it."
 
-#: What a compare chart or table says where an interval may be too narrow: each arm that ran more trials than cases,
-#: by its trials and cases (:data:`COMPARE_NESTED_TEMPLATE`), joined by semicolons.
+#: What a compare chart or table says where an interval may be too narrow, as a may: each arm that ran more trials
+#: than cases, by its trials and cases (:data:`COMPARE_NESTED_TEMPLATE`), joined by semicolons; then what the input
+#: says the intervals count, only where it says (:data:`COMPARE_STATED_COUNT`, :data:`COMPARE_UNSTATED_COUNT`).
 COMPARE_NARROW_NOTE = (
-    "An interval marked as counting trials may be too narrow: {nested} ran more trials than cases, and trials of one "
-    "case are not independent; read on the cases, it would be wider."
+    "{nested} ran more trials than cases, and trials of one case are not independent: an interval here may be too "
+    "narrow if these intervals count trials nested in cases.{counted}"
 )
 COMPARE_NESTED_TEMPLATE = "{arm} ({trials} trials of {cases} cases)"
+#: Where the input states what an arm's spread counts, on a row that may be too narrow: each unit it names.
+COMPARE_STATED_COUNT = " The input states what an unpaired interval's arms count: {units}."
+#: Where a paired row may be too narrow: its contrast states no unit.
+COMPARE_UNSTATED_COUNT = (
+    " A paired interval's unit is unstated: the input does not say whether it counts cases or trials."
+)
 
 #: What a settle table's size reads on a row whose estimate sits exactly on its line: no size settles it there.
 SETTLE_NO_SIZE = "none settles it at today's estimate"
