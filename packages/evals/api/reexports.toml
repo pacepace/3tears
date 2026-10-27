@@ -12,14 +12,14 @@
 home = "threetears.evals.analysis"
 also = ["threetears.evals.ops"]
 names = [
-    "AnalysisGenerationEstimate", "EvalSummary", "FrontierResult", "FrozenReporterCase", "HistoryResult",
-    "JudgeTemperatureComparison", "OutOfRunSpendReport", "PivotTable", "ScoreExport", "dollars_text",
+    "AnalysisGenerationEstimate", "EXPORT_PAGE_RESULTS", "EvalSummary", "FrontierResult", "FrozenReporterCase",
+    "HistoryResult", "JudgeTemperatureComparison", "OutOfRunSpendReport", "PivotTable", "ScoreExport", "dollars_text",
     "format_number", "frontier_text", "out_of_run_spend_text", "scope_out_of_run_spend",
 ]
 why = """
 `actions` may reach `analysis` only through `ops` (tests/test_package_matrix.py), and the action catalogue names
 each of these: the result an operation hands back and the text it is shown as. Dropped from `ops`, the catalogue
-could not import them at all.
+could not import them at all. `EXPORT_PAGE_RESULTS` is the ceiling `scope_export`'s description states.
 """
 
 [[reexport]]

@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: `scope_export` pages a large scope instead of reading it whole
+
+**Fixed:** an unnamed `scope_export` read every result in its scope into memory and serialized them into one
+response, so a large scope could exhaust its host (Discodon, 2026-10-27: a 502, then a restart). `export_results`
+now estimates from the run listing, before reading anything, how many results each run holds (its matrix, cases
+times k, or the cells it recorded persisting when those are more), against `EXPORT_PAGE_RESULTS` (1,000 results, new
+in `threetears.evals.analysis`; also re-exported from `threetears.evals.ops`). A scope that fits is exported as
+before, byte for byte, with `page: null`. A larger scope is exported in pages of whole runs, oldest first (by
+`created_at`, then id), each page reading its runs' results run by run: `ScoreExport.page` (new, an `ExportPage`)
+names the page's runs, how many come before and after it, the archived runs and runs of another status left out
+unread, and `next_after_run_id`. A paged export's exclusion counts cover only that page's reads: results whose run
+was deleted are not reached. A whole-scope read that returns more results than its listing promised is not
+serialized; the export pages instead. One run larger than the ceiling is a page of its own.
+
+**Changed (MCP):** `scope_export` takes `export_after_run_id`, the previous page's `page.next_after_run_id`, and the
+text of a page with a next names the call, repeating a non-default `export_format` and `run_status`:
+`More: action='scope_export', export_after_run_id='<id>'`. `export_run_ids` is never paged: two or more named runs
+whose estimated results pass the ceiling are refused (`VALIDATION_FAILED`, naming the ceiling and the results they
+would read, with `details` `runs_named`, `results_estimated` and `result_ceiling`); one named run is exported whole.
+`export_after_run_id` with `export_run_ids`, or naming a run no longer in the scope, is refused. An unknown format
+is now refused before anything is read. An agent that exported a scope in one call must follow the pages.
+
 ## v0.80.0 -- 2026-10-26
 
 ### agent-tools, core: an edge-cacheable read may narrow its scopes by a second namespace node
