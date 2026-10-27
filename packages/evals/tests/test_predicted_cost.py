@@ -25,7 +25,12 @@ import pytest
 
 from threetears.evals.analysis import COST_PREDICTION_METHOD, PredictedValue, pivot
 from threetears.evals.analysis.reporting import METRIC_COMPOSITE, METRIC_COST_USD, ScoreRecord
-from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, PlannedCost, compute_estimate_cost
+from threetears.evals.analysis.lenses.cost_estimate import (
+    CostEstimate,
+    CostEstimateCell,
+    PlannedCost,
+    compute_estimate_cost,
+)
 from threetears.evals.analysis.lenses.pivot import PivotError, compute_pivot
 from threetears.evals.analysis.stats import lognormal_sum_prediction_band
 from threetears.evals.kernel import ValidationFailedError
@@ -118,14 +123,19 @@ class TestTheEstimateWritesAPredictionPerPlannedCell:
 _REPEATED_COSTS = (0.0015, 0.0005, 0.1, 1 / 3, 0.07, 2.5, 0.0)
 
 
-def _band_of(costs: list[float], *, n_test_cases: int, k_runs: int = 1) -> PredictedValue:
+def _cell_of(costs: list[float], *, n_test_cases: int, k_runs: int = 1) -> CostEstimateCell:
     run, results = _history("sonnet", costs)
     estimate = compute_estimate_cost(
         [run], results, models=["sonnet"], k_runs=k_runs, n_test_cases=n_test_cases, computed_at=STAMP, profile=PROFILE
     )
     (cell,) = estimate.cells
-    assert cell.predicted is not None
-    return cell.predicted
+    return cell
+
+
+def _band_of(costs: list[float], *, n_test_cases: int, k_runs: int = 1) -> PredictedValue:
+    predicted = _cell_of(costs, n_test_cases=n_test_cases, k_runs=k_runs).predicted
+    assert predicted is not None
+    return predicted
 
 
 class TestTheBandBracketsItsOwnEstimate:
@@ -170,6 +180,58 @@ class TestTheBandBracketsItsOwnEstimate:
 
         assert estimate.total_interval_low is not None and estimate.total_interval_high is not None
         assert estimate.total_interval_low == estimate.total_estimated_cost == estimate.total_interval_high
+
+    def test_a_history_that_never_varied_says_its_band_is_a_spread_of_none_seen(self) -> None:
+        cell = _cell_of([0.0015] * 3, n_test_cases=3)
+
+        assert cell.band_basis is not None
+        assert cell.band_basis.startswith(
+            "No spread in 3 past observations: each cost $0.0015, so the band has no width"
+        )
+        assert "a sweep whose cost varies at all lands outside it" in cell.band_basis
+
+    def test_a_high_outlier_the_log_scale_fit_discounts_never_pulls_the_upper_end_to_the_estimate(self) -> None:
+        """One runaway result among 19 cheap ones: the fit's upper end sits 15% under the mean's prediction."""
+        history = [0.001] * 19 + [0.1]
+        fit_low, fit_high = lognormal_sum_prediction_band(history, 100) or (0.0, 0.0)
+
+        cell = _cell_of(history, n_test_cases=20, k_runs=5)
+
+        predicted = cell.predicted
+        assert predicted is not None and predicted.interval_low is not None and predicted.interval_high is not None
+        assert fit_high < predicted.value, "the disagreement this test is about"
+        assert predicted.interval_high > fit_high and predicted.interval_high > 2 * predicted.value
+        assert predicted.interval_low <= fit_low
+        assert cell.band_basis is not None and "spanning two fits that disagree" in cell.band_basis
+        assert "a lognormal fit put its upper end $0.5052, 15% below the $0.595 the observations' mean predicts" in (
+            cell.band_basis
+        )
+
+    def test_a_low_outlier_the_log_scale_fit_inflates_never_pulls_the_lower_end_to_the_estimate(self) -> None:
+        """One near-free result among 99 at $1: the fit's lower end sits above the mean's prediction."""
+        history = [1.0] * 99 + [1e-6]
+        fit_low, fit_high = lognormal_sum_prediction_band(history, 100) or (0.0, 0.0)
+
+        cell = _cell_of(history, n_test_cases=100)
+
+        predicted = cell.predicted
+        assert predicted is not None and predicted.interval_low is not None and predicted.interval_high is not None
+        assert fit_low > predicted.value, "the disagreement this test is about"
+        assert 0.0 < predicted.interval_low < 0.99 * predicted.value
+        assert predicted.interval_high >= fit_high
+        assert cell.band_basis is not None
+        assert "a lognormal fit put its lower end $126.9, 28% above the $99 the observations' mean predicts" in (
+            cell.band_basis
+        )
+
+    def test_a_varied_history_holding_a_zero_takes_a_normal_theory_band_centred_on_its_estimate(self) -> None:
+        cell = _cell_of([0.0, 1.0, 1.1, 1.2, 0.9], n_test_cases=50)
+
+        predicted = cell.predicted
+        assert predicted is not None and predicted.interval_low is not None and predicted.interval_high is not None
+        assert 0.0 < predicted.interval_low < predicted.value < predicted.interval_high
+        assert predicted.interval_high - predicted.value == pytest.approx(predicted.value - predicted.interval_low)
+        assert cell.band_basis is not None and "normal-theory prediction band" in cell.band_basis
 
     @pytest.mark.parametrize("cost", [0.0015, 0.1, 1 / 3, 0.07])
     @pytest.mark.parametrize("n_history", [3, 11, 20])
