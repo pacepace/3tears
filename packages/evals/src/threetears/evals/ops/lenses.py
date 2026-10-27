@@ -1418,7 +1418,7 @@ def estimate_text(estimate: LaunchEstimate) -> str:
     ]
     for arm in estimate.arms:
         figure = (
-            f"{format_number(arm.predicted_usd, prefix='$')}"
+            f"cap figure {format_number(arm.predicted_usd, prefix='$')}"
             + (f" (central {format_number(arm.central_usd, prefix='$')})" if arm.central_usd is not None else "")
             if arm.predicted_usd is not None
             else "unpriced"
@@ -1429,9 +1429,9 @@ def estimate_text(estimate: LaunchEstimate) -> str:
             lines.append(f"  refused: {arm.refusal}")
             lines.append(f"  remedy: {arm.remedy}")
     if estimate.total_predicted_usd is None:
-        lines.append("total: none — an arm has no prediction, so no total is the launch's")
+        lines.append("total cap figure: none — an arm has no prediction, so no total is the launch's")
     else:
-        lines.append(f"total: {format_number(estimate.total_predicted_usd, prefix='$')}")
+        lines.append(f"total cap figure: {format_number(estimate.total_predicted_usd, prefix='$')}")
     lines.append("would launch" if estimate.would_launch else "would be refused")
     if estimate.detectable_effect is not None:
         lines += detectable_effect_lines(estimate.detectable_effect)

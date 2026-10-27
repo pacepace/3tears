@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from threetears.evals.analysis.numbers import format_number
 from threetears.evals.kernel import (
     JUDGE_KIND,
     JUDGE_KIND_CONTRACT,
@@ -214,7 +215,9 @@ async def test_a_cap_below_one_calls_ceiling_is_refused_by_the_estimate_and_the_
     assert "reserved at up to $0.5801 before it is sent, more than the whole cap" in arm.refusal
     assert "Refused before any launcher ran" in arm.refusal
     assert arm.remedy.startswith("name max_cost_usd of at least $0.59, the cap one such call needs to be admitted")
-    assert "$0.61 also leaves room for the $0.02 the arm is predicted to spend around it" in arm.remedy
+    assert arm.price.predicted_usd is not None
+    cap_figure = format_number(arm.price.predicted_usd, prefix="$")
+    assert f"$0.61 also leaves room for the arm's {cap_figure} cap figure around it" in arm.remedy
     assert "a cheaper judge model" in arm.remedy, "the remedy names what lowers the ceiling, not only the cap"
 
     reported = await campaign.ops_estimate(0.5)

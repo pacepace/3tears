@@ -603,7 +603,9 @@ async def test_an_arm_predicted_above_its_cap_is_refused_before_the_launcher_or_
     host, storage, clients, handed = off_loop(_generating_host, template, pricer=dear)
 
     with pytest.raises(
-        ValidationFailedError, match=r"predicted to cost \$9\.50 \(from 3 past results\), above its \$4\.00 cap"
+        ValidationFailedError,
+        match=r"has a cap figure of \$9\.5, the spend its cap is checked against \(from 3 past results\), above its "
+        r"\$4 cap",
     ):
         await _launch(host, template, n_variations=2, variation_model=WRITER, k_runs=3)
 

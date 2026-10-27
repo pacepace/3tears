@@ -46,6 +46,7 @@ from threetears.evals.analysis import (
     campaign_report,
 )
 from threetears.evals.analysis.lenses.cost_estimate import COST_BAND_SAFETY_MARGIN
+from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporting import ScoreProjection
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.ops import (
@@ -278,6 +279,22 @@ async def test_an_estimate_raises_what_the_launch_refuses_before_pricing_a_kinds
     assert outcome.is_error and "has no default candidate model\nremedy: name one" in outcome.text
     assert "cannot be priced" not in outcome.text
     assert str(refused.value) == f"kind '{toyhost_template().candidate_kind}' has no default candidate model; name one"
+
+
+async def test_an_estimates_text_labels_each_arms_figure_and_the_total_as_the_cap_figures_they_are(
+    evals: MountedTool,
+) -> None:
+    fixture = off_loop(_priced, off_loop(ops_fixture), (0.0015,) * 3)
+    launching = _launching(toyhost_template().id, PRICED_MODEL, k_runs=1)
+
+    outcome = await _call(evals, fixture, {"action": "launch_estimate", **launching})
+
+    estimate = LaunchEstimate.model_validate(outcome.structured)
+    (arm,) = estimate.arms
+    assert arm.predicted_usd is not None and arm.central_usd is not None and estimate.total_predicted_usd is not None
+    cap_figure, centre = format_number(arm.predicted_usd, prefix="$"), format_number(arm.central_usd, prefix="$")
+    assert f": cap figure {cap_figure} (central {centre}) — admitted;" in outcome.text
+    assert f"\ntotal cap figure: {format_number(estimate.total_predicted_usd, prefix='$')}\n" in outcome.text
 
 
 async def test_an_estimate_handed_back_as_predicted_cost_sits_beside_the_cost_observed(evals: MountedTool) -> None:

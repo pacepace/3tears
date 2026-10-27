@@ -25,11 +25,13 @@ handed ``judge=None``.
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import replace
 from typing import Any
 
 import pytest
 
+from threetears.evals.analysis.numbers import format_number
 from threetears.evals.schema import EvalRun, JudgeDeclaration, JudgedArtifact, RubricDim
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.schema.judge_attribution import judges_sharing_a_candidate_model
@@ -177,8 +179,9 @@ async def test_a_stored_case_arm_predicted_above_its_cap_is_refused_before_any_l
         ValidationFailedError,
         match=(
             f"the arm on '{RUN_MODELS[0]}' \\({STORED_CASES} stored case\\(s\\) x 1 repeat\\(s\\) of template "
-            f"'{toyhost_template().id}'\\) is predicted to cost \\$9\\.50 \\(from 3 past results\\), above its "
-            f"\\${TOYHOST_COST_CEILING_USD:.2f} cap.*Refused before any launcher ran"
+            f"'{toyhost_template().id}'\\) has a cap figure of \\$9\\.5, the spend its cap is checked against "
+            f"\\(from 3 past results\\), above its "
+            f"{re.escape(format_number(TOYHOST_COST_CEILING_USD, prefix='$'))} cap.*Refused before any launcher ran"
         ),
     ):
         await launched.launch(k_runs=1)
@@ -190,7 +193,17 @@ async def test_a_stored_case_arm_over_a_cap_the_launch_named_is_refused_too():
     """A named cap licenses an UNPRICED arm; one predicted above it is refused all the same."""
     launched = off_loop(_Launched, pricer=_at(2.0))
 
-    with pytest.raises(ValidationFailedError, match="predicted to cost \\$2\\.00.*above its \\$1\\.50 cap"):
+    with pytest.raises(ValidationFailedError, match="has a cap figure of \\$2,.*above its \\$1\\.5 cap"):
+        await launched.launch(max_cost_usd=1.5)
+
+    off_loop(launched.assert_nothing_launched)
+
+
+async def test_a_cap_figure_a_hair_over_its_cap_never_prints_equal_to_it():
+    """In cents, $1.503 over a $1.50 cap read "predicted to cost $1.50 (...), above its $1.50 cap"."""
+    launched = off_loop(_Launched, pricer=_at(1.503))
+
+    with pytest.raises(ValidationFailedError, match="has a cap figure of \\$1\\.503, .*above its \\$1\\.5 cap"):
         await launched.launch(max_cost_usd=1.5)
 
     off_loop(launched.assert_nothing_launched)
