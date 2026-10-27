@@ -15,6 +15,7 @@ Everything needed to produce campaign reports that read and look like the five r
 | Path | What it is |
 |---|---|
 | `ANALYST.md` | The analyst foundation: roles, workflow, report document, tools, invariants, editor rubric |
+| `analyst/README.md` | Where the analyst skill lives: in the evals package, as data the wheel ships |
 | `GENERATOR.md` | Procedure and rules; its §1 shape table, spine and mode rules are superseded by ANALYST.md, the rest is guidance |
 | `CONVERGENCE.md` | How the pipeline converges on the references, in phases P0–P7 |
 | `UPSTREAM.md` | Bundle requirements U1–U15, each with evidence from Kairo round 2 |

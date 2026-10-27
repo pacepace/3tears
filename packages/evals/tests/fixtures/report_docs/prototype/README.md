@@ -1,6 +1,6 @@
 # W2 prototype: analyst and report editor runs (2026-10-26)
 
-Each directory is one campaign snapshot. An Opus analyst wrote the report, working only from the skill (`docs/eval-report-kit/analyst/`) and the `evals_analyst` tool, through the dev CLI (`tests/fixtures/report_plans/analyst_cli.py`). It was blind to the campaign's own exemplar note and reference page. A fresh Opus report editor then scored the report on ANALYST.md §7's rubric (7 items, 0–2; a report passes with no 0 and a total of at least 11). The editor never saw the analyst's notes. Between reviews the analyst revised the report in its own context, at most twice.
+Each directory is one campaign snapshot. An Opus analyst wrote the report, working only from the skill (`packages/evals/src/threetears/evals/analysis/analyst/skill/`) and the `evals_analyst` tool, through the dev CLI (`tests/fixtures/report_plans/analyst_cli.py`). It was blind to the campaign's own exemplar note and reference page. A fresh Opus report editor then scored the report on ANALYST.md §7's rubric (7 items, 0–2; a report passes with no 0 and a total of at least 11). The editor never saw the analyst's notes. Between reviews the analyst revised the report in its own context, at most twice.
 
 | Snapshot | Story | Confidence | Editor scores by round |
 |---|---|---|---|

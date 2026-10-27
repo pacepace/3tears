@@ -49,6 +49,24 @@ as its public part; `threetears-release` still refuses to bump, sync or verify o
 labelled smoke assertion against a plain release. `docker-bake.hcl` keeps `v0.80.0`, since an image tag cannot
 carry `+`.
 
+### evals: the analyst skill ships in the package, and each role's system text is assembled from it
+
+**Added (provisional):** the analyst skill is package data under `threetears/evals/analysis/analyst/skill/`
+(`SKILL.md`, its five modules, the reasoning notes and their `exemplars/INDEX.md`), and ships in the wheel; it was
+read from `docs/eval-report-kit/analyst/`, which now only points at the package. A new `editor.md` there is the report
+editor's system text: ANALYST.md §7's rubric (7 items scored 0 to 2; a pass is no 0 and at least 11 of 14), the
+findings it returns (`must_fix` or `should_fix`, by claim), and the fenced JSON review it answers with; code adds up
+the scores. `threetears.evals.analysis.analyst.skill` (new) reads it: `load_skill()` returns an `AnalystSkill`, which
+refuses a skill that is not whole (a module missing, a note the index does not name or names without a file) and has
+a `digest` over every Markdown file. `AnalystSkill.analyst(withhold=())` is the analyst's system text as a `SkillText`
+(`text`, `files`, `exemplars`, `digest`): the role file and its modules, then the whole index and every note, as the
+prototype runs read them. `withhold` (a collection of note file names; a bare string is refused) leaves out a note and
+its index row, as a blind run does. Nothing about a campaign chooses which notes its analyst reads; each index row's
+new Structure column records the campaign its note came from, for readers. `AnalystSkill.editor()` is the editor's
+text. A `README.md` beside the skill holds its maintainers' notes, which reach no system text; ANALYST.md's Appendix A
+now points at the shipped Kairo note rather than repeating it. The module's `__all__` stays
+empty until the report writer's sessions call these names, and `tests/test_analyst_skill_exports.py` lists them.
+
 ### evals: a chart of readings prints the level of the interval it draws
 
 **Fixed:** a forest (or diverging bars) of readings draws each reading's `within_interval`, at the nominal level with no

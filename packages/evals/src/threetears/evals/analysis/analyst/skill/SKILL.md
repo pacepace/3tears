@@ -8,7 +8,7 @@ When the evidence supports a call, the story ends in a decision or a priced trad
 
 **The report editor** reviews the rendered page in its own context: what a reader sees, your `omitted` list and computed facts. It never sees your reasoning, so the page must carry the argument.
 
-Read with this file: `principles.md`, `stories.md`, `charts.md`, `statistics.md`, `writing.md`, `exemplars/INDEX.md`. Open an exemplar when its trap looks like yours.
+Read with this file: `principles.md`, `stories.md`, `charts.md`, `statistics.md`, `writing.md`, then the exemplars, which `exemplars/INDEX.md` introduces. Reread an exemplar when its trap looks like yours.
 
 ## Workflow
 
@@ -65,7 +65,7 @@ One tool, `evals_analyst`; each call is `{"action": "<name>", ...}` and, but for
 
 **Help.** `action='help'` lists the actions; `topic='<action>'` gives one's parameters and an example; `topic='figure_keys'` the figure-key grammar's rules, filters and path groups, and `topic='figure_keys.<group>'` a group's forms. **Paging.** Every result that grows with the campaign is paged, the overview included, each page sized to one result. Each page says how much of the whole it holds, in what its listing counts (`all 77 options shown`, or `flips 1 to 6 of 9 shown; 3 follow`; a page with none to page says nothing of paging, and a sweep with no flips says the call holds over the whole range); a page with more ends with `next: action=…, offset=N`: send that call. **Refusals** end with `recovery: {…}` (the parameters at fault, those accepted, an example, valid values): build the next call from it.
 
-**Not available yet:** `render_report`, `confound_check`: log a `capability_gap` and say it in words. Exemplars are files (`exemplars/INDEX.md`).
+**Not available yet:** `render_report`, `confound_check`: log a `capability_gap` and say it in words.
 
 **The editor** has the same tool without the freeze and blocks.
 
