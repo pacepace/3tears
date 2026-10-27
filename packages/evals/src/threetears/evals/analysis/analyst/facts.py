@@ -19,12 +19,15 @@ parameters:
 **Intervals are read wherever they are held.** A measure read with no statistics named reads every statistic the
 input holds on it read that way, its interval (``ci`` or ``half_width``) among them, and names what it holds and the
 intervals' level; the overview says, for each measure, which statistics each way of reading it holds, so a measure
-held only per cell or stratum is held per slice, not missing. **No interval is derived.** Where an overall figure
-holds no interval but its slices do (a balanced accuracy beside its cells' accuracies), an interval could follow from
-the slices' only under assumptions the input does not state: that the figure is the plain mean of those slices and
-that they are independent. Code does not assume how the pipeline computed a figure, so it states none: the overall
-figure reads as a point estimate (``point_estimate:<criterion>`` where a gate reads it), its slices' intervals stay
-citable, and the missing overall interval is the input's to carry (an upstream gap).
+held only per cell or stratum is held per slice, not missing. **One interval is derived, structurally.** Where an
+overall figure holds no interval and is, by the numbers the input states, the plain mean of one measure's
+target-matrix cells, each stating its own spread (a balanced accuracy beside its cells' accuracies), code derives its
+interval from theirs, the cells read as independent because the target matrix partitions the cases
+(:mod:`~threetears.evals.analysis.cell_mean`): ``overall_interval.<measure>.<arm>.*`` names it, marked derived, a
+measure read by arm lists it beside the figure, and a gate reads it, so no ``point_estimate:<criterion>`` caveat is
+implied there. Any other overall with no interval is not assumed to be a mean of its slices: it reads as a point
+estimate (``point_estimate:<criterion>`` where a gate reads it), its slices' intervals stay citable, and the missing
+overall interval is the input's to carry (an upstream gap).
 
 **Every number is a figure key's.** A tool builds the key that names a figure and :func:`~.cited.cite` (or
 :func:`~.cited.cite_if`, where the input may leave it unstated) resolves it; no number here is computed. A figure the
@@ -47,6 +50,7 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
+from threetears.evals.analysis.cell_mean import NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import NamedKind, reader_names
 from threetears.evals.analysis.report_decision import (
@@ -977,6 +981,10 @@ class FigureRow(_Fact):
     aspect: str | None = Field(description="The aspect the figure is read on, where the key names one.")
     slice: str | None = Field(description="The stratum or task id, or the cell as `<row>.<column>`; none by arm.")
     figures: list[CitedFigure] = Field(description="The statistics asked for, each the input states.")
+    derived: list[CitedFigure] = Field(
+        description="The interval code derived for an overall figure that states none and is the plain mean of its "
+        "target-matrix cells (overall_interval.<measure>.<arm>.*), each marked derived; empty where none is."
+    )
 
 
 class SliceRow(_Fact):
@@ -1095,6 +1103,22 @@ def _on_cells(report_input: ReportInput, measure_key: str) -> list[_Spot]:
     return spots
 
 
+#: The figures of an overall interval derived from the cells that a measure read by arm lists beside the figure.
+_DERIVED_OVERALL = ("interval", "half_width", "level")
+
+
+def _derived_overall(report_input: ReportInput, measure_key: str, arm: str) -> list[CitedFigure]:
+    """The interval derived for an arm's overall figure from its cells, by its keys
+    (``overall_interval.<measure>.<arm>.*``, each marked derived); none where the figure does not qualify."""
+    try:
+        cell_mean_interval(report_input, measure_key, arm)
+    except NoCellMean:
+        # NOSILENT: an overall that is no plain mean of its cells is the input's shape, not a fault: the row lists the
+        # figures the input states and no derived interval, which is what an empty list says.
+        return []
+    return [cite(f"overall_interval.{measure_key}.{arm}.{field}", report_input) for field in _DERIVED_OVERALL]
+
+
 def _slices_held(report_input: ReportInput, by: MeasureBy) -> bool:
     """Whether the input holds any slice of the kind a read is by (every input holds arms)."""
     held: dict[MeasureBy, bool] = {
@@ -1124,7 +1148,11 @@ def measure_read(
     statistic held (``held``), the ones a narrower read left out (``not_shown``) and the intervals' level, so an
     interval is never hidden behind a read that did not ask for it.
 
-    By arm, a measure read on more than the lead aspect is read on each, by its aspect's key. Within a slice,
+    By arm, a measure read on more than the lead aspect is read on each, by its aspect's key. An arm's overall figure
+    that states no interval and is the plain mean of its target-matrix cells lists, beside its statistics
+    (``derived``), the interval derived from theirs (``overall_interval.<measure>.<arm>.*``: the interval, its half-width and level, each marked
+    derived; its ``basis`` key says how it was built) wherever the read asks for every statistic or for an interval.
+    Within a slice,
     ``vs_control`` is each candidate's mean minus the control's there (derived, descriptive); the control has none.
 
     :param report_input: The snapshot's frozen report input.
@@ -1194,6 +1222,8 @@ def measure_read(
     kept = [spot for spot in spots if arm_filter in (None, spot[0])]
     page, next_offset = _page(kept, limit, offset)
     control = _control(report_input)
+    overall: set[str | None] = {None, _lead(report_input)} if by == "arm" else set()
+    interval_asked = statistics is None or bool({"ci", "half_width"} & set(asked))
     rows = [
         FigureRow(
             arm=cite(f"arm:{arm}", report_input),
@@ -1203,6 +1233,7 @@ def measure_read(
                 (f"{prefix}.{statistic}" for statistic in asked if statistic != _VS_CONTROL or arm != control),
                 report_input,
             ),
+            derived=_derived_overall(report_input, measure_key, arm) if interval_asked and aspect in overall else [],
         )
         for arm, aspect, slice_id, prefix, _stem in page
     ]

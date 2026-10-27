@@ -17,7 +17,9 @@ decision's to drop, not a figure here.
 - *fails* when it misses the threshold: under it where higher is better, over it where lower is;
 - else is *borderline* when its interval crosses the threshold: the low end under it where higher is better, the high
   end over it where lower is. The interval is the figure's ``Stat.ci``, else the value plus or minus its
-  ``half_width``. Only a mean carries one, so a p50 or p95 is never borderline;
+  ``half_width``, else, for an overall mean that is the plain mean of its target-matrix cells, the interval derived
+  from theirs (:mod:`~threetears.evals.analysis.cell_mean`), which its reason calls derived. Only a mean carries one,
+  so a p50 or p95 is never borderline;
 - else *passes*.
 
 A gate with no figure for the arm at a place the check reads it is *unknown* there: a figure the input does not hold
@@ -171,9 +173,11 @@ def _interval(figure: CriterionFigure) -> tuple[float, float] | None:
 
 
 def _spread(line: Figure, figure: CriterionFigure) -> str:
-    """The figure's interval as a reason states it after the figure: ``±4.4``, or ``interval 85.6–94.4%``."""
+    """The figure's interval as a reason states it after the figure: ``±4.4``, ``interval 85.6–94.4%``, or ``derived
+    interval 89.8–90.4%`` where code derived it from the cells (the figure's ``derived``)."""
     if figure.ci is not None:
-        return "interval " + format_figure(replace(line, kind="interval", value=figure.ci))
+        words = "derived interval " if figure.derived else "interval "
+        return words + format_figure(replace(line, kind="interval", value=figure.ci))
     assert figure.half_width is not None
     width = replace(line, value=figure.half_width)
     return "±" + format_figure(width, ("pts", "abs") if line.scale in _RATE_SCALES else ())

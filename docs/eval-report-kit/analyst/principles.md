@@ -55,6 +55,8 @@ Confidence is conditional on the caveats, never capped by them. There are three 
 - **`high_if_immaterial`**: the evidence is strong and caveats remain open. Each one gets a `material_if` clause saying what would make it matter ("only if the judge misreads in-character replies"). Where the deciding finding doesn't rest on the caveat, the clause says so ("cost, the deciding finding, is measured").
 - **`low`**: the evidence is weak even if every caveat is immaterial. A pick that nothing separates is the usual case.
 
+The form reads the method and the variance of the evidence, never the result alone. A lead's wrong-side risk (how often a fresh run of today's size would read the other way) is stated beside the call, and doesn't lower the form by itself.
+
 Code removes the caveats it can prove immaterial, such as a late margin when the call is the same at every plausible margin, and shows each as a checked line. Nobody else attests a caveat away. **An aspect left unsettled past its declared margin is an open caveat**, even when it isn't the asked aspect, because a loss the margin forbids is still possible and would change the call. The same goes for a gate the recommended option clears only on its point estimate.
 
 ## Prior insights

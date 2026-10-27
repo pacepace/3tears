@@ -49,6 +49,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
+from threetears.evals.analysis.cell_mean import NoCellMean, cell_mean_interval
 from threetears.evals.analysis.report_input import Criterion, Judged, Measure, Reading, ReportInput, Stat
 
 __all__ = [
@@ -90,6 +91,8 @@ class CriterionFigure:
     :ivar ci: The interval on the figure, low then high, where the input states one. Only a mean carries one: the
         input's interval is on the mean, so a p50 or p95 figure has none.
     :ivar half_width: The interval's half-width, where the input states only that; for a mean alone, like ``ci``.
+    :ivar derived: Whether ``ci`` was derived here rather than stated: an overall mean that is the plain mean of its
+        target-matrix cells, its interval combined from theirs (:mod:`~threetears.evals.analysis.cell_mean`).
     """
 
     value: float
@@ -97,6 +100,7 @@ class CriterionFigure:
     cell: str | None = None
     ci: tuple[float, float] | None = None
     half_width: float | None = None
+    derived: bool = False
 
 
 @dataclass(frozen=True)
@@ -250,7 +254,9 @@ def criterion_figures(report_input: ReportInput, criterion: Criterion, arm: str)
     :param arm: The arm's id.
     :ptype arm: str
     :return: One figure per place the criterion reads it (overall, its task, every task or every cell), each where the
-        input states it as a number, with the interval the input states on it. A figure that is not a finite number
+        input states it as a number, with the interval the input states on it; an overall mean that states none, and
+        is the plain mean of its target-matrix cells whose every cell states a spread, carries the interval derived
+        from theirs, marked ``derived``. A figure that is not a finite number
         (NaN, an infinity) is no figure: it neither meets nor misses a line, so it is left out like a missing one, and
         an arm lacking it is not shown to pass.
     :rtype: list[CriterionFigure]
@@ -264,8 +270,26 @@ def criterion_figures(report_input: ReportInput, criterion: Criterion, arm: str)
         mean = criterion.statistic == "mean"
         ci = (float(stat.ci[0]), float(stat.ci[1])) if mean and stat.ci is not None else None
         half_width = float(stat.half_width) if mean and stat.half_width is not None else None
+        derived = _derived_interval(report_input, criterion, arm) if mean and task is None and cell is None else None
+        if ci is None and half_width is None and derived is not None:
+            found.append(CriterionFigure(float(value), task, cell, derived, None, derived=True))
+            continue
         found.append(CriterionFigure(float(value), task, cell, ci, half_width))
     return found
+
+
+def _derived_interval(report_input: ReportInput, criterion: Criterion, arm: str) -> tuple[float, float] | None:
+    """The interval derived for an arm's overall mean on the criterion's lead-aspect figure, where it is the plain mean
+    of its target-matrix cells and every cell states a spread (:func:`~threetears.evals.analysis.cell_mean
+    .cell_mean_interval`); None where it is not, or the criterion reads another aspect, whose figures no cell holds."""
+    if _other_aspect(report_input, criterion) is not None:
+        return None
+    try:
+        return cell_mean_interval(report_input, criterion.measure, arm).interval
+    except NoCellMean:
+        # NOSILENT: an overall that is no plain mean of its cells, or whose cells state no spread, is the input's
+        # shape and not a fault: it stays a point estimate, which the point_estimate caveat then says.
+        return None
 
 
 def _gap(criterion: Criterion, value: float) -> float:

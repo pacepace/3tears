@@ -404,9 +404,17 @@ def test_a_count_is_cited_as_the_whole_number_it_is() -> None:
 
 def test_a_derived_mean_of_shares_graded_by_class_label_reads_no_binomial_spread() -> None:
     """r3's balanced accuracy is graded by class label but is the mean of each class's recall, no share of counted
-    trials: no binomial spread, so no interval, settle size or independent comparison is read on it. A cell's plain
-    accuracy, a share of its trials, still reads one."""
-    held = fixture_inputs()["r3"]
+    trials: no binomial spread is read on it. As r3 states it, it is the plain mean of its cells, so it reads the spread
+    derived from theirs, never a binomial one; with a cell stating no spread it reads none, so no interval, settle size
+    or independent comparison. A cell's plain accuracy, a share of its trials, still reads one."""
+    stated = fixture_inputs()["r3"]
+    data = stated.model_dump(mode="json", by_alias=True, exclude_none=True)
+    for figures in data["cells"]["complex|news"]["per_arm"].values():
+        figures["accuracy"].pop("half_width")
+    held = ReportInput.model_validate(data)
+    for arm in stated.measures["balanced_accuracy"].per_arm:
+        basis = resolve(f"spread.{arm}.balanced_accuracy.overall.basis", stated).value
+        assert isinstance(basis, str) and "derived from its target-matrix cells" in basis and "binomial" not in basis
     derived = [
         key
         for key, measure in held.measures.items()

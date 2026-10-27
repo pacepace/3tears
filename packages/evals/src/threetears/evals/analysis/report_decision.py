@@ -43,7 +43,9 @@ one.
                                           says what is good enough, so code ranks options on cost alone (a bar only
                                           warns)
 ``point_estimate:<criterion>``            a gate or guardrail a surviving option clears only on a point estimate:
-                                          the figure it reads holds no interval there (a percentile never does)
+                                          the figure it reads holds no interval there, stated or derived from its
+                                          cells (:mod:`~threetears.evals.analysis.cell_mean`; a percentile never
+                                          holds one)
 ``borderline:<criterion>``                a gate or guardrail a surviving option clears on its point estimate while
                                           the figure's interval reaches the wrong side of the line (the gate check's
                                           borderline, which counts as passing)
@@ -422,7 +424,8 @@ def _clears(threshold: float, direction: str, value: float) -> bool:
 
 def _point_estimates(report_input: ReportInput) -> Iterator[ImpliedCaveat]:
     """A ``point_estimate:<criterion>`` caveat for each gate or guardrail a surviving option clears at some place on a
-    figure that holds no interval there."""
+    figure that holds no interval there: none stated, and none derived from its cells
+    (:func:`~threetears.evals.analysis.report_margins.criterion_figures`)."""
     survivors = surviving_options(report_input)
     for criterion in report_input.criteria:
         if criterion.kind not in ("gate", "guardrail"):

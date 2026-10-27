@@ -53,6 +53,13 @@ off stated spreads: a normal approximation, never a test the pipeline ran. ``ass
 that many cases (or the arm's own distinct cases times the slice's traffic share): a what-if the key names, refused overall and
 where the figures state their count.
 
+**An overall that is the plain mean of its cells.** ``overall_interval.<measure>.<arm>.*`` reads the interval on an
+arm's overall figure that states none, where that figure is, by the numbers the input states, the unweighted mean of
+one measure's target-matrix cells and every cell states its own spread
+(:mod:`~threetears.evals.analysis.cell_mean`): its standard error the root of the cells' squared standard errors over
+their count, at the cells' stated level. A criterion figure's ``low`` and ``high`` read the same interval there. All
+derived, and refused, as unstated with why, wherever the figure does not qualify.
+
 **What else a sentence counts or compares.** ``count.examples`` and ``count.failures`` (per aspect and arm) say how
 many failed trials the snapshot froze as examples and how many the run had; ``overlap.<aspect>.<aspect>.`` whether
 two aspects ran the same cases; ``confusion.<axis>.<arm>.<expected>.<predicted>`` one cell of a classifier's
@@ -87,6 +94,7 @@ from dataclasses import dataclass, replace
 from typing import Literal, get_args
 
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
+from threetears.evals.analysis.cell_mean import CellMeanInterval, NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.numbers import format_number, group_thousands, spell_multiple, spell_price
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
@@ -1381,7 +1389,8 @@ def _criterion_figure_field(
         return _number(path, figure.value, "the criterion's figure", scale, unit=unit)
     if field in ("low", "high"):
         end = _end(path, figure.ci, field, "the figure's interval")
-        return _number(path, end, f"the figure's interval's {field} end", scale, unit=unit)
+        read = _number(path, end, f"the figure's interval's {field} end", scale, unit=unit)
+        return replace(read, derived=True) if figure.derived else read
     gap = figure.value - threshold if criterion.direction == "higher_is_better" else threshold - figure.value
     return _gap_figure(report_input, path, criterion.measure, threshold, gap, "the figure's gap from the threshold")
 
@@ -1812,6 +1821,100 @@ def _pooled(report_input: ReportInput, values: tuple[str, ...], path: str) -> Fi
         return _number(path, pooled.half_width, "the pooled half-width", scale, unit=unit)
     low, high = pooled.mean - pooled.half_width, pooled.mean + pooled.half_width
     return _interval(path, (low, high), "the pooled interval", scale, unit=unit)
+
+
+#: What an overall interval derived from its cells reads: the overall figure as stated, its standard error and the
+#: interval's half-width (in points for a rate), the interval and its ends, its level, the measure whose cells it is
+#: the plain mean of, how many cells, which means of them the figure fits, and how it was built, in one sentence.
+_OVERALL_INTERVAL_FIELDS = (
+    "mean",
+    "se",
+    "half_width",
+    "interval",
+    "low",
+    "high",
+    "level",
+    "of",
+    "cells",
+    "weights",
+    "basis",
+)
+
+#: Which means of its cells an overall fits, as ``overall_interval.<measure>.<arm>.weights`` writes it.
+_OVERALL_INTERVAL_WEIGHTS = {
+    False: "the plain mean of the cells",
+    True: "both the plain and the case-weighted mean of the cells; the interval is the wider of the two readings'",
+}
+
+#: How an overall interval derived from its cells was built, as ``overall_interval.<measure>.<arm>.basis`` writes it.
+_OVERALL_INTERVAL_BASIS = (
+    "derived here, not stated: the figure is the plain mean of {of} over the target matrix's cells, so its standard "
+    "error is the root of the sum of the cells' squared standard errors over their count, the cells read as "
+    "independent because no case falls in two, and its interval is built at the cells' stated level"
+)
+
+#: The same, for an overall the cells' case-weighted mean fits as well as their plain one.
+_OVERALL_INTERVAL_BOTH_BASIS = (
+    "derived here, not stated: the figure fits both a plain and a case-weighted mean of {of} over the target matrix's "
+    "cells, so its interval uses the wider of the two standard errors, each combining the cells' as independent "
+    "because no case falls in two, at the cells' stated level"
+)
+
+
+def _unspread_keys(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]:
+    """The measures and judged dimensions an overall interval may be derived for: an input with cells, and some arm's
+    overall figure on the key stating a mean and no spread of its own."""
+    if not report_input.cells:
+        return []
+    tables: list[tuple[str, Measure | Judged]] = [*report_input.measures.items(), *report_input.judged.items()]
+    return list(
+        dict.fromkeys(
+            key
+            for key, table in tables
+            if any(
+                stat.mean is not None and stat.ci is None and stat.half_width is None and stat.sem is None
+                for stat in table.per_arm.values()
+            )
+        )
+    )
+
+
+def _unspread_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    table = report_input.measures.get(prior[0]) or report_input.judged[prior[0]]
+    return [arm for arm, stat in table.per_arm.items() if stat.mean is not None]
+
+
+def _overall_interval(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    key, arm, field = values
+    try:
+        derived: CellMeanInterval = cell_mean_interval(report_input, key, arm)
+    except NoCellMean as none:
+        raise _unstated(path, f"names an interval derived from the cells, and none is: {none}") from none
+    scale, unit = _scale_of(report_input, key)
+    figure: Figure
+    if field == "mean":
+        figure = _number(path, derived.mean, "the overall figure", scale, unit=unit)
+    elif field in ("se", "half_width"):
+        value = derived.se if field == "se" else derived.half_width
+        figure = _apart(report_input, path, key, value, f"the derived interval's {field}", change=False)
+    elif field == "interval":
+        figure = _interval(path, derived.interval, "the derived interval", scale, unit=unit)
+    elif field in ("low", "high"):
+        end = derived.interval[0] if field == "low" else derived.interval[1]
+        figure = _number(path, end, f"the derived interval's {field} end", scale, unit=unit)
+    elif field == "level":
+        figure = _level(path, derived.level, "the level the derived interval is at")
+    elif field == "of":
+        figure = _text(path, _measure_reader_name(derived.of, report_input), "the measure whose cells it averages")
+    elif field == "cells":
+        figure = Figure(path=path, kind="number", value=float(len(derived.cells)), scale="count")
+    elif field == "weights":
+        figure = _text(path, _OVERALL_INTERVAL_WEIGHTS[derived.weighted_too], "which means of the cells it fits")
+    else:
+        of = _measure_reader_name(derived.of, report_input)
+        basis = _OVERALL_INTERVAL_BOTH_BASIS if derived.weighted_too else _OVERALL_INTERVAL_BASIS
+        figure = _text(path, basis.format(of=of), "how the interval was built")
+    return replace(figure, derived=True)
 
 
 def _gain_axes(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]:
@@ -3051,7 +3154,19 @@ _BASIS_WORDS: dict[str, str] = {
     "half_width": "its stated half-width",
     "sem": "its standard error",
     "binomial": "a pass/fail rate's binomial spread, from its count",
+    "cells": (
+        "the standard error derived from its target-matrix cells, the figure being their plain mean: the root of "
+        "the cells' squared standard errors over their count, the cells read as independent, at the cells' stated "
+        "level; a size read from it counts cases at today's mix of cells"
+    ),
 }
+
+#: A cell-derived spread's basis where a case-weighted mean of the cells fits the figure as well as the plain one.
+_CELLS_BOTH_WORDS = (
+    "the standard error derived from its target-matrix cells, the figure fitting both their plain and their "
+    "case-weighted mean: the wider of the two readings', the cells read as independent, at the cells' stated level; "
+    "a size read from it counts cases at today's mix of cells"
+)
 
 
 @dataclass(frozen=True)
@@ -3248,6 +3363,10 @@ def _read_spread(report_input: ReportInput, arm_id: str, key: str, where: str, a
     if held is None:
         raise NoSpread(f"names {arm_id}'s mean on {key!r} {_where_words(where)}, which the input does not state")
     stat = held.stat
+    if where == _OVERALL and aspect is None and stat.ci is None and stat.half_width is None and stat.sem is None:
+        cells = _cells_spread(report_input, arm_id, key, held)
+        if cells is not None:
+            return cells
     try:
         return stat_spread(
             float(stat.mean) if stat.mean is not None else None,
@@ -3263,6 +3382,32 @@ def _read_spread(report_input: ReportInput, arm_id: str, key: str, where: str, a
         raise NoSpread(
             f"reads {arm_id}'s spread on {key!r} {_where_words(where)}, and the figure has none: {none}"
         ) from none
+
+
+def _weighted_too(report_input: ReportInput, key: str, arm_id: str) -> bool:
+    """Whether a cell-derived spread's figure fits its cells' case-weighted mean as well as their plain one."""
+    try:
+        return cell_mean_interval(report_input, key, arm_id).weighted_too
+    except NoCellMean:
+        # NOSILENT: read only for a spread whose basis is the cells', which qualified; an overall that does not is
+        # no weighted reading, which False says.
+        return False
+
+
+def _cells_spread(report_input: ReportInput, arm_id: str, key: str, held: _Held) -> Spread | None:
+    """An arm's overall spread read off its target-matrix cells, where the overall states none of its own and is the
+    plain mean of its cells (:func:`~threetears.evals.analysis.cell_mean.cell_mean_interval`, the interval a gate on it
+    reads): its standard error the cells', combined; one case's spread that times the root of the overall's count. None
+    where the overall does not qualify, so its spread is read as before."""
+    try:
+        derived = cell_mean_interval(report_input, key, arm_id)
+    except NoCellMean:
+        # NOSILENT: an overall that is no plain mean of its cells is the input's shape, not a fault: its spread is
+        # read from what it states, as before, which is what None tells the caller.
+        return None
+    count, distinct = held.count, held.cases
+    per_case = derived.se * math.sqrt(distinct or count) if count is not None else None
+    return Spread(derived.mean, derived.se, count, per_case, derived.level, "cells", distinct)
 
 
 def _spread(
@@ -3334,6 +3479,8 @@ def _basis_words(
 ) -> str:
     """What a spread was read from, in words; a binomial one says where its count was read (its own, the slice's
     stated cases, or the arm's scoreboard), on another aspect's figures where ``aspect`` names one."""
+    if spread.basis == "cells" and _weighted_too(report_input, key, arm_id):
+        return _CELLS_BOTH_WORDS
     if spread.basis != "binomial":
         return _BASIS_WORDS[spread.basis]
     held = _held_where(report_input, arm_id, key, where, aspect)
@@ -4805,6 +4952,12 @@ _POOLED_NOTE = (
     "theirs as if independent, never a test the pipeline ran."
 )
 
+#: What the grammar says of an overall interval derived from its cells, in place of "descriptive, no interval".
+_OVERALL_INTERVAL_NOTE = (
+    "Derived: combined here from the cells' stated spreads, the cells read as independent, never a test the pipeline "
+    "ran."
+)
+
 #: Every path family, in the order the grammar teaches them.
 _FAMILIES: tuple[_Family, ...] = (
     _family_of(_Word("meta"), _Statistic(_META_FIELDS, "<field>"), what="the campaign's own words", resolve=_meta),
@@ -5173,7 +5326,8 @@ _FAMILIES: tuple[_Family, ...] = (
         _Ids("<arm>", _criterion_arms),
         _Statistic(_CRITERION_FIGURE_FIELDS, "<field>"),
         what="the one figure a criterion reads for an arm, in its measure's units; `gap` is how far it clears the "
-        "threshold, signed toward passing, in points for a rate",
+        "threshold, signed toward passing, in points for a rate; `low` and `high` are derived where the input states "
+        "no interval and `overall_interval` derives one",
         resolve=_criterion_arm,
         derived_statistics=_CRITERION_DERIVED,
         example="criteria.p95.fast.v2.gap",
@@ -5308,6 +5462,22 @@ _FAMILIES: tuple[_Family, ...] = (
         derived=True,
         derived_note=_POOLED_NOTE,
         example="pooled.tone.kept.fast.v2.weights",
+    ),
+    _family_of(
+        _Word("overall_interval"),
+        _Ids("<measure>", _unspread_keys),
+        _Ids("<arm>", _unspread_arms),
+        _Statistic(_OVERALL_INTERVAL_FIELDS, "<field>"),
+        what="the interval on an arm's overall figure that states none, where that figure is the plain mean of one "
+        "measure's target-matrix cells and every cell states a spread: `se` is the root of the cells' squared "
+        "standard errors over their count, `interval` the figure plus and minus it at the cells' stated `level`, `of` "
+        "the measure averaged, `cells` how many, `weights` whether a case-weighted mean of them fits it too (the "
+        "interval then reads the wider standard error), `basis` how it was built. Refused where the figure is no plain mean "
+        "of its cells, a cell states no spread, or the levels differ. A gate on the figure reads this interval, and "
+        "`criteria.<criterion>.<arm>.low` and `.high` read its ends",
+        resolve=_overall_interval,
+        derived=True,
+        derived_note=_OVERALL_INTERVAL_NOTE,
     ),
     _family_of(
         _Word("cost_per_month"),
@@ -5676,7 +5846,7 @@ def resolve(key: str, report_input: ReportInput) -> Figure:
     figure = reading.family.resolve(report_input, reading.values, key)
     if figure.scale in _PER_THOUSAND_FACTORS and not figure.per:
         figure = replace(figure, per=_money_per(report_input, reading.values))
-    return replace(figure, derived=_is_derived(reading))
+    return replace(figure, derived=figure.derived or _is_derived(reading))
 
 
 def _one_reading(key: str, report_input: ReportInput) -> _Reading:
@@ -5694,7 +5864,9 @@ def _one_reading(key: str, report_input: ReportInput) -> _Reading:
 
 
 def _is_derived(reading: _Reading) -> bool:
-    """Whether a reading's figure is computed here: its family is derived, or the statistic it names is."""
+    """Whether a reading's figure is computed here: its family is derived, or the statistic it names is. A resolver
+    may also mark one figure derived where its family copies the rest (a criterion figure's ends, read off an interval
+    derived from the cells)."""
     if reading.family.derived:
         return True
     values = iter(reading.values)
@@ -6443,7 +6615,9 @@ _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
     (
         "measures",
         "an arm's figures on a measure or judged dimension, its pass rate and scoreboard, and the judge",
-        frozenset({"measure", "judged", "judge", "pass_rate", "scoreboard", "reasoning_ratio", "pooled"}),
+        frozenset(
+            {"measure", "judged", "judge", "pass_rate", "scoreboard", "reasoning_ratio", "pooled", "overall_interval"}
+        ),
     ),
     (
         "slices",

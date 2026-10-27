@@ -32,6 +32,7 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import DotIntervalChart
 from threetears.evals.analysis.report.figure_keys import resolve
+from threetears.evals.analysis.report.plan_page.charting import computed_interval
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report.plan_page.words import COMPUTED_NOTE, COMPUTED_REPEATS_NOTE
 from threetears.evals.analysis.report_input import ReportInput, Stat
@@ -47,6 +48,9 @@ _EMPTY: dict[str, Any] = {
     "transform": "none",
     "small_multiples_by": "none",
 }
+
+#: How a binomial spread's basis begins, as its ``spread.`` key reads it.
+BINOMIAL = "a pass/fail rate's binomial spread"
 
 #: The kinds that draw an arm's figure with an interval code may compute.
 _KINDS = ("dot_interval", "bars", "table")
@@ -76,15 +80,21 @@ def _read(key: str, held: ReportInput) -> Any:
 
 
 def _computed() -> list[tuple[str, str, list[str]]]:
-    """Each measure or judged dimension no arm's overall figure states a spread of, with the arms whose spread reads an
-    interval: the input, the key and those arms."""
+    """Each measure or judged dimension no arm's overall figure states a spread of, with the arms whose spread reads a
+    binomial interval, the one a chart computes: the input, the key and those arms. An overall that is the plain mean
+    of its cells reads the spread derived from theirs instead (``cell_mean``), which a chart does not draw as computed."""
     found = []
     for name, held in _inputs().items():
         for key, table in [*held.measures.items(), *held.judged.items()]:
             stats = table.per_arm
             if not stats or not all(_bare(stat) for stat in stats.values()):
                 continue
-            arms = [arm for arm in stats if _read(f"spread.{arm}.{key}.overall.interval", held) is not None]
+            arms = [
+                arm
+                for arm in stats
+                if _read(f"spread.{arm}.{key}.overall.interval", held) is not None
+                and str(resolve(f"spread.{arm}.{key}.overall.basis", held).value).startswith(BINOMIAL)
+            ]
             if arms:
                 found.append((name, key, arms))
     return found
@@ -93,6 +103,16 @@ def _computed() -> list[tuple[str, str, list[str]]]:
 def test_the_fixtures_hold_rates_with_a_count_and_no_stated_interval() -> None:
     names = {name for name, _key, _arms in _computed()}
     assert "r2 with one gate" in names, names
+
+
+def test_an_overall_its_cells_give_an_interval_draws_none_computed() -> None:
+    """r3's balanced accuracy is the plain mean of its cells, and its spread is read off theirs (``cell_mean``): a
+    chart of it computes no interval, since its note would call it binomial; its interval is cited by its key."""
+    held = _inputs()["r3"]
+    for arm, stat in held.measures["balanced_accuracy"].per_arm.items():
+        basis = resolve(f"spread.{arm}.balanced_accuracy.overall.basis", held).value
+        assert isinstance(basis, str) and not basis.startswith(BINOMIAL), "the control: its spread reads its cells"
+        assert computed_interval(held, "balanced_accuracy", arm, stat) is None
 
 
 def test_no_interval_is_computed_on_a_figure_that_is_no_share_of_counted_trials() -> None:

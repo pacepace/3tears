@@ -15,6 +15,12 @@ this order:
 4. for a pass/fail rate with a count, the binomial spread ``sqrt(p(1 - p) / n)``, ``p`` read as a share; where the
    count is trials over fewer stated cases, ``n`` is the cases (see *What a case is*).
 
+An overall figure that states no spread of its own and is the plain mean of its target-matrix cells, each stating
+one, is read by the standard error derived from theirs (basis ``cells``, :mod:`~threetears.evals.analysis.cell_mean`),
+before any binomial spread, as a gate on it reads that interval; the figure-key module reads it, at the cells' stated
+level. Its spread of one case is that standard error times the root of the overall's count, so a size read from it
+counts cases at today's mix of cells.
+
 An interval or a half-width is read only at a stated level: a level nobody stated would make the standard error a
 guess, so such a statistic is read by its ``sem`` or as a rate, or not at all *(inferred)*. A standard error or a
 binomial spread carries no level of its own, so the result is read at the snapshot's stated level where it has one,
@@ -112,8 +118,10 @@ DEFAULT_LEVEL = 0.95
 #: The share of designs that clear, for the second design size a settle result gives beside the coin-toss one.
 POWER = 0.8
 
-#: What an arm's standard error was read from.
-SpreadBasis = Literal["interval", "half_width", "sem", "binomial"]
+#: What an arm's standard error was read from: its own interval, half-width or standard error, a rate's binomial
+#: spread, or (``cells``) the standard error derived for an overall that is the plain mean of its target-matrix cells,
+#: which the figure-key module reads off the cells (:mod:`~threetears.evals.analysis.cell_mean`).
+SpreadBasis = Literal["interval", "half_width", "sem", "binomial", "cells"]
 
 #: A level as the input writes one: a share (``0.95``) or a percent (``95%``, ``99.69%``).
 _LEVEL = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(%?)\s*$")
