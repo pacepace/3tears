@@ -76,7 +76,7 @@ from dataclasses import dataclass, replace
 from typing import Literal, get_args
 
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.analysis.numbers import format_number, group_thousands
+from threetears.evals.analysis.numbers import format_number, group_thousands, spell_multiple, spell_price
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
 from threetears.evals.analysis.report.cost_unit import REPLIES, CostBasis, per_count, per_noun
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
@@ -128,7 +128,6 @@ from threetears.evals.analysis.separation import (
     wrong_side_share,
 )
 from threetears.evals.analysis.style import humanize, measure_name
-from threetears.evals.analysis.summary import dollars_text
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of
 
 #: What a figure is: a number, an interval (low, high), a piece of text, or an arm (rendered by name and tag).
@@ -156,8 +155,10 @@ _FILTER_MEANS: dict[str, str] = {
     "pct": "a rate as a percent",
     "pts": "a change in points, signed, one decimal at most",
     "abs": "the magnitude, without its sign",
-    "usd": "dollars",
-    "int": "the nearest whole number, its thousands separated",
+    "usd": "dollars, three significant figures at least (`$0.302`, where cents would round a price a reader "
+    "multiplies to `$0.30`)",
+    "int": "the nearest whole number, its thousands separated; a multiple keeps its unit (`21 times`), every other "
+    "unit is left for the prose to write",
     "pct10": "a rate rounded to the nearest 10%",
     "interval": "an interval's two ends, joined by 'to'",
     "usd_per_1k": "dollars per 1,000 of what the cost counts, with the words (`per 1,000 conversations` where the "
@@ -2542,6 +2543,12 @@ _COST_GAP_FIELDS = ("per_1k", "monthly", "multiple")
 
 #: The unit a cost multiple is written in.
 MULTIPLE_UNIT = "times"
+
+#: The units a figure keeps under every filter, rounding included: a multiple's ``times`` is what makes it one, and
+#: ``21`` alone reads as a count. A multiple's own spelling rounds to the figures a ratio supports
+#: (:func:`~threetears.evals.analysis.numbers.spell_multiple`: ``21 times``, ``2.4 times``); ``int`` writes it whole.
+#: Every other unit is left off under ``int``, which prose writes after the key (``{…p95|int} ms``).
+_KEPT_UNITS = frozenset({MULTIPLE_UNIT})
 
 
 def _cost_gap_seconds(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
@@ -5148,7 +5155,8 @@ _FAMILIES: tuple[_Family, ...] = (
         _Ids("<arm>", _cost_gap_seconds),
         _Statistic(_COST_GAP_FIELDS, "<field>"),
         what="two arms' costs apart, the first's minus the second's: `per_1k` per 1,000 of what the cost counts, "
-        "`monthly` per month at the declared monthly volume, `multiple` the first's cost over the second's",
+        "`monthly` per month at the declared monthly volume, `multiple` the first's cost over the second's, read with its "
+        "unit under every filter (`21 times`, `2.4 times`: whole from ten up, one decimal below)",
         resolve=_cost_gap,
         derived=True,
         example="cost.gap.fast.v2.base.multiple",
@@ -5498,7 +5506,9 @@ def _plus(text: str, value: float) -> str:
 
 
 def _money(value: float, signed: bool) -> str:
-    text = dollars_text(abs(value))
+    """Dollars as a key writes them: to three significant figures at least (:func:`spell_price`), so a price a reader
+    multiplies by a volume reaches the monthly figure beside it."""
+    text = spell_price(abs(value))
     if value < 0:
         return f"-{text}"
     return _plus(text, value) if signed else text
@@ -5581,7 +5591,10 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
         if figure.scale not in ("count", "plain", "points", "usd_per_1m"):
             raise _refuse(figure.path, f"cannot read as a whole number: it is on the {figure.scale} scale")
         text = group_thousands(format_number(float(round(value))))
-        return _Spelled(_plus(text, value) if signed else text)
+        text = _plus(text, value) if signed else text
+        return _Spelled(f"{text} {figure.unit}" if figure.unit in _KEPT_UNITS else text)
+    if figure.unit in _KEPT_UNITS:
+        return _Spelled(f"{spell_multiple(value)} {figure.unit}")
     text = format_number(value)
     text = _plus(text, value) if signed else text
     if not figure.unit:

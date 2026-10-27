@@ -23,7 +23,16 @@ import pytest
 
 from packages.evals.tests.analyst_support import budget_inputs, fixture_inputs
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.analysis.report.figure_keys import figure_key_grammar, literal_numbers, render, resolve
+from threetears.evals.analysis.numbers import spell_dollars, spell_multiple, spell_price
+from threetears.evals.analysis.report.figure_keys import (
+    MULTIPLE_UNIT,
+    figure_filters,
+    figure_key_grammar,
+    format_figure,
+    literal_numbers,
+    render,
+    resolve,
+)
 from threetears.evals.analysis.report_input import ReportInput
 
 
@@ -86,6 +95,82 @@ def test_two_arms_costs_apart_read_the_pages_own_costs(name: str) -> None:
         else:
             with pytest.raises(UnstatedFigure):
                 resolve(f"{key}.multiple", held)
+
+
+@pytest.mark.parametrize("name", sorted(INPUTS))
+def test_a_multiple_keeps_its_unit_under_every_filter_and_rounds_to_what_a_ratio_supports(name: str) -> None:
+    """r3's report printed ``{cost.gap.<a>.<b>.multiple|int}`` as "21": the filter dropped the "times" that makes it
+    a multiple. Every filter a multiple takes keeps it, and its own spelling never claims a decimal past ten."""
+    held = INPUTS[name]
+    costs = _costs(held)
+    pairs = [(first, second) for first, second in permutations(costs, 2) if costs[second]][:12]
+    for first, second in pairs:
+        key = f"cost.gap.{first}.{second}.multiple"
+        figure = resolve(key, held)
+        ratio = costs[first] / costs[second]
+        taken = figure_filters(figure)
+        assert "int" in taken, key
+        assert format_figure(figure) == f"{spell_multiple(ratio)} {MULTIPLE_UNIT}"
+        assert format_figure(figure, ("int",)) == f"{round(ratio):,} {MULTIPLE_UNIT}"
+        for one in taken:
+            assert format_figure(figure, (one,)).endswith(f" {MULTIPLE_UNIT}"), (key, one)
+        digits = format_figure(figure).removesuffix(f" {MULTIPLE_UNIT}")
+        assert "." not in digits if ratio >= 10 else len(digits.split(".")[1]) <= 2, (key, digits)
+    assert pairs or len(costs) < 2, "the control: two arms with a cost"
+
+
+def test_a_multiple_reads_two_figures_whole_from_ten() -> None:
+    assert [spell_multiple(ratio) for ratio in (21.05, 9.96, 2.43, 1.04, 0.995, 0.48, 0.0483, 1240.4)] == [
+        "21",
+        "10",
+        "2.4",
+        "1.0",
+        "1.0",
+        "0.48",
+        "0.048",
+        "1,240",
+    ]
+
+
+def _price(text: str) -> float:
+    """The dollars a spelled price reads, as a reader would take them off the page."""
+    return float(text.split(" ", 1)[0].replace("$", "").replace(",", ""))
+
+
+#: The inputs declaring a monthly volume, which a monthly cost is read at.
+VOLUMED = [name for name in sorted(INPUTS) if INPUTS[name].meta.volume_per_month is not None]
+
+
+@pytest.mark.parametrize("name", VOLUMED)
+def test_a_price_per_1000_times_the_volume_reaches_the_monthly_figure_beside_it(name: str) -> None:
+    """r2's page printed "$0.30 per 1,000 calls" beside "$1,208 a month" at 4,000,000 calls: $0.30 x 4,000 is
+    $1,200. A price keeps three significant figures, so the product is within half a percent of the month."""
+    held = INPUTS[name]
+    volume = held.meta.volume_per_month
+    assert volume is not None
+    costs = _costs(held)
+    checked = 0
+    for arm in costs:
+        price = _price(render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {}))
+        month = resolve(f"cost_per_month.{arm}", held).value
+        assert isinstance(month, float)
+        assert price * float(volume) / 1000 == pytest.approx(month, rel=0.005), arm
+        checked += 1
+    assert checked, "the control: a declared volume and a cost"
+
+
+def test_a_price_keeps_a_third_figure_only_where_cents_would_round_one_away() -> None:
+    assert [spell_price(amount) for amount in (0.302, 0.30, 0.1, 0.4949, -0.495, 1.655, 0.0123, 0.9996, 7560.0)] == [
+        "$0.302",
+        "$0.30",
+        "$0.10",
+        "$0.495",
+        "-$0.495",
+        spell_dollars(1.655),
+        "$0.0123",
+        "$1.00",
+        "$7,560.00",
+    ]
 
 
 @pytest.mark.parametrize("name", sorted(INPUTS))

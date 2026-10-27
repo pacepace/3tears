@@ -143,6 +143,68 @@ def spell_dollars(amount: float) -> str:
     return f"{sign}${amount:.{decimals}f}"
 
 
+#: The amount below which cents keep fewer than three significant figures of a price (``$0.30`` of ``$0.302``).
+_THIRD_FIGURE_BELOW = 1.0
+
+
+def spell_price(amount: float) -> str:
+    """An amount of money a reader may multiply, such as a cost per 1,000 replies: :func:`spell_dollars`, with a third
+    significant figure from ten cents to a dollar, where cents keep only two.
+
+    Cents are what money is read in, and from a dollar up they carry three significant figures or more; below ten
+    cents :func:`spell_dollars` already writes three. Between, cents round away a third of a percent and more: a cost
+    of $0.302 per 1,000 calls reads ``$0.30``, and a reader who multiplies it by a declared 4,000,000 calls a month
+    reaches $1,200 beside a monthly figure of $1,208. Three significant figures there (``$0.302``) keep the product
+    within half a percent of the monthly figure, the rounding of the price's own third figure. A third figure that is
+    zero is left off (``$0.30``, not ``$0.300``): cents already say it.
+
+    :param amount: Dollars, as stored.
+    :ptype amount: float
+    :return: ``$0.302``, ``$0.30``, ``-$0.495``; :func:`spell_dollars`'s spelling outside ten cents to a dollar.
+    :rtype: str
+    """
+    if not 0.1 <= abs(amount) < _THIRD_FIGURE_BELOW:
+        return spell_dollars(amount)
+    text = f"{abs(amount):.3f}"
+    if float(text) >= _THIRD_FIGURE_BELOW:
+        return spell_dollars(amount)
+    sign = "-" if amount < 0 else ""
+    return f"{sign}${text[:-1] if text.endswith('0') else text}"
+
+
+#: The multiple from which a multiple is written whole: ``21 times``, never ``21.05 times``.
+_MULTIPLE_WHOLE_FROM = 10.0
+
+
+def spell_multiple(ratio: float) -> str:
+    """A ratio read as a multiple (one cost as a multiple of another), to the two significant figures a ratio of two
+    rounded figures supports, and never past the units digit from ten up.
+
+    From ten up it is whole, its thousands grouped (``21``, ``1,240``): a decimal on ``21.05 times`` claims a
+    precision neither figure it divides has. From one to ten it keeps one decimal, a zero one included (``2.4``,
+    ``1.0``), so a multiple near one still says it is near one rather than reading ``1``. Below one it keeps two
+    significant figures (``0.48``, ``0.048``). The unit word is the caller's.
+
+    :param ratio: The multiple.
+    :ptype ratio: float
+    :return: Its digits; :data:`ABSENT` for a non-finite ratio.
+    :rtype: str
+    """
+    if not math.isfinite(ratio):
+        return ABSENT
+    magnitude = abs(ratio)
+    if magnitude == 0:
+        return "0"
+    sign = "-" if ratio < 0 else ""
+    if magnitude >= _MULTIPLE_WHOLE_FROM or round(magnitude, 1) >= _MULTIPLE_WHOLE_FROM:
+        return sign + group_thousands(f"{magnitude:.0f}")
+    if magnitude >= 1 or round(magnitude, 1) >= 1:
+        return f"{sign}{magnitude:.1f}"
+    decimals = 1 - math.floor(math.log10(magnitude))
+    text = f"{magnitude:.{decimals}f}"
+    return sign + (text.rstrip("0").rstrip(".") if float(text) < 1 else "1.0")
+
+
 #: :data:`WRITTEN_FROM` as the bound a smaller value reads as.
 _WRITTEN_FROM_TEXT = f"{WRITTEN_FROM:.6f}"
 
@@ -162,4 +224,13 @@ def format_signed(value: float | None) -> str:
     return f"+{text}" if positive and not text.startswith("<") else text
 
 
-__all__ = ["ABSENT", "WHOLE_FROM", "WRITTEN_FROM", "format_number", "format_signed", "spell_dollars"]
+__all__ = [
+    "ABSENT",
+    "WHOLE_FROM",
+    "WRITTEN_FROM",
+    "format_number",
+    "format_signed",
+    "spell_dollars",
+    "spell_multiple",
+    "spell_price",
+]
