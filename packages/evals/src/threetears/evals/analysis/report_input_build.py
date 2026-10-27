@@ -996,14 +996,21 @@ def _failed(trial: TrialRow, primary: str | None) -> bool:
 
 
 def _holds_every_failure(aspect: AnalysisContextBundle, primary: str | None) -> bool:
-    """Whether an aspect's trials hold every failure its run had: none was left out of the bundle, or the cap kept a
-    trial that passed, so every failed and lost trial, which it keeps first, was kept *(inferred: a trial that passed
-    overall is no failure on the primary judged dimension either, so none the cap left out is one; a kept trial
-    that is reads as not held)*."""
+    """Whether an aspect's trials hold every failure its run had, as the examples count one. None was left out of the
+    bundle; or the cap, which keeps every failed and lost trial before any that passed, kept one that passed, so only
+    passed trials were left out, and a passed trial is no failure: with no primary judged dimension a failure is a
+    failed trial, and with one, a nought on it fails the trial only where it decides pass, a capability dimension
+    (``JudgedMeasure.axis``). A primary dimension that does not (a boundary dimension, or one the bundle does not
+    describe) can score nought on a trial that passed and was left out, so such an aspect is not held whole."""
     if aspect.trials_omitted == 0:
         return True
     passed = [trial for trial in aspect.trials if trial.state == "passed"]
-    return bool(passed) and not any(_failed(trial, primary) for trial in passed)
+    if not passed or any(_failed(trial, primary) for trial in passed):
+        return False
+    if primary is None:
+        return True
+    described = [measure for measure in aspect.judged_measures if measure.name == primary]
+    return bool(described) and all(measure.axis == "capability" for measure in described)
 
 
 def _started(text: str, chars: int) -> str:

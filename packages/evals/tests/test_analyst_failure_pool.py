@@ -38,6 +38,7 @@ from threetears.evals.analysis.analyst.facts import campaign_overview, examples_
 from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_input
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.errors import UnstatedFigure
+from threetears.evals.analysis.planned_analysis import report_input_digest, report_input_document_digest
 from threetears.evals.analysis.report.figure_keys import OVERLAP_WORDS, reader_name, resolve
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS, planner_view, report_input
@@ -261,3 +262,58 @@ def test_an_example_card_names_its_aspect_where_the_input_holds_more_than_one(na
         meta = row.cells[0].split(" · ")
         aspect = reader_name("aspect", example.aspect or "", held)
         assert (aspect in meta) == (len(held.aspects) > 1), (meta, aspect)
+
+
+def _capped(bundle: CampaignBundle, axis: str) -> CampaignBundle:
+    """s3 with its first aspect capped: its passed trials but one left out of the bundle, and its primary judged
+    dimension described on the given axis."""
+    first, *rest = bundle.aspects
+    kept = [trial for trial in first.trials if trial.state != "passed"]
+    kept += [trial for trial in first.trials if trial.state == "passed"][:1]
+    measures = [
+        measure.model_copy(update={"axis": axis}) if measure.name == "answer.correct" else measure
+        for measure in first.judged_measures
+    ]
+    capped = first.model_copy(
+        update={"trials": kept, "trials_omitted": len(first.trials) - len(kept), "judged_measures": measures}
+    )
+    return bundle.model_copy(update={"aspects": [capped, *rest]})
+
+
+@pytest.mark.parametrize(("axis", "counted"), [("capability", True), ("boundary", False)])
+def test_a_capped_aspect_is_counted_only_where_its_primary_dimension_decides_pass(axis: str, counted: bool) -> None:
+    """A trial that passed can score nought on a primary judged dimension that does not decide pass (a boundary
+    dimension), and the cap leaves passed trials out first: such an aspect's failures are not known, never undercounted.
+    One whose primary dimension decides pass (capability) loses no failure to the cap."""
+    bundle = _capped(shape_bundle("s3"), axis)
+    held = analyst_input(bundle)
+    assert held.primary_judged == "answer.correct"
+    capped = bundle.aspects[0].aspect
+    arm = held.arms[0].id
+    if counted:
+        assert held.failed_trials is not None and capped in {row.aspect for row in held.failed_trials}
+        expected = _failures(shape_bundle("s3"), held.primary_judged)
+        assert resolve(f"count.failures.{capped}.{arm}", held).value == sum(
+            count for (aspect, _arm, _stratum), count in expected.items() if aspect == capped
+        )
+    else:
+        with pytest.raises(UnstatedFigure):
+            resolve(f"count.failures.{capped}.{arm}", held)
+        row = next(row for row in examples_list(held, {}, limit=200).kept_from if row.aspect == capped)
+        assert row.failed is None and row.unknown
+
+
+@pytest.mark.parametrize("name", sorted(BUNDLES))
+def test_a_planners_input_and_a_bare_one_dump_no_count_so_their_digest_is_as_it_was(name: str) -> None:
+    """The counted fields are left out of an input that does not count them, so a planner's input built from a bundle
+    and every bare fixture dump exactly the fields they did before the fields existed."""
+    counted = {"failed_trials", "case_overlap"}
+    before = {field.alias or name for name, field in ReportInput.model_fields.items()} - counted
+    for held in (report_input(BUNDLES[name]), *fixture_inputs().values()):
+        document = held.model_dump(mode="json", by_alias=True)
+        assert set(document) <= before and not counted & set(document)
+        assert report_input_digest(held) == report_input_document_digest(
+            {key: value for key, value in document.items() if key not in counted}
+        )
+    analyst = _counted(name).model_dump(mode="json", by_alias=True)
+    assert counted <= set(analyst)

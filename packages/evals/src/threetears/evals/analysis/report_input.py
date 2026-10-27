@@ -577,13 +577,16 @@ class ReportInput(_Part):
         default_factory=dict, description="Each label axis's confusion, by axis id."
     )
     human_pref: HumanPreference | None = Field(default=None, description="Blind human ratings.")
+    # Left out of the document when unset, as a planner's input and a bare one leave them, so their digest is as it was.
     failed_trials: list[FailedTrials] | None = Field(
         default=None,
+        exclude_if=lambda value: value is None,
         description="The failed trials the run holds per aspect, arm and stratum, which the examples are kept from; "
         "none where the input does not count them.",
     )
     case_overlap: list[CaseOverlap] | None = Field(
         default=None,
+        exclude_if=lambda value: value is None,
         description="For each two aspects, the cases both ran and the cases only one ran; none where the input does "
         "not hold the aspects' case ids.",
     )
