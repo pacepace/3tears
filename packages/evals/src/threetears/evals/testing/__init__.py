@@ -19,7 +19,8 @@ into a JSONL file once and replays them exactly with no network, refusing by nam
 (:mod:`threetears.evals.testing.recorded_completions`). Beside it, the recorded tool turns,
 :class:`RecordedTurns`, which keep a tool-calling loop's replies alone, per named session and in order, with the
 snapshot id a placeholder, and replay them while the tools run live, a session asked one turn more than it holds
-refused naming the turn (:mod:`threetears.evals.testing.recorded_turns`). The negotiation check: :func:`check_refusal_negotiation` scripts
+refused naming the turn (:mod:`threetears.evals.testing.recorded_turns`). The negotiation check:
+:func:`check_refusal_negotiation` scripts
 three routers that refuse a host's own client (its temperature under enforcement; any enforced request; its output
 cap and effort word, naming what is taken), and raises :class:`NegotiationConformanceFailure` naming each mistake
 unless the client resends in order, reports what the served request carried, and remembers what it proved and

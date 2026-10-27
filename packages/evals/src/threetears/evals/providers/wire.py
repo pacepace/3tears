@@ -105,8 +105,24 @@ BASE_URLS: Final[Mapping[Provider, str]] = {
     "openai": "https://api.openai.com/v1",
 }
 
-#: Claude 5.5 models take no temperature, on any route: none is ever sent to one.
-_NO_TEMPERATURE: Final = re.compile(r"claude-[a-z]+-5[.-]5")
+#: What is known of each model before any request, whatever its route: one row per fact, each a pattern searched in
+#: the lower-cased id (so a dated id, a router's ``anthropic/claude-opus-5.5`` and a cloud's prefix all match) and the
+#: facts it declares. A model no row names declares nothing: its settings go as asked, and a refusal the provider
+#: answers is learned (completions) or comes back to the caller (tool turns).
+#:
+#: - Claude 5.5 models take no temperature.
+#: - Claude 5 models, and Opus 4.7 and 4.8, take no thinking budget (``thinking.budget_tokens`` is a 400): they think
+#:   adaptively, on an effort word.
+#: - Opus 5.5, Sonnet 5.5, and the Fable 5 and Mythos 5 families cannot have thinking disabled. Sonnet 5, Opus 5 and
+#:   Haiku 5.5 can.
+_DECLARED_FACTS: Final[tuple[tuple[re.Pattern[str], SettingFacts], ...]] = (
+    (re.compile(r"claude-[a-z]+-5[.-]5"), SettingFacts(accepts_temperature=False)),
+    (re.compile(r"claude-[a-z]+-5(?![0-9])|claude-opus-4[.-][78](?![0-9])"), SettingFacts(reasoning_budget=False)),
+    (
+        re.compile(r"claude-(?:opus|sonnet)-5[.-]5(?![0-9])|claude-(?:fable|mythos)-5(?![0-9])"),
+        SettingFacts(reasoning_disable=False),
+    ),
+)
 
 #: Anthropic's stop reasons, in the engine's words. ``model_context_window_exceeded`` is the window filling and
 #: ``pause_turn`` a server-tool pause: output stopped early for a cause that is neither the cap nor a filter.
@@ -136,14 +152,22 @@ _ROUTERS: Final = "openrouter/"
 
 
 def declared_facts(model_id: str) -> SettingFacts:
-    """What the client knows of a model before any request, whatever its route: a Claude 5.5 takes no temperature.
+    """What the client knows of a model before any request, whatever its route, read off :data:`_DECLARED_FACTS`.
+
+    A completion's negotiation and a tool turn read the same facts: whether a temperature is taken, whether a
+    thinking budget is (``reasoning_budget``), and whether thinking can be disabled (``reasoning_disable``).
 
     :param model_id: The model id.
     :ptype model_id: str
-    :return: The facts; every one unknown but that.
+    :return: The facts; every one the table does not declare unknown.
     :rtype: SettingFacts
     """
-    return SettingFacts(accepts_temperature=False) if _NO_TEMPERATURE.search(model_id.lower()) else SettingFacts()
+    plain = model_id.lower()
+    facts = SettingFacts()
+    for pattern, declared in _DECLARED_FACTS:
+        if pattern.search(plain):
+            facts = declared.over(facts)
+    return facts
 
 
 @dataclass(frozen=True, slots=True)
@@ -528,17 +552,14 @@ _TURN_STOPS: Final[Mapping[str, TurnStopReason]] = {
 }
 
 
-#: Claude 5 models (``claude-opus-5-5``, ``claude-sonnet-5``), which think adaptively only: a thinking budget, or
-#: thinking turned off, is answered with a 400.
-_ADAPTIVE_THINKING_ONLY: Final = re.compile(r"claude-[a-z]+-5(?![0-9])")
-
-
 def turn_settings_refusal(model: str, sent: WireSettings) -> str | None:
     """Why a model built with ``sent`` sends no tool turn, or ``None`` when it can send one.
 
-    A tool turn sends no temperature (a Claude 5.5 takes none, nor does thinking), and a Claude 5 model thinks
-    adaptively only, so a thinking budget or the effort word ``none`` would be refused by the provider after the
-    turn was built: each is refused here, before anything is sent, naming the setting that works.
+    A tool turn sends no temperature (a Claude 5.5 takes none, nor does thinking) and negotiates no setting, so a
+    thinking budget on a model whose facts say it takes none, or ``effort='none'`` on one whose facts say thinking
+    cannot be disabled (:func:`declared_facts`), is refused here, before anything is sent, naming what works. A model
+    the facts do not cover is sent the setting as given, and the provider's 400, if it refuses it, reaches the caller
+    as a :class:`~threetears.evals.providers.ProviderError` that is not resent.
 
     :param model: The model id.
     :ptype model: str
@@ -548,18 +569,20 @@ def turn_settings_refusal(model: str, sent: WireSettings) -> str | None:
     :rtype: str | None
     """
     if sent.temperature is not None:
-        return "tool turns send no temperature (a Claude 5.5 model takes none, nor does thinking): build the model without one"
-    if _ADAPTIVE_THINKING_ONLY.search(model.lower()) is None:
-        return None
-    if sent.reasoning_max_tokens is not None:
         return (
-            f"{model} thinks adaptively only and refuses a thinking budget ({sent.reasoning_max_tokens} tokens): build "
-            "the model with an effort word (effort='high', say) instead"
+            "tool turns send no temperature (a Claude 5.5 model takes none, nor does thinking): build the model "
+            "without one"
         )
-    if sent.reasoning_effort == "none":
+    facts = declared_facts(model)
+    if sent.reasoning_max_tokens is not None and facts.reasoning_budget is False:
         return (
-            f"{model} thinks adaptively only and cannot have thinking turned off (effort='none'): build the model with "
-            "an effort word other than 'none' instead"
+            f"{model} takes no thinking budget ({sent.reasoning_max_tokens} tokens): build the model with an effort "
+            "word (effort='high', say) instead"
+        )
+    if sent.reasoning_effort == "none" and facts.reasoning_disable is False:
+        return (
+            f"{model} cannot have thinking disabled (effort='none'): build the model with an effort word other than "
+            "'none' instead"
         )
     return None
 
@@ -602,8 +625,8 @@ def turn_body(
     :ptype facts: SettingFacts
     :return: The JSON body.
     :rtype: dict[str, Any]
-    :raises ValueError: No messages; a thinking block in a user message; a last message holding only thinking, where no breakpoint can go; an output cap
-        that is not a positive count; or a thinking budget not below it, naming both.
+    :raises ValueError: No messages; a thinking block in a user message; a last message holding only thinking, where no
+        breakpoint can go; an output cap that is not a positive count; or a thinking budget not below it, naming both.
     """
     if not messages:
         raise ValueError("a tool turn sends at least one message")

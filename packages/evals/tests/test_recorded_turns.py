@@ -151,7 +151,7 @@ async def test_a_session_asked_past_its_recording_is_refused_naming_the_turn(tmp
         await replay.turn_session("editor-2", snapshot=REPLAYED_ON).turn(
             system="", messages=ask("?"), tools=(), max_tokens=1
         )
-    with pytest.raises(RecordingRefused, match="never recorded again"):
+    with pytest.raises(RecordingRefused, match="cut short .* delete the file and record it again; otherwise"):
         await editor.turn(system="", messages=ask("?"), tools=(), max_tokens=1)
     assert replay.unconsumed() == {"analyst": 2}, "the turns a replay left are named by session"
 
@@ -218,13 +218,16 @@ async def test_each_ceiling_a_session_answered_is_kept_for_its_turn_and_replayed
 
     assert first_ceiling == witness.turn_price_ceiling(messages=ask("a"), **asked), "a recording passes it through"
     assert first_ceiling is not None and refused_ceiling is not None and refused_ceiling > first_ceiling
-    replay = RecordedTurns.replay(path).turn_session("analyst", snapshot=REPLAYED_ON)
+    replaying = RecordedTurns.replay(path)
+    replay = replaying.turn_session("analyst", snapshot=REPLAYED_ON)
     assert replay.turn_price_ceiling(messages=ask("anything"), **asked) == first_ceiling
     replayed = await replay.turn(messages=ask("anything"), **asked)
+    assert replaying.unconsumed() == {"analyst": 1}, "the refused turn's ceiling is a line not yet asked"
     assert replay.turn_price_ceiling(messages=ask("anything"), **asked) == refused_ceiling, (
         "the refused turn's ceiling replays, so the budget ends the replay where it ended the recording"
     )
     assert replayed.cost_usd == pytest.approx(100 * 0.000004 + 10 * 0.00002), "the cost is still the recorded one"
+    assert replaying.unconsumed() == {}
 
 
 async def test_a_ceiling_asked_for_a_turn_that_recorded_none_is_refused_naming_the_turn(tmp_path: Path) -> None:

@@ -21,8 +21,12 @@ output, cache-read and cache-write tokens, and its cost with `price_source`; a c
 `is_error` only on a refusal), three `cache_control` breakpoints (the system prompt, the last tool, the last
 message), every thinking block sent back exactly as its reply carried it, and the model's own effort or thinking
 budget. Any other route is refused before anything is sent, naming the one that works, as are settings the provider
-would refuse: a temperature, and on a Claude 5 model (which thinks adaptively only) a thinking budget or
-`effort="none"`. `Model.turn_price_ceiling` bounds a turn from the catalogue's rates.
+would refuse: a temperature, a thinking budget on a model that takes none (Claude 5 models, Opus 4.7 and 4.8), and
+`effort="none"` on one that cannot have thinking disabled (Opus 5.5, Sonnet 5.5, the Fable 5 and Mythos 5 families).
+Both rules are facts in the client's one per-model table, which a completion's negotiation reads too, so a completion
+asked a budget on those models sends its effort word instead; a model the table does not cover is sent the setting as
+given, and the provider's refusal comes back to the caller. `Model.turn_price_ceiling` bounds a turn from the
+catalogue's rates.
 
 `threetears.evals.testing.RecordedTurns` keeps a tool-calling loop's replies alone, per named session and in order,
 with the session's snapshot id held as `{snapshot}` and written back on replay; no request bytes are kept, so a replay

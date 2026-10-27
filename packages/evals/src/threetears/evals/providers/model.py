@@ -728,9 +728,9 @@ class Model:
         :param recording: A JSONL recording to replay, or to record into; a relative path is read beside the eval
             file being loaded (``python -m threetears.evals FILE``), else in the working directory.
         :ptype recording: str | os.PathLike[str] | None
-        :param turn_recording: A tool-turn recording, per session (:meth:`turn_session`): replayed when the file
-            exists, whatever ``RECORD`` says, else recorded live; read where ``recording`` is. Anthropic only. A model replaying one still sends its
-            completions live, so it still needs a key unless ``recording`` replays those.
+        :param turn_recording: A tool-turn recording, per session (:meth:`turn_session`): replayed when the file exists,
+            whatever ``RECORD`` says, else recorded live; read where ``recording`` is. Anthropic only. A model replaying
+            one still sends its completions live, so it still needs a key unless ``recording`` replays those.
         :ptype turn_recording: str | os.PathLike[str] | None
         :param catalogue: The price catalogue to share with other models, or ``None`` for one of its own.
         :ptype catalogue: Catalogue | None
@@ -764,8 +764,8 @@ class Model:
             setting that is the caller's error (an effort that is neither a word nor a budget, a budget not below
             ``max_tokens``, an Anthropic budget below 1024), or a ``catalogue_fetch_timeout`` that is not above zero;
             a ``turn_recording`` on a route other than Anthropic's, beside settings a tool turn refuses (a temperature;
-            on a Claude 5 model, a thinking budget or ``effort='none'``), or to be recorded by a model that replays its
-            completions and so has no live client.
+            a thinking budget, or ``effort='none'``, on a model whose declared facts say it takes none), or to be
+            recorded by a model that replays its completions and so has no live client.
         """
         if catalogue_fetch_timeout is not None and catalogue_fetch_timeout <= 0:
             raise ValueError(f"catalogue_fetch_timeout {catalogue_fetch_timeout} is not above zero seconds")
@@ -1001,9 +1001,10 @@ class Model:
         :rtype: TurnReply
         :raises ValueError: A route other than Anthropic's, naming the one that works; a model with a
             ``turn_recording``, whose turns go through :meth:`turn_session`; settings a tool turn refuses (a
-            temperature; on a Claude 5 model, a thinking budget or ``effort='none'``); a model that replays its
-            completions and sends nothing live; or a turn the wire refuses (no messages, a cap not above a thinking
-            budget).
+            temperature; a thinking budget, or ``effort='none'``, on a model whose declared facts say it takes none: a
+            model the facts do not cover is sent them, and the provider's refusal comes back as a ``ProviderError``);
+            a model that replays its completions and sends nothing live; or a turn the wire refuses (no messages, a
+            cap not above a thinking budget).
         :raises ProviderError: The provider refused or failed the turn.
         :raises httpx.HTTPError: The request could not be sent, or timed out.
         """

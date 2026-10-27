@@ -247,17 +247,21 @@ async def test_a_turn_without_tools_or_system_marks_only_the_last_message() -> N
     ]
 
 
-async def test_a_thinking_budget_goes_as_enabled_thinking_and_must_sit_below_the_turn_s_cap() -> None:
-    # A Claude 4 model takes a budget; a Claude 5 one refuses it (the next test).
-    server = Server(CASES["opening"]["reply"])
-    model = Model(
-        "claude-opus-4-8",
+def claude(model_id: str, server: Server, /, **options: Any) -> Model:
+    """``model_id`` on Anthropic, sending through ``server``."""
+    return Model(
+        model_id,
         provider="anthropic",
         api_key="test-key",
-        effort=2048,
         catalogue=catalogue(),
         http=httpx.AsyncClient(transport=httpx.MockTransport(server)),
+        **options,
     )
+
+
+async def test_a_thinking_budget_goes_as_enabled_thinking_and_must_sit_below_the_turn_s_cap() -> None:
+    server = Server(CASES["opening"]["reply"])
+    model = claude("claude-sonnet-4-6", server, effort=2048)
 
     await model.turn(system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=4096)
     with pytest.raises(ValueError, match=r"max_tokens \(2048\) must exceed the thinking budget \(2048\)"):
@@ -269,23 +273,80 @@ async def test_a_thinking_budget_goes_as_enabled_thinking_and_must_sit_below_the
 
 
 @pytest.mark.parametrize(
-    ("effort", "refusal"),
+    ("model_id", "effort", "refusal"),
     [
-        (2048, r"claude-opus-5-5 thinks adaptively only and refuses a thinking budget \(2048 tokens\)"),
-        ("none", r"claude-opus-5-5 thinks adaptively only and cannot have thinking turned off"),
+        ("claude-opus-5-5", 2048, r"claude-opus-5-5 takes no thinking budget \(2048 tokens\)"),
+        ("claude-haiku-5-5", 2048, r"claude-haiku-5-5 takes no thinking budget"),
+        ("claude-sonnet-5", 2048, r"claude-sonnet-5 takes no thinking budget"),
+        ("claude-opus-4-8", 2048, r"claude-opus-4-8 takes no thinking budget"),
+        ("claude-opus-4-7", 2048, r"claude-opus-4-7 takes no thinking budget"),
+        ("claude-opus-5-5", "none", r"claude-opus-5-5 cannot have thinking disabled \(effort='none'\)"),
+        ("claude-sonnet-5-5", "none", r"claude-sonnet-5-5 cannot have thinking disabled"),
+        ("claude-fable-5-1", "none", r"claude-fable-5-1 cannot have thinking disabled"),
+        ("claude-mythos-5", "none", r"claude-mythos-5 cannot have thinking disabled"),
     ],
 )
-async def test_a_claude_5_model_with_a_budget_or_no_thinking_is_refused_before_anything_is_sent(
-    effort: int | str, refusal: str
+async def test_a_setting_the_model_s_facts_say_it_refuses_is_refused_before_anything_is_sent(
+    model_id: str, effort: int | str, refusal: str
 ) -> None:
     server = Server(CASES["opening"]["reply"])
-    model = opus(server, effort=effort)
 
     with pytest.raises(ValueError, match=refusal):
-        await model.turn(system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=4096)
+        await claude(model_id, server, effort=effort).turn(
+            system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=4096
+        )
     with pytest.raises(ValueError, match=refusal):
-        Model(MODEL, provider="anthropic", api_key="k", effort=effort, turn_recording="unused-turns.jsonl")
+        Model(model_id, provider="anthropic", api_key="k", effort=effort, turn_recording="unused-turns.jsonl")
     assert server.bodies == []
+
+
+@pytest.mark.parametrize("model_id", ["claude-haiku-5-5", "claude-sonnet-5", "claude-opus-5"])
+async def test_effort_none_sends_thinking_disabled_where_the_model_takes_it(model_id: str) -> None:
+    server = Server(CASES["opening"]["reply"])
+    await claude(model_id, server, effort="none").turn(
+        system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=4096
+    )
+
+    assert server.bodies[0]["thinking"] == {"type": "disabled"}
+    assert "output_config" not in server.bodies[0]
+
+
+async def test_a_model_the_facts_do_not_cover_is_sent_the_setting_and_its_refusal_comes_back_unresent() -> None:
+    sent: list[dict[str, Any]] = []
+
+    def refusing(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        error = {"type": "invalid_request_error", "message": "thinking.type.enabled is not supported for this model"}
+        return httpx.Response(400, json={"type": "error", "error": error})
+
+    model = Model(
+        "claude-opus-6",
+        provider="anthropic",
+        api_key="test-key",
+        effort=2048,
+        catalogue=catalogue(),
+        http=httpx.AsyncClient(transport=httpx.MockTransport(refusing)),
+    )
+    with pytest.raises(ProviderError):
+        await model.turn(system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=4096)
+
+    assert [body["thinking"] for body in sent] == [{"type": "enabled", "budget_tokens": 2048}], "sent once, as given"
+
+
+async def test_a_completion_reads_the_same_facts_and_sends_a_budget_as_its_effort_word() -> None:
+    server = Server(
+        {
+            "model": "claude-opus-5-5-20261001",
+            "content": [{"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 3, "output_tokens": 1},
+        }
+    )
+    completion = await claude("claude-opus-5-5", server, effort=4096, max_tokens=8192).generate(system="", user="x")
+
+    assert "budget_tokens" not in json.dumps(server.bodies[0])
+    assert server.bodies[0]["thinking"] == {"type": "adaptive"}
+    assert completion.sent_settings is not None and completion.sent_settings.unsent_reasoning_max_tokens == 4096
 
 
 async def test_a_last_message_of_only_thinking_is_refused_before_anything_is_sent() -> None:

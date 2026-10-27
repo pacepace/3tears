@@ -21,10 +21,11 @@ the model wrote the placeholder's text.
 
 **Drift is a refusal that names its turn, and nothing is recorded twice.** A session asked one turn more than it
 holds raises :class:`~threetears.evals.testing.RecordingRefused` naming the session and the turn, and
-:meth:`RecordedTurns.unconsumed` names the sessions a replay left turns of. Either means the code now runs
-differently from when the recording was made. The remedy is to the code, or to the recorded reply as data: a turn
-recording that exists is only ever replayed (:meth:`RecordedTurns.record` refuses one), since a second paid run would
-answer differently and hide what changed.
+:meth:`RecordedTurns.unconsumed` names the sessions a replay left replies or ceilings of. Either means the code now
+runs differently from when the recording was made, and the remedy is to the code, or to the recorded reply as data: a
+turn recording that exists is only ever replayed (:meth:`RecordedTurns.record` refuses one), since a second paid run
+would answer differently and hide what changed. The one exception is a recording run that was cut short (interrupted,
+or a turn that failed), which leaves a file a replay runs off the end of: that file is deleted and recorded again.
 
 **The file.** One JSON object per line, appended as each event happens: the recorder's format version
 (:attr:`RecordedTurns.FORMAT_VERSION`), when it was written, the session's name, the index (from 0) of the turn the
@@ -61,10 +62,12 @@ _LINE_MEMBERS: Mapping[str, frozenset[str]] = {
     "ceiling": frozenset({"recorder_version", "recorded_at", "session", "index", "kind", "ceiling"}),
 }
 
-#: What a drifted replay's refusal tells its reader to do.
+#: What a drifted replay's refusal tells its reader to do: a recording run that was cut short (interrupted, or a turn
+#: that failed) is the one case a recording is made again; any other drift is the code's.
 _DRIFT_REMEDY = (
-    "the code now runs differently from when the recording was made: fix the code, or edit the recorded reply as "
-    "data (a turn recording is never recorded again)"
+    "if the recording run was cut short (interrupted, or a turn failed), delete the file and record it again; "
+    "otherwise the code now runs differently from when the recording was made: fix the code, or edit the recorded "
+    "reply as data"
 )
 
 #: What a refusal to read a recording tells its reader to do.
@@ -118,7 +121,7 @@ class RecordedTurns:
                 raise RecordingRefused(
                     self.path,
                     "it exists, and a turn recording is replayed, never recorded again",
-                    "replay it (RecordedTurns.replay), and fix drift in the code or in the recorded reply as data",
+                    "replay it (RecordedTurns.replay); delete it first only if its recording run was cut short",
                 )
             sessions = {}
         self._book = _Book(self.path, inner, sessions)
@@ -167,15 +170,19 @@ class RecordedTurns:
         return _Session(self._book, name, snapshot)
 
     def unconsumed(self) -> dict[str, int]:
-        """The sessions a replay has not served every recorded turn of, and how many each has left.
+        """The sessions a replay left recorded lines of, and how many: replies never served, and ceilings never asked.
 
-        :return: Session -> turns left; empty when every recorded turn was served. Always empty while recording.
+        :return: Session -> lines left; empty when every reply was served and every ceiling asked. Always empty while
+            recording.
         :rtype: dict[str, int]
         """
         book = self._book
         if book.inner is not None:
             return {}
-        left = {name: len(lines.replies) - book.served.get(name, 0) for name, lines in book.sessions.items()}
+        left = {
+            name: len(lines.replies) - book.served.get(name, 0) + len(set(lines.ceilings) - book.asked.get(name, set()))
+            for name, lines in book.sessions.items()
+        }
         return {name: count for name, count in sorted(left.items()) if count}
 
 
@@ -186,6 +193,7 @@ class _Book:
     :ivar inner: The live client a recording sends through, or ``None`` while replaying.
     :ivar sessions: Session -> its lines: replies (the snapshot id a placeholder) and recorded ceilings.
     :ivar served: Session -> how many of its turns have been served (replaying) or recorded (recording).
+    :ivar asked: Session -> the turns a replay was asked the recorded ceiling of.
     """
 
     def __init__(self, path: Path, inner: ToolTurnClient | None, sessions: dict[str, _SessionLines]) -> None:
@@ -193,6 +201,7 @@ class _Book:
         self.inner = inner
         self.sessions = sessions
         self.served: dict[str, int] = {}
+        self.asked: dict[str, set[int]] = {}
 
     async def turn(
         self,
@@ -241,6 +250,7 @@ class _Book:
                     f"session {name!r} recorded no price ceiling for its turn {index + 1}, and one was asked",
                     _DRIFT_REMEDY,
                 )
+            self.asked.setdefault(name, set()).add(index)
             return ceilings[index]
         ceiling = self.inner.turn_price_ceiling(system=system, messages=messages, tools=tools, max_tokens=max_tokens)
         self._append(name, index, "ceiling", ceiling)
