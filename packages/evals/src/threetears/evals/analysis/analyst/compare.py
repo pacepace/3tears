@@ -9,7 +9,8 @@ half-widths; this states the same reading as keys, so a report cites it and the 
 
 **Paired or independent, from what the snapshot holds.** Overall, where a contrast states one of the two arms against
 the other (the control) on the measure, with its difference and interval, the comparison is that paired estimate:
-its interval is the pipeline's own, corrected within its family, at the family's level. Everywhere else (in a slice,
+its interval is the pipeline's own, at its family's level, corrected or not as the family's own ``correction`` says
+(never asserted: unstated where the family names none). Everywhere else (in a slice,
 between two candidates, in a campaign with no control) it combines the two arms' own spreads as independent samples
 (:func:`~threetears.evals.analysis.separation.independent_difference`), from each arm's stated interval or half-width
 at the stated level, its standard error, or, for a pass/fail rate with a count, its binomial spread. Every row says
@@ -25,6 +26,16 @@ as an assumption wherever it is cited, and a place whose figures state their cou
 **What a row says.** The two means, the difference (in points for a rate), its interval and level, whether the
 interval excludes zero, and, where it does and the measure states which way is better, the arm ahead. A slice where
 either arm states no spread is listed with why, and no interval.
+
+**What the interval counts, and when it may be too narrow.** An independent row says what each arm's count counts
+(``counts``: cases, trials, or observations), as the ``spread.`` keys read it; a paired row says its contrast states
+no count, so the input does not say whether its interval counts cases or trials. Where what the interval counts is
+trials, observations or unstated, the spread was not read on distinct cases, and the arm ran more trials than cases
+(its scoreboard's usable or ran trials above its cases: replies of one conversation, or repeats of one case), the
+interval may be too narrow, since trials of one case are not independent: the row says so (``may_be_narrow``, a
+paired row's unstated unit ``counted_unstated``), cites each such arm's trials and cases (``nested``), and the page's
+notes say why, once. It never widens the interval itself *(inferred: the snapshot holds no
+per-case outcomes to read a clustered interval from)*.
 
 **What it refuses**, teaching the next call: anything but two distinct arms of the snapshot; a measure the snapshot
 holds no figure of for both; and a measure on which neither arm states a spread anywhere both hold it (no interval,
@@ -198,6 +209,26 @@ class ComparisonRow(BaseModel):
         description="Where the interval is the paired estimate a contrast states, the candidate that contrast reads "
         "against the control, as arm:<id>; None where the two arms' own spreads are read as independent.",
     )
+    counts: list[CitedFigure] = Field(
+        default_factory=list,
+        description="What each arm's count counts on an independent row (cases, trials or observations), as its "
+        "spread.<arm>.<measure>.<where>.counts key reads it; empty on a paired row, whose contrast states no count.",
+    )
+    nested: list[CitedFigure] = Field(
+        default_factory=list,
+        description="Where the interval may be too narrow, each such arm's trials and its cases: it ran more trials "
+        "than cases, and the interval counts trials, observations or an unstated unit; empty otherwise.",
+    )
+    counted_unstated: bool = Field(
+        default=False,
+        description="True on a paired row: its contrast states no count, so the input does not say whether its "
+        "interval counts cases or trials (notes says so once).",
+    )
+    may_be_narrow: bool = Field(
+        default=False,
+        description="True where the interval may be too narrow: the arms in nested ran more trials than cases, and "
+        "the interval counts trials, observations or an unstated unit (notes says why once).",
+    )
     excludes_zero: bool | None = Field(description="Whether the interval excludes zero; None with no interval.")
     ahead: str | None = Field(
         description="The arm ahead, as arm:<id>, where the interval excludes zero and the measure states which way "
@@ -229,6 +260,50 @@ class ArmsComparison(BaseModel):
     notes: list[str] = Field(description="What could not be read, and why.")
 
 
+#: What a paired row's interval counts, in words: the contrast says nothing of it.
+_PAIRED_COUNT = (
+    "a paired row's contrast states no count (counted_unstated), so the input does not say whether its interval "
+    "counts cases or trials"
+)
+
+#: Why an interval may be too narrow, in words.
+_MAY_BE_NARROW = (
+    "a row marked may_be_narrow may have too narrow an interval: it counts trials, observations or an unstated unit, "
+    "and the arms its nested figures name ran more trials than cases (replies of one conversation, or repeats of one "
+    "case), which are not independent; read on the cases it would be wider. Say so wherever it is cited"
+)
+
+
+def _trials_over_cases(report_input: ReportInput, arm: str) -> list[CitedFigure]:
+    """An arm's trials and its cases, as its scoreboard states them, where it ran more trials than cases; else empty."""
+    board = report_input.scoreboard.get(arm)
+    if board is None or board.cases is None:
+        return []
+    trials, field = (board.usable, "usable") if board.usable is not None else (board.ran, "ran")
+    if trials is None or trials <= board.cases:
+        return []
+    return [cite(f"scoreboard.{arm}.{field}", report_input), cite(f"scoreboard.{arm}.cases", report_input)]
+
+
+def _what_it_counts(
+    report_input: ReportInput, arms: tuple[str, str], key: str, where: str, head: str, paired: bool
+) -> tuple[list[CitedFigure], list[CitedFigure]]:
+    """What a row's interval counts (each arm's count, on an independent row), and each arm whose trials may make it
+    too narrow, by its trials and cases (this module's What the interval counts)."""
+    counts: list[CitedFigure] = []
+    loose: list[str] = list(arms) if paired else []
+    if not paired:
+        for arm in arms:
+            counted, _why = cite_or_why(f"{head}spread.{arm}.{key}.{where}.counts", report_input)
+            if counted is None:
+                continue
+            counts.append(counted)
+            cases, _why = cite_or_why(f"{head}spread.{arm}.{key}.{where}.cases", report_input)
+            if counted.value in ("trials", "observations") and cases is None:
+                loose.append(arm)
+    return counts, [figure for arm in loose for figure in _trials_over_cases(report_input, arm)]
+
+
 def _row(
     report_input: ReportInput, first: str, second: str, key: str, where: str, assumed: int | str | None = None
 ) -> ComparisonRow:
@@ -239,6 +314,10 @@ def _row(
     paired = pairing_contrast(report_input, first, second, key, where)
     excludes: bool | None = None
     ahead: str | None = None
+    counts: list[CitedFigure] = []
+    nested: list[CitedFigure] = []
+    if interval is not None:
+        counts, nested = _what_it_counts(report_input, (first, second), key, where, head, paired is not None)
     if interval is not None and isinstance(interval.value, tuple):
         low, high = interval.value
         excludes = low > 0 or high < 0
@@ -256,6 +335,10 @@ def _row(
         level=level,
         basis=cite(f"{prefix}.basis", report_input) if interval is not None else None,
         paired_with=_arm(paired.arm) if interval is not None and paired is not None else None,
+        counts=counts,
+        nested=nested,
+        counted_unstated=interval is not None and paired is not None,
+        may_be_narrow=bool(nested),
         excludes_zero=excludes,
         ahead=ahead,
         unread=why,
@@ -353,7 +436,11 @@ def arms_compare(
         total=len(rows),
         offset=offset,
         next_offset=end if end < len(rows) else None,
-        notes=unkeyed_strata(report_input),
+        notes=[
+            *([_PAIRED_COUNT] if any(row.counted_unstated for row in page) else []),
+            *([_MAY_BE_NARROW] if any(row.may_be_narrow for row in page) else []),
+            *unkeyed_strata(report_input),
+        ],
     )
 
 

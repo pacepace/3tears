@@ -3282,6 +3282,21 @@ def _family_level(report_input: ReportInput, contrast: Contrast) -> float | None
     return level_share(families[0].level) if len(families) == 1 else None
 
 
+def _correction_words(report_input: ReportInput, contrast: Contrast) -> str:
+    """Whether a contrast's interval is corrected, as the one family on its aspect states it (``correction``), never
+    asserted: corrected by the method it names, not corrected where it names ``none``, and unstated where it names none
+    or no one family is on the contrast's aspect."""
+    families = [family for family in report_input.contrast_families if family.aspect == contrast.aspect]
+    if len(families) != 1:
+        return "and no one contrast family on its aspect says whether it is corrected"
+    correction = (families[0].correction or "").strip()
+    if not correction:
+        return "and its family states no correction, so whether it is corrected is unstated"
+    if correction.lower() == "none":
+        return "not corrected across its family (the family's correction is none)"
+    return f"corrected within its family ({correction})"
+
+
 def _paired(report_input: ReportInput, arm_id: str, other: str, key: str) -> Contrast | None:
     """The one contrast stating one of the two arms against the other (the control) on ``key``, with its difference
     and interval, on the lead aspect whose figures ``overall`` reads (:func:`on_lead_aspect`): the paired estimate, which the
@@ -3378,8 +3393,8 @@ def _read_difference(report_input: ReportInput, arm_id: str, other: str, key: st
             high=high,
             level=_family_level(report_input, contrast),
             basis=(
-                f"paired: the contrast of {contrast.arm} against the control on {key!r}, its own interval, corrected "
-                "within its family"
+                f"paired: the contrast of {contrast.arm} against the control on {key!r}, its own interval, "
+                f"{_correction_words(report_input, contrast)}"
             ),
         )
     first = _read_spread(report_input, arm_id, key, where)
