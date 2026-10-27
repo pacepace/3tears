@@ -89,6 +89,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     KindResolver,
     chart_block,
     count_text,
+    criterion_label,
     factor_legend,
     factor_token,
     figure_stat,
@@ -123,7 +124,6 @@ from threetears.evals.analysis.report.plan_page.words import (
     NOT_GATED,
     PASSES_EVERY_GATE,
     PICK_LABEL,
-    REFERENCE_TEMPLATE,
     REGION_LABEL,
     TASK_DETAIL_TEMPLATE,
     TASK_SHARE_TEMPLATE,
@@ -186,9 +186,7 @@ def _criterion_line(context: ChartContext, criterion: Criterion, drawn: Quantity
         raise context.refuse(f"the criterion {criterion.id!r} states no single threshold")
     value = figure.value * drawn.factor
     kind: Literal["floor", "budget"] = "floor" if criterion.direction == "higher_is_better" else "budget"
-    return ChartReference(
-        value=value, label=REFERENCE_TEMPLATE.format(kind=kind, value=figure_text(value, drawn)), kind=kind
-    )
+    return ChartReference(value=value, label=criterion_label(context, criterion, value, drawn), kind=kind)
 
 
 def _arm_name(context: ChartContext, arm: str) -> str:

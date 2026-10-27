@@ -116,6 +116,9 @@ from threetears.evals.analysis.style import humanize
 
 __all__ = ["RESOLVERS"]
 
+#: The sources whose rows an analysis computes, unrounded: a values table spells them at their quantity's precision.
+_COMPUTED = frozenset({"compare", "levers"})
+
 
 #: The scoreboard's figures that count by cause.
 _BY_CAUSE = frozenset({"lost", "failed"})
@@ -503,6 +506,8 @@ def _dot_interval(context: ChartContext) -> Drawn:
     if several and context.spec.domain:
         raise context.refuse(STORED_SPAN_REFUSAL)
     first = strips[0].drawn
+    # What an analysis computes is spelled at its quantity's precision in the values table (chart_block's read_at).
+    read_at = first.unit if source in _COMPUTED and not several else ""
     if len(strips) == 1:
         (strip,) = strips
         data = DotIntervalChart(
@@ -513,7 +518,7 @@ def _dot_interval(context: ChartContext) -> Drawn:
             reference=strip.line,
             emphasis=context.emphasis,
         )
-        return Drawn(chart_block(context, data), notes)
+        return Drawn(chart_block(context, data, read_at=read_at), notes)
     panels = []
     for strip in strips:
         look = context.look.arm(strip.arm) if strip.arm in context.look.arms else None
@@ -529,7 +534,7 @@ def _dot_interval(context: ChartContext) -> Drawn:
             )
         )
     data = DotIntervalChart(domain=spans[first], fmt=first.fmt, level=level, emphasis=context.emphasis, panels=panels)
-    return Drawn(chart_block(context, data), notes)
+    return Drawn(chart_block(context, data, read_at=read_at), notes)
 
 
 # --- range_bars ---------------------------------------------------------------------------------------------------

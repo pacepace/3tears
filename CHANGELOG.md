@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: blocks print computed changes as their keys read them, name each line by its criterion, and page what fits
+
+**Fixed:** a compare or lever chart printed its values and interval ends at a float's four figures (`-2.163 to
+-0.03699`, `+0.83`); in points they now read as the rows' keys and notes do (`-2.2 to -0.03699`, `+0.8`): a chart of
+what an analysis computes is spelled at its quantity's precision (`ChartBlock.unit` carries it for a kit chart). A lever
+chart drew a rate's effect, which its key states as a share, a hundredth of its size (`-0.0295` for `-2.9` points); it
+draws in points. A lever move printed a setting's value as a float (`→ 1.0`); it ends at the value as the input states
+it (a declared level's name, `→ 1 retry`, else the value, whole if whole). Two interactions of different moves read
+alike (`at X less at Y`); an interaction is labelled by its two moves, `(X → Low) less (Y → Low)`, in the chart and the
+table, and the caption speaks of interactions only where one is drawn. The settle table printed counts with a decimal
+(`617.0`): a table's bare numbers read alike within their column only. A plain table leaves out a source's column
+that is a dash in every row (a settle table's trial columns on a design that repeats no case); a measure the query
+names keeps its column. The settle note said "Each bar" on a table; it names the column it explains. A line at a
+declared criterion read "floor 90%" whatever the criterion; it is named by its reader name and declared kind
+(`Overall accuracy gate, at least 90%`), and an overall criterion drawn on each task's, stratum's or cell's figures
+says `overall`. A bar chart's values table named an arm without the letter tag every other block prints
+(`P · Production`).
+
+**Changed:** `block_render` sizes each page by its text, at most `limit` rows that fit one result (nine example cards
+that fit are one page, where the cells' character count stopped at six). Every paged analyst result says how much of
+the whole it holds before any `next:` line: `all 77 shown`, `rows 1 to 6 of 9 shown; 3 follow`, `none to show`.
+
 ### evals: a comparison says what pairs it, and the settle table says what its sizes count
 
 **Added:** `ComparisonRow.paired_with` on `arms_compare`'s rows: `arm:<id>` where a contrast pairs the two arms, else null; `figure_keys.pairing_contrast` is the one rule for what pairs two arms, read by the compare keys, `arms_compare` and the compare block's level.

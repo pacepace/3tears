@@ -16,7 +16,7 @@ Contracts held here (``analysis.report_rows`` selectors ``compare``, ``settle``,
 - **reader words**: a compare block names its arms and measure by reader names, never by id or key, even where its
   interval is the paired estimate a contrast states;
 - **one unit per size**: a settle table sets the cases and the trials a design needs beside today's cases and trials,
-  and the repeats of a case.
+  and the repeats of a case; on a count stating no cases, the trial columns no row fills are left out.
 
 Every expectation is read off the analysis functions' own results on the input (r1 to r5, the misfits, the shapes).
 """
@@ -434,7 +434,8 @@ def test_a_settle_table_on_a_count_stating_no_cases_says_what_its_sizes_count() 
         assert printed[at["Sizes count"]] == row.count_of[0].reads != "cases"
         assert _numbers(printed[at["Needed, one-sided"]]) == _numbers(row.cases_needed.reads)
         assert _numbers(printed[at["Today"]]) == [float(stat.n or 0)]
-        assert printed[at["Trials today"]] in ("", "—")
+    # No row states trials apart from its count, so the trial columns are dashes in every row, and left out.
+    assert not {"Trials today", "Trials needed, one-sided", "Repeats of a case"} & set(at), list(at)
 
 
 def test_an_independent_compare_caption_says_how_both_arms_spreads_were_read_once_where_they_read_alike() -> None:

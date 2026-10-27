@@ -801,7 +801,9 @@ class ChartBlock(_Block):
     )
     unit: str = Field(
         default="",
-        description="The unit an interval chart's values, or a cost/quality chart's costs, are stated in; empty for none.",
+        description="The unit an interval chart's values, or a cost/quality chart's costs, are stated in; for a kit "
+        "chart of what an analysis computes (two arms' difference, a lever's effect), the unit its values table spells "
+        "its values at where its format names none (a point to one decimal); empty for none.",
     )
     zero_line: bool = Field(default=False, description="Whether the chart draws a line at zero (a difference's).")
     margin: float | None = Field(
@@ -957,7 +959,7 @@ class ChartBlock(_Block):
         :rtype: tuple[list[str], list[list[str]]]
         """
         if self.data is not None:
-            return self.data.values_table()
+            return self.data.values_table(self.unit)
         if self.chart == "outcome_bar":
             labels = list(dict.fromkeys(segment.label for bar in self.bars for segment in bar.segments))
             headers = ["Arm", "ran", *labels]

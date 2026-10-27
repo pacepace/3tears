@@ -88,8 +88,10 @@ from threetears.evals.analysis.report.plan_page.words import (
     PRICE_STEP_TEMPLATE,
     SETTLE_FLOOR_TEMPLATE,
     SETTLE_MARGIN_TEMPLATE,
+    SETTLE_EACH,
     SETTLE_NOTE,
     STATISTIC_NOTE,
+    TABLE_HEADERS,
 )
 from threetears.evals.analysis.analyst.settle import SettleRow
 from threetears.evals.analysis.report_rows import PriceStep
@@ -392,7 +394,8 @@ def settle_notes(context: ChartContext) -> tuple[str, ...]:
         for row in context.rows()
         if isinstance(row.item, SettleRow) and row.item.level is not None
     }
-    return (SETTLE_NOTE.format(level=", ".join(sorted(levels)) or "the snapshot's level"),)
+    each = SETTLE_EACH.get(context.spec.kind, SETTLE_EACH["bars"]).format(column=TABLE_HEADERS["wrong_side"])
+    return (SETTLE_NOTE.format(each=each, level=", ".join(sorted(levels)) or "the snapshot's level"),)
 
 
 def _open_steps(context: ChartContext) -> list[str]:

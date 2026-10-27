@@ -15,6 +15,7 @@ __all__ = [
     "PAIRED_BASIS_TEMPLATE",
     "SETTLE_FLOOR_TEMPLATE",
     "SETTLE_MARGIN_TEMPLATE",
+    "SETTLE_EACH",
     "SETTLE_NOTE",
     "BAR_WORD",
     "BAR_STRIP_NOTE",
@@ -24,6 +25,8 @@ __all__ = [
     "LEVER_EFFECT_GROUP",
     "LEVER_MOVE_TEMPLATE",
     "LEVERS_NOTE",
+    "LEVERS_INTERACTION_NOTE",
+    "LEVERS_READ_NOTE",
     "COMPARE_NOTE",
     "BASIS_NOTE",
     "ANSWER_TEMPLATES",
@@ -49,6 +52,8 @@ __all__ = [
     "INPUT_TERM",
     "LEVER_NOTE",
     "LINE_TEMPLATES",
+    "CRITERION_LINE_TEMPLATE",
+    "CRITERION_LINE_WHERE",
     "MADE_TEMPLATE",
     "MARGIN_STATUS_WORDS",
     "MISSING_TEMPLATE",
@@ -264,6 +269,17 @@ OVERALL = "Overall"
 #: A criterion's line, by its direction.
 LINE_TEMPLATES: dict[str, str] = {"higher_is_better": "at least {line}", "lower_is_better": "at most {line}"}
 
+#: A declared criterion's line as a chart labels it: its reader name and its kind (gate, floor, bar, guardrail), the
+#: side that passes (:data:`LINE_TEMPLATES`), and, where it reads its figure elsewhere than the chart does, where
+#: (:data:`CRITERION_LINE_WHERE`): an overall gate drawn in each task's panel is the overall line, not a task's.
+CRITERION_LINE_TEMPLATE = "{name} {kind}, {side}{where}"
+CRITERION_LINE_WHERE = {
+    "overall": " overall",
+    "each_task": " in each task",
+    "task": " in {task}",
+    "cell": " in each cell",
+}
+
 #: What a gate matrix cell says beside its status where the input holds no figure there.
 NO_FIGURE = "no figure"
 
@@ -334,11 +350,13 @@ LEVER_NOTE = (
 BAR_WORD = "bar"
 BAR_STRIP_NOTE = "Each dot is the arm's value, with the interval its bar was read on; a hollow dot misses its bar."
 
-#: A settle chart's caption.
+#: A settle chart's or table's caption: what its figure is, ``{each}`` naming where it sits for the kind drawn
+#: (:data:`SETTLE_EACH`, a bar's length, or a table's column by its header).
 SETTLE_NOTE = (
-    "Each bar is how often a fresh run of today's size would read the figure on the other side of its line, if the "
+    "{each} how often a fresh run of today's size would read the figure on the other side of its line, if the "
     "truth is today's estimate ({level}); it plans a run and tests nothing."
 )
+SETTLE_EACH = {"bars": "Each bar is", "table": 'In each row, "{column}" is'}
 
 #: What a settle row against an aspect's margin, or a floor, is settled against.
 SETTLE_MARGIN_TEMPLATE = "the margin on {aspect}"
@@ -361,18 +379,22 @@ CASES_WORD = "cases"
 #: What a compare row overall is called, beside the slices' names.
 OVERALL_WORD = "Overall"
 
-#: A lever chart's caption.
-LEVERS_NOTE = (
-    "Each effect is one setting moved between two arms that differ in it alone, on {measure}; each interaction is how "
-    "that effect changes across another setting. Descriptive: read as two arms' own spreads, never a test."
+#: A lever chart's caption: what an effect is, and, where the chart draws any, what an interaction is
+#: (:data:`LEVERS_INTERACTION_NOTE` after it), then how both are read.
+LEVERS_NOTE = "Each effect is one setting moved between two arms that differ in it alone, on {measure}{interactions}."
+LEVERS_INTERACTION_NOTE = (
+    "; each interaction is the same move's effect in one context less its effect in another, the two contexts "
+    "differing in one other setting"
 )
+LEVERS_READ_NOTE = "Descriptive: read as two arms' own spreads, never a test."
 
 #: A lever effect's label (the arm it moves from, and the value it moves to), and the group effects sit under.
 LEVER_MOVE_TEMPLATE = "{start} → {value}"
 LEVER_EFFECT_GROUP = "{setting}"
 
-#: An interaction's label (the second context's effect less the first's) and the group it sits under.
-LEVER_CROSS_TEMPLATE = "at {second} less at {first}"
+#: An interaction's label: the second move's effect less the first's, each move as an effect's label names it (the
+#: arm it starts from, and the value it moves to), so two interactions read apart wherever their moves do.
+LEVER_CROSS_TEMPLATE = "({second}) less ({first})"
 LEVER_CROSS_GROUP = "{setting} effect, across {across}"
 
 #: A chart whose intervals code computed from each rate's binomial spread, where its figures state none.
