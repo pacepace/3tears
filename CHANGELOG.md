@@ -98,6 +98,15 @@ the indexes onto it: `uq_identity_active_per_variant` and `idx_identity_variant_
 no variant reads and writes exactly what it did before; one that builds its L1 table from
 `identity_versions_table` gets the column with it.
 
+**Deploy and rollback:** v003 runs before 0.81.0's identity code reads the table, at the next start of whatever
+applies the migrations. 0.80.x code keeps working against a migrated table while no variant rows exist: its inserts
+take the `''` default. To roll back to 0.80.x, first remove every variant row (`DELETE FROM identity_versions WHERE
+variant <> ''`), because 0.80.x reads them as rows of the block itself and a block could then hold more than one
+active version. Then recreate the block-level indexes: `CREATE UNIQUE INDEX IF NOT EXISTS uq_identity_active_per_block
+ON identity_versions (agent_id, customer_id, user_id, block_key) WHERE status = 'active'` and `CREATE INDEX IF NOT
+EXISTS idx_identity_block_history ON identity_versions (agent_id, user_id, block_key, date_created DESC)`. The column
+and the per-variant indexes can stay.
+
 ## v0.80.0 -- 2026-10-27
 
 ### backup: a drill compares a naive-timestamp table against the backup's moment
