@@ -6,6 +6,12 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a comparison says what pairs it, and the settle table says what its sizes count
+
+**Added:** `ComparisonRow.paired_with` on `arms_compare`'s rows: `arm:<id>` where a contrast pairs the two arms, else null; `figure_keys.pairing_contrast` is the one rule for what pairs two arms, read by the compare keys, `arms_compare` and the compare block's level.
+
+**Changed:** the settle table heads its sizes "Needed, one-sided" and "Needed, two-sided", says what they count in a "Sizes count" column (cases where the figure states them, else trials or observations), gives "Today" in that unit, and shows trials needed on both sides on a repeated design (row fields: `today` replaces `today_cases`; `counted` and `trials_needed_two_sided` are new). The `settle_cases` description says the same.
+
 ### evals: blocks print levels as stated, label what they draw, draw the intervals the tools compute, and draw what compare, settle and levers read
 
 **Fixed:** a reading's, pair's, spread's, compare's and lever's level key printed in whole percents (97.5% and 98.33%

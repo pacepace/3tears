@@ -521,15 +521,16 @@ def _analysed_levels(chart: PlannedChart, report_input: ReportInput) -> Iterator
         if row.interval is None:
             continue
         if isinstance(item, ComparisonRow):
-            level, basis = item.level, item.basis
+            level = item.level
+            paired = item.paired_with is not None
         elif isinstance(item, EffectRow | InteractionRow):
             level = next((figure for figure in item.figures if figure.key.endswith(".level")), None)
             basis = next((figure for figure in item.figures if figure.key.endswith(".basis")), None)
+            paired = basis is not None and str(basis.value).startswith(_PAIRED)
         else:
             continue
         if level is None or not isinstance(level.value, float):
             continue
-        paired = basis is not None and str(basis.value).startswith(_PAIRED)
         yield _percent(level.value) if paired else f"{_percent(level.value)} {_UNPAIRED_LEVEL}"
 
 
