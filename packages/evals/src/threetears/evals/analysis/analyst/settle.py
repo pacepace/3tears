@@ -27,8 +27,8 @@ arithmetic and its design note are :mod:`~threetears.evals.analysis.separation`.
   fewer where the arms agree case by case *(inferred: the snapshot holds no case-level differences to size a paired
   design by)*.
 - *An assumed count* (``assumed``, a what-if the caller states): a slice whose figure states no count has no spread to
-  read; read as if each such slice held that many cases, or (``share``) the arm's own count times the slice's traffic
-  share. Every figure read under it is keyed ``assumed.<cases>.`` or ``assumed.share.``, so it reads as an assumption
+  read; read as if each such slice held that many cases, or (``share``) the arm's own distinct cases times the
+  slice's traffic share (and, on a repeated design, its trials times the share). Every figure read under it is keyed ``assumed.<cases>.`` or ``assumed.share.``, so it reads as an assumption
   wherever it is cited; a place whose figures state their count is read as they state it.
 
 **What a row says.** Today's estimate and the line (or the two arms' difference), its distance toward passing, the
@@ -91,12 +91,12 @@ from threetears.evals.analysis.report.figure_keys import (
 )
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import criterion_aspect, lead_aspect
-
-#: The criterion kinds that remove an option that misses them, as declared.
-_GATING = frozenset({"gate", "guardrail"})
 from threetears.evals.kernel.errors import RefusedInput
 
 __all__ = ["SETTLE_PAGE", "Assumed", "Settle", "settle_cases"]
+
+#: The criterion kinds that remove an option that misses them, as declared.
+_GATING = frozenset({"gate", "guardrail"})
 
 #: The rows one page holds unless the caller asks for more.
 SETTLE_PAGE = 10
@@ -119,13 +119,18 @@ _ONE_SIDED = (
     "cases_needed_80 the size at which four in five do. A page prints two-sided intervals, which need more: "
     "cases_needed_two_sided and cases_needed_two_sided_80 are the same sizes for the two-sided interval at the level. "
     "Each size counts cases, each run as often as today (repeats), and trials_needed and its siblings count the trials "
-    "that takes; where a figure states no distinct cases its sizes count what count_of says its count counts"
+    "that takes; where a figure states no distinct cases its sizes count what count_of says its count counts. On a "
+    "repeated design a pass/fail rate's spread is read on its distinct cases, each counted once (basis says so): the "
+    "widest its repeats allow, so cases_needed is the most cases they could need; were the repeats independent it "
+    "would need fewer, as few as cases_needed over the repeats"
 )
 _TWO_SIDED = (
     "two-sided at the snapshot's level, each arm running cases_needed: an interval on the difference, centred on "
     "today's, excludes zero; half such designs do at cases_needed if the truth equals today's difference, four in five "
     "at cases_needed_80. Read as independent arms: a paired design over the same cases needs fewer. Each size counts "
-    "cases per arm, each run as often as today (repeats), and trials_needed counts the trials that takes"
+    "cases per arm, each run as often as today (repeats), and trials_needed counts the trials that takes; on a "
+    "repeated design a pass/fail rate's spread is read on its distinct cases, each counted once, the widest its "
+    "repeats allow"
 )
 
 #: What a row against a margin or a floor reads.
@@ -167,8 +172,8 @@ _UNREPEATED = frozenset(
     {"trials_needed", "trials_needed_80", "trials_needed_two_sided", "trials_needed_two_sided_80", "level"}
 )
 
-#: What an assumed count is, as the caller gives it: a number of cases, or ``share`` (the arm's own count times the
-#: slice's traffic share).
+#: What an assumed count is, as the caller gives it: a number of cases, or ``share`` (the arm's own distinct cases times
+#: the slice's traffic share).
 Assumed = int | Literal["share"]
 
 #: Which side of its line today's estimate is on, so which way a row's sizes settle it.
@@ -236,6 +241,10 @@ class SettleRow(BaseModel):
     count_of: list[CitedFigure] = Field(
         description="What each count counts: cases, trials (a repeated case counts again), or observations."
     )
+    cases: list[CitedFigure] = Field(
+        description="Today's distinct cases, for each arm whose count is trials over its stated cases: the unit the "
+        "sizes count."
+    )
     repeats: list[CitedFigure] = Field(
         description="The trials each case ran today, for each arm whose count is trials over its stated cases."
     )
@@ -284,7 +293,7 @@ def _spread_figures(
 ) -> dict[str, list[CitedFigure]]:
     """Each arm's count, what it counts, its repeats and its spread basis at a place, where its spread reads; ``head``
     the assumption's key prefix, or empty."""
-    found: dict[str, list[CitedFigure]] = {"n": [], "counts": [], "repeats": [], "basis": []}
+    found: dict[str, list[CitedFigure]] = {"n": [], "counts": [], "cases": [], "repeats": [], "basis": []}
     for arm in arms:
         if where not in separation_wheres(report_input, (arm,), key):
             continue
@@ -342,6 +351,7 @@ def _row(
         level=read["level"],
         counts=spread.get("n", []),
         count_of=spread.get("counts", []),
+        cases=spread.get("cases", []),
         repeats=spread.get("repeats", []),
         basis=spread.get("basis", []),
         unsettled=why if read["cases_needed"] is None or read["wrong_side"] is None else "",
@@ -378,7 +388,13 @@ def _on_own_aspect(report_input: ReportInput, row: SettleRow, prefix: str) -> Se
     """A criterion row on an aspect other than the lead, its count, what it counts, its repeats and its spread basis
     read on that aspect by the criterion's own settle keys, where a ``spread.`` key reads the lead aspect's."""
     found: dict[str, list[CitedFigure]] = {}
-    for field, named in (("n", "counts"), ("counts", "count_of"), ("repeats", "repeats"), ("basis", "basis")):
+    for field, named in (
+        ("n", "counts"),
+        ("counts", "count_of"),
+        ("cases", "cases"),
+        ("repeats", "repeats"),
+        ("basis", "basis"),
+    ):
         figure, _why = cite_or_why(f"{prefix}.{field}", report_input)
         found[named] = [figure] if figure is not None else []
     return row.model_copy(update=found)
@@ -618,7 +634,7 @@ def settle_cases(
         ``floor:<aspect>/<floor>``.
     :ptype against: str | None
     :param assumed: A what-if: the cases each slice stating no count of its own is read as holding, or ``share``
-        (the arm's own count times the slice's traffic share); its figures are keyed ``assumed.<cases>.``.
+        (the arm's own distinct cases times the slice's traffic share); its figures are keyed ``assumed.<cases>.``.
     :ptype assumed: Assumed | None
     :param limit: The most rows one page holds.
     :ptype limit: int

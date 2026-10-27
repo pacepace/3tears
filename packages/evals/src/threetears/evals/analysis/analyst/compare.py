@@ -19,7 +19,7 @@ case's difference, which the snapshot does not hold)*.
 
 **An assumed count** (``assumed``, a what-if the caller states): a slice where an arm's figure states no count has no
 binomial spread to read, so no interval. Read as if each such slice held that many cases, or (``share``) the arm's own
-count times the slice's traffic share; every figure read under it is keyed ``assumed.<cases>.compare.``, so it reads
+distinct cases times the slice's traffic share (and, on a repeated design, its trials times the share); every figure read under it is keyed ``assumed.<cases>.compare.``, so it reads
 as an assumption wherever it is cited, and a place whose figures state their count is read as they state it.
 
 **What a row says.** The two means, the difference (in points for a rate), its interval and level, whether the
@@ -284,7 +284,7 @@ def arms_compare(
     :param measure: The measure or judged dimension, by key.
     :ptype measure: str
     :param assumed: A what-if: the cases each slice stating no count of its own is read as holding, or ``share``
-        (each arm's own count times the slice's traffic share); its figures are keyed ``assumed.<cases>.``.
+        (each arm's own distinct cases times the slice's traffic share); its figures are keyed ``assumed.<cases>.``.
     :ptype assumed: int | str | None
     :param limit: The most places one page holds.
     :ptype limit: int
@@ -360,7 +360,11 @@ def assumed_words(assumed: int | str | None) -> str:
     """
     if assumed is None:
         return ""
-    how = "the arm's own count times the slice's traffic share" if assumed == ASSUMED_SHARE else f"{assumed} cases"
+    how = (
+        "the arm's own distinct cases times the slice's traffic share"
+        if assumed == ASSUMED_SHARE
+        else f"{assumed} cases"
+    )
     return (
         f"a what-if: each slice whose figure states no count read as holding {how}; its figures are keyed "
         f"assumed.{assumed}., and a place whose figures state their count is read as they state it"

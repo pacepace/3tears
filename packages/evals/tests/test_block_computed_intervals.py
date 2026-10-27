@@ -92,7 +92,20 @@ def _computed() -> list[tuple[str, str, list[str]]]:
 
 def test_the_fixtures_hold_rates_with_a_count_and_no_stated_interval() -> None:
     names = {name for name, _key, _arms in _computed()}
-    assert "r2 with one gate" in names and "r3 without its configs" in names, names
+    assert "r2 with one gate" in names, names
+
+
+def test_no_interval_is_computed_on_a_figure_that_is_no_share_of_counted_trials() -> None:
+    """r3 grades its balanced accuracy by class label, but it is the mean of each class's recall: no binomial spread
+    describes it, so no interval is computed for it, however its arms' trials are counted. Only a share of counted
+    trials is (a pass/fail measure, a plain accuracy or match)."""
+    held = _inputs()["r3 without its configs"]
+    shares = {"accuracy", "match"}
+    derived = [key for key, measure in held.measures.items() if measure.grade == "class_label" and key not in shares]
+    assert derived, "the control: r3 grades a derived mean by class label"
+    for name, key, _arms in _computed():
+        measure = _inputs()[name].measures.get(key)
+        assert measure is None or measure.grade == "pass_fail" or key in shares, (name, key)
 
 
 def test_an_arms_spread_reads_its_interval_as_its_mean_plus_and_minus_the_quantile_times_its_error() -> None:

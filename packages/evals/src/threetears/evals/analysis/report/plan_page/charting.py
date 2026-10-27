@@ -461,7 +461,8 @@ def computed_interval(
         # NOSILENT: a figure with no count, no rate, or a rate of none or all reads no interval: the chart draws its
         # dot or bar with none, as it draws any figure that states none.
         return None
-    assert isinstance(interval, tuple) and isinstance(level, float), (interval, level)
+    if not isinstance(interval, tuple) or not isinstance(level, float):
+        raise TypeError(f"spread.{arm}.{key}.overall read as {interval!r} at {level!r}, not an interval at a level")
     return (float(interval[0]), float(interval[1])), level
 
 
