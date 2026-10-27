@@ -8,6 +8,8 @@ which keeps the real transport's cap and content-type gate.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from threetears.media.contracts import (
@@ -20,6 +22,7 @@ from threetears.search.contracts.candidate import Candidate, Locator
 from threetears.search.extract import (
     EXTRACTION_CHARSET_FACET,
     EXTRACTION_FINAL_URL_FACET,
+    EXTRACTION_METHOD_FACET,
     EXTRACTION_NEXT_STEP_FACET,
     EXTRACTION_NOTES_FACET,
     EXTRACTION_REASON_FACET,
@@ -383,7 +386,205 @@ async def test_without_a_reader_a_pdf_is_refused_at_the_gate() -> None:
     result = await extract(_candidate(), transport=transport)
 
     assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_REFUSED
-    assert result.facets[EXTRACTION_REASON_FACET].startswith("the address is not a page, so it is not read")
+    assert result.facets[EXTRACTION_REASON_FACET].startswith("the address is not a page or text, so it is not read")
+
+
+# --- text, read as written -------------------------------------------------
+
+#: A body that is the same text whatever it is declared as, and that no extractor would keep as it is.
+_AS_WRITTEN = "body { color: #333; }\n<urlset><url><loc>https://journal.example.org/</loc></url></urlset>\na,b\n"
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        "text/css",
+        "text/xml",
+        "text/csv",
+        "text/javascript",
+        "text/markdown",
+        "text/plain; charset=utf-8",
+        "application/xml",
+        "application/javascript",
+        "application/x-yaml",
+        "application/yaml",
+        "application/x-ndjson",
+        "application/rss+xml",
+        "application/atom+xml",
+    ],
+)
+async def test_a_textual_answer_is_read_as_written(declared: str) -> None:
+    """A stylesheet, a sitemap, a feed: what the reader asked to see, every character of it."""
+    transport = RecordedFetchTransport(
+        {_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=_AS_WRITTEN.encode(), content_type=declared)}
+    )
+
+    result = await extract(_candidate(), transport=transport)
+
+    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_COMPLETE
+    assert result.content is not None and result.content.text == _AS_WRITTEN
+    assert result.facets[EXTRACTION_METHOD_FACET] == "text"
+
+
+@pytest.mark.parametrize("declared", ["application/json", "application/ld+json", "application/vnd.api+json"])
+async def test_json_that_parses_is_shown_indented(declared: str) -> None:
+    body = rb'{"id":7,"slug":"contact","title":{"rendered":"Contact \u00e9"}}'  # the JSON escape, read as é
+    transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=body, content_type=declared)})
+
+    result = await extract(_candidate(), transport=transport)
+
+    assert result.content is not None
+    assert result.content.text == (
+        '{\n  "id": 7,\n  "slug": "contact",\n  "title": {\n    "rendered": "Contact \u00e9"\n  }\n}'
+    )
+
+
+async def test_json_that_does_not_parse_is_shown_as_sent_and_says_so() -> None:
+    body = b'{"id":7, "cut off'
+    transport = RecordedFetchTransport(
+        {_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=body, content_type="application/json")}
+    )
+
+    result = await extract(_candidate(), transport=transport)
+
+    assert result.content is not None and result.content.text == body.decode()
+    assert result.facets[EXTRACTION_NOTES_FACET] == [
+        "It says it is JSON but does not parse as JSON; it is shown as sent."
+    ]
+
+
+async def test_text_past_a_page_s_cap_is_refused_like_a_page() -> None:
+    """The same cap the page path keeps: text is not a way around it."""
+    transport = RecordedFetchTransport(
+        {_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=b"a," * 600, content_type="text/csv")}
+    )
+
+    result = await extract(_candidate(), transport=transport, max_bytes=1000)
+
+    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_REFUSED
+    assert result.content is None
+
+
+@pytest.mark.parametrize(
+    "declared", ["image/png", "application/zip", "application/octet-stream", "audio/mpeg", "video/mp4"]
+)
+async def test_a_binary_answer_is_refused_before_its_body_and_says_what_is_read(declared: str) -> None:
+    transport = RecordedFetchTransport(
+        {_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=b"\x89PNG\x00\x01", content_type=declared)}
+    )
+
+    result = await extract(_candidate(), transport=transport)
+
+    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_REFUSED
+    assert result.facets[EXTRACTION_REASON_FACET].startswith(
+        "the address is not a page or text, so it is not read; an image, an archive, audio or video is not read"
+    )
+    assert repr(declared) in result.facets[EXTRACTION_REASON_FACET]
+
+
+# --- a page's source --------------------------------------------------------
+
+
+async def test_source_hands_back_the_page_s_html_as_fetched() -> None:
+    """For checking markup, scripts, forms and meta tags: the article would have dropped every one."""
+    transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=_ARTICLE)})
+
+    result = await extract(_candidate(), transport=transport, source=True)
+
+    assert result.content is not None and result.content.text == _ARTICLE.decode()
+    assert result.facets[EXTRACTION_METHOD_FACET] == "source"
+    assert result.facets[EXTRACTION_NOTES_FACET] == [
+        "This is the page's HTML as fetched, not its article; scripts that run later are not run."
+    ]
+
+
+async def test_source_of_a_thin_page_is_its_own_html_and_its_frame_is_not_followed() -> None:
+    transport = RecordedFetchTransport(
+        {
+            _ROBOTS: _ALLOW,
+            _PAGE: RecordedPage(body=_MENU_WITH_FRAME),
+            f"{_SITE}/viewer/42.html": RecordedPage(body=_ARTICLE),
+        }
+    )
+
+    result = await extract(_candidate(), transport=transport, source=True, thin_page_chars=1000)
+
+    assert result.content is not None and result.content.text == _MENU_WITH_FRAME.decode()
+    assert transport.fetched == [_ROBOTS, _PAGE]
+
+
+async def test_without_source_a_page_is_still_its_article() -> None:
+    """Good traffic: the default is unchanged."""
+    transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=_ARTICLE)})
+
+    result = await extract(_candidate(), transport=transport)
+
+    assert result.content is not None and "<p>" not in result.content.text
+    assert "South America" in result.content.text
+
+
+# --- advice names only web addresses ---------------------------------------
+
+
+@pytest.mark.parametrize("location", ["about:blank", "javascript:void(0)", "data:text/html,hi", "mailto:a@b.org", ""])
+async def test_a_redirect_to_no_web_address_does_not_tell_the_reader_to_fetch_it(location: str) -> None:
+    headers = {"location": location} if location else {}
+    transport = RecordedFetchTransport(
+        {_ROBOTS: _ALLOW, _PAGE: RecordedPage(status_code=302, body=b"", headers=headers)}
+    )
+
+    result = await extract(_candidate(), transport=transport)
+
+    said = f"{result.facets[EXTRACTION_REASON_FACET]} {result.facets[EXTRACTION_NEXT_STEP_FACET]}"
+    assert result.facets[EXTRACTION_NEXT_STEP_FACET] == "find the same facts elsewhere"
+    assert "fetch " not in result.facets[EXTRACTION_NEXT_STEP_FACET]
+    if location:
+        assert location not in said
+
+
+async def test_a_relative_redirect_names_the_whole_web_address() -> None:
+    """Good traffic: a redirect the fetch did not follow is named as an address the reader can fetch."""
+    transport = RecordedFetchTransport(
+        {_ROBOTS: _ALLOW, _PAGE: RecordedPage(status_code=302, body=b"", headers={"location": "/moved here"})}
+    )
+
+    result = await extract(_candidate(), transport=transport)
+
+    assert result.facets[EXTRACTION_NEXT_STEP_FACET] == f"fetch {_SITE}/moved%20here"
+
+
+#: Every address a sentence names: after "fetch", "at" or "to".
+_NAMED_ADDRESS = re.compile(r"\b(?:fetch|at|to) ([A-Za-z][A-Za-z0-9+.-]*:\S*)")
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        RecordedPage(body=b"<html><body><nav>Home</nav><iframe src='about:blank'></iframe></body></html>"),
+        RecordedPage(body=b"<html><body><nav>Home</nav><iframe src='javascript:x()'></iframe></body></html>"),
+        RecordedPage(body=b"<html><body><nav>Home</nav><iframe src='data:text/html,a'></iframe></body></html>"),
+        RecordedPage(body=b"<html><body><nav>Home</nav><iframe src='https://other.net/x'></iframe></body></html>"),
+        RecordedPage(
+            body=b"<html><body><nav>Home</nav><iframe src='/a'></iframe><iframe src='/b'></iframe></body></html>"
+        ),
+        RecordedPage(
+            body=b"<html><head><meta name='citation_pdf_url' content='about:blank'></head><body>Home</body></html>"
+        ),
+        RecordedPage(status_code=301, body=b"", headers={"location": "about:blank"}),
+        RecordedPage(status_code=301, body=b"", headers={"location": "ftp://files.example.org/a"}),
+    ],
+)
+async def test_no_advice_names_an_address_that_is_not_http(page: RecordedPage) -> None:
+    """A reader told to fetch about:blank fetches nothing and is told nothing."""
+    transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: page})
+
+    result = await extract(_candidate(), transport=transport, thin_page_chars=1000)
+
+    said = " ".join(str(result.facets.get(key) or "") for key in (EXTRACTION_REASON_FACET, EXTRACTION_NEXT_STEP_FACET))
+    for address in _NAMED_ADDRESS.findall(said):
+        assert address.startswith(("http://", "https://")), said
+    for scheme in ("about:", "javascript:", "data:", "ftp:"):
+        assert scheme not in said, said
 
 
 # --- a thin page and its frame --------------------------------------------
@@ -710,7 +911,11 @@ def test_same_site_reads_the_registrable_part(first: str, second: str, same: boo
     ("scope", "reason"),
     [
         ("RESPONSE_BYTES_SCOPE", "the page is larger than 2 MB, the most a fetch reads"),
-        ("CONTENT_TYPE_SCOPE", "the address is not a page, so it is not read (refused)"),
+        (
+            "CONTENT_TYPE_SCOPE",
+            "the address is not a page or text, so it is not read; an image, an archive, audio or video is "
+            "not read as text (refused)",
+        ),
     ],
 )
 async def test_the_transport_s_own_cap_scopes_are_the_ones_read(scope: str, reason: str) -> None:

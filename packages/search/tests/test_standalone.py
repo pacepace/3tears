@@ -662,6 +662,29 @@ async def test_the_gate_matches_on_the_media_type_not_the_header() -> None:
     assert response.body == page
 
 
+@pytest.mark.parametrize(
+    ("declared", "passes"),
+    [
+        ("application/rss+xml", True),
+        ("application/ld+json; charset=utf-8", True),
+        ("application/vnd.api+json", True),
+        ("application/jsonp", False),
+        ("image/svg+xml-compressed", False),
+    ],
+)
+async def test_a_suffix_entry_takes_every_type_with_that_suffix_and_only_those(declared: str, passes: bool) -> None:
+    """``+json`` names a family no prefix can: a feed, JSON-LD, a vendor's JSON."""
+    async with LocalHttpServer((Reply(body=b"{}", headers={"Content-Type": declared}),)) as server:
+        fetch = _transport(max_attempts=1).fetch(
+            "GET", f"{server.base_url}/feed", max_bytes=1_000_000, allowed_content_types=("+json", "+xml")
+        )
+        if passes:
+            assert (await fetch).body == b"{}"
+        else:
+            with pytest.raises(LocalCapExceeded):
+                await fetch
+
+
 async def test_a_response_declaring_no_media_type_is_refused_by_the_gate() -> None:
     """Unknown content can be arbitrarily expensive; unknown is not 'what I hoped'."""
     async with LocalHttpServer((Reply(body=b"?" * 512, headers={"Content-Type": ""}),)) as server:

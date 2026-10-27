@@ -66,6 +66,7 @@ Rulings taken in this module, recorded here per the Gate A precedent:
 from __future__ import annotations
 
 import codecs
+import json
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -104,7 +105,12 @@ from threetears.search.contracts.candidate import Candidate, ContentSlot
 from threetears.search.contracts.errors import LocalCapExceeded, SearchFailure, TimedOut
 from threetears.search.contracts.fidelity import FIDELITY_CONTENT
 from threetears.search.contracts.spend import Spend
-from threetears.search.contracts.transport import FetchTransport, HeavyFetcher, TransportResponse
+from threetears.search.contracts.transport import (
+    FetchTransport,
+    HeavyFetcher,
+    TransportResponse,
+    media_type_accepted,
+)
 
 _logger = get_logger(__name__)
 
@@ -162,11 +168,30 @@ ROBOTS_UNREADABLE_ALLOW: Final[str] = "allow"
 
 type RobotsUnreadable = Literal["deny", "allow"]
 
-#: Media types the web path will read as a page.
+#: Media types the web path will read as a page: markup, through the extractor.
 HTML_CONTENT_TYPES: Final[tuple[str, ...]] = (
     "text/html",
     "application/xhtml+xml",
-    "text/plain",
+)
+
+#: Media types read as text, as written: every ``text/*`` that is not a page (plain text, CSS,
+#: CSV, XML, JavaScript, Markdown), JSON, XML, YAML, NDJSON, JavaScript, and any ``+json`` or
+#: ``+xml`` type (RSS, Atom, JSON-LD). Entries are gate entries
+#: (:func:`~threetears.search.contracts.media_type_accepted`): a prefix, or a ``+`` suffix. A
+#: stylesheet, a sitemap or an API's answer is what the reader asked to see, and none of it needs
+#: a library to read; JSON that parses is shown indented.
+_TEXT_CONTENT_TYPES: Final[tuple[str, ...]] = (
+    "text/",
+    "application/json",
+    "application/xml",
+    "application/javascript",
+    "application/x-javascript",
+    "application/ecmascript",
+    "application/yaml",
+    "application/x-yaml",
+    "application/x-ndjson",
+    "+json",
+    "+xml",
 )
 
 #: :attr:`Candidate.facets` key carrying the ``media-contracts`` ``EXTRACTION_STATUS_*`` vocabulary.
@@ -213,6 +238,12 @@ _METHOD_TRAFILATURA: Final[str] = "trafilatura"
 
 #: Method name recorded when a caller's heavy fetcher produced the carrier.
 _METHOD_HEAVY: Final[str] = "trafilatura+rendered"
+
+#: Method name recorded when a textual carrier was handed back as written.
+_METHOD_TEXT: Final[str] = "text"
+
+#: Method name recorded when a page's markup was handed back as fetched (``source``).
+_METHOD_SOURCE: Final[str] = "source"
 
 #: The cap scopes the standalone transport refuses under (``standalone.RESPONSE_BYTES_SCOPE``
 #: and ``standalone.CONTENT_TYPE_SCOPE``), spelled here because this module must not import the
@@ -291,8 +322,7 @@ class CarrierReader:
 
     def reads(self, media_type: str | None) -> bool:
         """Whether this reader takes a carrier declared as ``media_type``."""
-        lowered = (media_type or "").lower()
-        return bool(lowered) and any(lowered.startswith(prefix.lower()) for prefix in self.media_types)
+        return media_type_accepted(media_type, self.media_types)
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,6 +364,7 @@ async def extract(
     robots_unreadable: RobotsUnreadable = "deny",
     readers: Sequence[CarrierReader] = (),
     thin_page_chars: int | None = None,
+    source: bool = False,
 ) -> Candidate:
     """Fill one candidate's content slot from its carrier.
 
@@ -375,6 +406,10 @@ async def extract(
     :param thin_page_chars: when set, a page with less readable text than this that points at
         its article follows it one level (module docstring); None never follows
     :ptype thin_page_chars: int | None
+    :param source: hand a page back as the markup that was fetched, not its extracted article,
+        for a reader checking markup, scripts, forms or meta tags. A page's frame is not followed
+        when its source is asked for; text and readers' carriers read as they always do
+    :ptype source: bool
     :return: the candidate with content, fidelity and extraction facets recorded; on a
         per-candidate failure, the candidate with its status, reason and next step and no content
     :rtype: Candidate
@@ -414,6 +449,7 @@ async def extract(
         readers=readers,
         timeout_seconds=timeout_seconds,
         headers=conditional or None,
+        source=source,
     )
 
     if isinstance(read, _Unread) and read.response is not None and conditional:
@@ -427,6 +463,7 @@ async def extract(
                 }
             )
 
+    # text read as written, and a page's source, are never followed: only an extracted article is thin
     if thin_page_chars is not None and heavy_fetcher is None:
         read = await _follow_a_thin_page(
             read,
@@ -646,8 +683,9 @@ async def _read_carrier(
     readers: Sequence[CarrierReader],
     timeout_seconds: float | None,
     headers: Mapping[str, str] | None = None,
+    source: bool = False,
 ) -> _Read | _Unread:
-    """Fetch one carrier and read it: a page through the extractor, anything else through its reader.
+    """Fetch one carrier and read it: a page through the extractor, text as written, anything else through its reader.
 
     :param url: the carrier's address
     :ptype url: str
@@ -665,11 +703,15 @@ async def _read_carrier(
     :ptype timeout_seconds: float | None
     :param headers: conditional validators, or None
     :ptype headers: Mapping[str, str] | None
+    :param source: hand a page back as its markup rather than its article
+    :ptype source: bool
     :return: what was read, or why nothing was
     :rtype: _Read | _Unread
     """
     largest = max([max_bytes, *(reader.max_bytes for reader in readers)])
-    allowed = HTML_CONTENT_TYPES + tuple(media for reader in readers for media in reader.media_types)
+    allowed = (
+        HTML_CONTENT_TYPES + _TEXT_CONTENT_TYPES + tuple(media for reader in readers for media in reader.media_types)
+    )
     try:
         response = await _fetch_carrier(
             url,
@@ -710,6 +752,9 @@ async def _read_carrier(
             "find a shorter copy of it, or the same facts elsewhere",
         )
     markup, charset = _decode(response.body, response.headers.get("content-type", ""))
+    is_page = media_type_accepted(declared, HTML_CONTENT_TYPES)
+    if source or (not is_page and media_type_accepted(declared, _TEXT_CONTENT_TYPES)):
+        return _as_written(markup, response=response, charset=charset, declared=declared, source=source and is_page)
     text = extractor(markup) or ""
     title: str | None = None
     published_at: datetime | None = None
@@ -740,6 +785,55 @@ async def _read_carrier(
         charset=charset,
         notes=notes,
         method=method,
+    )
+
+
+def _as_written(
+    decoded: str, *, response: TransportResponse, charset: str, declared: str | None, source: bool
+) -> _Read | _Unread:
+    """A textual carrier, or a page's markup, handed back as it came.
+
+    JSON that parses is shown indented, since an API's answer on one line is unreadable;
+    anything else is the decoded body unchanged.
+
+    :param decoded: the decoded body
+    :ptype decoded: str
+    :param response: the fetched carrier
+    :ptype response: TransportResponse
+    :param charset: the character set it was decoded with
+    :ptype charset: str
+    :param declared: its declared media type
+    :ptype declared: str | None
+    :param source: whether a page's markup was asked for in place of its article
+    :ptype source: bool
+    :return: the text, or why there was none
+    :rtype: _Read | _Unread
+    """
+    text = decoded
+    notes: tuple[str, ...] = ()
+    if media_type_accepted(declared, ("application/json", "+json")):
+        try:
+            text = json.dumps(json.loads(decoded), indent=2, ensure_ascii=False)
+        except ValueError:
+            # NOSILENT: JSON that does not parse is still the text the site sent, and is shown as sent
+            notes = ("It says it is JSON but does not parse as JSON; it is shown as sent.",)
+    if source:
+        notes = (*notes, "This is the page's HTML as fetched, not its article; scripts that run later are not run.")
+    if not text.strip():
+        return _Unread(
+            EXTRACTION_STATUS_FAILED,
+            f"the address answered with nothing ({declared or 'no content type'}, empty)",
+            "check the address",
+            response=response,
+        )
+    return _Read(
+        text=text,
+        response=response,
+        title=None,
+        published_at=None,
+        charset=charset,
+        notes=notes,
+        method=_METHOD_SOURCE if source else _METHOD_TEXT,
     )
 
 
@@ -797,10 +891,12 @@ def _cap_refusal(exc: LocalCapExceeded, *, largest: int, max_bytes: int, readers
     :rtype: _Unread
     """
     if exc.scope == _CONTENT_TYPE_SCOPE:
-        kinds = ["a page", *(f"a {reader.kind}" for reader in readers)]
+        kinds = ["a page", "text", *(f"a {reader.kind}" for reader in readers)]
+        named = ", ".join(kinds[:-1]) + f" or {kinds[-1]}"
         return _Unread(
             EXTRACTION_STATUS_REFUSED,
-            f"the address is not {' or '.join(kinds)}, so it is not read ({exc.message})",
+            f"the address is not {named}, so it is not read; an image, an archive, audio or video is not "
+            f"read as text ({exc.message})",
             "find a page about it instead",
         )
     if exc.scope == _RESPONSE_BYTES_SCOPE:
@@ -818,6 +914,33 @@ def _cap_refusal(exc: LocalCapExceeded, *, largest: int, max_bytes: int, readers
             "find a shorter copy of it, or the same facts elsewhere",
         )
     return _Unread(EXTRACTION_STATUS_REFUSED, str(exc), None)
+
+
+def _web_address(address: str | None, *, base: str | None) -> str | None:
+    """An address a sentence may tell the reader to fetch: absolute http(s), as a plain URL, or None.
+
+    Advice only ever names an address the fetch can read. ``about:blank``, ``data:``,
+    ``javascript:`` or a relative path with nothing to resolve it against is not one, and naming
+    it sends the reader to a fetch that cannot happen.
+
+    :param address: the address as the site gave it
+    :ptype address: str | None
+    :param base: the URL that answered, to resolve a relative address against
+    :ptype base: str | None
+    :return: the absolute web address, percent-encoded and bounded, or None
+    :rtype: str | None
+    """
+    if not address or not address.strip():
+        return None
+    try:
+        absolute = urljoin(base or "", address.strip())
+        parts = urlsplit(absolute)
+    except ValueError:
+        # NOSILENT: an address that will not split is no address the reader can be sent to
+        return None
+    if parts.scheme not in _WEB_SCHEMES or not parts.netloc:
+        return None
+    return quote(absolute, safe=_URL_SAFE)[:_SHOWN_URL_CHARS]
 
 
 def _size(count: int) -> str:
@@ -857,11 +980,15 @@ def _status_reason(response: TransportResponse) -> tuple[str, str]:
     if status >= 500:
         return (f"the site had an error ({status})", "try again shortly")
     if 300 <= status < 400:
-        target = response.headers.get("location")
-        pointed = f" to {target}" if target else ""
+        target = _web_address(response.headers.get("location"), base=response.final_url)
+        if target is None:
+            return (
+                f"the site sent the fetch on to no web address it can follow ({status})",
+                "find the same facts elsewhere",
+            )
         return (
-            f"the site sent the fetch further{pointed} than it follows ({status})",
-            "fetch the address it points to",
+            f"the site sent the fetch further, to {target}, than it follows ({status})",
+            f"fetch {target}",
         )
     return (f"the site answered {status}", "check the address")
 
@@ -1239,7 +1366,9 @@ async def _follow_a_thin_page(
         return read
     # The address comes from the page's own markup, so it is made a plain URL before a sentence
     # carries it: no spaces, no line breaks, nothing a reader could take for an instruction.
-    target = quote(pointed.strip(), safe=_URL_SAFE)[:_SHOWN_URL_CHARS]
+    target = _web_address(pointed, base=page)
+    if target is None:
+        return read
 
     def menu_only(why: str) -> _Unread:
         return _UnreadWithText(

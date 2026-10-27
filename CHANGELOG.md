@@ -110,6 +110,25 @@ the next upgrade treats v003 as applied and the recreated `uq_identity_active_pe
 active version beside its block's; v003 is idempotent, so it runs cleanly again then. The package is agent-scoped,
 so run all of this in each agent's schema. The column and the per-variant indexes can stay.
 
+### search, agent-tools: web_fetch reads any text, and a page's source
+
+**Fixed:** `web_fetch` refused every response that was not HTML, plain text or a PDF. Seen on production
+(2026-10-26), while a person debugged a WordPress site with the agent: a stylesheet (`text/css`), the sitemap
+(`text/xml`) and the REST API's answer (`application/json`) were all refused, and the agent had to ask the person
+to view source by hand. Extract now reads every `text/*`, JSON, XML, JavaScript, YAML, NDJSON and any `+json` or
+`+xml` type (RSS, Atom, JSON-LD) as written, under the same byte cap a page has; JSON that parses is shown
+indented. `text/plain` is now read as written rather than through the article extractor. Images, archives,
+audio and video are still refused before their body is read, and the refusal says what is read.
+
+**Added:** `web_fetch`'s `source` argument (and `extract(..., source=True)`) returns a page's HTML as fetched
+instead of its article, for checking markup, scripts, forms and meta tags. A gate entry that starts with `+`
+matches a structured-syntax suffix (`threetears.search.contracts.media_type_accepted`, used by both fetch
+transports and `CarrierReader.reads`).
+
+**Fixed:** advice never names an address the fetch cannot read. A redirect the fetch did not follow is named
+only when it points to an http(s) address (resolved against the page), and a frame's address goes through the
+same check; `about:blank`, `data:`, `javascript:` and the like are never offered as something to fetch.
+
 ### agent-memory: a Dream pass no longer stops the event loop
 
 **Fixed:** a consolidation pass compared every pair of a scope's memory embeddings in pure Python on the event
