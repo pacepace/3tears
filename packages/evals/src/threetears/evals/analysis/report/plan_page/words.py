@@ -10,6 +10,19 @@ heads and status words. Held here so a translation replaces them in one place.
 from __future__ import annotations
 
 __all__ = [
+    "SETTLE_FLOOR_TEMPLATE",
+    "SETTLE_MARGIN_TEMPLATE",
+    "SETTLE_NOTE",
+    "BAR_WORD",
+    "BAR_STRIP_NOTE",
+    "OVERALL_WORD",
+    "LEVER_CROSS_GROUP",
+    "LEVER_CROSS_TEMPLATE",
+    "LEVER_EFFECT_GROUP",
+    "LEVER_MOVE_TEMPLATE",
+    "LEVERS_NOTE",
+    "COMPARE_NOTE",
+    "BASIS_NOTE",
     "ANSWER_TEMPLATES",
     "APPENDIX_TITLE",
     "ARM_HEADERS",
@@ -18,6 +31,7 @@ __all__ = [
     "ARMS_TAKEAWAY",
     "ASPECT_MEASURE_TEMPLATE",
     "CONFIDENCE_LABEL",
+    "COMPUTED_NOTE",
     "CONFIDENCE_WORDS",
     "CONTRAST_VERDICT_WORDS",
     "EXPECTED_TERM",
@@ -313,6 +327,49 @@ LEVER_NOTE = (
     "both: descriptive, uncorrected."
 )
 
+#: A bar's line, as its label names it, and what a strip of bar reads says.
+BAR_WORD = "bar"
+BAR_STRIP_NOTE = "Each dot is the arm's value, with the interval its bar was read on; a hollow dot misses its bar."
+
+#: A settle chart's caption.
+SETTLE_NOTE = (
+    "Each bar is how often a fresh run of today's size would read the figure on the other side of its line, if the "
+    "truth is today's estimate ({level}); it plans a run and tests nothing."
+)
+
+#: What a settle row against an aspect's margin, or a floor, is settled against.
+SETTLE_MARGIN_TEMPLATE = "the margin on {aspect}"
+SETTLE_FLOOR_TEMPLATE = "the floor {floor} on {aspect}"
+
+#: A compare chart's caption: whose difference each row is, and on what.
+COMPARE_NOTE = "Each row is {first} less {second} on {measure}, overall and in each place both hold it."
+
+#: How a compare chart's intervals were read, in the analysis's own words.
+BASIS_NOTE = "The interval is {basis}."
+
+#: What a compare row overall is called, beside the slices' names.
+OVERALL_WORD = "Overall"
+
+#: A lever chart's caption.
+LEVERS_NOTE = (
+    "Each effect is one setting moved between two arms that differ in it alone, on {measure}; each interaction is how "
+    "that effect changes across another setting. Descriptive: read as two arms' own spreads, never a test."
+)
+
+#: A lever effect's label (the arm it moves from, and the value it moves to), and the group effects sit under.
+LEVER_MOVE_TEMPLATE = "{start} → {value}"
+LEVER_EFFECT_GROUP = "{setting}"
+
+#: An interaction's label (the second context's effect less the first's) and the group it sits under.
+LEVER_CROSS_TEMPLATE = "at {second} less at {first}"
+LEVER_CROSS_GROUP = "{setting} effect, across {across}"
+
+#: A chart whose intervals code computed from each rate's count, where the input states none.
+COMPUTED_NOTE = (
+    "Each interval is computed here from the rate's count: its binomial spread, by the normal approximation, held to "
+    "0 to 100%; the input states none. A rate of none or all has none."
+)
+
 #: A chart of blind human preference, about the no-preference point.
 HUMAN_PREF_NOTE = "The share of {n} blind ratings preferring {control} over {arm}; 50% is no preference."
 
@@ -475,6 +532,27 @@ TABLE_HEADERS = {
     "prefers_control": "Prefers the control",
     "step": "Step along the frontier",
     "per_point": "Price per point",
+    "aspect": "Aspect",
+    "bar": "Bar",
+    "place": "Place",
+    "first": "First arm",
+    "second": "Second arm",
+    "difference": "Difference",
+    "interval": "Interval",
+    "level": "Level",
+    "basis": "Read as",
+    "against": "Against",
+    "estimate": "Today's figure",
+    "line": "Line",
+    "distance": "Distance toward passing",
+    "settles": "Settles",
+    "cases_needed": "Needed, one-sided",
+    "cases_needed_two_sided": "Needed, two-sided",
+    "counts": "Today's count",
+    "count_of": "Counts",
+    "wrong_side": "A fresh run reads the other side",
+    "setting": "Setting",
+    "move": "Move",
 }
 
 #: How a step along a price frontier is named: the option it moves from, then the one it moves to.

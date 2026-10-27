@@ -251,6 +251,14 @@ _SOURCE_ROWS: dict[str, tuple[str, str, bool, tuple[str, ...]]] = {
                "point a month at the declared volume, else per thousand of what the cost counts, ends off its gain's "
                "interval",
                "from→to", True, ("measures", "arms")),
+    "bar_reads": ("an arm against an absolute bar, its value and interval", "measure/arm", True,
+                  ("arms", "measures", "aspect")),
+    "compare": ("arms_compare's row: query.arms' first less its second on its one measure, at one place (strata: "
+                "'overall', a slice)", "its place", True, ("arms", "measures", "strata")),
+    "settle": ("settle_cases' row: one arm against one line it is read by, at one place", "arm/line/place", False,
+               ("arms", "measures", "strata")),
+    "levers": ("a levers_effects effect or interaction on the one measure, at the one place strata names",
+               "the move", True, ("arms", "measures", "strata")),
 }  # fmt: skip
 
 

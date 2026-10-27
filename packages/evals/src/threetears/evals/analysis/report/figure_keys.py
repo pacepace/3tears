@@ -123,6 +123,7 @@ from threetears.evals.analysis.separation import (
     difference_spread,
     independent_difference,
     level_share,
+    spread_interval,
     stat_spread,
     wrong_side_share,
 )
@@ -244,6 +245,9 @@ class Figure:
     ``held_above``, a criterion figure's ``gap``): descriptive, with no interval and no test behind it. ``per`` is
     what a money figure counts, as a plural noun (``conversations``), where the input states it
     (:mod:`~threetears.evals.analysis.report.cost_unit`); empty where it does not, or the figure is no money.
+    ``level`` marks an interval's confidence level, read in percent as the input states it, to every digit the number
+    rule keeps (``97.5%``, ``98.33%``), never rounded to a whole percent or to a rate's one decimal: two levels that
+    differ never print alike.
     """
 
     path: str
@@ -255,6 +259,7 @@ class Figure:
     whole: bool = False
     derived: bool = False
     per: str = ""
+    level: bool = False
 
 
 # --- the vocabulary a path is matched against -------------------------------------------------------------------
@@ -479,6 +484,11 @@ def _number(
     return Figure(path=path, kind="number", value=float(value), scale=scale, unit=unit, change=change, whole=whole)
 
 
+def _level(path: str, value: float | None, what: str) -> Figure:
+    """An interval's confidence level, a share, read in percent as stated (:class:`Figure`'s ``level``)."""
+    return replace(_number(path, value, what, "share"), level=True)
+
+
 def _end(path: str, interval: tuple[float, float] | None, statistic: str, what: str) -> float:
     """One end of ``interval`` (``low`` or ``high``), refused by name where the input states no interval."""
     if interval is None:
@@ -592,7 +602,7 @@ def _reading_figure(reading: Reading, statistic: str, path: str) -> Figure:
     if statistic == "margin":
         return _number(path, reading.margin, "the reading's margin", "points")
     if statistic == "level":
-        return _number(path, reading.gain_confidence, "the interval's level", "share", whole=True)
+        return _level(path, reading.gain_confidence, "the interval's level")
     if statistic == "verdict":
         return _text(path, reading.reading, "the reading")
     return _text(path, getattr(reading, statistic), f"the reading's {statistic}")
@@ -2579,7 +2589,7 @@ def _pair(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figu
         end = _end(path, pair.interval, statistic, "the pair's interval")
         return _number(path, end, f"the interval's {statistic} end", "points", change=True)
     if statistic == "confidence":
-        return _number(path, pair.confidence, "the interval's level", "share", whole=True)
+        return _level(path, pair.confidence, "the interval's level")
     if statistic == "p_holm":
         return _number(path, pair.p_holm, "the Holm-adjusted p", "plain")
     if statistic == "ahead":
@@ -2893,8 +2903,23 @@ _OVERALL = "overall"
 
 #: What an arm's spread on a figure reads: its mean, its standard error, the spread of one case, the count it rests on
 #: and what that count counts (cases, trials or observations), the distinct cases behind a count of trials and the
-#: trials each ran today, the level a result read from it is stated at, and what the standard error was read from.
-_SPREAD_FIELDS = ("mean", "se", "per_case", "n", "counts", "cases", "repeats", "level", "basis")
+#: trials each ran today, the level a result read from it is stated at, what the standard error was read from, and the
+#: interval it gives at that level and its two ends (the mean plus and minus the normal quantile times the standard
+#: error, a rate's ends held to none to all: :func:`~threetears.evals.analysis.separation.spread_interval`).
+_SPREAD_FIELDS = (
+    "mean",
+    "se",
+    "per_case",
+    "n",
+    "counts",
+    "cases",
+    "repeats",
+    "level",
+    "basis",
+    "interval",
+    "low",
+    "high",
+)
 
 #: What two arms' difference reads: the first minus the second, its interval, the interval's ends and half-width, its
 #: level, and whether it is the paired estimate a contrast states or two independent arms' spreads combined.
@@ -3201,7 +3226,16 @@ def _spread_figure(report_input: ReportInput, values: tuple[str, ...], path: str
     if field == "repeats":
         return _number(path, spread.repeats, "the trials each case ran, where the count is trials", "plain")
     if field == "level":
-        return _number(path, spread.level, "the level a result read from it is stated at", "share")
+        return _level(path, spread.level, "the level a result read from it is stated at")
+    if field in ("interval", "low", "high"):
+        try:
+            low, high = spread_interval(spread, rate=_rate_of(report_input, key))
+        except NoSpread as none:
+            raise _unstated(path, str(none)) from none
+        scale, unit = _scale_of(report_input, key)
+        if field == "interval":
+            return _interval(path, (low, high), "the interval", scale, unit=unit)
+        return _number(path, low if field == "low" else high, f"the interval's {field} end", scale, unit=unit)
     return Figure(path=path, kind="text", value=_basis_words(report_input, arm_id, key, where, spread))
 
 
@@ -3333,7 +3367,7 @@ def _compare_figure(report_input: ReportInput, values: tuple[str, ...], path: st
     if field == "level":
         if level is None:
             raise _unstated(path, "names the level of the contrast's interval, which the input does not state")
-        return _number(path, level, "the interval's level", "share")
+        return _level(path, level, "the interval's level")
     if field == "interval":
         scale, unit = _scale_of(report_input, key)
         factor = 100.0 if scale == "share" else 1.0
@@ -3786,7 +3820,9 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         "and `repeats` the trials each ran; `level` the level a result read from it is stated at; `basis` what the "
         "standard error was read from (a stated interval or half-width at a stated level, a standard error, or a "
         "pass/fail rate's binomial spread from a count, naming where the count was read: its own, the slice's stated "
-        "cases, or the arm's scoreboard)",
+        "cases, or the arm's scoreboard); `interval`, `low` and `high` the interval it gives at that level (the mean "
+        "plus and minus the normal quantile times `se`, a rate's ends held to none to all; none for a rate of none or "
+        "all), which a chart of a rate draws where the input states no interval",
         resolve=_spread_figure,
         derived=True,
         derived_note=_SEPARATION_NOTE,
@@ -4240,7 +4276,7 @@ def _lever_figure(report_input: ReportInput, key: str, effect: _Effect, field: s
     if field == "level":
         if read.level is None:
             raise _unstated(path, "names the level of the contrast's interval, which the input does not state")
-        return _number(path, read.level, "the interval's level", "share")
+        return _level(path, read.level, "the interval's level")
     if field == "interval":
         return Figure(path=path, kind="interval", value=(read.low, read.high), scale=scale, unit=unit, change=True)
     end = read.low if field == "low" else read.high
@@ -5423,6 +5459,8 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
             raise _refuse(figure.path, f"cannot read as a percent: {why}")
         if spelling == "pct10":
             return _Spelled(format_number(float(round(hundred / 10) * 10)), PERCENT)
+        if figure.level:
+            return _Spelled(format_number(hundred), PERCENT)
         whole = float(round(hundred)) if figure.whole else hundred
         return _Spelled(number_in(whole, PERCENT), PERCENT)
     if spelling in ("pts", "points"):

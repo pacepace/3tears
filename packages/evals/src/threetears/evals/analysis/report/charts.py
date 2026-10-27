@@ -223,10 +223,16 @@ class _Drawable(_Kind):
                 continue
             own_headers, rows = one.table(legend)
             headers = headers or ["Panel", *own_headers]
-            body += [[panel.title or "", *row] for row in rows]
+            body += [[_panel_name(panel), *row] for row in rows]
         headers = headers or ["Panel", ""]
         body += [[card.title or "", card.subtitle or "", *([""] * (len(headers) - 2))] for card in cards]
         return headers, body
+
+
+def _panel_name(panel: _PanelText) -> str:
+    """A small multiple as a values table's Panel column names it: its title, then its subtitle where it has one (an
+    arm's panel names the axis or measure it draws), so no two panels read alike that the picture tells apart."""
+    return " · ".join(part for part in (panel.title, panel.subtitle) if part)
 
 
 #: A number in a table cell: its sign, its digits with any thousands separators, and its decimals; never inside a
@@ -1109,10 +1115,31 @@ class ConfusionPanel(_ConfusionFields, _PanelText):
 
 
 class ConfusionChart(_ConfusionFields, _Drawable):
-    """``confusion``: errors between classes, row-normalized, the diagonal tinted and off-diagonal shares warned."""
+    """``confusion``: errors between classes, row-normalized, the diagonal tinted and off-diagonal shares warned.
+
+    Its values table is the matrix, a row per true label and a column per predicted one, where it draws one; in small
+    multiples, whose label axes each have their own labels, it is a row per cell (the panel, the true label, the
+    predicted label and the share of the true label's row), so no panel's cells sit under another's labels.
+    """
 
     panels: list[ConfusionPanel] | None = Field(default=None, description="Small multiples, one per label axis.")
     panel_min_rem: float | None = Field(default=None, description="The narrowest panel before a column drops.")
+
+    def values_table(self) -> tuple[list[str], list[list[str]]]:
+        if self.panels is None:
+            return super().values_table()
+        body: list[list[str]] = []
+        for panel, one in _drawn(self):
+            if panel is None or not isinstance(one, _ConfusionFields):
+                continue
+            spec = one.fmt or "pct:1"
+            labels = one.labels or []
+            for expected, shares in zip(labels, one.shares(), strict=True):
+                body += [
+                    [_panel_name(panel), expected, predicted, _formatted(spec, share)]
+                    for predicted, share in zip(labels, shares, strict=True)
+                ]
+        return ["Panel", "True", "Predicted", "Share of the true label"], body
 
 
 # ---------- example cards ----------

@@ -9,7 +9,10 @@
 - *tasks*, *strata*: an arm per row, a panel per slice (and measure) where there are several, or a panel per arm, a
   row per slice, where the plan asks for panels by arm;
 - *floors*: an arm per row, a panel per floor where there are several: each dot is the largest drop its interval
-  allows, against the floor's margin below zero, which a caption says; a broken floor is hollow.
+  allows, against the floor's margin below zero, which a caption says; a broken floor is hollow;
+- *bar_reads*: an arm per row at its value with the interval the bar was read on (the pipeline's, at its interval
+  level), a panel per aspect, measure and bar, against the bar's line; a missed bar is hollow;
+- *compare*, *levers*: as the diverging chart reads them, a dot per row, a strip per group.
 
 The line is the stored one, else the one criterion on the measure read where the chart reads it (overall, in every
 task, or in the one task a panel draws). A dot that misses its line is hollow. A strip always states a level (the
@@ -41,6 +44,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from threetears.evals.analysis.report.blocks import ChartBlock
 from threetears.evals.analysis.report.charts import (
@@ -65,10 +69,12 @@ from threetears.evals.analysis.report.plan_page.charting import (
     Drawn,
     KindResolver,
     chart_block,
+    computed_notes,
     criterion_line,
     drawn_keys,
     factor_legend,
     factor_token,
+    figure_interval,
     figure_unit,
     interval_words,
     measure_words,
@@ -94,6 +100,8 @@ from threetears.evals.analysis.report.plan_page.look import (
     quantity,
 )
 from threetears.evals.analysis.report.plan_page.words import (
+    BAR_STRIP_NOTE,
+    BAR_WORD,
     FLOOR_STRIP_NOTE,
     LOG_X_NOTE,
     MISSES_TEMPLATE,
@@ -103,7 +111,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     REFERENCE_TEMPLATE,
 )
 from threetears.evals.analysis.report_gates import gate_check
-from threetears.evals.analysis.report_input import FloorRead, ScoreboardRow, Stat, Stratum, Task
+from threetears.evals.analysis.report_input import BarRead, FloorRead, ScoreboardRow, Stat, Stratum, Task
 from threetears.evals.analysis.style import humanize
 
 __all__ = ["RESOLVERS"]
@@ -248,7 +256,7 @@ def _figure_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str,
         dots = []
         for arm in context.arm_order(arm for (on, arm) in reads if on == key):
             value, statistic = reads[key, arm]
-            interval = stat_interval(figures[key, arm]) if level and statistic == "mean" else None
+            interval = figure_interval(context, key, arm, figures[key, arm]) if level and statistic == "mean" else None
             shown = (interval[0] * drawn.factor, interval[1] * drawn.factor) if interval is not None else None
             dot = _dot(
                 context,
@@ -261,7 +269,7 @@ def _figure_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str,
             )
             dots.append(dataclasses.replace(dot, tip=_with_line(dot.tip, dot.value, line)))
         strips.append(_Strip(title=measure_words(report_input, key), arm="", dots=dots, line=line, drawn=drawn))
-    return strips, level, (), False
+    return strips, level, computed_notes(context), False
 
 
 def _slice_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, ...], bool]:
@@ -392,6 +400,52 @@ def _floor_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, 
     return strips, level, (FLOOR_STRIP_NOTE, *missing_note(missing)), True
 
 
+def _bar_read_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, ...], bool]:
+    """bar_reads: an arm per row at its value with the interval the bar was read on, a strip per aspect, measure and
+    bar, against the bar's line; a missed bar is hollow."""
+    report_input = context.report_input
+    reads = [row.item for row in context.rows() if isinstance(row.item, BarRead)]
+    groups: dict[tuple[str, str, float, str], list[BarRead]] = {}
+    for read in reads:
+        groups.setdefault((read.aspect, read.measure, float(read.bar), read.direction), []).append(read)
+    several_aspects = len({aspect for aspect, *_ in groups}) > 1
+    strips = []
+    for (aspect, measure, bar, direction), held in groups.items():
+        drawn = quantity(figure_unit(report_input, measure))
+        kind: Literal["floor", "budget"] = "floor" if direction == "higher_is_better" else "budget"
+        line = ChartReference(
+            value=bar * drawn.factor,
+            label=REFERENCE_TEMPLATE.format(kind=BAR_WORD, value=figure_text(bar * drawn.factor, drawn)),
+            kind=kind,
+        )
+        dots = []
+        by_arm = {read.arm: read for read in held}
+        for arm in context.arm_order(by_arm):
+            read = by_arm[arm]
+            if read.value is None:
+                continue
+            interval = (
+                (float(read.interval[0]) * drawn.factor, float(read.interval[1]) * drawn.factor)
+                if context.level and read.interval is not None
+                else None
+            )
+            dot = _dot(
+                context,
+                row_id=arm,
+                label=_arm_label(context, arm),
+                arm=arm,
+                value=float(read.value) * drawn.factor,
+                interval=interval,
+                drawn=drawn,
+            )
+            words = [read.status, *([read.why] if read.why else [])]
+            dots.append(dataclasses.replace(dot, tip=[*dot.tip, *words], hollow=read.status == "missed"))
+        name = measure_words(report_input, measure)
+        title = f"{context.look.reader('aspect', aspect)} · {name}" if several_aspects else name
+        strips.append(_Strip(title=title, arm="", dots=dots, line=line, drawn=drawn))
+    return strips, context.level, (BAR_STRIP_NOTE,), False
+
+
 def _dot_row(context: ChartContext, dot: _Dot, line: ChartReference | None) -> DotIntervalRow:
     look = context.look.arm(dot.arm) if dot.arm in context.look.arms else None
     hollow = misses_line(dot.value, line) or dot.hollow
@@ -426,8 +480,10 @@ def _dot_interval(context: ChartContext) -> Drawn:
     refusal = unit_refusal(context.spec.kind, context.query, context.report_input)
     if refusal:
         raise context.refuse(refusal)
-    if source in ("readings", "contrasts"):
+    if source in ("readings", "contrasts", "compare", "levers"):
         strips, level, notes, centred = _change_strips(context)
+    elif source == "bar_reads":
+        strips, level, notes, centred = _bar_read_strips(context)
     elif source in ("measures", "judged"):
         strips, level, notes, centred = _figure_strips(context)
     elif source in ("tasks", "strata"):
@@ -435,7 +491,10 @@ def _dot_interval(context: ChartContext) -> Drawn:
     elif source == "floors":
         strips, level, notes, centred = _floor_strips(context)
     else:
-        raise context.refuse("a dot strip draws readings, contrasts, measures, judged, floors, tasks or strata")
+        raise context.refuse(
+            "a dot strip draws readings, contrasts, measures, judged, floors, tasks, strata, bar reads, two arms "
+            "compared or lever effects"
+        )
     strips = [strip for strip in strips if strip.dots]
     if not strips:
         raise context.refuse("it selects no figure to draw")

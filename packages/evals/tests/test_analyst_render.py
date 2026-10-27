@@ -394,11 +394,20 @@ _UNEXERCISED_FILTERS = {
     ("floors", "measures"),
     ("strata", "arms"),
     ("tasks", "arms"),
+    # Only r1 reading only bars holds bar reads, on one aspect and one measure.
+    ("bar_reads", "aspect"),
+    ("bar_reads", "measures"),
+    # Two arms compared, and lever effects, are read on the arms and the one measure a query names, so a query of
+    # every row selects none and these fields alone change none here; test_block_sources_analysed holds them.
+    *(("compare", field) for field in ("arms", "measures", "strata")),
+    ("levers", "arms"),
+    ("levers", "strata"),
 }
 
 #: The sources said to carry an interval whose rows no fixture gives one: no fixture's judged or config figure states
-#: its ``ci``.
-_UNEXERCISED_INTERVALS = {"judged", "configs"}
+#: its ``ci``; r1 reading only bars reads its bars on no interval; and a query of every row selects no compare or lever
+#: row (test_block_sources_analysed holds theirs).
+_UNEXERCISED_INTERVALS = {"judged", "configs", "bar_reads", "compare", "levers"}
 
 
 def test_each_sources_filters_are_the_query_fields_that_change_its_rows_and_no_other() -> None:

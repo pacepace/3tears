@@ -16,14 +16,22 @@ unit            drawn as                                                     kit
 share           a rate on 0 to 1, as a percent (×100); a change, in points    ``pct``; ``+num:0``
 percent, pct    a percent as it is; a change, in points                      ``pct``; ``+num:0``
 points          points                                                       ``+num:0``
-usd             money per reply, always per 1,000 replies (×1000)            ``usd:2``, tick ``usd:1``
-usd_per_1k      dollars per 1,000 of what the measure counts                  ``usd:2`` under $10, else ``usd``
+usd             money per reply, always per 1,000 replies (×1000)            ``usd``
+usd_per_1k      dollars per 1,000 of what the measure counts                  ``usd``
 usd_per_1m      dollars per 1,000,000 of what the measure counts              ``usd``
-dollars         dollars as they are (a run's total)                           ``usd:2``
+dollars         dollars as they are (a run's total, a month's price)          ``usd``
 ms, s           milliseconds, seconds                                        ``ms``, ``s:1``
 score           a judged score                                               ``num:2``
 (other)         the number, its unit beside it                               ``num``
 ==============  ===========================================================  ==================
+
+**Money has one spelling within a chart, by its size** (the kit's ``usd``): its values, its notes and its ticks
+alike, thousands grouped (``$8,400``), an amount of :data:`_WHOLE_DOLLARS_FROM` or more in whole dollars and a smaller
+one as the package spells money (:func:`~threetears.evals.analysis.summary.dollars_text`: cents from ten cents up,
+three significant figures below, never ``$0.00``). Cents on an axis of thousands are noise,
+and under ten dollars whole dollars round away the figure; a rule by each amount's size reads one amount alike on
+every chart and panel that draws it. Money per reply is its own quantity (``per`` ``reply``): drawn per 1,000 replies,
+which another cost's thousand may not count, so it never shares an axis with one.
 
 **A level's look** (:func:`series_token`): where a chart colours by a factor's levels (a factorial grid's paths and
 tiles), each level takes the kit's series colours in the factor's order, as candidates do in theirs.
@@ -52,6 +60,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from threetears.evals.analysis.numbers import format_number, group_thousands
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, signed_with_unit, with_unit
 from threetears.evals.analysis.report.charts import ChartShape, ChartStatus
 from threetears.evals.analysis.style import humanize
@@ -326,6 +335,8 @@ class Quantity:
     :ivar tick_fmt: The axis labels' format, where it differs from the values'.
     :ivar change: Whether the values are changes, read signed.
     :ivar rate: Whether the values are a rate in percent (or a change in one), whose axis never runs past 0 to 100.
+    :ivar per: What money's thousand counts where it is not the measure's own (``reply``: money per reply, drawn per
+        1,000 replies); empty otherwise.
     """
 
     factor: float = field(compare=False)
@@ -334,13 +345,37 @@ class Quantity:
     tick_fmt: str | None = None
     change: bool = False
     rate: bool = False
+    per: str = ""
 
 
 #: The money units a cost is stated in, per reply and per a number of replies, and dollars as they are (a run's total).
 _PER_REPLY, _PER_THOUSAND, _PER_MILLION, _DOLLARS = "usd", "usd_per_1k", "usd_per_1m", "dollars"
 
-#: The magnitude from which dollars per 1,000 (of what a cost counts) drop their cents on a chart.
+#: The magnitude from which money drops its cents on a chart: every amount drawn at it or above.
 _WHOLE_DOLLARS_FROM = 10.0
+
+#: Every unit money is drawn in, and what money per reply's thousand counts.
+_MONEY_UNITS = frozenset({_PER_REPLY, _PER_THOUSAND, _PER_MILLION, _DOLLARS})
+_REPLY = "reply"
+
+#: Money's format: each amount by its size (this module's money).
+_MONEY_FORMAT = "usd"
+
+
+def _money_text(value: float, drawn: Quantity) -> str:
+    """An amount as the chart's money spelling writes it (this module's money), as the kit's ``usd`` draws it: whole
+    dollars, grouped, from :data:`_WHOLE_DOLLARS_FROM`; under it the package's money spelling
+    (:func:`~threetears.evals.analysis.summary.dollars_text`)."""
+    # The run summary's module reads the report's blocks, which read this one: its money rule is imported where used.
+    from threetears.evals.analysis.summary import dollars_text
+
+    size = abs(value)
+    if size >= _WHOLE_DOLLARS_FROM:
+        text = f"${group_thousands(format_number(float(round(size))))}"
+    else:
+        text = dollars_text(size)
+    sign = "-" if value < 0 and size else "+" if drawn.change and value > 0 else ""
+    return f"{sign}{text}"
 
 
 def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False) -> Quantity:
@@ -365,15 +400,15 @@ def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False) -
         return Quantity(factor, "pct", PERCENT, rate=True)
     if unit == "points":
         return Quantity(1.0, "+num:0", POINTS, change=True)
-    if unit == _PER_REPLY:
-        return Quantity(1000.0, f"{sign}usd:2", MONEY, tick_fmt=f"{sign}usd:1", change=change)
-    if unit == _PER_THOUSAND:
-        largest = max((abs(value) for value in values), default=0.0)
-        return Quantity(1.0, f"{sign}usd" if largest >= _WHOLE_DOLLARS_FROM else f"{sign}usd:2", MONEY, change=change)
-    if unit == _PER_MILLION:
-        return Quantity(1.0, f"{sign}usd", MONEY, change=change)
-    if unit == _DOLLARS:
-        return Quantity(1.0, f"{sign}usd:2", MONEY, change=change)
+    if unit in _MONEY_UNITS:
+        factor = 1000.0 if unit == _PER_REPLY else 1.0
+        return Quantity(
+            factor,
+            f"{sign}{_MONEY_FORMAT}",
+            MONEY,
+            change=change,
+            per=_REPLY if unit == _PER_REPLY else "",
+        )
     if unit == "ms":
         return Quantity(1.0, f"{sign}ms", "ms", change=change)
     if unit == "s":
@@ -385,7 +420,8 @@ def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False) -
 
 def figure_text(value: float, drawn: Quantity) -> str:
     """A drawn value as a chart's note writes it: by the package's number rule, in its unit, signed where the
-    quantity is a change (never "+0" for a change that rounds there: the rule keeps its digits).
+    quantity is a change (never "+0" for a change that rounds there: the rule keeps its digits); money in the chart's
+    one money spelling, as its ticks read it (this module's money).
 
     :param value: The value, in display units.
     :ptype value: float
@@ -394,6 +430,8 @@ def figure_text(value: float, drawn: Quantity) -> str:
     :return: The text.
     :rtype: str
     """
+    if drawn.unit == MONEY:
+        return _money_text(value, drawn)
     return signed_with_unit(value, drawn.unit) if drawn.change else with_unit(value, drawn.unit)
 
 

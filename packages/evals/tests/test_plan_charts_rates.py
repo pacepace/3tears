@@ -53,6 +53,10 @@ from threetears.evals.analysis.report_gates import gate_check
 from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stratum, Task
 from threetears.evals.analysis.report_plan_checks import validate_plan
 from threetears.evals.analysis.report_plan_facts import plan_facts
+from threetears.evals.analysis.report.block_spec import block_look
+from threetears.evals.analysis.report_plan_facts import fact_arms
+from threetears.evals.analysis.analyst.snapshot import frozen_input
+from packages.evals.tests.analyst_support import SHAPE_NAMES, shape_snapshots
 from threetears.evals.analysis.report_rows import query_rows
 from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec, ReportPlan
 
@@ -114,9 +118,18 @@ def _with_roles(name: str, control: str | None) -> ReportInput:
 
 
 @functools.cache
+def _shape(name: str) -> ReportInput:
+    """A shape campaign's input as its snapshot froze it: the pin searches them for data no reference input holds
+    (an arm against an absolute bar with its value)."""
+    return frozen_input(shape_snapshots("s")[name])
+
+
+@functools.cache
 def _variant(key: str) -> ReportInput:
     """An input by key: ``rN`` as it is, ``rN+control`` with its first arm made the control, ``rN-control`` with its
-    control made a candidate."""
+    control made a candidate, a shape campaign (``s1`` to ``s3``) as it is."""
+    if key in SHAPE_NAMES:
+        return _shape(key)
     name, _, change = key.partition("+") if "+" in key else key.partition("-")
     if not change:
         return _input(name)
@@ -124,12 +137,19 @@ def _variant(key: str) -> ReportInput:
 
 
 #: The inputs the pin searches: each fixture input, and each with a control where it has none.
-_PIN_INPUTS = [*INPUTS, *(f"{name}+control" for name in INPUTS if control_arm(_input(name)) is None)]
+_PIN_INPUTS = [
+    *INPUTS,
+    *(f"{name}+control" for name in INPUTS if control_arm(_input(name)) is None),
+    *SHAPE_NAMES,
+]
 
 
 @functools.cache
 def _look(name: str) -> PageLook:
-    """The look the page builder gives the input's anchor plan's page: its arms, order, survivors and names."""
+    """The look the page builder gives the input's anchor plan's page: its arms, order, survivors and names; a shape
+    campaign, which has no anchor plan, the look one block is drawn with."""
+    if name in SHAPE_NAMES:
+        return block_look(_variant(name), fact_arms(_variant(name)))
     plan, report_input = _anchor(name.partition("+")[0].partition("-")[0]), _variant(name)
     facts = plan_facts(report_input)
     return page_look(
@@ -192,7 +212,11 @@ def _vocabulary(name: str, source: str) -> list[str]:
     scoreboards hold."""
     report_input = _variant(name)
     keys: dict[str, None] = {}
-    for row in query_rows(_query(source), report_input):
+    rows = query_rows(_query(source), report_input)
+    if not rows:
+        # A source an analysis computes reads the arms and the one measure a query names: any measure may be named.
+        keys |= dict.fromkeys([*report_input.measures, *report_input.judged])
+    for row in rows:
         if row.key:
             keys[row.key] = None
         if isinstance(row.item, Stratum | Task | Cell):
@@ -225,7 +249,8 @@ def _drew(kind: str, drawn: PageChart) -> bool:
 
 def _resolves_somewhere(kind: str, source: str) -> bool:
     for name in _PIN_INPUTS:
-        if not query_rows(_query(source), _variant(name)):
+        held = query_rows(_query(source), _variant(name))
+        if not held and not any(query_rows(spec.query, _variant(name)) for spec in _candidates(name, kind, source)):
             continue
         for spec in _candidates(name, kind, source):
             try:
@@ -581,12 +606,19 @@ def test_a_dot_strip_of_tasks_by_arm_is_a_panel_per_arm_a_row_per_task() -> None
 
 @pytest.mark.parametrize("source", _SOURCES)
 def test_a_table_lays_out_the_rows_its_query_selects_for_any_source(source: str) -> None:
-    name = next(name for name in INPUTS if query_rows(_query(source), _input(name)))
-    drawn = _draw(name, _spec("table", _query(source)))
+    # The first input whose rows a query of the source selects: every row, else (a source an analysis computes reads
+    # the arms and the measure a query names) the first candidate query that selects any.
+    name, query = next(
+        (name, spec.query)
+        for name in _PIN_INPUTS
+        for spec in [_spec("table", _query(source)), *_candidates(name, "table", source)]
+        if query_rows(spec.query, _variant(name))
+    )
+    drawn = _draw(name, _spec("table", query))
     block = drawn.chart
     assert isinstance(block, TableBlock) and block.rows
     assert block.total_rows == len(block.rows)
-    selected = query_rows(_query(source), _input(name))
+    selected = query_rows(query, _variant(name))
     # A wide table lays a figure out as a cell: its arm's (its place's) row, its measure's column; any other, a row.
     measured = {
         column.key.removeprefix("measure:")

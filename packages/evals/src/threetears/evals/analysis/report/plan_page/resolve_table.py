@@ -22,6 +22,13 @@ confusion       the axis, the arm, the true label, the predicted label, the shar
 human_pref      the slice, the share of ratings preferring the control with its interval
 prices          the step along the price frontier (from one option to the next), its price per point with its
                 interval: a month's at the declared volume, else per 1,000 of what the cost counts
+bar_reads       the aspect, the measure, the arm, its value with the interval its bar was read on, the bar, the status
+compare         the place, each arm's mean, the first less the second, its interval, level and basis
+settle          the arm, the criterion (and place), today's estimate, the line, the distance, which way it settles,
+                the cases a one-sided and a two-sided design need, today's count and what it counts, how often a
+                fresh run reads the other side, the level
+levers          the setting (or the two an interaction crosses), the move, the effect (or difference), its interval,
+                level, and an interaction's verdict
 ==============  ===================================================================================================
 
 **Wide, so paired figures sit side by side.** An arm's pass rate, cost and latency are one row, each in its
@@ -31,7 +38,9 @@ measure's column headed by its reader name, rather than three rows a reader pair
 each interval's ends, headed by the chart's interval level (``95% interval``), so a reader without the glyph (the
 Markdown page, a values table) reads the interval and its level too.
 
-An arm is the kit's chip (its tag and name); every number is spelled by the package's number rule, an absent one a dash.
+An arm is the kit's chip (its tag and name); every number is spelled by the package's number rule, an absent one a dash;
+a row an analysis computed (compare, settle, levers) prints each figure as its key reads it, so the table and prose
+citing the key read alike.
 A month's prices are whole dollars where every one on the axis is :data:`_WHOLE_DOLLARS_FROM` or more, as the
 ``usd_whole`` figure key filter writes them: the cents of a monthly amount are noise, and under that whole dollars would
 round away too much, so every price keeps its cents. A query's arms keep the rows of those arms, on sources whose rows
@@ -50,8 +59,10 @@ from threetears.evals.analysis.report.plan_page.charting import (
     ChartContext,
     Drawn,
     KindResolver,
+    computed_notes,
     contrast_groups,
     contrast_words,
+    figure_interval,
     figure_unit,
     measure_words,
     slice_name,
@@ -60,8 +71,13 @@ from threetears.evals.analysis.report.plan_page.charting import (
 )
 from threetears.evals.analysis.report.plan_page.look import quantity
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
-from threetears.evals.analysis.report.plan_page.resolve_magnitudes import price_notes
+from threetears.evals.analysis.report.plan_page.resolve_magnitudes import price_notes, settle_label, settle_notes
+from threetears.evals.analysis.analyst.cited import CitedFigure
+from threetears.evals.analysis.analyst.compare import ComparisonRow
+from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow
+from threetears.evals.analysis.analyst.settle import SettleRow
 from threetears.evals.analysis.report_input import (
+    BarRead,
     Cell,
     ConfusionTable,
     Contrast,
@@ -74,11 +90,12 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Task,
 )
-from threetears.evals.analysis.report_rows import PriceStep
+from threetears.evals.analysis.report_rows import PriceStep, lever_arms
 from threetears.evals.analysis.report.plan_page.words import (
     PRICE_STEP_TEMPLATE,
     CELL_TEMPLATE,
     INTERVAL_HEADER,
+    OVERALL_WORD,
     TABLE_HEADERS,
     TABLE_ORDER,
     TABLE_PER_THOUSAND,
@@ -124,8 +141,9 @@ def _kept_arms(context: ChartContext, held: Iterator[str]) -> list[str]:
     return context.arm_order(arm for arm in held if arm in allowed)
 
 
-def _figure_cell(context: ChartContext, key: str, stat: Stat | None) -> tuple[TableCell, str]:
-    """A figure's cell, and its measure's name as the table writes it (per 1,000 replies for money per reply)."""
+def _figure_cell(context: ChartContext, key: str, stat: Stat | None, arm: str = "") -> tuple[TableCell, str]:
+    """A figure's cell, and its measure's name as the table writes it (per 1,000 replies for money per reply); an
+    arm's overall figure carries the interval code computes where the table's level is computed here."""
     report_input = context.report_input
     name = measure_words(report_input, key)
     read = stat_value(report_input, key, stat) if stat is not None else None
@@ -135,7 +153,10 @@ def _figure_cell(context: ChartContext, key: str, stat: Stat | None) -> tuple[Ta
         name = TABLE_PER_THOUSAND.format(name=name, per=per_count(per_noun(measure)))
     if stat is None or read is None:
         return TableCell(value=None), name
-    interval = stat_interval(stat) if read[1] == "mean" else None
+    if read[1] != "mean":
+        interval = None
+    else:
+        interval = figure_interval(context, key, arm, stat) if arm else stat_interval(stat)
     shown = (interval[0] * drawn.factor, interval[1] * drawn.factor) if interval is not None else None
     return _number(read[0] * drawn.factor, drawn.unit, shown), name
 
@@ -180,16 +201,19 @@ def _contrasts(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
             }
 
 
-def _wide(context: ChartContext, places: list[tuple[_Row, dict[str, Stat]]], laid: _Laid) -> Iterator[_Row]:
+def _wide(
+    context: ChartContext, places: list[tuple[_Row, dict[str, Stat]]], laid: _Laid, arms: list[str] | None = None
+) -> Iterator[_Row]:
     """Each place's row (its own cells, then a cell per measure it holds a figure on, a dash where it holds none),
-    each measure's column added to ``laid`` once, in the order the places first hold it."""
+    each measure's column added to ``laid`` once, in the order the places first hold it; ``arms`` names the arm each
+    place is, where it is an arm's overall figures."""
     keys = list(dict.fromkeys(key for _, figures in places for key in figures))
     named: dict[str, str] = {}
     built: list[_Row] = []
-    for own, figures in places:
+    for index, (own, figures) in enumerate(places):
         row = dict(own)
         for key in keys:
-            cell, name = _figure_cell(context, key, figures.get(key))
+            cell, name = _figure_cell(context, key, figures.get(key), arms[index] if arms is not None else "")
             named.setdefault(key, name)
             row[f"{_MEASURE_COLUMN}{key}"] = cell
         built.append(row)
@@ -204,7 +228,7 @@ def _figures(context: ChartContext, laid: _Laid) -> Iterator[_Row]:
     places = [
         ({"arm": _arm(context, arm)}, {key: stat for (key, on), stat in figures.items() if on == arm}) for arm in arms
     ]
-    yield from _wide(context, places, laid)
+    yield from _wide(context, places, laid, arms)
 
 
 def _scoreboard(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
@@ -291,8 +315,16 @@ def _cells(context: ChartContext, laid: _Laid) -> Iterator[_Row]:
     yield from _wide(context, [place for place in places if place[1]], laid)
 
 
+def _axis_names(context: ChartContext) -> dict[str, str]:
+    """Each declared factor's (or target-matrix axis's) reader name, by id."""
+    matrix = context.report_input.target_matrix
+    factors = [*context.report_input.factors, *((matrix.rows, matrix.columns) if matrix is not None else ())]
+    return {factor.id: factor.name for factor in factors if factor.name}
+
+
 def _confusion(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     names = _level_names(context)
+    axes = _axis_names(context)
     for row in context.rows():
         table = row.item
         assert isinstance(table, ConfusionTable)
@@ -301,7 +333,7 @@ def _confusion(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
             for expected, shares in zip(table.labels, table.per_arm[arm], strict=True):
                 for predicted, share in zip(table.labels, shares, strict=True):
                     yield {
-                        "axis": _words(humanize("dimension", row.key)),
+                        "axis": _words(axes.get(row.key) or humanize("dimension", row.key)),
                         "arm": _arm(context, arm),
                         "expected": _words(names.get(expected, expected)),
                         "predicted": _words(names.get(predicted, predicted)),
@@ -316,6 +348,91 @@ def _human_pref(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
         yield {
             "slice": _words(preference.name or preference.id),
             "prefers_control": _number(float(preference.prefers_control), "%", row.interval),
+        }
+
+
+def _bar_reads(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
+    for row in context.rows():
+        read = row.item
+        assert isinstance(read, BarRead)
+        drawn = quantity(figure_unit(context.report_input, read.measure))
+        interval = read.interval
+        yield {
+            "aspect": _words(context.look.reader("aspect", read.aspect)),
+            "measure": _words(measure_words(context.report_input, read.measure)),
+            "arm": _arm(context, read.arm),
+            "value": _number(
+                float(read.value) * drawn.factor if read.value is not None else None,
+                drawn.unit,
+                (float(interval[0]) * drawn.factor, float(interval[1]) * drawn.factor)
+                if interval is not None
+                else None,
+            ),
+            "bar": _number(float(read.bar) * drawn.factor, drawn.unit),
+            "status": _words(read.status),
+        }
+
+
+def _read(figure: CitedFigure | None) -> TableCell:
+    """A cited figure's cell: the figure as its key reads it, so the table prints what prose citing the key does."""
+    return TableCell(value=figure.reads if figure is not None else None)
+
+
+def _compare(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
+    for row in context.rows():
+        item = row.item
+        assert isinstance(item, ComparisonRow)
+        yield {
+            "place": _words(str(item.name.value) if item.name is not None else OVERALL_WORD),
+            "first": _read(item.first),
+            "second": _read(item.second),
+            "difference": _read(item.difference),
+            "interval": _read(item.interval),
+            "level": _read(item.level),
+            "basis": _read(item.basis),
+        }
+
+
+def _settle(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
+    for row in context.rows():
+        item = row.item
+        assert isinstance(item, SettleRow)
+        yield {
+            "arm": _arm(context, row.arm),
+            "against": _words(settle_label(context, item)),
+            "estimate": _read(item.estimate[0] if item.estimate else None),
+            "line": _read(item.line),
+            "distance": _read(item.distance),
+            "settles": _words(item.settles),
+            "cases_needed": _read(item.cases_needed),
+            "cases_needed_two_sided": _read(item.cases_needed_two_sided),
+            "counts": _read(item.counts[0] if item.counts else None),
+            "count_of": _read(item.count_of[0] if item.count_of else None),
+            "wrong_side": _read(item.wrong_side),
+            "level": _read(item.level),
+        }
+
+
+def _levers(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
+    for row in context.rows():
+        item = row.item
+        assert isinstance(item, EffectRow | InteractionRow)
+        by_field = {figure.key.rpartition(".")[2]: figure for figure in item.figures}
+        if isinstance(item, EffectRow):
+            start, end = lever_arms(item, context.report_input)
+            moved = PRICE_STEP_TEMPLATE.format(first=_arm(context, start).text, second=_arm(context, end).text)
+            what = humanize("dimension", item.setting)
+        else:
+            arms = lever_arms(item, context.report_input)
+            moved = " vs ".join(_arm(context, arm).text for arm in arms[::2])
+            what = f"{humanize('dimension', item.setting)} × {humanize('dimension', item.across)}"
+        yield {
+            "setting": _words(what),
+            "move": _words(moved),
+            "difference": _read(item.figures[0]),
+            "interval": _read(by_field.get("interval")),
+            "level": _read(by_field.get("level")),
+            "verdict": _words(item.verdict if isinstance(item, InteractionRow) else None),
         }
 
 
@@ -373,6 +490,26 @@ _SOURCES: dict[str, tuple[Callable[[ChartContext, _Laid], Iterator[_Row]], tuple
     "confusion": (_confusion, ("axis", "arm", "expected", "predicted", "value")),
     "human_pref": (_human_pref, ("slice", "prefers_control")),
     "prices": (_prices, ("step", "per_point")),
+    "bar_reads": (_bar_reads, ("aspect", "measure", "arm", "value", "bar", "status")),
+    "compare": (_compare, ("place", "first", "second", "difference", "interval", "level", "basis")),
+    "settle": (
+        _settle,
+        (
+            "arm",
+            "against",
+            "estimate",
+            "line",
+            "distance",
+            "settles",
+            "cases_needed",
+            "cases_needed_two_sided",
+            "counts",
+            "count_of",
+            "wrong_side",
+            "level",
+        ),
+    ),
+    "levers": (_levers, ("setting", "move", "difference", "interval", "level", "verdict")),
 }
 
 
@@ -423,7 +560,13 @@ def _table(context: ChartContext) -> Drawn:
         else:
             columns.append(TableColumn(key=key, header=TABLE_HEADERS[key]))
     columns, rows = _with_intervals(columns, rows, context.spec.level)
-    notes = price_notes(context) if context.query.source == "prices" else ()
+    notes = (
+        price_notes(context)
+        if context.query.source == "prices"
+        else settle_notes(context)
+        if context.query.source == "settle"
+        else computed_notes(context)
+    )
     table = TableBlock(
         section=PLANNED_SECTION,
         name=context.query.source,
