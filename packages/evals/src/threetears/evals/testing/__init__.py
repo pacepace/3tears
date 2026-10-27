@@ -16,7 +16,10 @@ path returns ``JobsStarted`` and its job makes at least one — watched through 
 wraps its client factory in (:mod:`threetears.evals.testing.jobs_conformance`). Beside the kits, one client: the
 recorded completions, :class:`RecordedCompletions`, which records the calls a host's real completion client answers
 into a JSONL file once and replays them exactly with no network, refusing by name a prompt the recording does not hold
-(:mod:`threetears.evals.testing.recorded_completions`). The negotiation check: :func:`check_refusal_negotiation` scripts
+(:mod:`threetears.evals.testing.recorded_completions`). Beside it, the recorded tool turns,
+:class:`RecordedTurns`, which keep a tool-calling loop's replies alone, per named session and in order, with the
+snapshot id a placeholder, and replay them while the tools run live, a session asked one turn more than it holds
+refused naming the turn (:mod:`threetears.evals.testing.recorded_turns`). The negotiation check: :func:`check_refusal_negotiation` scripts
 three routers that refuse a host's own client (its temperature under enforcement; any enforced request; its output
 cap and effort word, naming what is taken), and raises :class:`NegotiationConformanceFailure` naming each mistake
 unless the client resends in order, reports what the served request carried, and remembers what it proved and
@@ -63,6 +66,7 @@ from threetears.evals.testing.recorded_completions import (
     RecordingRefused,
     ReplayedCompletion,
 )
+from threetears.evals.testing.recorded_turns import RecordedTurns
 from threetears.evals.testing.store_conformance import (
     STORE_CONFORMANCE_CASES,
     StoreConformanceCase,
@@ -91,6 +95,7 @@ __all__ = [
     "ReaderSample",
     "RecordedCompletions",
     "RecordedPrompt",
+    "RecordedTurns",
     "RecordingRefused",
     "ReplayedCompletion",
     "StoreConformanceCase",

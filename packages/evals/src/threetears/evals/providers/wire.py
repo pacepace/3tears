@@ -15,19 +15,34 @@ Pure: nothing here sends or logs. A request is built from the settings the negot
 * **OpenRouter**: the OpenAI shape with ``reasoning.max_tokens`` for a budget or ``reasoning.effort`` for a word
   (never both: OpenRouter takes one), ``provider.require_parameters`` exactly when the request is enforced, and
   ``usage.include`` so the reply carries its cost.
+
+Tool turns (:func:`turn_body`, :func:`read_turn`) speak Anthropic's Messages API alone: the tool definitions, the
+conversation's blocks as :mod:`threetears.evals.schema`'s turn port writes them, and three ``cache_control``
+breakpoints, on the system prompt, the last tool and the last message, so each turn reads the conversation before it
+from the cache and writes only what it adds.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final, Literal
 
 from threetears.evals.negotiation import ProviderFamily, SettingFacts, WireSettings, anthropic_thinking
 from threetears.evals.providers.failures import Provider, ProviderError
-from threetears.evals.schema import StopReason
+from threetears.evals.schema import (
+    StopReason,
+    TurnText,
+    TurnToolResult,
+    TurnToolSpec,
+    TurnToolUse,
+    TurnBlock,
+    TurnMessage,
+    TurnStopReason,
+    block_from_json,
+)
 
 __all__ = [
     "BASE_URLS",
@@ -36,12 +51,15 @@ __all__ = [
     "KEY_VARIABLES",
     "Directive",
     "Reply",
+    "TurnRead",
     "declared_facts",
     "directive_of",
     "in_body_error",
     "read_reply",
     "reported_cost",
+    "read_turn",
     "request_body",
+    "turn_body",
 ]
 
 
@@ -487,3 +505,144 @@ def reported_cost(usage: Mapping[str, Any]) -> tuple[float | None, str | None, s
             ),
         )
     return float(cost) + float(upstream), PriceSource.OPENROUTER_REPORTED_UPSTREAM, None
+
+
+#: The cache breakpoint a tool turn marks: the default five-minute lifetime, which each turn of a loop renews.
+_CACHE_BREAKPOINT: Final[Mapping[str, str]] = {"type": "ephemeral"}
+
+#: The blocks a breakpoint may sit on: never a thinking block, which the Messages API refuses one on.
+_CACHEABLE: Final = TurnText | TurnToolUse | TurnToolResult
+
+#: Anthropic's stop reasons, in a tool turn's words: unlike a completion's, ``tool_use`` is kept, since it is the model
+#: waiting on its calls.
+_TURN_STOPS: Final[Mapping[str, TurnStopReason]] = {
+    "end_turn": "end_turn",
+    "stop_sequence": "end_turn",
+    "tool_use": "tool_use",
+    "max_tokens": "max_tokens",
+    "refusal": "content_filter",
+    "model_context_window_exceeded": "truncated",
+    "pause_turn": "truncated",
+}
+
+
+def _breakpoint(block: Mapping[str, Any]) -> dict[str, Any]:  # Any: a JSON object
+    return {**block, "cache_control": dict(_CACHE_BREAKPOINT)}
+
+
+def turn_body(
+    model: str,
+    *,
+    system: str,
+    messages: Sequence[TurnMessage],
+    tools: Sequence[TurnToolSpec],
+    max_tokens: int,
+    sent: WireSettings,
+    facts: SettingFacts,
+) -> dict[str, Any]:  # Any: a JSON body
+    """The Messages API body of one tool turn.
+
+    The system prompt goes as one text block, and each tool as its definition. Three ``cache_control`` breakpoints
+    mark the system prompt, the last tool and the last cacheable block of the last message (a breakpoint is never
+    put on a thinking block); a turn with no tools carries two. Every block, a thinking block's signature included,
+    is sent as the message holds it. Thinking and the effort word come from ``sent`` as a completion's do
+    (:func:`~threetears.evals.negotiation.anthropic_thinking`); a tool turn sends no temperature.
+
+    :param model: The model id.
+    :ptype model: str
+    :param system: The system prompt; an empty one is not sent.
+    :ptype system: str
+    :param messages: The conversation, oldest first.
+    :ptype messages: Sequence[TurnMessage]
+    :param tools: The tools the model may call.
+    :ptype tools: Sequence[TurnToolSpec]
+    :param max_tokens: The turn's output cap.
+    :ptype max_tokens: int
+    :param sent: The model's reasoning settings: an effort word or a thinking budget.
+    :ptype sent: WireSettings
+    :param facts: What is known of the model.
+    :ptype facts: SettingFacts
+    :return: The JSON body.
+    :rtype: dict[str, Any]
+    :raises ValueError: No messages; a last message holding only thinking, where no breakpoint can go; an output cap
+        that is not a positive count; or a thinking budget not below it, naming both.
+    """
+    if not messages:
+        raise ValueError("a tool turn sends at least one message")
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
+        raise ValueError(f"a tool turn's max_tokens {max_tokens!r} is not a positive number of tokens")
+    budget = sent.reasoning_max_tokens
+    if budget is not None and max_tokens <= budget:
+        raise ValueError(
+            f"Anthropic's max_tokens ({max_tokens}) must exceed the thinking budget ({budget}), which it includes: "
+            "give the turn a larger max_tokens, or the model a smaller budget"
+        )
+    *earlier, last = messages
+    marked = max((i for i, block in enumerate(last.content) if isinstance(block, _CACHEABLE)), default=None)
+    if marked is None:
+        raise ValueError("the last message of a tool turn holds only thinking, which no cache breakpoint can mark")
+    last_blocks = [
+        _breakpoint(block.to_json()) if i == marked else block.to_json() for i, block in enumerate(last.content)
+    ]
+    body: dict[str, Any] = {  # Any: a JSON body
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [message.to_json() for message in earlier] + [{"role": last.role, "content": last_blocks}],
+    }
+    if system:
+        body["system"] = [_breakpoint({"type": "text", "text": system})]
+    if tools:
+        *first_tools, last_tool = (tool.to_json() for tool in tools)
+        body["tools"] = [*first_tools, _breakpoint(last_tool)]
+    if (thinking := anthropic_thinking(sent, facts)) is not None:
+        body["thinking"] = thinking
+    if sent.reasoning_effort not in (None, "none"):
+        body["output_config"] = {"effort": sent.reasoning_effort}
+    return body
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TurnRead:
+    """What a tool turn's reply says beyond a completion's :class:`Reply`: its blocks and its cache counts.
+
+    :ivar content: The reply's blocks, in order, a thinking block exactly as it came.
+    :ivar stop_reason: Why it stopped, in a tool turn's words; an absent or unknown reason is ``truncated``.
+    :ivar provider_stop_reason: The reason as the provider named it, or ``None``.
+    :ivar cache_read_tokens: Prompt tokens read from the cache, or ``None`` when unreported.
+    :ivar cache_write_tokens: Prompt tokens written to it, or ``None`` when unreported.
+    """
+
+    content: tuple[TurnBlock, ...]
+    stop_reason: TurnStopReason
+    provider_stop_reason: str | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+
+
+def read_turn(status: int, body: Mapping[str, Any]) -> TurnRead:  # Any: JSON
+    """A tool turn's reply blocks, stop reason and cache counts; its other counts are :func:`read_reply`'s.
+
+    :param status: The HTTP status, which an unreadable reply's error carries.
+    :ptype status: int
+    :param body: The parsed JSON body.
+    :ptype body: Mapping[str, Any]
+    :return: What the reply says.
+    :rtype: TurnRead
+    :raises ProviderError: The reply carries no content list, or a block a tool turn does not read.
+    """
+    blocks = body.get("content")
+    if not isinstance(blocks, list) or not all(isinstance(block, Mapping) for block in blocks):
+        raise ProviderError("anthropic", status, "the reply carried no list of content blocks", body=dict(body))
+    try:
+        content = tuple(block_from_json(block) for block in blocks)
+    except ValueError as unread:
+        raise ProviderError("anthropic", status, f"the reply carried {unread}", body=dict(body)) from unread
+    raw = _named(body.get("stop_reason"))
+    usage = _mapping(body.get("usage"))
+    return TurnRead(
+        content=content,
+        stop_reason=_TURN_STOPS.get(raw, "truncated") if raw else "truncated",
+        provider_stop_reason=raw,
+        cache_read_tokens=_count(usage.get("cache_read_input_tokens")),
+        cache_write_tokens=_count(usage.get("cache_creation_input_tokens")),
+    )

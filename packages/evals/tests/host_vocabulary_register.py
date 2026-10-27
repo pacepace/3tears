@@ -250,6 +250,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "schema/prose.py": {},
     "kernel/provider.py": {},
     "schema/completion.py": {},
+    "schema/turns.py": {},
     "kernel/result_condition.py": {},
     "kernel/runner_spend.py": {},
     "schema/schema_nesting.py": {},
@@ -390,5 +391,6 @@ CEILINGS: dict[str, dict[str, int]] = {
     "testing/negotiation_conformance.py": {},
     "testing/reader_conformance.py": {},
     "testing/recorded_completions.py": {},
+    "testing/recorded_turns.py": {},
     "testing/store_conformance.py": {},
 }
