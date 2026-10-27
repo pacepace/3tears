@@ -43,7 +43,7 @@
     },
     "threetears.evals.Model": {
       "kind": "class",
-      "signature": "Model(id: str, *, provider: Provider | None = None, api_key: str | None = None, base_url: str | None = None, max_tokens: int | None = None, effort: str | int | None = None, temperature: float | None = None, recording: str | os.PathLike[str] | None = None, catalogue: Catalogue | None = None, http: httpx.AsyncClient | None = None, own_http: bool = False, transport: httpx.AsyncBaseTransport | None = None, timeout: float | httpx.Timeout | None = None, headers: Mapping[str, str] | None = None, catalogue_fetch_timeout: float | None = None, retry: DeclinedRetry | None = None) -> None",
+      "signature": "Model(id: str, *, provider: Provider | None = None, api_key: str | None = None, base_url: str | None = None, max_tokens: int | None = None, effort: str | int | None = None, temperature: float | None = None, recording: str | os.PathLike[str] | None = None, turn_recording: str | os.PathLike[str] | None = None, catalogue: Catalogue | None = None, http: httpx.AsyncClient | None = None, own_http: bool = False, transport: httpx.AsyncBaseTransport | None = None, timeout: float | httpx.Timeout | None = None, headers: Mapping[str, str] | None = None, catalogue_fetch_timeout: float | None = None, retry: DeclinedRetry | None = None) -> None",
       "tier": "host-contract"
     },
     "threetears.evals.PUBLIC_ROOTS": {
@@ -135,6 +135,11 @@
       "kind": "function",
       "signature": "bind_cell_identity(identity: CellIdentity) -> Iterator[None]",
       "tier": "host-contract"
+    },
+    "threetears.evals.schema.block_from_json": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.BoundCompletionClient": {
       "kind": "protocol",
@@ -1176,6 +1181,11 @@
       "signature": "SweepableValue(content_hash: str, display: str, scale: Scale, raw: Any | None = None)",
       "tier": "host-contract"
     },
+    "threetears.evals.schema.ToolTurnClient": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.TraceSink": {
       "kind": "protocol",
       "signature": "TraceSink{cell_identity(self, cell: CellIdentity) -> AbstractContextManager[None]; cell_spans(self, cell: CellIdentity) -> AbstractContextManager[CellTrace]}",
@@ -1183,6 +1193,51 @@
     },
     "threetears.evals.schema.TRANSCRIPT_DIM_ID": {
       "kind": "constant (str)",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.TurnBlock": {
+      "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.TurnMessage": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.TurnReply": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.TurnStopReason": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.TurnText": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.TurnThinking": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.TurnToolResult": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.TurnToolSpec": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.TurnToolUse": {
+      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },
@@ -7061,6 +7116,11 @@
       "signature": "RecordedPrompt(system: str, user: str, response_format: dict[str, Any] | None = None)",
       "tier": "host-contract"
     },
+    "threetears.evals.testing.RecordedTurns": {
+      "kind": "class",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.testing.RecordingRefused": {
       "kind": "exception",
       "signature": "RecordingRefused(path: Path, problem: str, remedy: str) -> None",
@@ -8473,7 +8533,7 @@
     },
     "threetears.evals.providers.Model": {
       "kind": "class",
-      "signature": "Model(id: str, *, provider: Provider | None = None, api_key: str | None = None, base_url: str | None = None, max_tokens: int | None = None, effort: str | int | None = None, temperature: float | None = None, recording: str | os.PathLike[str] | None = None, catalogue: Catalogue | None = None, http: httpx.AsyncClient | None = None, own_http: bool = False, transport: httpx.AsyncBaseTransport | None = None, timeout: float | httpx.Timeout | None = None, headers: Mapping[str, str] | None = None, catalogue_fetch_timeout: float | None = None, retry: DeclinedRetry | None = None) -> None",
+      "signature": "Model(id: str, *, provider: Provider | None = None, api_key: str | None = None, base_url: str | None = None, max_tokens: int | None = None, effort: str | int | None = None, temperature: float | None = None, recording: str | os.PathLike[str] | None = None, turn_recording: str | os.PathLike[str] | None = None, catalogue: Catalogue | None = None, http: httpx.AsyncClient | None = None, own_http: bool = False, transport: httpx.AsyncBaseTransport | None = None, timeout: float | httpx.Timeout | None = None, headers: Mapping[str, str] | None = None, catalogue_fetch_timeout: float | None = None, retry: DeclinedRetry | None = None) -> None",
       "tier": "host-contract"
     },
     "threetears.evals.providers.PriceRefresh": {

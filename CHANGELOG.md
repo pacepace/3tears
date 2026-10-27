@@ -6,6 +6,38 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: tool turns over Anthropic's Messages API, recorded and replayed per session
+
+**Added (provisional):** the tool-turn port, `threetears.evals.schema.ToolTurnClient`:
+`turn(system=, messages=, tools=, max_tokens=) -> TurnReply` and `turn_price_ceiling(...)`, which bounds a turn
+before it is sent (`None`, never a lower figure, when the catalogue cannot price it). Messages are `TurnMessage`s of
+`TurnText`, `TurnThinking`, `TurnToolUse` and `TurnToolResult` blocks (`TurnBlock`, read back by `block_from_json`), and
+tools are `TurnToolSpec`s; each block's JSON is the block as the Messages API writes it. A `TurnReply` carries its
+blocks, its stop reason in a turn's words (`TurnStopReason`: `tool_use` kept, the cap named `max_tokens`), its input,
+output, cache-read and cache-write tokens, and its cost with `price_source`; a count or cost nothing reported is
+`None`, never `0`, and `pricing_failure` says why.
+
+`Model.turn` sends one tool turn to Anthropic over httpx, no SDK: the tool definitions, `tool_result` blocks (with
+`is_error` only on a refusal), three `cache_control` breakpoints (the system prompt, the last tool, the last
+message), every thinking block sent back exactly as its reply carried it, and the model's own effort or thinking
+budget. Any other route is refused before anything is sent, naming the one that works, as are settings the provider
+would refuse: a temperature, a thinking budget on a model that takes none (Claude 5 models, Opus 4.7 and 4.8), and
+`effort="none"` on one that cannot have thinking disabled (Opus 5.5, Sonnet 5.5, the Fable 5 and Mythos 5 families).
+Both rules are facts in the client's one per-model table, which a completion's negotiation reads too, so a completion
+asked a budget on those models sends its effort word instead; a model the table does not cover is sent the setting as
+given, and the provider's refusal comes back to the caller. `Model.turn_price_ceiling` bounds a turn from the
+catalogue's rates.
+
+`threetears.evals.testing.RecordedTurns` keeps a tool-calling loop's replies alone, per named session and in order,
+with the session's snapshot id held as `{snapshot}` and written back on replay; no request bytes are kept, so a replay
+runs with its tools live. Each price ceiling a session answered is kept for the turn it bounded and replayed, so an
+ending a budget forced replays as recorded; costs replay as recorded. A session asked one turn more than it holds is
+refused naming the session and the turn, and `unconsumed()` names the turns a replay left; the remedy is to the code
+or the recorded reply. A turn recording is never recorded again: one that exists always replays, whatever `RECORD`
+says, and `RecordedTurns.record` refuses one. `Model(turn_recording=)` replays the file when it exists and records it
+live when it does not, and `Model.turn_session(name, snapshot=)` hands out a session's client (the model itself when
+there is no recording); with a recording set, `Model.turn` refuses and names `turn_session`.
+
 ### all packages: the report-kit analyst line's pins carry a local version label
 
 **Changed:** every 3tears package on the report-kit analyst line declares `0.80.0+analyst.2`, a PEP 440 local

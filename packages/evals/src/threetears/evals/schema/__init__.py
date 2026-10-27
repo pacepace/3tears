@@ -231,6 +231,19 @@ from threetears.evals.schema.traces import (
     bind_cell_identity,
     current_cell_identity,
 )
+from threetears.evals.schema.turns import (
+    TurnText,
+    TurnThinking,
+    TurnToolResult,
+    TurnToolSpec,
+    ToolTurnClient,
+    TurnToolUse,
+    TurnBlock,
+    TurnMessage,
+    TurnReply,
+    TurnStopReason,
+    block_from_json,
+)
 from threetears.evals.schema.values import (
     IntervalScale,
     NominalScale,
@@ -262,6 +275,17 @@ from threetears.evals.schema.versioning import (
 )
 
 __all__ = [
+    "TurnText",
+    "TurnThinking",
+    "TurnToolResult",
+    "TurnToolSpec",
+    "ToolTurnClient",
+    "TurnToolUse",
+    "TurnBlock",
+    "TurnMessage",
+    "TurnReply",
+    "TurnStopReason",
+    "block_from_json",
     "KnownModelRoleOrigin",
     "KnownRoleModelOrigin",
     "KnownCostCapOrigin",
