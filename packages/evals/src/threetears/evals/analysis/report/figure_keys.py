@@ -29,6 +29,17 @@ gained, whose low and high ends are read off the gain's interval where a contras
 leaves open is refused as unbounded, never written as a number). ``cost_per_month.<arm>`` and the ``monthly_`` price
 fields read the same at the declared ``meta.volume_per_month``. All are derived and marked so.
 
+**A cost some trials did not report.** ``cost.unreported.<arm>.<field>`` reads the page's cost
+(``cost_per_1k.<arm>``) where some of the arm's trials report no cost: ``missing`` counts them (the trials the arm's
+scoreboard says ran, less the cost measure's observations), ``free`` is the cost per 1,000 had each of them cost
+nothing (the mean times observations over trials run: the least the arm's mean over every trial can be), and
+``at_p95`` had each cost the arm's own 95th percentile, a what-if, not a ceiling: the snapshot holds no highest
+cost, so nothing caps what a missing trial could have cost. Its inputs are the measure the page's cost is read from,
+overall on the arm (its mean, observations ``n`` and ``p95``), and the arm's ``scoreboard.<arm>.ran``. It reads each
+observation as one trial's, so it refuses, as unstated, a cost the page reads from the scoreboard or blends over
+tasks (no observations are counted), an arm whose measure or scoreboard leaves ``n`` or ``ran`` unstated, and a
+measure with more observations than trials run, whose observations are not one per trial. All derived.
+
 **Two arms apart, and the cases that would settle a reading.** ``spread.<arm>.<measure>.<where>.*`` reads an arm's
 spread on a figure, ``compare.<arm>.<arm>.<measure>.<where>.*`` the difference between two arms with its interval (a
 contrast's own where one pairs them, else independent), and ``settle.*`` the cases a design needs to separate an arm
@@ -2581,6 +2592,52 @@ def _cost_gap(report_input: ReportInput, values: tuple[str, ...], path: str) -> 
     if not costs[second]:
         raise _unstated(path, f"names {first}'s cost as a multiple of {second}'s, and {second} costs nothing")
     return Figure(path=path, kind="number", value=costs[first] / costs[second], scale="plain", unit=MULTIPLE_UNIT)
+
+
+# --- a cost some trials did not report -----------------------------------------------------------------------------
+
+#: What a cost some trials did not report reads: how many did not, the cost per 1,000 with each counted free, and with
+#: each counted at the arm's own 95th percentile.
+_UNREPORTED_FIELDS = ("missing", "free", "at_p95")
+
+
+def _unreported(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    """One arm's cost read with its unreported trials counted free, or at its 95th percentile (this module's account).
+
+    :raises UnstatedFigure: The page's cost is not read off one measure's overall figures, the measure or the
+        scoreboard leaves the observations or the trials run unstated, or the observations outnumber the trials.
+    """
+    arm, field = values
+    source = cost_basis(report_input).source
+    measure = report_input.measures.get(source)
+    stat = measure.per_arm.get(arm) if measure is not None else None
+    if measure is None or stat is None or stat.mean is None:
+        raise _unstated(path, f"names the trials {arm}'s cost leaves out, and its cost is read off no measure's figure")
+    row = report_input.scoreboard.get(arm)
+    ran = row.ran if row is not None else None
+    if stat.n is None or ran is None:
+        raise _unstated(
+            path,
+            f"counts the trials {arm}'s cost leaves out, and the snapshot states no {'n' if stat.n is None else 'trials run'}",
+        )
+    if stat.n > ran:
+        raise _unstated(
+            path,
+            f"counts the trials {arm}'s cost leaves out, and its cost has more observations than the arm ran trials, "
+            "so they are not one per trial",
+        )
+    missing = ran - stat.n
+    if field == "missing":
+        return _count(path, missing)
+    factor = _PER_THOUSAND_FACTORS[measure.unit or ""]
+    if field == "free":
+        return Figure(path=path, kind="number", value=stat.mean * stat.n / ran * factor, scale="usd_per_1k")
+    if stat.p95 is None:
+        raise _unstated(
+            path, f"names {arm}'s cost with its missing trials at its 95th percentile, which it does not state"
+        )
+    filled = (stat.mean * stat.n + stat.p95 * missing) / ran
+    return Figure(path=path, kind="number", value=filled * factor, scale="usd_per_1k")
 
 
 # --- an aspect's pair readings, floors and bars ----------------------------------------------------------------------
@@ -5175,6 +5232,17 @@ _FAMILIES: tuple[_Family, ...] = (
         derived=True,
         example="cost.gap.fast.v2.base.multiple",
     ),
+    _family_of(
+        _Word("cost.unreported"),
+        _keyed("<arm>", _costs_per_thousand),
+        _Statistic(_UNREPORTED_FIELDS, "<field>"),
+        what="an arm's cost where some of its trials report none: `missing` how many (trials run less the cost's "
+        "observations), `free` the cost per 1,000 had each cost nothing (the least the mean over every trial can be), "
+        "`at_p95` had each cost the arm's own 95th percentile (a what-if, not a ceiling: the snapshot holds no "
+        "highest cost); refused where the cost is not read off one measure's observations, one per trial",
+        resolve=_unreported,
+        derived=True,
+    ),
 )
 
 
@@ -6117,8 +6185,8 @@ _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
     ),
     (
         "cost",
-        "cost per 1,000 of what the cost counts and per month, cost uplift, and a move between options priced per "
-        "point",
+        "cost per 1,000 of what the cost counts and per month, cost uplift, a cost some trials did not report, and a "
+        "move between options priced per point",
         frozenset({"cost_per_1k", "cost", "price", "cost_per_month"}),
     ),
     (

@@ -9,9 +9,14 @@ Contracts held here (``threetears.evals.analysis.report.figure_keys``):
   declared), and the first's as a multiple of the second's; every one derived;
 - **pairs of arms** (``count.pairs``, ``count.arm_pairs``) count the pairs the input's pair readings read apart, and
   the pairs of arms there are;
+- **a cost some trials did not report** (``cost.unreported.<arm>.<field>``) counts them, and reads the page's cost with
+  each counted free and at the arm's own 95th percentile, refused where the cost is not read off one measure's
+  observations, one per trial;
+- a cost multiple keeps its unit under every filter, and a price keeps the figures a reader's multiplication needs;
 - the grammar teaches each family, and a sentence citing them types no digit.
 
-Every expectation is read off the input, on every fixture (r1 to r5, the misfits, s1 to s3).
+Every expectation is read off the input, on every fixture (r1 to r5, the misfits, s1 to s3, and Kairo round 2 for a
+cost some trials did not report).
 """
 
 from __future__ import annotations
@@ -21,11 +26,14 @@ from itertools import permutations
 
 import pytest
 
-from packages.evals.tests.analyst_support import budget_inputs, fixture_inputs
+from packages.evals.tests.analyst_support import KAIRO, budget_inputs, fixture_inputs, fixture_snapshots
+from threetears.evals.analysis.analyst.snapshot import frozen_input
+from threetears.evals.analysis.report.cost_unit import per_count
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.numbers import spell_dollars, spell_multiple, spell_price
 from threetears.evals.analysis.report.figure_keys import (
     MULTIPLE_UNIT,
+    cost_basis,
     figure_filters,
     figure_key_grammar,
     format_figure,
@@ -173,6 +181,53 @@ def test_a_price_keeps_a_third_figure_only_where_cents_would_round_one_away() ->
     ]
 
 
+#: Every input a cost some trials did not report is read on: the fixtures and Kairo round 2, whose arms each leave
+#: some trials' cost unreported.
+UNREPORTED = INPUTS | {KAIRO: frozen_input(fixture_snapshots("s")[KAIRO])}
+
+#: What a dollar measure's mean is multiplied by to read per 1,000 of what it counts.
+_PER_THOUSAND = {"usd": 1000.0, "usd_per_1k": 1.0, "usd_per_1m": 0.001}
+
+
+@pytest.mark.parametrize("name", sorted(UNREPORTED))
+def test_a_cost_some_trials_did_not_report_reads_free_and_at_its_p95_or_says_why_not(name: str) -> None:
+    """Kairo's analyst needed to show the trials with no cost could not reverse the arms' order on cost: their cost
+    counted free (the least the mean can be) and at each arm's own 95th percentile."""
+    held = UNREPORTED[name]
+    measure = held.measures.get(cost_basis(held).source)
+    for arm in _costs(held):
+        key = f"cost.unreported.{arm}"
+        stat = measure.per_arm.get(arm) if measure is not None else None
+        row = held.scoreboard.get(arm)
+        ran = row.ran if row is not None else None
+        if measure is None or stat is None or stat.mean is None or stat.n is None or ran is None or stat.n > ran:
+            for field in ("missing", "free", "at_p95"):
+                with pytest.raises(UnstatedFigure):
+                    resolve(f"{key}.{field}", held)
+            continue
+        factor = _PER_THOUSAND[measure.unit or ""]
+        missing = resolve(f"{key}.missing", held)
+        free = resolve(f"{key}.free", held)
+        assert missing.value == ran - stat.n and missing.scale == "count"
+        assert free.value == pytest.approx(stat.mean * stat.n / ran * factor)
+        assert free.derived and free.scale == "usd_per_1k"
+        cost = resolve(f"cost_per_1k.{arm}", held).value
+        assert isinstance(free.value, float) and isinstance(cost, float) and free.value <= cost
+        if stat.p95 is None:
+            with pytest.raises(UnstatedFigure):
+                resolve(f"{key}.at_p95", held)
+        else:
+            filled = resolve(f"{key}.at_p95", held).value
+            assert filled == pytest.approx((stat.mean * stat.n + stat.p95 * (ran - stat.n)) / ran * factor)
+        assert render(f"{{{key}.free|usd_per_1k}}", held, {}).endswith(per_count(cost_basis(held).noun, 1_000))
+
+
+def test_some_arm_leaves_trials_without_a_cost() -> None:
+    """The control for the walk above: Kairo's arms each ran trials that report no cost."""
+    held = UNREPORTED[KAIRO]
+    assert all(resolve(f"cost.unreported.{arm}.missing", held).value > 0 for arm in _costs(held))
+
+
 @pytest.mark.parametrize("name", sorted(INPUTS))
 def test_the_pairs_of_arms_are_counted(name: str) -> None:
     held = INPUTS[name]
@@ -186,6 +241,7 @@ def test_the_grammar_teaches_each_family() -> None:
     for form in (
         "confusion.<axis>.<arm>.<expected>.<predicted>",
         "cost.gap.<arm>.<arm>.<field>",
+        "cost.unreported.<arm>.<field>",
         "count.examples.<aspect>.<arm>",
         "count.failures.<aspect>.<arm>",
         "overlap.<aspect>.<aspect>.<field>",
