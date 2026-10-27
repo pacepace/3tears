@@ -42,6 +42,7 @@ from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.figure_keys import arm_settings
 from threetears.evals.analysis.report.plan_page.look import quantity
 from threetears.evals.analysis.report.plan_page.charting import contrast_unit_of
+from threetears.evals.analysis.report.plan_page.words import SETTLE_NO_SIZE
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import criterion_place
 from threetears.evals.analysis.style import humanize
@@ -191,10 +192,11 @@ def test_a_settle_table_prints_every_size_as_its_key_reads_it_and_no_column_no_r
                     continue
                 for row, printed in zip(rows, _column(block, column), strict=True):
                     figure = getattr(row, field)
-                    assert printed == (figure.reads if figure is not None else "—"), (name, column, printed)
+                    unsized = SETTLE_NO_SIZE if row.settles == "on_the_line" and column.startswith("Needed") else "—"
+                    assert printed == (figure.reads if figure is not None else unsized), (name, column, printed)
             for at, column in enumerate(block.columns[1:], start=1):
                 assert any(printed.cells[at] not in ("", "—") for printed in block.rows), (name, column)
-            (note,) = block.notes
+            note = block.notes[0]  # what its figure is; what would settle a row on its line follows
             named = note.split('"')[1] if note.count('"') == 2 else ""
             assert "bar" not in note.split('"')[0] and named in block.columns, (name, note)
             seen += 1
@@ -206,6 +208,67 @@ def test_a_settle_bar_chart_says_each_bar_is_the_figure() -> None:
     arm = next(arm.id for arm in held.arms if settle_cases(held, [arm.id], limit=_EVERY).rows)
     block = _drawn(held, "bars", _query("settle", arms=[arm]))
     assert block is not None and any(note.startswith("Each bar is") for note in block.notes), block
+
+
+def test_a_settle_row_on_its_line_says_no_size_settles_it_and_what_would() -> None:
+    held = _inputs()["r1"]
+    seen = 0
+    for arm in held.arms:
+        try:
+            rows = settle_cases(held, [arm.id], limit=_EVERY).rows
+        except RefusedInput:
+            continue
+        on_line = [at for at, row in enumerate(rows) if row.settles == "on_the_line"]
+        if not on_line:
+            continue
+        block = _drawn(held, "table", _query("settle", arms=[arm.id]))
+        assert block is not None
+        for at in on_line:
+            for column in ("Needed, one-sided", "Needed, two-sided"):
+                assert _column(block, column)[at] == SETTLE_NO_SIZE, (arm.id, column)
+            would = rows[at].what_would
+            assert any(note.lower().startswith(would.lower()) for note in block.notes), block.notes
+        seen += 1
+    assert seen, "the control: r1's pick reads exactly its gate's line in one task"
+
+
+# =============================================================================
+# A compare chart says once where its interval may be too narrow
+# =============================================================================
+
+
+def _paired(held: ReportInput) -> tuple[str, str, str]:
+    """A candidate, the control and the measure a contrast pairs them on."""
+    control = next(arm.id for arm in held.arms if arm.role == "control")
+    contrast = next(contrast for contrast in held.contrasts if contrast.interval is not None)
+    return contrast.arm, control, contrast.measure
+
+
+def test_a_compare_block_whose_interval_may_be_too_narrow_says_so_once_with_each_arms_trials_and_cases() -> None:
+    held = _inputs()["r4"]
+    first, second, key = _paired(held)
+    read = arms_compare(held, [first, second], key, limit=_EVERY)
+    narrow = [row for row in read.rows if row.may_be_narrow]
+    assert narrow, "the control: r4's replies nest in fewer conversations"
+    for kind in ("diverging_bars", "table"):
+        block = _drawn(held, kind, _query("compare", arms=[first, second], measures=[key], strata=["overall"]))
+        assert block is not None
+        said = [note for note in block.notes if "too narrow" in note]
+        assert len(said) == 1, (kind, block.notes)
+        for figure in narrow[0].nested:
+            assert figure.reads in said[0], (kind, figure.reads, said[0])
+
+
+def test_a_compare_block_whose_arms_ran_each_case_once_says_nothing_of_narrow_intervals() -> None:
+    data = _inputs()["r4"].model_dump(mode="json", by_alias=True, exclude_none=True)
+    data["scoreboard"] = {
+        arm: {**row, "ran": row["cases"], "usable": row["cases"]} for arm, row in data["scoreboard"].items()
+    }
+    held = ReportInput.model_validate(data)
+    first, second, key = _paired(held)
+    assert not any(row.may_be_narrow for row in arms_compare(held, [first, second], key, limit=_EVERY).rows)
+    block = _drawn(held, "diverging_bars", _query("compare", arms=[first, second], measures=[key], strata=["overall"]))
+    assert block is not None and not any("too narrow" in note for note in block.notes), block.notes
 
 
 # =============================================================================

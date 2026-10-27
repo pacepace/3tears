@@ -382,7 +382,8 @@ def _settle_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[str]]
 
 
 def settle_notes(context: ChartContext) -> tuple[str, ...]:
-    """What a settle chart or table says: what its figure is, at the level it is sized at.
+    """What a settle chart or table says: what its figure is, at the level it is sized at; and, once, what would
+    settle a row whose estimate sits exactly on its line, which no size settles.
 
     :param context: The chart being resolved, over the settle source.
     :ptype context: ChartContext
@@ -395,7 +396,13 @@ def settle_notes(context: ChartContext) -> tuple[str, ...]:
         if isinstance(row.item, SettleRow) and row.item.level is not None
     }
     each = SETTLE_EACH.get(context.spec.kind, SETTLE_EACH["bars"]).format(column=TABLE_HEADERS["wrong_side"])
-    return (SETTLE_NOTE.format(each=each, level=", ".join(sorted(levels)) or "the snapshot's level"),)
+    # A row on its line has no size that settles it: what would (``what_would``) is said once, beneath.
+    would = dict.fromkeys(
+        f"{row.item.what_would[0].upper()}{row.item.what_would[1:]}."
+        for row in context.rows()
+        if isinstance(row.item, SettleRow) and row.item.settles == "on_the_line" and row.item.what_would
+    )
+    return (SETTLE_NOTE.format(each=each, level=", ".join(sorted(levels)) or "the snapshot's level"), *would)
 
 
 def _open_steps(context: ChartContext) -> list[str]:

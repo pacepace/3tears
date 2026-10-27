@@ -79,7 +79,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
 )
 from threetears.evals.analysis.report.plan_page.look import quantity
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
-from threetears.evals.analysis.report.plan_page.resolve_changes import compare_basis, lever_label
+from threetears.evals.analysis.report.plan_page.resolve_changes import compare_basis, lever_label, narrow_notes
 from threetears.evals.analysis.report.plan_page.resolve_magnitudes import price_notes, settle_label, settle_notes
 from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.compare import ComparisonRow
@@ -105,6 +105,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     CELL_TEMPLATE,
     INTERVAL_HEADER,
     CASES_WORD,
+    SETTLE_NO_SIZE,
     OVERALL_WORD,
     TABLE_HEADERS,
     TABLE_ORDER,
@@ -431,10 +432,14 @@ def _sizes(row: SettleRow) -> _Row:
     count = row.counts[0] if row.counts else None
     counted = str(row.count_of[0].value) if row.count_of else None
     cases = row.cases[0] if row.cases else None
+    # An estimate exactly on its line has no size that settles it there: the cell says so, never a bare dash.
+    unsized = _words(SETTLE_NO_SIZE) if row.settles == "on_the_line" else None
     return {
         "counted": _words(CASES_WORD if cases is not None else counted),
-        "cases_needed": _read(row.cases_needed),
-        "cases_needed_two_sided": _read(row.cases_needed_two_sided),
+        "cases_needed": unsized if unsized is not None and row.cases_needed is None else _read(row.cases_needed),
+        "cases_needed_two_sided": unsized
+        if unsized is not None and row.cases_needed_two_sided is None
+        else _read(row.cases_needed_two_sided),
         "today": _read(cases if cases is not None else count),
         "trials_needed": _read(row.trials_needed),
         "trials_needed_two_sided": _read(row.trials_needed_two_sided),
@@ -612,6 +617,8 @@ def _table(context: ChartContext) -> Drawn:
         if context.query.source == "prices"
         else settle_notes(context)
         if context.query.source == "settle"
+        else narrow_notes(context)
+        if context.query.source == "compare"
         else computed_notes(context)
     )
     table = TableBlock(

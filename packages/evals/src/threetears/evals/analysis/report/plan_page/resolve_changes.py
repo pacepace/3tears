@@ -73,6 +73,8 @@ from threetears.evals.analysis.report.plan_page.charting import (
 from threetears.evals.analysis.report.plan_page.look import Quantity, centred_domain, figure_text, quantity
 from threetears.evals.analysis.report.plan_page.words import (
     BASIS_NOTE,
+    COMPARE_NARROW_NOTE,
+    COMPARE_NESTED_TEMPLATE,
     COMPARE_NOTE,
     HUMAN_PREF_NOTE,
     LEVER_CROSS_GROUP,
@@ -552,7 +554,37 @@ def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tu
         measure=measure_words(context.report_input, key),
     )
     basis = tuple(dict.fromkeys(BASIS_NOTE.format(basis=basis) for basis in bases))
-    return changes, drawn, (named, *basis)
+    return changes, drawn, (named, *basis, *narrow_notes(context))
+
+
+def narrow_notes(context: ChartContext) -> tuple[str, ...]:
+    """What a compare chart or table says, once, where a row's interval may be too narrow (``may_be_narrow``): each
+    arm that ran more trials than cases, by its reader name and the trials and cases its key reads; empty where no
+    row is marked.
+
+    :param context: The chart being resolved, over the compare source.
+    :ptype context: ChartContext
+    :return: The note, or none.
+    :rtype: tuple[str, ...]
+    """
+    nested: dict[str, str] = {}
+    for row in context.rows():
+        item = row.item
+        if not isinstance(item, ComparisonRow) or not item.may_be_narrow:
+            continue
+        by_arm: dict[str, list[str]] = {}
+        for figure in item.nested:
+            arm = figure.key.removeprefix(_SCOREBOARD).rpartition(".")[0]
+            by_arm.setdefault(arm, []).append(figure.reads)
+        for arm, (trials, cases, *_rest) in ((arm, reads) for arm, reads in by_arm.items() if len(reads) >= 2):
+            nested.setdefault(
+                arm, COMPARE_NESTED_TEMPLATE.format(arm=_arm_name(context, arm), trials=trials, cases=cases)
+            )
+    return (COMPARE_NARROW_NOTE.format(nested="; ".join(nested.values())),) if nested else ()
+
+
+#: How a scoreboard figure's key opens, before its arm: ``scoreboard.<arm>.<field>``.
+_SCOREBOARD = "scoreboard."
 
 
 def compare_basis(context: ChartContext, row: ComparisonRow, key: str) -> str:

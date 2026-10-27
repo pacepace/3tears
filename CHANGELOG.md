@@ -24,6 +24,10 @@ declared criterion read "floor 90%" whatever the criterion; it is named by its r
 says `overall`. A bar chart's values table named an arm without the letter tag every other block prints
 (`P · Production`).
 
+**Added:** a compare chart or table whose row may have too narrow an interval (`ComparisonRow.may_be_narrow`) says
+so once, naming each arm's trials and cases (`nested`). A settle table's row whose estimate sits on its line prints
+"none settles it at today's estimate" for its sizes, and its `what_would` once beneath.
+
 **Changed:** `block_render` sizes each page by its text, at most `limit` rows that fit one result (nine example cards
 that fit are one page, where the cells' character count stopped at six). Every paged analyst result says how much of
 the whole it holds before any `next:` line: `all 77 shown`, `rows 1 to 6 of 9 shown; 3 follow`, `none to show`.
