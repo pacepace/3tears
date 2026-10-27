@@ -1,8 +1,9 @@
 """``analysis/analyst/skill.py`` exports a name once production code calls it, and not before.
 
-The module's ``__all__`` is empty. Its public names (:class:`~threetears.evals.analysis.analyst.skill.AnalystSkill`,
-:class:`~threetears.evals.analysis.analyst.skill.SkillText` and :func:`~threetears.evals.analysis.analyst.skill.load_skill`)
-are the skill's surface, waiting for their production callers: the report writer's analyst and editor sessions.
+The module's ``__all__`` holds :class:`~threetears.evals.analysis.analyst.skill.SkillText`, whose caller is the report
+writer's session. Its other public names (:class:`~threetears.evals.analysis.analyst.skill.AnalystSkill` and
+:func:`~threetears.evals.analysis.analyst.skill.load_skill`) wait for their production caller, the report writer's
+entry point.
 ``CLAUDE.md`` holds that no public API exists only for a test, and the caller gate
 (``tests/enforcement/test_public_api_has_a_caller.py``) reads a module's surface from its ``__all__``, so it cannot see
 the names left out. This test keeps the promise checkable: :data:`_AWAITING_A_CALLER` lists every public name left
@@ -26,7 +27,7 @@ _REPO = Path(__file__).resolve().parents[3]
 _SOURCES = sorted([*_REPO.glob("packages/*/src"), *_REPO.glob("packages/agent/*/src")])
 
 #: The public names defined in the module and left out of its ``__all__`` until a production caller imports them.
-_AWAITING_A_CALLER = frozenset({"AnalystSkill", "SkillText", "load_skill"})
+_AWAITING_A_CALLER = frozenset({"AnalystSkill", "load_skill"})
 
 
 def _defined_public_names() -> set[str]:

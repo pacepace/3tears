@@ -244,6 +244,7 @@
 "threetears.evals.schema.TurnBlock": "provisional",
 "threetears.evals.schema.TurnMessage": "provisional",
 "threetears.evals.schema.TurnReply": "provisional",
+"threetears.evals.schema.TurnReplyRefused": "provisional",
 "threetears.evals.schema.TurnStopReason": "provisional",
 "threetears.evals.schema.TurnText": "provisional",
 "threetears.evals.schema.TurnThinking": "provisional",

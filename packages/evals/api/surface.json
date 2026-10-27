@@ -1216,6 +1216,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.TurnReplyRefused": {
+      "kind": "exception",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.TurnStopReason": {
       "kind": "literal",
       "signature": "",

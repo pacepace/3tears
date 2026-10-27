@@ -538,5 +538,6 @@ class EvalReportDoc(EvalDocumentModel):
 
 #: The names with a caller outside this module. The document's own models and functions are this build's first
 #: report-doc/1 surface; each joins this list with its first production caller (the invariants, the claims renderer,
-#: the writing loop), never for a test alone.
-__all__ = ["EvalReportDoc"]
+#: the writing loop), never for a test alone. The analyst's session reads a submission as a ReportDoc, checks its
+#: validity and briefs the analyst with its JSON schema.
+__all__ = ["EvalReportDoc", "ReportDoc", "report_doc_json_schema", "report_doc_validity"]

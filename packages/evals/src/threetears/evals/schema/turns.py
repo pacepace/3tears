@@ -31,6 +31,7 @@ __all__ = [
     "TurnBlock",
     "TurnMessage",
     "TurnReply",
+    "TurnReplyRefused",
     "TurnStopReason",
     "block_from_json",
 ]
@@ -397,6 +398,20 @@ def _optional_count(value: Mapping[str, Any], member: str) -> int | None:  # Any
     if found is not None and (isinstance(found, bool) or not isinstance(found, int)):
         raise ValueError(f"a turn reply's {member} is neither a count nor null")
     return found
+
+
+class TurnReplyRefused(Exception):
+    """A turn that was sent and answered, so paid for, whose reply the client then refuses to hand back.
+
+    The loop never reads the reply, but the turn was billed, so the reply rides on the refusal and the loop counts its
+    tokens and cost before the refusal goes on to its caller. A recording raises one (as its own
+    ``RecordingRefused`` too) for a reply holding the literal ``{snapshot}``, which a replay could not tell from the
+    placeholder.
+
+    :ivar reply: The reply refused, as the provider answered it; set by whoever raises it.
+    """
+
+    reply: TurnReply
 
 
 class ToolTurnClient(Protocol):
