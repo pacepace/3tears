@@ -84,7 +84,7 @@ advance, which price band holds is the decider's call. No condition here reads w
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -306,6 +306,8 @@ class PriceTradeoff(BaseModel):
     what_if: WhatIf | None = Field(
         description="The what-if asked for: an option the gates remove or leave undecided, priced as if it passed."
     )
+    #: What its total counts, one and many: its page says how much of the whole it holds in it.
+    page_unit: ClassVar[tuple[str, str]] = ("option", "options")
     total: int = Field(description="The options paged: the frontier's, cheapest first, then every other arm.")
     offset: int = Field(description="The first option this page covers.")
     next_offset: int | None = Field(description="The offset of the next page; None when this is the last.")

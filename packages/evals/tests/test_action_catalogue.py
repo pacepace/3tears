@@ -372,6 +372,13 @@ class _Page(EvalBaseModel):
     next_offset: int | None
 
 
+class _PageParams(EvalBaseModel):
+    """A page's parameters: what to echo, and where the page starts."""
+
+    note: str = Field(description="What to echo back.")
+    offset: int = Field(default=0, description="Where the page starts.")
+
+
 class _OtherMeaning(EvalBaseModel):
     note: int = Field(description="A note, but a number.")
 
@@ -400,6 +407,7 @@ async def _no_path(stage: Any) -> dict[str, Any]:
         ({"example": {}}, "its example is not a valid call"),
         ({"paged": True}, "a paged action takes an `offset` and returns a `next_offset`"),
         ({"paged": True, "result": _Page}, "_Echo or _Page does not"),
+        ({"paged": True, "params": _PageParams, "result": _Page}, "_Page declares no page_unit"),
         ({"result": _Page, "render": render_cited}, "_Page is a page .next_offset.: declare paged=True"),
         ({"idempotent": True}, "a read is idempotent by its class"),
         ({"idempotent": True, "permission": "spend", "happy_path": _no_path}, "idempotent is declared by a write"),

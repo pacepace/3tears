@@ -78,7 +78,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -535,6 +535,8 @@ class Dominance(BaseModel):
         "a direction; descriptive. Equal to dominant when no axis is asked for.",
     )
     code_call: CodeCall = Field(description="Code's call on the declared criteria: its reading, never a constraint.")
+    #: What its total counts, one and many: its page says how much of the whole it holds in it.
+    page_unit: ClassVar[tuple[str, str]] = ("option", "options")
     total: int = Field(
         description="The options the snapshot holds; a page lists the survivors, the removed and the undecided among "
         "them."
@@ -996,6 +998,8 @@ class Sensitivity(BaseModel):
         "plan."
     )
     flips: list[Flip] = Field(description="The values an arm's status flips at inside the range, low to high.")
+    #: What its total counts, one and many: its page says how much of the whole it holds in it.
+    page_unit: ClassVar[tuple[str, str]] = ("flip", "flips")
     total: int = Field(description="The flips inside the range.")
     offset: int = Field(description="The first flip this page holds.")
     next_offset: int | None = Field(description="The offset of the next page of flips; None when this is the last.")
@@ -1758,6 +1762,8 @@ class Breakdown(BaseModel):
     slice_by: SliceBy = Field(description="How the slices are cut: stratum, task or cell.")
     arms: list[str] = Field(description="The arms shown, as arm:<id>.")
     slices: list[Slice] = Field(description="The slices holding the measure, in the input's order.")
+    #: What its total counts, one and many: its page says how much of the whole it holds in it.
+    page_unit: ClassVar[tuple[str, str]] = ("slice", "slices")
     total: int = Field(description="The slices holding the measure.")
     offset: int = Field(description="The first slice this page holds.")
     next_offset: int | None = Field(description="The offset of the next page; None when this is the last.")

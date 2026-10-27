@@ -189,6 +189,11 @@ class RenderedBlock(BaseModel):
     truncated: bool = Field(description="Whether rows follow this page.")
     notes: list[str] = Field(description="Code's lines under the block: what it leaves out, what bold means.")
 
+    @property
+    def page_unit(self) -> tuple[str, str]:
+        """What its total counts, one and many: an examples block's rows are its cards, any other's its rows."""
+        return ("card", "cards") if self.block_kind == "examples" else ("row", "rows")
+
 
 class BlockKind(BaseModel):
     """One kind of block: what it draws, the sources it reads, and the lines and panels it takes."""

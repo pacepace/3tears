@@ -220,7 +220,8 @@ class Action:
         (the next page's offset, ``None`` on the last). The tool writes the next page's call
         (:func:`~threetears.evals.actions.render.render_page`): the arguments the caller sent with ``offset`` advanced,
         as the text's last line and as ``next`` in the structured result, and leaves ``next_offset`` out of both on
-        the last page. Every analyst listing is paged; ``False``, the default.
+        the last page, and says how much of the whole the page holds in the unit its result names
+        (``page_unit``: flips, options, cards…). Every analyst listing is paged; ``False``, the default.
     :ivar idempotent: A ``write`` or ``destructive`` action a caller may repeat with the same parameters to no further
         effect (``report_snapshot_freeze`` names the snapshot it stored); a ``read`` is idempotent by its class, and
         neither a ``spend`` nor long work can be, since each call spends or starts work again. ``False``, the default.
@@ -251,7 +252,8 @@ class Action:
             nested model; a destructive action declares no required ``confirm``; ``long_running``
             disagrees with whether the result is ``JobsStarted``; an action whose result is anything else
             declares no ``render`` of its own; a spend action declares no ``happy_path``; the cut is not a
-            lowercase identifier; a paged action declares no ``offset`` or its result no ``next_offset``, or an
+            lowercase identifier; a paged action declares no ``offset`` or its result no ``next_offset`` or no
+            ``page_unit``, or an
             action rendered by :func:`~threetears.evals.actions.render.render_cited` returns a ``next_offset`` and is
             not paged; an action that is not a ``write`` or ``destructive`` one, or is long work, is
             declared idempotent; or the example does not validate.
@@ -299,6 +301,12 @@ class Action:
             raise ValueError(
                 f"{where}: a paged action takes an `offset` and returns a `next_offset`, the call to the next page; "
                 f"{self.params.__name__} or {self.result.__name__} does not"
+            )
+        if self.paged and getattr(self.result, "page_unit", None) is None:
+            raise ValueError(
+                f"{where}: a paged result names what its total counts, one and many, so its page says how much of the "
+                f"whole it holds in that unit: {self.result.__name__} declares no page_unit, such as "
+                "page_unit: ClassVar[tuple[str, str]] = ('flip', 'flips')"
             )
         if pages and not self.paged and self.render is render.render_cited:
             raise ValueError(
@@ -797,7 +805,7 @@ class MountedTool:
             )
         text, structured = action.render(result), result.model_dump(mode="json")
         if action.paged:
-            text, structured = render.render_page(name, params, text, structured)
+            text, structured = render.render_page(name, params, text, structured, render.page_unit(result))
         return ActionOutcome(text, structured=structured, action=name, text_field=action.text_field)
 
     def _names(self) -> tuple[str, ...]:

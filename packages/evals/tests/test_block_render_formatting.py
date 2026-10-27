@@ -15,8 +15,9 @@ Contracts held here (``analysis.report.charts`` values tables, ``analysis.report
   and the side that passes, and an overall criterion drawn on each task's figures says it is the overall line;
 - **one arm-label rule**: a bar chart names an arm's row as every other chart does, its letter tag first;
 - **a page of a block holds as many rows as fit in one result**, up to its limit, and says how many follow;
-- **a paged result says how much of the whole it holds**: ``all N shown`` on a complete page, else its rows and how
-  many follow, before the next page's call.
+- **a paged result says how much of the whole it holds, in what it counts**: ``all N cards shown`` on a complete page,
+  else which it holds and how many follow, before the next page's call; and where it counts none (a sweep with no
+  flips), that there are none to page, never that the page shows nothing.
 
 Every expectation is computed from the input the block reads (r1 to r5, the misfits, Kairo round 2).
 """
@@ -427,7 +428,9 @@ class _Params(BaseModel):
 
 
 def _text_of(page: RenderedBlock, params: BaseModel) -> str:
-    text, _structured = render_page("block_render", params, render_cited(page), page.model_dump(mode="json"))
+    text, _structured = render_page(
+        "block_render", params, render_cited(page), page.model_dump(mode="json"), page.page_unit
+    )
     return text
 
 
@@ -446,7 +449,7 @@ async def test_a_page_of_example_cards_holds_as_many_as_fit_in_one_result_and_sa
     assert page.structured is not None, page.text
     if len(_text_of(whole, params)) <= TEXT_BUDGET:
         assert len(page.structured["rows"]) == whole.total == 9, "nine cards that fit one result are one page"
-        assert page.text.splitlines()[-1] == "all 9 shown"
+        assert page.text.splitlines()[-1] == "all 9 cards shown"
 
     first = await _call(fixture, {**asked, "query": {"source": "examples"}})
     assert first.structured is not None and len(first.text) <= TEXT_BUDGET
@@ -457,7 +460,8 @@ async def test_a_page_of_example_cards_holds_as_many_as_fit_in_one_result_and_sa
     )
     assert len(_text_of(longer, params)) > TEXT_BUDGET, "the page holds every card that fits, not fewer"
     left = every.total - held_rows
-    assert first.text.splitlines()[-2] == f"rows 1 to {held_rows} of {every.total} shown; {left} follow"
+    follow = "follows" if left == 1 else "follow"
+    assert first.text.splitlines()[-2] == f"cards 1 to {held_rows} of {every.total} shown; {left} {follow}"
     assert first.text.splitlines()[-1].startswith("next: action='block_render'")
 
 
@@ -470,23 +474,49 @@ class _Listing(BaseModel):
     next_offset: int | None
 
 
-def test_a_page_says_how_much_of_the_whole_it_holds() -> None:
+def _shown(listing: _Listing, params: BaseModel) -> tuple[str, dict[str, Any]]:
+    return render_page("x_list", params, render_cited(listing), listing.model_dump(mode="json"), ("flip", "flips"))
+
+
+def test_a_page_says_how_much_of_the_whole_it_holds_in_what_it_counts() -> None:
     params = _Params(snapshot_id="s")
-    whole = _Listing(rows=["a", "b", "c"], total=3, offset=0, next_offset=None)
-    text, structured = render_page("x_list", params, render_cited(whole), whole.model_dump(mode="json"))
-    assert text.splitlines()[-1] == "all 3 shown" and "next" not in structured
-    first = _Listing(rows=["a", "b"], total=3, offset=0, next_offset=2)
-    text, _structured = render_page("x_list", params, render_cited(first), first.model_dump(mode="json"))
+    text, structured = _shown(_Listing(rows=["a", "b", "c"], total=3, offset=0, next_offset=None), params)
+    assert text.splitlines()[-1] == "all 3 flips shown" and "next" not in structured
+    text, _structured = _shown(_Listing(rows=["a", "b"], total=3, offset=0, next_offset=2), params)
     assert text.splitlines()[-2:] == [
-        "rows 1 to 2 of 3 shown; 1 follow",
+        "flips 1 to 2 of 3 shown; 1 follows",
         "next: action='x_list', snapshot_id='s', offset=2",
     ]
-    last = _Listing(rows=["c"], total=3, offset=2, next_offset=None)
-    text, _structured = render_page("x_list", params, render_cited(last), last.model_dump(mode="json"))
-    assert text.splitlines()[-1] == "rows 3 to 3 of 3 shown; none follow"
-    empty = _Listing(rows=[], total=0, offset=0, next_offset=None)
-    text, _structured = render_page("x_list", params, render_cited(empty), empty.model_dump(mode="json"))
-    assert text.splitlines()[-1] == "none to show"
+    text, _structured = _shown(_Listing(rows=["a"], total=3, offset=0, next_offset=1), params)
+    assert text.splitlines()[-2] == "flips 1 to 1 of 3 shown; 2 follow"
+    text, _structured = _shown(_Listing(rows=["c"], total=3, offset=2, next_offset=None), params)
+    assert text.splitlines()[-1] == "flips 3 to 3 of 3 shown; none follow"
+    text, _structured = _shown(_Listing(rows=["a"], total=1, offset=0, next_offset=None), params)
+    assert text.splitlines()[-1] == "the one flip shown"
+    text, _structured = _shown(_Listing(rows=[], total=3, offset=4, next_offset=None), params)
+    assert text.splitlines()[-1] == "none from flip 5: 3 flips in all"
+    text, _structured = _shown(_Listing(rows=[], total=0, offset=0, next_offset=None), params)
+    assert text.splitlines()[-1] == "no flips; the page above is the whole result"
+
+
+async def test_a_sweep_with_no_flips_says_it_has_none_to_page_and_never_that_the_page_shows_nothing() -> None:
+    """r4's margin sweep on an aspect with no reading flips nowhere, and its page still holds the segment and call."""
+    fixture, snapshots = off_loop(_seeded)
+    held = frozen_input(snapshots["r4"])
+    seen = 0
+    for aspect in held.aspects:
+        page = await _call(
+            fixture,
+            {"action": "decision_sensitivity", "snapshot_id": snapshots["r4"].id, "parameter": f"margin:{aspect.id}"},
+        )
+        assert page.structured is not None, page.text
+        if page.structured["total"] != 0:
+            continue
+        seen += 1
+        assert page.structured["segments"], "the control: a sweep with no flips still holds its one segment"
+        assert page.text.splitlines()[-1] == "no flips; the page above is the whole result"
+        assert "none to show" not in page.text
+    assert seen, "the control: r4 sweeps a margin with no flips"
 
 
 async def test_a_complete_overview_says_all_of_it_is_shown() -> None:
@@ -494,4 +524,4 @@ async def test_a_complete_overview_says_all_of_it_is_shown() -> None:
     snapshot = snapshots[KAIRO]
     overview = await _call(fixture, {"action": "campaign_overview", "snapshot_id": snapshot.id})
     assert overview.structured is not None and overview.structured.get("next_offset") is None, overview.text
-    assert overview.text.splitlines()[-1] == f"all {overview.structured['total']} shown"
+    assert overview.text.splitlines()[-1] == f"all {overview.structured['total']} rows shown"

@@ -38,7 +38,7 @@ the same rows. It never reads what kind of eval a campaign is.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -128,6 +128,8 @@ class KeysChecked(BaseModel):
         "unread_from; or that every key is read."
     )
     keys: list[KeyCheck] = Field(description="Each key on this page, in the order asked.")
+    #: What its total counts, one and many: a page is sized as the tool would write it, in this unit.
+    page_unit: ClassVar[tuple[str, str]] = ("key", "keys")
     total: int = Field(description="The distinct keys asked about.")
     offset: int = Field(description="The first key this page holds.")
     unread_from: int | None = Field(
