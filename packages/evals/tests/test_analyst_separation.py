@@ -31,18 +31,19 @@ from typing import Any
 
 import pytest
 
-from packages.evals.tests.analyst_support import compared_pair, fixture_snapshots
+from packages.evals.tests.analyst_support import aspect_tagged, compared_pair, fixture_snapshots
 from packages.evals.tests.fixtures.report_plans.misfits import reference_data
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
 from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, eval_catalogue
 from threetears.evals.analysis.analyst.compare import arms_compare, mean_key
-from threetears.evals.analysis.analyst.settle import settle_cases
+from threetears.evals.analysis.analyst.settle import SettleRow, settle_cases
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import (
     figure_key_grammar,
     figure_key_pages,
+    gain_axis,
     resolve,
     separation_wheres,
 )
@@ -255,6 +256,35 @@ def test_a_comparison_with_the_control_on_a_contrasted_measure_reads_the_contras
     assert isinstance(basis, str) and basis.startswith("paired")
 
 
+def test_a_contrast_on_another_aspect_is_never_read_as_the_overall_paired_difference() -> None:
+    """``overall`` reads an arm's by-arm figures, the lead aspect's. Where the lead aspect's contrast of the arm is
+    untested and another aspect holds a contrast on the same measure key, that contrast is another aspect's reading:
+    the comparison and the gain axis read the two arms' own means, never it, and nothing is labelled paired."""
+    held, arm, key = aspect_tagged(_all_inputs()["r4"])
+    control = next(held_arm.id for held_arm in held.arms if held_arm.role == "control")
+    (lead_untested,) = [c for c in held.contrasts if (c.arm, c.measure) == (arm, key) and c.delta is None]
+    (elsewhere,) = [c for c in held.contrasts if (c.arm, c.measure) == (arm, key) and c.delta is not None]
+    assert lead_untested.aspect != elsewhere.aspect, "the control: the two contrasts sit on two aspects"
+    points = _points(held, key)
+    mine, theirs = _stat(held, arm, key, "overall").mean, _stat(held, control, key, "overall").mean
+    assert mine is not None and theirs is not None and elsewhere.delta is not None
+    assert mine - theirs != pytest.approx(elsewhere.delta), "the control: the other aspect's delta reads apart"
+    prefix = f"compare.{arm}.{control}.{key}.overall"
+    assert _number(resolve(f"{prefix}.difference", held).value) == pytest.approx((mine - theirs) * points)
+    try:
+        basis = resolve(f"{prefix}.basis", held).value
+    except UnstatedFigure:
+        basis = ""
+    assert isinstance(basis, str) and not basis.startswith("paired"), basis
+    axis = gain_axis(held, key)
+    sign = 1.0 if axis.higher_is_better else -1.0
+    assert axis.positions[arm] - axis.positions[control] == pytest.approx(sign * (mine - theirs))
+    # A lead-aspect contrast still pairs: tagging the lead aspect by name changes nothing.
+    paired = next(c for c in held.contrasts if c.aspect == lead_untested.aspect and c.interval is not None)
+    lead_basis = resolve(f"compare.{paired.arm}.{control}.{paired.measure}.overall.basis", held).value
+    assert isinstance(lead_basis, str) and lead_basis.startswith("paired")
+
+
 def test_the_grammar_teaches_each_separation_family_on_its_own_page_with_a_rendered_example() -> None:
     lines = {line.split("`:", 1)[0]: line for line in figure_key_grammar().splitlines() if line.startswith("- `")}
     page = figure_key_pages()["separation"]
@@ -384,6 +414,137 @@ def test_the_r2_editors_sum_is_what_settle_cases_says_of_the_pick_against_its_ga
     assert "one-sided" in result.sided and not result.hypothetical
     # The editor's own case: a pass rate a tenth of a point over a 97% gate needs tens of thousands of cases.
     assert cases_to_separate(math.sqrt(0.971 * 0.029) * 100, 0.1, 0.95, sided=1, power=0.5) > 70_000
+
+
+def _line_rows() -> Iterator[tuple[str, ReportInput, str, SettleRow]]:
+    """Every row settling one arm against the criteria it is judged by, on every fixture: (input, arm, row)."""
+    for name, held in _all_inputs().items():
+        for arm in held.arms:
+            try:
+                result = settle_cases(held, [arm.id], limit=WHOLE)
+            except RefusedInput:
+                continue
+            for row in result.rows:
+                yield name, held, arm.id, row
+
+
+def _measure_of(held: ReportInput, row: SettleRow) -> str:
+    criterion_id = row.against.removeprefix("criterion ")
+    return next(criterion.measure for criterion in held.criteria if criterion.id == criterion_id)
+
+
+def _level_words(row: SettleRow) -> tuple[float, str]:
+    """A row's level as its figure words it: the share, and the sidedness it states."""
+    assert row.level is not None and isinstance(row.level.value, str), row.level
+    percent, _space, sided = row.level.value.partition("% ")
+    return float(percent) / 100, sided
+
+
+def test_a_line_row_says_it_is_one_sided_and_gives_the_size_at_which_the_printed_two_sided_interval_clears() -> None:
+    """A page prints two-sided intervals. A line row's one-sided level says so in its own words, and beside its
+    one-sided sizes it gives the size at which the two-sided interval at that level, centred on today's estimate,
+    sits wholly on today's side of the line: there and not one case fewer."""
+    checked = 0
+    for name, held, arm, row in _line_rows():
+        if row.cases_needed is None or row.cases_needed_two_sided is None:
+            continue
+        level, sided = _level_words(row)
+        assert sided == "one-sided", (name, row.level)
+        key = _measure_of(held, row)
+        assert level == pytest.approx(_number(resolve(f"spread.{arm}.{key}.{row.where}.level", held).value))
+        per_case = _number(resolve(f"spread.{arm}.{key}.{row.where}.per_case", held).value)
+        assert row.distance is not None
+        distance = abs(_number(row.distance.value))
+        one, two = _NORMAL.inv_cdf(level), _NORMAL.inv_cdf(0.5 + level / 2)
+        needed, printed = _number(row.cases_needed.value), _number(row.cases_needed_two_sided.value)
+        # Within rounding: a size the arithmetic lands on exactly may round up by one.
+        assert distance - one * per_case / math.sqrt(needed) >= -1e-9
+        assert needed == 1 or distance - one * per_case / math.sqrt(needed - 1) < 1e-9
+        assert distance - two * per_case / math.sqrt(printed) >= -1e-9
+        assert printed == 1 or distance - two * per_case / math.sqrt(printed - 1) < 1e-9
+        assert row.cases_needed_two_sided_80 is not None
+        powered = _number(row.cases_needed_two_sided_80.value)
+        assert _NORMAL.cdf(distance * math.sqrt(powered) / per_case - two) >= 0.8 - 1e-9
+        assert powered == 1 or _NORMAL.cdf(distance * math.sqrt(powered - 1) / per_case - two) < 0.8
+        checked += 1
+    assert checked, "the control: some fixture arm is sized against its line"
+
+
+def test_two_arms_settled_apart_say_their_level_is_two_sided_and_give_no_second_size() -> None:
+    held = _all_inputs()["r1"]
+    result = settle_cases(held, ["atlas-l", "atlas-m"], measure="overall", limit=WHOLE)
+    for row in result.rows:
+        assert _level_words(row)[1] == "two-sided"
+        assert row.cases_needed_two_sided is None and row.cases_needed_two_sided_80 is None and row.settles is None
+
+
+def test_a_row_says_which_side_its_estimate_is_on_and_a_failing_arms_size_confirms_its_miss() -> None:
+    """A row's sizes settle whichever side today's estimate is on. For an arm on the failing side of its line, the
+    size is the one at which a bound centred on today's estimate sits wholly on the failing side: it confirms the
+    miss, and the row says so (``misses``); it never says such a design would clear the line."""
+    sides: set[str] = set()
+    for name, held, arm, row in _line_rows():
+        if row.distance is None or row.cases_needed is None:
+            continue
+        distance = _number(row.distance.value)
+        assert row.settles == ("clears" if distance > 0 else "misses"), (name, row.where, row.against)
+        sides.add(row.settles)
+        if distance < 0:
+            z = _NORMAL.inv_cdf(_level_words(row)[0])
+            per_case = _number(resolve(f"spread.{arm}.{_measure_of(held, row)}.{row.where}.per_case", held).value)
+            needed = _number(row.cases_needed.value)
+            # At that size the bound toward passing stays short of the line, the design showing the miss; one case
+            # fewer and it reaches the line.
+            assert distance + z * per_case / math.sqrt(needed) <= 1e-9
+            assert needed == 1 or distance + z * per_case / math.sqrt(needed - 1) > -1e-9
+    assert sides == {"clears", "misses"}, "the control: the fixtures hold an arm on each side of a line"
+
+
+def _counted(held: ReportInput, arm: str, key: str, where: str) -> str:
+    """What the count an arm's spread rests on counts, read off the input: its own n (cases where its n_cases equals
+    it, trials where fewer, else observations), else its n_cases, else the slice's cases, or overall the scoreboard's
+    usable trials, else its cases."""
+    stat = _stat(held, arm, key, where)
+    if stat.n is not None:
+        return "observations" if stat.n_cases is None else "cases" if stat.n <= stat.n_cases else "trials"
+    if stat.n_cases is not None or where != "overall":
+        return "cases"
+    board = held.scoreboard[arm]
+    return "trials" if board.usable is not None else "cases"
+
+
+def test_each_line_row_says_what_its_count_and_so_its_sizes_count() -> None:
+    """A size counts what the count it rests on counts: on a repeated design that is trials, and the row says so."""
+    seen: set[str] = set()
+    for name, held, arm, row in _line_rows():
+        if row.cases_needed is None:
+            continue
+        key = _measure_of(held, row)
+        assert len(row.count_of) == len(row.counts) == 1, (name, row.where)
+        (counted,) = row.count_of
+        assert counted.key == f"spread.{arm}.{key}.{row.where}.counts"
+        assert counted.value == _counted(held, arm, key, row.where), (name, arm, row.where)
+        seen.add(str(counted.value))
+    assert "cases" in seen, "the control: the fixtures size on cases"
+
+
+def test_on_a_repeated_design_a_line_rows_sizes_count_trials_and_say_so() -> None:
+    """r2 with each pass rate stating three trials of each case: the count the spread rests on is trials, so the sizes
+    are counts of trials, and the row says so."""
+    data = reference_data("r2")
+    for stat in data["measures"]["pass_rate"]["per_arm"].values():
+        stat["n_cases"], stat["n"] = 400, 1200
+    held = ReportInput.model_validate(data)
+    (pick,) = dominant_options(_all_inputs()["r2"])
+    gate = next(criterion for criterion in held.criteria if criterion.measure == "pass_rate")
+    (row,) = settle_cases(held, [pick], criterion=gate.id).rows
+    assert [figure.value for figure in row.count_of] == ["trials"] and [f.value for f in row.counts] == [1200]
+    mean = held.measures["pass_rate"].per_arm[pick].mean
+    assert mean is not None and row.cases_needed is not None
+    share = mean / 100
+    per_case = math.sqrt(share * (1 - share)) * 100
+    expected = math.ceil((_NORMAL.inv_cdf(0.95) * per_case / (mean - float(gate.threshold))) ** 2)
+    assert row.cases_needed.value == expected, "a size in trials, read on the trials' binomial spread"
 
 
 def test_settling_one_arm_reads_every_criterion_it_is_judged_by_and_says_why_a_p95_is_not_sized() -> None:
