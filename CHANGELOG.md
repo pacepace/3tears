@@ -6,71 +6,7 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: an arm whose every past result cost the same launches, priced from that history, under an enforced cap
-
-**Fixed:** a launch priced by `history_launch_pricer` raised `ValueError: a range runs low <= central <= predicted`
-building the arm's `ArmPrice` when every priced past result of the arm cost the same (Discodon's second launch of one
-arm, three results at $0.0015 each). The cost band (`compute_estimate_cost`) read that history on the log scale, whose
-ends are `exp` of a mean of logs and round away from the arithmetic mean the central estimate is drawn from: both ends
-landed an ulp off the centre, here below it. The band now brackets its estimate, and never moves an end onto it by
-more than rounding. A history whose costs are all equal, or apart by rounding alone (within a billionth), has a band
-of no width at exactly the estimate (each cell's and the total's), and its `band_basis` says no spread was seen in its
-N past observations. The band stays what the history computes wherever it is shown, however narrow: a reader may judge
-one or two percent significant. Where a cap is judged, the history pricer holds every arm to at least a 3% safety
-margin above its estimate: `ArmPrice.predicted_usd`, the figure a launch holds to the arm's cap, is the greater of the
-band's upper end and the estimate plus 3%, while `low_usd` and `central_usd` stay as computed and the band's own upper
-end rides along as `ArmPrice.band_high_usd` (new; also on `ArmEstimate`, and the end a cost pivot's plan reads). Where
-the margin binds, the basis states both: "the band from history is $a-$b (x% below to y% above $c); the cap reads $d,
-the 3% safety margin above the estimate, wider than the band by $g", the gap saying how far the cap stands above the
-band's end where four figures would spell the two alike. Where it does not, the basis names the band's upper end
-alone. An arm refused over its cap is said to have a "cap figure" above it, never to be "predicted to cost" it, and
-the cap figure and the cap are spelled by the number rule, not in cents, so a cap figure a hair above its cap never
-prints equal to it; the launch estimate's text labels each arm's figure and the total as cap figures. So that a launch
-may spell by it, the number rule's module moved from `analysis` to `kernel` (`threetears.evals.kernel.numbers`), the
-package both may import: `threetears.evals.kernel` now exports `format_number`, `format_signed` and `ABSENT`, and
-`threetears.evals.analysis` (and `ops`, for `format_number`) still export them. A log-scale end that misses the
-estimate by rounding alone (within a billionth of it) is set to it. A log-scale band that misses it by more, where the
-lognormal fit contradicts the history's mean (one outlier among near-equal costs), becomes the outer envelope of that
-band and the normal-theory band around the mean; its `band_basis` calls it an at-least-95% band, wider than either
-fit's because neither can be trusted alone, names the end the fit put where, and says why a lower end of $0 is $0. The
-upper end a launch is capped at is never the bare mean of a history that varied. Every figure in a basis is spelled by
-the package's one rule (`format_number`), never as an exponent, and so is every figure in the `ArmPrice.basis` the
-history pricer writes: in cents, a sub-cent arm's band read "$0.00-$0.00 around $0.00", three figures with one
-spelling. The normal-theory band (a history holding a zero cost) is centred on the same estimate.
-`lognormal_sum_prediction_band` gives observations all equal a band of no width at exactly `n_future` times their
-value; read through their logs, eleven or more of them had a spread a few ulps above zero.
-
-### evals: `scope_export` pages a large scope instead of reading it whole
-
-**Fixed:** an unnamed `scope_export` read every result in its scope into memory and serialized them into one
-response, so a large scope could exhaust its host (Discodon, 2026-10-27: a 502, then a restart). `export_results`
-now estimates from the run listing, before reading anything, how many results each run holds (its matrix, cases
-times k, or the cells it recorded persisting when those are more), against `EXPORT_PAGE_RESULTS` (1,000 results, new
-in `threetears.evals.analysis`; also re-exported from `threetears.evals.ops`). A scope that fits is exported as
-before, byte for byte, with `page: null`. A larger scope is exported in pages of whole runs, oldest first (by
-`created_at`, then id), each page reading its runs' results run by run: `ScoreExport.page` (new, an `ExportPage`)
-names the page's runs, how many come before and after it, the archived runs and runs of another status left out
-unread, and `next_after_run_id`. A paged export's exclusion counts cover only that page's reads: results whose run
-was deleted are not reached. A whole-scope read that returns more results than its listing promised is not
-serialized; the export pages instead. One run larger than the ceiling is a page of its own.
-
-**Changed (MCP):** `scope_export` takes `export_after_run_id`, the previous page's `page.next_after_run_id`, and the
-text of a page with a next names the call, repeating a non-default `export_format` and `run_status`:
-`More: action='scope_export', export_after_run_id='<id>'`. `export_run_ids` is never paged: two or more named runs
-whose estimated results pass the ceiling are refused (`VALIDATION_FAILED`, naming the ceiling and the results they
-would read, with `details` `runs_named`, `results_estimated` and `result_ceiling`); one named run is exported whole.
-`export_after_run_id` with `export_run_ids`, or naming a run no longer in the scope, is refused. An unknown format
-is now refused before anything is read. An agent that exported a scope in one call must follow the pages.
-
-### object-store: a presign no longer holds the event loop
-
-**Fixed:** `S3ObjectStore.presigned_get_url` opened an aiobotocore client for every URL, building a whole botocore
-client class on the loop each time: ~100 ms a URL on cobalt dev's shared CPU, so a load presigning a file per
-partition stalled its loop over and over. A store that opened its own session now signs on a worker thread with one
-synchronous botocore client, built on first use and kept; its URLs are the ones the aiobotocore client signs. A store
-given a session (a test's fake, a caller's aioboto3) presigns through it as before.
-
-## v0.80.0 -- 2026-10-26
+## v0.80.0 -- 2026-10-27
 
 ### backup: a drill compares a naive-timestamp table against the backup's moment
 
@@ -307,6 +243,70 @@ host's own actions included, is unchanged.
 
 **Docs:** the host-adoption guide says a CPU-bound read shares the interpreter lock with the eval runs in its process
 whatever executor runs it, beside the guidance on offloading store calls.
+
+### evals: an arm whose every past result cost the same launches, priced from that history, under an enforced cap
+
+**Fixed:** a launch priced by `history_launch_pricer` raised `ValueError: a range runs low <= central <= predicted`
+building the arm's `ArmPrice` when every priced past result of the arm cost the same (Discodon's second launch of one
+arm, three results at $0.0015 each). The cost band (`compute_estimate_cost`) read that history on the log scale, whose
+ends are `exp` of a mean of logs and round away from the arithmetic mean the central estimate is drawn from: both ends
+landed an ulp off the centre, here below it. The band now brackets its estimate, and never moves an end onto it by
+more than rounding. A history whose costs are all equal, or apart by rounding alone (within a billionth), has a band
+of no width at exactly the estimate (each cell's and the total's), and its `band_basis` says no spread was seen in its
+N past observations. The band stays what the history computes wherever it is shown, however narrow: a reader may judge
+one or two percent significant. Where a cap is judged, the history pricer holds every arm to at least a 3% safety
+margin above its estimate: `ArmPrice.predicted_usd`, the figure a launch holds to the arm's cap, is the greater of the
+band's upper end and the estimate plus 3%, while `low_usd` and `central_usd` stay as computed and the band's own upper
+end rides along as `ArmPrice.band_high_usd` (new; also on `ArmEstimate`, and the end a cost pivot's plan reads). Where
+the margin binds, the basis states both: "the band from history is $a-$b (x% below to y% above $c); the cap reads $d,
+the 3% safety margin above the estimate, wider than the band by $g", the gap saying how far the cap stands above the
+band's end where four figures would spell the two alike. Where it does not, the basis names the band's upper end
+alone. An arm refused over its cap is said to have a "cap figure" above it, never to be "predicted to cost" it, and
+the cap figure and the cap are spelled by the number rule, not in cents, so a cap figure a hair above its cap never
+prints equal to it; the launch estimate's text labels each arm's figure and the total as cap figures. So that a launch
+may spell by it, the number rule's module moved from `analysis` to `kernel` (`threetears.evals.kernel.numbers`), the
+package both may import: `threetears.evals.kernel` now exports `format_number`, `format_signed` and `ABSENT`, and
+`threetears.evals.analysis` (and `ops`, for `format_number`) still export them. A log-scale end that misses the
+estimate by rounding alone (within a billionth of it) is set to it. A log-scale band that misses it by more, where the
+lognormal fit contradicts the history's mean (one outlier among near-equal costs), becomes the outer envelope of that
+band and the normal-theory band around the mean; its `band_basis` calls it an at-least-95% band, wider than either
+fit's because neither can be trusted alone, names the end the fit put where, and says why a lower end of $0 is $0. The
+upper end a launch is capped at is never the bare mean of a history that varied. Every figure in a basis is spelled by
+the package's one rule (`format_number`), never as an exponent, and so is every figure in the `ArmPrice.basis` the
+history pricer writes: in cents, a sub-cent arm's band read "$0.00-$0.00 around $0.00", three figures with one
+spelling. The normal-theory band (a history holding a zero cost) is centred on the same estimate.
+`lognormal_sum_prediction_band` gives observations all equal a band of no width at exactly `n_future` times their
+value; read through their logs, eleven or more of them had a spread a few ulps above zero.
+
+### evals: `scope_export` pages a large scope instead of reading it whole
+
+**Fixed:** an unnamed `scope_export` read every result in its scope into memory and serialized them into one
+response, so a large scope could exhaust its host (Discodon, 2026-10-27: a 502, then a restart). `export_results`
+now estimates from the run listing, before reading anything, how many results each run holds (its matrix, cases
+times k, or the cells it recorded persisting when those are more), against `EXPORT_PAGE_RESULTS` (1,000 results, new
+in `threetears.evals.analysis`; also re-exported from `threetears.evals.ops`). A scope that fits is exported as
+before, byte for byte, with `page: null`. A larger scope is exported in pages of whole runs, oldest first (by
+`created_at`, then id), each page reading its runs' results run by run: `ScoreExport.page` (new, an `ExportPage`)
+names the page's runs, how many come before and after it, the archived runs and runs of another status left out
+unread, and `next_after_run_id`. A paged export's exclusion counts cover only that page's reads: results whose run
+was deleted are not reached. A whole-scope read that returns more results than its listing promised is not
+serialized; the export pages instead. One run larger than the ceiling is a page of its own.
+
+**Changed (MCP):** `scope_export` takes `export_after_run_id`, the previous page's `page.next_after_run_id`, and the
+text of a page with a next names the call, repeating a non-default `export_format` and `run_status`:
+`More: action='scope_export', export_after_run_id='<id>'`. `export_run_ids` is never paged: two or more named runs
+whose estimated results pass the ceiling are refused (`VALIDATION_FAILED`, naming the ceiling and the results they
+would read, with `details` `runs_named`, `results_estimated` and `result_ceiling`); one named run is exported whole.
+`export_after_run_id` with `export_run_ids`, or naming a run no longer in the scope, is refused. An unknown format
+is now refused before anything is read. An agent that exported a scope in one call must follow the pages.
+
+### object-store: a presign no longer holds the event loop
+
+**Fixed:** `S3ObjectStore.presigned_get_url` opened an aiobotocore client for every URL, building a whole botocore
+client class on the loop each time: ~100 ms a URL on cobalt dev's shared CPU, so a load presigning a file per
+partition stalled its loop over and over. A store that opened its own session now signs on a worker thread with one
+synchronous botocore client, built on first use and kept; its URLs are the ones the aiobotocore client signs. A store
+given a session (a test's fake, a caller's aioboto3) presigns through it as before.
 
 ## v0.79.0 -- 2026-10-26
 
