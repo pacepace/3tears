@@ -75,11 +75,13 @@ the margin, in points).
 
 **How often today's design lands on the wrong side** (:func:`wrong_side_share`): if the truth equals today's estimate,
 a fresh run of today's size reads its estimate on the other side of the line (or the other arm ahead) with probability
-``Phi(-|distance| / se)``.
+``Phi(-|distance| / se)``. An estimate exactly on its line reads one half: centred on the line, a fresh run lands on
+either side alike, which is the answer to how sure today's reading is, not a refusal.
 
 **What it refuses**, each by raising :class:`NoSpread` with the reason in words: a statistic with no spread to read
-(no interval at a stated level, no standard error, and no count for a rate); an estimate exactly on its line, which no
-number of cases separates; a per-case spread of zero (every case read alike), which no design size changes. Nothing
+(no interval at a stated level, no standard error, and no count for a rate); a design size for an estimate exactly on
+its line, since no finite number of cases settles a reading whose truth is today's estimate (a caller says what would:
+a truth away from the line); a per-case spread of zero (every case read alike), which no design size changes. Nothing
 here reads what kind of eval a figure came from: every condition is on the numbers given.
 """
 
@@ -353,7 +355,10 @@ def cases_to_separate(per_case: float, distance: float, level: float, *, sided: 
     :raises NoSpread: The estimate sits on its line, or one case carries no spread.
     """
     if distance == 0 or not math.isfinite(distance):
-        raise NoSpread("the estimate sits exactly on its line, so no number of cases separates it")
+        raise NoSpread(
+            "the estimate sits exactly on its line, so no finite number of cases settles it at today's estimate: a "
+            "run of any size centred on the line lands on either side alike"
+        )
     if per_case <= 0 or not math.isfinite(per_case):
         raise NoSpread("every case reads alike (no spread per case), so no design size changes what it reads")
     z = (_z_one_sided(level) if sided == 1 else _z_two_sided(level)) + (_z_one_sided(power) if power != 0.5 else 0.0)
@@ -368,12 +373,12 @@ def wrong_side_share(distance: float, se: float) -> float:
     :ptype distance: float
     :param se: Its standard error at today's size.
     :ptype se: float
-    :return: The share of such designs, 0 to one half.
+    :return: The share of such designs, 0 to one half; one half for an estimate exactly on its line.
     :rtype: float
-    :raises NoSpread: The estimate sits on its line, or carries no spread.
+    :raises NoSpread: The distance is not a number, or the estimate carries no spread.
     """
-    if distance == 0 or not math.isfinite(distance):
-        raise NoSpread("the estimate sits exactly on its line: a fresh run lands on either side alike")
+    if not math.isfinite(distance):
+        raise NoSpread("the estimate's distance from its line is not a number")
     if se <= 0 or not math.isfinite(se):
         raise NoSpread("the estimate carries no spread, so a fresh run reads it exactly again")
     return _NORMAL.cdf(-abs(distance) / se)

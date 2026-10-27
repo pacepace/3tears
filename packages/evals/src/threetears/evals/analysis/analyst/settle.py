@@ -41,6 +41,12 @@ count, else the arm's own stated spread times the root of its count.
 - *Which way it settles* (``settles``): the sizes are read on the distance's size, so they settle whichever side
   today's estimate is on. A row whose estimate passes says ``clears`` (the size would show the line cleared); one whose
   estimate misses says ``misses`` (the size would confirm the miss, never that the arm clears).
+- *An estimate exactly on its line* (``settles``: ``on_the_line``) is answered, never refused: a fresh run of today's
+  size reads it on the wrong side half the time (``wrong_side``, one half), no finite size settles it at today's
+  estimate (its sizes are absent, ``unsettled`` says why), and ``what_would`` says what would: only a truth away from
+  the line can be settled, so the run that would is sized for a truth the caller assumes, by a hypothetical line that
+  far from today's (its sizes are the sizes for that truth, on today's spread). Two arms with equal estimates read the
+  same way: either arm ahead half the time, and only a true difference can be settled.
 - *Sidedness*: a line row's sizes are for a one-sided bound, and its ``level`` reads ``95% one-sided``; since a page
   prints two-sided intervals, a line row gives beside them the sizes at which the two-sided interval at the level
   sits on today's side (``cases_needed_two_sided``, ``cases_needed_two_sided_80``). A two-arm row is two-sided, and
@@ -58,8 +64,8 @@ count, else the arm's own stated spread times the root of its count.
 
 **What it refuses**, teaching: the wrong number of arms; a criterion the snapshot does not declare, or one reading no
 figure for the arm; a hypothetical line with no measure, or a measure that states no direction; a line written only
-in exponent notation; and a call where no row can be read (every figure a p50 or p95, no spread, no count, or each
-estimate exactly on its line), naming why. A row that cannot be read among others that can is listed with why
+in exponent notation; and a call where no row can be read (every figure a p50 or p95, no spread, or no count),
+naming why. A row that cannot be read among others that can is listed with why
 (``unsettled``), never dropped.
 
 **No branch on the kind of eval.** Every condition is on what the snapshot holds: a declared criterion, a stated
@@ -176,8 +182,9 @@ _UNREPEATED = frozenset(
 #: the slice's traffic share).
 Assumed = int | Literal["share"]
 
-#: Which side of its line today's estimate is on, so which way a row's sizes settle it.
-Settles = Literal["clears", "misses"]
+#: Which side of its line today's estimate is on, so which way a row's sizes settle it; ``on_the_line`` where it sits
+#: exactly on it, which no size settles at today's estimate.
+Settles = Literal["clears", "misses", "on_the_line"]
 
 _MODEL = ConfigDict(frozen=True, extra="forbid")
 
@@ -209,7 +216,8 @@ class SettleRow(BaseModel):
     )
     settles: Settles | None = Field(
         description="Against a line, which side today's estimate is on, so what the sizes would settle: clears (the "
-        "line cleared) or misses (the miss confirmed); None between arms or with no distance."
+        "line cleared), misses (the miss confirmed), or on_the_line (exactly on it: no size settles it at today's "
+        "estimate, what_would says what would); None between arms or with no distance."
     )
     cases_needed: CitedFigure | None = Field(
         description="The size at which half such designs settle it, sized at the level's sidedness."
@@ -250,6 +258,11 @@ class SettleRow(BaseModel):
     )
     basis: list[CitedFigure] = Field(description="What each arm's spread was read from.")
     unsettled: str = Field(description="Why no design size is read here; empty where one is.")
+    what_would: str = Field(
+        default="",
+        description="Where today's estimate sits exactly on its line (or two arms read alike), what would settle it "
+        "and the call that sizes it; empty otherwise.",
+    )
     gates: bool | None = Field(
         default=None,
         description="Against a declared criterion, whether it removes an option that misses it as the caller reads "
@@ -303,6 +316,29 @@ def _spread_figures(
     return found
 
 
+def _on_the_line(against: str, arms: Sequence[str], key: str) -> str:
+    """What would settle a reading whose estimate sits exactly on its line, or two arms read alike, and the call that
+    sizes it (this module's An estimate exactly on its line); ``key`` empty where no hypothetical line on the figure
+    reads it (a margin's or floor's change, a criterion on another aspect)."""
+    if len(arms) == 2:
+        return (
+            "the two arms read alike, so either reads ahead half the time and no finite size settles which is ahead: "
+            "only a true difference can be; arms_compare gives the interval on how large it may be"
+        )
+    head = (
+        "only a truth away from the line can be settled, and a run of any size centred on the line reads either side "
+        "alike"
+    )
+    if key:
+        return (
+            f"{head}: size the run for the truth you assume with settle_cases, arm_ids=[{arms[0]!r}], "
+            f"measure_key={key!r} and hypothetical_line set that far from this line on the side you would settle; its "
+            "cases_needed is the size for a truth that far off, on today's spread"
+        )
+    parameter = f"threshold:{against.removeprefix('criterion ')}" if against.startswith("criterion ") else against
+    return f"{head}: decision_sensitivity on {parameter} gives the call on either side of it"
+
+
 def _row(
     report_input: ReportInput,
     prefix: str,
@@ -329,8 +365,15 @@ def _row(
     spread = _spread_figures(report_input, arms, key, where, head) if key else {}
     distance = read.get("distance")
     settles: Settles | None = None
+    what_would = ""
     if distance is not None and isinstance(distance.value, int | float) and distance.value != 0:
         settles = "clears" if distance.value > 0 else "misses"
+    elif distance is not None and isinstance(distance.value, int | float):
+        settles = "on_the_line"
+        what_would = _on_the_line(against, arms, key)
+    difference = read.get("difference")
+    if difference is not None and isinstance(difference.value, int | float) and difference.value == 0:
+        what_would = _on_the_line(against, arms, key)
     return SettleRow(
         where=where,
         name=place_name(report_input, where),
@@ -355,6 +398,7 @@ def _row(
         repeats=spread.get("repeats", []),
         basis=spread.get("basis", []),
         unsettled=why if read["cases_needed"] is None or read["wrong_side"] is None else "",
+        what_would=what_would,
     )
 
 
@@ -431,6 +475,8 @@ def _criteria_rows(
             )
             on_lead = criterion_aspect(report_input, criterion) == lead_aspect(report_input)
             row = row if on_lead else _on_own_aspect(report_input, row, prefix)
+            if row.what_would and not on_lead:
+                row = row.model_copy(update={"what_would": _on_the_line(row.against, (arm,), "")})
             gates = criterion.kind in _GATING or (criterion.kind == "bar" and bars_as == "gates")
             rows.append(row.model_copy(update={"gates": gates}))
     return rows

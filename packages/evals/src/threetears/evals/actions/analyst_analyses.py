@@ -428,9 +428,10 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
                 "allow, so cases_needed is the most cases they could need). A slice "
                 "whose figure states no count has no spread: assumed_cases reads it under a what-if count, keyed "
                 "assumed.<cases>.*. A criterion declared on an aspect reads that aspect's figure, and each criterion "
-                "row says whether it gates as you read the bars (gates; bars_as). A p50 or p95, a figure with no "
-                "spread or count, "
-                "and an estimate exactly on its line say why in unsettled. Without a limit a page holds as many "
+                "row says whether it gates as you read the bars (gates; bars_as). A p50 or p95, and a figure with no "
+                "spread or count, say why in unsettled. An estimate exactly on its line is answered: settles reads "
+                "on_the_line, wrong_side one half, no size settles it at today's estimate, and what_would names the "
+                "call that sizes a run for a truth away from the line. Without a limit a page holds as many "
                 f"rows as fit one result, up to {SETTLE_PAGE}."
             ),
         ),
