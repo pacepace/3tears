@@ -46,7 +46,7 @@ Each kind uses the subset its table lists. The same idea has the same name in ev
 
 | Field | Type | Meaning |
 |---|---|---|
-| `fmt` | string | Named format for values and axis labels: `name` or `name:digits`, with a leading `+` to sign positive values. Names: `num` (plain), `int` (rounded, thousands separators), `pct` (`85.3%`), `pts` (`2.1 pts`), `usd` (no digits: $0.302, $11.5, $1,208; with digits: fixed), `usdk` ($7.6k), `ms` (`513 ms`), `s` (`3.0 s`), `dur` (ms in, `600ms` / `1s` out), `x` (`1.5×`), `k` (`3.1k`). Without digits a value prints as many decimals as it needs, up to two (`usd` and `ms` keep their own rounding). |
+| `fmt` | string | Named format for values and axis labels: `name` or `name:digits`, with a leading `+` to sign positive values. Names: `num` (plain), `int` (rounded, thousands separators), `pct` (`85.3%`), `pts` (`2.1 pts`), `usd` (no digits, by each amount's size: $0.0450, $0.30, $4.25, $12, $1,208, whole dollars from $10, cents from ten cents, three significant figures below; with digits: fixed; always grouped, a negative amount `-$1,208`), `usdk` ($7.6k), `ms` (`513 ms`), `s` (`3.0 s`), `dur` (ms in, `600ms` / `1s` out), `x` (`1.5×`), `k` (`3.1k`). Without digits a value prints as many decimals as it needs, up to two (`usd` and `ms` keep their own rounding). |
 | `tick_fmt` | string | Format for axis labels when it differs from `fmt`. |
 | `domain` | [number, number] | Axis range in value units. A value outside it is drawn at the edge. |
 | `ticks` | number[] | Explicit tick positions. The kit drops any whose label would touch its neighbour at the drawn width. Without it, nice ticks are chosen so no two labels repeat. |

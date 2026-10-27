@@ -68,6 +68,7 @@ from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, Re
 from threetears.evals.analysis.report_margins import criterion_place
 from threetears.evals.analysis.report_rows import SourceRow, query_rows
 from threetears.evals.analysis.style import measure_name
+from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec
 
 __all__ = [
@@ -269,7 +270,9 @@ def figure_unit(report_input: ReportInput, key: str, *, kind: str | None = None,
 
 def measure_words(report_input: ReportInput, key: str, *, kind: str | None = None) -> str:
     """What a reader calls a measure or judged dimension: its label, else the package's name for it; how each trial
-    ended (a contrast of kind ``trial``) is the pass rate.
+    ended (a contrast of kind ``trial``) is the pass rate. A goal check whose label is its bare expression (the input
+    declares it no display name) is named as the package names an undeclared check, its expression set as code
+    (:func:`~threetears.evals.analysis.style.measure_name`), so it reads as the check it is, never as a stray key.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -283,7 +286,8 @@ def measure_words(report_input: ReportInput, key: str, *, kind: str | None = Non
     if kind == "trial":
         return "pass rate"
     if key in report_input.measures and kind != "judged":
-        return report_input.measures[key].label or measure_name(key)
+        label = report_input.measures[key].label
+        return measure_name(key) if label is None or label == goal_check_of(key) else label
     if key in report_input.judged:
         return report_input.judged[key].label or measure_name(key)
     return measure_name(key)

@@ -16,7 +16,9 @@ function kThinTicks(vals,x,f){const out=[];let last=-1e9;for(const v of vals){co
 const kClamp=(v,a,b)=>Math.max(Math.min(a,b),Math.min(Math.max(a,b),v));
 const fmt={
   pct:(v,d=1)=>v.toFixed(d)+"%",
-  usd:v=>v>=100?"$"+Math.round(v).toLocaleString():v>=10?"$"+v.toFixed(1):v>=1?"$"+v.toFixed(2):"$"+v.toFixed(3),
+  // money by its size: whole dollars from $10, cents from ten cents, three significant figures below; grouped, the
+  // sign before the dollar sign (the package's look.figure_text and summary.dollars_text write it by the same rule)
+  usd:v=>{const a=Math.abs(v),t=a>=10?Math.round(a).toLocaleString("en-US"):a===0?"0":a>=.1?a.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}):a.toFixed(2-Math.floor(Math.log10(a)));return (v<0&&a!==0?"-":"")+"$"+t;},
   s:v=>v.toFixed(v<10?1:0)+"s", ms:v=>Math.round(v)+" ms", x:v=>v.toFixed(1)+"×"
 };
 // named formats for chart data: "name" or "name:digits", with a leading "+" to sign positive values.
@@ -24,7 +26,7 @@ const fmt={
 const kShort=(v,d)=>d==null?String(+(+v).toFixed(2)):(+v).toFixed(d);
 const K_FMTS={
   num:kShort, int:v=>Math.round(v).toLocaleString("en-US"), pct:(v,d)=>kShort(v,d)+"%", pts:(v,d)=>kShort(v,d)+" pts",
-  usd:(v,d)=>d==null?fmt.usd(v):"$"+v.toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d}),
+  usd:(v,d)=>d==null?fmt.usd(v):(v<0?"-":"")+"$"+Math.abs(v).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d}),
   usdk:v=>Math.abs(v)>=1000?"$"+(v/1000).toFixed(1)+"k":"$"+Math.round(v).toLocaleString("en-US"),
   ms:(v,d)=>(d==null?String(Math.round(v)):v.toFixed(d))+" ms", s:(v,d)=>kShort(v,d)+" s",
   dur:v=>v>=1000?kShort(v/1000)+"s":kShort(v)+"ms", x:(v,d)=>v.toFixed(d==null?1:d)+"×", k:(v,d)=>(v/1000).toFixed(d==null?1:d)+"k"

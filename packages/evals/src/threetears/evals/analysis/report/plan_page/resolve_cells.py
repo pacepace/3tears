@@ -24,8 +24,9 @@ matrix is one scale, so measures in more than one unit are refused; measures dra
 are one, each drawn at its own scale.
 
 **confusion** draws one matrix per label axis the query keeps and per arm (the query's, else every arm the axis holds),
-in panels where there is more than one: titled by the arm, with its chip, where there are several arms, else by the
-axis. A table stated in row percents is drawn as it is; one in counts is normalized by the kit. The labels are the
+in panels where there is more than one: titled by the arm, with its chip, under it the axis's name, where there are
+several arms, else by the axis; its values table names each cell's panel, true label and predicted label, so a panel's
+cells never read under another axis's labels. A table stated in row percents is drawn as it is; one in counts is normalized by the kit. The labels are the
 axis's level names where the input's factors name them.
 """
 
@@ -540,7 +541,6 @@ def _confusion(context: ChartContext) -> Drawn:
     if not drawn:
         raise context.refuse("no arm it reads holds a confusion table")
     several_arms = len({arm for _, arm, _, _ in drawn}) > 1
-    several_axes = len({axis for axis, _, _, _ in drawn}) > 1
     notes = (CONFUSION_NOTE, *missing_note(missing))
     if len(drawn) == 1:
         axis, _, table, matrix = drawn[0]
@@ -556,7 +556,7 @@ def _confusion(context: ChartContext) -> Drawn:
         panels.append(
             ConfusionPanel(
                 title=look.name if look is not None else _axis_name(context, axis),
-                subtitle=_axis_name(context, axis) if look is not None and several_axes else None,
+                subtitle=_axis_name(context, axis) if look is not None else None,
                 tag=look.tag if look is not None else None,
                 color=look.token if look is not None else None,
                 labels=_label_names(context, axis, table.labels),

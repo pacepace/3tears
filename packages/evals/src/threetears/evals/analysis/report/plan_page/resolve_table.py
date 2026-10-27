@@ -291,8 +291,16 @@ def _cells(context: ChartContext, laid: _Laid) -> Iterator[_Row]:
     yield from _wide(context, [place for place in places if place[1]], laid)
 
 
+def _axis_names(context: ChartContext) -> dict[str, str]:
+    """Each declared factor's (or target-matrix axis's) reader name, by id."""
+    matrix = context.report_input.target_matrix
+    factors = [*context.report_input.factors, *((matrix.rows, matrix.columns) if matrix is not None else ())]
+    return {factor.id: factor.name for factor in factors if factor.name}
+
+
 def _confusion(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     names = _level_names(context)
+    axes = _axis_names(context)
     for row in context.rows():
         table = row.item
         assert isinstance(table, ConfusionTable)
@@ -301,7 +309,7 @@ def _confusion(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
             for expected, shares in zip(table.labels, table.per_arm[arm], strict=True):
                 for predicted, share in zip(table.labels, shares, strict=True):
                     yield {
-                        "axis": _words(humanize("dimension", row.key)),
+                        "axis": _words(axes.get(row.key) or humanize("dimension", row.key)),
                         "arm": _arm(context, arm),
                         "expected": _words(names.get(expected, expected)),
                         "predicted": _words(names.get(predicted, predicted)),

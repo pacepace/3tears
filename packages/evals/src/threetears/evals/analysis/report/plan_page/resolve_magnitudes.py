@@ -11,7 +11,8 @@ than ten times, by the page's one log rule, which a caption says):
   per row grouped under each slice (a single slice needs no group);
 - *human_pref*: a row per slice, the share of ratings preferring the control;
 - *prices*: a row per step along the price frontier, its price per point (a month's at the declared volume, else per
-  1,000 of what the cost counts) from zero, its interval's ends where both are stated.
+  1,000 of what the cost counts) from zero, its interval's ends where both are stated; named by its options, and on
+  a narrow chart, where that does not fit, by their tags.
 
 Bars share one axis, so the measures a chart reads are in one unit, each at its own scale; in panels by slice or by
 measure, where the plan asks for them, each panel is its measure's own, in its unit
@@ -105,7 +106,8 @@ _BY_CAUSE = frozenset({"lost", "failed"})
 @dataclass(frozen=True)
 class _Bar:
     """One drawn bar: its row's id, label, colour, tag and group, its value and interval (or the low end of one open
-    above), how it reads, and the quantity it is drawn as where that is its measure's own (None for the chart's)."""
+    above), how it reads, the quantity it is drawn as where that is its measure's own (None for the chart's), and a
+    shorter reader name a narrow chart prints where its label does not fit (a price step's options by their tags)."""
 
     id: str
     label: str
@@ -118,6 +120,7 @@ class _Bar:
     arm: str = ""
     tip: tuple[str, ...] = ()
     drawn: Quantity | None = None
+    short_label: str | None = None
 
 
 def _statistic_note(statistics: set[str]) -> tuple[str, ...]:
@@ -283,15 +286,24 @@ def _price_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[str]]:
     between; a step whose interval is open above carries its low end, drawn as a whisker open above."""
     steps = [(row.item, row.interval) for row in context.rows() if isinstance(row.item, PriceStep)]
     monthly = any(step.monthly for step, _ in steps)
-    drawn = quantity("dollars" if monthly else "usd_per_1k", [step.value for step, _ in steps])
+    amounts = [
+        value
+        for step, interval in steps
+        for value in (step.value, *(interval or ()), *((step.open_from,) if step.open_from is not None else ()))
+    ]
+    drawn = quantity("dollars" if monthly else "usd_per_1k", amounts)
 
     def name(arm: str) -> str:
         return context.look.arm(arm).name if arm in context.look.arms else arm
+
+    def tag(arm: str) -> str:
+        return context.look.arm(arm).tag if arm in context.look.arms else arm
 
     bars = [
         _Bar(
             id=f"{step.first}→{step.second}",
             label=PRICE_STEP_TEMPLATE.format(first=name(step.first), second=name(step.second)),
+            short_label=PRICE_STEP_TEMPLATE.format(first=tag(step.first), second=tag(step.second)),
             value=step.value * drawn.factor,
             interval=(interval[0] * drawn.factor, interval[1] * drawn.factor) if interval is not None else None,
             open_from=step.open_from * drawn.factor if step.open_from is not None else None,
@@ -345,6 +357,7 @@ def _bar_row(context: ChartContext, bar: _Bar, drawn: Quantity) -> BarRow:
     return BarRow(
         id=bar.id,
         label=bar.label,
+        short_label=bar.short_label,
         tag=bar.tag,
         value=bar.value,
         lo=interval[0] if interval is not None else open_from,
