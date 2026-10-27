@@ -73,7 +73,7 @@ provider's tags) is the adapter's to parse (AR-F2).
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Protocol, Self, runtime_checkable
@@ -87,7 +87,38 @@ __all__ = [
     "StreamedResponse",
     "StreamingTransport",
     "TransportResponse",
+    "media_type_accepted",
 ]
+
+
+def media_type_accepted(media_type: str | None, allowed: Sequence[str]) -> bool:
+    """Whether a declared media type passes a content-type gate.
+
+    An entry is a prefix (``text/`` takes every text type, ``application/json`` takes
+    itself), or a prefix and a structured-syntax suffix (RFC 6839) joined by ``*``:
+    ``application/*+json`` takes ``application/ld+json`` and ``application/vnd.api+json``,
+    which no prefix can name, and the ``*`` stands for at least one character. The prefix
+    keeps a suffix to its family: ``application/*+xml`` takes a feed and not
+    ``image/svg+xml``. Case is ignored, and a type that declares nothing passes nothing.
+
+    :param media_type: the bare media type the response declared, without parameters
+    :ptype media_type: str | None
+    :param allowed: the gate's entries
+    :ptype allowed: Sequence[str]
+    :return: True when some entry takes the type
+    :rtype: bool
+    """
+    lowered = (media_type or "").strip().lower()
+    if not lowered:
+        return False
+    for entry in allowed:
+        head, star, tail = entry.lower().partition("*")
+        if not star:
+            if lowered.startswith(head):
+                return True
+        elif len(lowered) > len(head) + len(tail) and lowered.startswith(head) and lowered.endswith(tail):
+            return True
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +236,9 @@ class FetchTransport(Protocol):
       chunk by chunk;
     - **the content-type gate refuses before the body** : when
       ``allowed_content_types`` is given and the response's declared
-      media type prefix-matches none of them, the implementation refuses
+      media type matches none of them (:func:`media_type_accepted`: a
+      prefix, or a prefix and a suffix such as ``application/*+json``),
+      the implementation refuses
       without reading the body -- the gate exists so Extract never pulls
       megabytes of video to learn it wanted text (§3.5).
     """
@@ -245,7 +278,9 @@ class FetchTransport(Protocol):
             budget, not a transport constant
         :ptype max_bytes: int
         :param allowed_content_types: media-type prefixes this read will
-            accept (e.g. ``("text/html", "application/xhtml+xml")``);
+            accept (e.g. ``("text/html", "application/xhtml+xml")``), and
+            prefix-and-suffix entries such as ``application/*+json``
+            (:func:`media_type_accepted`);
             None accepts anything. A declared type outside the gate is
             refused before the body is read
         :ptype allowed_content_types: tuple[str, ...] | None

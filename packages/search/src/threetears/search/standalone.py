@@ -157,6 +157,7 @@ from threetears.search.contracts import (
     TimedOut,
     TransportFailed,
     TransportResponse,
+    media_type_accepted,
 )
 
 __all__ = [
@@ -2548,7 +2549,7 @@ class StandaloneTransport:
             return
         declared = headers.get("content-type", "")
         media_type = declared.split(";", 1)[0].strip().lower()
-        if media_type and any(media_type.startswith(prefix.lower()) for prefix in allowed):
+        if media_type_accepted(media_type, allowed):
             return
         described = f"declared content type {media_type!r}" if media_type else "declared no content type"
         raise LocalCapExceeded(
