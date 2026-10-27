@@ -119,7 +119,7 @@ survivor on every axis that matters:
 1. *No call* when the report measures one arm (there is nothing to choose), when no option survives, or, in a change,
    when no surviving candidate is separated: its asked readings' intervals cross zero and sit outside the margin (or
    no margin is declared), and no contrast on an asked aspect separated it (``improved``, ``regressed`` or
-   ``equivalent``, corrected within its family). A candidate with neither an asked reading nor a contrast on an asked
+   ``equivalent``, as its family's correction reads it: corrected only where that names a method). A candidate with neither an asked reading nor a contrast on an asked
    aspect forces nothing.
 2. *Decide* when exactly one survivor dominates; the plan recommends that one.
 3. *Decide* when two or more survive, none dominates alone, and the campaign declared a rule that ranks the axes (a
@@ -735,7 +735,8 @@ def _level(report_input: ReportInput, arm: str, control: str, overrides: _Overri
 
 def separating_contrasts(report_input: ReportInput, arm: str) -> list[Contrast]:
     """The contrasts on an asked aspect that separate a candidate from the control: verdict ``improved``,
-    ``regressed`` or ``equivalent``, corrected within their family, in the input's order. How a question a measure
+    ``regressed`` or ``equivalent``, each as its family's correction reads it (uncorrected where that is ``none``), in
+    the input's order. How a question a measure
     answers (a latency aspect's p95) separates a candidate.
 
     :param report_input: The report input.

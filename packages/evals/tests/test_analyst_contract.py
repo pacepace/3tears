@@ -543,6 +543,23 @@ async def test_every_analyst_read_action_answers_alike_twice_within_its_budget_o
                 _held_to_figures(first.structured, held, text=action.name != "block_render")
 
 
+def test_the_walk_sweeps_a_range_that_names_an_unswept_side_on_either_end() -> None:
+    """The control for the walk above: its ranged decision_sensitivity calls name a side past each end of a range on
+    some fixture, so the every-number check reads what unswept holds (the W2c bare count it never saw)."""
+    (action,) = [action for action in read_actions() if action.name == "decision_sensitivity"]
+    sides = set()
+    for name, snapshot in fixture_snapshots(TOYHOST_SCOPE).items():
+        held = frozen_input(snapshot)
+        for arguments in action_calls(action, held, snapshot.id):
+            if "range_low" not in arguments and "range_high" not in arguments:
+                continue
+            given = {end: arguments[end] for end in ("range_low", "range_high") if end in arguments}
+            result = sensitivity(held, arguments["parameter"], **given)
+            sides |= {side.side for side in result.unswept}
+            _held_to_figures(result.model_dump(mode="json"), held)
+    assert sides == {"below_range_low", "above_range_high"}
+
+
 @pytest.mark.parametrize("name", sorted(budget_inputs()))
 async def test_every_analyst_read_action_keeps_its_default_page_within_the_budget_on_shape_and_wide_campaigns(
     name: str,

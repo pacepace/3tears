@@ -3942,6 +3942,19 @@ def _passed_reading(
     return held[0], (float(low), float(high)), 1.0 if candidate == arm_id else -1.0
 
 
+#: Why an arm's spread read on its trials may be too narrow.
+_TRIALS_NARROWER = "which reads narrower than its cases would where a case ran more than once"
+
+#: What a paired row's two estimates are, beside its difference: not the same figures, so said once in its basis.
+_PAIRED_ESTIMATES = (
+    "first and second are each arm's pooled pass rate on the aspect's scoreboard (trials passed over usable), while "
+    "the difference is the reading's own change, the mean of per-case shares over the cases it pairs (under one test "
+    "setup where several ran), so it need not equal first minus second: it differs where cases ran unequal usable "
+    "trials, the reading pairs fewer cases than the scoreboard counts, or one setup was read; cite the difference "
+    "with the sizes, never first minus second"
+)
+
+
 def _passed_apart(report_input: ReportInput, aspect_id: str, arm_id: str, other: str, path: str) -> _PassedApart:
     """Two arms apart on an aspect's pass rate (its scoreboard's trials passed over usable), in points: paired where the
     aspect's reading of a candidate against the control states its interval (its own change, interval and level, the
@@ -3973,7 +3986,7 @@ def _passed_apart(report_input: ReportInput, aspect_id: str, arm_id: str, other:
             basis=(
                 f"paired: {reading.arm}'s reading on {aspect_id} against the control, its own change and interval at "
                 "its stated level, over the cases each arm ran (the reading's cases); a size counts cases each arm "
-                "runs, each run as often as today"
+                f"runs, each run as often as today. {_PAIRED_ESTIMATES}"
             ),
         )
     spreads = []
@@ -3993,13 +4006,17 @@ def _passed_apart(report_input: ReportInput, aspect_id: str, arm_id: str, other:
     per_case = (
         None if first.per_case is None or second.per_case is None else 100 * math.hypot(first.per_case, second.per_case)
     )
-    on_cases = first.cases is not None and second.cases is not None
-    counted = (
-        f"read on its distinct cases, each counted once: {_REPEATS_BOUND}"
-        if on_cases
-        else "read on its usable trials as if each were independent, which reads narrower than its cases would where "
-        "a case ran more than once"
-    )
+    on_cases = [spread.cases is not None for spread in spreads]
+    if all(on_cases):
+        counted = f"read on its distinct cases, each counted once: {_REPEATS_BOUND}"
+    elif not any(on_cases):
+        counted = f"read on its usable trials as if each were independent, {_TRIALS_NARROWER}"
+    else:
+        cased, trialled = (arm_id, other) if on_cases[0] else (other, arm_id)
+        counted = (
+            f"read for {cased} on its distinct cases, each counted once ({_REPEATS_BOUND}), and for {trialled}, whose "
+            f"scoreboard states no cases, on its usable trials as if each were independent, {_TRIALS_NARROWER}"
+        )
     return _PassedApart(
         difference=100 * (first.mean - second.mean),
         se=100 * math.hypot(first.se, second.se),
@@ -4308,7 +4325,9 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         _Ids("<arm>", _passed_others),
         _Statistic(_PASSED_FIELDS, "<field>"),
         what="two arms apart on an aspect's pass rate (its scoreboard's trials passed over usable), the first minus "
-        "the second: `first` and `second` each arm's rate, `difference` in points, then what two arms' settle reads "
+        "the second: `first` and `second` each arm's pooled rate, `difference` in points (on a paired row the "
+        "reading's own change, which need not equal first minus second; `basis` says so), then what two arms' "
+        "settle reads "
         "(`cases_needed`, `cases_needed_80`, `trials_needed`, `trials_needed_80`, `wrong_side`, `level` two-sided); "
         "`repeats` the trials each case ran today; `basis` the count basis: paired where the aspect's reading of a "
         "candidate against the control states its interval (its own change and interval, over the cases each arm "

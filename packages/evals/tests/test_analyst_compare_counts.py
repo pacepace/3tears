@@ -11,7 +11,9 @@ Contracts held here (``threetears.evals.analysis.analyst.compare`` and the ``com
   paired row says its contrast states no count (``counted_unstated``) and the page's notes say so once;
 - **may be too narrow**: a row is marked where what its interval counts is trials, observations or unstated, its
   spread was not read on distinct cases, and an arm ran more trials than cases, citing each such arm's trials and
-  cases; never where every arm's trials equal its cases. Expectations are computed from each input.
+  cases; never where every arm's trials equal its cases. Expectations are computed from each input. The note says it
+  as a may (``may be too narrow if these intervals count trials nested in cases``), never that reading on the cases
+  would widen it, and never calls a paired row, whose unit is unstated, counting trials.
 """
 
 from __future__ import annotations
@@ -205,6 +207,21 @@ def test_r4s_paired_contrast_on_replies_in_conversations_is_marked_as_possibly_t
     assert row.paired_with == f"arm:{contrast.arm}" and row.counted_unstated and row.may_be_narrow
     trials, cases = (figure.value for figure in row.nested[:2])
     assert isinstance(trials, int | float) and isinstance(cases, int | float) and trials > cases
+
+
+def test_the_narrow_note_says_a_may_and_never_that_the_cases_would_widen_a_paired_interval() -> None:
+    """The W2c finding: the note said "read on the cases it would be wider" of every marked row, though a paired row's
+    unit is unstated and Kairo's per-case contrast is already over the cases. It says the interval may be too narrow
+    if it counts trials nested in cases, in the phrase the page's note shares."""
+    held = fixture_inputs()["r4"]
+    contrast = next(_paired_contrasts(held))
+    control = next(a.id for a in held.arms if a.role == "control")
+    comparison = arms_compare(held, [contrast.arm, control], contrast.measure)
+    assert comparison.rows[0].may_be_narrow and comparison.rows[0].counted_unstated
+    (note,) = [note for note in comparison.notes if "may_be_narrow" in note]
+    assert "may be too narrow if these intervals count trials nested in cases" in note
+    assert "would be wider" not in note and "counts trials, observations or an unstated unit" not in note
+    assert "unstated" in note and "may already be read over the cases" in note
 
 
 def test_a_row_whose_arms_ran_each_case_once_is_never_marked_as_possibly_too_narrow() -> None:
