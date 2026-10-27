@@ -147,6 +147,7 @@ from threetears.evals.analysis.separation import (
     stat_spread,
     wrong_side_share,
 )
+from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import humanize, measure_name
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of
 
@@ -623,7 +624,10 @@ def _reading_figure(reading: Reading, statistic: str, path: str) -> Figure:
     if statistic == "margin":
         return _number(path, reading.margin, "the reading's margin", "points")
     if statistic == "level":
-        return _level(path, reading.gain_confidence, "the interval's level")
+        # The level of the interval `interval`, `low` and `high` read (within_interval): the nominal one, with no
+        # correction. gain_confidence is the gain interval's, which no reading key reads.
+        stated = INTERVAL_LEVEL if reading.within_interval is not None else None
+        return _level(path, stated, "the interval's level")
     if statistic == "verdict":
         return _text(path, reading.reading, "the reading")
     return _text(path, getattr(reading, statistic), f"the reading's {statistic}")

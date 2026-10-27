@@ -30,7 +30,9 @@ No such criterion, or several, is a fault at completion, naming why, and so is a
 What the chart reads is :mod:`~threetears.evals.analysis.report_rows`' selection (:func:`query_aspect`,
 :func:`query_rows`), the one the checks and the page read too.
 
-**A chart's interval level** is the one its rows carry: a reading's confidence, a contrast's family level
+**A chart's interval level** is the one its rows carry: a reading's nominal level (its ``within_interval``, the one
+a chart of readings draws, is at :data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL` with no correction; its
+``gain_confidence`` is the gain interval's, which no chart of readings draws), a contrast's family level
 (:func:`contrast_level`), a measure's or judged dimension's declared level (a stratum's with "uncorrected"). A dot
 strip, bars or a table of arms' figures (measures, judged dimensions, configs) none of which states an interval, where
 some is a pass/fail rate with a count, is completed at the level of the interval code computes from that count, marked
@@ -478,9 +480,10 @@ def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
     """The interval level printed on the chart, from the rows it reads; empty where they carry none."""
     source = chart.query.source
     if source == "readings":
-        readings = _selected_readings(chart, report_input)
-        levels = [_percent(r.gain_confidence) for r in readings if r.gain_confidence is not None]
-        return _one(path, "interval level", levels, faults)
+        # A chart of readings draws each one's within_interval, at the nominal level with no correction: never
+        # its gain interval's level (gain_confidence, a Holm step's), so readings at different steps share one.
+        drawn = any(r.within_interval is not None for r in _selected_readings(chart, report_input))
+        return _percent(INTERVAL_LEVEL) if drawn else ""
     if source == "contrasts":
         return _one(path, "interval level", (level for _, level in _selected_contrasts(chart, report_input)), faults)
     if source in ("measures", "judged"):
