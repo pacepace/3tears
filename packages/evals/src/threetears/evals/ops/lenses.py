@@ -58,6 +58,7 @@ from threetears.evals.analysis.cassette_mode import cassette_mode_disclosure
 from threetears.evals.analysis.lenses.cost_estimate import (
     COST_BAND_SAFETY_MARGIN,
     COST_ESTIMATE_MIN_BASIS,
+    CostObservation,
     compute_estimate_cost,
 )
 from threetears.evals.analysis.significance import format_significance
@@ -94,6 +95,7 @@ from threetears.evals.run.reads import list_runs
 
 from threetears.evals.analysis.lens_text import exclusion_lines
 from threetears.evals.kernel.remedies import FIND_RUN, FIND_TEMPLATE
+from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
 
 
 def _lister(host: EvalHost) -> RunLister:
@@ -282,12 +284,14 @@ def scope_export(
     status: str | None = "completed",
     run_ids: list[str] | None = None,
     after_run_id: str | None = None,
+    after_case_id: str | None = None,
 ) -> ScoreExport:
     """The scope's observations as flat rows, in CSV or JSON, for analysis elsewhere, a page at a time when large.
 
     A scope whose runs' matrices hold more than :data:`~threetears.evals.analysis.EXPORT_PAGE_RESULTS` results is
-    exported in pages of whole runs, oldest first: each page's ``page.next_after_run_id`` is the ``after_run_id`` of
-    the next (:func:`~threetears.evals.analysis.export_results`).
+    exported in pages of whole runs, oldest first, and a run past it in pages of its cases: each page's
+    ``page.next_after_run_id`` is the ``after_run_id`` of the next, and its ``page.next_after_case_id`` the
+    ``after_case_id`` (:func:`~threetears.evals.analysis.export_results`).
 
     :param host: The host whose store and vocabulary are read.
     :ptype host: EvalHost
@@ -297,15 +301,19 @@ def scope_export(
     :ptype format: str | None
     :param status: Only runs with this status; ``"all"`` exports every run.
     :ptype status: str | None
-    :param run_ids: Only these runs — archived ones included, since they were named. Never paged: two or more
-        whose results would pass the ceiling are refused.
+    :param run_ids: Only these runs — archived ones included, since they were named. Two or more whose results
+        would pass the ceiling are refused; one past it is paged by its cases.
     :ptype run_ids: list[str] | None
     :param after_run_id: The previous page's ``page.next_after_run_id``; ``None`` reads the first page.
     :ptype after_run_id: str | None
+    :param after_case_id: The previous page's ``page.next_after_case_id``; ``None`` starts at the run after
+        ``after_run_id``.
+    :ptype after_case_id: str | None
     :return: The export.
     :rtype: ScoreExport
     :raises ValidationFailedError: The format is not one there is, the status is no run's, the named runs would pass
-        the ceiling, or ``after_run_id`` is given with ``run_ids`` or is no run in the scope.
+        the ceiling, ``after_run_id`` is no run in the scope or is given with ``run_ids`` other than inside the one
+        run they name, or ``after_case_id`` is given alone or is no case of that run.
     """
     return export_results(
         host.storage,
@@ -315,6 +323,7 @@ def scope_export(
         status=status,
         run_ids=run_ids,
         after_run_id=after_run_id,
+        after_case_id=after_case_id,
         profile=host.profile,
     )
 
@@ -1033,10 +1042,17 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
             for run in list_runs(host, quote.scope_id, include_archived=True)
             if run.template_id == template_id and not _launch_differences(run, quote)
         ]
-        results = [result for run in runs for result in host.storage.query_eval_results_by_run(run.id, quote.scope_id)]
+        # Each run read a page at a time, and of each of the arm's model's results only what the estimate reads: a
+        # template's history is every result of every run of it, which no launch, nor a take-up's replay, holds whole.
+        observations = [
+            CostObservation.of(result)
+            for run in runs
+            for result in iter_run_results(host.storage, run, page_results=RUN_RESULTS_PAGE)
+            if result.model == quote.candidate_model
+        ]
         estimate = compute_estimate_cost(
             runs,
-            results,
+            observations,
             models=[quote.candidate_model],
             k_runs=quote.k_runs,
             n_test_cases=quote.case_count,
@@ -1205,7 +1221,9 @@ def _closest_priced_differences(host: EvalHost, quote: ArmQuote, template: EvalT
     for run in list_runs(host, quote.scope_id, include_archived=True):
         if run.template_id != template.id:
             continue
-        if not any(r.cost_usd is not None for r in host.storage.query_eval_results_by_run(run.id, quote.scope_id)):
+        # Read a page at a time, and only until a priced result is met.
+        pages = iter_run_results(host.storage, run, page_results=RUN_RESULTS_PAGE)
+        if not any(result.cost_usd is not None for result in pages):
             continue
         differences = _launch_differences(run, quote)
         if closest is None or len(differences) < len(closest):
@@ -1497,6 +1515,12 @@ def export_text(export: ScoreExport, *, next_call: str | None = None) -> str:
             if page.run_ids
             else f"no runs, of {total}"
         )
+        if page.case_ids is not None:
+            cases = page.cases_before + len(page.case_ids) + page.cases_after
+            held = (
+                f"run {page.runs_before + 1} of {total}, its cases "
+                f"{page.cases_before + 1}-{page.cases_before + len(page.case_ids)} of {cases}"
+            )
         lines.append(f"page: {held}, oldest first; at most {page.result_ceiling} results a page")
         unread = [
             f"{count} {what}"

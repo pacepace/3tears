@@ -733,7 +733,8 @@ before a page is slow, and you can alert on `elapsed_ms` instead.
 **Every read of a whole scope is bounded.** `export_results` estimates from the run listing how many results a scope
 holds before it reads any: each run's matrix (cases times k), or the cells it recorded persisting when those are
 more. Past `EXPORT_PAGE_RESULTS` (1,000) it exports in pages of whole runs (`ScoreExport.page`), each read run by
-run, so one call never holds the scope.
+run, so one call never holds the scope. A run past the ceiling, in the scope's pages or named alone, is exported in
+pages of whole cases of it, the cursor naming the case (`page.next_after_case_id`).
 
 The aggregating lenses (`comparison_sets`, `pivot`, `frontier`, `history`, `program_budget` and `orphaned_runs`, and
 the `scope_pivot`, `scope_frontier` and `scope_history` operations and actions over them) cannot page: part of a
@@ -757,6 +758,17 @@ pivot, a frontier or a history reads as the whole of it. They make the same esti
 
 Campaign reports read their member runs by id, so the budget never applies to them. Answering a scope past the
 budget in one call needs the projection pushed down into SQL (#996).
+
+**A run is read a page at a time.** A run's summary (`summarize_run`, `run_get`), a take-up of it (`job_resume`, the
+history pricer its replayed launch prices with included), the offer of one (`resumable_jobs`) and a second judge
+pass's poll read a run in one pass and then by id: one `by_doc_type` of the run's results with the thirteen fields that
+grow with what a cell did left out (`exclude`, heaviest first), then one `get_many` per `RUN_RESULTS_PAGE` (200)
+results. Your store already serves both: nothing to add. The pass is your store's filter over the scope's result rows
+by run, the one a whole read of the run made, now once a walk and shipping no heavy field, plus `n / 200` reads by
+key. Leaving the fields out costs what your store's `exclude` costs: one rebuild of each document per path when it
+drops them one at a time; a store whose fields are top-level keys of a Postgres `jsonb` can drop them all in one
+operation (`data - text[]`). A store that applies `exclude` after fetching should project each row as it reads it, or
+the pass holds every row's text at once. A few readers still read a run whole; the CHANGELOG lists them.
 
 ## Stored data: what is kept
 

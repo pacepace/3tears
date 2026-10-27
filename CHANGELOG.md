@@ -31,6 +31,91 @@ way carries `RegressionAlert.narrowed_read_disclosure` (new). When the subject a
 logs at ERROR that it checked nothing and that nothing narrower exists (`eval.regression watch checked nothing on
 run=...`), and `RegressionWatch.check` raises the refusal. The `frontier` command's refusal names `--subject`.
 
+### evals: a run's stored results are read a page at a time, never whole
+
+**Fixed:** five readers still loaded every stored result of a run at once, and a result carries its judge's
+reasoning, its kind's payload, its world events, its deliveries and its rescores, so their memory grew with the run:
+a run's summary (`summarize_run`, so `run_get`, `quick`'s summaries and the CLI's); a take-up of a run (`job_resume`,
+`resume_run`, `resume_launch`) and the offer of one (`resumable_jobs`, which read every resumable run of a scope in
+one call); the launch pricer `history_launch_pricer`, which read every run of the template whole on every launch and
+on every take-up's replay of one; `job_poll` of a finished second judge pass, on every poll; and an export of one
+run past `EXPORT_PAGE_RESULTS`.
+
+**How each reads now: one pass over the run, then reads by id** (`threetears.evals.kernel.run_pages`, new). The run's
+results are found by one read of the run that reads each result's key (`ResultKey`, also exported from
+`threetears.evals.kernel`: id, case, `k`, model, when stored), `EvalStorage.query_eval_result_keys_by_run` (new: the
+same `by_doc_type` a whole read of the run is, with the thirteen fields that grow with what a cell did left out,
+heaviest first: `world_events`, `kind_payload`, `judge_reasoning`, the judge's rescores, repeats and second judgings,
+`async_deliveries`, `usage`, `rubric_scores`, the outcome lists and the judge's "cannot tell" prose; the scalars
+ship, a few hundred bytes a result, and are ignored). The keys are ordered by the case's place in the run, then `k`, model,
+when stored and id, and the results are read by id a page at a time, `RUN_RESULTS_PAGE` (200) a page,
+`EvalStorage.load_eval_results` (new: one `get_many`). So a walk of a run of `n` results costs one pass over the run
+plus `n / 200` reads by id, which every store answers from its key; it holds one page of results and `n` keys of a
+few scalars. Every `DocumentStore` already serves both reads: a host adds nothing. Per store: the in-memory store
+passes over its documents once and looks each page up by key; the SQLite store reads the scope's results by its
+`(scope_id, doc_type)` index once, filtering the run as a whole read of it always did, and each page by its
+`(scope_id, id)` key (a projected read now projects each row as it is read, where it held every row's text first); a
+routed store passes both to the store results are kept in; over Discodon's YSQL table the key read is the scope's
+key index with the run's containment as a filter (as its store's docstring says of every equality read), each left-out
+field one `#-` in the database, and each page is a primary-key read. In every store the pass is over the scope's result
+rows the store filters by run, as a whole read of the run always was; what changed is that it is made once a walk,
+not once a page, and ships no heavy field.
+Neither a keyset read (ordered after a cursor, with a limit) nor one streaming read is possible over the port as it
+stands: the port has no range predicate and returns a list, and Discodon's sync engine fetches every row of a
+statement and answers with one JSON reply, so either would be a port method and a host change. A result whose case is none of its run's cases is read too, after every case of
+the run. `iter_run_results`, `run_result_keys`, `run_case_pages` and `read_results` are the walk's parts, and
+`RunResultsStore` the two reads.
+
+- **`summarize_run`** folds each result into its tallies as it is read. Counts, minimums and maximums stream; every
+  sum (a measure's or a dimension's mean, a role's dollars, the run's total) is kept exactly and rounded once, as
+  `math.fsum` rounds, so the summary does not move with the page size or the store's order. A mean was `sum(values) /
+  len(values)` and is now the correctly rounded sum over the count: the same figure wherever Python's compensated
+  `sum` already rounds correctly, which was every case in 20,000 random trials, and on the toy host's stored runs
+  byte for byte. Three readings need every value at once and keep one small record per value, never the result:
+  the label statistics (each classification and its case, for an interval clustered by case), the second judges'
+  agreement (each pair of scores, for kappa and its interval) and the errors listed. The errors are now in the
+  run's case order, then `k`, where they were in the store's order. To stream them, `inter_judge_agreement`,
+  `judge_drift`, `self_judging_models`, `unconfirmed_model_identities` and `request_settings_readings` each read
+  through a tally (`InterJudgeTally` in `threetears.evals.analysis.agreement`, `JudgeDriftTally` in
+  `threetears.evals.analysis.judge_drift`; `SelfJudgingTally`, `ModelIdentityTally` and `RequestSettingsTally` in
+  `threetears.evals.analysis.reporting`, new), with the same answers. `job_poll` of a second judge pass reads its
+  agreement and drift through the same two tallies.
+- **A take-up** keeps each stored row as a `StoredCell` (new in `threetears.evals.run`: the row's `CellSummary`, its
+  harness fault, its exclusion cause, its superseded spend and its metered calls landed and refused), read page by
+  page. **Changed:** `StoredCells.done` is a tuple of `StoredCell`, `StoredCells.replaced` maps a cell to its
+  `StoredCell`, and `RunResumption.rows` is a tuple of `StoredCell`, where each held the stored `EvalResult`s.
+  `resumable_jobs` walks each resumable run in turn, where it read every run's rows in one call: a pass over each run
+  and a read by id a page, none of them a run's whole volume.
+- **The history pricer** walks each run of the template a page at a time and keeps, of each of the arm's model's
+  results, what the cost estimate reads (`CostObservation`, new in `threetears.evals.analysis.lenses.cost_estimate`:
+  its run, model, cost and cost roles): O(n) small records over the template's history, never its results.
+  `compute_estimate_cost` takes those as well as results. Naming the closest priced run reads each run only until a
+  priced result is met. A take-up's replay of its launch therefore reads no run whole either.
+- **An export of one run past the ceiling**, in a scope's pages or named alone in `export_run_ids`, is paged by its
+  cases, each page whole cases of the run up to the ceiling (one case alone when it holds more), read by id after one
+  pass over the run's keys. The cursor is the same one, carrying the case: `ExportPage` gains `case_ids`,
+  `cases_before`, `cases_after`, `next_after_case_id` (the case the next page starts after, inside
+  `next_after_run_id`) and `named_run_ids` (the run the next call names again). A CSV page's columns are its own, so
+  pages join by column name. **Changed:** the lenses' store protocol (`LensStore`) gains
+  `query_eval_result_keys_by_run` and `load_eval_results`, which `EvalStorage` has; a host that hands the lenses a
+  store of its own adds them.
+- **Known limits.** A walk reads its run's keys once, when it starts: a result written after is not read, and one
+  removed before its page is read is absent. `job_poll` of a second judge pass is exercised by its tests but its read
+  bound is not pinned by one, and it now loads the run, so a run this build cannot read refuses the poll, and a run
+  whose lease lapsed is settled by it. The SQLite store parses each row's JSON while it holds its connection's lock,
+  so other threads wait on that one connection for longer.
+- **Still read whole**, each its own follow-up: comparing two runs (`runs_compare`, `compare_two_runs`,
+  `bisect_runs`, and the pair disclosures' measurement windows), settling a lapsed run that recorded no
+  completeness, the witnessed cells' judge-ceiling check, `results_list` and `list_results`, `delete_run`'s cascade,
+  the campaign and analysis readers, `run_summary` (the lens) and the scope aggregates.
+
+**Changed (MCP):** `scope_export` takes `export_after_case_id`, the previous page's `page.next_after_case_id`, beside
+`export_after_run_id`, and the text of a page inside a run names it (and `export_run_ids` for a named run):
+`More: action='scope_export', export_after_run_id='<run>', export_after_case_id='<case>'`, with the page line
+`page: run 2 of 7, its cases 1-1000 of 2400`. `export_after_case_id` without `export_after_run_id`, or naming no case
+of that run, is refused (`VALIDATION_FAILED`, `details` `after_run_id` and `after_case_id`). A run archived or
+moved to another status between its pages is left, and the next page starts at the run after it.
+
 ## v0.80.0 -- 2026-10-27
 
 ### backup: a drill compares a naive-timestamp table against the backup's moment

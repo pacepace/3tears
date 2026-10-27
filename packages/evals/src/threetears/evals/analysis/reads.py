@@ -95,6 +95,7 @@ from threetears.evals.kernel.scoring import (
 from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN
+from threetears.evals.kernel.run_pages import RunResultsStore, read_results, run_case_pages, run_result_keys
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -167,8 +168,9 @@ READ_TIER_ROW_BUDGET = 50_000
 #: carries the body twice (its structured result and its text). At this ceiling a page projects 4,000 to 25,000
 #: records, inside :data:`READ_TIER_ROW_BUDGET` at up to 50 measures per result, and its CSV body is about 2 MB at four
 #: records per result. A scope estimated past it is exported in pages of whole runs
-#: (:class:`~threetears.evals.analysis.lenses.export.ExportPage`), and a named list of runs past it is refused. One
-#: run is never split: a run larger than the ceiling is a page of its own, or exported alone.
+#: (:class:`~threetears.evals.analysis.lenses.export.ExportPage`), and a named list of runs past it is refused. A run
+#: larger than the ceiling, in a scope's pages or named alone, is exported in pages of whole cases of it
+#: (:func:`~threetears.evals.kernel.run_pages.run_case_pages`), so no call reads past the ceiling but by one case.
 EXPORT_PAGE_RESULTS = 1_000
 
 
@@ -222,8 +224,9 @@ def _observe_read(
     )
 
 
-class LensStore(Protocol):
-    """The storage reads the lenses make — results by scope and by run, campaigns, and one whole run.
+class LensStore(RunResultsStore, Protocol):
+    """The storage reads the lenses make — results by scope, by run and a run's a page at a time, campaigns, and one
+    whole run.
 
     A scope's runs are not listed through it: they arrive through ``list_runs`` and the caller's
     listed-run loader, which carry the run package's listing rules. Structural, so a host's own storage satisfies it by
@@ -1089,6 +1092,7 @@ def export_results(
     status: str | None = "completed",
     run_ids: list[str] | None = None,
     after_run_id: str | None = None,
+    after_case_id: str | None = None,
     profile: HostProfile,
 ) -> ScoreExport:
     """Serialize the projection's flat rows for a scope as CSV or JSON, a page at a time when the scope is large.
@@ -1114,6 +1118,13 @@ def export_results(
     page, which stays right while runs are added, finish or are archived between calls: it names a place in the order
     of every run in the scope, not a count. Its exclusions count only what its reads returned.
 
+    **A run larger than the ceiling is paged by its cases**, never read whole: its pages hold whole cases of it, in the
+    run's order, as many as the ceiling holds (one alone when it holds more), each read by id after one read of the
+    run's result keys (:mod:`~threetears.evals.kernel.run_pages`). The cursor is the same
+    one, carrying the case: ``page.next_after_case_id`` beside ``page.next_after_run_id`` while the run has cases left,
+    and the call names both (``after_case_id``). So is one named run larger than the ceiling, its pages naming it
+    again (``page.named_run_ids``). A CSV page's columns are its own, so pages join by column name.
+
     :param storage: Where the scope's results are read (:class:`LensStore`).
     :ptype storage: LensStore
     :param scope_id: Partition key — the scope to export.
@@ -1133,8 +1144,8 @@ def export_results(
         rows, not row width: the stored result carries no trace payload at
         all — that lives in a sibling :class:`~threetears.evals.schema.models.EvalTrace`
         document no export path reads. Unknown ids are silently absent (they
-        contribute no rows). ``None`` exports every run, as before. Never paged: two or more named runs whose
-        estimated results pass :data:`EXPORT_PAGE_RESULTS` are refused; one named run is exported whole.
+        contribute no rows). ``None`` exports every run, as before. Two or more named runs whose estimated results
+        pass :data:`EXPORT_PAGE_RESULTS` are refused; one named run past it is paged by its cases.
 
         **A named id is honoured even when the run is archived**, matching
         ``EvalService.get_run`` and every other by-id surface: archiving withholds a
@@ -1142,9 +1153,13 @@ def export_results(
         name. Only the unnamed case — the one that expressed no preference —
         is narrowed to the cohort.
     :ptype run_ids: list[str] | None
-    :param after_run_id: The previous page's ``next_after_run_id``: read the page that starts after this run.
-        ``None`` or blank reads the first page, or the whole scope when it fits. Not taken with ``run_ids``.
+    :param after_run_id: The previous page's ``next_after_run_id``: read the page that starts after this run, or
+        inside it when ``after_case_id`` is given. ``None`` or blank reads the first page, or the whole scope when it
+        fits. Taken with ``run_ids`` only to go on inside the one run they name.
     :ptype after_run_id: str | None
+    :param after_case_id: The previous page's ``next_after_case_id``: read the page of ``after_run_id`` that starts
+        after this case of it. ``None`` or blank starts at the run after ``after_run_id``.
+    :ptype after_case_id: str | None
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: The :class:`~threetears.evals.analysis.lenses.export.ScoreExport`: its body is CSV text or a JSON
@@ -1153,8 +1168,9 @@ def export_results(
     :rtype: ScoreExport
     :raises ValidationFailedError: The format is not one this surface can emit,
         ``status`` is neither ``"all"`` nor a status a run can carry, two or more named runs would read past
-        :data:`EXPORT_PAGE_RESULTS`, ``after_run_id`` is given with ``run_ids`` or names no run in the scope —
-        each a question the caller can restate.
+        :data:`EXPORT_PAGE_RESULTS`, ``after_run_id`` names no run in the scope or is given with ``run_ids`` other
+        than to go on inside the one run they name, or ``after_case_id`` is given without ``after_run_id`` or names
+        no case of that run — each a question the caller can restate.
     """
     started = time.perf_counter()
     try:
@@ -1164,16 +1180,26 @@ def export_results(
     status = _status_filter(status)
     requested = {rid.strip() for rid in run_ids if rid and rid.strip()} if run_ids else None
     cursor = (after_run_id or "").strip() or None
-    if cursor is not None and requested is not None:
+    case_cursor = (after_case_id or "").strip() or None
+    if case_cursor is not None and cursor is None:
         raise ValidationFailedError(
-            "an export of named runs is not paged, so it starts after no run",
+            "an export starts after a case only inside the run it is one of, and no run was named to start inside",
+            details={"after_case_id": case_cursor},
+            remedy="name the run with the case (export_after_run_id with export_after_case_id), as the page said",
+        )
+    if cursor is not None and requested is not None and (requested != {cursor} or case_cursor is None):
+        raise ValidationFailedError(
+            "an export of named runs is paged only inside the one run it names, so it starts after no run",
             details={"after_run_id": cursor},
-            remedy="name the runs alone, or leave them out and page the whole scope",
+            remedy="name the runs alone, or name one run with the run and case its last page said to start after, or "
+            "leave them out and page the whole scope",
         )
 
     all_runs, cohort, archived_run_ids = _corpus_and_cohort(list_runs, scope_id)
     if requested is not None:
-        return _export_named(storage, scope_id, all_runs, requested, status, known_format, profile, started)
+        return _export_named(
+            storage, scope_id, all_runs, requested, status, known_format, profile, started, after_case_id=case_cursor
+        )
     if cursor is None and sum(_results_estimate(run) for run in all_runs) <= EXPORT_PAGE_RESULTS:
         results = storage.query_eval_results(scope_id)
         if len(results) <= EXPORT_PAGE_RESULTS:
@@ -1196,7 +1222,9 @@ def export_results(
             EXPORT_PAGE_RESULTS,
         )
         del results
-    return _export_page(storage, scope_id, all_runs, cursor, status, known_format, profile, started)
+    return _export_page(
+        storage, scope_id, all_runs, cursor, status, known_format, profile, started, after_case_id=case_cursor
+    )
 
 
 def _export_named(
@@ -1208,10 +1236,14 @@ def _export_named(
     fmt: str,
     profile: HostProfile,
     started: float,
+    *,
+    after_case_id: str | None = None,
 ) -> ScoreExport:
-    """An export of the runs a caller named, read run by run, refused when two or more would pass the ceiling.
+    """An export of the runs a caller named, read run by run, refused when two or more would pass the ceiling; one
+    named run past it is paged by its cases (:func:`_export_run_page`).
 
-    :raises ValidationFailedError: Two or more named runs' estimated results pass :data:`EXPORT_PAGE_RESULTS`.
+    :raises ValidationFailedError: Two or more named runs' estimated results pass :data:`EXPORT_PAGE_RESULTS`, or
+        ``after_case_id`` is no case of the one named run.
     """
     # An explicitly named id is selected from the CORPUS, not the cohort: naming a run
     # is deliberate, and every other by-id surface (get_run, run_summary, compare_two_runs,
@@ -1229,8 +1261,25 @@ def _export_named(
             f"{EXPORT_PAGE_RESULTS} one export call reads",
             details={"runs_named": len(runs), "results_estimated": estimate, "result_ceiling": EXPORT_PAGE_RESULTS},
             remedy=(
-                "name fewer runs (one run is always exported whole), or name none and read scope_export page by page"
+                "name fewer runs (one run is always exported, page by page past the ceiling), or name none and read "
+                "scope_export page by page"
             ),
+        )
+    if len(runs) == 1 and (after_case_id is not None or estimate > EXPORT_PAGE_RESULTS):
+        (run,) = runs
+        return _export_run_page(
+            storage,
+            scope_id,
+            all_runs,
+            run,
+            after_case_id,
+            fmt,
+            profile,
+            started,
+            runs_before=0,
+            runs_after=0,
+            status=status,
+            named=True,
         )
     # Each named run's results are read by run — each query is run-id-indexed — instead of every result in the
     # scope. The projection places a subset natively: known_run_ids stays the whole corpus, so a result whose run
@@ -1254,13 +1303,18 @@ def _export_page(
     fmt: str,
     profile: HostProfile,
     started: float,
+    *,
+    after_case_id: str | None = None,
 ) -> ScoreExport:
-    """One page of a paged export: the narrowed runs after ``cursor``, oldest first, up to the ceiling.
+    """One page of a paged export: the narrowed runs after ``cursor``, oldest first, up to the ceiling — or, when the
+    first of them alone passes the ceiling or ``after_case_id`` names a case of ``cursor``, whole cases of that one run
+    (:func:`_export_run_page`).
 
-    :raises ValidationFailedError: ``cursor`` names no run in the scope.
+    :raises ValidationFailedError: ``cursor`` names no run in the scope, or ``after_case_id`` no case of it.
     """
     order = sorted(all_runs, key=lambda run: (run.created_at, run.id))
     start = 0
+    inside: str | None = None
     if cursor is not None:
         position = next((index for index, run in enumerate(order) if run.id == cursor), None)
         if position is None:
@@ -1274,8 +1328,28 @@ def _export_page(
     def narrowed(run: EvalRun) -> bool:
         return not run.archived and (status is None or run.status == status)
 
+    if cursor is not None and after_case_id is not None and narrowed(order[start - 1]):
+        # The page goes on inside the cursor's run. One archived, or moved to another status, since the last page is
+        # left as the narrowing leaves any run: the page starts at the run after it.
+        start -= 1
+        inside = after_case_id
     before = sum(1 for run in order[:start] if narrowed(run))
     remaining = [run for run in order[start:] if narrowed(run)]
+    if inside is not None or (remaining and _results_estimate(remaining[0]) > EXPORT_PAGE_RESULTS):
+        return _export_run_page(
+            storage,
+            scope_id,
+            all_runs,
+            remaining[0],
+            inside,
+            fmt,
+            profile,
+            started,
+            runs_before=before,
+            runs_after=len(remaining) - 1,
+            status=status,
+            named=False,
+        )
     page: list[EvalRun] = []
     estimate = 0
     for run in remaining:
@@ -1304,6 +1378,81 @@ def _export_page(
             run_status=status,
             archived_runs=len(archived_run_ids),
             runs_outside_status=sum(1 for run in all_runs if not run.archived and not narrowed(run)),
+        ),
+    )
+
+
+def _export_run_page(
+    storage: LensStore,
+    scope_id: str,
+    all_runs: list[EvalRun],
+    run: EvalRun,
+    after_case_id: str | None,
+    fmt: str,
+    profile: HostProfile,
+    started: float,
+    *,
+    runs_before: int,
+    runs_after: int,
+    status: str | None,
+    named: bool,
+) -> ScoreExport:
+    """One page of an export inside one run: whole cases of it after ``after_case_id``, in the run's order, up to the
+    ceiling (one case alone when it holds more), read by id after one read of the run's result keys.
+
+    :param runs_before: Runs of the narrowed scope the pages before this run held; 0 for a named run.
+    :ptype runs_before: int
+    :param runs_after: Runs of the narrowed scope after this run; 0 for a named run.
+    :ptype runs_after: int
+    :param named: Whether the caller named the run, so the next call names it again and the scope's archived runs
+        narrowed nothing.
+    :ptype named: bool
+    :raises ValidationFailedError: ``after_case_id`` is no case of the run.
+    """
+    keys = run_result_keys(storage, run)
+    try:
+        pages = run_case_pages(keys, page_results=EXPORT_PAGE_RESULTS, after_case_id=after_case_id)
+    except ValueError:
+        raise ValidationFailedError(
+            f"case {after_case_id!r} is not one of run {run.id!r}'s cases, so no export page starts after it",
+            details={"after_run_id": run.id, "after_case_id": after_case_id},
+            remedy="read scope_export again from the run's first page, naming the run alone to start after the run "
+            "before it, or no run at all",
+        ) from None
+    held = pages[0] if pages else []
+    case_ids = list(dict.fromkeys(key.test_case_id for key in held))
+    results = read_results(storage, scope_id, held)
+    archived_run_ids = {each.id for each in all_runs if each.archived}
+    projection = project_score_records(
+        [run],
+        results,
+        known_run_ids={each.id for each in all_runs},
+        archived_run_ids=None if named else archived_run_ids,
+        profile=profile,
+    )
+    _observe_read("export_results", scope_id, started, len(all_runs), len(results), len(projection.records))
+    cases = list(dict.fromkeys(key.test_case_id for key in keys))
+    cases_before = cases.index(case_ids[0]) if case_ids else len(cases)
+    more_in_run = len(pages) > 1
+    return export_projection(
+        projection,
+        fmt=fmt,
+        page=ExportPage(
+            result_ceiling=EXPORT_PAGE_RESULTS,
+            run_ids=[run.id],
+            runs_before=runs_before,
+            runs_after=runs_after,
+            case_ids=case_ids,
+            cases_before=cases_before,
+            cases_after=len(cases) - cases_before - len(case_ids),
+            next_after_run_id=run.id if more_in_run or runs_after else None,
+            next_after_case_id=case_ids[-1] if more_in_run else None,
+            named_run_ids=[run.id] if named else None,
+            run_status=status,
+            archived_runs=0 if named else len(archived_run_ids),
+            runs_outside_status=0
+            if named
+            else sum(1 for each in all_runs if not each.archived and status is not None and each.status != status),
         ),
     )
 

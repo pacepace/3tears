@@ -13,9 +13,14 @@ action:
   carries no page.
 - **A listing that promised less than the store holds** (results whose run was deleted) is not serialized whole.
 - **Two or more named runs past the ceiling are refused**, naming the ceiling, the results they would read and the
-  remedy; one named run is exported whole however large.
-- **The action teaches the next call**: its text names ``export_after_run_id`` and repeats a non-default format and
-  status, and following it reads the next page.
+  remedy.
+- **A run past the ceiling is paged by its cases**, never read whole, in a scope's pages and named alone: each page
+  reads whole cases of it by id after one pass over its keys, none past the ceiling; the cursor carries the case
+  (``next_after_case_id``), following it covers every row once, a CSV page's rows join the whole export's by column
+  name, and a case cursor without its run, or naming no case of it, is refused.
+- **The action teaches the next call**: its text names ``export_after_run_id`` (and ``export_after_case_id`` and
+  ``export_run_ids`` inside a run) and repeats a non-default format and status, and following it reads the next
+  page.
 
 Mutations that turn this file red (each run against a saved copy and restored from it):
 
@@ -23,12 +28,16 @@ Mutations that turn this file red (each run against a saved copy and restored fr
   ``_results_estimate`` returning ``len(test_case_ids)`` alone.
 - ``reads._export_page``: ``>=`` for ``>`` against the ceiling; a page allowed to be empty when a run remains;
   ``next_after_run_id`` set on the last page; the order by id alone.
-- ``reads._export_named``: the refusal at one run.
-- ``render.render_export``: the format or status left out of the hint.
+- ``reads._export_named``: the refusal at one run; one named run past the ceiling read whole.
+- ``reads._export_page``: a run past the ceiling read whole as a page of its own; the case cursor ignored.
+- ``reads._export_run_page``: ``next_after_case_id`` set on a run's last page.
+- ``render.render_export``: the format or status left out of the hint; the case or the named run left out of it.
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from collections import Counter
 from collections.abc import Sequence
@@ -43,6 +52,7 @@ from threetears.evals.analysis.reporting import ScoreProjection, project_score_r
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
+from threetears.evals.kernel.run_pages import ResultKey
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.run.reads import list_runs
 from threetears.evals.schema.models import CalibrationRating, EvalResult, EvalRun, EvalTemplate, RunCompleteness
@@ -70,6 +80,10 @@ class FakeCountingStore:
         self.scope_reads: list[int] = []
         #: The rows each by-run read returned, in call order.
         self.run_reads: list[tuple[str, int]] = []
+        #: The keys each read of a run's result keys returned, in call order: a few scalars a result, never a row.
+        self.key_reads: list[tuple[str, int]] = []
+        #: The rows each read of results by id returned, in call order.
+        self.id_reads: list[int] = []
 
     def query_eval_results(self, scope_id: str, /) -> list[EvalResult]:
         rows = self._inner.query_eval_results(scope_id)
@@ -79,6 +93,16 @@ class FakeCountingStore:
     def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
         rows = self._inner.query_eval_results_by_run(run_id, scope_id)
         self.run_reads.append((run_id, len(rows)))
+        return rows
+
+    def query_eval_result_keys_by_run(self, run_id: str, scope_id: str, /) -> list[ResultKey]:
+        keys = self._inner.query_eval_result_keys_by_run(run_id, scope_id)
+        self.key_reads.append((run_id, len(keys)))
+        return keys
+
+    def load_eval_results(self, result_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
+        rows = self._inner.load_eval_results(result_ids, scope_id)
+        self.id_reads.append(len(rows))
         return rows
 
     def list_campaigns(self, scope_id: str, /) -> list[EvalCampaign]:
@@ -103,7 +127,11 @@ class FakeCountingStore:
 
     def rows_read(self) -> int:
         """Every result row any read returned."""
-        return sum(self.scope_reads) + sum(rows for _, rows in self.run_reads)
+        return sum(self.scope_reads) + sum(rows for _, rows in self.run_reads) + sum(self.id_reads)
+
+    def largest_read(self) -> int:
+        """The most result rows one read returned."""
+        return max([0, *self.scope_reads, *(rows for _, rows in self.run_reads), *self.id_reads])
 
 
 def _seed_run(
@@ -194,11 +222,20 @@ def large_scope() -> tuple[EvalStorage, list[EvalRun]]:
 def _pages(
     store: FakeCountingStore, inner: EvalStorage, *, after_run_id: str | None = None, **arguments: Any
 ) -> list[ScoreExport]:
-    """Every page of an export, following each page's next run from the first (or from ``after_run_id``)."""
+    """Every page of an export, following each page's cursor (its next run, and its next case inside a run) from the
+    first (or from ``after_run_id``)."""
     pages = [_export(store, inner, after_run_id=after_run_id, **arguments)]
     while (page := pages[-1].page) is not None and page.next_after_run_id is not None:
         assert len(pages) < 50, "the pages never ended"
-        pages.append(_export(store, inner, after_run_id=page.next_after_run_id, **arguments))
+        pages.append(
+            _export(
+                store,
+                inner,
+                after_run_id=page.next_after_run_id,
+                after_case_id=page.next_after_case_id,
+                **arguments,
+            )
+        )
     return pages
 
 
@@ -288,17 +325,39 @@ class TestPagesCoverEveryRowExactlyOnce:
         later = [run_id for page in rest if page.page for run_id in page.page.run_ids]
         assert later == [run.id for run in completed[3:]] + [added.id]
 
-    def test_a_run_larger_than_the_ceiling_is_a_page_of_its_own(self, ceiling: int) -> None:
+    def test_a_run_larger_than_the_ceiling_is_paged_by_its_cases_never_read_whole(self, ceiling: int) -> None:
         storage, _ = memory_storage()
         small = _seed_run(storage, 0)
         big = _seed_run(storage, 1, cases=ceiling + 5)
         last = _seed_run(storage, 2)
         store = FakeCountingStore(storage)
 
-        pages = _pages(store, storage)
+        pages = _pages(store, storage, fmt="json")
 
-        assert [page.page.run_ids for page in pages if page.page] == [[small.id], [big.id], [last.id]]
-        assert store.rows_read() == 2 * CASES + ceiling + 5
+        held = [page.page for page in pages if page.page]
+        assert [page.run_ids for page in held] == [[small.id], [big.id], [big.id], [last.id]]
+        assert [page.case_ids for page in held] == [
+            None,
+            [f"tc-{case}" for case in range(ceiling)],
+            [f"tc-{case}" for case in range(ceiling, ceiling + 5)],
+            None,
+        ]
+        assert [(page.cases_before, page.cases_after) for page in held[1:3]] == [(0, 5), (ceiling, 0)]
+        assert [(page.next_after_run_id, page.next_after_case_id) for page in held] == [
+            (small.id, None),
+            (big.id, f"tc-{ceiling - 1}"),
+            (big.id, None),
+            (None, None),
+        ]
+        assert [(page.runs_before, page.runs_after) for page in held] == [(0, 2), (1, 1), (1, 1), (2, 0)]
+        assert store.run_reads == [(small.id, CASES), (last.id, CASES)], "the big run is never read by run"
+        assert store.id_reads == [ceiling, 5], "the big run read by id, a page of its cases at a time"
+        assert store.key_reads == [(big.id, ceiling + 5)] * 2, "after one pass over its keys a page"
+        assert store.largest_read() <= ceiling
+        rows = Counter(key for page in pages for key in _record_keys(page))
+        assert rows == Counter(
+            (record.result_id, record.metric, record.rubric_dim) for record in _whole_projection(storage).records
+        ), "every row once"
 
     def test_runs_are_paged_in_the_order_they_were_created_not_by_id(self, ceiling: int) -> None:
         storage, _ = memory_storage()
@@ -412,21 +471,113 @@ class TestNamedRunsPastTheCeilingAreRefused:
         assert export.page is None
         assert {key[0].rsplit("-", 1)[0] for key in _record_keys(export)} == {run.id for run in completed[:3]}
 
-    def test_one_named_run_larger_than_the_ceiling_is_exported_whole(self, ceiling: int) -> None:
+    def test_one_named_run_larger_than_the_ceiling_is_paged_by_its_cases(self, ceiling: int) -> None:
         storage, _ = memory_storage()
-        big = _seed_run(storage, 0, cases=ceiling + 5)
+        big = _seed_run(storage, 0, cases=ceiling + 5, archived=True)
+        store = FakeCountingStore(storage)
 
-        export = _export(FakeCountingStore(storage), storage, run_ids=[big.id], fmt="json")
+        pages = _pages(store, storage, run_ids=[big.id], fmt="json")
 
-        assert export.page is None
-        assert len({key[0] for key in _record_keys(export)}) == ceiling + 5
+        held = [page.page for page in pages if page.page]
+        assert [page.case_ids for page in held] == [
+            [f"tc-{case}" for case in range(ceiling)],
+            [f"tc-{case}" for case in range(ceiling, ceiling + 5)],
+        ]
+        assert [page.named_run_ids for page in held] == [[big.id], [big.id]]
+        assert [(page.next_after_run_id, page.next_after_case_id) for page in held] == [
+            (big.id, f"tc-{ceiling - 1}"),
+            (None, None),
+        ]
+        assert [(page.archived_runs, page.runs_outside_status) for page in held] == [(0, 0), (0, 0)]
+        assert store.run_reads == [] and store.largest_read() <= ceiling
+        assert sorted(key[0] for page in pages for key in _record_keys(page) if key[1] == "composite") == sorted(
+            f"{big.id}-{cell}" for cell in range(ceiling + 5)
+        )
 
-    def test_named_runs_are_not_paged(self, large_scope: tuple[EvalStorage, list[EvalRun]]) -> None:
+    def test_named_runs_are_not_paged_after_another_run(self, large_scope: tuple[EvalStorage, list[EvalRun]]) -> None:
         storage, completed = large_scope
         with pytest.raises(ValidationFailedError) as refused:
             _export(FakeCountingStore(storage), storage, run_ids=[completed[0].id], after_run_id=completed[1].id)
 
-        assert refused.value.message == "an export of named runs is not paged, so it starts after no run"
+        assert refused.value.message == (
+            "an export of named runs is paged only inside the one run it names, so it starts after no run"
+        )
+        with pytest.raises(ValidationFailedError):
+            _export(FakeCountingStore(storage), storage, run_ids=[completed[0].id], after_run_id=completed[0].id)
+
+
+class TestTheCursorInsideARun:
+    def test_a_case_is_named_only_with_its_run(self, ceiling: int) -> None:
+        storage, _ = memory_storage()
+        _seed_run(storage, 0, cases=ceiling + 5)
+
+        with pytest.raises(ValidationFailedError) as refused:
+            _export(FakeCountingStore(storage), storage, after_case_id="tc-3")
+
+        assert refused.value.details == {"after_case_id": "tc-3"}
+        assert "export_after_run_id" in refused.value.remedy
+
+    def test_a_case_no_longer_in_its_run_is_refused_teaching_a_restart(self, ceiling: int) -> None:
+        storage, _ = memory_storage()
+        big = _seed_run(storage, 0, cases=ceiling + 5)
+
+        with pytest.raises(ValidationFailedError) as refused:
+            _export(FakeCountingStore(storage), storage, after_run_id=big.id, after_case_id="tc-gone")
+
+        assert (
+            refused.value.message
+            == f"case 'tc-gone' is not one of run {big.id!r}'s cases, so no export page starts after it"
+        )
+        assert refused.value.details == {"after_run_id": big.id, "after_case_id": "tc-gone"}
+        assert "first page" in refused.value.remedy
+
+    def test_a_run_archived_between_its_pages_is_left_and_the_next_run_follows(self, ceiling: int) -> None:
+        storage, _ = memory_storage()
+        big = _seed_run(storage, 0, cases=ceiling + 5)
+        last = _seed_run(storage, 1)
+        store = FakeCountingStore(storage)
+        first = _export(store, storage)
+        assert first.page is not None and first.page.next_after_case_id is not None
+
+        storage.set_eval_run_archived(big.id, SCOPE, archived=True)
+        rest = _export(
+            store, storage, after_run_id=first.page.next_after_run_id, after_case_id=first.page.next_after_case_id
+        )
+
+        assert rest.page is not None and rest.page.run_ids == [last.id] and rest.page.case_ids is None
+
+    def test_a_case_with_more_rows_than_a_page_is_a_page_of_its_own(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(reads, "EXPORT_PAGE_RESULTS", 5)
+        storage, _ = memory_storage()
+        _seed_run(storage, 0, cases=3, k_runs=6)
+        store = FakeCountingStore(storage)
+
+        pages = _pages(store, storage)
+
+        assert [page.page.case_ids for page in pages if page.page] == [["tc-0"], ["tc-1"], ["tc-2"]]
+        assert store.id_reads == [6] * 3, "a page splits no case"
+
+    def test_csv_pages_join_the_whole_exports_rows_by_column_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        storage, _ = memory_storage()
+        big = _seed_run(storage, 0, cases=CASES * 3, k_runs=2)
+        whole = _export(FakeCountingStore(storage), storage, fmt="csv")
+        assert whole.page is None, "under the real ceiling the run fits"
+
+        monkeypatch.setattr(reads, "EXPORT_PAGE_RESULTS", CEILING)
+        pages = _pages(FakeCountingStore(storage), storage, fmt="csv")
+
+        assert len(pages) == 2 and all(page.page is not None and page.page.run_ids == [big.id] for page in pages)
+        columns = next(csv.reader(io.StringIO(whole.body)))
+        joined: Counter[str] = Counter()
+        for page in pages:
+            reader = csv.DictReader(io.StringIO(page.body))
+            assert set(reader.fieldnames or ()) <= set(columns), "a page's columns are some of the whole export's"
+            joined.update(json.dumps([row.get(column, "") for column in columns]) for row in reader)
+        expected = Counter(
+            json.dumps([row[column] for column in columns]) for row in csv.DictReader(io.StringIO(whole.body))
+        )
+        assert joined == expected
+        assert sum(page.n_records for page in pages) == whole.n_records
 
 
 # =============================================================================
@@ -483,3 +634,34 @@ async def test_the_actions_last_page_names_no_next_call(evals: MountedTool, monk
     page = ScoreExport.model_validate(outcome.structured).page
     assert page is not None and page.next_after_run_id is None
     assert "More:" not in outcome.text
+
+
+async def test_the_action_names_the_case_and_the_named_run_inside_a_run(
+    evals: MountedTool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = off_loop(ops_fixture)
+    storage = fixture.host.eval_host.storage
+    monkeypatch.setattr(reads, "EXPORT_PAGE_RESULTS", CEILING)
+    big = off_loop(_seed_run, storage, 600, status="failed", scope_id=TOYHOST_SCOPE, cases=CEILING + 5)
+
+    arguments = {"action": "scope_export", "export_run_ids": [big.id], "run_status": "all"}
+    first = await evals.call(arguments, host=fixture.host, caller=CALLER)
+
+    assert not first.is_error, first.text
+    page = ScoreExport.model_validate(first.structured).page
+    assert page is not None and page.next_after_case_id == f"tc-{CEILING - 1}"
+    hint = (
+        f"More: action='scope_export', export_after_run_id='{big.id}', export_after_case_id='tc-{CEILING - 1}', "
+        f"export_run_ids=['{big.id}'], run_status='all'."
+    )
+    assert hint in first.text
+    assert f"page: run 1 of 1, its cases 1-{CEILING} of {CEILING + 5}, oldest first" in first.text
+
+    second = await evals.call(
+        {**arguments, "export_after_run_id": big.id, "export_after_case_id": page.next_after_case_id},
+        host=fixture.host,
+        caller=CALLER,
+    )
+    following = ScoreExport.model_validate(second.structured).page
+    assert following is not None and following.case_ids == [f"tc-{case}" for case in range(CEILING, CEILING + 5)]
+    assert following.next_after_run_id is None and "More:" not in second.text
