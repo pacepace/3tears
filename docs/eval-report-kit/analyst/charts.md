@@ -23,6 +23,22 @@ Each claim carries one block. Choose the one that answers the claim's question m
 | `table` | Exact figures a reader will look up or compare across many columns | Any rows | It replaces a chart whose shape is the finding |
 | prose | One fact that needs no picture | A figure key | It carries several numbers a table would hold better |
 
+## Sources the analyses feed
+
+Some blocks draw what an analysis computed, not a stored figure. `block_catalog` lists each source's kinds and parameters; these are the ones to reach for:
+
+| Source | Draws | Use it for |
+|---|---|---|
+| `compare` | Two named arms' difference on one measure, overall and per slice, with its interval (paired where a contrast pairs them, else unpaired) | A claim that one option beats another when there is no control, or the control isn't one of them |
+| `settle` | `settle_cases` rows: distance to the line, cases needed one- and two-sided, how often today's size reads the wrong way | Watch and next steps: what a re-run must look like to decide a thin clearance |
+| `levers` | What one setting buys between arms differing in it alone, and where that effect reverses | Factorial sweeps: the lever and its interaction, instead of reading a lattice by eye |
+| `bar_reads` | Each arm's reading against a declared bar, with its interval and the bar's line | A bar the question treats as the condition |
+| `prices` | The price frontier's steps, price per point with its interval | The trade between cost and quality |
+
+A `lattice` over configs also draws from the arms' own settings when the snapshot holds no configs rows but two or more settings cross fully.
+
+An interval marked **computed** was computed here from a rate's count (binomial), not stated by the pipeline. On a repeated design it is read on the distinct cases, at the widest spread the repeats allow, so it errs wide. Say "computed" when you cite one.
+
 ## Mechanics that keep a chart honest
 
 - **One unit and one interval system per chart, with the level printed.** A 95% confirmatory reading and a family-corrected contrast belong in separate charts. Mixed together, the reader compares intervals that mean different things.

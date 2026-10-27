@@ -42,9 +42,15 @@ Contrasts across many arms and measures are corrected for multiplicity, which wi
 
 Average effects over a crossed grid (what a retry buys, what more reasoning buys) are meaningful only when the factors don't interact. Check the grid before averaging. An interaction is a finding in itself, often the most important one.
 
+## Unknown is not a fail
+
+A gate read in each task, on a figure the snapshot holds only overall, has no figure in those places. The tools call such an option **undecided**, never failed or removed, and list its unknown places. Don't write that it fails the gate. Say what is unknown and what measuring it would settle. A labelled implied fact (for example, an overall p95 over the budget implies some task is over it) is an inference you may state as one, never a verdict.
+
+Bars warn by default. Where the question makes a bar the condition, read it as a gate with `bars_as: "gates"` and say in Method that you did.
+
 ## Kept examples are a sample
 
-The snapshot keeps a few failures per slice. A sentence about all of a slice's failures needs the count of failures, not the kept few; say how many you read out of how many there are.
+The snapshot keeps a few failures per slice. `examples_list` says how many it kept of how many failed (`kept_from`). A sentence about all of a slice's failures needs that count, not the kept few; say how many you read out of how many there are.
 
 ## Small strata and zero counts
 
