@@ -36,7 +36,10 @@ run had (`kept_from`); `campaign_overview` says whether each aspect ran the same
 `count.examples`, `count.failures` (and per `<aspect>.<arm>[.<stratum>]`), `count.pairs`, `count.arm_pairs`,
 `overlap.<aspect>.<aspect>.<same|shared|only_first|only_second>`, `confusion.<axis>.<arm>.<expected>.<predicted>`, and
 `cost.gap.<arm>.<arm>.<per_1k|monthly|multiple>`. An example card names its aspect where the input holds more than one.
-Freezing unchanged evidence writes a new snapshot id.
+A capped aspect's failures are counted only where every failure was kept: where the cap kept a trial that passed and
+the primary judged dimension decides pass (a capability dimension). Fields an input does not count are left out of its
+document, so a planner's input and a bare one digest as before; freezing a campaign's evidence writes a new snapshot
+id.
 
 **Changed:** `settle_cases` sizes cases on a repeated design, each case run as often as today (one case's spread is its
 mean's over its repeats), and gives the trials that takes beside each size (`trials_needed` and its siblings;
@@ -44,8 +47,16 @@ mean's over its repeats), and gives the trials that takes beside each size (`tri
 arm and nothing named it reads every margin a reading of the arm is read against and every floor read on it, beside
 its criteria; `against` (`margin:<aspect>`, `floor:<aspect>/<floor>`) names one, keyed `settle.margin.*` and
 `settle.floor.*`. `settle_cases` and `arms_compare` take `assumed_cases`, a what-if count for a slice whose figure states
-none (a number, or `share` for the arm's own count times the slice's traffic share), keyed `assumed.<cases>.*`. A
-binomial spread's basis names where its count was read (its own, the slice's stated cases, or the arm's scoreboard).
+none (a number, or `share` for the arm's own distinct cases times the slice's traffic share, and its trials times the
+share on a repeated design), keyed `assumed.<cases>.*`. A binomial spread's basis names where its count was read (its
+own, the slice's stated cases, or the arm's scoreboard). On a repeated design a pass/fail rate's binomial spread is read
+on its distinct cases, each counted once: the widest its repeats allow, since the snapshot holds no per-case outcomes,
+so an interval or a size read from it is never narrower than the cases support (read as independent trials it would
+be the root of the repeats narrower); the basis and the settle result say so, and settle rows carry today's `cases`
+beside `trials_needed` and `repeats`. A binomial spread is read only on a share of counted trials: a measure graded
+pass/fail, a plain `accuracy` or `match`, or a pass/fail judged dimension; a mean of shares graded by class label under
+another name (a balanced accuracy) reads none, so no interval or settle size is computed on it. A count is cited as
+the whole number it is.
 ### evals: a criterion reads its own aspect's figures; a gate with no figure is unknown, not a fail; the analyst chooses how bars read
 
 **Fixed:** a bar declared on one aspect read the lead aspect's figure in every reader of criteria. On a campaign with a
