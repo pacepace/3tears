@@ -60,7 +60,14 @@ difference heatmap naming fewer than two arms, which otherwise draws its second 
 names no control; panels by aspect over a source that reads one aspect where the query names none (measures and
 judged figures and the scoreboard read the lead aspect's, readings the one asked aspect's) where the input holds what
 the query selects on another aspect too (:func:`held_aspects`): those panels would show one aspect as all of them, so
-the fault names each aspect to draw a block of, naming it in ``query.aspect``. :func:`small_multiple_faults` refuses
+the fault names each aspect to draw a block of, naming it in ``query.aspect``; a ``compare`` query naming other than
+two arms, a ``compare`` or ``levers`` query naming other than one measure, or a ``levers`` query naming more than one
+place; and a query over rows an analysis computes (``compare``, ``settle``, ``levers``) that selects none, naming the
+analysis function's own refusal where it refuses the call. A configs chart on an input holding no configs reads the
+grid its arms' settings make (:func:`~threetears.evals.analysis.report_rows.config_grid`). A chart of two arms
+compared or of lever effects prints its rows' level, marked unpaired where their spreads were combined as independent;
+a chart of bar reads the pipeline's interval level (:data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`), at which
+it reads bars *(inferred: a bar read states no level of its own)*. :func:`small_multiple_faults` refuses
 panels on a kind the kit does not panel (its chart model carries no ``panels``).
 
 Every fault is ``(field path, why)``, the path under the one the caller names the chart by.
@@ -84,19 +91,33 @@ from threetears.evals.analysis.report.figure_keys import (
     reader_names,
     resolve,
 )
+from threetears.evals.analysis.analyst.compare import ComparisonRow, arms_compare
+from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow, lever_effects
+from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.report.plan_page.charting import (
     COMPUTED,
     computed_interval,
     contrast_unit,
+    contrast_unit_of,
     drawn_keys,
+    figure_unit,
     unit_refusal,
 )
 from threetears.evals.analysis.report.plan_page.look import PageLook, page_look
 from threetears.evals.analysis.report_decision import control_arm, surviving_options
 from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import criterion_aspect, criterion_place, lead_aspect
-from threetears.evals.analysis.report_rows import PriceStep, SourceRow, query_aspect, query_rows
+from threetears.evals.analysis.report_rows import (
+    OVERALL,
+    PriceStep,
+    SourceRow,
+    config_grid,
+    lever_place,
+    query_aspect,
+    query_rows,
+)
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, ChartSpec, PlannedChart
 
 if TYPE_CHECKING:  # an arm's facts are read by type only: the completion step that defines them imports this module.
@@ -126,14 +147,18 @@ _SOURCES: tuple[str, ...] = get_args(ChartQuery.model_fields["source"].annotatio
 #: The sources each chart kind can draw (GENERATOR §5.1), in the kit's order; a table draws any.
 BLOCK_SOURCES: Mapping[str, frozenset[str]] = {
     "forest": frozenset({"readings", "contrasts"}),
-    "bars": frozenset({"measures", "judged", "scoreboard", "strata", "tasks", "configs", "human_pref", "prices"}),
+    "bars": frozenset(
+        {"measures", "judged", "scoreboard", "strata", "tasks", "configs", "human_pref", "prices", "settle"}
+    ),
     "diverging_bars": frozenset(
-        {"readings", "contrasts", "measures", "judged", "strata", "tasks", "configs", "human_pref"}
+        {"readings", "contrasts", "measures", "judged", "strata", "tasks", "configs", "human_pref", "compare", "levers"}
     ),
     "lines": frozenset({"measures", "judged", "strata", "tasks"}),
     "scatter_frontier": frozenset({"measures", "judged", "scoreboard", "configs", "tasks"}),
     "gate_scatter": frozenset({"measures", "judged", "configs", "tasks"}),
-    "dot_interval": frozenset({"readings", "contrasts", "measures", "judged", "floors", "tasks", "strata"}),
+    "dot_interval": frozenset(
+        {"readings", "contrasts", "measures", "judged", "floors", "tasks", "strata", "bar_reads", "compare", "levers"}
+    ),
     "range_bars": frozenset({"measures", "tasks"}),
     "gate_matrix": frozenset({"tasks", "readings", "floors", "measures", "configs"}),
     "lattice": frozenset({"configs"}),
@@ -174,8 +199,15 @@ _LESS_THE_CONTROL = frozenset({"measures", "judged", "strata", "tasks"})
 #: The arms a difference heatmap names to draw its second less its first, needing no control.
 _COMPARED_PAIR = 2
 
-#: The sources whose query names exactly one measure: a price frontier is read on one gain axis.
-_ONE_MEASURE = frozenset({"prices"})
+#: The sources whose query names exactly one measure, and what that one is: a price frontier is read on one gain axis,
+#: two arms' difference and the lever effects on one measure.
+_ONE_MEASURE = {"prices": "gain axis", "compare": "measure", "levers": "measure"}
+
+#: The sources an analysis function computes the rows of (``report_rows``), each to the call that reads them.
+_ANALYSED = {"compare": "arms_compare", "settle": "settle_cases", "levers": "levers_effects"}
+
+#: The sources whose places a query keeps by ``strata``, overall among them.
+_PLACED = frozenset(_ANALYSED)
 
 #: The level a chart of price steps prints where its ends are read off the unpaired interval, after the gain's own.
 _UNPAIRED_LEVEL = "unpaired"
@@ -261,6 +293,8 @@ def complete_chart(chart: PlannedChart, report_input: ReportInput, path: str) ->
     :rtype: tuple[ChartSpec, list[tuple[str, str]]]
     """
     faults: list[_Fault] = []
+    if chart.query.source == "configs":
+        report_input = config_grid(report_input)
     references = list(_references(chart, report_input, path, faults))
     level = _level(chart, report_input, path, faults)
     unit = _unit(chart, report_input, path, faults)
@@ -471,7 +505,36 @@ def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
         return f"{level} {_UNCORRECTED}" if level else ""
     if source == "prices":
         return _price_level(chart, report_input, path, faults)
+    if source in ("compare", "levers"):
+        return _one(path, "interval level", _analysed_levels(chart, report_input), faults)
+    if source == "bar_reads":
+        read = any(row.interval is not None for row in query_rows(chart.query, report_input))
+        return _percent(INTERVAL_LEVEL) if read else ""
     return ""
+
+
+def _analysed_levels(chart: PlannedChart, report_input: ReportInput) -> Iterator[str]:
+    """Each compare or lever row's interval level, marked unpaired where the two arms' own spreads were combined as
+    independent (as a chart of price steps marks its unpaired ends): an interaction's always is."""
+    for row in query_rows(chart.query, report_input):
+        item = row.item
+        if row.interval is None:
+            continue
+        if isinstance(item, ComparisonRow):
+            level, basis = item.level, item.basis
+        elif isinstance(item, EffectRow | InteractionRow):
+            level = next((figure for figure in item.figures if figure.key.endswith(".level")), None)
+            basis = next((figure for figure in item.figures if figure.key.endswith(".basis")), None)
+        else:
+            continue
+        if level is None or not isinstance(level.value, float):
+            continue
+        paired = basis is not None and str(basis.value).startswith(_PAIRED)
+        yield _percent(level.value) if paired else f"{_percent(level.value)} {_UNPAIRED_LEVEL}"
+
+
+#: How a compare or lever row's basis opens where it is the paired estimate a contrast states.
+_PAIRED = "paired"
 
 
 def _price_level(chart: PlannedChart, report_input: ReportInput, path: str, faults: list[_Fault]) -> str:
@@ -610,6 +673,16 @@ def _unit(chart: PlannedChart, report_input: ReportInput, path: str, faults: lis
         return _only(_judged_unit(report_input, query.measures))
     if source == "prices":
         return "dollars" if report_input.meta.volume_per_month is not None else "usd_per_1k"
+    if source in ("compare", "levers"):
+        return _only(contrast_unit_of(report_input, key) for key in query.measures)
+    if source == "settle":
+        return "percent"
+    if source == "bar_reads":
+        return _only(
+            figure_unit(report_input, read.measure)
+            for read in report_input.bars
+            if not query.measures or read.measure in query.measures
+        )
     return ""
 
 
@@ -657,6 +730,8 @@ def chart_faults(
     :return: Each fault as ``(field path, why)``.
     :rtype: Iterator[tuple[str, str]]
     """
+    if chart.query.source == "configs":
+        report_input = config_grid(report_input)
     yield from _query_faults(path, chart, report_input, set(options))
     yield from _no_control_faults(path, chart, report_input)
     yield from _aspect_panel_faults(path, chart, report_input)
@@ -804,19 +879,37 @@ def _query_faults(path: str, chart: ChartSpec, report_input: ReportInput, option
         yield f"{path}.query.aspect", f"is {query.aspect!r}, which is no aspect; the aspects are {aspects}"
         return
     measures = _measure_vocabulary(source, report_input)
+    shaped = True  # whether the query names what its source reads: else "selects nothing" says no more
     if stray := [measure for measure in query.measures if measure not in measures]:
+        shaped = False
         held = f"it reads {sorted(measures)}" if measures else "it names none"
         yield f"{path}.query.measures", f"name {stray}, which the {source!r} source does not hold; {held}"
     elif source in _ONE_MEASURE and len(query.measures) != 1:
+        shaped = False
         yield (
             f"{path}.query.measures",
-            f"name {list(query.measures)}, and a {source!r} block reads one gain axis: name one of {sorted(measures)}",
+            f"name {list(query.measures)}, and a {source!r} block reads one {_ONE_MEASURE[source]}: name one of "
+            f"{sorted(measures)}",
         )
-    strata = _strata_vocabulary(report_input)
+    if source == "compare" and len(query.arms) != _COMPARED_PAIR:
+        shaped = False
+        yield (
+            f"{path}.query.arms",
+            f"name {list(query.arms)}, and a 'compare' block reads two arms, every row the first less the second: "
+            "name the two, in that order",
+        )
+    if source == "levers" and len([place for place in query.strata if place != OVERALL]) > 1:
+        shaped = False
+        yield (
+            f"{path}.query.strata",
+            f"name {list(query.strata)}, and a 'levers' block reads one place: name one task, stratum or cell, or "
+            f"{OVERALL!r} (or none) for the arms' overall figures",
+        )
+    strata = _strata_vocabulary(report_input) | ({OVERALL} if source in _PLACED else set())
     if stray := [stratum for stratum in query.strata if stratum not in strata]:
         yield f"{path}.query.strata", f"name {stray}, which are no strata or tasks of the report input"
     rows: list[SourceRow] = query_rows(query, report_input)
-    if not rows:
+    if not rows and (shaped or source not in _ANALYSED):
         yield _nothing_selected(path, query, report_input)
     elif chart.kind in INTERVAL_KINDS and any(row.interval is None for row in rows):
         yield (
@@ -833,7 +926,9 @@ def _nothing_selected(path: str, query: ChartQuery, report_input: ReportInput) -
     """A query that selects no row: on a ``prices`` query reading one gain axis, why its frontier yields no step (it
     holds one option or none, or no step joins two of the arms the query keeps), naming the frontier's options; else
     that the chart would be empty."""
-    if query.source in _ONE_MEASURE and len(query.measures) == 1:
+    if query.source in _ANALYSED:
+        return _unanalysed(path, query, report_input)
+    if query.source == "prices" and len(query.measures) == 1:
         (gain_key,) = query.measures
         try:
             frontier = price_frontier(report_input, gain_key)
@@ -857,9 +952,34 @@ def _nothing_selected(path: str, query: ChartQuery, report_input: ReportInput) -
     return f"{path}.query", f"selects nothing from {query.source!r}: the chart would be empty"
 
 
+def _unanalysed(path: str, query: ChartQuery, report_input: ReportInput) -> _Fault:
+    """Why a query over rows an analysis computes selects none: the function's own refusal, read on the same call."""
+    call = _ANALYSED[query.source]
+    try:
+        if query.source == "compare" and len(query.arms) == _COMPARED_PAIR and len(query.measures) == 1:
+            arms_compare(report_input, query.arms, query.measures[0])
+        elif query.source == "levers" and len(query.measures) == 1:
+            lever_effects(report_input, query.measures[0], place_filter=lever_place(query, report_input))
+        elif query.source == "settle":
+            for arm in query.arms or [arm.id for arm in report_input.arms]:
+                settle_cases(report_input, [arm])
+    except RefusedInput as refused:
+        return f"{path}.query", f"selects nothing from {query.source!r}: {call} refuses it: {refused.fault}"
+    return (
+        f"{path}.query",
+        f"selects nothing from {query.source!r}: no row {call} reads is of the arms, measures and places it keeps",
+    )
+
+
 def _measure_vocabulary(source: str, report_input: ReportInput) -> set[str]:
     if source in _NO_MEASURES:
         return set()
+    if source in ("compare", "levers"):
+        return set(report_input.measures) | set(report_input.judged)
+    if source == "settle":
+        return {criterion.measure for criterion in report_input.criteria}
+    if source == "bar_reads":
+        return {read.measure for read in report_input.bars}
     if source == "contrasts":
         return {contrast.measure for contrast in report_input.contrasts}
     if source == "measures":

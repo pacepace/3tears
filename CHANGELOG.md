@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: blocks print levels as stated, label what they draw, draw the intervals the tools compute, and draw what compare, settle and levers read
+
+**Fixed:** a reading's, pair's, spread's, compare's and lever's level key printed in whole percents (97.5% and 98.33%
+both read 98%); a level now prints as the input states it (`Figure.level`). A confusion block's values table printed
+the first panel's labels over every panel and dropped an arm panel's axis; it now reads a row per cell (panel, true
+label, predicted label, share) and names each panel's axis. A goal check named only by its expression heads a table's
+column as that expression set as code. Money on a chart has one spelling by each amount's size, grouped: a bar's label
+read `$8400` beside ticks of `$5,000.00`; kit.js `fmt.usd` groups in en-US and puts the sign before the dollar sign
+(reference pages rebuilt). A price step carries its options' tags as its short label for a narrow chart.
+
+**Added:** `spread.<arm>.<key>.<where>.interval`, `.low` and `.high` (the interval an arm's spread gives at its level,
+a rate's ends held to none to all; none for a rate of none or all; `separation.spread_interval`). A dot strip, bars or
+table of arms' figures none of which states an interval, where some is a pass/fail rate with a count, is completed at
+`95% computed` and draws those intervals, with a note; stored charts draw as stored. New chart sources (a stored-plan
+schema addition): `bar_reads` (an arm against an absolute bar with its interval and line; dot strip, table),
+`compare` (`arms_compare`'s rows, the query's first arm less its second; dot strip, diverging bars, table), `settle`
+(`settle_cases`' rows; bars, table) and `levers` (`lever_effects`' effects and interactions; dot strip, diverging bars,
+table). A configs query on an input with no configs reads the grid its arms' settings make (`report_rows.config_grid`),
+so a lattice draws on a factorial campaign that recorded no configs.
+
 ### evals: a criterion reads its own aspect's figures; a gate with no figure is unknown, not a fail; the analyst chooses how bars read
 
 **Fixed:** a bar declared on one aspect read the lead aspect's figure in every reader of criteria. On a campaign with a

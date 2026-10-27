@@ -30,6 +30,7 @@ from threetears.evals.analysis.report.plan_page.charting import ChartContext, Ki
 from threetears.evals.analysis.report.plan_page.look import PageLook
 from threetears.evals.analysis.report.plan_page.model import PageChart
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_rows import config_grid
 from threetears.evals.kernel.report_plan import ChartSpec
 
 __all__ = ["resolve_chart"]
@@ -99,6 +100,9 @@ def resolve_chart(
         raise UnresolvableReference(
             f"no resolver draws a {spec.kind!r} chart over {spec.query.source!r} yet ({title or fallback_title!r})"
         )
+    if spec.query.source == "configs":
+        # A configs chart reads the grid the input's configs make, or, where it holds none, its arms' settings.
+        report_input = config_grid(report_input)
     context = ChartContext(
         spec=spec, report_input=report_input, look=look, title=title or fallback_title or spec.kind, summary=summary
     )

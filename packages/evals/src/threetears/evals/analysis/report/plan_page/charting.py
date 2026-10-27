@@ -89,6 +89,7 @@ __all__ = [
     "chart_block",
     "contrast_groups",
     "contrast_unit",
+    "contrast_unit_of",
     "contrast_words",
     "count_text",
     "computed_interval",
@@ -101,7 +102,6 @@ __all__ = [
     "figure_stat",
     "figure_unit",
     "interval_words",
-    "lead_aspect",
     "measure_words",
     "misses_line",
     "missing_note",
@@ -428,18 +428,6 @@ def stat_value(report_input: ReportInput, key: str, stat: Stat) -> tuple[float, 
 
 #: The word a chart's level carries where its intervals are computed here, each from its rate's count.
 COMPUTED = "computed"
-
-
-def lead_aspect(report_input: ReportInput) -> str | None:
-    """The aspect an arm's overall figures belong to: the first asked, else the first; None where the input holds none.
-
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :return: The aspect's id.
-    :rtype: str | None
-    """
-    asked = [aspect.id for aspect in report_input.aspects if aspect.asked]
-    return asked[0] if asked else next((aspect.id for aspect in report_input.aspects), None)
 
 
 def computed_interval(
@@ -884,6 +872,21 @@ def contrast_unit(report_input: ReportInput, contrast: Contrast) -> str:
     :rtype: str
     """
     unit = figure_unit(report_input, contrast.measure, kind=contrast.kind)
+    return "points" if quantity(unit, change=True) == quantity("points") else unit
+
+
+def contrast_unit_of(report_input: ReportInput, key: str) -> str:
+    """The unit a difference between two arms on a measure or judged dimension is in, as a contrast's is
+    (:func:`contrast_unit`): ``points`` for a rate, else its figures' own unit.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param key: The measure or judged dimension.
+    :ptype key: str
+    :return: ``points``, ``score``, a money unit, ``ms``, ``s``, any other declared unit, or empty.
+    :rtype: str
+    """
+    unit = figure_unit(report_input, key)
     return "points" if quantity(unit, change=True) == quantity("points") else unit
 
 

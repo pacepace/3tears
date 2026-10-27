@@ -22,6 +22,13 @@ confusion       the axis, the arm, the true label, the predicted label, the shar
 human_pref      the slice, the share of ratings preferring the control with its interval
 prices          the step along the price frontier (from one option to the next), its price per point with its
                 interval: a month's at the declared volume, else per 1,000 of what the cost counts
+bar_reads       the aspect, the measure, the arm, its value with the interval its bar was read on, the bar, the status
+compare         the place, each arm's mean, the first less the second, its interval, level and basis
+settle          the arm, the criterion (and place), today's estimate, the line, the distance, which way it settles,
+                the cases a one-sided and a two-sided design need, today's count and what it counts, how often a
+                fresh run reads the other side, the level
+levers          the setting (or the two an interaction crosses), the move, the effect (or difference), its interval,
+                level, and an interaction's verdict
 ==============  ===================================================================================================
 
 **Wide, so paired figures sit side by side.** An arm's pass rate, cost and latency are one row, each in its
@@ -31,7 +38,9 @@ measure's column headed by its reader name, rather than three rows a reader pair
 each interval's ends, headed by the chart's interval level (``95% interval``), so a reader without the glyph (the
 Markdown page, a values table) reads the interval and its level too.
 
-An arm is the kit's chip (its tag and name); every number is spelled by the package's number rule, an absent one a dash.
+An arm is the kit's chip (its tag and name); every number is spelled by the package's number rule, an absent one a dash;
+a row an analysis computed (compare, settle, levers) prints each figure as its key reads it, so the table and prose
+citing the key read alike.
 A month's prices are whole dollars where every one on the axis is :data:`_WHOLE_DOLLARS_FROM` or more, as the
 ``usd_whole`` figure key filter writes them: the cents of a monthly amount are noise, and under that whole dollars would
 round away too much, so every price keeps its cents. A query's arms keep the rows of those arms, on sources whose rows
@@ -62,8 +71,13 @@ from threetears.evals.analysis.report.plan_page.charting import (
 )
 from threetears.evals.analysis.report.plan_page.look import quantity
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
-from threetears.evals.analysis.report.plan_page.resolve_magnitudes import price_notes
+from threetears.evals.analysis.report.plan_page.resolve_magnitudes import price_notes, settle_label, settle_notes
+from threetears.evals.analysis.analyst.cited import CitedFigure
+from threetears.evals.analysis.analyst.compare import ComparisonRow
+from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow
+from threetears.evals.analysis.analyst.settle import SettleRow
 from threetears.evals.analysis.report_input import (
+    BarRead,
     Cell,
     ConfusionTable,
     Contrast,
@@ -76,11 +90,12 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Task,
 )
-from threetears.evals.analysis.report_rows import PriceStep
+from threetears.evals.analysis.report_rows import PriceStep, lever_arms
 from threetears.evals.analysis.report.plan_page.words import (
     PRICE_STEP_TEMPLATE,
     CELL_TEMPLATE,
     INTERVAL_HEADER,
+    OVERALL_WORD,
     TABLE_HEADERS,
     TABLE_ORDER,
     TABLE_PER_THOUSAND,
@@ -336,6 +351,91 @@ def _human_pref(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
         }
 
 
+def _bar_reads(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
+    for row in context.rows():
+        read = row.item
+        assert isinstance(read, BarRead)
+        drawn = quantity(figure_unit(context.report_input, read.measure))
+        interval = read.interval
+        yield {
+            "aspect": _words(context.look.reader("aspect", read.aspect)),
+            "measure": _words(measure_words(context.report_input, read.measure)),
+            "arm": _arm(context, read.arm),
+            "value": _number(
+                float(read.value) * drawn.factor if read.value is not None else None,
+                drawn.unit,
+                (float(interval[0]) * drawn.factor, float(interval[1]) * drawn.factor)
+                if interval is not None
+                else None,
+            ),
+            "bar": _number(float(read.bar) * drawn.factor, drawn.unit),
+            "status": _words(read.status),
+        }
+
+
+def _read(figure: CitedFigure | None) -> TableCell:
+    """A cited figure's cell: the figure as its key reads it, so the table prints what prose citing the key does."""
+    return TableCell(value=figure.reads if figure is not None else None)
+
+
+def _compare(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
+    for row in context.rows():
+        item = row.item
+        assert isinstance(item, ComparisonRow)
+        yield {
+            "place": _words(str(item.name.value) if item.name is not None else OVERALL_WORD),
+            "first": _read(item.first),
+            "second": _read(item.second),
+            "difference": _read(item.difference),
+            "interval": _read(item.interval),
+            "level": _read(item.level),
+            "basis": _read(item.basis),
+        }
+
+
+def _settle(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
+    for row in context.rows():
+        item = row.item
+        assert isinstance(item, SettleRow)
+        yield {
+            "arm": _arm(context, row.arm),
+            "against": _words(settle_label(context, item)),
+            "estimate": _read(item.estimate[0] if item.estimate else None),
+            "line": _read(item.line),
+            "distance": _read(item.distance),
+            "settles": _words(item.settles),
+            "cases_needed": _read(item.cases_needed),
+            "cases_needed_two_sided": _read(item.cases_needed_two_sided),
+            "counts": _read(item.counts[0] if item.counts else None),
+            "count_of": _read(item.count_of[0] if item.count_of else None),
+            "wrong_side": _read(item.wrong_side),
+            "level": _read(item.level),
+        }
+
+
+def _levers(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
+    for row in context.rows():
+        item = row.item
+        assert isinstance(item, EffectRow | InteractionRow)
+        by_field = {figure.key.rpartition(".")[2]: figure for figure in item.figures}
+        if isinstance(item, EffectRow):
+            start, end = lever_arms(item, context.report_input)
+            moved = PRICE_STEP_TEMPLATE.format(first=_arm(context, start).text, second=_arm(context, end).text)
+            what = humanize("dimension", item.setting)
+        else:
+            arms = lever_arms(item, context.report_input)
+            moved = " vs ".join(_arm(context, arm).text for arm in arms[::2])
+            what = f"{humanize('dimension', item.setting)} × {humanize('dimension', item.across)}"
+        yield {
+            "setting": _words(what),
+            "move": _words(moved),
+            "difference": _read(item.figures[0]),
+            "interval": _read(by_field.get("interval")),
+            "level": _read(by_field.get("level")),
+            "verdict": _words(item.verdict if isinstance(item, InteractionRow) else None),
+        }
+
+
 #: The least monthly price a table writes in whole dollars, as the ``usd_whole`` filter reads one.
 _WHOLE_DOLLARS_FROM = 10.0
 
@@ -390,6 +490,26 @@ _SOURCES: dict[str, tuple[Callable[[ChartContext, _Laid], Iterator[_Row]], tuple
     "confusion": (_confusion, ("axis", "arm", "expected", "predicted", "value")),
     "human_pref": (_human_pref, ("slice", "prefers_control")),
     "prices": (_prices, ("step", "per_point")),
+    "bar_reads": (_bar_reads, ("aspect", "measure", "arm", "value", "bar", "status")),
+    "compare": (_compare, ("place", "first", "second", "difference", "interval", "level", "basis")),
+    "settle": (
+        _settle,
+        (
+            "arm",
+            "against",
+            "estimate",
+            "line",
+            "distance",
+            "settles",
+            "cases_needed",
+            "cases_needed_two_sided",
+            "counts",
+            "count_of",
+            "wrong_side",
+            "level",
+        ),
+    ),
+    "levers": (_levers, ("setting", "move", "difference", "interval", "level", "verdict")),
 }
 
 
@@ -440,7 +560,13 @@ def _table(context: ChartContext) -> Drawn:
         else:
             columns.append(TableColumn(key=key, header=TABLE_HEADERS[key]))
     columns, rows = _with_intervals(columns, rows, context.spec.level)
-    notes = price_notes(context) if context.query.source == "prices" else computed_notes(context)
+    notes = (
+        price_notes(context)
+        if context.query.source == "prices"
+        else settle_notes(context)
+        if context.query.source == "settle"
+        else computed_notes(context)
+    )
     table = TableBlock(
         section=PLANNED_SECTION,
         name=context.query.source,

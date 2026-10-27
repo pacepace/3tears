@@ -24,6 +24,11 @@ confusion       a :class:`ConfusionTable`, one per axis                         
 human_pref      a :class:`PreferenceRow` slice                                    its id                     yes
 prices          a :class:`PriceStep` along the price frontier on a gain axis      ``from→to``                yes
                 (each the query's ``measures`` keeps)
+bar_reads       a :class:`BarRead`: an arm against an absolute bar                ``measure/arm``            yes
+compare         an ``arms_compare`` row: the query's first arm less its second    its place                  yes
+                on its one measure, overall or in one slice
+settle          a ``settle_cases`` row: an arm against a criterion reading it     ``arm/criterion/place``    no
+levers          a ``lever_effects`` effect or interaction on the one measure      the move                   yes
 ==============  ================================================================  =========================  ========
 
 A figure row reads the query's aspect from the measure's ``by_aspect`` where it names one the measure holds, else its
@@ -34,6 +39,23 @@ where every step states a paired one, else unpaired). A price step whose gain's 
 the evidence allows any price above its low end, so the row carries no two-ended interval and its step holds the low
 end it does state (:attr:`PriceStep.open_from`), which a chart draws as a whisker open above and a table writes as
 having no upper bound, never as a bare price.
+
+**The rows an analysis computes** (``compare``, ``settle``, ``levers``) are its function's own rows, never computed
+again here: :func:`~threetears.evals.analysis.analyst.compare.arms_compare`,
+:func:`~threetears.evals.analysis.analyst.settle.settle_cases` and
+:func:`~threetears.evals.analysis.analyst.levers.lever_effects`, each figure in them a cited figure key. A ``compare``
+query names two arms, in order (every row the first less the second), and one measure; ``strata`` keeps places
+(``overall``, a task, a stratum or a cell by id). A ``settle`` query keeps the arms each settled against every
+criterion reading it (``arms``, empty for all; an arm no criterion reads has no row), the criteria on the measures it
+names, and the places. A ``levers`` query names one measure and at most one place (empty for overall); ``arms`` keeps
+the effects and interactions every arm of which it keeps. A call the function refuses selects no row, and the chart
+checks name the function's reason. A ``bar_reads`` row is an arm against one absolute bar, as the pipeline read it.
+
+**A configs query on an input holding no configs** reads the grid the arms' own settings make
+(:func:`config_grid`), where they make one: the settings the arms vary that every arm states, two or more, crossed
+fully (every combination of their values held by exactly one arm). Each is a factor (the input's declared factor of
+that id, its levels matched by id or name, else one named for the setting), and each arm the config of its values.
+So a lattice of a factorial campaign draws whether or not the snapshot recorded its configs.
 
 **A price step** is one move along the frontier of the options best at some price per point
 (:func:`~threetears.evals.analysis.report.figure_keys.price_frontier`), on each gain axis a ``prices`` query keeps (a
@@ -54,19 +76,30 @@ the first, in the input's order. A limit on any other source keeps every row.
 
 from __future__ import annotations
 
+import functools
+import math
+import weakref
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
+from typing import Any
 
+from threetears.evals.analysis.analyst.compare import ComparisonRow, arms_compare
+from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow, lever_effects
+from threetears.evals.analysis.analyst.settle import Settle, SettleRow, settle_cases
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.figure_keys import price_frontier, resolve
+from threetears.evals.analysis.report.figure_keys import arm_settings, price_frontier, resolve
 from threetears.evals.analysis.report_input import (
     Aspect,
+    BarRead,
     Cell,
+    Config,
     ConfusionTable,
     Contrast,
     Example,
+    Factor,
     FloorRead,
     Judged,
+    Level,
     Measure,
     PreferenceRow,
     Reading,
@@ -76,9 +109,50 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Task,
 )
+from threetears.evals.analysis.style import humanize
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.report_plan import ChartQuery
 
-__all__ = ["PriceStep", "SourceRow", "query_aspect", "query_rows"]
+__all__ = [
+    "OVERALL",
+    "PriceStep",
+    "SourceRow",
+    "config_grid",
+    "lever_arms",
+    "lever_place",
+    "place_of",
+    "query_aspect",
+    "query_rows",
+]
+
+#: How a query's ``strata`` names an analysis row's overall place, beside the slices' ids.
+OVERALL = "overall"
+
+#: The most rows an analysis function is asked for at once: every row it has.
+_EVERY_ROW = 1_000_000
+
+#: Each analysis function's result on each input it was called on, by the input's identity, then the call: a chart's
+#: rows are selected by its checks, its completion and its resolver alike, and the analysis behind them is read once.
+#: An entry goes with its input (a finalizer drops it), so a later input reusing an identity never reads it.
+_ANALYSED: dict[int, dict[tuple[Any, ...], Any]] = {}
+
+
+def _analysed[T](report_input: ReportInput, call: tuple[Any, ...], read: Callable[[], T]) -> T:
+    """``read()`` once per input and call: its result, or its refusal raised again each time it is asked for."""
+    held = _ANALYSED.get(id(report_input))
+    if held is None:
+        held = _ANALYSED[id(report_input)] = {}
+        weakref.finalize(report_input, _ANALYSED.pop, id(report_input), None)
+    if call not in held:
+        try:
+            held[call] = read()
+        except RefusedInput as refused:
+            held[call] = refused
+    found = held[call]
+    if isinstance(found, RefusedInput):
+        raise found.with_traceback(None)
+    result: T = found
+    return result
 
 
 @dataclass(frozen=True)
@@ -137,6 +211,11 @@ class SourceRow:
         | ConfusionTable
         | PreferenceRow
         | PriceStep
+        | BarRead
+        | ComparisonRow
+        | SettleRow
+        | EffectRow
+        | InteractionRow
     )
     arm: str = ""
     key: str = ""
@@ -221,7 +300,7 @@ def _figures(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow
         tables.append(report_input.judged)
     arms = _arms(query, report_input)
     if source == "configs":
-        arms &= {config.arm for config in report_input.configs}
+        arms &= {config.arm for config in config_grid(report_input).configs}
     measures = set(query.measures)
     for table in tables:
         for key, figures in table.items():
@@ -374,6 +453,219 @@ def _steps(query: ChartQuery, report_input: ReportInput, gain_key: str) -> Itera
         yield SourceRow(f"{first}→{second}", step, key=gain_key, interval=interval)
 
 
+#: The fewest settings a grid of configs crosses.
+_CROSSED = 2
+
+
+def config_grid(report_input: ReportInput) -> ReportInput:
+    """The input with the grid its configs make: its own where it holds configs, else the one its arms' settings make
+    (this module's configs query on an input holding no configs); the input as it is where the settings every arm
+    states and the arms vary are fewer than two, or do not cross fully (every combination of their values one arm).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The input, its ``factors`` and ``configs`` the grid's.
+    :rtype: ReportInput
+    """
+    if report_input.configs:
+        return report_input
+    settings = arm_settings(report_input)
+    names = list(dict.fromkeys(name for values in settings.values() for name in values))
+    varying = [
+        name
+        for name in names
+        if all(values.get(name) is not None for values in settings.values())
+        and len({str(values[name]) for values in settings.values()}) > 1
+    ]
+    combinations = {tuple(str(values[name]) for name in varying) for values in settings.values()}
+    sizes = [len({str(values[name]) for values in settings.values()}) for name in varying]
+    if len(varying) < _CROSSED or len(combinations) != len(settings) or len(combinations) != math.prod(sizes):
+        return report_input
+    declared = {factor.id: factor for factor in report_input.factors}
+    factors: list[Factor] = []
+    ids: dict[str, dict[str, str]] = {}
+    for name in varying:
+        values = list(dict.fromkeys(str(values[name]) for values in settings.values()))
+        own = declared.get(name)
+        levels = own.levels if own is not None else []
+        held = {spelled.casefold(): level.id for level in levels for spelled in (level.id, level.name or level.id)}
+        if own is not None and all(value.casefold() in held for value in values):
+            factors.append(own)
+            ids[name] = {value: held[value.casefold()] for value in values}
+        else:
+            factors.append(
+                Factor(
+                    id=name, name=humanize("dimension", name), levels=[Level(id=value, name=value) for value in values]
+                )
+            )
+            ids[name] = {value: value for value in values}
+    configs = [
+        Config(arm=arm, levels={name: ids[name][str(values[name])] for name in varying})
+        for arm, values in settings.items()
+    ]
+    kept = [factor for factor in report_input.factors if factor.id not in ids]
+    return report_input.model_copy(update={"factors": [*factors, *kept], "configs": configs})
+
+
+def place_of(where: str, report_input: ReportInput) -> str:
+    """An analysis row's place as a query's ``strata`` names it: :data:`OVERALL`, or the slice's id (a task's, a
+    stratum's, or a cell's, which a separation key spells by its row and column).
+
+    :param where: The place as a separation key spells it (``overall``, ``task.<task>``, ``strata.<stratum>``,
+        ``cells.<row>.<column>``), or as a lever's place does (a task's or stratum's id, ``<row>.<column>``).
+    :ptype where: str
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The place.
+    :rtype: str
+    """
+    kind, _dot, named = where.partition(".")
+    spelled = {f"{cell.row}.{cell.column}": cell_id for cell_id, cell in report_input.cells.items()}
+    if kind in ("task", "strata"):
+        return named
+    if kind == "cells":
+        return spelled.get(named, named)
+    return spelled.get(where, where)
+
+
+def _kept_place(where: str, query: ChartQuery, report_input: ReportInput) -> bool:
+    return not query.strata or place_of(where, report_input) in query.strata
+
+
+def _bar_reads(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow]:
+    arms = _arms(query, report_input)
+    measures = set(query.measures)
+    for read in report_input.bars:
+        if (
+            read.arm in arms
+            and (not measures or read.measure in measures)
+            and (not query.aspect or read.aspect == query.aspect)
+        ):
+            yield SourceRow(
+                f"{read.measure}/{read.arm}", read, arm=read.arm, key=read.measure, interval=_interval(read.interval)
+            )
+
+
+def _cited_interval(figure: object) -> tuple[float, float] | None:
+    value = getattr(figure, "value", None)
+    return (float(value[0]), float(value[1])) if isinstance(value, tuple) else None
+
+
+def _compare(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow]:
+    """The query's first arm less its second on its one measure, at each place it keeps (``arms_compare``'s rows)."""
+    if len(query.arms) != 2 or len(query.measures) != 1:
+        return
+    (measure,) = query.measures
+    try:
+        first, second = query.arms
+        read = _analysed(
+            report_input,
+            ("compare", first, second, measure),
+            lambda: arms_compare(report_input, (first, second), measure, limit=_EVERY_ROW),
+        )
+    except RefusedInput:
+        # NOSILENT: a pair the function refuses selects no row; the chart checks name its reason, read again there.
+        return
+    for row in read.rows:
+        if _kept_place(row.where, query, report_input):
+            yield SourceRow(place_of(row.where, report_input), row, key=measure, interval=_cited_interval(row.interval))
+
+
+def _settled(report_input: ReportInput, arm: str) -> Settle:
+    return settle_cases(report_input, [arm], limit=_EVERY_ROW)
+
+
+def _settle(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow]:
+    """Each kept arm against every criterion reading it (``settle_cases``' rows), on the measures and places kept."""
+    measures = set(query.measures)
+    by_id = {criterion.id: criterion for criterion in report_input.criteria}
+    for arm in [held.id for held in report_input.arms if held.id in _arms(query, report_input)]:
+        try:
+            read = _analysed(report_input, ("settle", arm), functools.partial(_settled, report_input, arm))
+        except RefusedInput:
+            # NOSILENT: an arm no criterion reads, or none of whose readings settles, has no row; the checks say why.
+            continue
+        for row in read.rows:
+            criterion = by_id.get(row.against.removeprefix("criterion "))
+            if criterion is None or (measures and criterion.measure not in measures):
+                continue
+            if _kept_place(row.where, query, report_input):
+                place = place_of(row.where, report_input)
+                yield SourceRow(f"{arm}/{criterion.id}/{place}", row, arm=arm, key=criterion.measure)
+
+
+def lever_place(query: ChartQuery, report_input: ReportInput) -> str | None:
+    """The one place a levers query reads within, as ``lever_effects`` names it; None for overall.
+
+    :param query: The query.
+    :ptype query: ChartQuery
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The place; None where the query names none, or names overall.
+    :rtype: str | None
+    """
+    named = [place for place in query.strata if place != OVERALL]
+    if not named:
+        return None
+    cell = report_input.cells.get(named[0])
+    return f"{cell.row}.{cell.column}" if cell is not None else named[0]
+
+
+def lever_arms(row: EffectRow | InteractionRow, report_input: ReportInput) -> list[str]:
+    """The arms a lever row reads: an effect's two, or an interaction's four (each move's, found by its effect's key).
+
+    :param row: An effect or an interaction, as ``lever_effects`` returns it.
+    :ptype row: EffectRow | InteractionRow
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The arms, by id: from, then to, for each move.
+    :rtype: list[str]
+    """
+    if isinstance(row, EffectRow):
+        return [str(row.from_arm.value), str(row.to_arm.value)]
+    found: list[str] = []
+    ids = [arm.id for arm in report_input.arms]
+    for figure in (row.first, row.second):
+        stem = f"lever.{row.setting}."
+        move = next(
+            (
+                (first, second)
+                for first in ids
+                for second in ids
+                if first != second and figure.key.startswith(f"{stem}{first}.{second}.")
+            ),
+            None,
+        )
+        found += list(move) if move is not None else []
+    return found
+
+
+def _levers(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow]:
+    """The effects, then the interactions, of every setting on the query's one measure at its place
+    (``lever_effects``' rows), each every arm of which the query keeps."""
+    named = [place for place in query.strata if place != OVERALL]
+    if len(query.measures) != 1 or len(named) > 1:
+        return
+    (measure,) = query.measures
+    try:
+        place = lever_place(query, report_input)
+        read = _analysed(
+            report_input,
+            ("levers", measure, place),
+            lambda: lever_effects(report_input, measure, place_filter=place, limit=_EVERY_ROW),
+        )
+    except RefusedInput:
+        # NOSILENT: a measure or place the function refuses selects no row; the chart checks name its reason.
+        return
+    arms = _arms(query, report_input)
+    rows: list[EffectRow | InteractionRow] = [*read.effects, *read.interactions]
+    for row in rows:
+        moved = lever_arms(row, report_input)
+        if moved and set(moved) <= arms:
+            interval = _cited_interval(row.figures[1]) if len(row.figures) > 1 else None
+            yield SourceRow("→".join(moved), row, key=measure, interval=interval)
+
+
 #: Each source's selector (this module's table).
 _SELECTORS: dict[str, Callable[[ChartQuery, ReportInput], Iterator[SourceRow]]] = {
     "readings": _readings,
@@ -390,4 +682,8 @@ _SELECTORS: dict[str, Callable[[ChartQuery, ReportInput], Iterator[SourceRow]]] 
     "confusion": _confusion,
     "human_pref": _human_pref,
     "prices": _prices,
+    "bar_reads": _bar_reads,
+    "compare": _compare,
+    "settle": _settle,
+    "levers": _levers,
 }

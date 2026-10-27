@@ -12,7 +12,9 @@ than ten times, by the page's one log rule, which a caption says):
 - *human_pref*: a row per slice, the share of ratings preferring the control;
 - *prices*: a row per step along the price frontier, its price per point (a month's at the declared volume, else per
   1,000 of what the cost counts) from zero, its interval's ends where both are stated; named by its options, and on
-  a narrow chart, where that does not fit, by their tags.
+  a narrow chart, where that does not fit, by their tags;
+- *settle*: a row per arm, criterion and place ``settle_cases`` reads: how often a fresh run of today's size reads the
+  figure on the other side of its line, if the truth is today's estimate, a caption naming the level it is sized at.
 
 Bars share one axis, so the measures a chart reads are in one unit, each at its own scale; in panels by slice or by
 measure, where the plan asks for them, each panel is its measure's own, in its unit
@@ -84,8 +86,10 @@ from threetears.evals.analysis.report.plan_page.words import (
     PRICE_OPEN_NOTE,
     PRICE_STEP_NOTES,
     PRICE_STEP_TEMPLATE,
+    SETTLE_NOTE,
     STATISTIC_NOTE,
 )
+from threetears.evals.analysis.analyst.settle import SettleRow
 from threetears.evals.analysis.report_rows import PriceStep
 from threetears.evals.analysis.report_input import (
     Measure,
@@ -315,6 +319,67 @@ def _price_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[str]]:
     return bars, drawn, {"mean"}
 
 
+def settle_label(context: ChartContext, row: SettleRow) -> str:
+    """A settle row as a reader names it, after its arm: the criterion it is settled against, and the place where it
+    is not the arm's overall figure.
+
+    :param context: The chart being resolved.
+    :ptype context: ChartContext
+    :param row: One ``settle_cases`` row.
+    :ptype row: SettleRow
+    :return: The label.
+    :rtype: str
+    """
+    criterion = row.against.removeprefix("criterion ")
+    parts = [context.look.reader("criterion", criterion)]
+    if row.name is not None:
+        parts.append(str(row.name.value))
+    return " · ".join(parts)
+
+
+def _settle_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[str]]:
+    """settle: a bar per arm and criterion (and place), how often a fresh run of today's size reads it on the other
+    side of its line, as ``settle_cases`` reads it."""
+    drawn = quantity("share")
+    bars = []
+    for row in context.rows():
+        item = row.item
+        assert isinstance(item, SettleRow)
+        figure = item.wrong_side
+        if figure is None or not isinstance(figure.value, float):
+            continue
+        look = context.look.arm(row.arm) if row.arm in context.look.arms else None
+        label = f"{look.name if look is not None else row.arm} · {settle_label(context, item)}"
+        bars.append(
+            _Bar(
+                id=row.label,
+                label=label,
+                value=figure.value * drawn.factor,
+                color=look.token if look is not None else None,
+                tag=look.tag if look is not None else None,
+                arm=row.arm,
+                short_label=look.tag if look is not None else None,
+            )
+        )
+    return bars, drawn, {"mean"}
+
+
+def settle_notes(context: ChartContext) -> tuple[str, ...]:
+    """What a settle chart or table says: what its figure is, at the level it is sized at.
+
+    :param context: The chart being resolved, over the settle source.
+    :ptype context: ChartContext
+    :return: The note.
+    :rtype: tuple[str, ...]
+    """
+    levels = {
+        str(row.item.level.value)
+        for row in context.rows()
+        if isinstance(row.item, SettleRow) and row.item.level is not None
+    }
+    return (SETTLE_NOTE.format(level=", ".join(sorted(levels)) or "the snapshot's level"),)
+
+
 def _open_steps(context: ChartContext) -> list[str]:
     """The steps a prices chart or table draws whose interval is open above, each named by its options."""
 
@@ -469,9 +534,11 @@ def _bars(context: ChartContext) -> Drawn:
         bars, drawn, statistics = _preference_bars(context)
     elif source == "prices":
         bars, drawn, statistics = _price_bars(context)
+    elif source == "settle":
+        bars, drawn, statistics = _settle_bars(context)
     else:
         raise context.refuse(
-            "bars draw measures, judged, scoreboard, strata, tasks, configs, human preference or prices"
+            "bars draw measures, judged, scoreboard, strata, tasks, configs, human preference, prices or settle rows"
         )
     if not bars:
         raise context.refuse("it selects no figure to draw")
@@ -499,6 +566,8 @@ def _bars(context: ChartContext) -> Drawn:
         emphasis=context.emphasis,
     )
     notes = (*_statistic_note(statistics), *((LOG_BARS_NOTE,) if logged else ()), *computed_notes(context))
+    if source == "settle":
+        notes = (*notes, *settle_notes(context))
     if source == "prices":
         notes = (
             *notes,

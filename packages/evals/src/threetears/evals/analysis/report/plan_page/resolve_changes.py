@@ -23,16 +23,25 @@ about a centre).
 - *human_pref*: the share of blind ratings preferring the control, per slice, about the no-preference point (50%),
   bold where its interval excludes it;
 - *configs*: lever effects, each level of a factor against the factor's first level on the query's measure,
-  averaged over every combination of the other factors that holds both: descriptive, uncorrected.
+  averaged over every combination of the other factors that holds both: descriptive, uncorrected;
+- *compare*: the query's first arm less its second at each place ``arms_compare`` reads, with its interval, bold
+  where the interval clears zero; a caption names the two arms and how the interval was read (paired or independent);
+- *levers*: each lever effect, grouped by its setting, then each interaction, grouped by its setting and the setting
+  it crosses, as ``lever_effects`` reads them: bold where an effect's interval clears zero, or an interaction reverses
+  or differs. A row's short label names its arms by their tags.
 
 Every interval is drawn only where the chart states a level; every note is written by the package's number rule.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
+from threetears.evals.analysis.analyst.cited import CitedFigure
+from threetears.evals.analysis.analyst.compare import ComparisonRow
+from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow
 from threetears.evals.analysis.report.charts import BarRow, BarsChart, BarsPanel, ChartReference, ForestChart, ForestRow
 from threetears.evals.analysis.report.plan_page.charting import (
     ChartContext,
@@ -40,6 +49,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     KindResolver,
     chart_block,
     contrast_groups,
+    contrast_unit_of,
     contrast_words,
     figure_stat,
     figure_unit,
@@ -56,12 +66,22 @@ from threetears.evals.analysis.report.plan_page.charting import (
 )
 from threetears.evals.analysis.report.plan_page.look import Quantity, centred_domain, figure_text, quantity
 from threetears.evals.analysis.report.plan_page.words import (
+    BASIS_NOTE,
+    COMPARE_NOTE,
     HUMAN_PREF_NOTE,
+    LEVER_CROSS_GROUP,
+    LEVER_CROSS_TEMPLATE,
+    LEVER_EFFECT_GROUP,
+    LEVER_MOVE_TEMPLATE,
     LEVER_NOTE,
+    LEVERS_NOTE,
+    OVERALL_WORD,
     UNCORRECTED_NOTE,
     change_words,
 )
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, Stat, Stratum, Task
+from threetears.evals.analysis.report_rows import lever_arms
+from threetears.evals.analysis.style import humanize
 
 __all__ = ["RESOLVERS"]
 
@@ -86,6 +106,7 @@ class _Change:
     tip: list[str]
     group: str | None = None
     panel: str | None = None
+    short_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -296,18 +317,7 @@ def _figure_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tup
 
 
 def _with_group(change: _Change, group: str | None, label: str | None = None) -> _Change:
-    return _Change(
-        id=change.id,
-        label=label if label is not None else change.label,
-        color=change.color,
-        value=change.value,
-        interval=change.interval,
-        strong=change.strong,
-        note=change.note,
-        tip=change.tip,
-        group=group,
-        panel=change.panel,
-    )
+    return dataclasses.replace(change, label=label if label is not None else change.label, group=group)
 
 
 def _slice_changes(context: ChartContext) -> tuple[dict[str, list[_Change]], Quantity, tuple[str, ...]]:
@@ -417,6 +427,160 @@ def _lever_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tupl
     return changes, drawn, (LEVER_NOTE,)
 
 
+# --- rows an analysis computes: two arms' difference, and the lever effects ----------------------------------------
+
+
+def _difference_quantity(context: ChartContext, key: str) -> Quantity:
+    """How a difference between two arms on one measure is drawn: a rate's in points, another's in its own unit."""
+    return quantity(contrast_unit_of(context.report_input, key), change=True)
+
+
+def _arm_name(context: ChartContext, arm: str) -> str:
+    return context.look.arm(arm).name if arm in context.look.arms else arm
+
+
+def _arm_tag(context: ChartContext, arm: str) -> str:
+    return context.look.arm(arm).tag if arm in context.look.arms else arm
+
+
+def _figure_value(figure: CitedFigure | None, drawn: Quantity) -> float | None:
+    return float(figure.value) * drawn.factor if figure is not None and isinstance(figure.value, float) else None
+
+
+def _figure_ends(figure: CitedFigure | None, drawn: Quantity) -> tuple[float, float] | None:
+    if figure is None or not isinstance(figure.value, tuple):
+        return None
+    return float(figure.value[0]) * drawn.factor, float(figure.value[1]) * drawn.factor
+
+
+def _analysed_change(
+    *,
+    row_id: str,
+    label: str,
+    short: str,
+    value: float,
+    interval: tuple[float, float] | None,
+    drawn: Quantity,
+    head: Sequence[str],
+    strong: bool | None,
+    group: str | None = None,
+) -> _Change:
+    """One row an analysis computed, as a change: bold where its interval clears zero, muted where it holds it."""
+    tip = [*head, figure_text(value, drawn)]
+    if interval is not None:
+        tip[-1] += f", {interval_words(*interval, drawn)}"
+    return _Change(
+        id=row_id,
+        label=label,
+        color=None,
+        value=value,
+        interval=interval,
+        strong=strong,
+        note=figure_text(value, drawn),
+        tip=tip,
+        group=group,
+        short_label=short,
+    )
+
+
+def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[str, ...]]:
+    """compare: the query's first arm less its second at each place ``arms_compare`` reads, a row each."""
+    rows = context.rows()
+    if not rows:
+        raise context.refuse("it selects no difference of two arms: name the two arms and one measure")
+    key = rows[0].key
+    first, second = context.query.arms
+    drawn = _difference_quantity(context, key)
+    changes: list[_Change] = []
+    bases: list[str] = []
+    for row in rows:
+        item = row.item
+        assert isinstance(item, ComparisonRow)
+        value = _figure_value(item.difference, drawn)
+        if value is None:
+            continue
+        place = str(item.name.value) if item.name is not None else OVERALL_WORD
+        interval = _figure_ends(item.interval, drawn)
+        if item.basis is not None:
+            bases.append(str(item.basis.value))
+        changes.append(
+            _analysed_change(
+                row_id=row.label,
+                label=place,
+                short=place,
+                value=value,
+                interval=interval,
+                drawn=drawn,
+                head=[place],
+                strong=item.excludes_zero,
+            )
+        )
+    named = COMPARE_NOTE.format(
+        first=_arm_name(context, first),
+        second=_arm_name(context, second),
+        measure=measure_words(context.report_input, key),
+    )
+    basis = tuple(dict.fromkeys(BASIS_NOTE.format(basis=basis) for basis in bases))
+    return changes, drawn, (named, *basis)
+
+
+def _lever_label(context: ChartContext, row: EffectRow | InteractionRow) -> tuple[str, str, str]:
+    """A lever row's label, short label and group: an effect by the arm it moves from and the value it moves to,
+    under its setting; an interaction by the two contexts, under its setting and the other setting it crosses."""
+    arms = lever_arms(row, context.report_input)
+    if isinstance(row, EffectRow):
+        start, end = arms
+        to_value = str(row.to_value.value) if row.to_value is not None else _arm_name(context, end)
+        label = LEVER_MOVE_TEMPLATE.format(start=_arm_name(context, start), value=to_value)
+        short = LEVER_MOVE_TEMPLATE.format(start=_arm_tag(context, start), value=_arm_tag(context, end))
+        return label, short, LEVER_EFFECT_GROUP.format(setting=humanize("dimension", row.setting))
+    first_from, _first_to, second_from, _second_to = (arms + ["", "", "", ""])[:4]
+    label = LEVER_CROSS_TEMPLATE.format(second=_arm_name(context, second_from), first=_arm_name(context, first_from))
+    short = LEVER_CROSS_TEMPLATE.format(second=_arm_tag(context, second_from), first=_arm_tag(context, first_from))
+    group = LEVER_CROSS_GROUP.format(
+        setting=humanize("dimension", row.setting), across=humanize("dimension", row.across)
+    )
+    return label, short, group
+
+
+def _lever_rows(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[str, ...]]:
+    """levers: each effect, then each interaction, ``lever_effects`` reads on the query's one measure and place."""
+    rows = context.rows()
+    if not rows:
+        raise context.refuse("it selects no lever effect: name one measure")
+    key = rows[0].key
+    drawn = _difference_quantity(context, key)
+    changes: list[_Change] = []
+    for row in rows:
+        item = row.item
+        assert isinstance(item, EffectRow | InteractionRow)
+        value = _figure_value(item.figures[0], drawn)
+        if value is None:
+            continue
+        interval = _figure_ends(item.figures[1], drawn) if len(item.figures) > 1 else None
+        label, short, group = _lever_label(context, item)
+        if isinstance(item, InteractionRow):
+            strong: bool | None = item.verdict in ("reverses", "differs") if item.verdict != "no_interval" else None
+        else:
+            strong = None if interval is None else interval[0] > 0 or interval[1] < 0
+        changes.append(
+            _analysed_change(
+                row_id=row.label,
+                label=label,
+                short=short,
+                value=value,
+                interval=interval,
+                drawn=drawn,
+                head=[group, label],
+                strong=strong,
+                group=group,
+            )
+        )
+    if len({change.group for change in changes}) == 1:
+        changes = [_with_group(change, None) for change in changes]
+    return changes, drawn, (LEVERS_NOTE.format(measure=measure_words(context.report_input, key)),)
+
+
 # --- the charts ----------------------------------------------------------------------------------------------------
 
 
@@ -426,6 +590,7 @@ def _forest_row(change: _Change, context: ChartContext) -> ForestRow:
     return ForestRow(
         id=change.id,
         label=change.label,
+        short_label=change.short_label,
         value=change.value,
         lo=change.interval[0],
         hi=change.interval[1],
@@ -478,6 +643,7 @@ def _bar_row(change: _Change, level: str) -> BarRow:
     return BarRow(
         id=change.id,
         label=change.label,
+        short_label=change.short_label,
         value=change.value,
         lo=interval[0] if interval is not None else None,
         hi=interval[1] if interval is not None else None,
@@ -534,9 +700,14 @@ def _diverging(context: ChartContext) -> Drawn:
         centre = _NO_PREFERENCE
     elif source == "configs":
         changes, drawn, notes = _lever_changes(context)
+    elif source == "compare":
+        changes, drawn, notes = _compare_changes(context)
+    elif source == "levers":
+        changes, drawn, notes = _lever_rows(context)
     else:
         raise context.refuse(
-            "diverging bars draw readings, contrasts, measures, judged, strata, tasks, configs or human preference"
+            "diverging bars draw readings, contrasts, measures, judged, strata, tasks, configs, human preference, "
+            "two arms compared or lever effects"
         )
     if not changes:
         raise context.refuse("it selects no change to draw")
