@@ -104,8 +104,11 @@ take the `''` default. To roll back to 0.80.x, first remove every variant row (`
 variant <> ''`), because 0.80.x reads them as rows of the block itself and a block could then hold more than one
 active version. Then recreate the block-level indexes: `CREATE UNIQUE INDEX IF NOT EXISTS uq_identity_active_per_block
 ON identity_versions (agent_id, customer_id, user_id, block_key) WHERE status = 'active'` and `CREATE INDEX IF NOT
-EXISTS idx_identity_block_history ON identity_versions (agent_id, user_id, block_key, date_created DESC)`. The column
-and the per-variant indexes can stay.
+EXISTS idx_identity_block_history ON identity_versions (agent_id, user_id, block_key, date_created DESC)`. Last,
+remove v003's ledger row (`DELETE FROM _schema_migrations WHERE package = 'agent_identity' AND version = 3`), or
+the next upgrade treats v003 as applied and the recreated `uq_identity_active_per_block` stays, refusing a variant's
+active version beside its block's; v003 is idempotent, so it runs cleanly again then. The package is agent-scoped,
+so run all of this in each agent's schema. The column and the per-variant indexes can stay.
 
 ## v0.80.0 -- 2026-10-27
 
