@@ -1,0 +1,159 @@
+### c1 / 1
+rendered block
+block_kind: bars
+query:
+  source: measures
+  aspect: 
+  measures: [cost_usd]
+  arms: []
+  strata: []
+  limit: 0
+  transform: per_1k
+  small_multiples_by: none
+reference_line: budget
+emphasis: 
+title: 
+level: 95%
+unit: usd
+domain: 
+criteria.answers/bar/cost_usd.threshold = $0.00100
+columns: [Row, Value, 95% interval, Note]
+rows (4):
+  - cells: [alpha, $4.0, $4.0 to $4.0, $4.0]
+  - cells: [beta, $0.8, $0.8 to $0.8, $0.8]
+  - cells: [gamma, $0.5, $0.5 to $0.5, $0.5]
+  - cells: [budget $1, $1.0, , ]
+total: 4
+offset: 0
+truncated: False
+notes: []
+
+### c1 / 2
+rendered block
+block_kind: bars
+query:
+  source: measures
+  aspect: 
+  measures: [total_ms]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: budget
+emphasis: 
+title: 
+level: 95%
+unit: ms
+domain: 
+criteria.answers/bar/total_ms.threshold = 800 ms
+columns: [Row, Value, 95% interval, Note]
+rows (4):
+  - cells: [alpha, 1001 ms, 973.3 ms to 1029 ms, 1001 ms]
+  - cells: [beta, 701 ms, 673.3 ms to 728.7 ms, 701 ms]
+  - cells: [gamma, 401 ms, 373.3 ms to 428.7 ms, 401 ms]
+  - cells: [budget 800 ms, 800 ms, , ]
+total: 4
+offset: 0
+truncated: False
+notes: []
+
+### c2 / 1
+rendered block
+block_kind: dot_interval
+query:
+  source: measures
+  aspect: 
+  measures: [goal_state:reply.total == case.total]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: beta
+title: 
+level: 95%
+unit: 
+domain: 
+reference: none
+columns: [Row, Value, 95% interval]
+rows (3):
+  - cells: [A · alpha, 0.8833, 0.6893 to 0.9627]
+  - cells: [B · beta, 0.65, 0.4387 to 0.8152]
+  - cells: [C · gamma, 0.45, 0.2518 to 0.6655]
+total: 3
+offset: 0
+truncated: False
+notes: []
+
+### c3 / 1
+rendered block
+block_kind: table
+query:
+  source: scoreboard
+  aspect: 
+  measures: []
+  arms: [beta, gamma]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Arm, Figure, Value]
+rows (16):
+  - cells: [B · beta, ran, 60]
+  - cells: [B · beta, lost, 0]
+  - cells: [B · beta, usable, 60]
+  - cells: [B · beta, passed, 39]
+  - cells: [B · beta, failed, 21]
+  - cells: [B · beta, cases, 20]
+  - cells: [B · beta, reply cost usd, 0.0008]
+  - cells: [B · beta, test cost usd, 0.048]
+  - cells: [C · gamma, ran, 60]
+  - cells: [C · gamma, lost, 0]
+  - cells: [C · gamma, usable, 60]
+  - cells: [C · gamma, passed, 27]
+  - cells: [C · gamma, failed, 33]
+  - cells: [C · gamma, cases, 20]
+  - cells: [C · gamma, reply cost usd, 0.0005]
+  - cells: [C · gamma, test cost usd, 0.03]
+total: 16
+offset: 0
+truncated: False
+notes: []
+
+### c4 / 1
+rendered block
+block_kind: table
+query:
+  source: measures
+  aspect: 
+  measures: [goal_state:reply.cites_policy, goal_state:reply.total == case.total]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 95%
+unit: 
+domain: 
+reference: none
+columns: [Arm, reply.cites_policy, 95% interval, reply.total == case.total, 95% interval]
+rows (3):
+  - cells: [A · alpha, 1, 0.8274 to 1, 0.8833, 0.6893 to 0.9627]
+  - cells: [B · beta, 1, 0.8274 to 1, 0.65, 0.4387 to 0.8152]
+  - cells: [C · gamma, 1, 0.8274 to 1, 0.45, 0.2518 to 0.6655]
+total: 3
+offset: 0
+truncated: False
+notes: []

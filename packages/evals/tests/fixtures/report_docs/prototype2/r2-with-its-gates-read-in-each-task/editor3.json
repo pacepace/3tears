@@ -1,0 +1,99 @@
+{
+  "resolutions": [
+    {
+      "finding": "our_lean's reason did not discriminate: 'L misses only that one' held as well for J and the pass line, and the page's figures cut at least as much toward J.",
+      "status": "resolved",
+      "evidence": "our_lean now opens 'Which line gives is the owner's call, and the figures don't pick one'. It sets L beside J: 870 ms against 600 ms, a miss certain in some task, at $2,532 a month, against J's 1.4- and 0.6-point misses at $1,208 a month with per-task latency unknown. It adds the L minus J interval, compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.interval, which reads -0.4 to +2.1, and marks the process advice as 'Ours, not a rule the campaign set'. next item 5 asks the owner to declare the line or a price. One remnant: the best_of_n material_if still says 'the lean would lose its candidate', but the lean no longer has a candidate (see findings)."
+    },
+    {
+      "finding": "The routing sentence in where_it_flips said J clears date math, though J's date-math gap is 0.",
+      "status": "resolved",
+      "evidence": "where_it_flips now reads 'J clears single lookup, and date math only exactly at the line ... the routed mix would carry that zero margin on date math'. Block c1/1 shows J at 97.0% in date math against the 97% line."
+    },
+    {
+      "finding": "c4 generalised J's misses from one frozen failure per task, and said so only in the caption.",
+      "status": "resolved",
+      "evidence": "The c4 claim text now says 'a single example in each task it misses rather than a measured share of its misses'. Block c4/1 holds exactly two rows, TQ-0418 (multi-hop) and TQ-1103 (ambiguous entity), and the caption says 'the first frozen in each, not chosen'."
+    },
+    {
+      "finding": "Prose named arms in forms that differ from the page's printed names ('Brisk-S low retry', 'Atlas-M high without a retry').",
+      "status": "resolved",
+      "evidence": "omitted now names single arms through {arm:atlas-m.high.r0} (E), {arm:atlas-m.low.r1} (D) and {arm:nano-xs.low.r1} (Q), and figure_keys_check reads each with its letter tag. The unkeyed names left describe groups ('Atlas-M at reasoning off and low', 'The Nano-XS configurations') or configurations nobody ran ('Brisk-S between low and high reasoning', 'low reasoning with a second retry'), and those cannot take an arm key."
+    },
+    {
+      "finding": "Invariant concern (prior): typed counts in prose with no figure key ('Two sit nearer', 'while missing two tasks', 'the two lines cross').",
+      "status": "resolved",
+      "evidence": "A scan of every prose field with the braced keys stripped finds no typed figure. The only digits left are the statistic name 'p95' and the unit label 'per 1,000 calls'. 'while missing two tasks' is now {count.failing.pass_rate.brisk-s.low.r1|words}, the Atlas-M entry names the two arms by key, and c3 reads 'the pass line and the budget cross'."
+    }
+  ],
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline, flag, lede and recommendation say what to do: ship none of eighteen and record per-task p95 first. They say why: the two that clear 97% in all four tasks, L and F, run 870 ms and 2551 ms p95 against a 600 ms budget, while J, at 513 ms the best inside the budget, misses multi-hop by 1.4 and ambiguous entity by 0.6. They give the main risk: there is no per-task latency, and the flag says so directly under the headline. The inference from pooled to per-task is sound. If every task's p95 sat below 870 ms, the traffic mix's p95 would too, so 'at least one task runs that slow or slower' holds. The call matches code's call: options_dominance and both threshold sweeps read no_call, with no survivors."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "c1 leads: nothing clears both lines. c2 says L over F if the budget gives (-0.4 to +1.7 on pass rate, $2,532 against $13,908 a month). c3 shows the lines crossing inside Brisk-S, with retry lifting low reasoning +1.9 (+0.3 to +3.4), which motivates next item 2. c4 shows where J fails. where_it_flips, explore and next agree on every flip point: the budget at 870 ms or higher, the pass line at 95.6% or lower, and routing that turns on per-task latency. The lean is now neutral and matches next item 5. One stale clause: best_of_n's material_if says 'the lean would lose its candidate', but the lean names none. The caveat now bears on c2 and on the L-or-J question."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 1,
+      "reason": "Nothing is recommended, and L's weak axes are visible: 870 ms pooled, a 0.3-point multi-hop clearance, the best of eighteen. The watch slot applies an inference to L alone. That inference puts about 300 multi-hop cases behind L's clearance, a fraction of one SE and close to even odds. The same inference puts about 180 ambiguous-entity cases behind J's 0.6-point miss (SE about 1.4 points, so about 0.4 SE). That miss is as likely to be noise as L's clearance, yet our_lean states it as a firm miss ('misses only the pass line ... by 1.4 points in multi-hop and 0.6 in ambiguous entities'). Read with the same treatment, J's only firm-looking miss is multi-hop, at about 1.2 SE. That bears directly on the L-or-J question put to the owner. Separately, where_it_flips offers routing as a way to 'meet both lines with neither moved' without saying what the pooled figure demands of it. If L held 600 ms in multi-hop and ambiguous entities (40% of traffic), at most 2% of all calls could exceed 870 ms from those tasks. L's pooled p95 of 870 ms then needs its single-lookup and date-math p95 to be at least about 870 ms: the reverse of the watch slot's own expectation that multi-hop runs slowest."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "Each omission checks out on the snapshot. Nano-XS: the best, S, reads 95.8/93.5/94.7/94.2, under J's 98.4/95.6/97.0/96.4 in every task, and every Nano-XS configuration misses every task (options_dominance). Atlas-M: E and D miss only multi-hop, by 0.4 and 0.6, at 2430 and 1500 ms. A, B and C miss three tasks each (multi-hop by 2.9 to 6.8) at 900 to 1395 ms, all over L's 870, so none is a nearer way out, though the entry's reason names only E and D. Retry: levers_effects shows retry lifting pass rate in all nine pairings (+0.9 to +7.5), and 12 of 18 interactions are 'within'. The six that differ are mostly model contrasts involving Nano-XS, so 'mostly include zero' holds. Calls per task runs from 1.43 to 1.89 with no line declared. Outcome and extra calls hold no figures. The pooled pass-rate gate is omitted with the right reason (J reads 97.1 pooled while missing two tasks)."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "Both snapshot caveats (caveats_list: no_control, best_of_n) are shown with a material_if, and each is correct on the call. no_control touches only comparisons between configurations. If L fell under the line on a re-run, only F would clear every task, at 2551 ms, so nothing ships either way. The confounds the snapshot does not name are carried into the flag, watch, next and method. Latency was recorded only pooled: options_dominance reads p95 as no_figure in every task and the p95 sweep has no flips. Per-task rates carry no spread: settle_cases refuses J and L for lack of a count. Timing machines are unstated. J's date math sits exactly on the line. The one stale reference is in best_of_n's wording (item 2), not in its substance."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "Each of the five next items names a measurement, run or declaration and what it settles. (1) Per-task p95, from stored timings if kept: which line J and L really miss, and whether the routing split holds. (2) Brisk-S between low and high reasoning, and low with a second retry, on multi-hop and ambiguous cases with per-task latency: whether one configuration clears both lines. (3) Routing run as one configuration, gated on (1): what the split costs, measured together. (4) Per-task case counts: whether L's 0.3-point clearance is real and how far J's misses sit from the line. (5) The owner names the line that gives, or a price per point: turns no_call into a call."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 2,
+      "reason": "c1: a per-task dot plot of J, L and F against 97% (c1/1), plus range bars of every arm against 600 ms (c1/2). Lift J's multi-hop 95.6 or drop L's 870 ms and c1 would have to change. c2: cost bars of only L ($0.633) and F ($3.477), plus a per-task plot showing both above the line in all four tasks. The difference interval is in the sentence, and the caption says so. c3: a per-task plot of all six Brisk-S arms carries 'only high with a retry reaches the line in every task' (K at 95.5/96.6/96.1, L above in all four), and the pooled table carries the retry's cost (+$0.014 per 1k). c4: the two frozen failures, which the claim now calls single examples. All 40 braced keys read on the snapshot through figure_keys_check, none unstated or refused, and all seven blocks render."
+    }
+  ],
+  "total": 13,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The noise treatment of the two near options is asymmetric. The watch slot's inference (cases drawn by traffic share) makes L's 0.3-point multi-hop clearance about 0.3 SE on about 300 cases. By the same inference, J's 0.6-point ambiguous-entity miss (criteria.pass_rate.brisk-s.low.r1.disamb.gap) is about 0.4 SE on about 180 cases, equally fragile. Only J's 1.4-point multi-hop miss is about 1.2 SE. our_lean and next item 4 present both of J's misses as firm. State the same labelled inference for J, so the owner sees that J's shortfall rests mainly on multi-hop, just as L's clearance rests on a coin flip there."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The routing option in where_it_flips (and next items 1 and 3) is offered as a way to 'meet both lines with neither moved' without saying what the pooled latency already demands of it. L's pooled p95 is 870 ms (measure.latency_ms.brisk-s.high.r1.p95). For L to hold 600 ms in multi-hop and ambiguous entities (25% + 15% of traffic), those tasks could put at most 2% of all calls over 870 ms. Single lookup and date math, the tasks routed to J, would then need L's own p95 there to be at least about 870 ms. That is the reverse of the watch slot's expectation that multi-hop runs slowest. Say this in one sentence where routing is offered, so it doesn't read as live as the in-between Brisk-S run."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "best_of_n's material_if still reads 'only for the lean ... the lean would lose its candidate'. The lean no longer names a candidate ('the figures don't pick one'). The caveat bears on c2 (L over F if the budget gives) and on the L-or-J question put to the owner: if L reads under the line on a re-run, F becomes the only option that clears pass rate everywhere. Re-point the clause to those."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 1: all 40 distinct braced keys read on the snapshot via figure_keys_check, none unstated or refused. No typed figure remains in prose outside keys; the digits left are the statistic name 'p95' and the unit label 'per 1,000 calls'.",
+    "Invariant 5: Method 'Source' prints meta.provenance, which contains a repository path (docs/eval-report-kit/references/r2-config-sweep.json). Block c4/1 prints case ids (TQ-0418, TQ-1103) in the body. Both are acceptable only if the renderer counts Method as appendix-level and case ids as reader-facing example labels rather than internal ids.",
+    "Invariant 6: the report-doc carries Method but no explicit full-results appendix. Confirm the renderer supplies it.",
+    "Invariants 3 and 4: both caveats in caveats_list (no_control, best_of_n) are shown with material_if, and the form is high_if_immaterial, not plain high. Pass."
+  ],
+  "calls": 20
+}

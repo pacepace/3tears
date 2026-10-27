@@ -1,0 +1,12 @@
+refused: measure_read does not take aspect, measure.
+measure_read accepts:
+- snapshot_id (string, required): The snapshot every figure is read from, by the id its freeze returned.
+- measure_key (string, required): A measure or judged dimension, by the key campaign_overview lists.
+- by (one of arm|stratum|task|cell, default "arm"): Read each arm's figure (arm), or each arm's within each stratum, task or target-matrix cell.
+- statistics (optional list of one of mean|ci|half_width|sem|n|n_cases|p50|p95|change|vs_control, default null): The statistics to read, each where the snapshot states it; omitted, every one it holds on the measure read this way, its interval (ci or half_width) among them. vs_control (a candidate's mean minus the control's within a slice) needs a slice and a control, and is read only when named.
+- aspect_filter (optional string, default null): Read only this aspect, by its id in the snapshot; omitted reads every aspect.
+- arm_filter (optional string, default null): Read only this arm, by its id in the snapshot; omitted reads every arm.
+- limit (optional integer, default null): The most rows to return, up to 200.
+- offset (integer, default 0): Skip this many rows; the previous page's next_offset.
+Example: {"action": "measure_read", "snapshot_id": "report-snapshot:0193a1b2c3d4e5f60718293a4b5c6d7e", "measure_key": "resolves", "by": "stratum"}
+recovery: {"parameters":["aspect","measure"],"accepted":["snapshot_id","measure_key","by","statistics","aspect_filter","arm_filter","limit","offset"],"example":{"action":"measure_read","snapshot_id":"report-snapshot:0193a1b2c3d4e5f60718293a4b5c6d7e","measure_key":"resolves","by":"stratum"},"see":{"action":"help","topic":"measure_read"}}

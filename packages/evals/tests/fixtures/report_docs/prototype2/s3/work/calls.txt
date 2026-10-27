@@ -1,0 +1,6 @@
+c1 1 {"action": "block_render", "snapshot_id": "report-snapshot:42f35b3f8956b3fd82d08e15e9700298", "block_kind": "dot_interval", "query": {"source": "judged", "measures": ["answer.correct"], "aspect": "clarity"}}
+c2 1 {"action": "block_render", "snapshot_id": "report-snapshot:42f35b3f8956b3fd82d08e15e9700298", "block_kind": "dot_interval", "query": {"source": "judged", "measures": ["answer.correct"], "aspect": "accuracy"}}
+c3 1 {"action": "block_render", "snapshot_id": "report-snapshot:42f35b3f8956b3fd82d08e15e9700298", "block_kind": "table", "query": {"source": "judged", "measures": ["answer.clear"], "aspect": "clarity"}}
+c3 2 {"action": "block_render", "snapshot_id": "report-snapshot:42f35b3f8956b3fd82d08e15e9700298", "block_kind": "table", "query": {"source": "judged", "measures": ["answer.clear"], "aspect": "accuracy"}}
+c4 1 {"action": "block_render", "snapshot_id": "report-snapshot:42f35b3f8956b3fd82d08e15e9700298", "block_kind": "examples", "query": {"source": "examples", "aspect": "clarity"}}
+c4 2 {"action": "block_render", "snapshot_id": "report-snapshot:42f35b3f8956b3fd82d08e15e9700298", "block_kind": "examples", "query": {"source": "examples", "aspect": "accuracy"}}

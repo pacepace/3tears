@@ -1,0 +1,42 @@
+sensitivity
+parameter: threshold:p95
+hypothetical: False
+swept: every threshold from no lower end up, without end, on criterion p95
+criteria.p95.threshold = 250 ms
+boundary_belongs_to: above
+declared_call:
+  modes: [decide]
+  dominant: [arm:brisk-s.few]
+reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+declared_picks: []
+segments (2):
+  - low: none; modes: [no_call]; dominant: []; picks: []
+    high:
+      criteria.p95.brisk-s.few.value = 184 ms
+  - high: none; modes: [decide]; dominant: [arm:brisk-s.few]; picks: []
+    low:
+      criteria.p95.brisk-s.few.value = 184 ms
+holds: False
+picks_hold: True
+flips (9):
+  - arm: arm:nano-xs.zero; where: none; call_changes: False; picks_change: False
+    criteria.p95.nano-xs.zero.value = 70 ms
+  - arm: arm:nano-xs.few; where: none; call_changes: False; picks_change: False
+    criteria.p95.nano-xs.few.value = 80 ms
+  - arm: arm:brisk-s.zero; where: none; call_changes: False; picks_change: False
+    criteria.p95.brisk-s.zero.value = 160 ms
+  - arm: arm:brisk-s.few; where: none; call_changes: True; picks_change: False
+    criteria.p95.brisk-s.few.value = 184 ms
+  - arm: arm:nano-xs.rubric; where: none; call_changes: False; picks_change: False
+    criteria.p95.nano-xs.rubric.value = 217 ms
+  - arm: arm:atlas-m.zero; where: none; call_changes: False; picks_change: False
+    criteria.p95.atlas-m.zero.value = 420 ms
+  - arm: arm:atlas-m.few; where: none; call_changes: False; picks_change: False
+    criteria.p95.atlas-m.few.value = 483 ms
+  - arm: arm:brisk-s.rubric; where: none; call_changes: False; picks_change: False
+    criteria.p95.brisk-s.rubric.value = 496 ms
+  - arm: arm:atlas-m.rubric; where: none; call_changes: False; picks_change: False
+    criteria.p95.atlas-m.rubric.value = 1302 ms
+total: 9
+offset: 0
+notes: []

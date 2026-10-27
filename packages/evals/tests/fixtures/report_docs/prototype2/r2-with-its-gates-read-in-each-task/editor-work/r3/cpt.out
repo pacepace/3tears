@@ -1,0 +1,82 @@
+measure figures
+measure: calls_per_task
+by: arm
+level: none
+held: [mean]
+not_shown: []
+slices: []
+rows (18):
+  - aspect: none; slice: none
+    arm:atlas-m.off.r0 = Atlas-M · reasoning off · no retry (A)
+    figures (1):
+      measure.calls_per_task.atlas-m.off.r0.mean = 1.539 calls
+  - aspect: none; slice: none
+    arm:atlas-m.off.r1 = Atlas-M · reasoning off · 1 retry (B)
+    figures (1):
+      measure.calls_per_task.atlas-m.off.r1.mean = 1.599 calls
+  - aspect: none; slice: none
+    arm:atlas-m.low.r0 = Atlas-M · reasoning low · no retry (C)
+    figures (1):
+      measure.calls_per_task.atlas-m.low.r0.mean = 1.469 calls
+  - aspect: none; slice: none
+    arm:atlas-m.low.r1 = Atlas-M · reasoning low · 1 retry (D)
+    figures (1):
+      measure.calls_per_task.atlas-m.low.r1.mean = 1.504 calls
+  - aspect: none; slice: none
+    arm:atlas-m.high.r0 = Atlas-M · reasoning high · no retry (E)
+    figures (1):
+      measure.calls_per_task.atlas-m.high.r0.mean = 1.43 calls
+  - aspect: none; slice: none
+    arm:atlas-m.high.r1 = Atlas-M · reasoning high · 1 retry (F)
+    figures (1):
+      measure.calls_per_task.atlas-m.high.r1.mean = 1.452 calls
+  - aspect: none; slice: none
+    arm:brisk-s.off.r0 = Brisk-S · reasoning off · no retry (G)
+    figures (1):
+      measure.calls_per_task.brisk-s.off.r0.mean = 1.579 calls
+  - aspect: none; slice: none
+    arm:brisk-s.off.r1 = Brisk-S · reasoning off · 1 retry (H)
+    figures (1):
+      measure.calls_per_task.brisk-s.off.r1.mean = 1.668 calls
+  - aspect: none; slice: none
+    arm:brisk-s.low.r0 = Brisk-S · reasoning low · no retry (I)
+    figures (1):
+      measure.calls_per_task.brisk-s.low.r0.mean = 1.492 calls
+  - aspect: none; slice: none
+    arm:brisk-s.low.r1 = Brisk-S · reasoning low · 1 retry (J)
+    figures (1):
+      measure.calls_per_task.brisk-s.low.r1.mean = 1.539 calls
+  - aspect: none; slice: none
+    arm:brisk-s.high.r0 = Brisk-S · reasoning high · no retry (K)
+    figures (1):
+      measure.calls_per_task.brisk-s.high.r0.mean = 1.442 calls
+  - aspect: none; slice: none
+    arm:brisk-s.high.r1 = Brisk-S · reasoning high · 1 retry (L)
+    figures (1):
+      measure.calls_per_task.brisk-s.high.r1.mean = 1.476 calls
+  - aspect: none; slice: none
+    arm:nano-xs.off.r0 = Nano-XS · reasoning off · no retry (M)
+    figures (1):
+      measure.calls_per_task.nano-xs.off.r0.mean = 1.698 calls
+  - aspect: none; slice: none
+    arm:nano-xs.off.r1 = Nano-XS · reasoning off · 1 retry (N)
+    figures (1):
+      measure.calls_per_task.nano-xs.off.r1.mean = 1.888 calls
+  - aspect: none; slice: none
+    arm:nano-xs.low.r0 = Nano-XS · reasoning low · no retry (O)
+    figures (1):
+      measure.calls_per_task.nano-xs.low.r0.mean = 1.559 calls
+  - aspect: none; slice: none
+    arm:nano-xs.low.r1 = Nano-XS · reasoning low · 1 retry (Q)
+    figures (1):
+      measure.calls_per_task.nano-xs.low.r1.mean = 1.68 calls
+  - aspect: none; slice: none
+    arm:nano-xs.high.r0 = Nano-XS · reasoning high · no retry (R)
+    figures (1):
+      measure.calls_per_task.nano-xs.high.r0.mean = 1.479 calls
+  - aspect: none; slice: none
+    arm:nano-xs.high.r1 = Nano-XS · reasoning high · 1 retry (S)
+    figures (1):
+      measure.calls_per_task.nano-xs.high.r1.mean = 1.566 calls
+total: 18
+offset: 0

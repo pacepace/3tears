@@ -1,0 +1,27 @@
+rendered block
+block_kind: bars
+query:
+  source: measures
+  aspect: 
+  measures: [cost_per_1k]
+  arms: [brisk-s.low.r1, brisk-s.high.r1, atlas-m.high.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: brisk-s.low.r1
+title: 
+level: 
+unit: usd_per_1k
+domain: 
+reference: none
+columns: [Row, Value, Note]
+rows (3):
+  - cells: [Brisk-S · reasoning low · 1 retry, $0.302, $0.302]
+  - cells: [Brisk-S · reasoning high · 1 retry, $0.633, $0.633]
+  - cells: [Atlas-M · reasoning high · 1 retry, $3.477, $3.477]
+total: 3
+offset: 0
+truncated: False
+notes: [The bars are drawn on a log scale: their values span more than ten times, so each step is a multiple.]

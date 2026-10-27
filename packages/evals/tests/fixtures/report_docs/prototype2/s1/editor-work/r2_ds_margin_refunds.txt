@@ -1,0 +1,25 @@
+sensitivity
+parameter: margin:refunds
+hypothetical: False
+swept: every margin from zero up, without end, on aspect refunds
+aspects.refunds.margin = 10
+boundary_belongs_to: below
+declared_call:
+  modes: [tradeoff]
+  dominant: []
+reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+declared_picks: []
+segments (1):
+  - low: none; high: none; modes: [tradeoff]; dominant: []; picks: []
+holds: True
+picks_hold: True
+flips (3):
+  - arm: arm:v2; where: none; call_changes: False; picks_change: False
+    aspects.refunds.flip_margin.v2 = 2.6
+  - arm: arm:v4; where: none; call_changes: False; picks_change: False
+    aspects.refunds.flip_margin.v4 = 12.7
+  - arm: arm:v3; where: none; call_changes: False; picks_change: False
+    aspects.refunds.flip_margin.v3 = 19
+total: 3
+offset: 0
+notes: []

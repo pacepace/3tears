@@ -1,0 +1,85 @@
+keys checked
+reads_as: each key as a report writes it, read on the snapshot: what it prints through its filters, the family it reads by, or why it reads nothing and what to write instead
+keys (40):
+  - asked: arm:atlas-m.high.r0; status: reads; form: arm:<id>; what: an arm, printed by its short name and letter tag; arms: [arm:atlas-m.high.r0]; aspects: []; filters_taken: []; refusal: none; remedy: none
+    arm:atlas-m.high.r0 = Atlas-M · reasoning high · no retry (E)
+  - asked: arm:atlas-m.high.r1; status: reads; form: arm:<id>; what: an arm, printed by its short name and letter tag; arms: [arm:atlas-m.high.r1]; aspects: []; filters_taken: []; refusal: none; remedy: none
+    arm:atlas-m.high.r1 = Atlas-M · reasoning high · 1 retry (F)
+  - asked: arm:atlas-m.low.r1; status: reads; form: arm:<id>; what: an arm, printed by its short name and letter tag; arms: [arm:atlas-m.low.r1]; aspects: []; filters_taken: []; refusal: none; remedy: none
+    arm:atlas-m.low.r1 = Atlas-M · reasoning low · 1 retry (D)
+  - asked: arm:brisk-s.high.r1; status: reads; form: arm:<id>; what: an arm, printed by its short name and letter tag; arms: [arm:brisk-s.high.r1]; aspects: []; filters_taken: []; refusal: none; remedy: none
+    arm:brisk-s.high.r1 = Brisk-S · reasoning high · 1 retry (L)
+  - asked: arm:brisk-s.low.r1; status: reads; form: arm:<id>; what: an arm, printed by its short name and letter tag; arms: [arm:brisk-s.low.r1]; aspects: []; filters_taken: []; refusal: none; remedy: none
+    arm:brisk-s.low.r1 = Brisk-S · reasoning low · 1 retry (J)
+  - asked: arm:nano-xs.low.r1; status: reads; form: arm:<id>; what: an arm, printed by its short name and letter tag; arms: [arm:nano-xs.low.r1]; aspects: []; filters_taken: []; refusal: none; remedy: none
+    arm:nano-xs.low.r1 = Nano-XS · reasoning low · 1 retry (Q)
+  - asked: compare.atlas-m.high.r1.brisk-s.high.r1.pass_rate.overall.interval|interval; status: reads; form: compare.<arm>.<arm>.<measure>.<where>.<field>; what: the first arm minus the second on a measure or judged dimension, `overall` or within a slice, in points for a rate, with its interval: paired where a contrast states one against the other (the control) overall, else the two arms' own spreads combined as independent; `basis` says which; arms: [arm:atlas-m.high.r1, arm:brisk-s.high.r1]; aspects: []; filters_taken: [pts, abs, int, interval]; refusal: none; remedy: none
+    compare.atlas-m.high.r1.brisk-s.high.r1.pass_rate.overall.interval|interval = -0.4 to +1.7
+  - asked: compare.atlas-m.high.r1.brisk-s.high.r1.pass_rate.overall.level; status: reads; form: compare.<arm>.<arm>.<measure>.<where>.<field>; what: the first arm minus the second on a measure or judged dimension, `overall` or within a slice, in points for a rate, with its interval: paired where a contrast states one against the other (the control) overall, else the two arms' own spreads combined as independent; `basis` says which; arms: [arm:atlas-m.high.r1, arm:brisk-s.high.r1]; aspects: []; filters_taken: [pct, pts, abs, pct10]; refusal: none; remedy: none
+    compare.atlas-m.high.r1.brisk-s.high.r1.pass_rate.overall.level = 95%
+  - asked: compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.interval|interval; status: reads; form: compare.<arm>.<arm>.<measure>.<where>.<field>; what: the first arm minus the second on a measure or judged dimension, `overall` or within a slice, in points for a rate, with its interval: paired where a contrast states one against the other (the control) overall, else the two arms' own spreads combined as independent; `basis` says which; arms: [arm:brisk-s.high.r1, arm:brisk-s.low.r1]; aspects: []; filters_taken: [pts, abs, int, interval]; refusal: none; remedy: none
+    compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.interval|interval = -0.4 to +2.1
+  - asked: cost_per_month.atlas-m.high.r1|usd_whole; status: reads; form: cost_per_month.<arm>; what: an arm's cost per month at the declared monthly volume; arms: [arm:atlas-m.high.r1]; aspects: []; filters_taken: [abs, usd, usd_per_1k, usd_whole]; refusal: none; remedy: none
+    cost_per_month.atlas-m.high.r1|usd_whole = $13,908
+  - asked: cost_per_month.brisk-s.high.r1|usd_whole; status: reads; form: cost_per_month.<arm>; what: an arm's cost per month at the declared monthly volume; arms: [arm:brisk-s.high.r1]; aspects: []; filters_taken: [abs, usd, usd_per_1k, usd_whole]; refusal: none; remedy: none
+    cost_per_month.brisk-s.high.r1|usd_whole = $2,532
+  - asked: cost_per_month.brisk-s.low.r1|usd_whole; status: reads; form: cost_per_month.<arm>; what: an arm's cost per month at the declared monthly volume; arms: [arm:brisk-s.low.r1]; aspects: []; filters_taken: [abs, usd, usd_per_1k, usd_whole]; refusal: none; remedy: none
+    cost_per_month.brisk-s.low.r1|usd_whole = $1,208
+  - asked: count.failing.pass_rate.brisk-s.low.r1|words; status: reads; form: count.failing.<criterion>.<arm>; what: how many of a criterion's places an arm misses: a figure on the wrong side of the threshold, or none; arms: [arm:brisk-s.low.r1]; aspects: []; filters_taken: [abs, int, words]; refusal: none; remedy: none
+    count.failing.pass_rate.brisk-s.low.r1|words = two
+  - asked: count.levels.model|words; status: reads; form: count.levels.<factor>; what: how many levels one factor of a factorial grid holds; arms: []; aspects: []; filters_taken: [abs, int, words]; refusal: none; remedy: none
+    count.levels.model|words = three
+  - asked: count.levels.reasoning|words; status: reads; form: count.levels.<factor>; what: how many levels one factor of a factorial grid holds; arms: []; aspects: []; filters_taken: [abs, int, words]; refusal: none; remedy: none
+    count.levels.reasoning|words = three
+  - asked: count.passing.pass_rate|words; status: reads; form: count.passing.<criterion>; what: how many options clear one gate or guardrail at every place it reads (a borderline figure clears it); arms: []; aspects: []; filters_taken: [abs, int, words]; refusal: none; remedy: none
+    count.passing.pass_rate|words = two
+  - asked: count.places.pass_rate|words; status: reads; form: count.places.<criterion>; what: how many places a criterion reads an arm's figure at: one overall, else each task or cell it reads in; arms: []; aspects: []; filters_taken: [abs, int, words]; refusal: none; remedy: none
+    count.places.pass_rate|words = four
+  - asked: criteria.p95.threshold; status: reads; form: criteria.<criterion>.<field>; what: a declared criterion: its threshold in its measure's units, the measure, statistic and direction; arms: []; aspects: []; filters_taken: [abs, int]; refusal: none; remedy: none
+    criteria.p95.threshold = 600 ms
+  - asked: criteria.pass_rate.atlas-m.high.r0.multihop.gap|abs|pts; status: reads; form: criteria.<criterion>.<arm>.<place>.<field>; what: a criterion's figure for an arm at one place it reads: a task by id, a cell as `<row>.<column>`; arms: [arm:atlas-m.high.r0]; aspects: []; filters_taken: [pts, abs, int]; refusal: none; remedy: none
+    criteria.pass_rate.atlas-m.high.r0.multihop.gap|abs|pts = 0.4
+  - asked: criteria.pass_rate.atlas-m.low.r1.multihop.gap|abs|pts; status: reads; form: criteria.<criterion>.<arm>.<place>.<field>; what: a criterion's figure for an arm at one place it reads: a task by id, a cell as `<row>.<column>`; arms: [arm:atlas-m.low.r1]; aspects: []; filters_taken: [pts, abs, int]; refusal: none; remedy: none
+    criteria.pass_rate.atlas-m.low.r1.multihop.gap|abs|pts = 0.6
+  - asked: criteria.pass_rate.brisk-s.high.r1.multihop.gap|abs|pts; status: reads; form: criteria.<criterion>.<arm>.<place>.<field>; what: a criterion's figure for an arm at one place it reads: a task by id, a cell as `<row>.<column>`; arms: [arm:brisk-s.high.r1]; aspects: []; filters_taken: [pts, abs, int]; refusal: none; remedy: none
+    criteria.pass_rate.brisk-s.high.r1.multihop.gap|abs|pts = 0.3
+  - asked: criteria.pass_rate.brisk-s.low.r1.disamb.gap|abs|pts; status: reads; form: criteria.<criterion>.<arm>.<place>.<field>; what: a criterion's figure for an arm at one place it reads: a task by id, a cell as `<row>.<column>`; arms: [arm:brisk-s.low.r1]; aspects: []; filters_taken: [pts, abs, int]; refusal: none; remedy: none
+    criteria.pass_rate.brisk-s.low.r1.disamb.gap|abs|pts = 0.6
+  - asked: criteria.pass_rate.brisk-s.low.r1.multihop.gap|abs|pts; status: reads; form: criteria.<criterion>.<arm>.<place>.<field>; what: a criterion's figure for an arm at one place it reads: a task by id, a cell as `<row>.<column>`; arms: [arm:brisk-s.low.r1]; aspects: []; filters_taken: [pts, abs, int]; refusal: none; remedy: none
+    criteria.pass_rate.brisk-s.low.r1.multihop.gap|abs|pts = 1.4
+  - asked: criteria.pass_rate.threshold; status: reads; form: criteria.<criterion>.<field>; what: a declared criterion: its threshold in its measure's units, the measure, statistic and direction; arms: []; aspects: []; filters_taken: [pct, pts, abs, pct10]; refusal: none; remedy: none
+    criteria.pass_rate.threshold = 97%
+  - asked: lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.effect|abs|pts; status: reads; form: lever.<setting>.<from>.<to>.<measure>.<field>; what: a lever's effect: one setting moved between two arms whose settings differ in it alone, `<to>` minus `<from>` on a measure or judged dimension (`effect`: a pairing contrast's difference, else the two means'), overall. Computed here, as `compare.<to>.<from>.<measure>.<where>` reads the same two arms: an effect's `interval` (its ends `low`, `high`, its `level`) is a contrast's own where one pairs the two arms overall, else the two arms' own spreads combined as independent (a stated interval, half-width or standard error, or a pass/fail rate's binomial spread from its count), and its `basis` says which; an interaction's is recovered from its two effects' intervals as if independent (MOVER), at their common level; with no spread to read there is no interval. levers_effects lists them; arms: [arm:brisk-s.low.r0, arm:brisk-s.low.r1]; aspects: []; filters_taken: [pts, abs]; refusal: none; remedy: none
+    lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.effect|abs|pts = 1.9
+  - asked: lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.interval|interval; status: reads; form: lever.<setting>.<from>.<to>.<measure>.<field>; what: a lever's effect: one setting moved between two arms whose settings differ in it alone, `<to>` minus `<from>` on a measure or judged dimension (`effect`: a pairing contrast's difference, else the two means'), overall. Computed here, as `compare.<to>.<from>.<measure>.<where>` reads the same two arms: an effect's `interval` (its ends `low`, `high`, its `level`) is a contrast's own where one pairs the two arms overall, else the two arms' own spreads combined as independent (a stated interval, half-width or standard error, or a pass/fail rate's binomial spread from its count), and its `basis` says which; an interaction's is recovered from its two effects' intervals as if independent (MOVER), at their common level; with no spread to read there is no interval. levers_effects lists them; arms: [arm:brisk-s.low.r0, arm:brisk-s.low.r1]; aspects: []; filters_taken: [pts, abs, interval]; refusal: none; remedy: none
+    lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.interval|interval = +0.3 to +3.4
+  - asked: measure.latency_ms.atlas-m.high.r0.p95; status: reads; form: measure.<measure>.<arm>.<statistic>; what: an arm's figure on a measure; arms: [arm:atlas-m.high.r0]; aspects: []; filters_taken: [abs, int]; refusal: none; remedy: none
+    measure.latency_ms.atlas-m.high.r0.p95 = 2430 ms
+  - asked: measure.latency_ms.atlas-m.high.r1.p95; status: reads; form: measure.<measure>.<arm>.<statistic>; what: an arm's figure on a measure; arms: [arm:atlas-m.high.r1]; aspects: []; filters_taken: [abs, int]; refusal: none; remedy: none
+    measure.latency_ms.atlas-m.high.r1.p95 = 2551 ms
+  - asked: measure.latency_ms.atlas-m.low.r1.p95; status: reads; form: measure.<measure>.<arm>.<statistic>; what: an arm's figure on a measure; arms: [arm:atlas-m.low.r1]; aspects: []; filters_taken: [abs, int]; refusal: none; remedy: none
+    measure.latency_ms.atlas-m.low.r1.p95 = 1500 ms
+  - asked: measure.latency_ms.brisk-s.high.r1.p95; status: reads; form: measure.<measure>.<arm>.<statistic>; what: an arm's figure on a measure; arms: [arm:brisk-s.high.r1]; aspects: []; filters_taken: [abs, int]; refusal: none; remedy: none
+    measure.latency_ms.brisk-s.high.r1.p95 = 870 ms
+  - asked: measure.latency_ms.brisk-s.low.r1.p95; status: reads; form: measure.<measure>.<arm>.<statistic>; what: an arm's figure on a measure; arms: [arm:brisk-s.low.r1]; aspects: []; filters_taken: [abs, int]; refusal: none; remedy: none
+    measure.latency_ms.brisk-s.low.r1.p95 = 513 ms
+  - asked: meta.provenance; status: reads; form: meta.<field>; what: the campaign's own words; arms: []; aspects: []; filters_taken: []; refusal: none; remedy: none
+    meta.provenance = Synthetic example data from docs/eval-report-kit/references/r2-config-sweep.json
+  - asked: meta.volume_per_month|int; status: reads; form: meta.<field>; what: the campaign's own words; arms: []; aspects: []; filters_taken: [abs, int, words]; refusal: none; remedy: none
+    meta.volume_per_month|int = 4,000,000
+  - asked: n_candidates|words; status: reads; form: n_candidates; what: how many candidates ran; arms: []; aspects: []; filters_taken: [abs, int, words]; refusal: none; remedy: none
+    n_candidates|words = eighteen
+  - asked: scoreboard.brisk-s.high.r1.cases|int; status: reads; form: scoreboard.<arm>.<statistic>; what: how an arm's trials came out; arms: [arm:brisk-s.high.r1]; aspects: []; filters_taken: [abs, int, words]; refusal: none; remedy: none
+    scoreboard.brisk-s.high.r1.cases|int = 1,200
+  - asked: task.datemath.share; status: reads; form: task.<task>.<field>; what: a task; arms: []; aspects: []; filters_taken: [pct, pts, abs, pct10]; refusal: none; remedy: none
+    task.datemath.share = 20%
+  - asked: task.disamb.share; status: reads; form: task.<task>.<field>; what: a task; arms: []; aspects: []; filters_taken: [pct, pts, abs, pct10]; refusal: none; remedy: none
+    task.disamb.share = 15%
+  - asked: task.multihop.brisk-s.low.r1.pass_rate.mean; status: reads; form: task.<task>.<arm>.<measure>.<statistic>; what: an arm's figure on a measure or judged dimension within one task; `vs_control` is its mean minus the control's there; arms: [arm:brisk-s.low.r1]; aspects: []; filters_taken: [pct, pts, abs, pct10]; refusal: none; remedy: none
+    task.multihop.brisk-s.low.r1.pass_rate.mean = 95.6%
+  - asked: task.multihop.share; status: reads; form: task.<task>.<field>; what: a task; arms: []; aspects: []; filters_taken: [pct, pts, abs, pct10]; refusal: none; remedy: none
+    task.multihop.share = 25%
+  - asked: task.single.share; status: reads; form: task.<task>.<field>; what: a task; arms: []; aspects: []; filters_taken: [pct, pts, abs, pct10]; refusal: none; remedy: none
+    task.single.share = 40%
+total: 40
+offset: 0

@@ -1,0 +1,152 @@
+lever effects
+measure: balanced_accuracy
+place: none
+level: none
+higher_is_better: True
+assumption: Each effect is the second arm minus the first, between two arms whose settings differ in one setting alone, read as arms_compare reads the same two arms: paired where a contrast pairs them overall, else the two means' difference with the two arms' own spreads (a stated interval, half-width or standard error, or a pass/fail rate's binomial spread from its count) combined as if independent, which is conservative where the arms ran the same cases; each effect's basis and level say which. An interaction's interval is recovered from its two effects' as if independent (MOVER), at their common level. With no spread to read there is no interval: a point difference, descriptive, with no test. Rows with an interval come first.
+settings (2):
+  - setting: model; isolated: True; note: none
+    values (3):
+      settings.atlas-m.zero.model = Atlas-M
+      settings.brisk-s.zero.model = Brisk-S
+      settings.nano-xs.zero.model = Nano-XS
+  - setting: prompt; isolated: True; note: none
+    values (3):
+      settings.atlas-m.zero.prompt = Zero-shot
+      settings.atlas-m.few.prompt = Few-shot (12 ex.)
+      settings.atlas-m.rubric.prompt = Rubric + reasoning
+effects (13):
+  - setting: model
+    arm:atlas-m.zero = Atlas-M · Zero-shot (A)
+    arm:brisk-s.zero = Brisk-S · Zero-shot (D)
+    settings.atlas-m.zero.model = Atlas-M
+    settings.brisk-s.zero.model = Brisk-S
+    figures (4):
+      lever.model.atlas-m.zero.brisk-s.zero.balanced_accuracy.effect = -3.8
+      lever.model.atlas-m.zero.brisk-s.zero.balanced_accuracy.interval = -4.2 to -3.4
+      lever.model.atlas-m.zero.brisk-s.zero.balanced_accuracy.level = 95%
+      lever.model.atlas-m.zero.brisk-s.zero.balanced_accuracy.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: model
+    arm:atlas-m.zero = Atlas-M · Zero-shot (A)
+    arm:nano-xs.zero = Nano-XS · Zero-shot (G)
+    settings.atlas-m.zero.model = Atlas-M
+    settings.nano-xs.zero.model = Nano-XS
+    figures (4):
+      lever.model.atlas-m.zero.nano-xs.zero.balanced_accuracy.effect = -11.6
+      lever.model.atlas-m.zero.nano-xs.zero.balanced_accuracy.interval = -12.1 to -11.1
+      lever.model.atlas-m.zero.nano-xs.zero.balanced_accuracy.level = 95%
+      lever.model.atlas-m.zero.nano-xs.zero.balanced_accuracy.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: model
+    arm:atlas-m.few = Atlas-M · Few-shot (12 ex.) (B)
+    arm:brisk-s.few = Brisk-S · Few-shot (12 ex.) (E)
+    settings.atlas-m.few.model = Atlas-M
+    settings.brisk-s.few.model = Brisk-S
+    figures (4):
+      lever.model.atlas-m.few.brisk-s.few.balanced_accuracy.effect = -1.4
+      lever.model.atlas-m.few.brisk-s.few.balanced_accuracy.interval = -1.8 to -1
+      lever.model.atlas-m.few.brisk-s.few.balanced_accuracy.level = 95%
+      lever.model.atlas-m.few.brisk-s.few.balanced_accuracy.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: model
+    arm:atlas-m.few = Atlas-M · Few-shot (12 ex.) (B)
+    arm:nano-xs.few = Nano-XS · Few-shot (12 ex.) (H)
+    settings.atlas-m.few.model = Atlas-M
+    settings.nano-xs.few.model = Nano-XS
+    figures (4):
+      lever.model.atlas-m.few.nano-xs.few.balanced_accuracy.effect = -2
+      lever.model.atlas-m.few.nano-xs.few.balanced_accuracy.interval = -2.4 to -1.6
+      lever.model.atlas-m.few.nano-xs.few.balanced_accuracy.level = 95%
+      lever.model.atlas-m.few.nano-xs.few.balanced_accuracy.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: model
+    arm:atlas-m.rubric = Atlas-M · Rubric + reasoning (C)
+    arm:brisk-s.rubric = Brisk-S · Rubric + reasoning (F)
+    settings.atlas-m.rubric.model = Atlas-M
+    settings.brisk-s.rubric.model = Brisk-S
+    figures (4):
+      lever.model.atlas-m.rubric.brisk-s.rubric.balanced_accuracy.effect = -1.7
+      lever.model.atlas-m.rubric.brisk-s.rubric.balanced_accuracy.interval = -2 to -1.4
+      lever.model.atlas-m.rubric.brisk-s.rubric.balanced_accuracy.level = 95%
+      lever.model.atlas-m.rubric.brisk-s.rubric.balanced_accuracy.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: model
+    arm:atlas-m.rubric = Atlas-M · Rubric + reasoning (C)
+    arm:nano-xs.rubric = Nano-XS · Rubric + reasoning (I)
+    settings.atlas-m.rubric.model = Atlas-M
+    settings.nano-xs.rubric.model = Nano-XS
+    figures (4):
+      lever.model.atlas-m.rubric.nano-xs.rubric.balanced_accuracy.effect = -9.3
+      lever.model.atlas-m.rubric.nano-xs.rubric.balanced_accuracy.interval = -9.7 to -8.9
+      lever.model.atlas-m.rubric.nano-xs.rubric.balanced_accuracy.level = 95%
+      lever.model.atlas-m.rubric.nano-xs.rubric.balanced_accuracy.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: model
+    arm:brisk-s.zero = Brisk-S · Zero-shot (D)
+    arm:nano-xs.zero = Nano-XS · Zero-shot (G)
+    settings.brisk-s.zero.model = Brisk-S
+    settings.nano-xs.zero.model = Nano-XS
+    figures (4):
+      lever.model.brisk-s.zero.nano-xs.zero.balanced_accuracy.effect = -7.8
+      lever.model.brisk-s.zero.nano-xs.zero.balanced_accuracy.interval = -8.3 to -7.3
+      lever.model.brisk-s.zero.nano-xs.zero.balanced_accuracy.level = 95%
+      lever.model.brisk-s.zero.nano-xs.zero.balanced_accuracy.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: model
+    arm:brisk-s.few = Brisk-S · Few-shot (12 ex.) (E)
+    arm:nano-xs.few = Nano-XS · Few-shot (12 ex.) (H)
+    settings.brisk-s.few.model = Brisk-S
+    settings.nano-xs.few.model = Nano-XS
+    figures (4):
+      lever.model.brisk-s.few.nano-xs.few.balanced_accuracy.effect = -0.6
+      lever.model.brisk-s.few.nano-xs.few.balanced_accuracy.interval = -1 to -0.2
+      lever.model.brisk-s.few.nano-xs.few.balanced_accuracy.level = 95%
+      lever.model.brisk-s.few.nano-xs.few.balanced_accuracy.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: model
+    arm:brisk-s.rubric = Brisk-S · Rubric + reasoning (F)
+    arm:nano-xs.rubric = Nano-XS · Rubric + reasoning (I)
+    settings.brisk-s.rubric.model = Brisk-S
+    settings.nano-xs.rubric.model = Nano-XS
+    figures (4):
+      lever.model.brisk-s.rubric.nano-xs.rubric.balanced_accuracy.effect = -7.6
+      lever.model.brisk-s.rubric.nano-xs.rubric.balanced_accuracy.interval = -8 to -7.2
+      lever.model.brisk-s.rubric.nano-xs.rubric.balanced_accuracy.level = 95%
+      lever.model.brisk-s.rubric.nano-xs.rubric.balanced_accuracy.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: prompt
+    arm:atlas-m.zero = Atlas-M · Zero-shot (A)
+    arm:atlas-m.few = Atlas-M · Few-shot (12 ex.) (B)
+    settings.atlas-m.zero.prompt = Zero-shot
+    settings.atlas-m.few.prompt = Few-shot (12 ex.)
+    figures (4):
+      lever.prompt.atlas-m.zero.atlas-m.few.balanced_accuracy.effect = +2.3
+      lever.prompt.atlas-m.zero.atlas-m.few.balanced_accuracy.interval = +1.9 to +2.7
+      lever.prompt.atlas-m.zero.atlas-m.few.balanced_accuracy.level = 95%
+      lever.prompt.atlas-m.zero.atlas-m.few.balanced_accuracy.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: prompt
+    arm:atlas-m.zero = Atlas-M · Zero-shot (A)
+    arm:atlas-m.rubric = Atlas-M · Rubric + reasoning (C)
+    settings.atlas-m.zero.prompt = Zero-shot
+    settings.atlas-m.rubric.prompt = Rubric + reasoning
+    figures (4):
+      lever.prompt.atlas-m.zero.atlas-m.rubric.balanced_accuracy.effect = +3.4
+      lever.prompt.atlas-m.zero.atlas-m.rubric.balanced_accuracy.interval = +3 to +3.8
+      lever.prompt.atlas-m.zero.atlas-m.rubric.balanced_accuracy.level = 95%
+      lever.prompt.atlas-m.zero.atlas-m.rubric.balanced_accuracy.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: prompt
+    arm:atlas-m.few = Atlas-M · Few-shot (12 ex.) (B)
+    arm:atlas-m.rubric = Atlas-M · Rubric + reasoning (C)
+    settings.atlas-m.few.prompt = Few-shot (12 ex.)
+    settings.atlas-m.rubric.prompt = Rubric + reasoning
+    figures (4):
+      lever.prompt.atlas-m.few.atlas-m.rubric.balanced_accuracy.effect = +1.1
+      lever.prompt.atlas-m.few.atlas-m.rubric.balanced_accuracy.interval = +0.8 to +1.4
+      lever.prompt.atlas-m.few.atlas-m.rubric.balanced_accuracy.level = 95%
+      lever.prompt.atlas-m.few.atlas-m.rubric.balanced_accuracy.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - setting: prompt
+    arm:brisk-s.zero = Brisk-S · Zero-shot (D)
+    arm:brisk-s.few = Brisk-S · Few-shot (12 ex.) (E)
+    settings.brisk-s.zero.prompt = Zero-shot
+    settings.brisk-s.few.prompt = Few-shot (12 ex.)
+    figures (4):
+      lever.prompt.brisk-s.zero.brisk-s.few.balanced_accuracy.effect = +4.7
+      lever.prompt.brisk-s.zero.brisk-s.few.balanced_accuracy.interval = +4.3 to +5.1
+      lever.prompt.brisk-s.zero.brisk-s.few.balanced_accuracy.level = 95%
+      lever.prompt.brisk-s.zero.brisk-s.few.balanced_accuracy.basis = independent: each arm's own spread (a pass/fail rate's binomial spread, from its count; a pass/fail rate's binomial spread, from its count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+interactions: []
+total: 36
+offset: 0
+next: action='levers_effects', snapshot_id='report-snapshot:f415cf1cf53877f61c6710e31d14e4c9', measure_key='balanced_accuracy', offset=13

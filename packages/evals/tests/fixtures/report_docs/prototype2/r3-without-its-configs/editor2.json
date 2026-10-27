@@ -1,0 +1,132 @@
+{
+  "resolutions": [
+    {
+      "finding": "must_fix (report): Nano-XS few-shot's overall clearance (0.1 points) is inside noise, but the lede, decision 'next' slot and next[0] treated complex news as its only obstacle.",
+      "status": "resolved",
+      "evidence": "The lede now says Nano-XS 'clears the overall line by only +0.1 points, inside noise'. why_not adds that a fresh run of today's size would read it under the line 23.1% of the time (settle...wrong_side). The decision 'next' slot asks for 'a fix for complex news and a full re-run on fresh turns, sized for the overall line'. next[0] sizes that re-run at 700,113 turns (settle...cases_needed_two_sided_80) and its settles clause names the overall line. All keys read as printed."
+    },
+    {
+      "finding": "must_fix (c5): 'few-shot examples are the lever that moves accuracy most' is false.",
+      "status": "resolved",
+      "evidence": "c5 now reads 'What few-shot examples buy depends on the model: +11.9 points for Nano-XS against +4.7 for Brisk-S, a gap clear of noise.' levers_effects confirms the interaction: +7.2, interval +6.6 to +7.8. The caption now says rubric with reasoning gains more than few-shot on Atlas-M (93.2% against 92.1%) and Brisk-S (91.5% against 90.7%) and loses to it on Nano-XS (83.9% against 90.1%). The block still does not show that interaction (new finding)."
+    },
+    {
+      "finding": "should_fix (report): next[0] gave no held-out guard against tuning the examples on the turns it is scored on.",
+      "status": "resolved",
+      "evidence": "next[0] now re-runs Nano-XS 'with fresh turns the examples were not drawn from', on every gate."
+    },
+    {
+      "finding": "should_fix (c6): the domain panel sits under Simple/Medium/Complex column headers, and the block showed only the pick's confusion while the cascade depends on Nano-XS.",
+      "status": "partially resolved",
+      "evidence": "The block now shows both brisk-s.few and nano-xs.few, and c6 claims Nano-XS flags complex (92.3% against 92.7%) and news (95.5% against 95.8%) about as well as the pick, which is true. In blocks.txt the domain rows still print under the columns Simple, Medium and Complex. Only the caption and a new Method 'Confusion' entry say the columns are Science, Conversational and News."
+    },
+    {
+      "finding": "should_fix (c1): the gate matrix labels the first gate 'Overall accuracy' though it reads balanced accuracy.",
+      "status": "partially resolved",
+      "evidence": "The block row is still labelled 'Overall accuracy (at least 90%)'. Method's Gates entry now says 'The gate the matrix calls Overall accuracy reads balanced accuracy, not traffic-weighted accuracy', and every prose mention says balanced accuracy. The label itself is fixed by the kit, so this is the most the analyst can do in the report."
+    },
+    {
+      "finding": "should_fix (report): the point_estimate:overall caveat used pipeline jargon ('the binomial spread code sized it on').",
+      "status": "resolved",
+      "evidence": "The caveat now reads 'far noisier than the spread expected from 48,210 turns: on that spread a run of 13,512 turns would settle the clearance, and the pick ran 48,210'."
+    },
+    {
+      "finding": "invariant 1: omitted[2] typed the count 'the seven other configurations' with no figure key.",
+      "status": "resolved",
+      "evidence": "omitted[2] now reads 'Each is already out on the gate matrix', with no count."
+    },
+    {
+      "finding": "invariant 5 (borderline): Method's Source line printed a repo file path through meta.provenance.",
+      "status": "resolved",
+      "evidence": "Source now reads 'Synthetic example data, run {meta.run_date}' (= 2026-10-24). No path or id appears."
+    }
+  ],
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline names the action (ship Brisk-S few-shot, E), the reason (the only one of nine configurations through every gate) and the cost ($1,200 a month). The lede gives the thinnest margin (0.7 points) and the near alternative: Nano-XS at $57, out on complex news, with an overall pass inside noise. The watch slot names all three risks: 0.7 points overall, p95 66 ms under budget with no spread, and complex news 2.9 points above the floor. c1's gate matrix confirms the call cell by cell, and options_dominance returns the same single survivor."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "The claims run in order. c1 shows the one survivor. c2 gives its thinnest margin. c3 and c4 show the near-miss alternative and what it would save. c5 and c6 add detail on why few-shot matters for Nano-XS and whether a cascade could work. The next steps follow from those claims. Nothing contradicts the headline. One loose phrase: the lede says 'only a fuller re-run could make it a contender', but Nano-XS's complex-news miss is clear of noise (interval 75.3% to 78.1%), so a re-run alone cannot. The decision 'next' slot and next[0] correctly ask for a fix plus a re-run."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 2,
+      "reason": "Every weak axis of the pick is shown: overall margin 0.7 (settle wrong_side about 0), p95 gap 66 ms with no spread, and complex news 2.9 points above the floor (interval 81.7% to 84.1%). Nano-XS's +0.1-point overall pass is now called inside noise, with its 23.1% wrong-side rate. c5's 'clear of noise' is backed by the interaction interval (+6.6 to +7.8). One softening remains. c3's 'matches or beats the pick in most cells' is literally true: arms_compare finds Nano-XS ahead in 2 cells and within noise in 5. But the claim leaves out that Nano-XS also trails in medium news (-1.5, interval -2.8 to -0.2, uncorrected), the other news cell."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "No omission changes the call. The gate scatter is rightly dropped: it would hide the cell floor that rules Nano-XS out. Each configuration left out of the cell table is already out on the gate matrix (options_dominance). The price frontier is moot with one survivor (count.surviving = one). examples_list confirms no failed trials were frozen. Atlas-M zero-shot also fails p95 at 420 ms. The macro F1 point is disclosed. One small overstatement: the 'Nano-XS ahead of the pick in simple cells' entry says both clear by far, but only simple science and simple conversational exclude zero; simple news is within noise (-0.5 to +1.5)."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "caveats_list holds four caveats (no_control, point_estimate:overall, point_estimate:p95, best_of_n). The page shows all four with specific material_if clauses, and each is carried into a next step: a re-run of the pick on fresh turns, and production p95 with its spread. The settle figures check out: the pick needs 13,512 turns against 48,210 run, with wrong_side about 0. Method flags the open definition of 'correct' and the uncorrected, independent basis for pair comparisons. The noise judgments on overall balanced accuracy assume a binomial spread on all 48,210 turns. That slightly understates the spread of an average across unequal-sized labels, but the point_estimate:overall caveat states the assumption and no conclusion is near its edge."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "Each step names an experiment and what it settles. next[0] is now a full re-run of Nano-XS on every gate, on held-out turns, sized at 700,113 turns, and settles whether it replaces the pick. next[1] runs a cascade as a measured arm. next[2] measures production p95 with its spread, saying what happens if the pick is over the budget. next[3] re-runs the pick on fresh turns to settle best_of_n. Minor gaps: next[3] gives no size (settle says 13,512 turns suffice), and next[0] aims only at complex news although Nano-XS also trails in medium news."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "c1's gate matrix, c3's interval heatmap and c4's log-scale cost bars each fit their claims. c2's dot plot shows the margin, and its caption admits there are no intervals. c5 claims an interaction (+11.9 against +4.7, 'a gap clear of noise'), but its block is a flat nine-row table of balanced accuracy, cost and latency. The reader must do the subtraction, and nothing on the block shows the effects or the interaction interval (+6.6 to +7.8). If that interval crossed zero the block would look the same, so the 'clear of noise' part fails the counterfactual. A model-by-prompt grid or lever block would show it. c6's confusion block still prints the domain panel under the columns Simple, Medium and Complex. Only the caption and Method say what those columns really are, so a reader scanning the block misreads it."
+    }
+  ],
+  "total": 13,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "c5",
+      "severity": "should_fix",
+      "finding": "The claim is about an interaction: few-shot buys +11.9 points on Nano-XS against +4.7 on Brisk-S, 'a gap clear of noise'. The evidence is a flat table of all nine configurations' balanced accuracy, cost and latency, which shows neither the effects nor the interaction's interval. Show it with a block that does: a model-by-prompt grid, or lever effects with intervals. Or cite the interaction figure in the text, lever.prompt.brisk-s.zero.brisk-s.few.balanced_accuracy.vs.nano-xs.zero.nano-xs.few.difference (+7.2) and its interval (+6.6 to +7.8)."
+    },
+    {
+      "claim": "c6",
+      "severity": "should_fix",
+      "finding": "The domain rows still print under the columns Simple, Medium and Complex, and only the caption and Method say they mean Science, Conversational and News. This is a renderer defect: the confusion block needs its own column labels for each panel. Until the renderer is fixed, consider splitting the domain confusion into its own block, or leaving it out."
+    },
+    {
+      "claim": "c3",
+      "severity": "should_fix",
+      "finding": "'Matches or beats the pick in most cells' leaves out that Nano-XS also trails the pick in medium news, by -1.5 (interval -2.8 to -0.2, uncorrected), the only cell besides complex news where the pick is ahead clear of noise. News is Nano-XS's weak domain, not only complex news. Say so in c3, and widen next[0]'s examples to news turns, not only complex news."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The lede says 'only a fuller re-run could make it a contender'. Nano-XS's complex-news miss is clear of noise (76.7%, interval 75.3% to 78.1%), so it needs a complex-news fix as well as the re-run, as the decision 'next' slot already says. Make the lede match."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Method's Intervals entry says 'Overall balanced accuracy and p95 latency carry none'. Yet the lede, why_not and c5 make noise judgments on overall balanced accuracy (inside noise, 23.1% wrong-side, clear of noise). Those come from a binomial spread on the 48,210 turns, which only the point_estimate:overall caveat mentions. Say in Method that overall noise judgments use the binomial spread expected from the turn count, an approximation that runs a little narrow for balanced accuracy."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "next[3] ('Re-run the pick on fresh turns') gives no size. Cite settle.criteria.overall.brisk-s.few.overall.cases_needed_two_sided_80 (13,512) as next[0] does for Nano-XS."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The omitted entry 'Nano-XS ahead of the pick in simple cells' says 'cells both clear by far' as if all three simple cells were leads. arms_compare finds Nano-XS ahead clear of noise only in simple science (+1.1) and simple conversational (+1.1); simple news (+0.5, -0.5 to +1.5) is within noise."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 1 (borderline): omitted[3] types a count, 'One configuration survives', instead of {count.surviving|words} (which reads 'one').",
+    "Invariant 1 (borderline): c6's caption types row counts, 'the first six rows ... the last six'. why_not says 'both rubric-with-reasoning configurations', a count of two with no key. Both describe structure rather than data, so they are probably acceptable."
+  ],
+  "calls": 17
+}

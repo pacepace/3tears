@@ -1,0 +1,92 @@
+{
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline, decision block and c1 give the action (ship Brisk-S low reasoning, 1 retry), the reason (the cheapest of five over the 97% gate, at $0.30 per 1,000 calls) and the main risk (a 0.1-point clearance; the lede says 38.6% of same-size re-runs land under the gate). They also name the fallback (high reasoning, $1,324 more a month) and the one declaration that would switch the pick."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "c1 says it is the cheapest passer, c2 that its pass is fragile, c3 what the safe alternative costs, c4 where it is weak, and c5 why it passes at all. Each claim follows from the last. The gate is declared on the mean (criterion statistic: mean), so recommending the point-estimate reading while making the beyond-noise reading the owner's call is consistent with the headline. The one contradiction is in next[1] (see item 6)."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 1,
+      "reason": "The thin margin is shown fully. Four other claims go further than the evidence. (a) c4 and the watch name only multi-hop (95.6%), but the pick is also under the gate's level on ambiguous entity (96.4%). (b) c4 says high reasoning 'holds the gate's level in every task' on per-task figures that have no counts and no spread (multi-hop 97.3%). (c) c5 says retry 'raises the pass rate at every model and reasoning level', but Atlas-M high's retry effect is +0.9 with an interval of -0.2 to +2. (d) c3, the explore control and the price bars price a 0.8-point gain at $1,595 a point, but that gain's unpaired interval (compare.brisk-s.high.r1.brisk-s.low.r1: -0.4 to +2.1) includes zero, and the page never says so."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "I checked the omissions against the snapshot. No near miss (Atlas-M low no-retry 96.6% at $1.60, Brisk-S high no-retry 96.6% at $0.612, Atlas-M off 1-retry 96.4% at $1.06) is cheaper than the pick. Nano-XS's best miss is settled: a 0.02% chance of reading on the wrong side, and 266 cases would confirm the miss. Atlas-M is not separated from Brisk-S at the same settings (-0.5 to +2 at low, -0.4 to +1.7 at high). None of the omitted items would change the call at the declared gate."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "All three snapshot caveats are carried with their material_if. point_estimate is carried into the lede, c2, the watch and next[0]. best_of_n is carried into a caveat and next[1]. no_control is carried into a caveat and Method, which also notes that the unpaired basis reads wide. The task mix (an overall gate over a mix that has no per-task counts) appears only as a watch, but it is a weak axis rather than a confound of the comparison."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 1,
+      "reason": "next[0] (the owner declares a noise-proof or a point-estimate gate) and next[2] (a hop-by-hop plan, then re-run) each name what they settle. next[1] claims that a fresh run the size of today's 1,200 cases settles 'whether the pick's reading was the luck of being the best of eighteen'. A same-size run reads the pick under the gate 38.6% of the time even if today's figure is the truth, and the watch itself says the margin is 'too thin for more cases to settle' (38,350 cases for even odds). That run gives one more point reading. It does not settle the luck question."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "c1's lattice and c4's heatmap and example fit their claims well. c2's claim is that the clearance 'sits inside the noise', but its dot_interval draws no intervals, so the block cannot show noise; binomial spreads exist (Method says so, and the lever and compare intervals use them). c3 cites a $1,324 monthly gap, but its bars show only $1,595 per point, a number the sentence never uses. c5 claims retry helps at 'every model', but its block shows only Brisk-S. It also prints 95.3% and 97.1%, which differ by 1.8, while the prose says +1.9."
+    }
+  ],
+  "total": 11,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "must_fix",
+      "finding": "The explore gate control says 'Up to 95.3% the pick is Brisk-S low no-retry'. decision_sensitivity on threshold:pass_rate shows Nano-XS is the cheapest passer for any gate at or below 94.8% (nano-xs.high.r1 at $0.111, then low.r1, off.r1, off.r0 further down), and Brisk-S low no-retry wins only between 94.8% and 95.3%. Give the lower bands, or state the range the control sweeps."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "next[1] says a fresh same-size re-run settles whether the pick's reading was best-of-eighteen luck. At 1,200 cases that run lands under the gate 38.6% of the time even if today's figure is true. Either say what such a run actually gives (a second reading, free of selection, for the point-estimate rule) or size it on the settle figures."
+    },
+    {
+      "claim": "c2",
+      "severity": "should_fix",
+      "finding": "The claim is about noise, but the dot_interval draws no intervals, and its caption says none exist even though Method says spreads come from the binomial counts. Draw the binomial intervals, or show the re-run odds, so the block carries the claim."
+    },
+    {
+      "claim": "c3",
+      "severity": "should_fix",
+      "finding": "The prose cites the $1,324 monthly cost gap, but the bars show $1,595 per point. Also, the 0.8-point gain being priced has an unpaired interval of -0.4 to +2.1, so per-point prices have no bounded ends. Show the cost gap the sentence cites, and say the gain is not separated from zero."
+    },
+    {
+      "claim": "c5",
+      "severity": "should_fix",
+      "finding": "'Raises the pass rate at every model and reasoning level' overstates the evidence. Atlas-M high's retry effect is +0.9 (-0.2 to +2), and Brisk-S high's lower end is +0.04. The block shows only Brisk-S. Its bars differ by 1.8 points while the prose says +1.9, so readers will see the mismatch."
+    },
+    {
+      "claim": "c4",
+      "severity": "should_fix",
+      "finding": "The pick is under the gate's level on two tasks, multi-hop (95.6%) and ambiguous entity (96.4%), not one. 'Holds the gate's level in every task' for high reasoning rests on per-task points with no stated counts (multi-hop 97.3%). Name both tasks, and frame the per-task reading as descriptive in the sentence, not only in the caption."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The two Brisk-S survivors are not separated from each other (high minus low +0.8, -0.4 to +2.1). The page frames the choice as clearing the gate with room, which is correct, but it never says that the extra $1,324 a month buys no measurable pass-rate gain over the pick, only a clearance that holds up to noise."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 1: next[1].settles types 'eighteen' (n_candidates exists), c2's caption types 'five' and 'two' (count.passing.pass_rate exists), and c3's caption types 'three'. Each count should be cited by key.",
+    "Invariant 4: the confidence form is high_if_immaterial, not plain high, so it passes. But the point_estimate caveat's own material_if says its clearance 'cannot rule out' a true rate under the gate, so the caveat is live, not immaterial (wrong_side 38.6%). A conditional or unresolved form would read more honestly.",
+    "Invariant 6: Method is present. report.json does not show the full-results appendix, so this review could not confirm it renders.",
+    "Invariant 5: Method's Source line prints a repository file path (meta.provenance). That is fine if Method renders below the claims as the appendix."
+  ],
+  "calls": 16
+}

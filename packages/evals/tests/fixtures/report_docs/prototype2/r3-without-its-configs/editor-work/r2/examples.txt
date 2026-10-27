@@ -1,0 +1,5 @@
+example listing
+examples: []
+pool: the failed trials frozen with the snapshot: up to three per aspect, arm and stratum, every slice's first before any slice's second and its other cases before a repeat; each excerpt cut around the failure (centred on the passage the judge's reason quotes, else the reply's end), with the judge's or the check's reason
+total: 0
+offset: 0
