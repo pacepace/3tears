@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import functools
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -489,7 +489,7 @@ def block_catalog(report_input: ReportInput, snapshot_id: str) -> BlockCatalog:
         kinds=[
             BlockKind(
                 kind=kind,
-                reads=_reads(kind),
+                reads=_reads(kind, list(BLOCK_SOURCES)),
                 sources=[source for source in sources if source in drawn],
                 needs_interval=kind in INTERVAL_KINDS,
                 panels=kind in PANELLED_KINDS,
@@ -505,11 +505,15 @@ def block_catalog(report_input: ReportInput, snapshot_id: str) -> BlockCatalog:
     )
 
 
-def _reads(kind: str) -> str:
-    """What a kind draws: its kit chart model's first paragraph, else a plain table's."""
+def _reads(kind: str, kinds: Sequence[str]) -> str:
+    """What a kind draws: its kit chart model's first paragraph, else a plain table's; a kind drawn by the model of a
+    kind listed before it (``diverging_bars`` by ``bars``'s) says so, rather than the same paragraph twice."""
     model = KIT_CHARTS.get(kind)
     if model is None or not model.__doc__:
         return _TABLE_READS
+    earlier = next((other for other in kinds[: kinds.index(kind)] if KIT_CHARTS.get(other) is model), None)
+    if earlier is not None:
+        return f"as ``{earlier}``, which names both"
     (first, *_rest) = model.__doc__.strip().split("\n\n")
     return " ".join(first.split())
 

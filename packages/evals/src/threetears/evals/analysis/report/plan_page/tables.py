@@ -19,7 +19,9 @@ judged:<dim>     the arm's figure on the judged dimension
 gate             the arm's gate status (:func:`~threetears.evals.analysis.report_gates.gate_check`) as a pill, and
                  its first binding reason
 measure:<key>    the arm's figure on the measure: its mean, else the statistic a criterion on it reads
-cost_per_1k      dollars per 1,000 of what the cost counts, and the uplift against the control's
+cost_per_1k      dollars per 1,000 of what the cost counts, the uplift against the control's, and how many of the
+                 arm's calls went unanswered beside it, where any did (``calls.unanswered.<arm>``); an arm with no
+                 cost says none beside its dash
 ===============  ===================================================================================================
 
 A cell the input holds no figure for is a dash. A column outside these families is refused: it is no column the
@@ -152,10 +154,29 @@ def _cost(column: str, arm: str, report_input: ReportInput, look: PageLook) -> T
         if figure is not None and control is not None and arm != control.id
         else None
     )
-    flag = None
+    marks: list[str] = []
     if uplift is not None and isinstance(uplift.value, float):
-        flag = ("+" if uplift.value > 0 else "") + format_figure(uplift)
-    return TableCell(value=_said(figure, ("usd",)), flag=flag)
+        marks.append(("+" if uplift.value > 0 else "") + format_figure(uplift))
+    # Beside the cost, never in it: the cost counts the answered calls, so an arm whose calls went unanswered says how
+    # many, where any did.
+    if figure is not None:
+        marks += _unanswered_marks(arm, report_input)
+    return TableCell(value=_said(figure, ("usd",)), flag="; ".join(marks) or None)
+
+
+def _unanswered_marks(arm: str, report_input: ReportInput) -> list[str]:
+    """How many of the arm's calls went unanswered, where any did: retried and lost together, else each kind a role
+    counted alone (the two together are not counted there)."""
+    together = _figure(f"calls.unanswered.{arm}", report_input)
+    if together is not None:
+        return [_calls(together, "unanswered")] if together.value else []
+    kinds = ((kind, _figure(f"calls.unanswered.{arm}.{kind}", report_input)) for kind in ("lost", "retried"))
+    return [_calls(held, f"{kind} unanswered") for kind, held in kinds if held is not None and held.value]
+
+
+def _calls(figure: Figure, what: str) -> str:
+    """A count of calls in words: ``1 call unanswered``, ``3 calls unanswered``."""
+    return f"{format_figure(figure)} {'call' if figure.value == 1 else 'calls'} {what}"
 
 
 #: Each column family's cell reader, keyed by the family exactly as

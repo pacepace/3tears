@@ -232,12 +232,14 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             paged=True,
             example=snapshot,
             detail=(
-                "Every id another tool takes is listed here: each arm (cited arm:<id>), each aspect and what rows it "
+                "Every id another tool takes is listed here: each arm (cited arm:<id>, with its calls that went "
+                "unanswered beside its cost where any did), each aspect and what rows it "
                 "holds, each measure and judged dimension by its key with the key form that reads it, what it can "
                 "be read by and the statistics it holds there (an interval is ci or half_width; arms_without lists "
                 "only arms holding it nowhere, so a measure held per cell or stratum is not missing) and, for a judged "
                 "one, its judge's tier, calibration and agreement, each criterion and its "
-                "threshold, each caveat with its reach, the late criteria, prior insights, and the name a reader is "
+                "threshold, each caveat with its reach, the late criteria, prior insights, the rigs the runs were "
+                "measured with (one row per rig, naming its runs), and the name a reader is "
                 "shown for each id. Every figure is written key = reads: cite the key, never the number. Its rows are "
                 "paged in that order, the campaign's own figures on every page; without a limit a page holds as many "
                 f"rows as fit one result, up to {OVERVIEW_LIMIT}."

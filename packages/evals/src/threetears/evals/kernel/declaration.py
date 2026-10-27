@@ -67,6 +67,7 @@ from threetears.evals.schema.models import (
     EvalTemplate,
     RubricScale,
     declared_name,
+    rubric_dim_scale,
     utc_now_iso,
 )
 
@@ -1314,7 +1315,7 @@ def resolve_bar_name(
         return BarName(
             name,
             "judged",
-            describe_rubric_dim(name, scale="ordinal" if name in RESERVED_DIM_IDS else rubric_dimensions[name]),
+            describe_rubric_dim(name, scale=rubric_dim_scale(name, rubric_dimensions)),
         )
     if name in goal_state_checks:
         # The check's RATE, which is what a bar on it reads — not the check's boolean observation.

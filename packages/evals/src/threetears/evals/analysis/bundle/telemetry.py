@@ -7,6 +7,7 @@ Descriptive only — no scoring statistic lives here. :func:`_run_summary` diges
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.reporting import ScoreRecord, self_judging_models
@@ -20,10 +21,12 @@ from threetears.evals.kernel.usage_capture import (
     production_replicating_cost,
 )
 from threetears.evals.analysis.bundle.schema import (
+    RunApparatus,
     RunSummary,
     TelemetryRollup,
     TokenRollup,
 )
+from threetears.evals.analysis.contention import EXECUTION_MODE
 from threetears.evals.analysis.bundle.config import _effective_config
 from threetears.evals.analysis.bundle.measures import _measure_collection
 
@@ -180,7 +183,34 @@ def _run_summary(
         ),
         measures=_measure_collection(run_results, profile=profile, undeclared="all_observed"),
         judge_shares_candidate_model=self_judging_models(run, run_results),
+        apparatus=_run_apparatus(run, run_results),
     )
+
+
+def _run_apparatus(run: EvalRun, run_results: list[EvalResult]) -> RunApparatus | None:
+    """The rig ``run`` recorded at launch, copied off it, with its results counted by the execution mode each recorded;
+    None where it recorded nothing past a serial run that pinned and declared nothing (``RunApparatus.recorded``).
+
+    :param run: The run.
+    :ptype run: EvalRun
+    :param run_results: That run's results.
+    :ptype run_results: list[EvalResult]
+    :return: The apparatus, or None.
+    :rtype: RunApparatus | None
+    """
+    modes = Counter(str(mode) for result in run_results if (mode := result.covariates.get(EXECUTION_MODE)) is not None)
+    apparatus = RunApparatus(
+        effective_judges=dict(run.effective_judges) if run.effective_judges is not None else None,
+        judge_asked_settings=run.judge_asked_settings,
+        judge_temperature=run.judge_temperature,
+        simulator_model=run.simulator_model,
+        measure_latency=run.measure_latency,
+        arm_schedule=run.arm_schedule,
+        cell_concurrency=run.cell_concurrency,
+        rubric_scales=dict(run.rubric_scales),
+        execution_modes=dict(sorted(modes.items())),
+    )
+    return apparatus if apparatus.recorded else None
 
 
 def _model_versions(runs: list[EvalRun], records: list[ScoreRecord]) -> dict[str, str]:

@@ -841,6 +841,7 @@ def assemble_context_bundle(
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
         catalog=bundle.measure_catalog,
         load_judge_evidence=lambda result_ids: storage.load_judge_evidence(result_ids, scope_id),
+        rubric_scales={run.id: run.rubric_scales for run in runs},
     )
     bundle.scoreboard = census.scoreboard
     bundle.trials = census.trials

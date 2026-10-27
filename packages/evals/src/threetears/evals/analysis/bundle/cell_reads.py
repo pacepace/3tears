@@ -36,7 +36,7 @@ from threetears.evals.kernel.declaration import (
 )
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import describe_rubric_dim
-from threetears.evals.schema.models import SCALES, EvalResult
+from threetears.evals.schema.models import SCALES, EvalResult, rubric_dim_scale
 from threetears.evals.kernel.result_condition import (
     DIFFERENTIAL_EXCLUSION_SHARE,
     JUDGE_CANNOT_TELL_OUTCOME,
@@ -200,8 +200,10 @@ def _judged_measures(
         }
         if len(scales) > 1:
             raise ValueError(f"rubric dimension {dimension!r} was judged on more than one scale: {sorted(scales)}")
-        # The dual-score axes carry no `rubric_scale` (they are not template dims) and are 1-5.
-        descriptor = describe_rubric_dim(dimension, scale=next(iter(scales), "ordinal"))
+        # The dual-score axes carry no `rubric_scale` (they are not template dims) and are 1-5 by construction; every
+        # template dim's row carries the scale it was answered on, and one carrying none is refused, never read as 1-5.
+        recorded = {dimension: scale for scale in scales}
+        descriptor = describe_rubric_dim(dimension, scale=rubric_dim_scale(dimension, recorded))
         arms = []
         for key in sorted(scored[dimension]):
             rows = scored[dimension][key]

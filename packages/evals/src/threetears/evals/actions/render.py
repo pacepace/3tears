@@ -432,8 +432,17 @@ def _cited_body(model: BaseModel, indent: str) -> list[str]:
     for name in type(model).model_fields:
         if name == _NEXT_OFFSET and not indent:
             continue
+        if _excluded(model, name):
+            continue
         lines += _cited_field(name, getattr(model, name), indent)
     return lines
+
+
+def _excluded(model: BaseModel, name: str) -> bool:
+    """Whether the model leaves the field out of its document as it now stands (its ``exclude_if``): left out of its
+    text too, so a field added unset writes a result's text as it was before the field existed."""
+    excluded = type(model).model_fields[name].exclude_if
+    return excluded is not None and bool(excluded(getattr(model, name)))
 
 
 #: The field a page names the next page's offset by (:attr:`~threetears.evals.actions.Action.paged`).
@@ -629,6 +638,8 @@ def _cited_row(item: BaseModel, indent: str) -> list[str]:
     plain: list[str] = []
     beneath: list[str] = []
     for name in type(item).model_fields:
+        if _excluded(item, name):
+            continue
         value = getattr(item, name)
         written = _cited_field(name, value, indent + "  ")
         if len(written) == 1 and not isinstance(value, CitedFigure):

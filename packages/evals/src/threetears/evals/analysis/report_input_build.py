@@ -88,10 +88,13 @@ from threetears.evals.analysis.report_input import (
     PriorInsight,
     Reading,
     ReportInput,
+    RequestSettings,
+    RunRig,
     ScoreboardRow,
     ShortRun,
     Stat,
     Stratum,
+    Unanswered,
 )
 from threetears.evals.analysis.report.words import declared_arm_names
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
@@ -247,6 +250,8 @@ class _Builder:
                     for insight in bundle.aspects[0].prior_insights
                 ],
                 **tallies,
+                # Only where a run recorded its rig, so an input over runs that recorded none carries no key.
+                **({"apparatus": apparatus} if (apparatus := self.apparatus()) is not None else {}),
             }
         )
 
@@ -521,9 +526,70 @@ class _Builder:
                 cases=row.cases,
                 reply_cost_usd=row.reply_cost_usd,
                 test_cost_usd=row.test_cost_usd,
+                # Only where a role counted them, so an arm none counted for carries no key.
+                **(
+                    {
+                        "unanswered": {
+                            held.role: Unanswered(
+                                retried=held.retried,
+                                lost=held.lost,
+                                reasons=held.reasons,
+                                calls=held.calls,
+                                share=held.share,
+                                uncounted=held.results_uncounted,
+                            )
+                            for held in row.unanswered
+                        }
+                    }
+                    if row.unanswered
+                    else {}
+                ),
             )
             for row in aspect.scoreboard
         }
+
+    def apparatus(self) -> list[RunRig] | None:
+        """The rig each run was measured with, aspect by aspect in the input's order and each aspect's runs in its run
+        summaries' order, for each run whose summary carries one; None where none does, so the input carries no key."""
+        held: list[RunRig] = []
+        for aspect in self.ordered:
+            arms = [
+                *([aspect.design.control_arm] if aspect.design.control_arm is not None else []),
+                *aspect.design.contrasts,
+            ]
+            arm_of = {run: arm.variant_key for arm in arms for run in arm.run_ids}
+            for summary in aspect.run_summaries:
+                rig = summary.apparatus
+                if rig is None:
+                    continue
+                key = arm_of.get(summary.run_id)
+                asked = rig.judge_asked_settings
+                held.append(
+                    RunRig(
+                        run=summary.run_id,
+                        arm=self.arm(key) if key is not None else None,
+                        aspect=aspect.aspect,
+                        judges=rig.effective_judges,
+                        judge_asked=(
+                            RequestSettings(
+                                max_tokens=asked.max_tokens,
+                                reasoning_max_tokens=asked.reasoning_max_tokens,
+                                reasoning_effort=asked.reasoning_effort,
+                                strict_output=asked.strict_output,
+                            )
+                            if asked is not None
+                            else None
+                        ),
+                        judge_temperature=rig.judge_temperature,
+                        simulator=rig.simulator_model,
+                        measure_latency=rig.measure_latency,
+                        arm_schedule=rig.arm_schedule,
+                        cell_concurrency=rig.cell_concurrency,
+                        execution_modes=rig.execution_modes,
+                        rubric_scales=rig.rubric_scales,
+                    )
+                )
+        return held or None
 
     # ------------------------------------------------------------------ measures and judged dimensions
 

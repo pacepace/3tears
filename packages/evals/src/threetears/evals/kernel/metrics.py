@@ -1028,6 +1028,32 @@ _SEED: tuple[MetricDescriptor, ...] = (
         ),
     ),
     _d(
+        name="unanswered_retried",
+        reader_name="Calls retried unforced",
+        data_type="numeric",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="subsystem",
+        unit="calls",
+        description=(
+            "A usage row's calls a forced tool choice was refused on and that were answered unforced in the same "
+            "call: beside the row's call_count, never in it, and in no cost. Absent where the row counted none."
+        ),
+    ),
+    _d(
+        name="unanswered_lost",
+        reader_name="Calls lost unanswered",
+        data_type="numeric",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="subsystem",
+        unit="calls",
+        description=(
+            "A usage row's calls sent and never answered, so the turn they belonged to ended in error: beside the "
+            "row's call_count, never in it, and in no cost. Absent where the row counted none."
+        ),
+    ),
+    _d(
         name="provider_units",
         reader_name="Provider units",
         data_type="numeric",
