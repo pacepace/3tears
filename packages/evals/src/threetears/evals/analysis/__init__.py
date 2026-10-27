@@ -154,6 +154,7 @@ from threetears.evals.analysis.generator import (
 )
 from threetears.evals.analysis.numbers import ABSENT, format_number, format_signed
 from threetears.evals.analysis.reads import (
+    EXPORT_PAGE_RESULTS,
     READ_TIER_ROW_BUDGET,
     compare_two_runs,
     comparison_sets,
@@ -451,7 +452,7 @@ from threetears.evals.analysis.lenses.frontier import (
 )
 from threetears.evals.kernel.scoring import UnpooledReason
 from threetears.evals.analysis.lenses.history import HistoryResult, MeasureSeries, RegressionFlag, SeriesPoint
-from threetears.evals.analysis.lenses.export import ExportFormat, ScoreExport
+from threetears.evals.analysis.lenses.export import ExportFormat, ExportPage, ScoreExport
 from threetears.evals.analysis.service import AnalysisStore
 
 
@@ -664,6 +665,7 @@ __all__ = [
     "PAIRED_TEST_NAME",
     "PROJECTED_METRICS",
     "READ_TIER_ROW_BUDGET",
+    "EXPORT_PAGE_RESULTS",
     "REPORTER_KIND",
     "REPORTER_KIND_CONTRACT",
     "SCOPED_METRICS_HELP",  # debt: retires when the English moves to one renderer
@@ -776,6 +778,7 @@ __all__ = [
     "CostEstimate",
     "CostEstimateCell",
     "ExportFormat",
+    "ExportPage",
     "HistoryResult",
     "LatencyPartition",
     "MeasureSeries",

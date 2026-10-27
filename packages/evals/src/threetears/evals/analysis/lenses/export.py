@@ -180,13 +180,43 @@ def export_format(fmt: str) -> ExportFormat:
     raise ExportError(f"unknown export format {fmt!r}", remedy=f"pass one of {', '.join(EXPORT_FORMATS)}")
 
 
+class ExportPage(EvalBaseModel):
+    """Which runs one page of a paged export holds, and the call that reads the next.
+
+    An export of a scope too large to read in one call is paged by runs, oldest first (by when each run was created,
+    then by id), each page holding whole runs up to a ceiling of results. Carried beside the body, never in it: a
+    page's body is the same serialization a whole export's is, over that page's runs.
+
+    A paged export reads each run's results by run, so its ``exclusions`` count only what those reads returned:
+    results of runs the narrowing left out are not read (``archived_runs`` and ``runs_outside_status`` count those
+    runs), and results that name no run in the scope are not reached at all.
+    """
+
+    result_ceiling: int = Field(
+        description="The most results one export call reads, estimated from each run's matrix before any is read; "
+        "a page holds whole runs up to it, and one run larger than it alone."
+    )
+    run_ids: list[str] = Field(description="The runs this page holds, in export order.")
+    runs_before: int = Field(description="Runs of the narrowed scope held by the pages before this one.")
+    runs_after: int = Field(description="Runs of the narrowed scope the pages after this one hold.")
+    next_after_run_id: str | None = Field(
+        description="The run the next page starts after, which the next call names; None when this page is the last."
+    )
+    run_status: str | None = Field(description="The run status the pages are narrowed to; None for every status.")
+    archived_runs: int = Field(description="Archived runs in the scope, left out of every page and not read.")
+    runs_outside_status: int = Field(
+        description="Runs in the scope, not archived, whose status is not run_status: left out and not read."
+    )
+
+
 class ScoreExport(EvalBaseModel):
     """A projection's rows serialized for analysis elsewhere, with the account a CSV body cannot carry.
 
     ``body`` is :func:`serialize_export`'s output byte for byte. The JSON form already holds the
     exclusions and the completeness disclosures; the CSV form is the flat rows alone, so the counts
     ride beside the body here — an export whose every result was excluded and one over an empty scope
-    are both a header row, and only these fields tell them apart.
+    are both a header row, and only these fields tell them apart. ``page`` is set on one page of a paged export
+    (:class:`ExportPage`) and ``None`` on an export that holds everything it was asked for.
     """
 
     format: ExportFormat
@@ -195,15 +225,22 @@ class ScoreExport(EvalBaseModel):
     exclusions: ProjectionExclusions
     #: ``run_id -> DEGRADED sentence`` for the exported runs that came up short of their matrix.
     completeness_disclosures: dict[str, str] = {}
+    page: ExportPage | None = Field(
+        default=None,
+        description="On one page of a paged export, which runs it holds and where the next page starts; None when "
+        "the export holds everything asked for.",
+    )
 
 
-def export_projection(projection: ScoreProjection, *, fmt: str) -> ScoreExport:
+def export_projection(projection: ScoreProjection, *, fmt: str, page: ExportPage | None = None) -> ScoreExport:
     """Serialize a projection in the named format, with the counts that qualify its rows.
 
     :param projection: The rows to export, plus what the projection dropped.
     :ptype projection: ScoreProjection
     :param fmt: ``"csv"`` or ``"json"``.
     :ptype fmt: str
+    :param page: Which runs of a paged export the projection holds; ``None`` for an export of everything asked for.
+    :ptype page: ExportPage | None
     :return: The export.
     :rtype: ScoreExport
     :raises ExportError: ``fmt`` is not one this surface can emit.
@@ -215,6 +252,7 @@ def export_projection(projection: ScoreProjection, *, fmt: str) -> ScoreExport:
         n_records=len(projection.records),
         exclusions=projection.exclusions,
         completeness_disclosures=projection.completeness_disclosures,
+        page=page,
     )
 
 
@@ -225,6 +263,7 @@ __all__ = [
     "export_records_csv",
     "ExportError",
     "ExportFormat",
+    "ExportPage",
     "ScoreExport",
     "serialize_export",
 ]

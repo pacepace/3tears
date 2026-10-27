@@ -25,6 +25,7 @@ from threetears.evals.kernel import EvalStorage, ResultOutcome, ValidationFailed
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema import KnownOutOfRunPurpose
 from threetears.evals.ops import (
+    EXPORT_PAGE_RESULTS,
     SweepArguments,
     SweepSettings,
     sweep_launch,
@@ -139,7 +140,6 @@ from threetears.evals.ops import (
     templates_list,
     bar_proposals_text,
     estimate_text,
-    export_text,
     frontier_text,
     history_text,
     out_of_run_spend_text,
@@ -289,7 +289,18 @@ ExportFormat = Annotated[
 ]
 ExportRunIds = Annotated[
     list[str] | None,
-    Field(description="Export only these runs, archived ones included since they are named; omitted exports all."),
+    Field(
+        description="Export only these runs, archived ones included since they are named; omitted exports all. "
+        "Never paged: two or more whose results would pass one page's ceiling are refused."
+    ),
+]
+ExportAfterRunId = Annotated[
+    str | None,
+    Field(
+        min_length=1,
+        description="The previous page's page.next_after_run_id: read the export page that starts after that run; "
+        "omitted reads the first page.",
+    ),
 ]
 # The condition's values spelled out rather than the enum itself, which would nest a definition in a flat
 # parameter list; the handler reads it back as the enum, so a value the enum lacks fails there, loudly.
@@ -700,6 +711,7 @@ class ScopeExportParams(EvalBaseModel):
     export_format: ExportFormat = "csv"
     run_status: RunStatusFilter = "completed"
     export_run_ids: ExportRunIds = None
+    export_after_run_id: ExportAfterRunId = None
 
 
 class LaunchEstimateParams(RunLaunchParams):
@@ -1351,6 +1363,7 @@ async def _scope_export(host: OpsHost, caller: Caller, params: ScopeExportParams
         format=params.export_format,
         status=params.run_status,
         run_ids=params.export_run_ids,
+        after_run_id=params.export_after_run_id,
     )
 
 
@@ -2607,11 +2620,14 @@ def engine_actions() -> tuple[Action, ...]:
             params=ScopeExportParams,
             result=ScoreExport,
             handler=_scope_export,
-            render=export_text,
+            render=render.render_export,
             example={"export_format": "csv", "export_run_ids": [run_id]},
             detail=(
                 "One row per observation, every lever and host measure its own column. CSV holds the rows alone, "
-                "so the result says beside it how many observations were left out and why; JSON carries both."
+                "so the result says beside it how many observations were left out and why; JSON carries both. "
+                f"A scope whose runs hold more than {EXPORT_PAGE_RESULTS} results is exported in pages of whole runs, "
+                "oldest first: page names the runs a page holds, and its text the call that reads the next "
+                "(export_after_run_id). Named runs are never paged, and two or more past the ceiling are refused."
             ),
         ),
         Action(
