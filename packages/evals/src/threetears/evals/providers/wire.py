@@ -35,6 +35,7 @@ from threetears.evals.providers.failures import Provider, ProviderError
 from threetears.evals.schema import (
     StopReason,
     TurnText,
+    TurnThinking,
     TurnToolResult,
     TurnToolSpec,
     TurnToolUse,
@@ -564,7 +565,7 @@ def turn_body(
     :ptype facts: SettingFacts
     :return: The JSON body.
     :rtype: dict[str, Any]
-    :raises ValueError: No messages; a last message holding only thinking, where no breakpoint can go; an output cap
+    :raises ValueError: No messages; a thinking block in a user message; a last message holding only thinking, where no breakpoint can go; an output cap
         that is not a positive count; or a thinking budget not below it, naming both.
     """
     if not messages:
@@ -576,6 +577,12 @@ def turn_body(
         raise ValueError(
             f"Anthropic's max_tokens ({max_tokens}) must exceed the thinking budget ({budget}), which it includes: "
             "give the turn a larger max_tokens, or the model a smaller budget"
+        )
+    if any(
+        message.role == "user" and any(isinstance(b, TurnThinking) for b in message.content) for message in messages
+    ):
+        raise ValueError(
+            "a thinking block goes back only in the assistant message whose reply carried it, never in a user message"
         )
     *earlier, last = messages
     marked = max((i for i, block in enumerate(last.content) if isinstance(block, _CACHEABLE)), default=None)

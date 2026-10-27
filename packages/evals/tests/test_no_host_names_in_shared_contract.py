@@ -290,6 +290,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/provider.py",
     # The completion port itself, split from how the engine reads what it returns.
     "schema/completion.py",
+    # The tool-turn port: the shape a tool-calling loop sends and gets back, named for no host.
+    "schema/turns.py",
     "run/fidelity.py",
     # The criteria judge. It left the host-coupled set when its last host reach went: the JSON
     # parser it calls now lives in the kernel, and it logs under its own module name rather than the

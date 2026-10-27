@@ -347,3 +347,13 @@ async def test_a_reply_carrying_a_block_a_turn_does_not_read_is_a_provider_error
         await opus(Server(odd)).turn(
             system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=512
         )
+
+
+async def test_a_thinking_block_in_a_user_message_is_refused_before_anything_is_sent() -> None:
+    server = Server(CASES["opening"]["reply"])
+    thinking = TurnThinking({"type": "thinking", "thinking": "x", "signature": "s"})
+    with pytest.raises(ValueError, match="only in the assistant message"):
+        await opus(server).turn(
+            system=SYSTEM, messages=[TurnMessage("user", [thinking, TurnText(OPENING)])], tools=TOOLS, max_tokens=512
+        )
+    assert server.bodies == []

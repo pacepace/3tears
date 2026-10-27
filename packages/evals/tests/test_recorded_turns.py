@@ -88,11 +88,14 @@ async def record_two_sessions(path: Path) -> Server:
     model = opus(server, turn_recording=path)
     analyst = model.turn_session("analyst", snapshot=RECORDED_ON)
     editor = model.turn_session("editor-1", snapshot=RECORDED_ON)
-    await analyst.turn(system="s", messages=ask("brief"), tools=TOOLS, max_tokens=1000)
+    await analyst.turn(system="SYSTEM-ONLY-MARK", messages=ask("REQUEST-ONLY-MARK"), tools=TOOLS, max_tokens=1000)
     await editor.turn(system="e", messages=ask("page"), tools=TOOLS, max_tokens=1000)
     await analyst.turn(
         system="s",
-        messages=[*ask("brief"), TurnMessage("user", [TurnToolResult("toolu_campaign_overview", "overview")])],
+        messages=[
+            *ask("REQUEST-ONLY-MARK"),
+            TurnMessage("user", [TurnToolResult("toolu_campaign_overview", "RESULT-ONLY-MARK")]),
+        ],
         tools=TOOLS,
         max_tokens=1000,
     )
@@ -132,7 +135,7 @@ async def test_the_file_holds_replies_alone_with_the_snapshot_as_a_placeholder(t
     assert "{snapshot}" in text
     assert [(line["session"], line["index"]) for line in lines] == [("analyst", 0), ("editor-1", 0), ("analyst", 1)]
     assert all(set(line) == {"recorder_version", "recorded_at", "session", "index", "reply"} for line in lines)
-    assert "brief" not in text and "overview" not in text, "no request bytes are kept"
+    assert "ONLY-MARK" not in text, "no request bytes are kept: no system prompt, message or tool result"
 
 
 async def test_a_session_asked_past_its_recording_is_refused_naming_the_turn(tmp_path: Path) -> None:
@@ -165,7 +168,9 @@ async def test_a_session_asked_for_again_carries_on_where_it_was(tmp_path: Path)
         system="", messages=ask("?"), tools=(), max_tokens=1
     )
 
-    assert again.text == "Reviewing."
+    assert again.text == f'```json\n{{"snapshot": "{REPLAYED_ON}"}}\n```', (
+        "the analyst's second turn, not its first again"
+    )
 
 
 async def test_a_model_given_an_existing_turn_recording_replays_it_and_sends_nothing(tmp_path: Path) -> None:
