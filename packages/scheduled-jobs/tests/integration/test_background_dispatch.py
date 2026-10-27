@@ -83,7 +83,14 @@ def _stores(pool: asyncpg.Pool) -> tuple[ScheduledJobCollection, JobFireCollecti
     )
 
 
-async def _seed_job(pool: asyncpg.Pool, kind: str, *, next_fire_at: datetime) -> tuple[UUID, UUID]:
+async def _seed_job(
+    pool: asyncpg.Pool,
+    kind: str,
+    *,
+    next_fire_at: datetime,
+    schedule_type: str = "interval",
+    schedule_config: dict[str, Any] | None = None,
+) -> tuple[UUID, UUID]:
     partition, job = _new_uuid(), _new_uuid()
     await pool.execute(
         "INSERT INTO scheduled_jobs "
@@ -94,8 +101,8 @@ async def _seed_job(pool: asyncpg.Pool, kind: str, *, next_fire_at: datetime) ->
         job,
         kind,
         {},
-        "interval",
-        {"seconds": 60},
+        schedule_type,
+        schedule_config if schedule_config is not None else {"seconds": 60},
         "active",
         next_fire_at,
         "coalesce",
@@ -340,6 +347,14 @@ async def _next_fire_at(pool: asyncpg.Pool, job_id: UUID) -> datetime:
     return value
 
 
+async def _job_row(pool: asyncpg.Pool, job_id: UUID) -> dict[str, Any]:
+    row = await pool.fetchrow(
+        "SELECT status, next_fire_at, last_fired_at, date_updated FROM scheduled_jobs WHERE job_id = $1", job_id
+    )
+    assert row is not None
+    return dict(row)
+
+
 async def _fire_statuses(pool: asyncpg.Pool, job_id: UUID) -> list[str]:
     rows = await pool.fetch("SELECT status FROM job_fires WHERE job_id = $1 ORDER BY actual_fired_at", job_id)
     return [row["status"] for row in rows]
@@ -412,3 +427,90 @@ async def test_a_fire_that_failed_on_its_own_error_waits_for_its_next_interval(p
     finally:
         await again.aclose()
     assert await _fire_statuses(pool, job) == ["failed"], "the next tick has nothing due"
+
+
+async def test_a_one_shot_cut_off_by_close_runs_on_the_next_tick(pool: asyncpg.Pool) -> None:
+    """The claim of a one-shot's only fire expires the job, so undoing that claim is what runs it at all."""
+    schedule_store, fire_store = _stores(pool)
+    due = (datetime.now(UTC) - timedelta(seconds=5)).replace(microsecond=0)
+    _, job = await _seed_job(
+        pool, "once", next_fire_at=due, schedule_type="one_shot_at", schedule_config={"fire_at_iso": due.isoformat()}
+    )
+    started = asyncio.Event()
+
+    async def _long(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        started.set()
+        await asyncio.sleep(3600)
+        return JobFireResult()
+
+    before = BackgroundDispatch(fire_store, config=DEFAULT_JOB_CONFIG, schedule_store=schedule_store)
+    await asyncio.wait_for(scheduled_tick_job(schedule_store, fire_store, {"once": before.wrap(_long)}), timeout=10)
+    await asyncio.wait_for(started.wait(), timeout=10)
+    claimed = await _job_row(pool, job)
+    assert (claimed["status"], claimed["next_fire_at"]) == ("expired", None), "the claim expired the one-shot"
+
+    await before.aclose()
+    undone = await _job_row(pool, job)
+    assert (undone["status"], undone["next_fire_at"]) == ("active", due), "the claim was undone"
+    assert undone["date_updated"] > claimed["date_updated"], "date_updated moves forward, not back to the occurrence"
+
+    ran: list[datetime] = []
+
+    async def _quick(trigger: JobTrigger, _f: UUID) -> JobFireResult:
+        ran.append(trigger.scheduled_fire_at)
+        return JobFireResult(output={"done": True})
+
+    after = BackgroundDispatch(fire_store, config=DEFAULT_JOB_CONFIG, schedule_store=schedule_store)
+    try:
+        await asyncio.wait_for(scheduled_tick_job(schedule_store, fire_store, {"once": after.wrap(_quick)}), timeout=10)
+        await asyncio.wait_for(after.join(), timeout=10)
+    finally:
+        await after.aclose()
+    assert ran == [due]
+    assert await _fire_statuses(pool, job) == ["failed", "succeeded"]
+    done = await _job_row(pool, job)
+    assert (done["status"], done["next_fire_at"]) == ("expired", None), "it ran once and is finished"
+
+
+@pytest.mark.parametrize("moved_by", ["a later claim", "a pause"])
+async def test_a_job_that_moved_on_during_the_cut_off_fire_is_left_alone(
+    pool: asyncpg.Pool, caplog: pytest.LogCaptureFixture, moved_by: str
+) -> None:
+    """Rewinding a job claimed again during the fire would replay every claimed occurrence under catch_up,
+    and rewinding a paused one would overwrite the pause; either way the row stays as it is."""
+    schedule_store, fire_store = _stores(pool)
+    due = (datetime.now(UTC) - timedelta(seconds=5)).replace(microsecond=0)
+    partition, job = await _seed_job(pool, "backup", next_fire_at=due)
+    started = asyncio.Event()
+
+    async def _long(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        started.set()
+        await asyncio.sleep(3600)
+        return JobFireResult()
+
+    background = BackgroundDispatch(fire_store, config=DEFAULT_JOB_CONFIG, schedule_store=schedule_store)
+    await asyncio.wait_for(
+        scheduled_tick_job(schedule_store, fire_store, {"backup": background.wrap(_long)}), timeout=10
+    )
+    await asyncio.wait_for(started.wait(), timeout=10)
+    if moved_by == "a later claim":
+        assert await schedule_store.claim_and_reschedule(
+            partition_key=partition,
+            job_id=job,
+            expected_next_fire=due + timedelta(seconds=60),
+            computed_next_fire=due + timedelta(seconds=120),
+            new_status="active",
+            now=datetime.now(UTC),
+        )
+    else:
+        assert await schedule_store.set_status(
+            partition_key=partition, job_id=job, status="paused", now=datetime.now(UTC)
+        )
+    moved = await _job_row(pool, job)
+
+    with caplog.at_level("INFO"):
+        await background.aclose()
+    assert await _job_row(pool, job) == moved, "the row is exactly as it was after it moved on"
+    messages = [r for r in caplog.records if "its job changed after the claim" in r.getMessage()]
+    assert [r.levelname for r in messages] == ["WARNING"]
+    assert "3tears.scheduled_jobs.fire.due_again" not in [r.getMessage() for r in caplog.records]

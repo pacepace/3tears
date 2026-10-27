@@ -131,6 +131,12 @@ class JobTrigger:
     :ivar scheduled_fire_at: the schedule's ``next_fire_at`` at claim
         time (the planned fire instant; drift = ``fired_at`` minus this)
     :ivar name: optional human-readable schedule name
+    :ivar claimed_next_fire_at: the ``next_fire_at`` the claim wrote
+        (``None`` for a terminal one-shot)
+    :ivar claimed_status: the ``status`` the claim wrote; ``None`` when
+        the trigger was not built from a claim. With ``fired_at`` (which
+        the claim wrote as ``last_fired_at`` and ``date_updated``) it is
+        what an undo of the claim checks the row still holds
     """
 
     job_id: UUID
@@ -141,6 +147,8 @@ class JobTrigger:
     scheduled_fire_at: datetime
     payload: dict[str, Any] = field(default_factory=dict)
     name: str | None = None
+    claimed_next_fire_at: datetime | None = None
+    claimed_status: ScheduleStatus | None = None
 
 
 @dataclass(frozen=True)

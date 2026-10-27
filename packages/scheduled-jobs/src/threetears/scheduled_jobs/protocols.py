@@ -32,9 +32,9 @@ from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 __all__ = [
+    "ClaimUndoStore",
     "DueSchedule",
     "FireStore",
-    "ImmediateFireStore",
     "ScheduleStore",
 ]
 
@@ -189,33 +189,52 @@ class ScheduleStore(Protocol):
 
 
 @runtime_checkable
-class ImmediateFireStore(Protocol):
-    """The schedule-side surface that makes a job due again without firing it.
+class ClaimUndoStore(Protocol):
+    """The schedule-side surface that undoes a claim whose fire never got to run.
 
-    :class:`~threetears.scheduled_jobs.background.BackgroundDispatch` uses it to bring back the
-    job of a fire it cancelled on shutdown: the claim had already advanced that job's
-    ``next_fire_at``, so without it the job waits a whole interval for work that never ran.
-    :meth:`ScheduledJobCollection.request_immediate_fire
-    <threetears.scheduled_jobs.collections.ScheduledJobCollection.request_immediate_fire>`
-    implements it.
+    :class:`~threetears.scheduled_jobs.background.BackgroundDispatch` uses it for a fire it
+    cancelled on shutdown: the claim had already advanced that job's ``next_fire_at`` (or, for a
+    one-shot, expired the job), so without the undo the work waits a whole interval or never runs.
+    :meth:`ScheduledJobCollection.undo_claim
+    <threetears.scheduled_jobs.collections.ScheduledJobCollection.undo_claim>` implements it.
     """
 
-    async def request_immediate_fire(
+    async def undo_claim(
         self,
         *,
         partition_key: UUID,
         job_id: UUID,
+        scheduled_fire_at: datetime,
+        claimed_at: datetime,
+        claimed_next_fire_at: datetime | None,
+        claimed_status: str,
         now: datetime,
     ) -> bool:
-        """Set an active job's ``next_fire_at`` to ``now``; the tick claims it as usual.
+        """Make the job active and due at ``scheduled_fire_at`` again, if the row is as the claim left it.
+
+        One compare-and-swap: the row must still hold ``status = claimed_status``, ``next_fire_at =
+        claimed_next_fire_at`` and ``last_fired_at = date_updated = claimed_at``, exactly what the
+        claim wrote. A later claim, a retune, a manual fire or a pause each changes one of them, and
+        the row is then left alone: rewinding it would replay claimed occurrences or overwrite a
+        decision taken while the fire ran.
 
         :param partition_key: partition column value
         :ptype partition_key: UUID
         :param job_id: target job
         :ptype job_id: UUID
-        :param now: the instant the job is due at
+        :param scheduled_fire_at: the occurrence the claim fired; the job is due at it again
+        :ptype scheduled_fire_at: datetime
+        :param claimed_at: the claim's tick instant, written then as ``last_fired_at`` and
+            ``date_updated``
+        :ptype claimed_at: datetime
+        :param claimed_next_fire_at: the ``next_fire_at`` the claim wrote (``None`` for a one-shot)
+        :ptype claimed_next_fire_at: datetime | None
+        :param claimed_status: the ``status`` the claim wrote
+        :ptype claimed_status: str
+        :param now: written as ``date_updated`` when the undo lands
         :ptype now: datetime
-        :return: ``True`` when the job was brought forward, ``False`` when no active row matched
+        :return: ``True`` when the claim was undone, ``False`` when the row no longer holds what
+            the claim wrote (or is gone)
         :rtype: bool
         """
         ...

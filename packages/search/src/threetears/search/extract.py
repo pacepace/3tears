@@ -123,6 +123,8 @@ __all__ = [
     "EXTRACTION_CHARSET_FACET",
     "EXTRACTION_FINAL_URL_FACET",
     "EXTRACTION_METHOD_FACET",
+    "EXTRACTION_METHOD_SOURCE",
+    "EXTRACTION_METHOD_TEXT",
     "EXTRACTION_NEXT_STEP_FACET",
     "EXTRACTION_NOTES_FACET",
     "EXTRACTION_REASON_FACET",
@@ -175,11 +177,13 @@ HTML_CONTENT_TYPES: Final[tuple[str, ...]] = (
 )
 
 #: Media types read as text, as written: every ``text/*`` that is not a page (plain text, CSS,
-#: CSV, XML, JavaScript, Markdown), JSON, XML, YAML, NDJSON, JavaScript, and any ``+json`` or
-#: ``+xml`` type (RSS, Atom, JSON-LD). Entries are gate entries
-#: (:func:`~threetears.search.contracts.media_type_accepted`): a prefix, or a ``+`` suffix. A
-#: stylesheet, a sitemap or an API's answer is what the reader asked to see, and none of it needs
-#: a library to read; JSON that parses is shown indented.
+#: CSV, XML, JavaScript, Markdown), JSON, XML, YAML, NDJSON, JavaScript, and any ``application``
+#: type with a ``+json`` or ``+xml`` suffix (RSS, Atom, JSON-LD). Entries are gate entries
+#: (:func:`~threetears.search.contracts.media_type_accepted`): a prefix, or a prefix and a suffix.
+#: A stylesheet, a sitemap or an API's answer is what the reader asked to see, and none of it needs
+#: a library to read; JSON that parses is shown indented. The suffixes stay inside ``application/``
+#: so an image stays refused: ``image/svg+xml`` is XML, and it is still an image, which can carry
+#: scripts.
 _TEXT_CONTENT_TYPES: Final[tuple[str, ...]] = (
     "text/",
     "application/json",
@@ -190,8 +194,8 @@ _TEXT_CONTENT_TYPES: Final[tuple[str, ...]] = (
     "application/yaml",
     "application/x-yaml",
     "application/x-ndjson",
-    "+json",
-    "+xml",
+    "application/*+json",
+    "application/*+xml",
 )
 
 #: :attr:`Candidate.facets` key carrying the ``media-contracts`` ``EXTRACTION_STATUS_*`` vocabulary.
@@ -227,6 +231,13 @@ _STATUS_NOT_MODIFIED: Final[int] = 304
 #: :attr:`Candidate.facets` key carrying *how* the text was produced (SR-B6).
 EXTRACTION_METHOD_FACET: Final[str] = "extraction_method"
 
+#: :data:`EXTRACTION_METHOD_FACET` value for a textual carrier handed back as written.
+EXTRACTION_METHOD_TEXT: Final[str] = "text"
+
+#: :data:`EXTRACTION_METHOD_FACET` value for a page's markup handed back in place of its article
+#: (``source``).
+EXTRACTION_METHOD_SOURCE: Final[str] = "source"
+
 #: Refusal identity for a call the ``[extract]`` extra is not installed for.
 EXTRACTOR_UNAVAILABLE_SCOPE: Final[str] = "extractor-unavailable"
 
@@ -239,11 +250,14 @@ _METHOD_TRAFILATURA: Final[str] = "trafilatura"
 #: Method name recorded when a caller's heavy fetcher produced the carrier.
 _METHOD_HEAVY: Final[str] = "trafilatura+rendered"
 
-#: Method name recorded when a textual carrier was handed back as written.
-_METHOD_TEXT: Final[str] = "text"
-
-#: Method name recorded when a page's markup was handed back as fetched (``source``).
-_METHOD_SOURCE: Final[str] = "source"
+#: The note on a page's source fetched as served, and on one a heavy fetcher rendered first.
+_SOURCE_FETCHED_NOTE: Final[str] = (
+    "This is the page's HTML as fetched, not its article; scripts that run later are not run."
+)
+_SOURCE_RENDERED_NOTE: Final[str] = (
+    "This is the page's HTML after a browser rendered it and ran its scripts, not its article and not the HTML "
+    "as served."
+)
 
 #: The cap scopes the standalone transport refuses under (``standalone.RESPONSE_BYTES_SCOPE``
 #: and ``standalone.CONTENT_TYPE_SCOPE``), spelled here because this module must not import the
@@ -407,8 +421,10 @@ async def extract(
         its article follows it one level (module docstring); None never follows
     :ptype thin_page_chars: int | None
     :param source: hand a page back as the markup that was fetched, not its extracted article,
-        for a reader checking markup, scripts, forms or meta tags. A page's frame is not followed
-        when its source is asked for; text and readers' carriers read as they always do
+        for a reader checking markup, scripts, forms or meta tags. Through ``heavy_fetcher`` that
+        markup is the rendered page, after its scripts ran, and the note on it says so. A page's
+        frame is not followed when its source is asked for; text and readers' carriers read as
+        they always do
     :ptype source: bool
     :return: the candidate with content, fidelity and extraction facets recorded; on a
         per-candidate failure, the candidate with its status, reason and next step and no content
@@ -753,8 +769,15 @@ async def _read_carrier(
         )
     markup, charset = _decode(response.body, response.headers.get("content-type", ""))
     is_page = media_type_accepted(declared, HTML_CONTENT_TYPES)
-    if source or (not is_page and media_type_accepted(declared, _TEXT_CONTENT_TYPES)):
-        return _as_written(markup, response=response, charset=charset, declared=declared, source=source and is_page)
+    if (source and is_page) or (not is_page and media_type_accepted(declared, _TEXT_CONTENT_TYPES)):
+        return _as_written(
+            markup,
+            response=response,
+            charset=charset,
+            declared=declared,
+            source=source and is_page,
+            rendered=heavy_fetcher is not None,
+        )
     text = extractor(markup) or ""
     title: str | None = None
     published_at: datetime | None = None
@@ -789,7 +812,7 @@ async def _read_carrier(
 
 
 def _as_written(
-    decoded: str, *, response: TransportResponse, charset: str, declared: str | None, source: bool
+    decoded: str, *, response: TransportResponse, charset: str, declared: str | None, source: bool, rendered: bool
 ) -> _Read | _Unread:
     """A textual carrier, or a page's markup, handed back as it came.
 
@@ -806,19 +829,21 @@ def _as_written(
     :ptype declared: str | None
     :param source: whether a page's markup was asked for in place of its article
     :ptype source: bool
+    :param rendered: whether a heavy fetcher rendered the carrier, so its scripts ran first
+    :ptype rendered: bool
     :return: the text, or why there was none
     :rtype: _Read | _Unread
     """
     text = decoded
     notes: tuple[str, ...] = ()
-    if media_type_accepted(declared, ("application/json", "+json")):
+    if media_type_accepted(declared, ("application/json", "application/*+json")):
         try:
             text = json.dumps(json.loads(decoded), indent=2, ensure_ascii=False)
         except ValueError:
             # NOSILENT: JSON that does not parse is still the text the site sent, and is shown as sent
             notes = ("It says it is JSON but does not parse as JSON; it is shown as sent.",)
     if source:
-        notes = (*notes, "This is the page's HTML as fetched, not its article; scripts that run later are not run.")
+        notes = (*notes, _SOURCE_RENDERED_NOTE if rendered else _SOURCE_FETCHED_NOTE)
     if not text.strip():
         return _Unread(
             EXTRACTION_STATUS_FAILED,
@@ -833,7 +858,7 @@ def _as_written(
         published_at=None,
         charset=charset,
         notes=notes,
-        method=_METHOD_SOURCE if source else _METHOD_TEXT,
+        method=EXTRACTION_METHOD_SOURCE if source else EXTRACTION_METHOD_TEXT,
     )
 
 

@@ -139,7 +139,8 @@ REAPED_DISPATCH_ERROR: str = "reaped: dispatch abandoned in 'dispatching' (pod d
 class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
     """Three-tier collection for :class:`ScheduledJobEntity`.
 
-    Implements :class:`~threetears.scheduled_jobs.protocols.ScheduleStore`.
+    Implements :class:`~threetears.scheduled_jobs.protocols.ScheduleStore`
+    and :class:`~threetears.scheduled_jobs.protocols.ClaimUndoStore`.
     Composite primary key ``(partition_key, job_id)``; partition column
     ``partition_key``. Standalone ``UNIQUE (job_id)`` lets
     ``job_fires.job_id`` reference the bare id.
@@ -641,6 +642,71 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
                 if requested is None:
                     write.unchanged()
         return requested is not None
+
+    async def undo_claim(
+        self,
+        *,
+        partition_key: UUID,
+        job_id: UUID,
+        scheduled_fire_at: datetime,
+        claimed_at: datetime,
+        claimed_next_fire_at: datetime | None,
+        claimed_status: str,
+        now: datetime,
+    ) -> bool:
+        """Undo a claim whose fire never got to run: active again, due at ``scheduled_fire_at``.
+
+        One compare-and-swap UPDATE on everything :meth:`claim_and_reschedule` wrote: ``status``,
+        ``next_fire_at`` (``IS NOT DISTINCT FROM``, since a one-shot's claim wrote ``NULL``), and
+        ``last_fired_at`` and ``date_updated``, both stamped with the claim's tick. A later claim
+        moves ``last_fired_at``; a retune, a manual fire or a pause moves ``date_updated``. Any of
+        them leaves the row alone, so an undo never replays claimed occurrences or overwrites a
+        decision taken while the fire ran.
+
+        ``last_fired_at`` keeps the claim's tick: the fire did start then. ``date_updated`` is
+        ``now``, never the past occurrence.
+
+        :param partition_key: partition column value
+        :ptype partition_key: UUID
+        :param job_id: target job
+        :ptype job_id: UUID
+        :param scheduled_fire_at: the occurrence the claim fired; the job is due at it again
+        :ptype scheduled_fire_at: datetime
+        :param claimed_at: the claim's tick instant (its ``last_fired_at`` and ``date_updated``)
+        :ptype claimed_at: datetime
+        :param claimed_next_fire_at: the ``next_fire_at`` the claim wrote (``None`` for a one-shot)
+        :ptype claimed_next_fire_at: datetime | None
+        :param claimed_status: the ``status`` the claim wrote
+        :ptype claimed_status: str
+        :param now: written as ``date_updated`` when the undo lands
+        :ptype now: datetime
+        :return: ``True`` when the claim was undone, ``False`` when the row no longer holds what
+            the claim wrote
+        :rtype: bool
+        """
+        undone = None
+        if self.l3_pool is not None:
+            # cache-bypass: atomic CAS UPDATE; the row is evicted from every tier once it lands, and
+            # an undo the row has moved past changed nothing and evicts nothing.
+            async with self.bypassing_write((partition_key, job_id)) as write:
+                undone = await self.l3_pool.fetchval(
+                    "UPDATE scheduled_jobs "
+                    "SET next_fire_at = $1, status = 'active', date_updated = $2 "
+                    "WHERE partition_key = $3 AND job_id = $4 AND status = $5 "
+                    "AND next_fire_at IS NOT DISTINCT FROM $6::timestamptz "
+                    "AND last_fired_at = $7 AND date_updated = $7 "
+                    "RETURNING job_id",
+                    scheduled_fire_at,
+                    now,
+                    partition_key,
+                    job_id,
+                    claimed_status,
+                    claimed_next_fire_at,
+                    claimed_at,
+                )
+                if undone is None:
+                    write.unchanged()
+        return undone is not None
 
     async def claim_and_reschedule(
         self,

@@ -9,6 +9,7 @@ which keeps the real transport's cap and content-type gate.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 
 import pytest
 
@@ -17,12 +18,14 @@ from threetears.media.contracts import (
     EXTRACTION_STATUS_FAILED,
     EXTRACTION_STATUS_REFUSED,
 )
-from threetears.search.contracts import Spend, TimedOut, TransportFailed
+from threetears.search.contracts import EGRESS_DIRECT, Spend, TimedOut, TransportFailed, TransportResponse
 from threetears.search.contracts.candidate import Candidate, Locator
 from threetears.search.extract import (
     EXTRACTION_CHARSET_FACET,
     EXTRACTION_FINAL_URL_FACET,
     EXTRACTION_METHOD_FACET,
+    EXTRACTION_METHOD_SOURCE,
+    EXTRACTION_METHOD_TEXT,
     EXTRACTION_NEXT_STEP_FACET,
     EXTRACTION_NOTES_FACET,
     EXTRACTION_REASON_FACET,
@@ -423,7 +426,7 @@ async def test_a_textual_answer_is_read_as_written(declared: str) -> None:
 
     assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_COMPLETE
     assert result.content is not None and result.content.text == _AS_WRITTEN
-    assert result.facets[EXTRACTION_METHOD_FACET] == "text"
+    assert result.facets[EXTRACTION_METHOD_FACET] == EXTRACTION_METHOD_TEXT == "text"
 
 
 @pytest.mark.parametrize("declared", ["application/json", "application/ld+json", "application/vnd.api+json"])
@@ -466,7 +469,8 @@ async def test_text_past_a_page_s_cap_is_refused_like_a_page() -> None:
 
 
 @pytest.mark.parametrize(
-    "declared", ["image/png", "application/zip", "application/octet-stream", "audio/mpeg", "video/mp4"]
+    "declared",
+    ["image/png", "image/svg+xml", "application/zip", "application/octet-stream", "audio/mpeg", "video/mp4"],
 )
 async def test_a_binary_answer_is_refused_before_its_body_and_says_what_is_read(declared: str) -> None:
     transport = RecordedFetchTransport(
@@ -492,9 +496,49 @@ async def test_source_hands_back_the_page_s_html_as_fetched() -> None:
     result = await extract(_candidate(), transport=transport, source=True)
 
     assert result.content is not None and result.content.text == _ARTICLE.decode()
-    assert result.facets[EXTRACTION_METHOD_FACET] == "source"
+    assert result.facets[EXTRACTION_METHOD_FACET] == EXTRACTION_METHOD_SOURCE == "source"
     assert result.facets[EXTRACTION_NOTES_FACET] == [
         "This is the page's HTML as fetched, not its article; scripts that run later are not run."
+    ]
+
+
+class _Renderer:  # parity-with: threetears.search.contracts.HeavyFetcher
+    """A rendering escalation that answers with the page as its scripts left it."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    async def fetch_rendered(
+        self,
+        url: str,
+        *,
+        max_bytes: int,
+        timeout_seconds: float | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> TransportResponse:
+        del max_bytes, timeout_seconds, headers
+        return TransportResponse(
+            status_code=200,
+            body=self._body,
+            headers={"content-type": "text/html"},
+            final_url=url,
+            egress=EGRESS_DIRECT,
+            elapsed_seconds=0.0,
+        )
+
+
+async def test_source_through_a_renderer_says_its_scripts_ran() -> None:
+    """A rendered page is not the HTML as served, and the note must not say its scripts did not run."""
+    rendered = _ARTICLE.replace(b"</body>", b"<div id='added-by-script'>hi</div></body>")
+    transport = RecordedFetchTransport({})
+
+    result = await extract(_candidate(), transport=transport, heavy_fetcher=_Renderer(rendered), source=True)
+
+    assert result.content is not None and result.content.text == rendered.decode()
+    assert result.facets[EXTRACTION_METHOD_FACET] == EXTRACTION_METHOD_SOURCE
+    assert result.facets[EXTRACTION_NOTES_FACET] == [
+        "This is the page's HTML after a browser rendered it and ran its scripts, not its article and not the HTML "
+        "as served."
     ]
 
 

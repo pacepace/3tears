@@ -110,7 +110,7 @@ from threetears.scheduled_jobs.events import (
 from threetears.scheduled_jobs.metrics import get_scheduled_jobs_emitter
 from threetears.scheduled_jobs.protocols import DueSchedule, FireStore, ScheduleStore
 from threetears.scheduled_jobs.reschedule import compute_next_fire_at
-from threetears.scheduled_jobs.types import JobFireResult, JobTrigger
+from threetears.scheduled_jobs.types import JobFireResult, JobTrigger, ScheduleStatus
 
 __all__ = [
     "UNROUTED_KIND_REASON",
@@ -463,7 +463,7 @@ async def _dispatch_one(
             # of its grid after the tick, so late ticks never drift it.
             current_fire_at=expected_next_fire,
         )
-    new_status = "expired" if computed_next_fire is None else "active"
+    new_status: ScheduleStatus = "expired" if computed_next_fire is None else "active"
 
     claimed = await schedule_store.claim_and_reschedule(
         partition_key=schedule.partition_key,
@@ -505,6 +505,8 @@ async def _dispatch_one(
         scheduled_fire_at=expected_next_fire,
         payload=schedule.payload,
         name=schedule.name,
+        claimed_next_fire_at=computed_next_fire,
+        claimed_status=new_status,
     )
     await fire_store.create_dispatching(
         fire_id=fire_id,

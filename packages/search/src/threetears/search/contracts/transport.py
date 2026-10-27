@@ -95,9 +95,11 @@ def media_type_accepted(media_type: str | None, allowed: Sequence[str]) -> bool:
     """Whether a declared media type passes a content-type gate.
 
     An entry is a prefix (``text/`` takes every text type, ``application/json`` takes
-    itself), or, when it starts with ``+``, a structured-syntax suffix (RFC 6839):
-    ``+json`` takes ``application/ld+json`` and ``application/vnd.api+json``, which no
-    prefix can name. Case is ignored, and a type that declares nothing passes nothing.
+    itself), or a prefix and a structured-syntax suffix (RFC 6839) joined by ``*``:
+    ``application/*+json`` takes ``application/ld+json`` and ``application/vnd.api+json``,
+    which no prefix can name, and the ``*`` stands for at least one character. The prefix
+    keeps a suffix to its family: ``application/*+xml`` takes a feed and not
+    ``image/svg+xml``. Case is ignored, and a type that declares nothing passes nothing.
 
     :param media_type: the bare media type the response declared, without parameters
     :ptype media_type: str | None
@@ -110,8 +112,11 @@ def media_type_accepted(media_type: str | None, allowed: Sequence[str]) -> bool:
     if not lowered:
         return False
     for entry in allowed:
-        wanted = entry.lower()
-        if lowered.endswith(wanted) if wanted.startswith("+") else lowered.startswith(wanted):
+        head, star, tail = entry.lower().partition("*")
+        if not star:
+            if lowered.startswith(head):
+                return True
+        elif len(lowered) > len(head) + len(tail) and lowered.startswith(head) and lowered.endswith(tail):
             return True
     return False
 
@@ -232,7 +237,8 @@ class FetchTransport(Protocol):
     - **the content-type gate refuses before the body** : when
       ``allowed_content_types`` is given and the response's declared
       media type matches none of them (:func:`media_type_accepted`: a
-      prefix, or a ``+json``-style suffix), the implementation refuses
+      prefix, or a prefix and a suffix such as ``application/*+json``),
+      the implementation refuses
       without reading the body -- the gate exists so Extract never pulls
       megabytes of video to learn it wanted text (§3.5).
     """
@@ -273,7 +279,8 @@ class FetchTransport(Protocol):
         :ptype max_bytes: int
         :param allowed_content_types: media-type prefixes this read will
             accept (e.g. ``("text/html", "application/xhtml+xml")``), and
-            ``+json``-style suffixes (:func:`media_type_accepted`);
+            prefix-and-suffix entries such as ``application/*+json``
+            (:func:`media_type_accepted`);
             None accepts anything. A declared type outside the gate is
             refused before the body is read
         :ptype allowed_content_types: tuple[str, ...] | None

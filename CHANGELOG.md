@@ -115,14 +115,25 @@ so run all of this in each agent's schema. The column and the per-variant indexe
 **Fixed:** `web_fetch` refused every response that was not HTML, plain text or a PDF. Seen on production
 (2026-10-26), while a person debugged a WordPress site with the agent: a stylesheet (`text/css`), the sitemap
 (`text/xml`) and the REST API's answer (`application/json`) were all refused, and the agent had to ask the person
-to view source by hand. Extract now reads every `text/*`, JSON, XML, JavaScript, YAML, NDJSON and any `+json` or
-`+xml` type (RSS, Atom, JSON-LD) as written, under the same byte cap a page has; JSON that parses is shown
-indented. `text/plain` is now read as written rather than through the article extractor. Images, archives,
-audio and video are still refused before their body is read, and the refusal says what is read.
+to view source by hand. Extract now reads every `text/*`, JSON, XML, JavaScript, YAML, NDJSON and any
+`application/` type with a `+json` or `+xml` suffix (RSS, Atom, JSON-LD) as written, under the same byte cap a
+page has; JSON that parses is shown indented. `text/plain` is now read as written rather than through the
+article extractor. Images, `image/svg+xml` included (it is XML, and it can carry scripts), archives, audio and
+video are still refused before their body is read, and the refusal says what is read.
+
+**Changed:** `threetears.search.extract.HTML_CONTENT_TYPES` no longer contains `text/plain`; a caller that
+passes it as its own gate stops accepting plain text, and should add `text/` for what extract now reads. The
+`FetchTransport` content-type gate takes a new entry form, a prefix and a suffix joined by `*`
+(`application/*+json`), and extract now sends `application/*+json`, `application/*+xml` and `text/` to every
+transport. A `FetchTransport` outside this repo written to the old prefix-only rule must match through
+`threetears.search.contracts.media_type_accepted`, or it refuses JSON-LD, RSS, Atom, CSS, CSV and every other
+`text/` type.
 
 **Added:** `web_fetch`'s `source` argument (and `extract(..., source=True)`) returns a page's HTML as fetched
-instead of its article, for checking markup, scripts, forms and meta tags. A gate entry that starts with `+`
-matches a structured-syntax suffix (`threetears.search.contracts.media_type_accepted`, used by both fetch
+instead of its article, for checking markup, scripts, forms and meta tags; through a `heavy_fetcher` it is the
+rendered page, and its note says the scripts ran. The method facet's values for these reads are exported as
+`EXTRACTION_METHOD_TEXT` and `EXTRACTION_METHOD_SOURCE`. A gate entry `<prefix>*<suffix>` matches a
+structured-syntax suffix within a family (`threetears.search.contracts.media_type_accepted`, used by both fetch
 transports and `CarrierReader.reads`).
 
 **Fixed:** advice never names an address the fetch cannot read. A redirect the fetch did not follow is named
@@ -140,15 +151,19 @@ and vectors of two widths still pair over the shorter one.
 ### scheduled-jobs: a fire cut off by a restart runs again on the next tick
 
 **Fixed:** `BackgroundDispatch.aclose` recorded each fire it cancelled as failed, but the claim had already
-advanced the job's `next_fire_at`, so the cut-off work waited a whole interval. Seen on production
-(2026-10-27): a deploy killed a 19-minute backup and nothing ran it again. Given the new `schedule_store`
-argument (an `ImmediateFireStore`, which `ScheduledJobCollection` already is through
-`request_immediate_fire`), `aclose` makes each cancelled fire's job due again at the occurrence it was
-running, so the first tick on any pod runs it and the schedule keeps its grid. It logs
-`EVENT_FIRE_DUE_AGAIN` (`3tears.scheduled_jobs.fire.due_again`). A fire that raised, reported a failure,
-timed out or was cancelled by anything but `aclose` keeps its advanced schedule. Without a `schedule_store`
-a cancelled fire's job waits as before, now with a WARNING saying so. A job paused or expired meanwhile is
-left alone.
+advanced the job's `next_fire_at` (or, for a `one_shot_at` or `relative_delay` job, expired it), so the cut-off
+work waited a whole interval or never ran. Seen on production (2026-10-27): a deploy killed a 19-minute backup
+and nothing ran it again. Given the new `schedule_store` argument (a `ClaimUndoStore`, which
+`ScheduledJobCollection` is through its new `undo_claim`), `aclose` undoes each cancelled fire's claim: the job
+is active and due again at the occurrence it was running, so the first tick on any pod runs it and the schedule
+keeps its grid. It logs `EVENT_FIRE_DUE_AGAIN` (`3tears.scheduled_jobs.fire.due_again`). The undo is one
+compare-and-swap on what the claim wrote (`status`, `next_fire_at`, and `last_fired_at` and `date_updated`
+at the claim's tick), and writes `date_updated` as now. A job claimed again, retuned, fired by hand, paused or
+deleted while the fire ran is left as it is, with a WARNING: rewinding it would replay the occurrences claimed
+meanwhile or overwrite the change. `JobTrigger` carries what its claim wrote (`claimed_next_fire_at`,
+`claimed_status`). A fire that raised, reported a failure, timed out or was cancelled by anything but `aclose`
+keeps its advanced schedule. Without a `schedule_store` a cancelled fire's job stays as the claim left it, now
+with a WARNING saying so.
 
 ## v0.80.0 -- 2026-10-27
 

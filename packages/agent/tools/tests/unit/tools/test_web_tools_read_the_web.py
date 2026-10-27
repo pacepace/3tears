@@ -483,16 +483,19 @@ class TestAnyTextIsRead:
         assert result.content.endswith('[\n  {\n    "id": 12,\n    "slug": "contact"\n  }\n]')
 
     @pytest.mark.asyncio
-    async def test_an_image_is_refused_and_says_what_is_read(self) -> None:
-        tool, _ = _fetch_tool(
-            {_ROBOTS: _ALLOW, f"{_SITE}/logo.png": RecordedPage(body=b"\x89PNG", content_type="image/png")}
-        )
+    @pytest.mark.parametrize(
+        ("name", "declared", "body"),
+        [("logo.png", "image/png", b"\x89PNG"), ("logo.svg", "image/svg+xml", b"<svg><script>1</script></svg>")],
+    )
+    async def test_an_image_is_refused_and_says_what_is_read(self, name: str, declared: str, body: bytes) -> None:
+        """An SVG is XML, and still an image: refused like one, scripts and all."""
+        tool, _ = _fetch_tool({_ROBOTS: _ALLOW, f"{_SITE}/{name}": RecordedPage(body=body, content_type=declared)})
 
-        result = await tool.execute(url=f"{_SITE}/logo.png")
+        result = await tool.execute(url=f"{_SITE}/{name}")
 
         assert result.success is False
         assert result.content.startswith(
-            f"Did not read {_SITE}/logo.png: the address is not a page, text or a PDF, so it is not read; "
+            f"Did not read {_SITE}/{name}: the address is not a page, text or a PDF, so it is not read; "
             "an image, an archive, audio or video is not read as text"
         )
 

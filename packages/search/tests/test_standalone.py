@@ -669,14 +669,22 @@ async def test_the_gate_matches_on_the_media_type_not_the_header() -> None:
         ("application/ld+json; charset=utf-8", True),
         ("application/vnd.api+json", True),
         ("application/jsonp", False),
+        ("application/+json", False),
+        ("image/svg+xml", False),
         ("image/svg+xml-compressed", False),
     ],
 )
-async def test_a_suffix_entry_takes_every_type_with_that_suffix_and_only_those(declared: str, passes: bool) -> None:
-    """``+json`` names a family no prefix can: a feed, JSON-LD, a vendor's JSON."""
+async def test_a_suffix_entry_takes_every_type_of_its_family_with_that_suffix_and_only_those(
+    declared: str, passes: bool
+) -> None:
+    """``application/*+json`` names a family no prefix can: a feed, JSON-LD, a vendor's JSON. An image
+    with an XML suffix is outside the family."""
     async with LocalHttpServer((Reply(body=b"{}", headers={"Content-Type": declared}),)) as server:
         fetch = _transport(max_attempts=1).fetch(
-            "GET", f"{server.base_url}/feed", max_bytes=1_000_000, allowed_content_types=("+json", "+xml")
+            "GET",
+            f"{server.base_url}/feed",
+            max_bytes=1_000_000,
+            allowed_content_types=("application/*+json", "application/*+xml"),
         )
         if passes:
             assert (await fetch).body == b"{}"

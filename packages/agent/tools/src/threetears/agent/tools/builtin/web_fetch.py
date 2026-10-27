@@ -42,8 +42,8 @@ again later"), from the facets Extract records.
 
 **What it reads.** A web page, as its article. Any text as written: CSS, XML (a
 sitemap, a feed), CSV, JavaScript, Markdown, YAML, plain text, and JSON, shown indented
-when it parses. A PDF, below. An image, an archive, audio or video is refused before
-its body is read, and says so. ``source`` hands a page back as the HTML that was
+when it parses. A PDF, below. An image (an SVG too, though it is XML), an archive, audio
+or video is refused before its body is read, and says so. ``source`` hands a page back as the HTML that was
 fetched instead of its article, so markup, scripts, forms and meta tags can be checked;
 it is the HTML as served, before any script runs.
 
@@ -100,6 +100,8 @@ from threetears.search.extract import (
     DEFAULT_USER_AGENT,
     EXTRACTION_FINAL_URL_FACET,
     EXTRACTION_METHOD_FACET,
+    EXTRACTION_METHOD_SOURCE,
+    EXTRACTION_METHOD_TEXT,
     EXTRACTION_NEXT_STEP_FACET,
     EXTRACTION_NOTES_FACET,
     EXTRACTION_REASON_FACET,
@@ -576,7 +578,7 @@ class WebFetchTool(TearsTool):
             version=self.mcp_version(),
             description=(
                 "Read a URL: a web page's article, any text as written (CSS, XML, sitemaps, feeds, CSV, "
-                "JavaScript, YAML; JSON indented), or a PDF. Images, archives, audio and video are refused."
+                "JavaScript, YAML; JSON indented), or a PDF. Images (SVG too), archives, audio and video are refused."
             ),
             input_schema=self._INPUT_SCHEMA,
         )
@@ -658,9 +660,9 @@ def _what_was_read(fetched: Candidate) -> str:
     """
     method = fetched.facets.get(EXTRACTION_METHOD_FACET)
     mime = (fetched.content.mime_type if fetched.content is not None else None) or "text"
-    if method == "source":
+    if method == EXTRACTION_METHOD_SOURCE:
         return f"the HTML source ({mime})"
-    if method == "text" and not fetched.title:
+    if method == EXTRACTION_METHOD_TEXT and not fetched.title:
         return f"a {mime} file"
     return f'"{fetched.title or "Untitled page"}"'
 

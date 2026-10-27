@@ -94,9 +94,9 @@ from threetears.scheduled_jobs.metrics import (
 )
 from threetears.scheduled_jobs.migrations import register
 from threetears.scheduled_jobs.protocols import (
+    ClaimUndoStore,
     DueSchedule,
     FireStore,
-    ImmediateFireStore,
     ScheduleStore,
 )
 from threetears.scheduled_jobs.reschedule import compute_next_fire_at
@@ -152,12 +152,12 @@ __all__ = [
     "SCHEDULED_JOBS_TICK_DURATION_SECONDS",
     "UNROUTED_KIND_REASON",
     "BackgroundDispatch",
+    "ClaimUndoStore",
     "DispatchCallback",
     "DispatchRoutes",
     "DueSchedule",
     "FireNotRecordedError",
     "FireStore",
-    "ImmediateFireStore",
     "JobConfig",
     "JobFireCollection",
     "JobFireEntity",
