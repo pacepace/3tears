@@ -76,9 +76,14 @@ counts no other subject's results; `comparison_sets` reads only the runs it grou
 status). `program_budget` and `orphaned_runs` take no filter, so past the budget they are refused. A read that
 returns more than the budget (a deleted run's results are in no listing) is not aggregated: a call for one subject
 reads that subject's runs instead, and any other call is refused, its `details` adding `results_returned`. Campaign
-reports read their runs by id and are unaffected. `RegressionWatch`, which reads its scope's whole history after
-each completed run, checks nothing in a scope past the budget and logs that at ERROR on every completed run
-(`eval.regression watch checked nothing on run=...`); `RegressionWatch.check` raises the refusal.
+reports read their runs by id and are unaffected. A narrowed pivot, frontier or history says what it did not count
+in `narrowed_read_disclosure` (new on `PivotTable`, `HistoryResult` and `FrontierResult`, printed in each one's text,
+and left out of a dump while unset, so no stored bundle's fingerprint moves); a narrowed frontier's judge tiers are
+read on that subject's results alone, and it says that too. `RegressionWatch` now reads the history of the completed
+run's own subject, so a scope past the budget is still checked wherever that subject fits; a judged alert read that
+way carries `RegressionAlert.narrowed_read_disclosure` (new). When the subject alone is past the budget, the watch
+logs at ERROR that it checked nothing and that nothing narrower exists (`eval.regression watch checked nothing on
+run=...`), and `RegressionWatch.check` raises the refusal. The `frontier` command's refusal names `--subject`.
 
 ## v0.80.0 -- 2026-10-26
 

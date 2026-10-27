@@ -10,10 +10,14 @@ that counts what it is asked for, with the budget patched to a few dozen results
 - **A call narrowed to runs that fit is answered**, reading those runs alone: one subject's runs for a pivot, a
   frontier or a history (with the same cells, points and series the whole scope's read gives that subject, and the
   same status and archival counts), the grouped runs for comparison sets. A narrowed call still past it is refused.
+- **A narrowed answer says what it did not count** (``narrowed_read_disclosure``, absent from a whole read and from a
+  bundle's fingerprint while unset): other subjects' results, and, on a judged frontier, the pooling of each judge's
+  tier, which a narrowed read takes on one subject's results and so can read another tier.
 - **A scope that fits is read whole, as before.**
 - **The safety net**: a read that returns more than the budget (results whose run was deleted) is not aggregated.
-- **The regression watch**, which reads a scope's history after each completed run, logs a refused history at ERROR
-  and delivers nothing; its ``check`` raises the refusal.
+- **The regression watch** reads the history of the completed run's own subject, so a scope past the budget is still
+  checked where that subject fits, a judged alert saying where its tier was read; when the subject alone is past it,
+  the hook logs at ERROR in its own words (nothing to narrow, #996) and delivers nothing, and ``check`` raises.
 - **A campaign report**, which reads its runs by id, is answered past the budget.
 
 Mutations that turn this file red: ``_aggregate_results`` reading the whole scope before the estimate; its narrowed
@@ -23,6 +27,7 @@ cohort (the status and archival counts then differ); the watch's ``except`` remo
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -30,7 +35,9 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import (
+    MIN_CASES,
     campaign_report,
+    frontier_text,
     comparison_sets,
     frontier,
     history,
@@ -39,14 +46,24 @@ from threetears.evals.analysis import (
     program_budget,
     reads,
 )
+from threetears.evals.analysis.lenses.frontier import FrontierResult
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
 from threetears.evals.kernel.storage import EvalStorage
-from threetears.evals.ops import RegressionAlert, RegressionSink, RegressionWatch
+from threetears.evals.ops import RegressionAlert, RegressionSink, RegressionWatch, history_text, pivot_text
 from threetears.evals.run.reads import list_runs
-from threetears.evals.schema.models import CalibrationRating, EvalResult, EvalRun, EvalTemplate
-from packages.evals.tests.factories import make_eval_result, make_eval_run, make_subject, memory_storage
+from threetears.evals.kernel.evidence_tiers import CALIBRATION_MIN_RESULTS
+from threetears.evals.schema import GoalStateOutcome, RoleUsage, RubricScore
+from threetears.evals.schema.models import TRANSCRIPT_DIM_ID, CalibrationRating, EvalResult, EvalRun, EvalTemplate
+from packages.evals.tests.factories import (
+    make_calibration_rating,
+    make_eval_result,
+    make_eval_run,
+    make_subject,
+    memory_storage,
+)
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.off_loop import off_loop
@@ -62,6 +79,8 @@ CASES = 4
 NARROW = "subject-a"
 #: The other subject: three completed runs (12 results), so the scope holds 28.
 OTHER = "subject-b"
+#: How a narrowed answer's disclosure starts, at :data:`BUDGET`.
+NARROWED_SAID = f"Read for subject {NARROW!r} alone: the scope is past the read tier's budget of {BUDGET} results"
 
 
 # parity-with: threetears.evals.analysis.reads.LensStore
@@ -268,6 +287,15 @@ class TestACallNarrowedToRunsThatFitIsAnswered:
         # Its archived and failed runs were read too, so what the cohort left out is counted exactly.
         assert table.exclusions.results_from_archived_runs == whole.exclusions.results_from_archived_runs == CASES
         assert table.exclusions.results_outside_queried_runs == whole.exclusions.results_outside_queried_runs == CASES
+        # Other subjects' rows were never read, so they are not counted, and the table says so where it is read.
+        assert whole.n_filtered_out > 0 and table.n_filtered_out == 0
+        assert whole.narrowed_read_disclosure is None
+        assert table.narrowed_read_disclosure is not None
+        assert table.narrowed_read_disclosure.startswith(NARROWED_SAID)
+        assert "other subjects' results are not counted as filtered out" in table.narrowed_read_disclosure
+        assert "evidence tier" not in table.narrowed_read_disclosure
+        assert table.narrowed_read_disclosure in pivot_text(table)
+        assert "narrowed_read_disclosure" not in whole.model_dump()
 
     def test_a_history_of_one_subject_gives_the_whole_reads_series(
         self, monkeypatch: pytest.MonkeyPatch, scope: tuple[EvalStorage, list[EvalRun]]
@@ -282,6 +310,10 @@ class TestACallNarrowedToRunsThatFitIsAnswered:
         assert store.scope_reads == [] and sorted(store.run_reads) == sorted(run.id for run in narrow)
         assert result.series == whole.series and result.series
         assert result.exclusions.results_from_archived_runs == whole.exclusions.results_from_archived_runs
+        assert whole.n_filtered_out > 0 and result.n_filtered_out == 0
+        assert whole.narrowed_read_disclosure is None
+        assert result.narrowed_read_disclosure is not None and result.narrowed_read_disclosure.startswith(NARROWED_SAID)
+        assert result.narrowed_read_disclosure in history_text(result)
 
     def test_a_frontier_of_one_subject_gives_the_whole_reads_points(
         self, monkeypatch: pytest.MonkeyPatch, scope: tuple[EvalStorage, list[EvalRun]]
@@ -295,6 +327,10 @@ class TestACallNarrowedToRunsThatFitIsAnswered:
 
         assert store.scope_reads == [] and sorted(store.run_reads) == sorted(run.id for run in narrow)
         assert result["subjects"] == whole["subjects"] and result["subjects"]
+        assert whole["n_filtered_out"] > 0 and result["n_filtered_out"] == 0
+        assert "narrowed_read_disclosure" not in whole
+        assert result["narrowed_read_disclosure"].startswith(NARROWED_SAID)
+        assert result["narrowed_read_disclosure"] in frontier_text(FrontierResult.model_validate(result))
 
     def test_a_grouping_narrowed_to_completed_runs_reads_those_alone(
         self, monkeypatch: pytest.MonkeyPatch, scope: tuple[EvalStorage, list[EvalRun]]
@@ -380,6 +416,107 @@ class TestTheSafetyNet:
 
 
 # =============================================================================
+# A judged frontier read for one subject, and what an unset disclosure leaves of a fingerprint
+# =============================================================================
+
+_DIM = "reply.quality"
+_JUDGE = "judge/model"
+#: Judged cases per subject: half the ratings :data:`CALIBRATION_MIN_RESULTS` asks, so only the two pooled calibrate.
+_JUDGED_CASES = CALIBRATION_MIN_RESULTS // 2
+
+
+def _judged_scope() -> EvalStorage:
+    """Two subjects of one run each, every result passing and scored by one judge that people rated in agreement
+    with it: :data:`_JUDGED_CASES` ratings per subject, :data:`CALIBRATION_MIN_RESULTS` across both."""
+    storage, _ = memory_storage()
+    for index, subject in enumerate((NARROW, OTHER)):
+        run = make_eval_run(
+            id=f"judged-{subject}",
+            scope_id=SCOPE,
+            candidate_model="a",
+            subject_snapshot=make_subject(subject, subject.title()),
+            status="completed",
+            test_case_ids=[f"tc{case}" for case in range(_JUDGED_CASES)],
+            created_at=f"2026-10-27T00:0{index}:00+00:00",
+        )
+        storage.save_eval_run(run)
+        for case in range(_JUDGED_CASES):
+            score = 4 + case % 2
+            result = make_eval_result(
+                id=f"{run.id}-{case}",
+                eval_run_id=run.id,
+                scope_id=SCOPE,
+                model="a",
+                subject_id=subject,
+                variant_key=f"vk-{subject}",
+                test_case_id=f"tc{case}",
+                rubric_scores=[
+                    RubricScore(
+                        dim=_DIM,
+                        score=score,
+                        scale="ordinal",
+                        served_model=_JUDGE,
+                        judge_temperature=0.0,
+                        axis="capability",
+                    )
+                ],
+                goal_state_outcomes=[GoalStateOutcome(expression="ok", passed=True)],
+                usage=[RoleUsage(role="candidate", cost_usd=0.01)],
+            )
+            storage.save_eval_result(result)
+            storage.save_calibration_rating(
+                make_calibration_rating(
+                    scope_id=SCOPE, run_id=run.id, result_id=result.id, rubric_dim=_DIM, score=score
+                )
+            )
+    return storage
+
+
+def _verdict_tier(answer: dict[str, Any]) -> str:
+    (subject,) = answer["subjects"]
+    assert subject["verdict"] is not None
+    return str(subject["verdict"]["judge_evidence_tier"])
+
+
+def test_a_judged_frontier_read_for_one_subject_tiers_its_judge_on_that_subject_and_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _judged_scope()
+
+    def ranked() -> dict[str, Any]:
+        return frontier(storage, SCOPE, list_runs=_lister(storage), bar=0.5, subject_id=NARROW)
+
+    whole = ranked()
+    monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", _JUDGED_CASES + MIN_CASES)
+    narrowed = ranked()
+
+    # Read whole, the judge's agreement pools both subjects' ratings and calibrates; read for one, half as many
+    # leave it undetermined. Kept, and said.
+    assert (_verdict_tier(whole), _verdict_tier(narrowed)) == ("calibrated", "undetermined")
+    assert "narrowed_read_disclosure" not in whole
+    said = narrowed["narrowed_read_disclosure"]
+    assert said.startswith(f"Read for subject {NARROW!r} alone")
+    assert "each judge's evidence tier was read on this subject's results alone" in said
+    assert said in frontier_text(FrontierResult.model_validate(narrowed))
+
+
+def test_an_unset_disclosure_leaves_a_bundles_fingerprint_where_it_was() -> None:
+    bundle = toyhost_bundle()
+    assert "narrowed_read_disclosure" not in json.dumps(bundle.to_dict())
+    said = bundle.model_copy(
+        update={"frontier": bundle.frontier.model_copy(update={"narrowed_read_disclosure": "read for one subject"})}
+    )
+
+    assert said.fingerprint() != bundle.fingerprint(), "set, it is evidence"
+    assert bundle.model_copy(deep=True).fingerprint() == bundle.fingerprint()
+    assert "narrowed_read_disclosure" not in json.dumps(
+        said.model_copy(
+            update={"frontier": said.frontier.model_copy(update={"narrowed_read_disclosure": None})}
+        ).to_dict()
+    )
+
+
+# =============================================================================
 # The regression watch, and campaign reports
 # =============================================================================
 
@@ -394,40 +531,100 @@ class _RecordingSink(RegressionSink):
         self.alerts.append(alert)
 
 
-def _watched() -> tuple[RegressionWatch, _RecordingSink]:
-    """Two completed runs of one contestant, the later one's cost up fivefold, and a watch on cost."""
+_WATCH_CASES = [f"c{index}" for index in range(12)]
+
+
+def _watched(*, others: int = 0) -> tuple[RegressionWatch, _RecordingSink]:
+    """Two completed runs of one contestant of :data:`NARROW`, the later one's cost up fivefold and its judged
+    transcript score down from 5 to 1, every judged score rated in agreement by a person (24 ratings, so the judge
+    calibrates on this subject alone), beside ``others`` runs of :data:`OTHER`; and a watch on cost and the
+    transcript."""
     storage, _ = memory_storage()
-    cases = [f"c{index}" for index in range(12)]
-    for run_id, created, cost in (("run-a", "2026-10-01T00:00:00Z", 0.01), ("run-b", "2026-10-02T00:00:00Z", 0.05)):
-        run = make_eval_run(id=run_id, scope_id=SCOPE, test_case_ids=cases, status="completed", created_at=created)
+    plan = [("run-a", NARROW, 0.01, 5), ("run-b", NARROW, 0.05, 1)]
+    plan += [(f"other-{index}", OTHER, 0.01, 5) for index in range(others)]
+    for order, (run_id, subject, cost, transcript) in enumerate(plan):
+        run = make_eval_run(
+            id=run_id,
+            scope_id=SCOPE,
+            subject_snapshot=make_subject(subject, subject.title()),
+            test_case_ids=_WATCH_CASES,
+            status="completed",
+            created_at=f"2026-10-{order + 1:02d}T00:00:00Z",
+        )
         storage.save_eval_run(run)
-        for index, case in enumerate(cases):
-            storage.save_eval_result(
-                make_eval_result(
-                    id=f"{run_id}-{case}",
-                    eval_run_id=run_id,
-                    scope_id=SCOPE,
-                    test_case_id=case,
-                    cost_usd=cost + index * 0.0001,
-                )
+        for index, case in enumerate(_WATCH_CASES):
+            result = make_eval_result(
+                id=f"{run_id}-{case}",
+                eval_run_id=run_id,
+                scope_id=SCOPE,
+                subject_id=subject,
+                test_case_id=case,
+                cost_usd=cost + index * 0.0001,
+                transcript_score=RubricScore(
+                    dim=TRANSCRIPT_DIM_ID,
+                    score=transcript,
+                    scale="ordinal",
+                    served_model=_JUDGE,
+                    axis="capability",
+                    judge_temperature=0.0,
+                ),
             )
+            storage.save_eval_result(result)
+            if subject == NARROW:
+                storage.save_calibration_rating(
+                    make_calibration_rating(
+                        scope_id=SCOPE,
+                        run_id=run_id,
+                        result_id=result.id,
+                        rubric_dim=TRANSCRIPT_DIM_ID,
+                        score=transcript,
+                    )
+                )
     sink = _RecordingSink()
     watch = RegressionWatch(
-        host=toyhost_host(storage=storage), sink=sink, measures=("cost_usd",), min_absolute_change=0.01
+        host=toyhost_host(storage=storage),
+        sink=sink,
+        measures=("cost_usd", TRANSCRIPT_DIM_ID),
+        min_absolute_change=0.01,
     )
     return watch, sink
 
 
 class TestTheRegressionWatch:
-    def test_its_check_raises_a_refused_history(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_a_scope_past_the_budget_is_still_checked_on_the_runs_own_subject(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        watch, _ = _watched(others=3)
+        whole = watch.check("run-b", SCOPE)
+        # The scope holds 60 results, its subject 24.
+        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 2 * len(_WATCH_CASES))
+
+        narrowed = watch.check("run-b", SCOPE)
+
+        assert [(alert.measure, alert.regression) for alert in narrowed] == [
+            (alert.measure, alert.regression) for alert in whole
+        ]
+        assert [alert.measure for alert in narrowed] == ["cost_usd", TRANSCRIPT_DIM_ID]
+        assert all(alert.narrowed_read_disclosure is None for alert in whole)
+        cost, transcript = narrowed
+        assert cost.narrowed_read_disclosure is None, "code graded it: no judge was tiered"
+        assert transcript.evidence_tier == "calibrated"
+        assert transcript.narrowed_read_disclosure is not None
+        assert transcript.narrowed_read_disclosure.startswith(f"Read for subject {NARROW!r} alone")
+        assert "Each judge's evidence tier was read on this subject's results alone" in (
+            transcript.narrowed_read_disclosure
+        )
+
+    def test_its_check_raises_when_the_runs_subject_alone_is_past_the_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         watch, _ = _watched()
-        assert [alert.run_id for alert in watch.check("run-b", SCOPE)] == ["run-b"], "under the budget it fires"
         monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", BUDGET)
 
         with pytest.raises(ValidationFailedError, match="history would aggregate about 24 results"):
             watch.check("run-b", SCOPE)
 
-    async def test_the_hook_logs_a_refused_history_at_error_and_delivers_nothing(
+    async def test_the_hook_logs_it_at_error_in_its_own_words_and_delivers_nothing(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         watch, sink = off_loop(_watched)
@@ -441,7 +638,9 @@ class TestTheRegressionWatch:
         assert line.levelno == logging.ERROR
         message = line.getMessage()
         assert f"checked nothing on run=run-b scope_id={SCOPE}" in message
-        assert "history would aggregate about 24 results" in message and "subject_filter" in message
+        assert f"holds about 24 results, past READ_TIER_ROW_BUDGET={BUDGET}" in message
+        assert "nothing an operator can narrow" in message and "#996" in message
+        assert "subject_filter" not in message and "subject_id" not in message
 
 
 def test_a_campaign_report_reads_its_runs_by_id_past_the_budget(monkeypatch: pytest.MonkeyPatch) -> None:

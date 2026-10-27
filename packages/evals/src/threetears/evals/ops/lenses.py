@@ -1269,6 +1269,8 @@ def pivot_text(table: PivotTable) -> str:
         f"{table.weighting}: {table.n_observations} observation(s), {table.n_filtered_out} filtered out",
         f"formula: {table.formula}",
     ]
+    if table.narrowed_read_disclosure:
+        lines.append(table.narrowed_read_disclosure)
     for cell in table.cells:
         spread = f", sem {format_number(cell.sem)}" if cell.sem is not None else ""
         unmeasured = f", {cell.n_unmeasured} unmeasured" if cell.n_unmeasured else ""
@@ -1351,6 +1353,8 @@ def history_text(result: HistoryResult) -> str:
             "materiality threshold); a step reads equivalent only when shown inside it"
         ),
     ]
+    if result.narrowed_read_disclosure:
+        lines.append(result.narrowed_read_disclosure)
     if result.attribution_disclosure:
         lines.append(result.attribution_disclosure)
     if result.identity_span_disclosure:

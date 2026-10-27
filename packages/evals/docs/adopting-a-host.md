@@ -745,7 +745,10 @@ pivot, a frontier or a history reads as the whole of it. They make the same esti
   `result_budget`), unless the call narrows to runs that fit, which it then reads run by run. A pivot, frontier or
   history narrows to one subject (`subject_filter` on the action, `subject_id` in Python): it reads every run of
   that subject, whatever its status and archived or not, so its status and archival counts stay exact. Other
-  subjects' results, and results whose run was deleted, are not read, so they are not counted. `comparison_sets`
+  subjects' results, and results whose run was deleted, are not read, so they are not counted, and the answer says
+  so in `narrowed_read_disclosure` (absent from a whole-scope answer), which its text prints before its rows.
+  A narrowed frontier's judge tiers are read on that subject's results alone, where a whole read pools every
+  subject's, so a tier can differ, and its disclosure says that too. `comparison_sets`
   narrows to a campaign, named runs or one run status. `program_budget` and `orphaned_runs` take no filter, so past
   the budget they are refused. The refusal names the estimate, the budget and the filters that narrow that call,
   and logs one WARNING line (`eval.read_tier lens=... refused ...`).
@@ -1401,9 +1404,11 @@ A judged measure fires only when every judge behind the step's scores is `calibr
 [Judges and calibration](judges-and-calibration.md)). A run that ended any other way than `completed` is
 not a point on the history, so it is never checked. The engine ships no delivery: with no watch, nothing
 is checked. A sink that raises is logged, the next alert is still delivered, and the run's status never
-changes. The watch reads its scope's whole history, so in a scope past `READ_TIER_ROW_BUDGET` that history is
-refused: the watch then checks nothing on the run and logs it at ERROR (`eval.regression watch checked nothing on
-run=...`), on every completed run of that scope. Called directly, `watch.check` raises the refusal.
+changes. The watch reads the history of the run's own subject, so a scope past `READ_TIER_ROW_BUDGET` is still
+checked wherever that subject fits; a judged alert then carries `narrowed_read_disclosure`, saying its judges were
+tiered on that subject's results alone. When the subject alone is past the budget, the watch checks nothing on the
+run and logs it at ERROR (`eval.regression watch checked nothing on run=...`), saying nothing narrower exists
+(#996). Called directly, `watch.check` raises the refusal.
 
 ### Generating cases at launch
 

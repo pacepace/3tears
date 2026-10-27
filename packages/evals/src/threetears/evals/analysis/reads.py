@@ -432,6 +432,29 @@ def _refuse_past_budget(
     )
 
 
+def _narrowed_read_disclosure(subject_id: str, *, tiers: bool = False) -> str:
+    """What an answer read for one subject alone, past :data:`READ_TIER_ROW_BUDGET`, did not count.
+
+    :param subject_id: The subject read.
+    :ptype subject_id: str
+    :param tiers: Whether the answer names judges' evidence tiers, which it then read on this subject's results alone.
+    :ptype tiers: bool
+    :return: The sentence the answer carries as ``narrowed_read_disclosure``.
+    :rtype: str
+    """
+    tiered = (
+        "; each judge's evidence tier was read on this subject's results alone, where a whole-scope read pools every "
+        "subject's"
+        if tiers
+        else ""
+    )
+    return (
+        f"Read for subject {subject_id!r} alone: the scope is past the read tier's budget of {READ_TIER_ROW_BUDGET} "
+        "results, so only this subject's runs were read; other subjects' results are not counted as filtered out, "
+        f"and results whose run is missing are not counted at all{tiered}."
+    )
+
+
 def _aggregate_results(
     storage: LensStore,
     scope_id: str,
@@ -440,7 +463,7 @@ def _aggregate_results(
     *,
     narrowed: Sequence[EvalRun] | None,
     remedy: str,
-) -> list[EvalResult]:
+) -> tuple[list[EvalResult], bool]:
     """The results an aggregate reads, held to :data:`READ_TIER_ROW_BUDGET` by its runs' estimate before any is read.
 
     A scope whose runs (``corpus``, every run a whole-scope read can return, archived ones included) are estimated at
@@ -456,15 +479,15 @@ def _aggregate_results(
     :ptype narrowed: Sequence[EvalRun] | None
     :param remedy: How this call narrows, by the filters it takes (or what to read instead, when it takes none).
     :ptype remedy: str
-    :return: The results read.
-    :rtype: list[EvalResult]
+    :return: The results read, and whether they are the narrowed runs' alone rather than the whole scope's.
+    :rtype: tuple[list[EvalResult], bool]
     :raises ValidationFailedError: The runs this call reads are estimated past the budget, or a read returned more.
     """
     whole = sum(_results_estimate(run) for run in corpus)
     if whole <= READ_TIER_ROW_BUDGET:
         results = storage.query_eval_results(scope_id)
         if len(results) <= READ_TIER_ROW_BUDGET:
-            return results
+            return results, False
         returned = len(results)
         del results
         if narrowed is None:
@@ -488,7 +511,7 @@ def _aggregate_results(
         raise _refuse_past_budget(
             lens, scope_id, estimate=estimate, runs=len(narrowed), returned=len(results), how=remedy
         )
-    return results
+    return results, True
 
 
 def comparison_sets(
@@ -595,7 +618,8 @@ def comparison_sets(
     runs = list_runs(scope_id, status=_status_filter(status))
     # The grouping reads results only for the runs it groups, so a scope past the budget is read for those alone.
     grouped = runs if scope_run_ids is None else [run for run in runs if run.id in set(scope_run_ids)]
-    results = _aggregate_results(
+    # Exact when narrowed: the grouping reads no result of a run it does not group, so nothing needs disclosing.
+    results, _ = _aggregate_results(
         storage,
         scope_id,
         "comparison_sets",
@@ -657,7 +681,9 @@ def pivot(
         disclosed default (equal per scenario).
     :ptype weighting: str | None
     :param subject_id: Optional single-subject filter. Required to pivot a
-        judge-mediated measure over a multi-subject scope.
+        judge-mediated measure over a multi-subject scope. Past
+        :data:`READ_TIER_ROW_BUDGET` only this subject's runs are read, and the
+        table's ``narrowed_read_disclosure`` names what that left uncounted.
     :ptype subject_id: str | None
     :param status: Raw run-status filter, defaulting to ``"completed"`` for the
         same reason as :func:`comparison_sets` — an in-flight run's cells
@@ -719,7 +745,7 @@ def pivot(
     # so those two counts stay exact within the subject.
     all_runs, cohort, archived_run_ids = _corpus_and_cohort(list_runs, scope_id)
     runs = [run for run in cohort if run.status == status] if status else cohort
-    results = _aggregate_results(
+    results, narrowed = _aggregate_results(
         storage,
         scope_id,
         "pivot",
@@ -756,6 +782,8 @@ def pivot(
         _observe_read("pivot", scope_id, started, *observed, cells_out="refused")
         raise ValidationFailedError(e.fault, remedy=e.remedy) from e
     _observe_read("pivot", scope_id, started, *observed, cells_out=len(table.cells))
+    if narrowed and subject_id:
+        return table.model_copy(update={"narrowed_read_disclosure": _narrowed_read_disclosure(subject_id)})
     return table
 
 
@@ -794,7 +822,10 @@ def frontier(
         refused.
     :ptype bar: float | str | None
     :param subject_id: Optional single-subject filter; other subjects' results
-        are counted as filtered-out rather than dropped silently.
+        are counted as filtered-out rather than dropped silently — except past
+        :data:`READ_TIER_ROW_BUDGET`, where only this subject's runs are read, so
+        other subjects' results (and results whose run is missing) are not counted,
+        and the answer's ``narrowed_read_disclosure`` says so.
     :ptype subject_id: str | None
     :param status: Raw run-status filter, defaulting to ``"completed"`` for the
         same reason as :func:`pivot`. ``"all"`` ranks over every run.
@@ -807,7 +838,9 @@ def frontier(
     :param control_variant_key: The variant each contestant's boundary (guardrail) dimensions are held against;
         ``None`` checks none, and the answer says so per subject.
     :ptype control_variant_key: str | None
-    :return: A JSON-safe :class:`~threetears.evals.analysis.lenses.frontier.FrontierResult` dict.
+    :return: A JSON-safe :class:`~threetears.evals.analysis.lenses.frontier.FrontierResult` dict. Read for one
+        subject alone (past :data:`READ_TIER_ROW_BUDGET`), each judge's evidence tier is read on that subject's
+        results alone, where a whole-scope read pools every subject's, and ``narrowed_read_disclosure`` says so.
     :rtype: dict[str, Any]
     :raises ValidationFailedError: The bar is not a number or is outside
         ``[0, 1]``, or ``status`` is neither ``"all"`` nor a status a run
@@ -824,7 +857,7 @@ def frontier(
     # Every run is read then narrowed here rather than in the query, for the
     # exclusion-accounting reason spelled out in :func:`pivot`.
     all_runs, cohort, archived_run_ids = _corpus_and_cohort(list_runs, scope_id)
-    results = _aggregate_results(
+    results, narrowed = _aggregate_results(
         storage,
         scope_id,
         "frontier",
@@ -856,6 +889,10 @@ def frontier(
         )
     except FrontierError as e:
         raise ValidationFailedError(e.fault, remedy=e.remedy) from e
+    if narrowed and subject is not None:
+        # Kept, and said: a judge's agreement here pooled over this subject's results alone, where a whole-scope
+        # read pools every subject's, so its tier can differ from the whole read's for the same subject.
+        result.narrowed_read_disclosure = _narrowed_read_disclosure(subject, tiers=bool(tiers))
     return result.model_dump(mode="json")
 
 
@@ -896,7 +933,10 @@ def history(
         counts, as a fraction; ``0.0`` lets significance alone flag.
     :ptype min_relative_change: float
     :param subject_id: Optional single-subject filter; other subjects' results
-        are counted as filtered-out rather than dropped silently.
+        are counted as filtered-out rather than dropped silently — except past
+        :data:`READ_TIER_ROW_BUDGET`, where only this subject's runs are read, so
+        other subjects' results (and results whose run is missing) are not counted,
+        and the answer's ``narrowed_read_disclosure`` says so.
     :ptype subject_id: str | None
     :param status: Raw run-status filter, defaulting to ``"completed"`` for the
         same reason as :func:`pivot`. ``"all"`` series over every run.
@@ -918,7 +958,7 @@ def history(
     # exclusion-accounting reason spelled out in :func:`pivot`.
     all_runs, cohort, archived_run_ids = _corpus_and_cohort(list_runs, scope_id)
     runs = [run for run in cohort if run.status == status] if status else cohort
-    results = _aggregate_results(
+    results, narrowed = _aggregate_results(
         storage,
         scope_id,
         "history",
@@ -941,6 +981,8 @@ def history(
         )
     except HistoryError as e:
         raise ValidationFailedError(e.fault, remedy=e.remedy) from e
+    if narrowed and subject is not None:
+        return result.model_copy(update={"narrowed_read_disclosure": _narrowed_read_disclosure(subject)})
     return result
 
 
@@ -974,7 +1016,7 @@ def program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -
     # also push their cost into `unattributed_cost_usd`, which is documented as
     # nonzero only on an integrity gap.
     runs = list_runs(scope_id, include_archived=True)
-    results = _aggregate_results(
+    results, _ = _aggregate_results(
         storage,
         scope_id,
         "program_budget",
@@ -1010,7 +1052,7 @@ def orphaned_runs(storage: LensStore, scope_id: str, *, list_runs: RunLister) ->
     :raises ValidationFailedError: The scope is past :data:`READ_TIER_ROW_BUDGET`, which nothing here narrows.
     """
     runs = list_runs(scope_id, include_archived=True)
-    results = _aggregate_results(
+    results, _ = _aggregate_results(
         storage,
         scope_id,
         "orphaned_runs",

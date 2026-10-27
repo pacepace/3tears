@@ -123,7 +123,13 @@ from threetears.evals.analysis import (
     serialize_report,
 )
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, OUT_OF_RUN_PURPOSES
-from threetears.evals.kernel import DEFAULT_TEMPERATURE_REPEATS, EvalServiceError, JobLeases, RefusedInput
+from threetears.evals.kernel import (
+    DEFAULT_TEMPERATURE_REPEATS,
+    EvalServiceError,
+    JobLeases,
+    RefusedInput,
+    ValidationFailedError,
+)
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.analysis.summary import summarize_run
 from threetears.evals.run import (
@@ -523,16 +529,29 @@ def run_cli(
                 )
             )
         elif args.command == "frontier":
-            ranked = FrontierResult.model_validate(
-                frontier(
-                    eval_host.storage,
-                    args.scope,
-                    list_runs=partial(list_runs, eval_host),
-                    bar=args.bar,
-                    subject_id=args.subject,
-                    profile=eval_host.profile,
+            try:
+                ranked = FrontierResult.model_validate(
+                    frontier(
+                        eval_host.storage,
+                        args.scope,
+                        list_runs=partial(list_runs, eval_host),
+                        bar=args.bar,
+                        subject_id=args.subject,
+                        profile=eval_host.profile,
+                    )
                 )
-            )
+            except ValidationFailedError as refused:
+                if "result_budget" not in refused.details:
+                    raise
+                # The remedy names the action's and Python's filter; here it is a flag, or nothing narrower.
+                budget = refused.details["result_budget"]
+                raise _Refused(
+                    f"{refused.message}; this subject alone is past the {budget}, and the frontier command has no "
+                    "narrower filter"
+                    if args.subject
+                    else f"{refused.message}; filter it to one subject with --subject: a frontier of one subject "
+                    f"reads only that subject's runs, and is answered when they hold {budget} results or fewer"
+                ) from refused
             _say(ranked.model_dump_json(indent=2) if args.json else frontier_text(ranked))
         else:
             _say(inspect_campaign_bundle(eval_host, args.campaign, args.scope).model_dump_json(indent=2))
