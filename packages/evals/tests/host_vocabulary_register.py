@@ -195,6 +195,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "kernel/arguments.py": {},
     "kernel/authored.py": {},
     "kernel/report_plan.py": {},
+    "kernel/report_doc.py": {},
     "kernel/report_snapshot.py": {},
     "kernel/authoring_fields.py": {},
     "schema/base.py": {},

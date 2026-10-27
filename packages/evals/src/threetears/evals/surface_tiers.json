@@ -379,6 +379,7 @@
 "threetears.evals.kernel.EvalInsight": "stable",
 "threetears.evals.kernel.EvalJobTimeout": "stable",
 "threetears.evals.kernel.EvalJudgeProfile": "stable",
+"threetears.evals.kernel.EvalReportDoc": "provisional",
 "threetears.evals.kernel.EvalReportPlan": "provisional",
 "threetears.evals.kernel.EvalReportSnapshot": "provisional",
 "threetears.evals.kernel.EvalRunScan": "provisional",

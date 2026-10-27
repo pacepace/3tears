@@ -1,0 +1,375 @@
+{
+  "schema": "report-doc/1",
+  "story": "tradeoff",
+  "headline": "Switching to {arm:f64} cuts reply cost by {cost.uplift.f64|abs|pct} but stays in character {contrast.f64.persona.delta|abs|pts} points less often; nothing declared says which matters more.",
+  "lede": "{arm:f64} is the only cheaper candidate that holds both guardrails, and it is clearly worse at staying in character ({contrast.f64.persona.interval|interval} points against {arm:prod}). Whether to switch turns on what a point of character is worth: keeping {arm:prod} costs {price.f64.prod.persona.monthly_per_point|usd_whole} a month per point.",
+  "flag": "Nothing was declared in advance for weighing cost against staying in character, and no margin says how much worse in character is acceptable. The choice below is the product owner's.",
+  "recommends": [
+    "prod"
+  ],
+  "confidence": {
+    "form": "high_if_immaterial",
+    "caveats": [
+      {
+        "id": "point_estimate:facts",
+        "label": null,
+        "material_if": "only if f64's true music-facts rate is under its guardrail: then f64 is out, Production is the only option holding every guardrail, and there is no trade left to price.",
+        "checked": null
+      },
+      {
+        "id": "point_estimate:specul",
+        "label": null,
+        "material_if": "only if f64's true rate of declining to speculate is under its guardrail: then f64 is out and Production stands alone.",
+        "checked": null
+      },
+      {
+        "id": "judge_unstated",
+        "label": null,
+        "material_if": "only if the music-facts judge reads one arm leniently or harshly: it decides which candidates pass the music-facts guardrail. The staying-in-character judge, on which the size of the trade rests, is calibrated, and cost is measured.",
+        "checked": null
+      },
+      {
+        "id": "best_of_n",
+        "label": null,
+        "material_if": "only if f64's thin guardrail clearances are partly the luck of being the best of {n_candidates|words} candidates: a re-run on fresh cases tends to read it lower, which could remove it as an option.",
+        "checked": null
+      }
+    ]
+  },
+  "decision": [
+    {
+      "slot": "the_trade",
+      "text": "{arm:f64} costs {cost_per_1k.f64|usd_per_1k} against {cost_per_1k.prod|usd_per_1k} for {arm:prod}, the control, saving {price.f64.prod.persona.monthly_cost_gap|abs|usd_whole} a month at today's volume. In exchange it stays in character {contrast.f64.persona.delta|abs|pts} points less often, a drop clear of zero."
+    },
+    {
+      "slot": "where_it_flips",
+      "text": "Keeping {arm:prod} buys each point of staying in character for {price.f64.prod.persona.monthly_per_point|usd_whole} a month ({price.f64.prod.persona.monthly_per_point_low|usd_whole} to {price.f64.prod.persona.monthly_per_point_high|usd_whole}). If a point is worth more than the high end, keep {arm:prod}; if less than the low end, switch to {arm:f64}; between the two, this run can't tell."
+    },
+    {
+      "slot": "our_lean",
+      "text": "Our lean, not a recommendation: keep {arm:prod} until a re-run confirms {arm:f64}'s guardrails, which a fresh run of today's size would read below the line {settle.criteria.facts.f64.overall.wrong_side} of the time on music facts and {settle.criteria.specul.f64.overall.wrong_side} on declining to speculate. The lean reverses if both guardrails hold and a point of character is worth less than {price.f64.prod.persona.monthly_per_point_low|usd_whole} a month."
+    },
+    {
+      "slot": "what_settles_it",
+      "text": "A declared price for a point of staying in character, or a declared margin of acceptable loss, from the product owner; and a re-run that confirms {arm:f64} above both guardrails."
+    },
+    {
+      "slot": "watch",
+      "text": "{arm:f64}'s nearest line is declining to speculate, cleared by {criteria.specul.f64.gap|abs|pts} points. Nothing here measures whether listeners notice the drop in character. {arm:f16}, the cheapest candidate, is out on a music-facts miss of {criteria.facts.f16.gap|abs|pts} points, which a fresh run of today's size would reverse {settle.criteria.facts.f16.overall.wrong_side} of the time: it is out by the declared rule, not by a settled gap."
+    }
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "text": "{arm:f64} costs {cost.uplift.f64|abs|pct} less than {arm:prod} and stays in character {contrast.f64.persona.delta|abs|pts} points less often, a drop whose interval excludes zero.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "bars",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "cost_per_1k"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "f64",
+          "caption": "Cost per 1,000 replies for each arm; Production is the control."
+        },
+        {
+          "block": "forest",
+          "query": {
+            "source": "contrasts",
+            "aspect": "",
+            "measures": [
+              "persona"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "f64",
+          "caption": "Change in staying in character against Production, paired intervals at {family.level}, not corrected across the {n_candidates|words} candidates. Every candidate is worse."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c2",
+      "text": "A lead, not a finding: {arm:f64}'s loss appears to grow with the conversation, from {strata.depth:1-2.f64.persona.vs_control|abs|pts} points at turn depth 1–2 to {strata.depth:11+.f64.persona.vs_control|abs|pts} at 11+, while {arm:cor}'s stays smaller at every depth.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "diverging_bars",
+          "query": {
+            "source": "strata",
+            "aspect": "",
+            "measures": [
+              "persona"
+            ],
+            "arms": [
+              "f64",
+              "cor"
+            ],
+            "strata": [
+              "depth:1-2",
+              "depth:3-5",
+              "depth:6-10",
+              "depth:11+"
+            ],
+            "limit": 0,
+            "transform": "arm_minus_control",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Change against Production in staying in character, by turn depth, uncorrected. No intervals are drawn: replies from one conversation are not independent, so per-reply intervals would overstate how settled each band is."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c3",
+      "text": "Of the {n_candidates|words} candidates only {arm:f64} holds both guardrails: {arm:f16} falls {criteria.facts.f16.gap|abs|pts} points short on music facts and {arm:cor} {criteria.specul.cor.gap|abs|pts} points short on declining to speculate.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "dot_interval",
+          "query": {
+            "source": "judged",
+            "aspect": "",
+            "measures": [
+              "facts"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": "floor",
+          "emphasis": "",
+          "caption": "Music facts correct for each arm against its guardrail; intervals computed from each rate's count."
+        },
+        {
+          "block": "dot_interval",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "specul"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": "floor",
+          "emphasis": "",
+          "caption": "Declines to speculate for each arm against its guardrail; intervals computed from each rate's count."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c4",
+      "text": "{arm:f64} clears both guardrails on its point estimates only: a fresh run of today's size would read music facts below its line {settle.criteria.facts.f64.overall.wrong_side} of the time, and declining to speculate {settle.criteria.specul.f64.overall.wrong_side} of the time.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "bars",
+          "query": {
+            "source": "settle",
+            "aspect": "",
+            "measures": [
+              "facts",
+              "specul"
+            ],
+            "arms": [
+              "f64"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "How often a fresh run of today's size would read f64 on the wrong side of each guardrail, if today's figure is the truth."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c5",
+      "text": "{arm:f64} also answers faster, a p95 of {measure.latency_s.f64.p95} against {measure.latency_s.prod.p95}, with no separated change in completing the requested action ({contrast.f64.task.interval|interval} points).",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "range_bars",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "latency_s"
+            ],
+            "arms": [
+              "prod",
+              "f64"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Latency from p50 to p95; no latency budget was declared."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    }
+  ],
+  "explore": [
+    {
+      "control": "Price of a point of staying in character, per month",
+      "binds": "Whether Production or f64 is the better buy",
+      "outcome": "Above {price.f64.prod.persona.monthly_per_point_high|usd_whole} a point, Production; below {price.f64.prod.persona.monthly_per_point_low|usd_whole}, f64; between the two, this run does not decide."
+    },
+    {
+      "control": "Margin of acceptable loss in staying in character",
+      "binds": "Whether f64 counts as acceptable, and then wins on cost",
+      "outcome": "f64's change sits at {contrast.f64.persona.interval|interval} points. A margin wider than the far end of that interval makes f64 acceptable and, being cheaper, the pick; a margin narrower than the near end shows f64 worse than allowed, so keep Production; a margin between the two ends leaves the call open. None was declared."
+    }
+  ],
+  "omitted": [
+    {
+      "what": "Character change by scenario (song intros, recommendations, banter, off-topic deflection, taking a correction)",
+      "why": "Only a change per scenario is held, with no counts or intervals, so no scenario can be read as separated; banter and taking a correction show the largest drops and are named for follow-up in the examples next step."
+    },
+    {
+      "what": "f16 priced as if it passed the music-facts guardrail",
+      "why": "Gated out by the declared rule; pricing it on the page would invite choosing an option the rule removes. Its miss is noted in Watch."
+    },
+    {
+      "what": "Output-cap lever (f64 at {settings.f64.max_output_tokens} against f16 at {settings.f16.max_output_tokens}) on staying in character",
+      "why": "Not separated in either direction, and f16 is gated out; it does not change the trade."
+    },
+    {
+      "what": "Completing the requested action for f16 and cor",
+      "why": "Both are slightly worse than Production, but neither is an option and no guardrail sits on it."
+    },
+    {
+      "what": "Production's own staying-in-character rate by turn depth",
+      "why": "It falls too with depth, which describes the persona task rather than the choice; the change against Production carries the decision-relevant part."
+    },
+    {
+      "what": "Latency of f16 and cor",
+      "why": "Neither is an option; cor is the slowest arm, which would not change anything."
+    },
+    {
+      "what": "Trials per case and the trial count behind each depth band",
+      "why": "Describes how the evidence was gathered; in Method."
+    },
+    {
+      "what": "Failure examples",
+      "why": "None were kept with this run, so no example can be shown; a next step asks for them."
+    },
+    {
+      "what": "Paired depth-band comparison of f64 against Production with per-reply intervals",
+      "why": "Its intervals read each reply as independent, though replies from one conversation are not, so they would overstate how settled each band is; the changes alone are shown, as a lead."
+    },
+    {
+      "what": "A separate chart of the monthly price per point",
+      "why": "One figure with its band; the trade and where it flips state it in full."
+    }
+  ],
+  "next": [
+    {
+      "text": "The product owner declares a price for a point of staying in character, or a margin of acceptable loss.",
+      "settles": "Turns the trade into a decision at once, with no further run: the price bands in Explore say which way."
+    },
+    {
+      "text": "Re-run f64 on music facts and declining to speculate at {settle.criteria.facts.f64.overall.cases_needed_two_sided|int} and {settle.criteria.specul.f64.overall.cases_needed_two_sided|int} cases, where half of such re-runs settle each line two-sided, or {settle.criteria.facts.f64.overall.cases_needed_two_sided_80|int} and {settle.criteria.specul.f64.overall.cases_needed_two_sided_80|int} for four in five.",
+      "settles": "Whether f64 is an option at all. If either rate lands below its line, keep Production and the trade is gone."
+    },
+    {
+      "text": "Run a mix that hands conversations to Production once they reach the 6–10 depth band, beside f64 and Production on the same cases.",
+      "settles": "Whether most of the character loss can be avoided while keeping most of the saving. Nobody ran this mix, so no figure prices it today."
+    },
+    {
+      "text": "Run Meridian-4.1-flash with Production's settings ({settings.prod.reasoning} reasoning, {settings.prod.max_output_tokens} output cap) on the same cases.",
+      "settles": "How much of f64's character loss is the model and how much its settings: if the loss shrinks, a settings change, not a model change, is the fix, and a cheaper option may close the trade."
+    },
+    {
+      "text": "Add a speculation guard to cor and re-run declining to speculate.",
+      "settles": "Whether cor, which loses {contrast.cor.persona.delta|abs|pts} points of character overall and {strata.depth:11+.cor.persona.vs_control|abs|pts} at depth 11+ (against {strata.depth:11+.f64.persona.vs_control|abs|pts} for f64) at {cost.uplift.cor|abs|pct} lower cost, becomes a middle option between f64 and Production."
+    },
+    {
+      "text": "Keep failure examples from f64's replies at depth 11+, and from banter and taking a correction.",
+      "settles": "What breaking character looks like late in a conversation, and whether the depth pattern holds once read per conversation; it says what a fix to f64 must target."
+    }
+  ],
+  "method": [
+    {
+      "term": "Cases",
+      "text": "{scoreboard.prod.cases|int} cases per arm, the same cases for every arm; {scoreboard.prod.ran|int} replies judged per arm; no replies lost or failed.",
+      "caveats": []
+    },
+    {
+      "term": "Staying in character",
+      "text": "A judged pass or fail per reply. The judge was calibrated on {judged.persona.calibration_ratings|int} human ratings, with {judged.persona.agreement} agreement.",
+      "caveats": []
+    },
+    {
+      "term": "Music facts correct",
+      "text": "A judged pass or fail per reply. Who judged it, and how far it can be trusted, is not stated.",
+      "caveats": []
+    },
+    {
+      "term": "Declines to speculate; completes the requested action",
+      "text": "A checked pass or fail per reply.",
+      "caveats": []
+    },
+    {
+      "term": "Guardrails",
+      "text": "Music facts correct at least {criteria.facts.threshold}, declines to speculate at least {criteria.specul.threshold}, each read on the overall point estimate. A rate that clears its line while its interval crosses it is borderline: it passes, and goes in Watch.",
+      "caveats": []
+    },
+    {
+      "term": "Intervals",
+      "text": "Each candidate's change against Production carries a {family.level} paired interval, not corrected across the {n_candidates|words} candidates. Guardrail intervals are computed from each rate's count. Turn-depth bands show changes only: their replies come from shared conversations, so a per-reply interval would read too narrow.",
+      "caveats": []
+    },
+    {
+      "term": "Cost",
+      "text": "Per 1,000 replies, read as exact; monthly figures at {meta.volume_per_month|int} replies a month.",
+      "caveats": []
+    },
+    {
+      "term": "Not compared",
+      "text": "f64 differs from Production in both model and output cap, and Production's reasoning setting has no stated counterpart on the flash arms, so the character loss is not credited to the model alone. No mix of arms was run.",
+      "caveats": []
+    },
+    {
+      "term": "Source",
+      "text": "The {meta.campaign} campaign, run {meta.run_date}.",
+      "caveats": []
+    }
+  ]
+}

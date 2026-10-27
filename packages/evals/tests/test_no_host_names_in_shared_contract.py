@@ -203,6 +203,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/report_plan.py",
     # The snapshot every analyst tool reads: one report input frozen whole, in the engine's vocabulary.
     "kernel/report_snapshot.py",
+    # The report document the analyst writes from a snapshot, and its stored form: the engine's vocabulary too.
+    "kernel/report_doc.py",
     "kernel/analysis_measures.py",
     # The engine's own Pydantic base. Shared contract by construction — it exists precisely so
     # that the models above it can be constructed in a host that has none of the first host installed —

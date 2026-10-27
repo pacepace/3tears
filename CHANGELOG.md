@@ -17,6 +17,27 @@ as its public part; `threetears-release` still refuses to bump, sync or verify o
 labelled smoke assertion against a plain release. `docker-bake.hcl` keeps `v0.80.0`, since an image tag cannot
 carry `+`.
 
+### evals: the report document, `report-doc/1`, and its stored form `eval_report_doc`
+
+**Added (provisional):** `threetears.evals.kernel.report_doc` holds the report document an analyst writes from a
+frozen snapshot, `ReportDoc` (`report-doc/1`): its story, headline, lede and optional flag, the arms it `recommends`,
+its confidence (a form, and caveats each open with `material_if` or `checked: "immaterial"`), 1 to 8 decision entries
+from a ten-word slot vocabulary, 1 to 12 claims each with 1 or 2 evidence blocks (a block kind over a filled
+`ChartQuery`, its reference line and emphasis beside it), the claims' and method items' caveats, a claim's `durable`
+mark, and up to 3 explore rows, the omitted list, up to 6 next steps and 1 to 12 method items. A caveat code does not
+assign is named `analyst:<slug>`, carries its own label, and is declared once in the confidence.
+`report_doc_validity(doc, arms=, caveats=)` names what a well-shaped document cites that its snapshot does not hold,
+and `report_doc_json_schema()` is the schema an analyst writes against, written out as
+`docs/eval-report-kit/schema/report-doc.schema.json`. The module exports only `EvalReportDoc` until its other names
+gain production callers (the invariants, the claims renderer, the writing loop). `EvalReportDoc`
+(`threetears.evals.kernel`, doc type `eval_report_doc`, derived and regenerable) stores one document as JSON beside its
+snapshot, how its writing ended (`stored`, `stored_with_findings`, `over_budget`), the editor's unresolved findings and
+the loop's tally; `EvalStorage.save_report_doc`, `load_report_doc`, `list_report_docs` and `delete_report_doc` keep
+it, a stored one is never written over, and `drop_derived` sweeps it. `kernel.report_plan`'s chart and reference-line
+kinds are public as `ChartKind` and `ReferenceKind`, which the document's evidence reads. The eighteen prototype report
+documents are converted to `report-doc/1` (`tests/fixtures/report_docs/prototype*/<name>/doc.json`), and ANALYST.md §5
+describes the document, with the reviewing role named the editor throughout.
+
 ### evals: an overall that is the plain mean of its cells reads an interval derived from theirs
 
 **Added:** an arm's overall figure that states no interval, and is by the numbers the input states the unweighted mean

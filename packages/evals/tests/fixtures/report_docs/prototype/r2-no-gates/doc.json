@@ -1,0 +1,400 @@
+{
+  "schema": "report-doc/1",
+  "story": "tradeoff",
+  "headline": "Past {arm:brisk-s.low.r1}, a point of pass rate costs {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month, not {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point}; the owner picks where to stop.",
+  "lede": "A single retry raises pass rate at every model and reasoning level for little cost and a longer p95 tail, and every Atlas-M setting but the most expensive is matched or beaten by a cheaper Brisk-S one. A pass-rate floor above {measure.pass_rate.brisk-s.low.r1.mean} or a p95 budget under {measure.latency_ms.brisk-s.low.r1.p95} would move the lean.",
+  "flag": "No pass-rate floor, latency budget or value per point was declared before the run, and no configuration served as a control. The lean below is the analyst's, not a rule.",
+  "recommends": [
+    "brisk-s.low.r1"
+  ],
+  "confidence": {
+    "form": "high_if_immaterial",
+    "caveats": [
+      {
+        "id": "cost_basis",
+        "label": null,
+        "material_if": "if the declared volume counts tasks rather than planner calls: each option's monthly cost then scales by its own calls per task ({measure.calls_per_task.brisk-s.low.r1.mean} for the lean, {measure.calls_per_task.brisk-s.high.r1.mean} for {arm:brisk-s.high.r1}). Every dollar band on this page moves with the basis, so a declared value per point can land in a different band. Only the order of the options holds either way.",
+        "checked": null
+      },
+      {
+        "id": "no_pass_rate_interval",
+        "label": null,
+        "material_if": "only if the owner would pay for the steps above the lean: each adds under a point of pass rate and nothing shows it is more than noise. The steps up to the lean are larger.",
+        "checked": null
+      },
+      {
+        "id": "best_of_many",
+        "label": null,
+        "material_if": "only if the lean's edge over its neighbours is the reason to choose it: picked as the knee of {n_candidates|int} configurations, its estimate is the optimistic one.",
+        "checked": null
+      },
+      {
+        "id": "pass_undefined",
+        "label": null,
+        "material_if": "only if the check fails plans the product would accept, as on ambiguous names, where a clarifying question is the only pass.",
+        "checked": null
+      }
+    ]
+  },
+  "decision": [
+    {
+      "slot": "the_trade",
+      "text": "Moving from the lean to {arm:brisk-s.high.r1} adds {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_cost_gap} a month to the lean's {cost_per_month.brisk-s.low.r1} for {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.gain|abs|pts} points of pass rate, and lengthens the p95 tail. Each step up to the lean cost at most {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} a point. Every dollar figure is priced per planner call."
+    },
+    {
+      "slot": "where_it_flips",
+      "text": "The lean is the cheapest option for any pass-rate floor above {measure.pass_rate.brisk-s.low.r0.mean} and up to {measure.pass_rate.brisk-s.low.r1.mean}. Above that the cheapest is {arm:brisk-s.high.r1}, and above {measure.pass_rate.brisk-s.high.r1.mean} only {arm:atlas-m.high.r1} qualifies. A p95 budget under {measure.latency_ms.brisk-s.low.r1.p95} rules the lean out."
+    },
+    {
+      "slot": "our_lean",
+      "text": "Ours, not a declared rule: {arm:brisk-s.low.r1}. Priced per call, it is the best option for any value of a point between {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} and {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month."
+    },
+    {
+      "slot": "what_settles_it",
+      "text": "Declarations from the planner's owner: first whether the monthly volume counts tasks or calls, which fixes the dollar bands; then a pass-rate floor and a p95 budget, or a monthly value for a point of pass rate, which picks the band."
+    },
+    {
+      "slot": "watch",
+      "text": "Multi-hop is the lean's weakest task, at {task.multihop.brisk-s.low.r1.pass_rate.mean}. The step to {arm:brisk-s.high.r1} lifts it to {task.multihop.brisk-s.high.r1.pass_rate.mean}, more than the {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.gain|abs|pts} points the step adds overall, so an owner who weights multi-hop gets more for the step than its overall price says."
+    }
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "text": "Pass rate climbs steeply with cost up to {arm:brisk-s.low.r1} and flattens after it: the next point costs {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month, against {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} for the last one before it.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "scatter_frontier",
+          "query": {
+            "source": "configs",
+            "aspect": "",
+            "measures": [
+              "cost_per_1k",
+              "pass_rate"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Every configuration's pass rate against its cost per call, cost on a log axis. The upper-left edge is the frontier: from Nano-XS through {arm:brisk-s.low.r1} and {arm:brisk-s.high.r1} to {arm:atlas-m.high.r1}."
+        },
+        {
+          "block": "table",
+          "query": {
+            "source": "configs",
+            "aspect": "",
+            "measures": [
+              "pass_rate",
+              "cost_per_1k"
+            ],
+            "arms": [
+              "nano-xs.off.r0",
+              "nano-xs.off.r1",
+              "nano-xs.low.r1",
+              "nano-xs.high.r1",
+              "brisk-s.low.r1",
+              "brisk-s.high.r1",
+              "atlas-m.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "The frontier options, cheapest first: the figures each price step is computed from."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c2",
+      "text": "A single retry raises pass rate at every model and reasoning level, most where the base is weakest: on Nano-XS with reasoning off it adds {price.nano-xs.off.r0.nano-xs.off.r1.pass_rate.gain|abs|pts} points for {price.nano-xs.off.r0.nano-xs.off.r1.pass_rate.monthly_cost_gap} a month.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "lattice",
+          "query": {
+            "source": "configs",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Model by reasoning level and retry. Each tile holds pass rate, cost per call and p95 latency; each retry column sits right of its no-retry pair. The pills read not gated because no gate was declared."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c3",
+      "text": "Atlas-M reaches the frontier only at its top setting: each of its other settings is matched or beaten by a cheaper Brisk-S one, and the top one adds {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.gain|abs|pts} points over {arm:brisk-s.high.r1} for {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_cost_gap} more a month.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "table",
+          "query": {
+            "source": "configs",
+            "aspect": "",
+            "measures": [
+              "pass_rate",
+              "cost_per_1k"
+            ],
+            "arms": [
+              "atlas-m.off.r0",
+              "brisk-s.off.r1",
+              "atlas-m.off.r1",
+              "atlas-m.low.r0",
+              "brisk-s.low.r1",
+              "atlas-m.low.r1",
+              "atlas-m.high.r0",
+              "brisk-s.high.r1",
+              "atlas-m.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Each Atlas-M setting after the cheaper Brisk-S setting that matches or beats it, ending with {arm:atlas-m.high.r1}, which none does. {arm:atlas-m.low.r1} and {arm:brisk-s.high.r1} tie on pass rate."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c4",
+      "text": "The dearer options are slower in the tail: {arm:atlas-m.high.r1} has a p95 of {measure.latency_ms.atlas-m.high.r1.p95}, against {measure.latency_ms.brisk-s.low.r1.p95} for {arm:brisk-s.low.r1}.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "range_bars",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "latency_ms"
+            ],
+            "arms": [
+              "nano-xs.high.r1",
+              "brisk-s.low.r1",
+              "brisk-s.high.r1",
+              "atlas-m.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Latency from p50 to p95 for the shortlist. No budget was declared, so no line is drawn."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c5",
+      "text": "Multi-hop is the weakest task for every option on the shortlist; {arm:brisk-s.low.r1} passes {task.multihop.brisk-s.low.r1.pass_rate.mean} of it.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "heatmap",
+          "query": {
+            "source": "tasks",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
+              "nano-xs.high.r1",
+              "brisk-s.low.r1",
+              "brisk-s.high.r1",
+              "atlas-m.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Pass rate by task for the shortlist. Descriptive: no interval, and task sizes are not stated."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c6",
+      "text": "Each failure card the snapshot froze for the lean shows a planning slip a fix could target: a second hop folded into the first, a date window off by a day, an ambiguous name answered without asking. The cards are a sample, not a census; the date-window card names its slip the commonest wrong-argument pattern.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "examples",
+          "query": {
+            "source": "examples",
+            "aspect": "",
+            "measures": [],
+            "arms": [
+              "brisk-s.low.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "The failure cards the snapshot froze for {arm:brisk-s.low.r1}: multi-hop, date math and ambiguous names, with none for single lookup. The snapshot chose them, not the size of each task's loss."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    }
+  ],
+  "explore": [
+    {
+      "control": "Pass-rate floor",
+      "binds": "Which configurations qualify, and so the cheapest one that does.",
+      "outcome": "Up to {measure.pass_rate.nano-xs.high.r1.mean} a Nano-XS setting is cheapest, and up to {measure.pass_rate.brisk-s.low.r0.mean} it is {arm:brisk-s.low.r0}. Above that and up to {measure.pass_rate.brisk-s.low.r1.mean} the lean is. Above that {arm:brisk-s.high.r1} is, and above {measure.pass_rate.brisk-s.high.r1.mean} only {arm:atlas-m.high.r1} qualifies."
+    },
+    {
+      "control": "p95 latency budget",
+      "binds": "Which configurations qualify on speed.",
+      "outcome": "Under {measure.latency_ms.brisk-s.low.r1.p95} the lean is out. Under {measure.latency_ms.brisk-s.high.r1.p95} every Atlas-M setting is out as well. No budget above {measure.latency_ms.atlas-m.high.r1.p95} binds anything."
+    },
+    {
+      "control": "Monthly value of a point of pass rate",
+      "binds": "Which frontier option is best, priced per planner call.",
+      "outcome": "The lean is best between {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} and {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point}. {arm:brisk-s.high.r1} is best up to {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point}, and {arm:atlas-m.high.r1} above it. On a per-task basis every band moves (see the cost-basis caveat)."
+    }
+  ],
+  "omitted": [
+    {
+      "what": "Code's dominance call naming Nano-XS with reasoning off and no retry dominant",
+      "why": "It ranks on cost alone because no quality axis was declared, and that configuration has the lowest pass rate; Method says why the report reads the pass-rate frontier instead."
+    },
+    {
+      "what": "Calls per task for every configuration",
+      "why": "It appears only in the cost-basis caveat: it changes no option's place on the frontier, but it moves the dollar bands if the volume counts tasks."
+    },
+    {
+      "what": "The outcome and extra-calls measures",
+      "why": "The snapshot lists them but holds no figures for any configuration."
+    },
+    {
+      "what": "Brisk-S at low reasoning with no retry",
+      "why": "It sits on the cost and pass-rate edge but is best at no value of a point; it matters only under a p95 budget between its tail and the lean's, which the explore control covers."
+    },
+    {
+      "what": "Task-level pass rates for the configurations off the shortlist",
+      "why": "Multi-hop is weakest in each of them too; the appendix holds them, and they change no call."
+    },
+    {
+      "what": "The Nano-XS malformed-output failure card",
+      "why": "It belongs to a configuration off the shortlist; retry recovering truncated output is already shown by the retry claim."
+    },
+    {
+      "what": "Price rows for options off the frontier beyond the first page",
+      "why": "Each is dominated by a cheaper option on pass rate; the lattice shows every one."
+    }
+  ],
+  "next": [
+    {
+      "text": "State whether the declared monthly volume of {meta.volume_per_month|int} counts tasks or planner calls.",
+      "settles": "Which dollar bands apply. Every price per point here is per call; on a task basis each option's cost scales by its own calls per task, so the bands move and a declared value per point can fall in a different band."
+    },
+    {
+      "text": "The planner's owner declares a pass-rate floor and a p95 latency budget, or a monthly value for a point of pass rate.",
+      "settles": "Which band applies, which turns the trade into a decision."
+    },
+    {
+      "text": "The owner defines what makes a planned call pass, including whether a clarifying question is the only pass on ambiguous names.",
+      "settles": "Whether the ambiguous-name rates, and so every option's overall rate, measure the product's own bar."
+    },
+    {
+      "text": "Rerun {arm:nano-xs.high.r1}, {arm:brisk-s.low.r1} and {arm:brisk-s.high.r1} paired on the same cases, with an interval on each difference.",
+      "settles": "Whether the steps either side of the lean are real or noise; the gain above it is under a point and carries no interval."
+    },
+    {
+      "text": "Target the lean's slips, with a bounds check on date windows and a prompt that plans each hop separately, then rerun it.",
+      "settles": "Whether the lean closes part of its gap to {arm:brisk-s.high.r1} at its own price, which would make the dearer steps harder to justify."
+    }
+  ],
+  "method": [
+    {
+      "term": "Cases",
+      "text": "Each configuration ran {scoreboard.brisk-s.low.r1.cases|int} cases, none lost or failed. Repeats and task sizes are not stated.",
+      "caveats": []
+    },
+    {
+      "term": "Shortlist",
+      "text": "{arm:nano-xs.high.r1}, {arm:brisk-s.low.r1}, {arm:brisk-s.high.r1} and {arm:atlas-m.high.r1}: the frontier options a decider would weigh, from the best Nano-XS setting up.",
+      "caveats": []
+    },
+    {
+      "term": "Pass",
+      "text": "The campaign does not define what makes a planned call pass. The failure cards count missing calls, wrong arguments, wrong tools and malformed output as failures, and on ambiguous names only a clarifying question passes.",
+      "caveats": []
+    },
+    {
+      "term": "Intervals",
+      "text": "None. Every pass rate is a point estimate with no interval or correction, so no difference between configurations is tested.",
+      "caveats": []
+    },
+    {
+      "term": "Rounding",
+      "text": "Rates print to the nearest tenth, without a trailing zero, and gains are computed before rounding, so a quoted gain can differ by a tenth of a point from the difference of the printed rates.",
+      "caveats": []
+    },
+    {
+      "term": "Price per point",
+      "text": "Arithmetic on point estimates: the extra monthly cost of the next frontier option divided by the points it adds. It describes; it does not infer.",
+      "caveats": []
+    },
+    {
+      "term": "Cost basis",
+      "text": "Cost is per planner call, which the lattice tiles label a reply. Monthly cost is that figure at the declared volume of {meta.volume_per_month|int} a month.",
+      "caveats": []
+    },
+    {
+      "term": "Latency",
+      "text": "p50 and p95 per configuration. Retry leaves p50 unchanged and lengthens p95.",
+      "caveats": []
+    },
+    {
+      "term": "Dominance",
+      "text": "Code's dominance computation names {arm:nano-xs.off.r0} dominant because, with no criteria declared, cost is its only axis. That configuration has the lowest pass rate, {measure.pass_rate.nano-xs.off.r0.mean}, so the report reads the frontier on pass rate and cost instead.",
+      "caveats": []
+    },
+    {
+      "term": "Not compared",
+      "text": "No production configuration served as a control. Only model, reasoning level and retry were varied.",
+      "caveats": []
+    },
+    {
+      "term": "Source",
+      "text": "{meta.provenance}, run on {meta.run_date}.",
+      "caveats": []
+    }
+  ]
+}

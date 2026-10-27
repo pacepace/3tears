@@ -23,3 +23,17 @@ Files in each directory:
 Two caveats on these runs:
 - Wave A (kairo, r1, r4, r2 without its gates) read `exemplars/INDEX.md`, whose one-line summaries give away each reference campaign's story. Those runs are less blind than wave B.
 - The editor read values tables, not a rendered page.
+
+## Converted documents (`doc.json`)
+
+Each directory's `doc.json` is its `report.json` converted to `report-doc/1` as `threetears.evals.kernel.report_doc.ReportDoc` stores it (`tests/test_report_doc_model.py` validates every one). `report.json` and the rest of the record are kept as the run left them. The conversion:
+- adds `recommends`, read by hand from the call this README and the report's decision state: a tradeoff's is the arm its lean names, and a report that ships nothing yet recommends none;
+- fills every evidence query's omitted fields with their empty values, as `block_render` returns a query;
+- drops `snapshot_id` where the draft carried one: the stored record names its snapshot;
+- writes every field the model defaults (`flag: null`, a claim's `caveats` and `durable`, a block's `reference` and `emphasis`).
+
+This prototype's drafts predate the schema's bounds and its caveat ids. Its conversion also:
+- tightens three fields over their bounds: the headlines of r1 reading only bars (285 characters) and r2 without its gates (284), and r4's lede (488). Each keeps its keys and its finding;
+- merges the first two of r1 reading only bars's four explore rows, both floors on judged behaviours, into one, since `explore` holds three.
+
+Outside Kairo, its caveat ids were mostly made up by the analyst before code assigned ids: `judge_not_stated`, `resolves_borderline`, `cost_basis` and the rest (r1's `judge_unstated` is code's). They are kept as written, as planted negatives: the model accepts them, and validity on their snapshots refuses them.

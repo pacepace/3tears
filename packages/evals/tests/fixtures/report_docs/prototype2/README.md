@@ -25,3 +25,15 @@ Files in each directory:
 Two caveats on these runs:
 - They ran with two bugs the runs found. The goal-state measures of s1 to s3 read as fractions rather than percents, so a price per point on them was 100 times too high (fixed since, on report-kit/goal-state-rates). And a bar declared per aspect reads the lead aspect's figure, so on s3 code's own call has the solo arm passing the clarity bar it misses (the next fix wave's first item). The analysts worked around both, and their notes say so.
 - The editor read values tables, not a rendered page.
+
+## Converted documents (`doc.json`)
+
+Each directory's `doc.json` is its `report.json` converted to `report-doc/1` as `threetears.evals.kernel.report_doc.ReportDoc` stores it (`tests/test_report_doc_model.py` validates every one). `report.json` and the rest of the record are kept as the run left them. The conversion:
+- adds `recommends`, read by hand from the call this README and the report's decision state: a tradeoff's is the arm its lean names, and a report that ships nothing yet recommends none;
+- fills every evidence query's omitted fields with their empty values, as `block_render` returns a query;
+- drops `snapshot_id` where the draft carried one: the stored record names its snapshot;
+- writes every field the model defaults (`flag: null`, a claim's `caveats` and `durable`, a block's `reference` and `emphasis`).
+
+This prototype's conversion also:
+- shortens s3's headline (252 characters) to the 240 the schema allows, keeping its keys and its finding;
+- drops `point_estimate:overall` from r3 without its configs: code no longer assigns it there, since an overall that is the plain mean of its cells now reads an interval derived from theirs. The analyst's clause on it asked for that interval.
