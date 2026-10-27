@@ -452,7 +452,7 @@ class EvalReportDoc(EvalDocumentModel):
     )
     ending: Literal["stored", "stored_with_findings", "over_budget"] = Field(
         description="How the writing loop ended: `stored`, a review passed with no must_fix finding; "
-        "`stored_with_findings`, the revisions ran out with findings open; `over_budget`, the budget ran out and the "
+        "`stored_with_findings`, the revisions ran out before a review passed (its findings, if any, are kept); `over_budget`, the budget ran out and the "
         "last draft the invariants passed, reviewed at least once, was kept."
     )
     findings: list[VerbatimJsonObject] = Field(

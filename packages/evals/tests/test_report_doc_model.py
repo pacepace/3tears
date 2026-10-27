@@ -218,7 +218,7 @@ def test_validity_refuses_an_arm_and_a_caveat_the_snapshot_does_not_hold_whereve
     assert "campaign_overview lists the snapshot's arm ids" in faults[0][1]
 
 
-#: The tradeoff documents: each states a lean, "not a recommendation", so each recommends nothing (owner, W3).
+#: The tradeoff documents: each states a lean, "not a recommendation", so each recommends nothing (ANALYST §5).
 _TRADEOFFS = ("prototype/r1-bars-only", "prototype/r2-no-gates", "prototype/r4", "prototype3/r4")
 
 
