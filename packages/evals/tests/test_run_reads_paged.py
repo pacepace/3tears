@@ -14,7 +14,8 @@ it serves:
   keys or of results by id, a page at a time; none hands out a run's rows, nor the scope's. A take-up paged one
   result at a time ends with every cell stored once, completed.
 - **resumable_jobs** offers a large run read a page at a time, as a single page holding it offers it.
-- **Both stores the engine ships** (in memory, SQLite) serve the two reads: the keys alone, the results by id.
+- **Both stores the engine ships** (in memory, SQLite) serve the two reads: the keys, with what grows with a cell left
+  out, then the results by id.
 
 Mutations that turn this file red (each run against a saved copy and restored from it):
 
@@ -22,8 +23,8 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 - ``summary._ExactSum``: a plain running ``+=`` (the summary moves with the page size).
 - ``resume._stored_rows``: the run read whole; a row run again kept as done.
 - ``lenses.history_launch_pricer``: a run of the template's history read whole.
-- ``run_pages.iter_run_results``: a page past ``page_results``; the keys left in the store's order.
-- ``storage.query_eval_result_keys_by_run``: a field kept past the key.
+- ``run_pages.iter_run_results``: a page past ``page_results``.
+- ``storage.query_eval_result_keys_by_run``: ``usage``, ``rubric_scores`` or ``world_events`` no longer left out.
 """
 
 from __future__ import annotations
@@ -55,6 +56,9 @@ from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture, settled
 
 SCOPE = "uni-run-reads-paged"
+#: Fields of a stored result that grow with what its cell did, which a read of its run's keys leaves out. Every result
+#: the fixtures store carries ``usage`` and ``rubric_scores``, so a whole read of a run always hands them out.
+_HEAVY = frozenset({"usage", "rubric_scores", "world_events", "judge_reasoning", "kind_payload"})
 #: The large run's cases and repeats: 120 results, many pages at any patched page size.
 CASES = 40
 K = 3
@@ -68,8 +72,8 @@ class BatchRecordingStore(ClockedStore):
 
     def __init__(self) -> None:
         super().__init__()
-        #: ``(run ids the read named, whether every field but a key was left out, results handed out)``, one per
-        #: typed read of results.
+        #: ``(run ids the read named, whether it read keys and left out what grows with a cell, results handed out)``,
+        #: one per typed read of results.
         self.typed_reads: list[tuple[tuple[str, ...], bool, int]] = []
         #: How many results each read by id handed out, in call order.
         self.id_reads: list[int] = []
@@ -101,7 +105,10 @@ class BatchRecordingStore(ClockedStore):
                 *([field_eq["eval_run_id"]] if "eval_run_id" in field_eq else []),
                 *(field_in or {}).get("eval_run_id", ()),
             )
-            keys_only = bool(rows) and all(set(row) <= set(ResultKey._fields) for row in rows)
+            # A read of a run's keys leaves out what grows with a cell: a stored result always carries its usage rows.
+            keys_only = bool(rows) and all(
+                set(ResultKey._fields) <= set(row) and _HEAVY.isdisjoint(row) for row in rows
+            )
             self.typed_reads.append((tuple(named), keys_only, len(rows)))
         return rows
 
@@ -128,7 +135,7 @@ class BatchRecordingStore(ClockedStore):
         return [rows for named, keys_only, rows in self.typed_reads if run_id in named and keys_only]
 
     def row_reads(self) -> list[int]:
-        """How many whole results each typed read handed out: every one but a read of keys alone."""
+        """How many whole results each typed read handed out: every one but a read of keys."""
         return [rows for _, keys_only, rows in self.typed_reads if not keys_only and rows]
 
 
@@ -207,7 +214,7 @@ class TestASummaryReadsItsRunAPageAtATime:
             paged = summarize_run(host, run.id, SCOPE)
 
             assert paged.model_dump_json() == whole.model_dump_json(), f"at {page} a page"
-            assert store.key_reads_of(run.id) == [CASES * K], "one pass over the run, its keys alone"
+            assert store.key_reads_of(run.id) == [CASES * K], "one pass over the run, for its keys"
             assert store.row_reads() == [], "no read of the run hands out its rows"
             assert max(store.id_reads) <= page and sum(store.id_reads) == CASES * K, "a page at a time, each once"
             assert len(store.id_reads) == -(-CASES * K // page)
@@ -339,7 +346,7 @@ class TestAnOfferReadsItsRunAPageAtATime:
 
 class TestEveryShippedStoreServesTheTwoReads:
     @pytest.mark.parametrize("kind", ["memory", "sqlite"])
-    def test_the_keys_alone_then_the_results_by_id_summarise_as_one_read(
+    def test_the_keys_then_the_results_by_id_summarise_as_one_read(
         self, kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         store = InMemoryDocumentStore() if kind == "memory" else SqliteDocumentStore(tmp_path / "evals.sqlite")

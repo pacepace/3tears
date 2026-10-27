@@ -739,12 +739,14 @@ scope: their answer is an aggregate, which a page cannot give.
 
 **A run is read a page at a time.** A run's summary (`summarize_run`, `run_get`), a take-up of it (`job_resume`, the
 history pricer its replayed launch prices with included), the offer of one (`resumable_jobs`) and a second judge
-pass's poll read a run in one pass and then by id: one `by_doc_type` of the run's results with every field but each
-result's key left out (`exclude`), then one `get_many` per `RUN_RESULTS_PAGE` (200) results. Your store already serves
-both: nothing to add. What it costs your database is the pass a whole read of the run always made, now projected, plus
-`n / 200` reads by key; serve `exclude` in the database, as Discodon's store does, and the pass ships a few scalars a
-result. A store that applies `exclude` after fetching should project each row as it reads it, or the pass holds every
-row's text at once. A few readers still read a run whole; the CHANGELOG lists them.
+pass's poll read a run in one pass and then by id: one `by_doc_type` of the run's results with the thirteen fields that
+grow with what a cell did left out (`exclude`, heaviest first), then one `get_many` per `RUN_RESULTS_PAGE` (200)
+results. Your store already serves both: nothing to add. The pass is your store's filter over the scope's result rows
+by run, the one a whole read of the run made, now once a walk and shipping no heavy field, plus `n / 200` reads by
+key. Leaving the fields out costs what your store's `exclude` costs: one rebuild of each document per path when it
+drops them one at a time; a store whose fields are top-level keys of a Postgres `jsonb` can drop them all in one
+operation (`data - text[]`). A store that applies `exclude` after fetching should project each row as it reads it, or
+the pass holds every row's text at once. A few readers still read a run whole; the CHANGELOG lists them.
 
 ## Stored data: what is kept
 

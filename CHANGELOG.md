@@ -74,9 +74,12 @@ on every take-up's replay of one; `job_poll` of a finished second judge pass, on
 run past `EXPORT_PAGE_RESULTS`.
 
 **How each reads now: one pass over the run, then reads by id** (`threetears.evals.kernel.run_pages`, new). The run's
-results are found by one read of the run that ships each result's key alone (`ResultKey`, also exported from
-`threetears.evals.kernel`: id, case, `k`, model, when stored), `EvalStorage.query_eval_result_keys_by_run` (new: the same `by_doc_type` a whole read of the run is,
-every other field left out with `exclude`). The keys are ordered by the case's place in the run, then `k`, model,
+results are found by one read of the run that reads each result's key (`ResultKey`, also exported from
+`threetears.evals.kernel`: id, case, `k`, model, when stored), `EvalStorage.query_eval_result_keys_by_run` (new: the
+same `by_doc_type` a whole read of the run is, with the thirteen fields that grow with what a cell did left out,
+heaviest first: `world_events`, `kind_payload`, `judge_reasoning`, the judge's rescores, repeats and second judgings,
+`async_deliveries`, `usage`, `rubric_scores`, the outcome lists and the judge's "cannot tell" prose; the scalars
+ship, a few hundred bytes a result, and are ignored). The keys are ordered by the case's place in the run, then `k`, model,
 when stored and id, and the results are read by id a page at a time, `RUN_RESULTS_PAGE` (200) a page,
 `EvalStorage.load_eval_results` (new: one `get_many`). So a walk of a run of `n` results costs one pass over the run
 plus `n / 200` reads by id, which every store answers from its key; it holds one page of results and `n` keys of a
@@ -84,8 +87,11 @@ few scalars. Every `DocumentStore` already serves both reads: a host adds nothin
 passes over its documents once and looks each page up by key; the SQLite store reads the scope's results by its
 `(scope_id, doc_type)` index once, filtering the run as a whole read of it always did, and each page by its
 `(scope_id, id)` key (a projected read now projects each row as it is read, where it held every row's text first); a
-routed store passes both to the store results are kept in; over Discodon's YSQL table the key read is the run's
-containment predicate, which its GIN index serves, projected in the database, and each page is a primary-key read.
+routed store passes both to the store results are kept in; over Discodon's YSQL table the key read is the scope's
+key index with the run's containment as a filter (as its store's docstring says of every equality read), each left-out
+field one `#-` in the database, and each page is a primary-key read. In every store the pass is over the scope's result
+rows the store filters by run, as a whole read of the run always was; what changed is that it is made once a walk,
+not once a page, and ships no heavy field.
 Neither a keyset read (ordered after a cursor, with a limit) nor one streaming read is possible over the port as it
 stands: the port has no range predicate and returns a list, and Discodon's sync engine fetches every row of a
 statement and answers with one JSON reply, so either would be a port method and a host change. A result whose case is none of its run's cases is read too, after every case of
@@ -125,6 +131,11 @@ the run. `iter_run_results`, `run_result_keys`, `run_case_pages` and `read_resul
   pages join by column name. **Changed:** the lenses' store protocol (`LensStore`) gains
   `query_eval_result_keys_by_run` and `load_eval_results`, which `EvalStorage` has; a host that hands the lenses a
   store of its own adds them.
+- **Known limits.** A walk reads its run's keys once, when it starts: a result written after is not read, and one
+  removed before its page is read is absent. `job_poll` of a second judge pass is exercised by its tests but its read
+  bound is not pinned by one, and it now loads the run, so a run this build cannot read refuses the poll, and a run
+  whose lease lapsed is settled by it. The SQLite store parses each row's JSON while it holds its connection's lock,
+  so other threads wait on that one connection for longer.
 - **Still read whole**, each its own follow-up: comparing two runs (`runs_compare`, `compare_two_runs`,
   `bisect_runs`, and the pair disclosures' measurement windows), settling a lapsed run that recorded no
   completeness, the witnessed cells' judge-ceiling check, `results_list` and `list_results`, `delete_run`'s cascade,

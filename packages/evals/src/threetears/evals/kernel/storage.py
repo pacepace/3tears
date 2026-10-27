@@ -125,12 +125,29 @@ _JUDGE_EVIDENCE_FIELDS: Final = (
 )
 
 
-#: The fields of a result a read of its run's keys keeps (:meth:`EvalStorage.query_eval_result_keys_by_run`): those of
-#: a :class:`~threetears.evals.kernel.run_pages.ResultKey`.
-_RESULT_KEY_FIELDS: Final = frozenset(ResultKey._fields)
-
-#: Every other field a result declares, which that read leaves out. A field a newer minor added rides along unread.
-_RESULT_KEY_EXCLUDED: Final = tuple(sorted(name for name in EvalResult.model_fields if name not in _RESULT_KEY_FIELDS))
+#: The fields of a result a read of its run's keys leaves out (:meth:`EvalStorage.query_eval_result_keys_by_run`):
+#: those that grow with what a cell did, heaviest first, so a store that drops them one at a time rebuilds a smaller
+#: document each time. ``world_events`` (a world's whole event log), ``kind_payload`` (a kind's verbatim payload) and
+#: ``judge_reasoning`` (the judge's prose) are unbounded; the judge's rescores, repeats and second judgings each carry
+#: scores and reasoning again; ``async_deliveries`` grows with the background work watched; and on the fixtures' stored
+#: results (2.2 KB each on the toy host's corpus) ``usage`` (330 B) and ``rubric_scores`` (250 B) are the largest
+#: fields, then the outcome lists and the judge's "cannot tell" prose. Every other field is a scalar or a short
+#: mapping, a few hundred bytes together, and ships: the key reader reads the key's five fields and nothing else.
+_RESULT_KEY_EXCLUDED: Final = (
+    "world_events",
+    "kind_payload",
+    "judge_reasoning",
+    "judge_rescores",
+    "judge_repeats",
+    "judge_seconds",
+    "async_deliveries",
+    "usage",
+    "rubric_scores",
+    "goal_state_outcomes",
+    "precondition_outcomes",
+    "judge_cannot_tell",
+    "judge_cut_short",
+)
 
 
 def _payload_exclusions(elide_payload: frozenset[str]) -> list[str]:
@@ -2472,10 +2489,11 @@ class EvalStorage:
         read that ships no other field.
 
         The one pass over a run a paged walk of it makes (:mod:`~threetears.evals.kernel.run_pages`): the same
-        ``by_doc_type`` a whole read of the run is, with every field of a result but its key left out (``exclude``),
-        so the store passes over the run's rows once and ships a few scalars of each. The results are then read by id,
-        a page at a time (:meth:`load_eval_results`). The keys are read off the stored rows without reconstructing
-        them; every field they name is one a result carries at every schema version.
+        ``by_doc_type`` a whole read of the run is, with the fields of a result that grow with what its cell did left
+        out (``exclude``, heaviest first), so the store filters the scope's results by the run once and ships each
+        result's scalars. The results are then read by id, a page at a time (:meth:`load_eval_results`). The keys are
+        read off the stored rows without reconstructing them; every field they name is one a result carries at every
+        schema version, and every other field shipped is ignored.
 
         :param run_id: The run.
         :ptype run_id: str

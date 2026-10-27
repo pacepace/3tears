@@ -7,10 +7,10 @@ second judge's agreement) reads it here instead, one page at a time, and keeps o
 before the next page is read. Peak memory is then a page of results and one small key per result, whatever the run's
 size.
 
-**One pass over the run, then reads by id.** The run's results are found once, by one read of the run that ships
-only each result's key (:class:`ResultKey`: its id, case, ``k``, model and when it was stored; the store leaves every
-other field out, :meth:`~threetears.evals.kernel.storage.EvalStorage.query_eval_result_keys_by_run`). The keys are
-put in the page order, and each page is then one read of its results by id
+**One pass over the run, then reads by id.** The run's results are found once, by one read of the run that leaves out
+every field that grows with what a cell did and keeps each result's key (:class:`ResultKey`: its id, case, ``k``,
+model and when it was stored, :meth:`~threetears.evals.kernel.storage.EvalStorage.query_eval_result_keys_by_run`). The
+keys are put in the page order, and each page is then one read of its results by id
 (:meth:`~threetears.evals.kernel.storage.EvalStorage.load_eval_results`), which every store answers from its key. So
 a walk of a run of ``n`` results is one read of the run plus ``n / page`` reads by id: the run is passed over once,
 however many pages it takes, where a read of the run per page would pass over it once a page.

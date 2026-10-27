@@ -1305,8 +1305,9 @@ def summarize_run(
 ) -> EvalSummary:
     """Summarise one stored run and its results, reading its results a page at a time.
 
-    The results are read in pages of whole cases (:func:`~threetears.evals.kernel.run_pages.iter_run_results`,
-    :data:`~threetears.evals.kernel.run_pages.RUN_RESULTS_PAGE` at a time), and each is folded into the summary's
+    The results are read a page at a time (:func:`~threetears.evals.kernel.run_pages.iter_run_results`,
+    :data:`~threetears.evals.kernel.run_pages.RUN_RESULTS_PAGE` at a time, by id after one pass over the run's keys),
+    and each is folded into the summary's
     tallies as it is read, so a summary of a large run never holds its results whole. Every count, minimum, maximum
     and sum is kept as it streams, each sum exactly (rounded once, at the end, as ``math.fsum`` rounds), so the
     summary is the same at any page size and in any order the store hands rows back. Three readings need every value
