@@ -23,6 +23,7 @@ from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_camp
 from threetears.evals.actions import Action, analyst_actions
 from threetears.evals.analysis.analyst.blocks import block_catalog, block_render
 from threetears.evals.analysis.analyst.compare import ArmsComparison, arms_compare
+from threetears.evals.analysis.analyst.analyses import sensitivity
 from threetears.evals.analysis.analyst.levers import lever_effects
 from threetears.evals.analysis.analyst.price import PriceTradeoff, price_tradeoff
 from threetears.evals.analysis.analyst.settle import settle_cases
@@ -132,13 +133,31 @@ def _dominance_calls(held: ReportInput) -> list[dict[str, Any]]:
 
 
 def _sensitivity_calls(held: ReportInput) -> list[dict[str, Any]]:
-    """The first margin, floor and gate the input declares, one sweep each, and its first bar read as a gate."""
+    """The first margin, floor and gate the input declares, one sweep each, its first bar read as a gate, and the
+    first of those with two flip values or more swept over a range cut short of them (:func:`_ranged_calls`)."""
     margins = [f"margin:{aspect.id}" for aspect in held.aspects if aspect.readings]
     floors = [f"floor:{read.aspect}/{read.floor}" for read in held.floors]
     gates = [f"threshold:{criterion.id}" for criterion in held.criteria if criterion.kind in ("gate", "guardrail")]
     calls = [{"parameter": found[0]} for found in (margins, floors, gates) if found]
     bars = _bars(held)
-    return calls + ([{"parameter": f"threshold:{bars[0]}", "bars_as": "gates"}] if bars else [])
+    calls += [{"parameter": f"threshold:{bars[0]}", "bars_as": "gates"}] if bars else []
+    return calls + next((ranged for ranged in (_ranged_calls(held, call["parameter"]) for call in calls) if ranged), [])
+
+
+def _ranged_calls(held: ReportInput, parameter: str) -> list[dict[str, Any]]:
+    """A sweep cut short of its flips, where it has two flip values or more: from midway between its middle two up to
+    its last flip value exactly, and from no lower end up to that midway, so ``unswept`` reads both sides; else none."""
+    whole = sensitivity(held, parameter, limit=10_000)
+    values = sorted({float(flip.at.value) for flip in whole.flips if isinstance(flip.at.value, int | float)})
+    if len(values) < 2:
+        return []
+    middle = (values[len(values) // 2 - 1] + values[len(values) // 2]) / 2
+    if parameter.partition(":")[0] in ("margin", "floor") and middle < 0:
+        return []
+    return [
+        {"parameter": parameter, "range_low": middle, "range_high": values[-1]},
+        {"parameter": parameter, "range_high": middle},
+    ]
 
 
 def _breakdown_calls(held: ReportInput) -> list[dict[str, Any]]:

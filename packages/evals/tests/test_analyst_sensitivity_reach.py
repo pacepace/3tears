@@ -4,10 +4,15 @@ Contracts held here (``threetears.evals.analysis.analyst.analyses.sensitivity``)
 
 - **every flip by default**: with no range, a sweep lists every flip its parameter has and names no unswept side;
 - **a range that stops short says so**: where the caller's range leaves out a flip at which the call or a routable
-  task's pick changes, ``unswept`` names that side, the nearest such flip, how many there are, the call past it (code's
-  call read independently with the line moved there), and whether that side loosens the line; a side with no such
-  flip is never named. Held on every fixture and parameter, and on the W2 regression prototype's r2 miss (the pass-rate
-  line swept from its declared value up, which hid the cheaper picks below it);
+  task's pick changes, ``unswept`` names that side, the nearest such flip, each such flip by its key, the call past it
+  (code's call read independently with the line moved there), and whether that side loosens the line; a side with no
+  such flip is never named. Held on every fixture and parameter, and on the W2 regression prototype's r2 miss (the
+  pass-rate line swept from its declared value up, which hid the cheaper picks below it);
+- **a range cut exactly at a flip**: a flip on the range's own end is past it where the end's value falls in the piece
+  inside the range (the range's high end on a line whose boundary value belongs below, its low end on one whose
+  boundary value belongs above), so the change just beyond it is named; and every flip's ``call_changes`` reads the
+  two sides of its value whatever the range, so a flip on the end never reads as moving nothing. Held with ranges cut
+  at every flip value of every sweep, on both boundary kinds;
 - **a margin over an aspect with no reading of a candidate** says code's rule never reads that candidate against a
   margin (the r4 margin sweep that reported no flip and no reason);
 - **the per-task picks' cross-cutting gates**: each arm a cross-cutting task's gate keeps out of every pick is listed
@@ -115,8 +120,69 @@ def test_a_range_stopping_short_of_a_change_names_that_side_and_its_nearest_flip
                 key=lambda flip: float(flip.at.value),  # type: ignore[arg-type]
             )
         )
-        assert unswept.nearest.at.value == nearest.at.value and unswept.changes == len(past)
+        assert unswept.nearest.at.value == nearest.at.value
+        assert sorted(figure.key for figure in unswept.past) == sorted(flip.at.key for flip in past)
+        assert not unswept.more_past and unswept.past[0].value == unswept.nearest.at.value
         assert resolve(unswept.nearest.at.key, held).value == unswept.nearest.at.value
+
+
+def _past_end(value: float, end: float, side: str, boundary: str) -> bool:
+    """Whether a change at a flip lies past the range's end: beyond it, or on it where the end's value belongs to the
+    piece inside the range, read from the sweep's own boundary."""
+    if side == "below_range_low":
+        return value < end or (value == end and boundary == "above")
+    return value > end or (value == end and boundary == "below")
+
+
+def _at_flip_cuts() -> list[tuple[str, str, float, str]]:
+    """Every sweep with a flip, and each value it flips at, cut there at either end."""
+    cuts = []
+    for name, parameter in _sweeps():
+        for value in _values(sensitivity(_inputs()[name], parameter, limit=WHOLE)):
+            cuts += [(name, parameter, value, "range_low"), (name, parameter, value, "range_high")]
+    return cuts
+
+
+def test_the_fixtures_hold_ranges_cut_at_a_flip_whose_change_lies_just_past_on_both_boundary_kinds() -> None:
+    """The control for the test below: a range cut exactly at a flip leaves the change just past it unread, at the
+    high end on a line whose boundary value belongs below and at the low end on one whose boundary value belongs
+    above. Both occur, so the strict reading of an end (the W2c miss) fails the test below."""
+    seen = set()
+    for name, parameter, value, end in _at_flip_cuts():
+        held = _inputs()[name]
+        whole = sensitivity(held, parameter, limit=WHOLE)
+        side = "below_range_low" if end == "range_low" else "above_range_high"
+        moving = any(
+            (flip.call_changes or flip.picks_change) and float(flip.at.value) == value  # type: ignore[arg-type]
+            for flip in whole.flips
+        )
+        if moving and _past_end(value, value, side, whole.boundary_belongs_to):
+            seen.add((side, whole.boundary_belongs_to))
+    assert seen == {("above_range_high", "below"), ("below_range_low", "above")}
+
+
+@pytest.mark.parametrize(("name", "parameter", "value", "end"), _at_flip_cuts(), ids=lambda value: str(value))
+def test_a_range_cut_exactly_at_a_flip_names_the_change_just_past_its_end(
+    name: str, parameter: str, value: float, end: str
+) -> None:
+    held = _inputs()[name]
+    whole = sensitivity(held, parameter, limit=WHOLE)
+    if parameter.partition(":")[0] in ("margin", "floor") and value < 0:
+        return
+    ranged = sensitivity(held, parameter, limit=WHOLE, **{end: value})  # type: ignore[arg-type]
+    moving = [flip for flip in whole.flips if flip.call_changes or flip.picks_change]
+    side = "below_range_low" if end == "range_low" else "above_range_high"
+    past = [flip for flip in moving if _past_end(float(flip.at.value), value, side, whole.boundary_belongs_to)]  # type: ignore[arg-type]
+    assert [unswept.side for unswept in ranged.unswept] == ([side] if past else []), (name, parameter, end, value)
+    if past:
+        (unswept,) = ranged.unswept
+        values = [float(flip.at.value) for flip in past]  # type: ignore[arg-type]
+        assert float(unswept.nearest.at.value) == (max(values) if side == "below_range_low" else min(values))  # type: ignore[arg-type]
+        assert sorted(figure.key for figure in unswept.past) == sorted(flip.at.key for flip in past)
+        assert unswept.nearest.call_changes or unswept.nearest.picks_change
+    read = {(flip.at.key, flip.arm): (flip.call_changes, flip.picks_change) for flip in whole.flips}
+    for flip in ranged.flips:
+        assert (flip.call_changes, flip.picks_change) == read[(flip.at.key, flip.arm)], (flip.at.key, end, value)
 
 
 def _moved(held: ReportInput, criterion_id: str, threshold: float) -> ReportInput:

@@ -32,8 +32,12 @@ cross-cutting task), so a gate that moves a routed plan without moving the one-o
 **A sweep's reach.** With no range, a sweep walks every flip: a threshold or a hypothetical line from no lower end
 to no upper end, a margin or a floor from zero up. A range the caller gives can stop short of a flip where the call or
 a routable task's pick changes; the result then says so for each side it cut (``unswept``): the nearest such flip past
-the range's end, how many there are, the call past it, and whether that side loosens the line. It never leaves the
-caller to infer it from a note. A margin sweep over an aspect with no reading of some candidate says so too: code's rule
+the range's end, each such flip by its key (a page's worth), the call past it, and whether that side loosens the line.
+A flip exactly on the range's end is past it where the end's value falls in the piece inside the range, since the
+change at it lies just beyond (the line at a pass-rate gate's flip, swept up to it, still reads the arm passing; the
+call changes just above). Every flip's ``call_changes`` and ``picks_change`` read the two sides of its value whatever
+range is given, so a flip on the range's end says what happens just past it. It never leaves the caller to infer it
+from a note. A margin sweep over an aspect with no reading of some candidate says so too: code's rule
 reads a margin against a reading alone, so no margin moves the call on that candidate, and a contrast on the aspect is
 not read against a margin.
 
@@ -114,13 +118,11 @@ __all__ = [
     "DOMINANCE_PAGE",
     "SENSITIVITY_PAGE",
     "BarsAs",
-    "Barred",
     "Breakdown",
     "Dominance",
     "GateRead",
     "Sensitivity",
     "SliceBy",
-    "Unswept",
     "breached_guardrails",
     "breakdown",
     "dominance",
@@ -907,8 +909,14 @@ class Flip(BaseModel):
         description="Which flip it is: a floor's held_above or broken_at, a criterion's task or cell; None otherwise."
     )
     at: CitedFigure = Field(description="The value it flips at, as the key that states it.")
-    call_changes: bool = Field(description="Whether code's call differs on the two sides of this value.")
-    picks_change: bool = Field(description="Whether a routable task's pick differs on the two sides of this value.")
+    call_changes: bool = Field(
+        description="Whether code's call differs on the two sides of this value, read past the range swept too: a "
+        "flip on the range's own end says whether the call changes just past it."
+    )
+    picks_change: bool = Field(
+        description="Whether a routable task's pick differs on the two sides of this value, read past the range swept "
+        "too."
+    )
 
 
 class SegmentEnd(BaseModel):
@@ -948,7 +956,11 @@ class Unswept(BaseModel):
         "where lower is), or a wider margin or floor; a line loosened admits options the range swept never reads."
     )
     nearest: Flip = Field(description="The nearest flip past that end where the call or a pick changes.")
-    changes: int = Field(description="The flips past that end where the call or a pick changes.")
+    past: list[CitedFigure] = Field(
+        description="Each flip past that end where the call or a pick changes, nearest first, as the key that states "
+        "it (the first is nearest's); at most a page's worth (limit), more_past saying whether more lie beyond."
+    )
+    more_past: bool = Field(description="Whether flips past the ones listed in past also change the call or a pick.")
     call_past: Call = Field(description="Code's call just past the nearest flip, away from the range.")
 
 
@@ -1514,53 +1526,76 @@ def _piece_past(pieces: Sequence[_Piece], value: float, side: UnsweptSide) -> _P
     raise ValueError(f"no piece of the sweep meets the flip at {value}")
 
 
-def _unswept(
-    report_input: ReportInput, parameter: str, sweep: _Sweep, given: tuple[float | None, float | None]
-) -> list[Unswept]:
-    """Each side of the caller's range past which the call or a routable task's pick changes, read on the sweep over
-    its default range (every flip); empty where no range is given."""
-    range_low, range_high = given
-    if range_low is None and range_high is None:
-        return []
+def _past_end(value: float, sweep: _Sweep, side: UnsweptSide) -> bool:
+    """Whether a flip lies past the caller's range on ``side``: beyond its end, or exactly on it where the end's value
+    falls in the piece inside the range (``sweep.boundary``), so that the change at the flip lies just past the end,
+    where the range never reads."""
+    if side == "below_range_low":
+        return sweep.low is not None and (value < sweep.low or (value == sweep.low and sweep.boundary == "above"))
+    return sweep.high is not None and (value > sweep.high or (value == sweep.high and sweep.boundary == "below"))
+
+
+@dataclass(frozen=True)
+class _Whole:
+    """A sweep over its default range (every flip): its flips low to high, and its pieces."""
+
+    cuts: list[_Cut]
+    pieces: list[_Piece]
+
+
+def _whole(report_input: ReportInput, parameter: str) -> _Whole:
+    """The sweep of ``parameter`` over its default range, which every flip's reading of the call on its two sides and
+    every unswept side are read on, whatever range the caller gave."""
     whole = _sweep_of(report_input, parameter, None, None)
-    cuts = sorted(whole.cuts, key=lambda cut: cut.value)
-    inside = [
-        cut
-        for cut in cuts
-        if (whole.low is None or cut.value >= whole.low) and (whole.high is None or cut.value <= whole.high)
-    ]
-    pieces = _pieces(whole, inside)
+    cuts = sorted(
+        (
+            cut
+            for cut in whole.cuts
+            if (whole.low is None or cut.value >= whole.low) and (whole.high is None or cut.value <= whole.high)
+        ),
+        key=lambda cut: cut.value,
+    )
+    return _Whole(cuts, _pieces(whole, cuts))
+
+
+def _flip(cut: _Cut, pieces: Sequence[_Piece]) -> Flip:
+    """One flip, the call and the picks on its two sides read on ``pieces``."""
+    return Flip(
+        arm=_arm(cut.arm),
+        where=cut.where,
+        at=cut.at,
+        call_changes=_changes(pieces, cut.value, lambda piece: piece.call),
+        picks_change=_changes(pieces, cut.value, lambda piece: piece.read.picks),
+    )
+
+
+def _unswept(parameter: str, sweep: _Sweep, whole: _Whole, limit: int) -> list[Unswept]:
+    """Each side of the caller's range past which the call or a routable task's pick changes, read on the sweep over
+    its default range (every flip): a flip beyond the range's end, or on it where the change lies just past
+    (:func:`_past_end`). Read only where the caller gives a range: with none, the sweep walks every flip."""
 
     def moves(cut: _Cut) -> bool:
-        return _changes(pieces, cut.value, lambda piece: piece.call) or _changes(
-            pieces, cut.value, lambda piece: piece.read.picks
+        return _changes(whole.pieces, cut.value, lambda piece: piece.call) or _changes(
+            whole.pieces, cut.value, lambda piece: piece.read.picks
         )
 
     found: list[Unswept] = []
-    sides: tuple[tuple[UnsweptSide, list[_Cut]], ...] = (
-        ("below_range_low", [cut for cut in inside if sweep.low is not None and cut.value < sweep.low and moves(cut)]),
-        (
-            "above_range_high",
-            [cut for cut in inside if sweep.high is not None and cut.value > sweep.high and moves(cut)],
-        ),
-    )
-    for side, past in sides:
+    sides: tuple[UnsweptSide, ...] = ("below_range_low", "above_range_high")
+    for side in sides:
+        past = [cut for cut in whole.cuts if _past_end(cut.value, sweep, side) and moves(cut)]
+        if side == "below_range_low":
+            past.reverse()
         if not past:
             continue
-        nearest = past[-1] if side == "below_range_low" else past[0]
-        beyond = _piece_past(pieces, nearest.value, side)
+        nearest = past[0]
+        beyond = _piece_past(whole.pieces, nearest.value, side)
         found.append(
             Unswept(
                 side=side,
                 loosens=_loosens(parameter, sweep, side),
-                nearest=Flip(
-                    arm=_arm(nearest.arm),
-                    where=nearest.where,
-                    at=nearest.at,
-                    call_changes=_changes(pieces, nearest.value, lambda piece: piece.call),
-                    picks_change=_changes(pieces, nearest.value, lambda piece: piece.read.picks),
-                ),
-                changes=len(past),
+                nearest=_flip(nearest, whole.pieces),
+                past=[cut.at for cut in past[:limit]],
+                more_past=len(past) > limit,
                 call_past=_call(beyond.call),
             )
         )
@@ -1659,7 +1694,9 @@ def sensitivity(
     notes = [*([_BARS_AS_GATES_NOTE] if bars_as == "gates" else []), *sweep.notes]
     if len(inside) < len(sweep.cuts):
         notes.append("flips outside the range swept are not listed")
-    unswept = _unswept(report_input, parameter, sweep, (range_low, range_high))
+    ranged = range_low is not None or range_high is not None
+    whole = _whole(report_input, parameter) if ranged else _Whole(inside, pieces)
+    unswept = _unswept(parameter, sweep, whole, limit) if ranged else []
     if unswept:
         notes.append(_UNSWEPT_NOTE.format(sides=" and ".join(side.side.replace("_", " ") for side in unswept)))
     unread = _unread_arms(report_input, parameter)
@@ -1683,16 +1720,7 @@ def sensitivity(
         segments=segments,
         holds=all(piece.call == declared for piece in pieces),
         picks_hold=all(piece.read.picks == declared_picks for piece in pieces),
-        flips=[
-            Flip(
-                arm=_arm(cut.arm),
-                where=cut.where,
-                at=cut.at,
-                call_changes=_changes(pieces, cut.value, lambda piece: piece.call),
-                picks_change=_changes(pieces, cut.value, lambda piece: piece.read.picks),
-            )
-            for cut in page
-        ],
+        flips=[_flip(cut, whole.pieces) for cut in page],
         total=len(inside),
         offset=offset,
         next_offset=end if end < len(inside) else None,
