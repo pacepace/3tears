@@ -19,7 +19,7 @@ from pydantic import Field, ValidationError, field_validator, model_validator
 
 from threetears.evals.actions.catalogue import Action, Caller
 from threetears.evals.actions.params import Limit, Offset, SnapshotId
-from threetears.evals.actions.render import render_cited
+from threetears.evals.actions.render import page_fits, render_cited
 from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, PlannedChart
 from threetears.evals.ops.analyst_blocks import BLOCK_ROWS, BlockCatalog, RenderedBlock, block_catalog, block_render
 from threetears.evals.ops.host import OpsHost
@@ -118,6 +118,7 @@ async def _block_render(host: OpsHost, caller: Caller, params: BlockRenderParams
         title=params.title,
         limit=params.limit,
         offset=params.offset,
+        fits=page_fits("block_render", params),
     )
 
 
@@ -165,8 +166,9 @@ def analyst_render_actions() -> tuple[Action, ...]:
                 "text, the interval level, unit and axis code fixed, and the reference line's figure by its key: never "
                 "the picture. It echoes the line and the emphasis it drew, which sit outside the query, so a report "
                 "document's evidence can carry them beside it. A block the page cannot draw on this snapshot is refused naming every fault at the "
-                "parameter it sits at. A page of rows stops at limit, or sooner where cells run long; its last "
-                "line names the call that reads the next."
+                "parameter it sits at. A page holds up to limit rows, as many as fit in one result (an example "
+                "card runs long); it says how many rows it holds of how many, and its last line names the call that "
+                "reads the next."
             ),
         ),
     )

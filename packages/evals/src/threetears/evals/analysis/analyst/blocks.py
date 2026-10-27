@@ -25,13 +25,20 @@ to ``price_tradeoff`` on that axis, which shows the frontier and why every other
 axes whose frontier takes a step: the axes a ``prices`` block draws.
 
 **Money in a values table** reads as the figure keys write it: its whole dollars grouped by thousands (``$1,239``,
-:func:`~threetears.evals.analysis.report.charts.even_precision`).
+:func:`~threetears.evals.analysis.report.charts.even_precision`). A plain table's bare numbers read alike within their
+column only, so a count beside a distance stays whole (``617``).
+
+**A page of rows** holds up to ``limit`` of them. The tool sizes it by its text (``fits``: the most rows within the
+limit whose page fits one tool result, one row at least), so nine example cards that fit are one page, and a page
+that stops short says how many follow and names the call to the next; a caller writing no text sizes it by its
+cells' characters (:data:`_PAGE_CHARS`).
 """
 
 from __future__ import annotations
 
 import functools
 import re
+from collections.abc import Callable
 from typing import get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -72,9 +79,9 @@ __all__ = [
 #: The values table's rows one page of a rendered block holds, by default.
 BLOCK_ROWS = 40
 
-#: The most characters of cells one page holds, whatever its limit: a page stops before the row that would pass it
-#: (a page holds one row at least), so a table of long cells (an example's reply) pages within what one tool result
-#: may take of an analyst's context.
+#: The most characters of cells one page holds where no text test sizes it, whatever its limit: a page stops before
+#: the row that would pass it (a page holds one row at least), so a table of long cells (an example's reply) pages
+#: within what one tool result may take of an analyst's context. The tool sizes a page by its own text instead.
 _PAGE_CHARS = 8_000
 
 #: The field path code's chart rules name a block's faults under.
@@ -138,6 +145,9 @@ _PRICES = "prices"
 #: The figure key grammar's heading for its path forms, and how each form is written under it.
 _FORMS_HEADING = "Paths:"
 _FORM = re.compile(r"^- `([^`]+)`")
+
+#: A table cell that is a number alone, signed or not: a count, a size, a distance, read alike only within its column.
+_BARE_NUMBER = re.compile(r"[+\-−]?\d[\d,]*(?:\.\d+)?")
 
 #: What a plain table draws, which no kit chart model says.
 _TABLE_READS = "a plain table: every row the query selects, a column for each figure the source holds"
@@ -273,6 +283,7 @@ def block_render(
     title: str = "",
     limit: int = BLOCK_ROWS,
     offset: int = 0,
+    fits: Callable[[RenderedBlock], bool] | None = None,
 ) -> RenderedBlock:
     """The block a page would draw of ``query`` as a ``block_kind``, as its values table (this module's account).
 
@@ -293,6 +304,10 @@ def block_render(
     :ptype limit: int
     :param offset: The rows to skip.
     :ptype offset: int
+    :param fits: Whether a page is short enough, as the tool writes it: the page holds the most rows within ``limit``
+        that pass it (one at least). None sizes a page by its cells' characters (:data:`_PAGE_CHARS`), for a caller
+        that writes no text.
+    :ptype fits: Callable[[RenderedBlock], bool] | None
     :return: The block.
     :rtype: RenderedBlock
     :raises RefusedInput: The block cannot be drawn on this input, naming every fault at the parameter it sits at.
@@ -356,27 +371,52 @@ def block_render(
             valid_values_from="block_catalog",
         )
     columns, rows = _values_table(drawn.chart)
-    page = _page(rows[offset : offset + limit])
-    after = offset + len(page)
-    more = after < len(rows)
-    return RenderedBlock(
-        block_kind=spec.kind,
-        query=spec.query,
-        reference_line=spec.reference[0].kind if spec.reference else None,
-        emphasis=spec.emphasis,
-        title=written,
-        level=spec.level,
-        unit=spec.unit,
-        domain=" to ".join(format_number(end) for end in spec.domain),
-        reference=cite(spec.reference[0].key, report_input) if spec.reference else None,
-        columns=columns,
-        rows=[BlockRow(cells=cells) for cells in page],
-        total=len(rows),
-        offset=offset,
-        next_offset=after if more else None,
-        truncated=more,
-        notes=list(drawn.notes),
-    )
+
+    def rendered(page: list[list[str]]) -> RenderedBlock:
+        after = offset + len(page)
+        more = after < len(rows)
+        return RenderedBlock(
+            block_kind=spec.kind,
+            query=spec.query,
+            reference_line=spec.reference[0].kind if spec.reference else None,
+            emphasis=spec.emphasis,
+            title=written,
+            level=spec.level,
+            unit=spec.unit,
+            domain=" to ".join(format_number(end) for end in spec.domain),
+            reference=cite(spec.reference[0].key, report_input) if spec.reference else None,
+            columns=columns,
+            rows=[BlockRow(cells=cells) for cells in page],
+            total=len(rows),
+            offset=offset,
+            next_offset=after if more else None,
+            truncated=more,
+            notes=list(drawn.notes),
+        )
+
+    window = rows[offset : offset + limit]
+    if fits is None:
+        return rendered(_page(window))
+    return _fitted(window, rendered, fits)
+
+
+def _fitted(
+    window: list[list[str]], rendered: Callable[[list[list[str]]], RenderedBlock], fits: Callable[[RenderedBlock], bool]
+) -> RenderedBlock:
+    """The page of the most rows of ``window`` that passes ``fits``, one row at least: a page grows with its rows, so
+    the largest is found by halving between one row and all of them."""
+    whole = rendered(window)
+    if len(window) <= 1 or fits(whole):
+        return whole
+    best, low, high = rendered(window[:1]), 2, len(window) - 1
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = rendered(window[:middle])
+        if fits(candidate):
+            best, low = candidate, middle + 1
+        else:
+            high = middle - 1
+    return best
 
 
 def _page(rows: list[list[str]]) -> list[list[str]]:
@@ -408,7 +448,10 @@ def _values_table(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[
     """A drawn block's values: a chart's table of every value it draws, or a table's own columns and cells, each cell
     after its arm's tag where it names an arm, as the page's Markdown prints it; and in either, every number at one
     precision among the cells that read alike (:func:`~threetears.evals.analysis.report.charts.even_precision`), so
-    two figures compared read at one precision."""
+    two figures compared read at one precision. A table's bare numbers (no unit, no words) read alike within their
+    column, which holds one figure: a count beside a distance in another column is no figure read alike, and stays
+    whole (``617``, never ``617.0``); a figure in its unit reads alike across the table, so today's ``97.1%`` and its
+    line's ``97.0%`` read at one precision."""
     if isinstance(block, ChartBlock):
         headers, body = block.values_table()
         return headers, even_precision(body)
@@ -417,7 +460,12 @@ def _values_table(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[
         [cell.text if cell.tag is None else f"{cell.tag} · {cell.text}" for cell in (row[c.key] for c in block.columns)]
         for row in block.rows
     ]
-    return columns, even_precision(rows)
+    across = even_precision(rows)
+    by_column = [even_precision([[cell] for cell in column]) for column in zip(*rows, strict=True)]
+    return columns, [
+        [by_column[at][row][0] if _BARE_NUMBER.fullmatch(cell) else across[row][at] for at, cell in enumerate(cells)]
+        for row, cells in enumerate(rows)
+    ]
 
 
 def block_catalog(report_input: ReportInput, snapshot_id: str) -> BlockCatalog:

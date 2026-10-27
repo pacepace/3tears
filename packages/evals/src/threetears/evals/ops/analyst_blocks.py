@@ -70,6 +70,7 @@ async def block_render(
     title: str = "",
     limit: int = BLOCK_ROWS,
     offset: int = 0,
+    fits: Callable[[RenderedBlock], bool] | None = None,
 ) -> RenderedBlock:
     """The block a page would draw of a query on the snapshot, as its values table.
 
@@ -93,6 +94,9 @@ async def block_render(
     :ptype limit: int
     :param offset: The rows to skip.
     :ptype offset: int
+    :param fits: Whether a page's text is short enough; the page is the most rows within ``limit`` that pass it, one
+        row at least. None sizes a page by its cells' characters alone.
+    :ptype fits: Callable[[RenderedBlock], bool] | None
     :return: The block.
     :rtype: RenderedBlock
     :raises NotFoundError: No snapshot with that id in the scope.
@@ -111,6 +115,7 @@ async def block_render(
             title=title,
             limit=limit,
             offset=offset,
+            fits=fits,
         ),
     )
 
