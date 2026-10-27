@@ -695,7 +695,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`GLOSSARY`** · constant (dict) · Every term of art a page may use, in one plain sentence each.
 - **`MIN_CASES`** · *host contract* · constant (int) · The fewest independent cases with a usable trial an arm needs before a rate on it is estimated, charted or compared: below it a t interval is too wide and unstable to read (`SMALL_N_BAND_FLOOR`), so a rate is printed as a count ("1 of 2"), never as a percentage, a difference or an interval.
   <br>`= 5`
-- **`READ_TIER_ROW_BUDGET`** · *host contract* · constant (int) · How many projected score records one read-tier call may carry before its observer line is logged at WARNING instead of INFO (#652).
+- **`READ_TIER_ROW_BUDGET`** · *host contract* · constant (int) · How many results one aggregating read-tier call may read, as its runs' listing estimates them before any is read; also how many projected score records one call may carry before its observer line is logged at WARNING (#652).
   <br>`= 50000`
 - **`REPORTER_KIND`** · constant (str) · The `candidate_kind` a reporter template declares.
   <br>`= 'analysis_reporter'`

@@ -730,10 +730,30 @@ at WARNING and ends `over READ_TIER_ROW_BUDGET=50000`, so you can alert on the l
 the scope has outgrown the in-Python projection, the signal to push it down into your store; it fires
 before a page is slow, and you can alert on `elapsed_ms` instead.
 
-**An export is bounded; the aggregating lenses are not yet.** `export_results` estimates from the run listing how
-many results a scope holds before it reads any, and past `EXPORT_PAGE_RESULTS` (1,000) it exports in pages of whole
-runs (`ScoreExport.page`), each read run by run, so one call never holds the scope. `pivot`, `frontier`, `history`
-and the budget lenses still read every result in the scope: their answer is an aggregate, which a page cannot give.
+**Every read of a whole scope is bounded.** `export_results` estimates from the run listing how many results a scope
+holds before it reads any: each run's matrix (cases times k), or the cells it recorded persisting when those are
+more. Past `EXPORT_PAGE_RESULTS` (1,000) it exports in pages of whole runs (`ScoreExport.page`), each read run by
+run, so one call never holds the scope.
+
+The aggregating lenses (`comparison_sets`, `pivot`, `frontier`, `history`, `program_budget` and `orphaned_runs`, and
+the `scope_pivot`, `scope_frontier` and `scope_history` operations and actions over them) cannot page: part of a
+pivot, a frontier or a history reads as the whole of it. They make the same estimate and hold it to
+`READ_TIER_ROW_BUDGET`, before reading anything:
+
+- **A scope within the budget** is read whole, as before.
+- **A scope past it** is refused (`VALIDATION_FAILED`, with `details` `runs`, `results_estimated` and
+  `result_budget`), unless the call narrows to runs that fit, which it then reads run by run. A pivot, frontier or
+  history narrows to one subject (`subject_filter` on the action, `subject_id` in Python): it reads every run of
+  that subject, whatever its status and archived or not, so its status and archival counts stay exact. Other
+  subjects' results, and results whose run was deleted, are not read, so they are not counted. `comparison_sets`
+  narrows to a campaign, named runs or one run status. `program_budget` and `orphaned_runs` take no filter, so past
+  the budget they are refused. The refusal names the estimate, the budget and the filters that narrow that call,
+  and logs one WARNING line (`eval.read_tier lens=... refused ...`).
+- **A read that returns more than the budget** (a deleted run's results are in no listing) is not aggregated. A
+  call for one subject reads that subject's runs instead; any other call is refused.
+
+Campaign reports read their member runs by id, so the budget never applies to them. Answering a scope past the
+budget in one call needs the projection pushed down into SQL (#996).
 
 ## Stored data: what is kept
 
@@ -1381,7 +1401,9 @@ A judged measure fires only when every judge behind the step's scores is `calibr
 [Judges and calibration](judges-and-calibration.md)). A run that ended any other way than `completed` is
 not a point on the history, so it is never checked. The engine ships no delivery: with no watch, nothing
 is checked. A sink that raises is logged, the next alert is still delivered, and the run's status never
-changes.
+changes. The watch reads its scope's whole history, so in a scope past `READ_TIER_ROW_BUDGET` that history is
+refused: the watch then checks nothing on the run and logs it at ERROR (`eval.regression watch checked nothing on
+run=...`), on every completed run of that scope. Called directly, `watch.check` raises the refusal.
 
 ### Generating cases at launch
 

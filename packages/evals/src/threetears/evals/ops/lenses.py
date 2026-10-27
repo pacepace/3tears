@@ -148,7 +148,8 @@ def scope_pivot(
     :return: The table.
     :rtype: PivotTable
     :raises ValidationFailedError: The pivot cannot be answered honestly — see
-        :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate.
+        :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate, or the scope is past
+        :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
     """
     plan: list[PlannedCost] | None = None
     if predicted_cost is not None:
@@ -213,7 +214,8 @@ def scope_history(
     :ptype status: str | None
     :return: The series.
     :rtype: HistoryResult
-    :raises ValidationFailedError: The metric cannot be seriesed, or the status is no run's.
+    :raises ValidationFailedError: The metric cannot be seriesed, or the status is no run's, or the scope is past
+        :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
     """
     return history(
         host.storage,
@@ -254,7 +256,9 @@ def scope_frontier(
     :ptype status: str | None
     :return: The frontier.
     :rtype: FrontierResult
-    :raises ValidationFailedError: The bar is not a number in ``[0, 1]``, or the status is no run's.
+    :raises ValidationFailedError: The bar is not a number in ``[0, 1]``, or the status is no run's, or the scope is
+        past :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs
+        that fit.
     """
     return FrontierResult.model_validate(
         frontier(

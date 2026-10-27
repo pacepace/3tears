@@ -24,6 +24,11 @@ grades — fires only when every judge behind the step's scores, on both runs, i
 repeats). An alert on an uncalibrated score is worse than none, so the check withholds it and logs that it did.
 A judge-graded host measure names no rubric dimension the engine can look a judge up by, so it never fires.
 
+**A history that is refused is said, never silent.** A scope past the read tier's budget
+(:data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET`) refuses the history the watch reads, so the watch checks
+nothing on that run. :meth:`RegressionWatch.check` raises the refusal to its caller; the hook, which nobody waits on,
+logs it at ERROR, naming the run and the refusal, and the run is untouched.
+
 **A sink that fails changes nothing.** Each alert is delivered on its own: a sink that raises is logged and
 the next alert is still delivered, and neither can reach the run, whose status was recorded before any check
 began (:class:`~threetears.evals.run.jobs.RunEndHook`).
@@ -55,6 +60,7 @@ from threetears.evals.analysis.lenses.history import (
 )
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier
+from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.metrics import GradedBy, is_code_graded
 from threetears.evals.schema.models import EvalResult
@@ -177,7 +183,20 @@ class RegressionWatch:
         """
         if status != "completed":
             return
-        alerts = await run_blocking(self.host.blocking_executor, self.check, run_id, scope_id)
+        try:
+            alerts = await run_blocking(self.host.blocking_executor, self.check, run_id, scope_id)
+        except ValidationFailedError as refused:
+            # The history refused the read (its scope is past READ_TIER_ROW_BUDGET): no measure of this run was
+            # checked, and nobody waits on a run-end hook, so the operator hears it here, at ERROR, every time.
+            log.error(
+                "eval.regression watch checked nothing on run=%s scope_id=%s: its history was refused (%s); no "
+                "regression on this run was looked for, and none will be on any run of this scope while its history "
+                "is refused",
+                run_id,
+                scope_id,
+                refused,
+            )
+            return
         for alert in alerts:
             try:
                 await self.sink(alert)
@@ -209,6 +228,7 @@ class RegressionWatch:
         :return: One alert per tracked measure and contestant whose step into the run reads ``regressed`` and may
             fire, in the order the measures were named.
         :rtype: list[RegressionAlert]
+        :raises ValidationFailedError: The history was refused: its scope is past the read tier's budget.
         """
         alerts: list[RegressionAlert] = []
         tiers = None
@@ -230,6 +250,8 @@ class RegressionWatch:
                 tier: JudgedEvidenceTier | None = None
                 if graded_by == "judge":
                     if results is None:
+                        # Within the read tier's budget: the history above read this scope whole (the watch names no
+                        # subject, so a scope past the budget refused it before this line).
                         results = self.host.storage.query_eval_results(scope_id)
                     if tiers is None:
                         tiers = judge_evidence_tiers(

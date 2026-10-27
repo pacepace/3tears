@@ -40,7 +40,7 @@ spelling. The normal-theory band (a history holding a zero cost) is centred on t
 `lognormal_sum_prediction_band` gives observations all equal a band of no width at exactly `n_future` times their
 value; read through their logs, eleven or more of them had a spread a few ulps above zero.
 
-### evals: `scope_export` pages a large scope instead of reading it whole
+### evals: a large scope is never read whole: `scope_export` pages it, and an aggregate refuses it
 
 **Fixed:** an unnamed `scope_export` read every result in its scope into memory and serialized them into one
 response, so a large scope could exhaust its host (Discodon, 2026-10-27: a 502, then a restart). `export_results`
@@ -61,6 +61,24 @@ whose estimated results pass the ceiling are refused (`VALIDATION_FAILED`, namin
 would read, with `details` `runs_named`, `results_estimated` and `result_ceiling`); one named run is exported whole.
 `export_after_run_id` with `export_run_ids`, or naming a run no longer in the scope, is refused. An unknown format
 is now refused before anything is read. An agent that exported a scope in one call must follow the pages.
+
+**Changed:** the aggregating lenses read their scope's results into Python too, and an aggregate cannot be paged
+(part of a pivot reads as the whole of it), so past a budget they refuse instead (owner, 2026-10-27; the SQL pushdown
+is #996). `comparison_sets`, `pivot`, `frontier`, `history`, `program_budget` and `orphaned_runs` (and
+`scope_pivot`, `scope_frontier` and `scope_history`, operations and actions) make the export's estimate, before
+reading anything, and hold it to `READ_TIER_ROW_BUDGET` (50,000, until now only the level of the read-tier log
+line). A scope within it is read whole, as before. A scope past it is refused (`VALIDATION_FAILED`, with `details`
+`runs`, `results_estimated` and `result_budget`; one WARNING line `eval.read_tier lens=... refused`), naming the
+estimate, the budget and the filters that narrow that call, unless the call narrows to runs that fit, which it
+then reads run by run: a pivot, frontier or history of one subject (`subject_filter`, `subject_id` in Python) reads
+every run of that subject, any status and archived ones too, so its status and archival counts stay exact, and
+counts no other subject's results; `comparison_sets` reads only the runs it groups (a campaign, named runs, a run
+status). `program_budget` and `orphaned_runs` take no filter, so past the budget they are refused. A read that
+returns more than the budget (a deleted run's results are in no listing) is not aggregated: a call for one subject
+reads that subject's runs instead, and any other call is refused, its `details` adding `results_returned`. Campaign
+reports read their runs by id and are unaffected. `RegressionWatch`, which reads its scope's whole history after
+each completed run, checks nothing in a scope past the budget and logs that at ERROR on every completed run
+(`eval.regression watch checked nothing on run=...`); `RegressionWatch.check` raises the refusal.
 
 ## v0.80.0 -- 2026-10-26
 
