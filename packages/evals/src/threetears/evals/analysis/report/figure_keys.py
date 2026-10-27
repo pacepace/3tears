@@ -1825,14 +1825,39 @@ def _pooled(report_input: ReportInput, values: tuple[str, ...], path: str) -> Fi
 
 #: What an overall interval derived from its cells reads: the overall figure as stated, its standard error and the
 #: interval's half-width (in points for a rate), the interval and its ends, its level, the measure whose cells it is
-#: the plain mean of, how many cells, and how it was built, in one sentence.
-_OVERALL_INTERVAL_FIELDS = ("mean", "se", "half_width", "interval", "low", "high", "level", "of", "cells", "basis")
+#: the plain mean of, how many cells, which means of them the figure fits, and how it was built, in one sentence.
+_OVERALL_INTERVAL_FIELDS = (
+    "mean",
+    "se",
+    "half_width",
+    "interval",
+    "low",
+    "high",
+    "level",
+    "of",
+    "cells",
+    "weights",
+    "basis",
+)
+
+#: Which means of its cells an overall fits, as ``overall_interval.<measure>.<arm>.weights`` writes it.
+_OVERALL_INTERVAL_WEIGHTS = {
+    False: "the plain mean of the cells",
+    True: "both the plain and the case-weighted mean of the cells; the interval is the wider of the two readings'",
+}
 
 #: How an overall interval derived from its cells was built, as ``overall_interval.<measure>.<arm>.basis`` writes it.
 _OVERALL_INTERVAL_BASIS = (
     "derived here, not stated: the figure is the plain mean of {of} over the target matrix's cells, so its standard "
     "error is the root of the sum of the cells' squared standard errors over their count, the cells read as "
     "independent because no case falls in two, and its interval is built at the cells' stated level"
+)
+
+#: The same, for an overall the cells' case-weighted mean fits as well as their plain one.
+_OVERALL_INTERVAL_BOTH_BASIS = (
+    "derived here, not stated: the figure fits both a plain and a case-weighted mean of {of} over the target matrix's "
+    "cells, so its interval uses the wider of the two standard errors, each combining the cells' as independent "
+    "because no case falls in two, at the cells' stated level"
 )
 
 
@@ -1883,9 +1908,12 @@ def _overall_interval(report_input: ReportInput, values: tuple[str, ...], path: 
         figure = _text(path, _measure_reader_name(derived.of, report_input), "the measure whose cells it averages")
     elif field == "cells":
         figure = Figure(path=path, kind="number", value=float(len(derived.cells)), scale="count")
+    elif field == "weights":
+        figure = _text(path, _OVERALL_INTERVAL_WEIGHTS[derived.weighted_too], "which means of the cells it fits")
     else:
         of = _measure_reader_name(derived.of, report_input)
-        figure = _text(path, _OVERALL_INTERVAL_BASIS.format(of=of), "how the interval was built")
+        basis = _OVERALL_INTERVAL_BOTH_BASIS if derived.weighted_too else _OVERALL_INTERVAL_BASIS
+        figure = _text(path, basis.format(of=of), "how the interval was built")
     return replace(figure, derived=True)
 
 
@@ -3133,6 +3161,13 @@ _BASIS_WORDS: dict[str, str] = {
     ),
 }
 
+#: A cell-derived spread's basis where a case-weighted mean of the cells fits the figure as well as the plain one.
+_CELLS_BOTH_WORDS = (
+    "the standard error derived from its target-matrix cells, the figure fitting both their plain and their "
+    "case-weighted mean: the wider of the two readings', the cells read as independent, at the cells' stated level; "
+    "a size read from it counts cases at today's mix of cells"
+)
+
 
 @dataclass(frozen=True)
 class _Place:
@@ -3349,6 +3384,16 @@ def _read_spread(report_input: ReportInput, arm_id: str, key: str, where: str, a
         ) from none
 
 
+def _weighted_too(report_input: ReportInput, key: str, arm_id: str) -> bool:
+    """Whether a cell-derived spread's figure fits its cells' case-weighted mean as well as their plain one."""
+    try:
+        return cell_mean_interval(report_input, key, arm_id).weighted_too
+    except NoCellMean:
+        # NOSILENT: read only for a spread whose basis is the cells', which qualified; an overall that does not is
+        # no weighted reading, which False says.
+        return False
+
+
 def _cells_spread(report_input: ReportInput, arm_id: str, key: str, held: _Held) -> Spread | None:
     """An arm's overall spread read off its target-matrix cells, where the overall states none of its own and is the
     plain mean of its cells (:func:`~threetears.evals.analysis.cell_mean.cell_mean_interval`, the interval a gate on it
@@ -3434,6 +3479,8 @@ def _basis_words(
 ) -> str:
     """What a spread was read from, in words; a binomial one says where its count was read (its own, the slice's
     stated cases, or the arm's scoreboard), on another aspect's figures where ``aspect`` names one."""
+    if spread.basis == "cells" and _weighted_too(report_input, key, arm_id):
+        return _CELLS_BOTH_WORDS
     if spread.basis != "binomial":
         return _BASIS_WORDS[spread.basis]
     held = _held_where(report_input, arm_id, key, where, aspect)
@@ -5424,7 +5471,8 @@ _FAMILIES: tuple[_Family, ...] = (
         what="the interval on an arm's overall figure that states none, where that figure is the plain mean of one "
         "measure's target-matrix cells and every cell states a spread: `se` is the root of the cells' squared "
         "standard errors over their count, `interval` the figure plus and minus it at the cells' stated `level`, `of` "
-        "the measure averaged, `cells` how many, `basis` how it was built. Refused where the figure is no plain mean "
+        "the measure averaged, `cells` how many, `weights` whether a case-weighted mean of them fits it too (the "
+        "interval then reads the wider standard error), `basis` how it was built. Refused where the figure is no plain mean "
         "of its cells, a cell states no spread, or the levels differ. A gate on the figure reads this interval, and "
         "`criteria.<criterion>.<arm>.low` and `.high` read its ends",
         resolve=_overall_interval,

@@ -13,16 +13,19 @@ of one measure's target-matrix cells, each stating its own spread (a balanced ac
 gets the interval derived from theirs: standard error `sqrt(sum(se_i^2)) / k` at the cells' stated level, the cells read
 as independent because the target matrix partitions the cases (`threetears.evals.analysis.cell_mean`). Its key is
 `overall_interval.<measure>.<arm>.<field>` (`mean`, `se`, `half_width`, `interval`, `low`, `high`, `level`, `of`,
-`cells`, `basis`), every figure marked derived; `measure_read` by arm lists it in a row's `derived`
+`cells`, `weights`, `basis`), every figure marked derived; `measure_read` by arm lists it in a row's `derived`
 (`FigureRow.derived`). A gate on the figure reads it (`CriterionFigure.derived`; `criteria.<criterion>.<arm>.low` and
 `.high` read its ends, marked derived, and a borderline reason says `derived interval`), so `point_estimate:<criterion>`
 is no longer implied there. An arm's overall spread reads the same standard error (`spread.<arm>.<measure>.overall.*`,
 basis naming the cells; one case's spread is it times the root of the overall's count), so `settle_cases` and
 `compare.*` read it too: a borderline on the derived interval gets its settling sizes. A chart computes no interval for
 such an overall, since its note would call it binomial. Nothing is derived where any cell states no spread, the figure
-is a weighted mean or no plain mean of its cells, a case-weighted mean of them fits it as well as the plain one, the
-cells do not cover the matrix once each, or their level is unstated or differs from the one the overall states. The
-analyst's principles say that confidence reads the method and the evidence's variance, never the result alone.
+is no plain mean of its cells, the cells do not cover the matrix once each, or their level is unstated or differs from
+the one the overall states. An overall that a case-weighted mean of its cells fits as well as the plain one (close
+figures, or near-equal counts) derives from the wider of the two standard errors, `sqrt(sum((w_i se_i)^2))` with `w_i`
+each cell's share of the cases, and says so (`overall_interval.<measure>.<arm>.weights`, and its `basis`). A cell figure
+that is no number is absent for its own arm. The analyst's principles say that confidence reads the method and the
+evidence's variance, never the result alone.
 
 ### evals: blocks print computed changes as their keys read them, name each line by its criterion, and page what fits
 

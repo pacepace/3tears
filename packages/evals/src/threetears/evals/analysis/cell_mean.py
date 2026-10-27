@@ -14,25 +14,27 @@ identified from the numbers alone, never from a measure's name, its definition's
 - one measure or judged dimension, of the same kind and unit as the overall's, is held in every cell for each arm
   checked, and its cells' plain mean equals the overall figure within the rounding both are stated to, for every arm
   that holds the overall figure and that measure in every cell (at least one). Two such measures are refused as
-  ambiguous, and so is a figure the cells do not average to (a macro F1), or one where a cell's figure is not a
-  finite number.
+  ambiguous, and so is a figure the cells do not average to (a macro F1). A cell figure that is not a finite number
+  is read as absent for its arm, like a missing one: that arm is not checked, and derives nothing.
 
-  *A weighted mean.* Where the cells state differing cases, their case-weighted mean is read beside the plain one: a
-  figure the plain mean fits but the case-weighted one does not (r3's balanced accuracy) qualifies; one the
-  case-weighted mean fits and the plain one does not (r3's traffic accuracy) does not; one both fit, because the cells'
-  figures sit within rounding of one another, is refused as ambiguous, since the basis would call a weighted mean
-  plain. Cells of one count weigh alike, so there the two means are one. Weights the input does not state cannot be
-  told apart this way: an overall weighted by traffic shares other than the cells' cases, whose figures happen to
-  average to it plainly within rounding, reads as the plain mean. Nothing in the input can catch it; only a figure
-  whose cells' figures are spread apart tells a weighted mean from the plain one.
+  *A weighted mean.* Where the cells state differing cases, their case-weighted mean is read beside the plain one. A
+  figure the plain mean fits and the case-weighted one does not (r3's balanced accuracy) is the plain mean; one the
+  case-weighted mean fits and the plain one does not (r3's traffic accuracy) derives nothing. One both fit, because
+  the cells' figures sit close together or their counts nearly alike, is either, and the input does not say which: its
+  standard error is the wider of the two readings', and its basis says it fits both (the good-intent rule: disclose,
+  rather than refuse a reading that is sound either way). Cells of one count weigh alike, so there the two means and
+  their standard errors are one. Weights the input does not state cannot be told apart this way: an overall weighted
+  by traffic shares other than the cells' cases, whose cells happen to average to it plainly within rounding, reads
+  as the plain mean. Nothing in the input can catch it.
 
-**The formula.** For ``k`` cells whose standard errors are ``se_i``, the overall's standard error is
-``sqrt(sum(se_i ** 2)) / k``: the variance of a plain mean of independent figures. The cells are independent because
-they are disjoint, no case read in two of them; that is the one assumption, and the input states the partition it
-rests on. Each cell's standard error is read as the separation module reads one
+**The formula.** For ``k`` cells whose standard errors are ``se_i``, the overall's standard error is ``sqrt(sum(se_i
+** 2)) / k``: the variance of a plain mean of independent figures. Read as the case-weighted mean too, it is the wider
+of that and ``sqrt(sum((w_i * se_i) ** 2))``, ``w_i`` each cell's cases over all the cells'. The cells are independent
+because they are disjoint, no case read in two of them; that is the one assumption, and the input states the partition
+it rests on. Each cell's standard error is read as the separation module reads one
 (:func:`~threetears.evals.analysis.separation.stat_spread`): its interval or half-width over the two-sided normal
-quantile at the stated level, else its stated standard error. A binomial spread read off a count is not the cell's
-own spread, so it is not read here.
+quantile at the stated level, else its stated standard error. A binomial spread read off a count is not the cell's own
+spread, so it is not read here.
 
 **The level.** The interval is the overall figure, as stated, plus and minus the two-sided normal quantile at the
 cells' stated level times that standard error: a normal approximation, at the level the cells' intervals are stated
@@ -41,16 +43,16 @@ interval read one number. Like a pooled figure's, its ends are not held to a rat
 
 **What it refuses** (:class:`NoCellMean`, its message saying why): an overall that states a spread of its own (there
 is nothing to derive); an input with no target matrix, or cells that do not cover it once each; an overall that is no
-plain mean of any measure's cells, or of two, or that a case-weighted mean of the cells fits as well; any cell, for the arm, that states no spread of its own: then nothing is
+plain mean of any measure's cells, or of two; any cell, for the arm, that states no spread of its own: then nothing is
 derived for that arm, and the overall stays a point estimate with its ``point_estimate`` caveat; cells whose level is
 unstated; and cells at a level other than the one the overall states for its own intervals, since the overall would
 then read at two levels. The input states one level per measure, so the cells of one measure share theirs.
 
-**Why no other rule applies.** A weighted mean's variance needs the weights, and a weight read off the cells' cases
-is a guess at how the pipeline weighed them; strata or tasks that may overlap or leave cases out would count a case
-twice or not at all, and their covariance is unstated; any other overall (a ratio, an F1 over pooled counts) has no
-variance that follows from its slices' alone. Each is left a point estimate rather than given an interval its input
-does not support.
+**Why no other rule applies.** A weighted mean's variance needs the weights, and the input states none but the cells'
+cases, so a figure only a weighted mean fits is left alone; strata or tasks that may overlap or leave cases out would
+count a case twice or not at all, and their covariance is unstated; any other overall (a ratio, an F1 over pooled
+counts) has no variance that follows from its slices' alone. Each is left a point estimate rather than given an
+interval its input does not support.
 
 Every reader of a criterion's figures reads the derived interval through
 :func:`~threetears.evals.analysis.report_margins.criterion_figures`, so the gate check, the decision's caveats, the
@@ -87,9 +89,12 @@ class CellMeanInterval:
     :ivar arm: The arm's id.
     :ivar of: The measure or judged dimension whose cells the overall is the plain mean of, by key.
     :ivar mean: The overall figure, as the input states it.
-    :ivar se: Its standard error, ``sqrt(sum(se_i ** 2)) / k`` over the ``k`` cells.
+    :ivar se: Its standard error, ``sqrt(sum(se_i ** 2)) / k`` over the ``k`` cells; where the figure fits their
+        case-weighted mean as well, the wider of that and ``sqrt(sum((w_i * se_i) ** 2))``.
     :ivar level: The level the interval is at, as a share: the cells' stated level.
     :ivar cells: The cells averaged, by id, in the input's order.
+    :ivar weighted_too: Whether the figure fits the cells' case-weighted mean as well as their plain one, so ``se`` is
+        the wider of the two readings'.
     """
 
     key: str
@@ -99,6 +104,7 @@ class CellMeanInterval:
     se: float
     level: float
     cells: tuple[str, ...]
+    weighted_too: bool = False
 
     @property
     def half_width(self) -> float:
@@ -143,9 +149,10 @@ def _rounding(values: list[float]) -> float:
 
 
 def _cell_means(report_input: ReportInput, cells: tuple[str, ...], arm: str, key: str) -> list[float] | None:
-    """An arm's mean on ``key`` in every cell, in order; None where a cell states none."""
+    """An arm's mean on ``key`` in every cell, in order; None where a cell states none, or one that is not a finite
+    number."""
     stats = [report_input.cells[cell].per_arm.get(arm, {}).get(key) for cell in cells]
-    means = [stat.mean for stat in stats if stat is not None and stat.mean is not None]
+    means = [stat.mean for stat in stats if stat is not None and stat.mean is not None and math.isfinite(stat.mean)]
     return [float(mean) for mean in means] if len(means) == len(cells) else None
 
 
@@ -174,18 +181,19 @@ def _case_weights(report_input: ReportInput, cells: tuple[str, ...]) -> list[flo
     return [float(count or 0) for count in counts]
 
 
-def _averaged(report_input: ReportInput, key: str, per_arm: Mapping[str, Stat], cells: tuple[str, ...]) -> str:
+def _averaged(
+    report_input: ReportInput, key: str, per_arm: Mapping[str, Stat], cells: tuple[str, ...]
+) -> tuple[str, bool]:
     """The one measure whose cells' plain mean is the overall figure for every arm checked (this module's Which
-    overalls qualify).
+    overalls qualify), and whether their case-weighted mean fits it for every one as well.
 
-    :raises NoCellMean: None is, or two are, or one is and its cells' case-weighted mean fits the figure as well.
+    :raises NoCellMean: None is, or two are.
     """
     held = dict.fromkeys(
         name for cell in cells for figures in report_input.cells[cell].per_arm.values() for name in figures
     )
     weights = _case_weights(report_input, cells)
-    found: list[str] = []
-    both: list[str] = []
+    found: list[tuple[str, bool]] = []
     for other in held:
         if not _same_kind(report_input, key, other):
             continue
@@ -197,28 +205,19 @@ def _averaged(report_input: ReportInput, key: str, per_arm: Mapping[str, Stat], 
             if overall is None or means is None:
                 continue
             checked += 1
-            if not all(math.isfinite(mean) for mean in means):
-                plain = weighted = False
+            if not _agrees(overall, sum(means) / len(means), means):
+                plain = False
                 break
-            plain = plain and _agrees(overall, sum(means) / len(means), means)
             if weights is not None:
                 mean = sum(weight * value for weight, value in zip(weights, means, strict=True)) / sum(weights)
                 weighted = weighted and _agrees(overall, mean, means)
-            if not plain:
-                break
         if checked and plain:
-            (both if weights is not None and weighted else found).append(other)
-    if both:
-        raise NoCellMean(
-            f"{key!r} fits both a plain and a case-weighted mean of the cells' figures on {', '.join(both)}, which "
-            "sit too close together to tell the two apart, so which it is is unsaid"
-        )
+            found.append((other, weights is not None and weighted))
     if not found:
         raise NoCellMean(f"{key!r} is not the plain mean of any measure's cells, as the figures the input states read")
     if len(found) > 1:
-        raise NoCellMean(
-            f"{key!r} is the plain mean of more than one measure's cells ({', '.join(found)}), so which is unsaid"
-        )
+        names = ", ".join(name for name, _ in found)
+        raise NoCellMean(f"{key!r} is the plain mean of more than one measure's cells ({names}), so which is unsaid")
     return found[0]
 
 
@@ -234,7 +233,8 @@ def cell_mean_interval(report_input: ReportInput, key: str, arm: str) -> CellMea
     :ptype arm: str
     :return: The overall figure, its standard error and the level its interval is at.
     :rtype: CellMeanInterval
-    :raises NoCellMean: The figure does not qualify, or a cell gives it no interval; the message says why.
+    :raises NoCellMean: The figure does not qualify, or a cell gives it no interval; the message says why. A figure
+        that fits the cells' case-weighted mean as well qualifies, its standard error the wider reading's.
     """
     table = _table(report_input, key)
     stat = table.per_arm.get(arm) if table is not None else None
@@ -244,7 +244,7 @@ def cell_mean_interval(report_input: ReportInput, key: str, arm: str) -> CellMea
     if stat.ci is not None or stat.half_width is not None or stat.sem is not None:
         raise NoCellMean(f"{arm}'s overall figure on {key!r} states a spread of its own, so none is derived")
     cells = _partition(report_input)
-    of = _averaged(report_input, key, table.per_arm, cells)
+    of, weighted_too = _averaged(report_input, key, table.per_arm, cells)
     source = _table(report_input, of)
     level = level_share(source.level) if source is not None else None
     if level is None:
@@ -274,4 +274,12 @@ def cell_mean_interval(report_input: ReportInput, key: str, arm: str) -> CellMea
             ) from none
         errors.append(spread.se)
     se = math.sqrt(sum(error**2 for error in errors)) / len(errors)
-    return CellMeanInterval(key=key, arm=arm, of=of, mean=overall, se=se, level=level, cells=cells)
+    weights = _case_weights(report_input, cells) if weighted_too else None
+    if weights is not None:
+        total = sum(weights)
+        se = max(
+            se, math.sqrt(sum((weight / total * error) ** 2 for weight, error in zip(weights, errors, strict=True)))
+        )
+    return CellMeanInterval(
+        key=key, arm=arm, of=of, mean=overall, se=se, level=level, cells=cells, weighted_too=weights is not None
+    )

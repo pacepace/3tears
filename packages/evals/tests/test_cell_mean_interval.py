@@ -15,6 +15,10 @@ decision's implied caveats):
   caveat stays; one cell stating none for one arm derives nothing for that arm alone;
 - **refusals**: cells at a level other than the overall's, cells whose level is unstated, and cells that do not cover
   the target matrix are refused, each saying why;
+- **a case-weighted mean that fits as well**: where the cells state differing cases and their case-weighted mean fits
+  the overall as well as their plain one (close figures, or near-equal counts), the overall derives from the wider of
+  the two standard errors, checked by hand, and its basis says it fits both; cells of one count read the plain one;
+- **a cell figure that is no number** is absent for its own arm alone, which derives nothing; the others derive;
 - **settling reads it too**: Nano-XS few-shot's borderline on the overall gate, which rests on the derived interval,
   gets settling sizes and a wrong-side share checked by hand, its spread's basis naming the cells; an overall that
   does not qualify still finds no spread.
@@ -170,43 +174,106 @@ def test_one_cell_stating_no_spread_for_one_arm_derives_nothing_for_that_arm_alo
     assert cite_if(_key("nano-xs.few", "interval"), held) is not None
 
 
-def test_an_overall_a_case_weighted_mean_fits_as_well_as_the_plain_one_is_refused() -> None:
-    """Cells whose figures sit within rounding of one another (90.1 and 90.2, alternately) and an overall that is
-    their case-weighted mean, rounded: the plain mean fits it within rounding too, so which it is is unsaid, and the
-    basis would call a weighted mean plain. Nothing is derived and the caveat stays."""
-    means: dict[str, float] = {}
+#: r3's cells' stated cases, in its order, and two near-balanced sets a quota grid that lost a few cases might state.
+R3_CASES = (3120, 14880, 4410, 4260, 7350, 5190, 3440, 1960, 3600)
+NEAR_EQUAL = (500, 498, 502, 497, 501, 499, 500, 503, 496)
+
+#: By hand, on brisk-s.few's cell half-widths: sqrt(sum((n_i / sum(n) * hw_i) ** 2)), the case-weighted mean's
+#: half-width, with r3's own cases (narrower than the plain mean's 0.310516) and with the near-equal ones (wider).
+WEIGHTED_HALF_WIDTH = {R3_CASES: 0.238462, NEAR_EQUAL: 0.310640}
+
+#: What ``overall_interval.<measure>.<arm>.weights`` reads, plain and fitting both.
+PLAIN = "the plain mean of the cells"
+BOTH = "both the plain and the case-weighted mean of the cells; the interval is the wider of the two readings'"
+
+
+def _weighted_half_width(cases: tuple[int, ...], widths: tuple[float, ...]) -> float:
+    total = sum(cases)
+    return math.sqrt(sum((count / total * width) ** 2 for count, width in zip(cases, widths, strict=True)))
+
+
+def _with_cases(cases: tuple[int, ...]) -> Any:
+    def change(data: dict[str, Any]) -> None:
+        for cell, count in zip(data["cells"].values(), cases, strict=True):
+            cell["n_cases"] = count
+
+    return change
+
+
+def _close(cases: tuple[int, ...], *, weighted: bool) -> ReportInput:
+    """r3 with every arm's cells at 90.1 and 90.2 alternately, stating ``cases``, and each arm's overall their
+    case-weighted mean (``weighted``) or their plain mean, rounded to one decimal as the input states figures."""
 
     def close(data: dict[str, Any]) -> None:
-        cases = [float(cell["n_cases"]) for cell in data["cells"].values()]
-        assert len(set(cases)) > 1, "the control: the cells' cases differ"
+        _with_cases(cases)(data)
+        figures = [90.1 if at % 2 == 0 else 90.2 for at in range(len(cases))]
         for arm in data["measures"]["balanced_accuracy"]["per_arm"]:
-            figures = [90.1 if at % 2 == 0 else 90.2 for at in range(len(cases))]
             for cell, figure in zip(data["cells"].values(), figures, strict=True):
                 cell["per_arm"][arm]["accuracy"]["mean"] = figure
-            weighted = sum(c * f for c, f in zip(cases, figures, strict=True)) / sum(cases)
-            means[arm] = sum(figures) / len(figures)
-            data["measures"]["balanced_accuracy"]["per_arm"][arm]["mean"] = round(weighted, 1)
+            weights = cases if weighted else (1,) * len(cases)
+            mean = sum(w * f for w, f in zip(weights, figures, strict=True)) / sum(weights)
+            data["measures"]["balanced_accuracy"]["per_arm"][arm]["mean"] = round(mean, 1)
 
-    held = _changed(close)
+    return _changed(close)
+
+
+def test_the_hand_weighted_half_widths_are_the_fixture_s() -> None:
+    held = _r3()
+    assert tuple(cell.n_cases for cell in held.cells.values()) == R3_CASES
+    for cases, expected in WEIGHTED_HALF_WIDTH.items():
+        assert _weighted_half_width(cases, HALF_WIDTHS["brisk-s.few"]) == pytest.approx(expected, abs=1e-6)
+    assert cite(_key("brisk-s.few", "weights"), held).value == PLAIN
+
+
+def test_an_overall_a_case_weighted_mean_fits_as_well_derives_from_the_wider_standard_error() -> None:
+    """Cells within rounding of one another (90.1 and 90.2) and an overall that is their case-weighted mean: the plain
+    mean fits it too, so it is either. It derives, from the wider of the two standard errors (here the plain one,
+    0.310516 against the case-weighted 0.238462 on r3's own cases), and its basis says it fits both."""
+    held = _close(R3_CASES, weighted=True)
     arm = "brisk-s.few"
-    overall = held.measures["balanced_accuracy"].per_arm[arm].mean
-    assert overall is not None and abs(means[arm] - overall) <= 0.1, "the control: the plain mean fits it too"
-    with pytest.raises(UnstatedFigure, match="fits both a plain and a case-weighted mean"):
-        resolve(_key(arm, "interval"), held)
+    widest = max(HAND_HALF_WIDTH[arm], WEIGHTED_HALF_WIDTH[R3_CASES])
+    assert cite(_key(arm, "half_width"), held).value == pytest.approx(widest, abs=1e-5)
+    assert cite(_key(arm, "weights"), held).value == BOTH
+    basis = cite(_key(arm, "basis"), held).value
+    assert isinstance(basis, str) and "fits both a plain and a case-weighted mean" in basis and "wider" in basis
+    spread = cite(f"spread.{arm}.balanced_accuracy.overall.basis", held).value
+    assert isinstance(spread, str) and "both their plain and their case-weighted mean" in spread
     gate = next(criterion for criterion in held.criteria if criterion.id == "overall")
     (figure,) = criterion_figures(held, gate, arm)
-    assert (figure.ci, figure.derived) == (None, False)
-    assert any(caveat.id == "point_estimate:overall" for caveat in implied_caveats(held))
+    assert figure.derived and figure.ci is not None
 
 
-def test_a_cell_figure_that_is_no_number_is_no_agreement() -> None:
+def test_near_equal_counts_with_spread_apart_figures_derive_from_the_wider_standard_error() -> None:
+    """r3's own figures, spread 14 points apart, on cells whose counts are nearly equal (a quota grid that lost a few
+    cases): the case-weighted mean sits within rounding of the plain one, so the figure fits both and derives, here
+    from the case-weighted standard error, 0.310640 by hand, the wider."""
+    held = _changed(_with_cases(NEAR_EQUAL))
+    arm = "brisk-s.few"
+    assert WEIGHTED_HALF_WIDTH[NEAR_EQUAL] > HAND_HALF_WIDTH[arm], "the control: the case-weighted one is wider"
+    assert cite(_key(arm, "half_width"), held).value == pytest.approx(WEIGHTED_HALF_WIDTH[NEAR_EQUAL], abs=1e-5)
+    assert cite(_key(arm, "weights"), held).value == BOTH
+
+
+def test_equal_counts_with_close_figures_derive_the_plain_standard_error() -> None:
+    """Cells of one count weigh alike, so their plain and case-weighted means are one reading, and its standard
+    error the plain one."""
+    held = _close((500,) * 9, weighted=False)
+    arm = "brisk-s.few"
+    assert cite(_key(arm, "half_width"), held).value == pytest.approx(HAND_HALF_WIDTH[arm], abs=1e-5)
+    assert cite(_key(arm, "weights"), held).value == PLAIN
+    basis = cite(_key(arm, "basis"), held).value
+    assert isinstance(basis, str) and "is the plain mean of Accuracy" in basis and "case-weighted" not in basis
+
+
+def test_a_cell_figure_that_is_no_number_is_absent_for_its_own_arm_alone() -> None:
     def not_a_number(data: dict[str, Any]) -> None:
-        for figures in data["cells"]["simple|conv"]["per_arm"].values():
-            figures["accuracy"]["mean"] = float("nan")
+        data["cells"]["simple|conv"]["per_arm"]["brisk-s.few"]["accuracy"]["mean"] = float("nan")
 
     held = _changed(not_a_number)
-    with pytest.raises(UnstatedFigure, match="is not the plain mean of any measure's cells"):
+    with pytest.raises(UnstatedFigure, match="states no spread of its own"):
         resolve(_key("brisk-s.few", "interval"), held)
+    nano = cite(_key("nano-xs.few", "half_width"), held).value
+    assert nano == pytest.approx(HAND_HALF_WIDTH["nano-xs.few"], abs=1e-5)
 
 
 def test_cells_at_a_level_other_than_the_overall_s_are_refused() -> None:
