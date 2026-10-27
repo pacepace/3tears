@@ -23,10 +23,12 @@ human_pref      the slice, the share of ratings preferring the control with its 
 prices          the step along the price frontier (from one option to the next), its price per point with its
                 interval: a month's at the declared volume, else per 1,000 of what the cost counts
 bar_reads       the aspect, the measure, the arm, its value with the interval its bar was read on, the bar, the status
-compare         the place, each arm's mean, the first less the second, its interval, level and basis
-settle          the arm, the criterion (and place), today's estimate, the line, the distance, which way it settles,
-                the cases a one-sided and a two-sided design need, today's count and what it counts, how often a
-                fresh run reads the other side, the level
+compare         the place, each arm's mean, the first less the second, its interval, level and basis (in reader
+                names: a paired one names the candidate and the measure, never their ids)
+settle          the arm, the line (and place), today's estimate, the line, the distance, which way it settles, the
+                cases a one-sided and a two-sided design need, the trials that takes and the repeats of a case,
+                today's cases and today's trials (each where its count states it), how often a fresh run reads the
+                other side, the level
 levers          the setting (or the two an interaction crosses), the move, the effect (or difference), its interval,
                 level, and an interaction's verdict
 ==============  ===================================================================================================
@@ -71,8 +73,9 @@ from threetears.evals.analysis.report.plan_page.charting import (
 )
 from threetears.evals.analysis.report.plan_page.look import quantity
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
+from threetears.evals.analysis.report.plan_page.resolve_changes import compare_basis
 from threetears.evals.analysis.report.plan_page.resolve_magnitudes import price_notes, settle_label, settle_notes
-from threetears.evals.analysis.analyst.cited import CitedFigure
+from threetears.evals.analysis.analyst.cited import CitedFigure, cite_if
 from threetears.evals.analysis.analyst.compare import ComparisonRow
 from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow
 from threetears.evals.analysis.analyst.settle import SettleRow
@@ -389,7 +392,7 @@ def _compare(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
             "difference": _read(item.difference),
             "interval": _read(item.interval),
             "level": _read(item.level),
-            "basis": _read(item.basis),
+            "basis": _words(compare_basis(context, item, row.key) or None),
         }
 
 
@@ -406,11 +409,24 @@ def _settle(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
             "settles": _words(item.settles),
             "cases_needed": _read(item.cases_needed),
             "cases_needed_two_sided": _read(item.cases_needed_two_sided),
-            "counts": _read(item.counts[0] if item.counts else None),
-            "count_of": _read(item.count_of[0] if item.count_of else None),
+            "trials_needed": _read(item.trials_needed),
+            "repeats": _read(item.repeats[0] if item.repeats else None),
+            **_today(context, row.arm, row.key, item),
             "wrong_side": _read(item.wrong_side),
             "level": _read(item.level),
         }
+
+
+def _today(context: ChartContext, arm: str, key: str, row: SettleRow) -> _Row:
+    """Today's count beside a settle row's sizes, in both units the sizes are: its distinct cases (the count itself
+    where it counts cases, else the spread's ``cases`` key) and its trials (the count where it counts trials), each
+    as its key reads it, so a size in cases never sits against a count of trials unlabelled."""
+    count = row.counts[0] if row.counts else None
+    counted = str(row.count_of[0].value) if row.count_of else ""
+    cases: CitedFigure | None = count if counted == "cases" else None
+    if cases is None and counted == "trials" and key:
+        cases = cite_if(f"spread.{arm}.{key}.{row.where}.cases", context.report_input)
+    return {"today_cases": _read(cases), "today_trials": _read(count if counted == "trials" else None)}
 
 
 def _levers(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
@@ -503,8 +519,10 @@ _SOURCES: dict[str, tuple[Callable[[ChartContext, _Laid], Iterator[_Row]], tuple
             "settles",
             "cases_needed",
             "cases_needed_two_sided",
-            "counts",
-            "count_of",
+            "trials_needed",
+            "repeats",
+            "today_cases",
+            "today_trials",
             "wrong_side",
             "level",
         ),

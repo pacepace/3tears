@@ -255,10 +255,11 @@ _SOURCE_ROWS: dict[str, tuple[str, str, bool, tuple[str, ...]]] = {
                   ("arms", "measures", "aspect")),
     "compare": ("arms_compare's row: query.arms' first less its second on its one measure, at one place (strata: "
                 "'overall', a slice)", "its place", True, ("arms", "measures", "strata")),
-    "settle": ("settle_cases' row: one arm against one line it is read by, at one place", "arm/line/place", False,
+    "settle": ("settle_cases' row: one arm against one line it is read by, at one place; measures keeps criteria on "
+               "them, margin and floor rows only where none is named", "arm/line/place", False,
                ("arms", "measures", "strata")),
-    "levers": ("a levers_effects effect or interaction on the one measure, at the one place strata names",
-               "the move", True, ("arms", "measures", "strata")),
+    "levers": ("a levers_effects effect or interaction on the one measure, at the one place strata names; arms keeps "
+               "rows all of whose arms it keeps", "the move", True, ("arms", "measures", "strata")),
 }  # fmt: skip
 
 
