@@ -301,6 +301,37 @@ class TestDriftComparator:
         assert things.status in {"drifted", "matched"}  # one-row drift sits under the floor
         assert report.ok
 
+    async def test_a_naive_timestamp_cutoff_column_compares_against_the_aware_backup_moment(
+        self, backup_set: Any
+    ) -> None:
+        """a ``timestamp without time zone`` cutoff column is bound the backup's moment as naive UTC; asyncpg
+        refused the aware moment for it, and the drill failed on the first database holding such a table."""
+        cluster, manifest, admin_dsn, alpha_dsn, _, _ = backup_set
+        scratch_dsn = await _scratch_restore(cluster, manifest, admin_dsn, "alpha")
+        for dsn in (scratch_dsn, alpha_dsn):
+            conn = await asyncpg.connect(dsn)
+            try:
+                await conn.execute("CREATE TABLE naive_clock (id int PRIMARY KEY, date_created timestamp NOT NULL)")
+                await conn.execute(
+                    "INSERT INTO naive_clock VALUES (1, $1), (2, $2)",
+                    manifest.created_at.astimezone(UTC).replace(tzinfo=None) - timedelta(hours=1),
+                    manifest.created_at.astimezone(UTC).replace(tzinfo=None) + timedelta(hours=1),
+                )
+            finally:
+                await conn.close()
+        try:
+            report = await DriftComparator(asyncpg.connect, scratch_dsn, alpha_dsn).compare(as_of=manifest.created_at)
+        finally:
+            for dsn in (alpha_dsn,):
+                conn = await asyncpg.connect(dsn)
+                try:
+                    await conn.execute("DROP TABLE naive_clock")
+                finally:
+                    await conn.close()
+        naive = next(t for t in report.tables if t.table == "naive_clock")
+        assert naive.cutoff == "column:date_created"
+        assert (naive.backup_count, naive.live_count) == (1, 1), "the row after the moment is excluded on both sides"
+
     async def test_the_uuid7_cutoff_excludes_rows_born_after_the_backup(self, backup_set: Any) -> None:
         cluster, manifest, admin_dsn, alpha_dsn, _, _ = backup_set
         scratch_dsn = await _scratch_restore(cluster, manifest, admin_dsn, "alpha")
