@@ -4228,7 +4228,7 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         _Word(TRIAL_PASS_NAME),
         _Ids("<aspect>", _passed_aspects),
         _Ids("<arm>", _passed_arms),
-        _Ids("<other>", _passed_others),
+        _Ids("<arm>", _passed_others),
         _Statistic(_PASSED_FIELDS, "<field>"),
         what="two arms apart on an aspect's pass rate (its scoreboard's trials passed over usable), the first minus "
         "the second: `first` and `second` each arm's rate, `difference` in points, then what two arms' settle reads "

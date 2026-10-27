@@ -27,7 +27,7 @@ import pytest
 from packages.evals.tests.analyst_support import KAIRO, fixture_inputs, fixture_snapshots
 from threetears.evals.analysis.analyst.settle import SettleRow, settle_cases
 from threetears.evals.analysis.analyst.snapshot import frozen_input
-from threetears.evals.analysis.report.figure_keys import passed_aspects, resolve
+from threetears.evals.analysis.report.figure_keys import key_subjects, passed_aspects, resolve
 from threetears.evals.analysis.report_input import ReportInput, ScoreboardRow
 from threetears.evals.analysis.separation import level_share
 from threetears.evals.kernel.errors import RefusedInput
@@ -124,6 +124,9 @@ def _holds_its_count_basis(held: ReportInput, row: SettleRow, aspect: str, arms:
     """A row cites each arm's usable trials and cases on the aspect, its basis, and trials only where both arms ran
     each case alike."""
     board = _board(held, aspect)
+    assert row.cases_needed is not None
+    subjects = key_subjects(row.cases_needed.key, held)
+    assert subjects.arms == tuple(arms) and subjects.aspects == (aspect,), "the key is about both arms and the aspect"
     assert [figure.key for figure in row.counts] == [f"aspects.{aspect}.scoreboard.{arm}.usable" for arm in arms]
     assert [figure.value for figure in row.counts] == [board[arm].usable for arm in arms]
     assert [figure.key for figure in row.cases] == [
