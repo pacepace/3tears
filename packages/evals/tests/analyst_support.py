@@ -44,6 +44,7 @@ __all__ = [
     "compared_pair",
     "read_actions",
     "fixture_inputs",
+    "shape_bundle",
     "fixture_snapshots",
     "frontier_widened",
     "widened",
@@ -209,7 +210,14 @@ SHAPE_NAMES = ("s1", "s2", "s3")
 
 
 @cache
-def _shape_bundle(name: str) -> CampaignBundle:
+def shape_bundle(name: str) -> CampaignBundle:
+    """One shape campaign's bundle (:data:`SHAPE_NAMES`), built once.
+
+    :param name: The shape's short name.
+    :ptype name: str
+    :return: Its campaign bundle.
+    :rtype: CampaignBundle
+    """
     shape = SHAPES[name]()
     return build_campaign_bundle(shape.campaign, list(shape.bundles.values()), arms=shape.arms, readings=shape.readings)
 
@@ -224,12 +232,12 @@ def shape_snapshots(scope_id: str) -> dict[str, EvalReportSnapshot]:
     """
     return {
         name: report_snapshot(
-            analyst_input(_shape_bundle(name)),
+            analyst_input(shape_bundle(name)),
             scope_id=scope_id,
-            campaign_id=_shape_bundle(name).campaign_id,
+            campaign_id=shape_bundle(name).campaign_id,
             source="campaign",
             created_by=_FROZEN_BY,
-            bundle=_shape_bundle(name),
+            bundle=shape_bundle(name),
             assembled_at=_KAIRO_ASSEMBLED_AT,
         )
         for name in SHAPE_NAMES
@@ -319,7 +327,7 @@ def budget_inputs() -> Mapping[str, ReportInput]:
     """
     built: dict[str, ReportInput] = {}
     for name in SHAPE_NAMES:
-        built[name] = analyst_input(_shape_bundle(name))
+        built[name] = analyst_input(shape_bundle(name))
     built[WIDE] = widened(fixture_inputs()[_GATES_IN_EACH_TASK], arms=1, tasks=1)
     built[f"{WIDE} choice"] = widened(fixture_inputs()["r1"], arms=3, tasks=1)
     built[f"{WIDE} {KAIRO}"] = widened(ReportInput.model_validate(_kairo_snapshot("s").report_input), arms=3, tasks=0)

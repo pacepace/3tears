@@ -77,6 +77,7 @@ from threetears.evals.analysis.report_input import (
     ContrastFamily,
     Criterion,
     Depth,
+    FailedTrials,
     Judged,
     LateCriterion,
     Measure,
@@ -2266,9 +2267,24 @@ def _steps_count(report_input: ReportInput, values: tuple[str, ...], path: str) 
 # --- counts: what a sentence counts, keyed so prose never types one ------------------------------------------------
 
 #: What ``count.<what>`` counts in the campaign: its arms (every option, the control among them), aspects, tasks,
-#: strata, target-matrix cells, configs of a factorial grid, gates and guardrails, every declared criterion, and the
-#: options surviving every gate and guardrail.
-_COUNTED = ("arms", "aspects", "tasks", "strata", "cells", "configs", "gates", "criteria", "surviving")
+#: strata, target-matrix cells, configs of a factorial grid, gates and guardrails, every declared criterion, the
+#: options surviving every gate and guardrail, the pairs of arms its pair readings read apart and the pairs of arms
+#: there are, the failed trials frozen as examples and the failed trials the run holds (:func:`_failures_held`).
+_COUNTED = (
+    "arms",
+    "aspects",
+    "tasks",
+    "strata",
+    "cells",
+    "configs",
+    "gates",
+    "criteria",
+    "surviving",
+    "pairs",
+    "arm_pairs",
+    "examples",
+    "failures",
+)
 
 #: The criterion kinds that remove an option that misses them, as the gates count them.
 _GATE_KINDS = frozenset({"gate", "guardrail"})
@@ -2296,6 +2312,16 @@ def _campaign_count(report_input: ReportInput, values: tuple[str, ...], path: st
     }
     if what == "surviving":
         return _count(path, len(surviving_arms(report_input)))
+    if what == "pairs":
+        read = {frozenset(pair.arms) for aspect in report_input.aspects for pair in aspect.pairs}
+        return _count(path, len(read))
+    if what == "arm_pairs":
+        return _count(path, math.comb(len(report_input.arms), 2))
+    if what == "examples":
+        return _count(path, len(report_input.examples))
+    if what == "failures":
+        held = _failures_held(report_input, [aspect.id for aspect in report_input.aspects], path)
+        return _count(path, sum(row.failed for row in held))
     return _count(path, counted[what])
 
 
@@ -2334,6 +2360,163 @@ def _factor_ids(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]
 def _levels_count(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     factor = next(factor for factor in report_input.factors if factor.id == values[0])
     return _count(path, len(factor.levels))
+
+
+# --- the examples a snapshot froze, and the failed trials they were kept from -------------------------------------
+
+
+def _failures_held(report_input: ReportInput, aspects: Sequence[str], path: str) -> list[FailedTrials]:
+    """The input's failed-trial counts on ``aspects``, refused as unstated where it counts none on one of them: an input
+    built without them (a planner's, a bare one), or an aspect whose bundle left failures out, reads as not known,
+    never as none."""
+    held = report_input.failed_trials
+    counted = {row.aspect for row in held} if held is not None else set()
+    missing = [aspect for aspect in aspects if aspect not in counted]
+    if held is None or missing:
+        where = "" if held is None else f" on {', '.join(missing)}"
+        raise _unstated(
+            path,
+            f"counts the failed trials the run holds{where}, which the snapshot does not count: not known, so a share "
+            "of them is not either",
+        )
+    return [row for row in held if row.aspect in aspects]
+
+
+def _example_aspects(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]:
+    """The aspects an example or a failed-trial count names, in the input's aspect order, then any other."""
+    named = [example.aspect for example in report_input.examples if example.aspect is not None]
+    named += [row.aspect for row in report_input.failed_trials or ()]
+    order = [aspect.id for aspect in report_input.aspects]
+    return [aspect for aspect in order if aspect in named] + [a for a in dict.fromkeys(named) if a not in order]
+
+
+def _example_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    """The arms an example or a failed-trial count names on one aspect, in the input's arm order."""
+    aspect = prior[-1]
+    named = {example.arm for example in report_input.examples if example.aspect == aspect}
+    named |= {row.arm for row in report_input.failed_trials or () if row.aspect == aspect}
+    return [arm.id for arm in report_input.arms if arm.id in named]
+
+
+def _example_strata(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    """The strata or tasks an example or a failed-trial count names for one aspect and arm."""
+    aspect, arm = prior[-2:]
+    named = [e.stratum for e in report_input.examples if (e.aspect, e.arm) == (aspect, arm)]
+    named += [row.stratum for row in report_input.failed_trials or () if (row.aspect, row.arm) == (aspect, arm)]
+    return [stratum for stratum in dict.fromkeys(named) if stratum is not None]
+
+
+def _kept_count(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect, arm, *stratum = values
+    kept = [
+        example
+        for example in report_input.examples
+        if (example.aspect, example.arm) == (aspect, arm) and (not stratum or example.stratum == stratum[0])
+    ]
+    return _count(path, len(kept))
+
+
+def _failed_trials_count(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect, arm, *stratum = values
+    held = _failures_held(report_input, [aspect], path)
+    rows = [row for row in held if row.arm == arm and (not stratum or row.stratum == stratum[0])]
+    return _count(path, sum(row.failed for row in rows))
+
+
+# --- whether two aspects ran the same cases -------------------------------------------------------------------------
+
+#: What two aspects' cases are, as ``overlap.<aspect>.<aspect>.same`` reads it: every case in both, some, none, or not
+#: known.
+OVERLAP_WORDS: dict[str, str] = {
+    "same": "the same cases",
+    "partly": "partly the same cases",
+    "apart": "different cases",
+    "unknown": "not known: the snapshot does not hold the two aspects' case ids",
+}
+
+#: What an overlap key reads: whether the two aspects ran the same cases, in words, and the counts behind it.
+_OVERLAP_FIELDS = ("same", "shared", "only_first", "only_second")
+
+
+def _other_aspects(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return [aspect.id for aspect in report_input.aspects if aspect.id != prior[-1]]
+
+
+def _overlap(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    first, second, field = values
+    held = report_input.case_overlap or ()
+    found = next((row for row in held if row.aspects in ((first, second), (second, first))), None)
+    if found is None:
+        if field == "same":
+            return Figure(path=path, kind="text", value=OVERLAP_WORDS["unknown"])
+        raise _unstated(
+            path, f"counts the cases {first} and {second} share, which the snapshot does not hold: not known"
+        )
+    flipped = found.aspects != (first, second)
+    only_first, only_second = (
+        (found.only_second, found.only_first) if flipped else (found.only_first, found.only_second)
+    )
+    if field == "same":
+        word = "same" if not only_first and not only_second else "apart" if not found.shared else "partly"
+        return Figure(path=path, kind="text", value=OVERLAP_WORDS[word])
+    counts = {"shared": found.shared, "only_first": only_first, "only_second": only_second}
+    return _count(path, counts[field])
+
+
+# --- a classifier's confusion: where each expected label's predictions went ------------------------------------------
+
+
+def _confusion_axes(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]:
+    return list(report_input.confusion)
+
+
+def _confusion_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return list(report_input.confusion[prior[-1]].per_arm)
+
+
+def _confusion_labels(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    axis = next(value for value in prior if value in report_input.confusion)
+    return list(report_input.confusion[axis].labels)
+
+
+def _confusion(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    axis, arm, expected, predicted = values
+    table = report_input.confusion[axis]
+    matrix = table.per_arm[arm]
+    row, column = table.labels.index(expected), table.labels.index(predicted)
+    if row >= len(matrix) or column >= len(matrix[row]):
+        raise _unstated(path, f"names a cell of {arm}'s {axis} confusion its matrix does not hold")
+    scale: Scale = "percent" if table.unit == "row_percent" else "count"
+    return Figure(path=path, kind="number", value=float(matrix[row][column]), scale=scale)
+
+
+# --- two arms' costs apart ------------------------------------------------------------------------------------------
+
+#: What two arms' costs apart read: the first's cost per 1,000 of what the cost counts minus the second's, the same per
+#: month at the declared volume, and the first's cost as a multiple of the second's.
+_COST_GAP_FIELDS = ("per_1k", "monthly", "multiple")
+
+#: The unit a cost multiple is written in.
+MULTIPLE_UNIT = "times"
+
+
+def _cost_gap_seconds(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return [arm for arm in _costs_per_thousand(report_input) if arm != prior[-1]]
+
+
+def _cost_gap(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    first, second, field = values
+    costs = _costs_per_thousand(report_input)
+    gap = costs[first] - costs[second]
+    if field == "per_1k":
+        return Figure(path=path, kind="number", value=gap, scale="usd_per_1k", change=True)
+    if field == "monthly":
+        return Figure(
+            path=path, kind="number", value=gap * _monthly_factor(report_input, path), scale="usd", change=True
+        )
+    if not costs[second]:
+        raise _unstated(path, f"names {first}'s cost as a multiple of {second}'s, and {second} costs nothing")
+    return Figure(path=path, kind="number", value=costs[first] / costs[second], scale="plain", unit=MULTIPLE_UNIT)
 
 
 # --- an aspect's pair readings, floors and bars ----------------------------------------------------------------------
@@ -4135,7 +4318,10 @@ _FAMILIES: tuple[_Family, ...] = (
         _Statistic(_COUNTED, "<what>"),
         what="how many the campaign holds: arms (every option, the control among them), aspects, tasks, strata, "
         "cells, configs, gates (gates and guardrails), criteria; `surviving` is how many options survive every gate "
-        "and guardrail, borderline counting as passing",
+        "and guardrail, borderline counting as passing; `pairs` how many pairs of arms its pair readings read apart, "
+        "`arm_pairs` how many pairs of arms there are; `examples` the failed trials the snapshot froze as examples, "
+        "`failures` the failed trials the run holds, which they were kept from (refused where the snapshot does not "
+        "count them: not known)",
         resolve=_campaign_count,
         derived_statistics=("surviving",),
         example="count.arms|words",
@@ -4193,6 +4379,73 @@ _FAMILIES: tuple[_Family, ...] = (
         _keyed("<factor>", _factor_ids),
         what="how many levels one factor of a factorial grid holds",
         resolve=_levels_count,
+    ),
+    _family_of(
+        _Word("count.examples"),
+        _keyed("<aspect>", _example_aspects),
+        _Ids("<arm>", _example_arms),
+        what="how many of one arm's failed trials on one aspect the snapshot froze as examples (`count.examples` "
+        "counts every one)",
+        resolve=_kept_count,
+        example="count.examples.answers.fast.v2",
+    ),
+    _family_of(
+        _Word("count.examples"),
+        _keyed("<aspect>", _example_aspects),
+        _Ids("<arm>", _example_arms),
+        _Ids("<stratum>", _example_strata),
+        what="the same within one stratum or task",
+        resolve=_kept_count,
+    ),
+    _family_of(
+        _Word("count.failures"),
+        _keyed("<aspect>", _example_aspects),
+        _Ids("<arm>", _example_arms),
+        what="how many of one arm's trials on one aspect failed, as the examples count a failure: the pool its examples "
+        "were kept from (`count.failures` counts every one); not known, and refused, where the snapshot does not "
+        "count them",
+        resolve=_failed_trials_count,
+        example="count.failures.answers.fast.v2",
+    ),
+    _family_of(
+        _Word("count.failures"),
+        _keyed("<aspect>", _example_aspects),
+        _Ids("<arm>", _example_arms),
+        _Ids("<stratum>", _example_strata),
+        what="the same within one stratum or task",
+        resolve=_failed_trials_count,
+    ),
+    _family_of(
+        _Word("overlap"),
+        _keyed("<aspect>", lambda ri: [aspect.id for aspect in ri.aspects]),
+        _Ids("<aspect>", _other_aspects),
+        _Statistic(_OVERLAP_FIELDS, "<field>"),
+        what="whether two aspects ran the same cases, by the cases' stored ids: `same` in words (the same cases, "
+        "partly, different, or not known where the snapshot does not hold their case ids), `shared` the cases both "
+        "ran, `only_first` and `only_second` the cases only one ran; the counts are refused where not known",
+        resolve=_overlap,
+        example="overlap.answers.speed.same",
+    ),
+    _family_of(
+        _Word("confusion"),
+        _keyed("<axis>", _confusion_axes),
+        _Ids("<arm>", _confusion_arms),
+        _Ids("<expected>", _confusion_labels),
+        _Ids("<predicted>", _confusion_labels),
+        what="one cell of an arm's confusion on a label axis: the share of the expected label's cases predicted as the "
+        "predicted label, a percent of its row (or a count, where the axis counts observations)",
+        resolve=_confusion,
+    ),
+    _family_of(
+        _Word("cost.gap"),
+        _keyed("<arm>", _costs_per_thousand),
+        _Ids("<arm>", _cost_gap_seconds),
+        _Statistic(_COST_GAP_FIELDS, "<field>"),
+        what="two arms' costs apart, the first's minus the second's: `per_1k` per 1,000 of what the cost counts, "
+        "`monthly` per month at the declared monthly volume, `multiple` the first's cost over the second's",
+        resolve=_cost_gap,
+        derived=True,
+        example="cost.gap.fast.v2.base.multiple",
     ),
 )
 
@@ -4776,8 +5029,8 @@ GRAMMAR_HEADING = "Figure keys"
 def _example_input() -> ReportInput:
     """A small made-up input the grammar's examples are rendered on, with a dotted arm id and a dotted dimension: one
     asked aspect and one other, with a measure on both, a pair reading, a floor, a bar, strata, a cell, criteria, a
-    numeric setting, each arm's depth, a criterion set late, a second contrast family naming no aspect, and a
-    monthly volume."""
+    numeric setting, each arm's depth, a criterion set late, a second contrast family naming no aspect, a monthly
+    volume, a frozen example with the failed trials it was kept from, and the cases the two aspects share."""
     rate = {"base": (0.912, 897), "fast.v2": (0.874, 895)}
     return ReportInput.model_validate(
         {
@@ -4951,6 +5204,9 @@ def _example_input() -> ReportInput:
             "caveats": {
                 "late_criteria": [{"criterion": "floor", "name": "answers/rate_drop/*", "set_at": "25 Oct 2026"}]
             },
+            "examples": [{"trial": "T7", "case": "c-12", "aspect": "answers", "arm": "fast.v2", "outcome": "judged"}],
+            "failed_trials": [{"aspect": "answers", "arm": "fast.v2", "failed": 61}],
+            "case_overlap": [{"aspects": ["answers", "speed"], "shared": 300, "only_first": 0, "only_second": 0}],
         }
     )
 
@@ -5068,7 +5324,8 @@ def figure_key_grammar() -> str:
 _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
     (
         "campaign",
-        "the campaign, its arms, aspects and settings, and how deeply each arm ran",
+        "the campaign, its arms, aspects and settings, how deeply each arm ran, and whether two aspects ran the same "
+        "cases",
         frozenset(
             {
                 "meta",
@@ -5082,6 +5339,7 @@ _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
                 "depth",
                 "late_criteria",
                 "caveats",
+                "overlap",
             }
         ),
     ),
@@ -5102,8 +5360,9 @@ _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
     ),
     (
         "slices",
-        "figures within one task, stratum or target-matrix cell, and the share of a loss each carries",
-        frozenset({"task", "strata", "cells"}),
+        "figures within one task, stratum or target-matrix cell, the share of a loss each carries, and where a "
+        "classifier's predictions of each label went",
+        frozenset({"task", "strata", "cells", "confusion"}),
     ),
     (
         "gates",
@@ -5129,7 +5388,8 @@ _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
     ),
     (
         "counts",
-        "how many of a thing a sentence counts: arms, slices, gates, the options passing each, the places one misses",
+        "how many of a thing a sentence counts: arms, slices, gates, the options passing each, the places one misses, "
+        "the examples kept and the failures they were kept from",
         frozenset({"count"}),
     ),
 )
