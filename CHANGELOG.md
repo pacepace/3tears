@@ -17,6 +17,16 @@ as its public part; `threetears-release` still refuses to bump, sync or verify o
 labelled smoke assertion against a plain release. `docker-bake.hcl` keeps `v0.80.0`, since an image tag cannot
 carry `+`.
 
+### evals: a chart of readings prints the level of the interval it draws
+
+**Fixed:** a forest (or diverging bars) of readings draws each reading's `within_interval`, at the nominal level with no
+correction, but printed the gain interval's Holm step-down level (`gain_confidence`): one candidate printed `97.5%`
+over an interval drawn at 95%, two candidates at different steps were refused for mixing interval levels the drawn
+intervals did not mix, and a reading with a `within_interval` but no gain fields was refused for stating no level. A
+chart of readings, its values table and a reading's `level` key (`reading.<arm>.level`) now print the nominal level
+(`stats.INTERVAL_LEVEL`), and a hand-built input needs no gain fields for a reading's chart to draw. What reads the gain
+interval (a reading's spread, two arms apart on a pass rate, the campaign scorecard) keeps its own level.
+
 ### evals: an overall that is the plain mean of its cells reads an interval derived from theirs
 
 **Added:** an arm's overall figure that states no interval, and is by the numbers the input states the unweighted mean
