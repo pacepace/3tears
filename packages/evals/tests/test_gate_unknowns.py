@@ -26,7 +26,7 @@ import math
 import pytest
 
 from packages.evals.tests.analyst_support import KAIRO, budget_inputs, fixture_inputs, fixture_snapshots
-from threetears.evals.analysis.analyst.analyses import IMPLIED_READS_AS, dominance, sensitivity
+from threetears.evals.analysis.analyst.analyses import dominance, sensitivity
 from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -144,9 +144,8 @@ def test_an_undecided_options_figure_over_every_case_that_misses_a_line_read_in_
                 expected.append((criterion.id, float(overall)))
         assert [(fact.criterion, fact.figures[-1].value) for fact in row.implied] == expected, arm
         for fact in row.implied:
-            assert (
-                fact.reads_as == IMPLIED_READS_AS and "inferred" in fact.reads_as and "never a verdict" in fact.reads_as
-            )
+            assert fact.reads_as == row.implied[0].reads_as, "every implied fact reads as the one same note"
+            assert "inferred" in fact.reads_as and "never a verdict" in fact.reads_as
             assert fact.figures[0].value == float(next(c for c in held.criteria if c.id == fact.criterion).threshold)
             assert all(resolve(figure.key, held).value == figure.value for figure in fact.figures)
     assert any(row.implied for row in result.undecided), "the control: a pooled p95 over the budget implies a miss"

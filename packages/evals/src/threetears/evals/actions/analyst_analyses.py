@@ -20,7 +20,7 @@ a constraint on what the report says.
 
 from __future__ import annotations
 
-from typing import Annotated, get_args
+from typing import Annotated, Literal, get_args
 
 from pydantic import Field
 
@@ -139,12 +139,25 @@ ArmIds = Annotated[
 ]
 
 
+#: A what-if count, one meaning for both actions that take one.
+AssumedCases = Annotated[
+    int | Literal["share"] | None,
+    Field(
+        description="A what-if for a slice whose figure states no count (so no spread): the cases each such slice is "
+        "read as holding, a whole number, or 'share' for the arm's own count times the slice's traffic share. Every "
+        "figure read under it is keyed assumed.<cases>. (or assumed.share.) so it reads as an assumption; a place "
+        "whose figures state their count is read as they state it. Omitted: none assumed.",
+    ),
+]
+
+
 class CompareParams(EvalBaseModel):
     """``arms_compare``: the two arms and the measure."""
 
     snapshot_id: SnapshotId
     arm_ids: ArmIds
     measure_key: MeasureKey
+    assumed_cases: AssumedCases = None
     limit: SizedLimit = None
     offset: Offset = 0
 
@@ -166,6 +179,14 @@ class SettleParams(EvalBaseModel):
         description="For one arm, a line the snapshot does not declare, on measure_key, in the figure's own units "
         "(a rate on the scale measure_read prints it on); every figure read against it is keyed hypothetical.",
     )
+    against: str | None = Field(
+        default=None,
+        min_length=1,
+        description="For one arm, the one margin or floor to settle its reading against: margin:<aspect> or "
+        "floor:<aspect>/<floor>, as decision_sensitivity names them; omitted, with no criterion_id or line, every "
+        "criterion, margin and floor reading the arm.",
+    )
+    assumed_cases: AssumedCases = None
     bars_as: BarsAsParam = "warnings"
     limit: SizedLimit = None
     offset: Offset = 0
@@ -179,6 +200,7 @@ async def _arms_compare(host: OpsHost, caller: Caller, params: CompareParams) ->
         snapshot_id=params.snapshot_id,
         arms=params.arm_ids,
         measure_key=params.measure_key,
+        assumed_cases=params.assumed_cases,
         limit=limit,
         offset=params.offset,
         fits=fits,
@@ -195,6 +217,8 @@ async def _settle_cases(host: OpsHost, caller: Caller, params: SettleParams) -> 
         measure_key=params.measure_key,
         criterion_id=params.criterion_id,
         hypothetical_line=params.hypothetical_line,
+        against=params.against,
+        assumed_cases=params.assumed_cases,
         bars_as=params.bars_as,
         limit=limit,
         offset=params.offset,
@@ -353,8 +377,9 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
                 "error, or a pass/fail rate's binomial spread from its count); basis says which, excludes_zero "
                 "whether the interval clears zero, ahead which arm reads better where it does. A measure neither arm "
                 "states a spread for is refused, naming measure_read for the two means. A normal approximation, "
-                "never a test the pipeline ran. Without a limit a page holds as many places as fit one result, up "
-                f"to {COMPARE_PAGE}."
+                "never a test the pipeline ran. A slice whose figures state no count has no binomial spread: "
+                "assumed_cases reads it under a what-if count, keyed assumed.<cases>.compare.*. Without a limit a "
+                f"page holds as many places as fit one result, up to {COMPARE_PAGE}."
             ),
         ),
         Action(
@@ -370,19 +395,25 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
             paged=True,
             example={"snapshot_id": _EXAMPLE_SNAPSHOT, "arm_ids": ["fast.v2"], "criterion_id": "cell_floor"},
             detail=(
-                "One arm: against every declared criterion reading it (or criterion_id alone), at each place it "
-                "reads it, or against a hypothetical_line on measure_key, which the snapshot does not declare "
-                "(keyed settle.hypothetical.*); one-sided, with the two-sided sizes a page's intervals need "
-                "beside (cases_needed_two_sided, cases_needed_two_sided_80). Two arms with measure_key: apart, "
+                "One arm: against every line it is judged by (each declared criterion at each place it reads it, "
+                "each margin its readings are read against, each floor read on it), or criterion_id alone, or "
+                "against (margin:<aspect> or floor:<aspect>/<floor>, keyed settle.margin.* and settle.floor.*: the "
+                "change from the control against minus the margin, on the reading's own interval), or a "
+                "hypothetical_line on measure_key, which the snapshot does not declare (keyed "
+                "settle.hypothetical.*); one-sided, with the two-sided sizes a page's intervals need beside "
+                "(cases_needed_two_sided, cases_needed_two_sided_80). Two arms with measure_key: apart, "
                 "overall and in each slice holding both; two-sided, as independent arms. Each row gives today's "
                 "estimate and line, the distance, settles (clears where today's estimate passes, misses where the "
                 "sizes would confirm a miss), cases_needed (an interval at the snapshot's level centred on today's "
                 "estimate sits wholly on today's side: half such designs do if the truth equals today's estimate), "
                 "cases_needed_80 (four in five do), wrong_side (how often a fresh run of today's size reads the "
-                "other way), level with its sidedness, and the count, what it counts (count_of: trials, not cases, "
-                "on a repeated design) and the spread basis it rests on, each a settle.* or spread.* key; a "
-                "criterion declared on an aspect reads that aspect's figure, and each criterion row says whether it "
-                "gates as you read the bars (gates; bars_as). A p50 or p95, a figure with no spread or count, "
+                "other way), level with its sidedness, and the count, what it counts (count_of) and the spread "
+                "basis it rests on, each a settle.* or spread.* key. Sizes count cases, each run as often as today "
+                "(repeats); trials_needed and its siblings are the trials that takes on a repeated design. A slice "
+                "whose figure states no count has no spread: assumed_cases reads it under a what-if count, keyed "
+                "assumed.<cases>.*. A criterion declared on an aspect reads that aspect's figure, and each criterion "
+                "row says whether it gates as you read the bars (gates; bars_as). A p50 or p95, a figure with no "
+                "spread or count, "
                 "and an estimate exactly on its line say why in unsettled. Without a limit a page holds as many "
                 f"rows as fit one result, up to {SETTLE_PAGE}."
             ),

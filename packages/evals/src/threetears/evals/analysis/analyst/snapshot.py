@@ -11,8 +11,12 @@ read as something else.
 excerpt the start of what the judge read; an analyst pages through them (``examples_list``), so a snapshot's input is
 built by :func:`analyst_input`: up to :data:`_ANALYST_PER_SLICE` failed trials per aspect, arm and stratum, at most
 :data:`_ANALYST_EXAMPLES` in all, each excerpt cut around the failure the judge's reason quotes. More than one per slice
-shows whether a failure is typical of it or a one-off. A report rendered against a snapshot is rendered against the
-snapshot's own input, never against a fresh ``report_input(bundle)``, whose example pool differs.
+shows whether a failure is typical of it or a one-off; and the input counts each slice's failed trials, so a page of
+them says how many the run had beside how many were kept, and a reader generalising from the kept ones knows what
+share of the failures they are. It also carries each example's case input and which cases each two aspects share
+(:func:`~threetears.evals.analysis.report_input_build.report_input` with ``counted``). A report rendered against a
+snapshot is rendered against the snapshot's own input, never against a fresh ``report_input(bundle)``, whose example
+pool differs.
 """
 
 from __future__ import annotations
@@ -47,10 +51,14 @@ def analyst_input(bundle: CampaignBundle) -> ReportInput:
     :param bundle: The campaign's bundle.
     :ptype bundle: CampaignBundle
     :return: The input, up to :data:`_ANALYST_PER_SLICE` failed trials per aspect, arm and stratum and
-        :data:`_ANALYST_EXAMPLES` in all, each excerpt cut around the failure.
+        :data:`_ANALYST_EXAMPLES` in all, each excerpt cut around the failure and carrying the start of what its case
+        asked; with each slice's failed-trial count and which cases each two aspects share, where the bundle holds
+        them whole.
     :rtype: ReportInput
     """
-    return built_input(bundle, examples=_ANALYST_EXAMPLES, per_slice=_ANALYST_PER_SLICE, excerpt="failure")
+    return built_input(
+        bundle, examples=_ANALYST_EXAMPLES, per_slice=_ANALYST_PER_SLICE, excerpt="failure", counted=True
+    )
 
 
 def report_snapshot(

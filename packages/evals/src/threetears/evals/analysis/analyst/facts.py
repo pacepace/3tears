@@ -47,6 +47,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
+from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import NamedKind, reader_names
 from threetears.evals.analysis.report_decision import (
     Caveat,
@@ -183,7 +184,9 @@ _VS_CONTROL = "vs_control"
 _POOL = (
     "the failed trials frozen with the snapshot: up to three per aspect, arm and stratum, every slice's first before "
     "any slice's second and its other cases before a repeat; each excerpt cut around the failure (centred on the "
-    "passage the judge's reason quotes, else the reply's end), with the judge's or the check's reason"
+    "passage the judge's reason quotes, else the reply's end), with the judge's or the check's reason. They are a "
+    "sample: kept_from says, per aspect and arm, how many were kept of how many failed, so a pattern read in them "
+    "names the share of the failures it rests on"
 )
 
 
@@ -276,6 +279,10 @@ class AspectRow(_Fact):
     )
     holds: list[str] = Field(
         description="The rows the input holds on it: readings, pairs, floors, bars, contrasts, strata, scoreboard."
+    )
+    same_cases: list[CitedFigure] = Field(
+        description="Whether it ran the same cases as each later aspect (`overlap.<aspect>.<other>.same`): the same, "
+        "partly, different, or not known; `shared`, `only_first` and `only_second` count them where known."
     )
 
 
@@ -549,8 +556,12 @@ def campaign_overview(
             repeats=cite_if(f"aspects.{aspect.id}.repeats", report_input),
             depth=_depths(report_input, aspect),
             holds=_aspect_holds(report_input, aspect),
+            same_cases=[
+                cite(f"overlap.{aspect.id}.{other.id}.same", report_input)
+                for other in report_input.aspects[index + 1 :]
+            ],
         )
-        for aspect in report_input.aspects
+        for index, aspect in enumerate(report_input.aspects)
     ]
     criteria = [
         CriterionRow(
@@ -1232,11 +1243,30 @@ class ExampleRow(_Fact):
     result_id: str | None = Field(description="The stored result the trial records, where the bundle named it.")
 
 
+class ExampleSlice(_Fact):
+    """One aspect and arm's failed trials (one stratum's, where the call names one): how many the snapshot froze as
+    examples, and how many the run had."""
+
+    aspect: str = Field(description="The aspect.")
+    arm: CitedFigure = Field(description="The arm.")
+    stratum: str | None = Field(description="The stratum or task, where the call names one; none for all of them.")
+    kept: CitedFigure = Field(description="The failed trials frozen as examples (`count.examples.<aspect>.<arm>`).")
+    failed: CitedFigure | None = Field(
+        description="The failed trials the run had, as the examples count a failure (`count.failures.<aspect>.<arm>`); "
+        "none where the snapshot does not count them."
+    )
+    unknown: str = Field(description="Why the failed trials are not known, where they are not; empty where they are.")
+
+
 class ExampleListing(_Fact):
     """A page of the failed trials the snapshot froze."""
 
     examples: list[ExampleRow] = Field(description="The page's examples, in the input's order.")
     pool: str = Field(description="What the examples are.")
+    kept_from: list[ExampleSlice] = Field(
+        description="Per aspect and arm the filters keep (and stratum, where stratum_filter names one), the examples "
+        "frozen against the failed trials the run had, whatever the outcome filter: what the examples are a sample of."
+    )
     total: int = Field(description="Examples in every page.")
     offset: int = Field(description="The examples skipped before this page.")
     next_offset: int | None = Field(description="The next page's offset; none on the last page.")
@@ -1264,6 +1294,47 @@ def _example_row(report_input: ReportInput, example: Example, results: Mapping[s
         expected=_clipped(example.expected),
         result_id=results.get(example.trial) if example.trial is not None else None,
     )
+
+
+def _kept_from(
+    report_input: ReportInput, arm_filter: str | None, aspect_filter: str | None, stratum_filter: str | None
+) -> list[ExampleSlice]:
+    """Each aspect and arm an example or a failed-trial count names, as the filters keep them: the examples kept, and
+    the failed trials they were kept from where the snapshot counts them."""
+    named = [(example.aspect, example.arm, example.stratum) for example in report_input.examples]
+    named += [(row.aspect, row.arm, row.stratum) for row in report_input.failed_trials or ()]
+    order = {arm: index for index, arm in enumerate(_arm_ids(report_input))}
+    aspects = {aspect.id: index for index, aspect in enumerate(report_input.aspects)}
+    pairs = {
+        (aspect, arm)
+        for aspect, arm, stratum in named
+        if aspect is not None
+        and arm in order
+        and arm_filter in (None, arm)
+        and aspect_filter in (None, aspect)
+        and stratum_filter in (None, stratum)
+    }
+    rows: list[ExampleSlice] = []
+    for aspect, arm in sorted(pairs, key=lambda pair: (aspects.get(pair[0], len(aspects)), pair[0], order[pair[1]])):
+        tail = f".{stratum_filter}" if stratum_filter is not None else ""
+        failed: CitedFigure | None = None
+        unknown = ""
+        try:
+            failed = cite(f"count.failures.{aspect}.{arm}{tail}", report_input)
+        except UnstatedFigure as untold:
+            # NOSILENT: an uncounted pool is the snapshot's shape, not a fault: the row says why in `unknown`.
+            unknown = str(untold)
+        rows.append(
+            ExampleSlice(
+                aspect=aspect,
+                arm=cite(f"arm:{arm}", report_input),
+                stratum=stratum_filter,
+                kept=cite(f"count.examples.{aspect}.{arm}{tail}", report_input),
+                failed=failed,
+                unknown=unknown,
+            )
+        )
+    return rows
 
 
 def examples_list(
@@ -1327,6 +1398,7 @@ def examples_list(
     return ExampleListing(
         examples=[_example_row(report_input, example, example_result_ids) for example in page],
         pool=_POOL,
+        kept_from=_kept_from(report_input, arm_filter, aspect_filter, stratum_filter),
         total=len(kept),
         offset=offset,
         next_offset=next_offset,

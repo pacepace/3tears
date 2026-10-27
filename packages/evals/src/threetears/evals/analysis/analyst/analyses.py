@@ -98,20 +98,17 @@ from threetears.evals.kernel.errors import RefusedInput
 __all__ = [
     "BREAKDOWN_PAGE",
     "DOMINANCE_PAGE",
-    "IMPLIED_READS_AS",
     "SENSITIVITY_PAGE",
     "BarsAs",
     "Breakdown",
     "Dominance",
     "GateRead",
-    "ImpliedFact",
     "Sensitivity",
     "SliceBy",
     "breached_guardrails",
     "breakdown",
     "dominance",
     "gate_reads",
-    "read_bars_as",
     "sensitivity",
 ]
 
@@ -131,7 +128,7 @@ _WARNING = frozenset({"bar", "floor"})
 BarsAs = Literal["warnings", "gates"]
 
 #: What an implied fact is, said on every one.
-IMPLIED_READS_AS = (
+_IMPLIED_READS_AS = (
     "inferred, not stated: an interpretive fact for the analyst and the editor to weigh, conditional on the places "
     "splitting the cases between them; never a verdict, and no gate reads it"
 )
@@ -306,7 +303,7 @@ def _read_as_gates(report_input: ReportInput, kinds: frozenset[str]) -> ReportIn
     return report_input.model_copy(update={"criteria": criteria})
 
 
-def read_bars_as(report_input: ReportInput, bars_as: BarsAs) -> ReportInput:
+def _read_bars_as(report_input: ReportInput, bars_as: BarsAs) -> ReportInput:
     """The input as the caller reads its bars (this module's How bars are read): as declared for ``warnings``, every
     bar read as a gate for ``gates``. A bar's figures, and every key citing them, read the same either way.
 
@@ -382,7 +379,7 @@ def _implied(report_input: ReportInput, arm: str) -> list[ImpliedFact]:
         found.append(
             ImpliedFact(
                 criterion=criterion.id,
-                reads_as=IMPLIED_READS_AS,
+                reads_as=_IMPLIED_READS_AS,
                 statement=f"{_arm(arm)}'s {criterion.statistic} over every case misses the line; if the {words}s "
                 f"split the cases between them (none in two, none in none), at least one {words}'s {criterion.statistic} "
                 "misses it too, so the gate would not pass in every one",
@@ -750,7 +747,7 @@ def dominance(
     :rtype: Dominance
     :raises RefusedInput: An axis names no measure or judged dimension the input holds.
     """
-    report_input = read_bars_as(report_input, bars_as)
+    report_input = _read_bars_as(report_input, bars_as)
     known = [*report_input.measures, *report_input.judged]
     unknown = [axis for axis in axes if axis not in known]
     if unknown:
@@ -1456,7 +1453,7 @@ def sensitivity(
     :rtype: Sensitivity
     :raises RefusedInput: The parameter names nothing this input holds, or the range is not one.
     """
-    report_input = read_bars_as(report_input, bars_as)
+    report_input = _read_bars_as(report_input, bars_as)
     sweep = _sweep_of(report_input, parameter, range_low, range_high)
     inside = sorted(
         (

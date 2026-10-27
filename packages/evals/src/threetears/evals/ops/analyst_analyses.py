@@ -28,7 +28,7 @@ from threetears.evals.analysis.analyst.analyses import (
 )
 from threetears.evals.analysis.analyst.compare import COMPARE_PAGE, ArmsComparison
 from threetears.evals.analysis.analyst.compare import arms_compare as compared
-from threetears.evals.analysis.analyst.settle import SETTLE_PAGE, Settle
+from threetears.evals.analysis.analyst.settle import SETTLE_PAGE, Assumed, Settle
 from threetears.evals.analysis.analyst.settle import settle_cases as settled
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput, ValidationFailedError
@@ -216,6 +216,7 @@ async def arms_compare(
     snapshot_id: str,
     arms: Sequence[str],
     measure_key: str,
+    assumed_cases: int | str | None = None,
     limit: int = COMPARE_PAGE,
     offset: int = 0,
     fits: Callable[[ArmsComparison], bool] | None = None,
@@ -232,6 +233,8 @@ async def arms_compare(
     :ptype arms: Sequence[str]
     :param measure_key: The measure or judged dimension, by key.
     :ptype measure_key: str
+    :param assumed_cases: A what-if: the cases each slice stating no count is read as holding, or ``share``.
+    :ptype assumed_cases: int | str | None
     :param limit: The most places one page holds.
     :ptype limit: int
     :param offset: The first place the page holds.
@@ -249,7 +252,11 @@ async def arms_compare(
         host,
         scope_id,
         snapshot_id,
-        lambda held: sized_page(lambda rows: compared(held, arms, measure_key, limit=rows, offset=offset), limit, fits),
+        lambda held: sized_page(
+            lambda rows: compared(held, arms, measure_key, assumed=assumed_cases, limit=rows, offset=offset),
+            limit,
+            fits,
+        ),
     )
 
 
@@ -262,13 +269,15 @@ async def settle_cases(
     measure_key: str | None = None,
     criterion_id: str | None = None,
     hypothetical_line: float | None = None,
+    against: str | None = None,
+    assumed_cases: Assumed | None = None,
     bars_as: BarsAs = "warnings",
     limit: int = SETTLE_PAGE,
     offset: int = 0,
     fits: Callable[[Settle], bool] | None = None,
 ) -> Settle:
-    """The cases that would settle a reading: one arm against its criteria, one criterion or a hypothetical line, or
-    two arms apart on one measure.
+    """The cases that would settle a reading: one arm against every line it is judged by, one criterion, margin or
+    floor, or a hypothetical line; or two arms apart on one measure.
 
     :param host: The host whose store holds the snapshot.
     :ptype host: OpsHost
@@ -284,6 +293,11 @@ async def settle_cases(
     :ptype criterion_id: str | None
     :param hypothetical_line: For one arm, a line on the measure the snapshot does not declare, in its own units.
     :ptype hypothetical_line: float | None
+    :param against: For one arm, the one margin or floor to settle it against: ``margin:<aspect>`` or
+        ``floor:<aspect>/<floor>``.
+    :ptype against: str | None
+    :param assumed_cases: A what-if: the cases each slice stating no count is read as holding, or ``share``.
+    :ptype assumed_cases: Assumed | None
     :param bars_as: How the caller reads the declared bars, which each criterion row says: ``warnings`` or ``gates``.
     :ptype bars_as: BarsAs
     :param limit: The most rows one page holds.
@@ -309,6 +323,8 @@ async def settle_cases(
                 measure=measure_key,
                 criterion=criterion_id,
                 line=hypothetical_line,
+                against=against,
+                assumed=assumed_cases,
                 limit=rows,
                 offset=offset,
                 bars_as=bars_as,

@@ -34,8 +34,20 @@ spread on a figure, ``compare.<arm>.<arm>.<measure>.<where>.*`` the difference b
 contrast's own where one pairs them, else independent), and ``settle.*`` the cases a design needs to separate an arm
 from a declared criterion's threshold, a hypothetical line (``settle.hypothetical.<line>.``, the line a number in the
 key), or another arm (:mod:`~threetears.evals.analysis.separation`): one-sided against a line, with the two-sided
-size beside it, and two-sided between arms, each ``level`` a text that says which. Derived, read off stated spreads: a
-normal approximation, never a test the pipeline ran.
+size beside it, and two-sided between arms, each ``level`` a text that says which. A size counts cases, each run as
+often as today, with the trials it takes beside it. ``settle.margin.`` and ``settle.floor.`` settle a candidate's
+change from the control against minus an aspect's margin or a floor's, on the reading's own interval. Derived, read
+off stated spreads: a normal approximation, never a test the pipeline ran. ``assumed.<cases>.`` (or
+``assumed.share.``) before a spread, compare or settle key reads it as if each slice whose figure states no count held
+that many cases (or the arm's own count times the slice's traffic share): a what-if the key names, refused overall and
+where the figures state their count.
+
+**What else a sentence counts or compares.** ``count.examples`` and ``count.failures`` (per aspect and arm) say how
+many failed trials the snapshot froze as examples and how many the run had; ``overlap.<aspect>.<aspect>.`` whether
+two aspects ran the same cases; ``confusion.<axis>.<arm>.<expected>.<predicted>`` one cell of a classifier's
+confusion; ``cost.gap.<arm>.<arm>.`` two arms' costs apart, per 1,000, per month and as a multiple. A count the input
+does not hold (a planner's input counts no failures, a bare one holds no case ids) is refused as unstated, never read
+as none.
 
 **A figure held on more than one aspect is named by its aspect.** Every figure that sits on an aspect has an
 ``aspects.<aspect>.`` form. Where the input holds a contrast's arm and measure, a stratum id or a contrast family on
@@ -77,6 +89,7 @@ from threetears.evals.analysis.report_input import (
     ContrastFamily,
     Criterion,
     Depth,
+    FailedTrials,
     Judged,
     LateCriterion,
     Measure,
@@ -107,6 +120,7 @@ from threetears.evals.analysis.separation import (
     NoSpread,
     Spread,
     cases_to_separate,
+    difference_spread,
     independent_difference,
     level_share,
     spread_interval,
@@ -115,6 +129,7 @@ from threetears.evals.analysis.separation import (
 )
 from threetears.evals.analysis.style import humanize, measure_name
 from threetears.evals.analysis.summary import dollars_text
+from threetears.evals.kernel.metrics import goal_check_of
 
 #: What a figure is: a number, an interval (low, high), a piece of text, or an arm (rendered by name and tag).
 FigureKind = Literal["number", "interval", "text", "arm"]
@@ -2285,9 +2300,25 @@ def _steps_count(report_input: ReportInput, values: tuple[str, ...], path: str) 
 
 #: What ``count.<what>`` counts in the campaign: its arms (every option, the control among them), aspects, tasks,
 #: strata, target-matrix cells, configs of a factorial grid, gates and guardrails, every declared criterion, the
-#: options surviving every gate and guardrail, and the options undecided: no gate figure fails them, and a gate has no
-#: figure for them somewhere.
-_COUNTED = ("arms", "aspects", "tasks", "strata", "cells", "configs", "gates", "criteria", "surviving", "undecided")
+#: options surviving every gate and guardrail, the options undecided (no gate figure fails them, and a gate has no
+#: figure for them somewhere), the pairs of arms its pair readings read apart and the pairs of arms there are, the
+#: failed trials frozen as examples and the failed trials the run holds (:func:`_failures_held`).
+_COUNTED = (
+    "arms",
+    "aspects",
+    "tasks",
+    "strata",
+    "cells",
+    "configs",
+    "gates",
+    "criteria",
+    "surviving",
+    "undecided",
+    "pairs",
+    "arm_pairs",
+    "examples",
+    "failures",
+)
 
 #: The criterion kinds that remove an option that misses them, as the gates count them.
 _GATE_KINDS = frozenset({"gate", "guardrail"})
@@ -2317,6 +2348,16 @@ def _campaign_count(report_input: ReportInput, values: tuple[str, ...], path: st
         return _count(path, len(surviving_arms(report_input)))
     if what == "undecided":
         return _count(path, len(undecided_arms(report_input)))
+    if what == "pairs":
+        read = {frozenset(pair.arms) for aspect in report_input.aspects for pair in aspect.pairs}
+        return _count(path, len(read))
+    if what == "arm_pairs":
+        return _count(path, math.comb(len(report_input.arms), 2))
+    if what == "examples":
+        return _count(path, len(report_input.examples))
+    if what == "failures":
+        held = _failures_held(report_input, [aspect.id for aspect in report_input.aspects], path)
+        return _count(path, sum(row.failed for row in held))
     return _count(path, counted[what])
 
 
@@ -2360,6 +2401,163 @@ def _factor_ids(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]
 def _levels_count(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     factor = next(factor for factor in report_input.factors if factor.id == values[0])
     return _count(path, len(factor.levels))
+
+
+# --- the examples a snapshot froze, and the failed trials they were kept from -------------------------------------
+
+
+def _failures_held(report_input: ReportInput, aspects: Sequence[str], path: str) -> list[FailedTrials]:
+    """The input's failed-trial counts on ``aspects``, refused as unstated where it counts none on one of them: an input
+    built without them (a planner's, a bare one), or an aspect whose bundle left failures out, reads as not known,
+    never as none."""
+    held = report_input.failed_trials
+    counted = {row.aspect for row in held} if held is not None else set()
+    missing = [aspect for aspect in aspects if aspect not in counted]
+    if held is None or missing:
+        where = "" if held is None else f" on {', '.join(missing)}"
+        raise _unstated(
+            path,
+            f"counts the failed trials the run holds{where}, which the snapshot does not count: not known, so a share "
+            "of them is not either",
+        )
+    return [row for row in held if row.aspect in aspects]
+
+
+def _example_aspects(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]:
+    """The aspects an example or a failed-trial count names, in the input's aspect order, then any other."""
+    named = [example.aspect for example in report_input.examples if example.aspect is not None]
+    named += [row.aspect for row in report_input.failed_trials or ()]
+    order = [aspect.id for aspect in report_input.aspects]
+    return [aspect for aspect in order if aspect in named] + [a for a in dict.fromkeys(named) if a not in order]
+
+
+def _example_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    """The arms an example or a failed-trial count names on one aspect, in the input's arm order."""
+    aspect = prior[-1]
+    named = {example.arm for example in report_input.examples if example.aspect == aspect}
+    named |= {row.arm for row in report_input.failed_trials or () if row.aspect == aspect}
+    return [arm.id for arm in report_input.arms if arm.id in named]
+
+
+def _example_strata(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    """The strata or tasks an example or a failed-trial count names for one aspect and arm."""
+    aspect, arm = prior[-2:]
+    named = [e.stratum for e in report_input.examples if (e.aspect, e.arm) == (aspect, arm)]
+    named += [row.stratum for row in report_input.failed_trials or () if (row.aspect, row.arm) == (aspect, arm)]
+    return [stratum for stratum in dict.fromkeys(named) if stratum is not None]
+
+
+def _kept_count(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect, arm, *stratum = values
+    kept = [
+        example
+        for example in report_input.examples
+        if (example.aspect, example.arm) == (aspect, arm) and (not stratum or example.stratum == stratum[0])
+    ]
+    return _count(path, len(kept))
+
+
+def _failed_trials_count(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect, arm, *stratum = values
+    held = _failures_held(report_input, [aspect], path)
+    rows = [row for row in held if row.arm == arm and (not stratum or row.stratum == stratum[0])]
+    return _count(path, sum(row.failed for row in rows))
+
+
+# --- whether two aspects ran the same cases -------------------------------------------------------------------------
+
+#: What two aspects' cases are, as ``overlap.<aspect>.<aspect>.same`` reads it: every case in both, some, none, or not
+#: known.
+OVERLAP_WORDS: dict[str, str] = {
+    "same": "the same cases",
+    "partly": "partly the same cases",
+    "apart": "different cases",
+    "unknown": "not known: the snapshot does not hold the two aspects' case ids",
+}
+
+#: What an overlap key reads: whether the two aspects ran the same cases, in words, and the counts behind it.
+_OVERLAP_FIELDS = ("same", "shared", "only_first", "only_second")
+
+
+def _other_aspects(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return [aspect.id for aspect in report_input.aspects if aspect.id != prior[-1]]
+
+
+def _overlap(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    first, second, field = values
+    held = report_input.case_overlap or ()
+    found = next((row for row in held if row.aspects in ((first, second), (second, first))), None)
+    if found is None:
+        if field == "same":
+            return Figure(path=path, kind="text", value=OVERLAP_WORDS["unknown"])
+        raise _unstated(
+            path, f"counts the cases {first} and {second} share, which the snapshot does not hold: not known"
+        )
+    flipped = found.aspects != (first, second)
+    only_first, only_second = (
+        (found.only_second, found.only_first) if flipped else (found.only_first, found.only_second)
+    )
+    if field == "same":
+        word = "same" if not only_first and not only_second else "apart" if not found.shared else "partly"
+        return Figure(path=path, kind="text", value=OVERLAP_WORDS[word])
+    counts = {"shared": found.shared, "only_first": only_first, "only_second": only_second}
+    return _count(path, counts[field])
+
+
+# --- a classifier's confusion: where each expected label's predictions went ------------------------------------------
+
+
+def _confusion_axes(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]:
+    return list(report_input.confusion)
+
+
+def _confusion_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return list(report_input.confusion[prior[-1]].per_arm)
+
+
+def _confusion_labels(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    axis = next(value for value in prior if value in report_input.confusion)
+    return list(report_input.confusion[axis].labels)
+
+
+def _confusion(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    axis, arm, expected, predicted = values
+    table = report_input.confusion[axis]
+    matrix = table.per_arm[arm]
+    row, column = table.labels.index(expected), table.labels.index(predicted)
+    if row >= len(matrix) or column >= len(matrix[row]):
+        raise _unstated(path, f"names a cell of {arm}'s {axis} confusion its matrix does not hold")
+    scale: Scale = "percent" if table.unit == "row_percent" else "count"
+    return Figure(path=path, kind="number", value=float(matrix[row][column]), scale=scale)
+
+
+# --- two arms' costs apart ------------------------------------------------------------------------------------------
+
+#: What two arms' costs apart read: the first's cost per 1,000 of what the cost counts minus the second's, the same per
+#: month at the declared volume, and the first's cost as a multiple of the second's.
+_COST_GAP_FIELDS = ("per_1k", "monthly", "multiple")
+
+#: The unit a cost multiple is written in.
+MULTIPLE_UNIT = "times"
+
+
+def _cost_gap_seconds(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return [arm for arm in _costs_per_thousand(report_input) if arm != prior[-1]]
+
+
+def _cost_gap(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    first, second, field = values
+    costs = _costs_per_thousand(report_input)
+    gap = costs[first] - costs[second]
+    if field == "per_1k":
+        return Figure(path=path, kind="number", value=gap, scale="usd_per_1k", change=True)
+    if field == "monthly":
+        return Figure(
+            path=path, kind="number", value=gap * _monthly_factor(report_input, path), scale="usd", change=True
+        )
+    if not costs[second]:
+        raise _unstated(path, f"names {first}'s cost as a multiple of {second}'s, and {second} costs nothing")
+    return Figure(path=path, kind="number", value=costs[first] / costs[second], scale="plain", unit=MULTIPLE_UNIT)
 
 
 # --- an aspect's pair readings, floors and bars ----------------------------------------------------------------------
@@ -2704,37 +2902,67 @@ def _named_reading_arms(report_input: ReportInput, prior: tuple[str, ...]) -> li
 _OVERALL = "overall"
 
 #: What an arm's spread on a figure reads: its mean, its standard error, the spread of one case, the count it rests on
-#: and what that count counts (cases, trials or observations), the level a result read from it is stated at, what the
-#: standard error was read from, and the interval it gives at that level and its two ends (the mean plus and minus the
-#: normal quantile times the standard error, a rate's ends held to none to all:
-#: :func:`~threetears.evals.analysis.separation.spread_interval`).
-_SPREAD_FIELDS = ("mean", "se", "per_case", "n", "counts", "level", "basis", "interval", "low", "high")
+#: and what that count counts (cases, trials or observations), the distinct cases behind a count of trials and the
+#: trials each ran today, the level a result read from it is stated at, what the standard error was read from, and the
+#: interval it gives at that level and its two ends (the mean plus and minus the normal quantile times the standard
+#: error, a rate's ends held to none to all: :func:`~threetears.evals.analysis.separation.spread_interval`).
+_SPREAD_FIELDS = (
+    "mean",
+    "se",
+    "per_case",
+    "n",
+    "counts",
+    "cases",
+    "repeats",
+    "level",
+    "basis",
+    "interval",
+    "low",
+    "high",
+)
 
 #: What two arms' difference reads: the first minus the second, its interval, the interval's ends and half-width, its
 #: level, and whether it is the paired estimate a contrast states or two independent arms' spreads combined.
 _COMPARE_FIELDS = ("difference", "interval", "low", "high", "half_width", "level", "basis")
 
 #: What settling two arms apart reads: their difference, the cases each needs for an interval centred on it to clear
-#: zero (``cases_needed``: half such designs clear; ``cases_needed_80``: four in five), how often a fresh run of today's
-#: size reads the other arm ahead, and the level, its sidedness (two-sided) in its words.
-_SETTLE_PAIR_FIELDS = ("difference", "cases_needed", "cases_needed_80", "wrong_side", "level")
+#: zero (``cases_needed``: half such designs clear; ``cases_needed_80``: four in five) and the trials those take at
+#: today's repeats, how often a fresh run of today's size reads the other arm ahead, and the level, its sidedness
+#: (two-sided) in its words.
+_SETTLE_PAIR_FIELDS = (
+    "difference",
+    "cases_needed",
+    "cases_needed_80",
+    "trials_needed",
+    "trials_needed_80",
+    "wrong_side",
+    "level",
+)
 
 #: What settling an arm against a line reads: its distance from the line toward passing (negative where today's figure
 #: misses), the cases a one-sided bound needs to sit wholly on today's side of the line, the cases the two-sided
-#: interval a page prints needs for the same, how often a fresh run of today's size lands on the other side, and the
-#: level, its sidedness (one-sided) in its words.
+#: interval a page prints needs for the same, the trials each size takes at today's repeats, how often a fresh run of
+#: today's size lands on the other side, and the level, its sidedness (one-sided) in its words.
 _SETTLE_LINE_FIELDS = (
     "distance",
     "cases_needed",
     "cases_needed_80",
     "cases_needed_two_sided",
     "cases_needed_two_sided_80",
+    "trials_needed",
+    "trials_needed_80",
+    "trials_needed_two_sided",
+    "trials_needed_two_sided_80",
     "wrong_side",
     "level",
 )
 
 #: A hypothetical line's fields: the line itself, then what settling an arm against it reads.
 _HYPOTHETICAL_FIELDS = ("line", *_SETTLE_LINE_FIELDS)
+
+#: A margin's or floor's fields: its line (minus the margin, in points), the candidate's change from the control it reads
+#: (in points), then what settling that change against the line reads.
+_MARGIN_FIELDS = ("line", "change", *_SETTLE_LINE_FIELDS)
 
 #: How each basis of a spread reads, in words.
 _BASIS_WORDS: dict[str, str] = {
@@ -2795,16 +3023,46 @@ def _separation_place(report_input: ReportInput, where: str) -> _Place | None:
     return found[0] if len(found) == 1 else None
 
 
-def _stat_where(
+@dataclass(frozen=True)
+class _Held:
+    """An arm's statistic at one place, and what its spread's count is.
+
+    :ivar stat: The statistic.
+    :ivar count: The count its spread rests on; None where none is stated.
+    :ivar counted: What that count counts.
+    :ivar cases: The distinct cases behind a count of trials, where stated and fewer; None otherwise.
+    :ivar source: Where the count was read, in words.
+    """
+
+    stat: Stat
+    count: float | None
+    counted: _Counted | None
+    cases: float | None
+    source: str
+
+
+#: Where a spread's count was read, in words: the figure's own, the slice's stated cases, or the arm's scoreboard.
+_COUNT_SOURCES: dict[str, str] = {
+    "own": "its own count",
+    "task": "the task's stated cases",
+    "cells": "the cell's stated cases",
+    "strata": "the stratum's stated cases",
+    "trials": "the arm's usable trials",
+    "cases": "the arm's cases",
+}
+
+
+def _held_where(
     report_input: ReportInput, arm_id: str, key: str, where: str, aspect: str | None = None
-) -> tuple[Stat, float | None, _Counted | None] | None:
-    """An arm's statistic on a measure or judged dimension at ``where``, with the count it rests on and what that count
-    counts: its own ``n`` (observations; cases where its ``n_cases`` equals it, trials where its ``n_cases`` is
-    fewer), else its ``n_cases`` (cases), else the place's: the slice's cases, or overall the arm's usable trials,
-    else its cases. Overall, ``aspect`` names an aspect other than the lead whose figures (``by_aspect``) and
-    scoreboard are read instead (a criterion declared on it); a slice holds no other aspect's figures. None where
-    the input states no mean there."""
-    fallback: tuple[int | None, _Counted | None] = (None, None)
+) -> _Held | None:
+    """An arm's statistic on a measure or judged dimension at ``where``, with the count it rests on, what that count
+    counts and where it was read: its own ``n`` (observations; cases where its ``n_cases`` equals it, trials where its
+    ``n_cases`` is fewer), else its ``n_cases`` (cases), else the place's: the slice's cases, or overall the arm's
+    usable trials, else its cases. A count of trials carries the distinct cases behind it where the figure, or overall
+    the arm's scoreboard, states them. Overall, ``aspect`` names an aspect other than the lead whose figures
+    (``by_aspect``) and scoreboard are read instead (a criterion declared on it); a slice holds no other aspect's
+    figures. None where the input states no mean there."""
+    fallback: tuple[int | None, _Counted | None, int | None, str] = (None, None, None, "")
     if aspect is not None and where != _OVERALL:
         return None
     if where == _OVERALL:
@@ -2816,24 +3074,42 @@ def _stat_where(
             report_input.scoreboard if aspect is None else _aspect_board(report_input, aspect) if aspect in held else {}
         )
         board = boards.get(arm_id)
-        if board is not None:
-            fallback = (board.usable, "trials") if board.usable is not None else (board.cases, "cases")
+        if board is not None and board.usable is not None:
+            fallback = (board.usable, "trials", board.cases, _COUNT_SOURCES["trials"])
+        elif board is not None:
+            fallback = (board.cases, "cases", None, _COUNT_SOURCES["cases"])
     else:
         place = _separation_place(report_input, where)
         stat = place.per_arm.get(arm_id, {}).get(key) if place is not None else None
-        fallback = (None, None) if place is None else (place.n_cases, "cases")
+        if place is not None:
+            fallback = (place.n_cases, "cases", None, _COUNT_SOURCES[where.partition(".")[0]])
     if stat is None or stat.mean is None:
         return None
     count: int | None
     counted: _Counted | None
+    cases: int | None = None
+    source = _COUNT_SOURCES["own"]
     if stat.n is not None:
         count = stat.n
         counted = "observations" if stat.n_cases is None else "cases" if stat.n <= stat.n_cases else "trials"
+        cases = stat.n_cases if counted == "trials" else None
     elif stat.n_cases is not None:
         count, counted = stat.n_cases, "cases"
     else:
-        count, counted = fallback
-    return stat, None if count is None else float(count), None if count is None else counted
+        count, counted, cases, source = fallback
+    if count is None:
+        return _Held(stat, None, None, None, "")
+    distinct = float(cases) if cases is not None and 0 < cases < count else None
+    return _Held(stat, float(count), counted, distinct, source)
+
+
+def _stat_where(
+    report_input: ReportInput, arm_id: str, key: str, where: str, aspect: str | None = None
+) -> tuple[Stat, float | None, _Counted | None] | None:
+    """An arm's statistic at ``where`` (on another aspect, where ``aspect`` names one), the count it rests on and what
+    that count counts (:func:`_held_where`)."""
+    held = _held_where(report_input, arm_id, key, where, aspect)
+    return None if held is None else (held.stat, held.count, held.counted)
 
 
 def _wheres(report_input: ReportInput, arms: Sequence[str], key: str) -> list[str]:
@@ -2878,19 +3154,20 @@ def _read_spread(report_input: ReportInput, arm_id: str, key: str, where: str, a
 
     :raises NoSpread: The input gives none; its words are what a refusal says after the key.
     """
-    held = _stat_where(report_input, arm_id, key, where, aspect)
+    held = _held_where(report_input, arm_id, key, where, aspect)
     if held is None:
         raise NoSpread(f"names {arm_id}'s mean on {key!r} {_where_words(where)}, which the input does not state")
-    stat, count, _counted = held
+    stat = held.stat
     try:
         return stat_spread(
             float(stat.mean) if stat.mean is not None else None,
             ci=None if stat.ci is None else (float(stat.ci[0]), float(stat.ci[1])),
             half_width=None if stat.half_width is None else float(stat.half_width),
             sem=None if stat.sem is None else float(stat.sem),
-            n=count,
+            n=held.count,
             stated_level=_stated_level(report_input, key),
             rate=_rate_of(report_input, key),
+            cases=held.cases,
         )
     except NoSpread as none:
         raise NoSpread(
@@ -2944,6 +3221,10 @@ def _spread_figure(report_input: ReportInput, values: tuple[str, ...], path: str
         if counted is None:
             raise _unstated(path, "names what the figure's count counts, and it rests on no count")
         return Figure(path=path, kind="text", value=counted)
+    if field == "cases":
+        return _number(path, spread.cases, "the distinct cases behind a count of trials", "count")
+    if field == "repeats":
+        return _number(path, spread.repeats, "the trials each case ran, where the count is trials", "plain")
     if field == "level":
         return _level(path, spread.level, "the level a result read from it is stated at")
     if field in ("interval", "low", "high"):
@@ -2955,7 +3236,19 @@ def _spread_figure(report_input: ReportInput, values: tuple[str, ...], path: str
         if field == "interval":
             return _interval(path, (low, high), "the interval", scale, unit=unit)
         return _number(path, low if field == "low" else high, f"the interval's {field} end", scale, unit=unit)
-    return Figure(path=path, kind="text", value=_BASIS_WORDS[spread.basis])
+    return Figure(path=path, kind="text", value=_basis_words(report_input, arm_id, key, where, spread))
+
+
+def _basis_words(
+    report_input: ReportInput, arm_id: str, key: str, where: str, spread: Spread, aspect: str | None = None
+) -> str:
+    """What a spread was read from, in words; a binomial one says where its count was read (its own, the slice's
+    stated cases, or the arm's scoreboard), on another aspect's figures where ``aspect`` names one."""
+    if spread.basis != "binomial":
+        return _BASIS_WORDS[spread.basis]
+    held = _held_where(report_input, arm_id, key, where, aspect)
+    source = held.source if held is not None and held.source else _COUNT_SOURCES["own"]
+    return f"a pass/fail rate's binomial spread, from {source}"
 
 
 def _family_level(report_input: ReportInput, contrast: Contrast) -> float | None:
@@ -3046,7 +3339,8 @@ def _read_difference(report_input: ReportInput, arm_id: str, other: str, key: st
         high=difference + half,
         level=first.level,
         basis=(
-            f"independent: each arm's own spread ({_BASIS_WORDS[first.basis]}; {_BASIS_WORDS[second.basis]}), "
+            f"independent: each arm's own spread ({_basis_words(report_input, arm_id, key, where, first)}; "
+            f"{_basis_words(report_input, other, key, where, second)}), "
             "combined as if the arms ran different cases, which reads wider than a paired interval where they ran the "
             "same"
         ),
@@ -3107,9 +3401,28 @@ def _settle_pair_figure(report_input: ReportInput, values: tuple[str, ...], path
     if first.per_case is None or second.per_case is None:
         raise _unstated(path, "names the cases a design needs, which needs the count each arm's figure rests on")
     per_case = math.hypot(first.per_case, second.per_case)
-    power = POWER if field == "cases_needed_80" else 0.5
+    power = POWER if field.endswith("_80") else 0.5
     cases = _settled(path, lambda: cases_to_separate(per_case, difference, first.level, sided=2, power=power))
+    if field.startswith("trials_"):
+        if first.repeats != second.repeats:
+            raise _unstated(
+                path,
+                "names the trials each arm needs, and the two arms ran their cases a different number of times: "
+                "read each arm's repeats (`spread.<arm>.<measure>.<where>.repeats`)",
+            )
+        return _trials(path, cases, first)
     return _number(path, cases, "the cases each arm needs", "count")
+
+
+def _trials(path: str, cases: float, spread: Spread) -> Figure:
+    """The trials a size in cases takes, each case run as often as today's design runs one."""
+    if spread.repeats is None:
+        raise _unstated(
+            path,
+            "names the trials a size takes, and the figure states no count of trials over fewer distinct cases: its "
+            "size counts what its count counts (`spread.<arm>.<measure>.<where>.counts`)",
+        )
+    return _number(path, math.ceil(cases * spread.repeats - 1e-9), "the trials the cases take", "count")
 
 
 def _sided_level(path: str, level: float, sided: Literal[1, 2]) -> Figure:
@@ -3127,11 +3440,17 @@ def _settle_line(
     line: float,
     higher_is_better: bool,
     field: str,
+    *,
+    in_points: bool = False,
 ) -> Figure:
     """What settling an arm's figure against a line reads, at ``field``: its distance toward passing, and the sizes at
     which an interval centred on it sits wholly on today's side of the line (clearing it where today's figure passes,
-    confirming the miss where it fails), one-sided and, beside it, two-sided as a page prints its intervals."""
+    confirming the miss where it fails), one-sided and, beside it, two-sided as a page prints its intervals; each size
+    in cases, and the trials it takes at today's repeats. ``in_points``: the figure is a change already in points (a
+    reading against a margin or a floor), not one on ``key``'s scale."""
     distance = spread.mean - line if higher_is_better else line - spread.mean
+    if field == "distance" and in_points:
+        return _number(path, distance, "the figure's distance from the line", "points", change=True)
     if field == "distance":
         return _apart(report_input, path, key, distance, "the figure's distance from the line", change=True)
     if field == "level":
@@ -3145,21 +3464,25 @@ def _settle_line(
     power = POWER if field.endswith("_80") else 0.5
     sided: Literal[1, 2] = 2 if "two_sided" in field else 1
     cases = _settled(path, lambda: cases_to_separate(per_case, distance, spread.level, sided=sided, power=power))
+    if field.startswith("trials_"):
+        return _trials(path, cases, spread)
     return _number(path, cases, "the cases a design needs", "count")
 
 
 #: What a criterion's settle reads beside its sizes: the count the arm's spread rests on, what that count counts, and
 #: what the spread was read from, each on the criterion's own aspect (the ``spread.`` key's, on the lead aspect).
-_SETTLE_COUNT_FIELDS = ("n", "counts", "basis")
+_SETTLE_COUNT_FIELDS = ("n", "counts", "repeats", "basis")
 
 
 def _criterion_count(
     report_input: ReportInput, path: str, spread: Spread, at: tuple[str, str, str, str | None], field: str
 ) -> Figure:
-    """A criterion settle's ``n``, ``counts`` or ``basis``: what ``spread.<arm>.<measure>.<where>`` reads, on the
-    criterion's aspect."""
+    """A criterion settle's ``n``, ``counts``, ``repeats`` or ``basis``: what ``spread.<arm>.<measure>.<where>``
+    reads, on the criterion's aspect."""
     if field == "n":
         return _number(path, spread.n, "the count the figure's spread rests on", "count")
+    if field == "repeats":
+        return _number(path, spread.repeats, "the trials each case ran, where the count is trials", "plain")
     if field == "counts":
         arm_id, key, where, aspect = at
         held = _stat_where(report_input, arm_id, key, where, aspect)
@@ -3167,7 +3490,8 @@ def _criterion_count(
         if counted is None:
             raise _unstated(path, "names what the figure's count counts, and it rests on no count")
         return Figure(path=path, kind="text", value=counted)
-    return Figure(path=path, kind="text", value=_BASIS_WORDS[spread.basis])
+    arm_id, key, where, aspect = at
+    return Figure(path=path, kind="text", value=_basis_words(report_input, arm_id, key, where, spread, aspect))
 
 
 def _criterion_wheres(report_input: ReportInput, criterion: Criterion, arm_id: str) -> list[str]:
@@ -3220,6 +3544,159 @@ def _settle_hypothetical_figure(report_input: ReportInput, values: tuple[str, ..
         raise _refuse(path, f"reads a line on {key!r}, which states no direction (higher or lower is better)")
     spread = _spread(report_input, arm_id, key, where, path)
     return _settle_line(report_input, path, spread, key, line, higher, field)
+
+
+# --- settling a candidate's reading against its aspect's margin, or a floor read on it --------------------------------
+
+
+def _margined_aspects(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]:
+    """The aspects some reading is read against a margin on: the reading's own margin, else the aspect's."""
+    return [
+        aspect.id
+        for aspect in report_input.aspects
+        if any(_reading_margin(aspect, reading) is not None for reading in aspect.readings)
+    ]
+
+
+def _reading_margin(aspect: Aspect, reading: Reading) -> float | None:
+    margin = reading.margin if reading.margin is not None else aspect.margin
+    return None if margin is None else float(margin)
+
+
+def _margined_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    aspect = _aspect_by_id(report_input, prior[-1])
+    return [reading.arm for reading in aspect.readings if _reading_margin(aspect, reading) is not None]
+
+
+def _reading_spread(aspect: Aspect, arm_id: str, path: str) -> Spread:
+    """A candidate's reading on an aspect as a spread on its change, in points: its gain interval at its stated level
+    (:func:`~threetears.evals.analysis.separation.difference_spread`), with the cases each arm ran."""
+    reading = _reading(aspect, arm_id)
+    if reading.gain_interval is None:
+        raise _unstated(
+            path, f"reads {arm_id}'s reading on {aspect.id} by its interval, which the reading does not state"
+        )
+    try:
+        return difference_spread(
+            float(reading.change),
+            (float(reading.gain_interval[0]), float(reading.gain_interval[1])),
+            level_share(reading.gain_confidence),
+            tuple(float(count) for count in reading.cases),
+        )
+    except NoSpread as none:
+        raise _unstated(path, f"reads {arm_id}'s reading on {aspect.id}, which has no spread: {none}") from none
+
+
+def _settle_margin_figure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect_id, arm_id, field = values
+    aspect = _aspect_by_id(report_input, aspect_id)
+    margin = _reading_margin(aspect, _reading(aspect, arm_id))
+    assert margin is not None
+    if field == "line":
+        return _number(path, -margin, "the margin's line: the drop the reading may show", "points", change=True)
+    spread = _reading_spread(aspect, arm_id, path)
+    if field == "change":
+        return _number(path, spread.mean, "the reading's change from the control", "points", change=True)
+    return _settle_line(report_input, path, spread, "", -margin, True, field, in_points=True)
+
+
+def _floored_aspects(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]:
+    return list(dict.fromkeys(read.aspect for read in report_input.floors if read.margin is not None))
+
+
+def _floored_keys(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    reads = report_input.floors
+    return list(dict.fromkeys(read.floor for read in reads if read.aspect == prior[-1] and read.margin is not None))
+
+
+def _floored_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    aspect_id, floor = prior[-2:]
+    return [read.arm for read in report_input.floors if (read.aspect, read.floor) == (aspect_id, floor)]
+
+
+def _floor_measure(report_input: ReportInput, rate: str, path: str) -> str:
+    """The one measure a floor's rate names: the measure of that key, else the check measure minted for it."""
+    named = [key for key in report_input.measures if key == rate or goal_check_of(key) == rate]
+    if len(named) != 1:
+        found = "no measure" if not named else f"{len(named)} measures"
+        raise _unstated(path, f"reads the floor's rate {rate!r}, which names {found} the input holds")
+    return named[0]
+
+
+def _aspect_spread(report_input: ReportInput, key: str, aspect_id: str, arm_id: str, path: str) -> Spread:
+    """An arm's spread on a measure on one aspect, from its own statistic there: its interval, half-width, standard
+    error, or a pass/fail rate's binomial spread from its own count."""
+    table = report_input.measures[key]
+    stat = _on_aspect(table, aspect_id, report_input).get(arm_id)
+    if stat is None:
+        raise _unstated(path, f"reads {arm_id}'s figure on {key!r} on {aspect_id}, which the input does not state")
+    count = stat.n if stat.n is not None else stat.n_cases
+    distinct = stat.n_cases if stat.n is not None and stat.n_cases is not None and stat.n_cases < stat.n else None
+    try:
+        return stat_spread(
+            None if stat.mean is None else float(stat.mean),
+            ci=None if stat.ci is None else (float(stat.ci[0]), float(stat.ci[1])),
+            half_width=None if stat.half_width is None else float(stat.half_width),
+            sem=None if stat.sem is None else float(stat.sem),
+            n=None if count is None else float(count),
+            stated_level=_stated_level(report_input, key),
+            rate=_rate_of(report_input, key),
+            cases=None if distinct is None else float(distinct),
+        )
+    except NoSpread as none:
+        raise _unstated(path, f"reads {arm_id}'s spread on {key!r} on {aspect_id}: {none}") from none
+
+
+def _floor_spread(report_input: ReportInput, aspect_id: str, floor: str, arm_id: str, path: str) -> Spread:
+    """A floor's drop on a candidate as a spread, in points: the aspect's reading where the floor speaks for its pass
+    rate, else the candidate's rate on the floor's own measure minus the control's, their spreads combined as
+    independent."""
+    read = next(
+        held for held in report_input.floors if (held.aspect, held.floor, held.arm) == (aspect_id, floor, arm_id)
+    )
+    if read.reading is None:
+        aspect = next((held for held in report_input.aspects if held.id == aspect_id), None)
+        if aspect is None or arm_id not in _reading_arms(aspect):
+            raise _unstated(path, f"reads the pass rate's drop on {aspect_id}, which holds no reading of {arm_id}")
+        return _reading_spread(aspect, arm_id, path)
+    control = _control(report_input)
+    if control is None:
+        raise _unstated(path, "reads a drop from the control, and the input names no control")
+    key = _floor_measure(report_input, read.reading, path)
+    mine = _aspect_spread(report_input, key, aspect_id, arm_id, path)
+    theirs = _aspect_spread(report_input, key, aspect_id, control.id, path)
+    factor = 100.0 if _scale_of(report_input, key)[0] == "share" else 1.0
+    per_case = (
+        None
+        if mine.per_case is None or theirs.per_case is None
+        else factor * math.hypot(mine.per_case, theirs.per_case)
+    )
+    count = None if mine.n is None or theirs.n is None else min(mine.n, theirs.n)
+    return Spread(
+        factor * (mine.mean - theirs.mean),
+        factor * math.hypot(mine.se, theirs.se),
+        count,
+        per_case,
+        mine.level,
+        mine.basis,
+        mine.cases if mine.cases == theirs.cases else None,
+    )
+
+
+def _settle_floor_figure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect_id, floor, arm_id, field = values
+    read = next(
+        held for held in report_input.floors if (held.aspect, held.floor, held.arm) == (aspect_id, floor, arm_id)
+    )
+    assert read.margin is not None
+    if field == "line":
+        return _number(path, -float(read.margin), "the floor's line: the drop it allows", "points", change=True)
+    spread = _floor_spread(report_input, aspect_id, floor, arm_id, path)
+    if field == "change":
+        return _number(
+            path, spread.mean, "the candidate's change from the control on the floor's rate", "points", change=True
+        )
+    return _settle_line(report_input, path, spread, "", -float(read.margin), True, field, in_points=True)
 
 
 def separation_wheres(report_input: ReportInput, arms: Sequence[str], key: str) -> list[str]:
@@ -3337,13 +3814,15 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         _Statistic(_SPREAD_FIELDS, "<field>"),
         what="an arm's spread on a measure or judged dimension, `overall` or within a slice (`task.<task>`, "
         "`cells.<row>.<column>`, `strata.<stratum>`): `se` the standard error of its mean and `per_case` one case's "
-        "spread, in points for a rate; `n` the count it rests on and `counts` what that count counts (`cases`; "
-        "`trials`, where a repeated case counts again; or `observations`, a statistic's own n that says neither); "
-        "`level` the level a result read from it is stated at; `basis` what the standard error was read from (a "
-        "stated interval or half-width at a stated level, a standard error, or a pass/fail rate's binomial spread "
-        "from its count); `interval`, `low` and `high` the interval it gives at that level (the mean plus and minus "
-        "the normal quantile times `se`, a rate's ends held to none to all; none for a rate of none or all), which a "
-        "chart of a rate draws where the input states no interval",
+        "spread (its mean's over today's repeats, where the count is trials), in points for a rate; `n` the count it "
+        "rests on and `counts` what that count counts (`cases`; `trials`, where a repeated case counts again; or "
+        "`observations`, a statistic's own n that says neither); `cases` the distinct cases behind a count of trials "
+        "and `repeats` the trials each ran; `level` the level a result read from it is stated at; `basis` what the "
+        "standard error was read from (a stated interval or half-width at a stated level, a standard error, or a "
+        "pass/fail rate's binomial spread from a count, naming where the count was read: its own, the slice's stated "
+        "cases, or the arm's scoreboard); `interval`, `low` and `high` the interval it gives at that level (the mean "
+        "plus and minus the normal quantile times `se`, a rate's ends held to none to all; none for a rate of none or "
+        "all), which a chart of a rate draws where the input states no interval",
         resolve=_spread_figure,
         derived=True,
         derived_note=_SEPARATION_NOTE,
@@ -3373,9 +3852,10 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         _Statistic(_SETTLE_PAIR_FIELDS, "<field>"),
         what="the cases each of two arms needs for a two-sided interval on their difference, centred on today's, to "
         "clear zero: `cases_needed` (half such designs clear if the truth equals today's difference), "
-        "`cases_needed_80` (four in five do), each counting what the arms' spread counts (`spread.<arm>.<measure>."
-        "<where>.counts`: trials, not cases, on a repeated design); `wrong_side` how often a fresh run of today's size "
-        "reads the other arm ahead; `level` the level, with its sidedness (`95% two-sided`)",
+        "`cases_needed_80` (four in five do), in cases where the figures state their cases (each run as often as "
+        "today), else in what their count counts (`spread.<arm>.<measure>.<where>.counts`); `trials_needed` and "
+        "`trials_needed_80` the trials those take at today's repeats; `wrong_side` how often a fresh run of today's "
+        "size reads the other arm ahead; `level` the level, with its sidedness (`95% two-sided`)",
         resolve=_settle_pair_figure,
         derived=True,
         derived_note=_SEPARATION_NOTE,
@@ -3393,11 +3873,14 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         "(negative where today's figure misses); the cases a design needs for a one-sided bound centred on today's "
         "figure to sit wholly on today's side of the line, clearing it where the figure passes and confirming the "
         "miss where it misses (`cases_needed`: half such designs; `cases_needed_80`: four in five), and the same for "
-        "the two-sided interval a page prints (`cases_needed_two_sided`, `cases_needed_two_sided_80`), each "
-        "counting what the arm's spread counts (`spread.<arm>.<measure>.<where>.counts`: trials, not cases, on a "
-        "repeated design); `wrong_side`, how often a fresh run of today's size lands on the other side; `level` the "
-        "level, with its sidedness (`95% one-sided`); `n`, `counts` and `basis` the count the arm's spread rests on, "
-        "what it counts and what the spread was read from, as `spread.` reads them, on the criterion's aspect",
+        "the two-sided interval a page prints (`cases_needed_two_sided`, `cases_needed_two_sided_80`), each in cases "
+        "where the figure states its cases (each run as often as today), else in what its count counts "
+        "(`spread.<arm>.<measure>.<where>.counts`), and each with the trials it takes at today's repeats "
+        "(`trials_needed`, `trials_needed_80`, `trials_needed_two_sided`, `trials_needed_two_sided_80`); "
+        "`wrong_side`, how often a fresh run of today's size lands on the other side; `level` the level, with its "
+        "sidedness (`95% one-sided`); `n`, `counts`, `repeats` and `basis` the count the arm's spread rests on, what it "
+        "counts, the trials each case ran and what the spread was read from, as `spread.` reads them, on the "
+        "criterion's aspect",
         resolve=_settle_criterion_figure,
         derived=True,
         derived_note=_SEPARATION_NOTE,
@@ -3418,7 +3901,229 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         derived_note=_SEPARATION_NOTE,
         example="settle.hypothetical.0.9.fast.v2.tone.kept.overall.wrong_side",
     ),
+    _family_of(
+        _Word("settle"),
+        _Word("margin"),
+        _Ids("<aspect>", _margined_aspects),
+        _Ids("<candidate>", _margined_arms),
+        _Statistic(_MARGIN_FIELDS, "<field>"),
+        what="a candidate's reading on an aspect against the aspect's margin: `line` minus the margin, `change` the "
+        "reading's change from the control (in points), then what a criterion's settle reads, the spread read off "
+        "the reading's own interval at its stated level, each arm running the size in cases",
+        resolve=_settle_margin_figure,
+        derived=True,
+        derived_note=_SEPARATION_NOTE,
+        example="settle.margin.answers.fast.v2.cases_needed",
+    ),
+    _family_of(
+        _Word("settle"),
+        _Word("floor"),
+        _Ids("<aspect>", _floored_aspects),
+        _Ids("<floor>", _floored_keys),
+        _Ids("<candidate>", _floored_arms),
+        _Statistic(_MARGIN_FIELDS, "<field>"),
+        what="a candidate's change from the control against a floor read on it: `line` minus the floor's margin, "
+        "`change` the change (in points), then what a criterion's settle reads; the change is the aspect's reading "
+        "where the floor speaks for its pass rate, else the candidate's rate on the floor's own measure minus the "
+        "control's, their spreads combined as independent",
+        resolve=_settle_floor_figure,
+        derived=True,
+        derived_note=_SEPARATION_NOTE,
+        example="settle.floor.answers.answers/rate_drop/*.fast.v2.wrong_side",
+    ),
 )
+
+# --- an assumed count: the separation families read as if each slice stating no count held one ---------------------
+
+#: How ``assumed.share.`` reads a slice's count: the arm's own count on the measure, times the slice's traffic share.
+ASSUMED_SHARE = "share"
+
+#: What the grammar says of a figure read under an assumed count, in place of "descriptive, no interval".
+_ASSUMED_NOTE = (
+    "Hypothetical: read as if each slice stating no count of its own held the assumed cases, never a figure the input "
+    "states; computed as its plain key's is."
+)
+
+
+def _assumed_count(path: str, spelled: str) -> int:
+    """The cases an ``assumed.<cases>.`` key spells, refused unless a whole number above none."""
+    value = float(spelled)
+    if not value.is_integer() or value < 1:
+        raise _refuse(
+            path, f"assumes {spelled} cases a slice, and an assumed count is a whole number of cases, one or more"
+        )
+    return int(value)
+
+
+def _slice_share(report_input: ReportInput, where: str) -> float | None:
+    """A slice's stated share of traffic: a task's or a stratum's; None for a cell, or one that states none."""
+    kind, _dot, named = where.partition(".")
+    if kind == "task":
+        shares = [task.share for task in report_input.tasks if task.id == named]
+    elif kind == "strata":
+        shares = [stratum.share for stratum in report_input.strata if stratum.id == named]
+    else:
+        shares = []
+    return float(shares[0]) if len(shares) == 1 and shares[0] is not None else None
+
+
+def _assumed_cases(
+    report_input: ReportInput, assumed: int | None, arm_id: str, key: str, where: str, path: str
+) -> int | None:
+    """The cases an assumption gives one arm's figure at a slice, where its count is unstated; None where the figure
+    states its count (the assumption leaves it as it is). ``assumed`` None reads the arm's own count times the slice's
+    traffic share."""
+    held = _held_where(report_input, arm_id, key, where)
+    if held is None or held.count is not None:
+        return None
+    if assumed is not None:
+        return assumed
+    share = _slice_share(report_input, where)
+    overall = _held_where(report_input, arm_id, key, _OVERALL)
+    if share is None or overall is None or overall.count is None:
+        lacking = "a traffic share" if share is None else f"{arm_id}'s own count on {key!r}"
+        raise _unstated(
+            path, f"reads {where}'s cases as {arm_id}'s count times its traffic share, and it states no {lacking}"
+        )
+    return max(1, round(overall.count * share))
+
+
+def _assumed_input(
+    report_input: ReportInput, assumed: int | None, arms: Sequence[str], key: str, where: str, path: str
+) -> ReportInput:
+    """The input as if each of ``arms``' figures on ``key`` at slice ``where`` that states no count held the assumed
+    cases; refused where ``where`` is no slice, or every one of them states its count (the plain key reads it)."""
+    if where == _OVERALL:
+        raise _refuse(
+            path, "assumes a count overall, and an assumed count fills only a slice: cite the key without `assumed.`"
+        )
+    filled = {arm: _assumed_cases(report_input, assumed, arm, key, where, path) for arm in arms}
+    filled = {arm: cases for arm, cases in filled.items() if cases is not None}
+    if not filled:
+        raise _refuse(
+            path,
+            f"assumes a count at {where}, where every figure it reads states its own: cite the key without `assumed.`",
+        )
+    kind, _dot, named = where.partition(".")
+
+    def counted(per_arm: Mapping[str, Mapping[str, Stat]]) -> dict[str, dict[str, Stat]]:
+        return {
+            arm: {
+                measure: stat.model_copy(update={"n_cases": filled[arm]}) if arm in filled and measure == key else stat
+                for measure, stat in figures.items()
+            }
+            for arm, figures in per_arm.items()
+        }
+
+    if kind == "task":
+        tasks = [
+            task.model_copy(update={"per_arm": counted(task.per_arm)}) if task.id == named else task
+            for task in report_input.tasks
+        ]
+        return report_input.model_copy(update={"tasks": tasks})
+    if kind == "strata":
+        strata = [
+            stratum.model_copy(update={"per_arm": counted(stratum.per_arm)}) if stratum.id == named else stratum
+            for stratum in report_input.strata
+        ]
+        return report_input.model_copy(update={"strata": strata})
+    cells = {
+        cell_id: cell.model_copy(update={"per_arm": counted(cell.per_arm)}) if _cell_spelling(cell) == named else cell
+        for cell_id, cell in report_input.cells.items()
+    }
+    return report_input.model_copy(update={"cells": cells})
+
+
+#: What one separation family's values name, for an assumption to fill: the arms, the measure, and the place.
+_Reads = Callable[[ReportInput, tuple[str, ...]], tuple[tuple[str, ...], str, str]]
+
+
+def _assumed_resolver(
+    inner: _Family, reads: _Reads, *, counted: bool
+) -> Callable[[ReportInput, tuple[str, ...], str], Figure]:
+    """A separation family read under an assumed count: ``assumed.<cases>.`` (``counted``) or ``assumed.share.``."""
+
+    def resolve_assumed(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+        assumed = _assumed_count(path, values[0]) if counted else None
+        rest = values[1:] if counted else values
+        arms, key, where = reads(report_input, rest)
+        figure = inner.resolve(_assumed_input(report_input, assumed, arms, key, where, path), rest, path)
+        if isinstance(figure.value, str) and figure.kind == "text" and path.endswith(".basis"):
+            how = f"{assumed} cases" if assumed is not None else "the arm's own count times the slice's traffic share"
+            own = f"from {_COUNT_SOURCES['own']}"
+            said = figure.value.replace(own, f"from an assumed count ({how})")
+            return replace(figure, value=said if said != figure.value else f"{figure.value}; the count assumed: {how}")
+        return figure
+
+    return resolve_assumed
+
+
+def _stripped(slot: _Slot, prefix: int) -> _Slot:
+    """An inner family's slot, its options read without the assumption's own values before it."""
+    if not isinstance(slot, _Ids) or not prefix:
+        return slot
+    options = slot.options
+    return _Ids(slot.name, lambda report_input, prior: options(report_input, prior[prefix:]))
+
+
+def _criterion_reads(report_input: ReportInput, values: tuple[str, ...]) -> tuple[tuple[str, ...], str, str]:
+    criterion_id, arm_id, where, _field = values
+    return (arm_id,), _criterion(report_input, criterion_id).measure, where
+
+
+#: Each separation family an assumption reads, with what its values name.
+_ASSUMABLE: tuple[tuple[_Family, _Reads], ...] = (
+    (_SEPARATION_FAMILIES[0], lambda _ri, values: ((values[0],), values[1], values[2])),
+    (_SEPARATION_FAMILIES[1], lambda _ri, values: ((values[0], values[1]), values[2], values[3])),
+    (_SEPARATION_FAMILIES[2], lambda _ri, values: ((values[0], values[1]), values[2], values[3])),
+    (_SEPARATION_FAMILIES[3], _criterion_reads),
+    (_SEPARATION_FAMILIES[4], lambda _ri, values: ((values[1],), values[2], values[3])),
+)
+
+
+def _assumed_family(inner: _Family, reads: _Reads, *, counted: bool) -> _Family:
+    head: tuple[_Slot, ...] = (_Word("assumed"), _Number("<cases>")) if counted else (_Word("assumed.share"),)
+    how = (
+        "as if each slice stating no count of its own held `<cases>` cases"
+        if counted
+        else "as if each slice stating no count of its own held the arm's own count times the slice's traffic share"
+    )
+    return _family_of(
+        *head,
+        *(_stripped(slot, 1 if counted else 0) for slot in inner.slots),
+        what=f"{inner.form()} read {how}; refused overall, and at a slice where every figure states its count",
+        resolve=_assumed_resolver(inner, reads, counted=counted),
+        derived=True,
+        derived_note=_ASSUMED_NOTE,
+    )
+
+
+#: The separation families read under an assumed count, each by a number of cases and by traffic share.
+_ASSUMED_FAMILIES: tuple[_Family, ...] = tuple(
+    _assumed_family(inner, reads, counted=counted) for counted in (True, False) for inner, reads in _ASSUMABLE
+)
+
+
+def assumable(report_input: ReportInput, arms: Sequence[str], key: str, where: str) -> bool:
+    """Whether an assumed count would fill something at a separation key's place: it is a slice, and one of ``arms``
+    states a mean on ``key`` there and no count.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param arms: The arms, by id.
+    :ptype arms: Sequence[str]
+    :param key: The measure or judged dimension, by key.
+    :ptype key: str
+    :param where: The place, as ``<where>`` spells it.
+    :ptype where: str
+    :return: Whether an ``assumed.`` key reads there.
+    :rtype: bool
+    """
+    if where == _OVERALL:
+        return False
+    held = [_held_where(report_input, arm, key, where) for arm in arms]
+    return any(one is not None and one.count is None for one in held)
+
 
 # --- lever effects: one setting moved between two arms that differ in it alone ------------------------------------
 
@@ -4186,6 +4891,7 @@ _FAMILIES: tuple[_Family, ...] = (
         example="cost_per_month.base",
     ),
     *_SEPARATION_FAMILIES,
+    *_ASSUMED_FAMILIES,
     _family_of(
         *_LEVER,
         _Statistic(_LEVER_FIELDS, "<field>"),
@@ -4231,7 +4937,10 @@ _FAMILIES: tuple[_Family, ...] = (
         what="how many the campaign holds: arms (every option, the control among them), aspects, tasks, strata, "
         "cells, configs, gates (gates and guardrails), criteria; `surviving` is how many options survive every gate "
         "and guardrail, borderline counting as passing; `undecided` how many no gate figure fails while a gate has no "
-        "figure for them somewhere: neither passed nor removed",
+        "figure for them somewhere: neither passed nor removed; `pairs` how many pairs of arms its pair readings read "
+        "apart, `arm_pairs` how many pairs of arms there are; `examples` the failed trials the snapshot froze as "
+        "examples, `failures` the failed trials the run holds, which they were kept from (refused where the snapshot "
+        "does not count them: not known)",
         resolve=_campaign_count,
         derived_statistics=("surviving", "undecided"),
         example="count.arms|words",
@@ -4299,6 +5008,73 @@ _FAMILIES: tuple[_Family, ...] = (
         _keyed("<factor>", _factor_ids),
         what="how many levels one factor of a factorial grid holds",
         resolve=_levels_count,
+    ),
+    _family_of(
+        _Word("count.examples"),
+        _keyed("<aspect>", _example_aspects),
+        _Ids("<arm>", _example_arms),
+        what="how many of one arm's failed trials on one aspect the snapshot froze as examples (`count.examples` "
+        "counts every one)",
+        resolve=_kept_count,
+        example="count.examples.answers.fast.v2",
+    ),
+    _family_of(
+        _Word("count.examples"),
+        _keyed("<aspect>", _example_aspects),
+        _Ids("<arm>", _example_arms),
+        _Ids("<stratum>", _example_strata),
+        what="the same within one stratum or task",
+        resolve=_kept_count,
+    ),
+    _family_of(
+        _Word("count.failures"),
+        _keyed("<aspect>", _example_aspects),
+        _Ids("<arm>", _example_arms),
+        what="how many of one arm's trials on one aspect failed, as the examples count a failure: the pool its examples "
+        "were kept from (`count.failures` counts every one); not known, and refused, where the snapshot does not "
+        "count them",
+        resolve=_failed_trials_count,
+        example="count.failures.answers.fast.v2",
+    ),
+    _family_of(
+        _Word("count.failures"),
+        _keyed("<aspect>", _example_aspects),
+        _Ids("<arm>", _example_arms),
+        _Ids("<stratum>", _example_strata),
+        what="the same within one stratum or task",
+        resolve=_failed_trials_count,
+    ),
+    _family_of(
+        _Word("overlap"),
+        _keyed("<aspect>", lambda ri: [aspect.id for aspect in ri.aspects]),
+        _Ids("<aspect>", _other_aspects),
+        _Statistic(_OVERLAP_FIELDS, "<field>"),
+        what="whether two aspects ran the same cases, by the cases' stored ids: `same` in words (the same cases, "
+        "partly, different, or not known where the snapshot does not hold their case ids), `shared` the cases both "
+        "ran, `only_first` and `only_second` the cases only one ran; the counts are refused where not known",
+        resolve=_overlap,
+        example="overlap.answers.speed.same",
+    ),
+    _family_of(
+        _Word("confusion"),
+        _keyed("<axis>", _confusion_axes),
+        _Ids("<arm>", _confusion_arms),
+        _Ids("<expected>", _confusion_labels),
+        _Ids("<predicted>", _confusion_labels),
+        what="one cell of an arm's confusion on a label axis: the share of the expected label's cases predicted as the "
+        "predicted label, a percent of its row (or a count, where the axis counts observations)",
+        resolve=_confusion,
+    ),
+    _family_of(
+        _Word("cost.gap"),
+        _keyed("<arm>", _costs_per_thousand),
+        _Ids("<arm>", _cost_gap_seconds),
+        _Statistic(_COST_GAP_FIELDS, "<field>"),
+        what="two arms' costs apart, the first's minus the second's: `per_1k` per 1,000 of what the cost counts, "
+        "`monthly` per month at the declared monthly volume, `multiple` the first's cost over the second's",
+        resolve=_cost_gap,
+        derived=True,
+        example="cost.gap.fast.v2.base.multiple",
     ),
 )
 
@@ -4884,8 +5660,8 @@ GRAMMAR_HEADING = "Figure keys"
 def _example_input() -> ReportInput:
     """A small made-up input the grammar's examples are rendered on, with a dotted arm id and a dotted dimension: one
     asked aspect and one other, with a measure on both, a pair reading, a floor, a bar, strata, a cell, criteria, a
-    numeric setting, each arm's depth, a criterion set late, a second contrast family naming no aspect, and a
-    monthly volume."""
+    numeric setting, each arm's depth, a criterion set late, a second contrast family naming no aspect, a monthly
+    volume, a frozen example with the failed trials it was kept from, and the cases the two aspects share."""
     rate = {"base": (0.912, 897), "fast.v2": (0.874, 895)}
     return ReportInput.model_validate(
         {
@@ -4919,7 +5695,15 @@ def _example_input() -> ReportInput:
                     "asked": True,
                     "margin": 10,
                     "readings": [
-                        {"arm": "fast.v2", "reading": "within_margin", "change": -4.26, "within_interval": [-7.1, -1.4]}
+                        {
+                            "arm": "fast.v2",
+                            "reading": "within_margin",
+                            "change": -4.26,
+                            "within_interval": [-7.1, -1.4],
+                            "gain_interval": [-7.6, -0.9],
+                            "gain_confidence": 0.975,
+                            "cases": [300, 300],
+                        }
                     ],
                     "depth": {
                         "base": {"cases": 300, "trials": 900, "repeats_per_case": [3, 3.0, 3]},
@@ -5059,6 +5843,9 @@ def _example_input() -> ReportInput:
             "caveats": {
                 "late_criteria": [{"criterion": "floor", "name": "answers/rate_drop/*", "set_at": "25 Oct 2026"}]
             },
+            "examples": [{"trial": "T7", "case": "c-12", "aspect": "answers", "arm": "fast.v2", "outcome": "judged"}],
+            "failed_trials": [{"aspect": "answers", "arm": "fast.v2", "failed": 61}],
+            "case_overlap": [{"aspects": ["answers", "speed"], "shared": 300, "only_first": 0, "only_second": 0}],
         }
     )
 
@@ -5176,7 +5963,8 @@ def figure_key_grammar() -> str:
 _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
     (
         "campaign",
-        "the campaign, its arms, aspects and settings, and how deeply each arm ran",
+        "the campaign, its arms, aspects and settings, how deeply each arm ran, and whether two aspects ran the same "
+        "cases",
         frozenset(
             {
                 "meta",
@@ -5190,6 +5978,7 @@ _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
                 "depth",
                 "late_criteria",
                 "caveats",
+                "overlap",
             }
         ),
     ),
@@ -5210,8 +5999,9 @@ _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
     ),
     (
         "slices",
-        "figures within one task, stratum or target-matrix cell, and the share of a loss each carries",
-        frozenset({"task", "strata", "cells"}),
+        "figures within one task, stratum or target-matrix cell, the share of a loss each carries, and where a "
+        "classifier's predictions of each label went",
+        frozenset({"task", "strata", "cells", "confusion"}),
     ),
     (
         "gates",
@@ -5231,13 +6021,20 @@ _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
         frozenset({"spread", "compare", "settle"}),
     ),
     (
+        "assumed",
+        "a spread, comparison or settle key read as if each slice whose figure states no count held an assumed count: "
+        "a what-if the key names",
+        frozenset({"assumed"}),
+    ),
+    (
         "levers",
         "the effect of one setting moved between arms that differ in it alone, and how it changes with another setting",
         frozenset({"lever"}),
     ),
     (
         "counts",
-        "how many of a thing a sentence counts: arms, slices, gates, the options passing each, the places one misses",
+        "how many of a thing a sentence counts: arms, slices, gates, the options passing each, the places one misses, "
+        "the examples kept and the failures they were kept from",
         frozenset({"count"}),
     ),
 )
@@ -5322,6 +6119,7 @@ __all__ = [
     "KeySubjects",
     "NamedKind",
     "arm_settings",
+    "assumable",
     "criterion_wheres",
     "POOL_WEIGHT_WORDS",
     "SLICE_COST_WORDS",

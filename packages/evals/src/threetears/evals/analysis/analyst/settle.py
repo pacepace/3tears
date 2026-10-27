@@ -15,10 +15,21 @@ arithmetic and its design note are :mod:`~threetears.evals.analysis.separation`.
   side of the line is the figure on?), at the snapshot's stated level, else 95%. Every figure read against a
   hypothetical line is keyed ``settle.hypothetical.<line>.``, so it reads as hypothetical wherever it is cited, and
   the result says so.
+- *A candidate's reading against its aspect's margin, or a floor read on it* (``against``: ``margin:<aspect>`` or
+  ``floor:<aspect>/<floor>``, as ``decision_sensitivity`` names them): the change from the control, in points, against
+  minus the margin, one-sided at the reading's own level, its spread read off the reading's own interval
+  (:func:`~threetears.evals.analysis.separation.difference_spread`), each arm running the size; a floor on another
+  rate than the aspect's reads the candidate's rate on that measure minus the control's, as independent arms. With
+  one arm and nothing named, every line the arm is judged by: each declared criterion, each margin a reading of it is
+  read against, each floor read on it. Every figure is keyed ``settle.margin.`` or ``settle.floor.``.
 - *Two arms apart* (two ``arm_ids`` and a ``measure_key``): overall and in each slice holding both, two-sided at the
   same level, each arm running the cases named. Read as independent arms: a paired design over the same cases needs
   fewer where the arms agree case by case *(inferred: the snapshot holds no case-level differences to size a paired
   design by)*.
+- *An assumed count* (``assumed``, a what-if the caller states): a slice whose figure states no count has no spread to
+  read; read as if each such slice held that many cases, or (``share``) the arm's own count times the slice's traffic
+  share. Every figure read under it is keyed ``assumed.<cases>.`` or ``assumed.share.``, so it reads as an assumption
+  wherever it is cited; a place whose figures state their count is read as they state it.
 
 **What a row says.** Today's estimate and the line (or the two arms' difference), its distance toward passing, the
 cases a design needs for an interval at the level, centred on today's estimate, to sit wholly on today's side of the
@@ -34,9 +45,12 @@ count, else the arm's own stated spread times the root of its count.
   prints two-sided intervals, a line row gives beside them the sizes at which the two-sided interval at the level
   sits on today's side (``cases_needed_two_sided``, ``cases_needed_two_sided_80``). A two-arm row is two-sided, and
   its ``level`` says so.
-- *What a case is* (``count_of``): a size counts what the count it is read from counts. That is cases where the
-  figure rests on distinct cases, and trials where it rests on trials (a case run again counts again): on a repeated
-  design ``cases_needed`` is then a count of trials, and the spread reads each repeat as independent.
+- *What a case is*: a fresh run adds cases, so a size counts cases, each run as often as today's design runs one;
+  ``trials_needed`` (and its siblings) is the trials that takes at today's repeats (``repeats``). On a repeated design
+  the count a spread rests on is trials (``count_of``); where the figure states its distinct cases the size is read
+  on one case's spread over its repeats. A binomial spread read from trials treats each repeat as independent, so
+  where a case's repeats agree the cases needed are more, at most the trials figure. Where a figure states no
+  distinct cases its size counts what its count counts.
 
 - *Whether the line gates* (``gates``): each criterion row says whether its criterion removes an option that misses
   it, as the caller reads the bars (``bars_as``: ``warnings`` as the snapshot declares them, or ``gates``). Code never
@@ -63,13 +77,18 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis.analyst.analyses import BarsAs
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite
 from threetears.evals.analysis.analyst.compare import (
+    assumed_words,
     cite_or_why,
     mean_key,
     place_name,
     refuse_arms,
     unkeyed_strata,
 )
-from threetears.evals.analysis.report.figure_keys import criterion_wheres, separation_wheres
+from threetears.evals.analysis.report.figure_keys import (
+    assumable,
+    criterion_wheres,
+    separation_wheres,
+)
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import criterion_aspect, lead_aspect
 
@@ -77,7 +96,7 @@ from threetears.evals.analysis.report_margins import criterion_aspect, lead_aspe
 _GATING = frozenset({"gate", "guardrail"})
 from threetears.evals.kernel.errors import RefusedInput
 
-__all__ = ["SETTLE_PAGE", "Settle", "settle_cases"]
+__all__ = ["SETTLE_PAGE", "Assumed", "Settle", "settle_cases"]
 
 #: The rows one page holds unless the caller asks for more.
 SETTLE_PAGE = 10
@@ -99,13 +118,22 @@ _ONE_SIDED = (
     "(settles: misses); cases_needed is the size at which half such designs do if the truth equals today's figure, "
     "cases_needed_80 the size at which four in five do. A page prints two-sided intervals, which need more: "
     "cases_needed_two_sided and cases_needed_two_sided_80 are the same sizes for the two-sided interval at the level. "
-    "Each size counts what count_of says the count counts: trials, not cases, on a repeated design"
+    "Each size counts cases, each run as often as today (repeats), and trials_needed and its siblings count the trials "
+    "that takes; where a figure states no distinct cases its sizes count what count_of says its count counts"
 )
 _TWO_SIDED = (
     "two-sided at the snapshot's level, each arm running cases_needed: an interval on the difference, centred on "
     "today's, excludes zero; half such designs do at cases_needed if the truth equals today's difference, four in five "
     "at cases_needed_80. Read as independent arms: a paired design over the same cases needs fewer. Each size counts "
-    "what count_of says the counts count: trials, not cases, on a repeated design"
+    "cases per arm, each run as often as today (repeats), and trials_needed counts the trials that takes"
+)
+
+#: What a row against a margin or a floor reads.
+_AGAINST_MARGIN = (
+    "one-sided at the reading's own level: the candidate's change from the control, in points, against minus the "
+    "margin, its spread read off the reading's own interval (a floor on another rate: the candidate's rate on that "
+    "measure minus the control's, as independent arms); each arm running cases_needed. Settles says which side today's "
+    "change is on"
 )
 
 #: The fields every row against a line reads, in the key's spelling.
@@ -115,12 +143,33 @@ _LINE_FIELDS = (
     "cases_needed_80",
     "cases_needed_two_sided",
     "cases_needed_two_sided_80",
+    "trials_needed",
+    "trials_needed_80",
+    "trials_needed_two_sided",
+    "trials_needed_two_sided_80",
     "wrong_side",
     "level",
 )
 
 #: The fields a row between two arms reads.
-_PAIR_FIELDS = ("difference", "cases_needed", "cases_needed_80", "wrong_side", "level")
+_PAIR_FIELDS = (
+    "difference",
+    "cases_needed",
+    "cases_needed_80",
+    "trials_needed",
+    "trials_needed_80",
+    "wrong_side",
+    "level",
+)
+
+#: The fields a row is read without, where its figure states no count of trials over fewer cases.
+_UNREPEATED = frozenset(
+    {"trials_needed", "trials_needed_80", "trials_needed_two_sided", "trials_needed_two_sided_80", "level"}
+)
+
+#: What an assumed count is, as the caller gives it: a number of cases, or ``share`` (the arm's own count times the
+#: slice's traffic share).
+Assumed = int | Literal["share"]
 
 #: Which side of its line today's estimate is on, so which way a row's sizes settle it.
 Settles = Literal["clears", "misses"]
@@ -168,14 +217,27 @@ class SettleRow(BaseModel):
     cases_needed_two_sided_80: CitedFigure | None = Field(
         description="Against a line, the two-sided size at which four in five do."
     )
+    trials_needed: CitedFigure | None = Field(
+        description="The trials cases_needed takes, each case run as often as today; None where the figure states no "
+        "count of trials over fewer cases."
+    )
+    trials_needed_80: CitedFigure | None = Field(description="The trials cases_needed_80 takes.")
+    trials_needed_two_sided: CitedFigure | None = Field(
+        description="Against a line, the trials cases_needed_two_sided takes."
+    )
+    trials_needed_two_sided_80: CitedFigure | None = Field(
+        description="Against a line, the trials cases_needed_two_sided_80 takes."
+    )
     wrong_side: CitedFigure | None = Field(
         description="How often a fresh run of today's size reads the other way, if the truth equals today's estimate."
     )
     level: CitedFigure | None = Field(description="The level the design is sized at, with its sidedness in words.")
     counts: list[CitedFigure] = Field(description="The count each arm's spread rests on, today.")
     count_of: list[CitedFigure] = Field(
-        description="What each count counts, and so each size: cases, trials (a repeated case counts again), or "
-        "observations."
+        description="What each count counts: cases, trials (a repeated case counts again), or observations."
+    )
+    repeats: list[CitedFigure] = Field(
+        description="The trials each case ran today, for each arm whose count is trials over its stated cases."
     )
     basis: list[CitedFigure] = Field(description="What each arm's spread was read from.")
     unsettled: str = Field(description="Why no design size is read here; empty where one is.")
@@ -200,6 +262,10 @@ class Settle(BaseModel):
     hypothetical: bool = Field(
         description="True where the line is the caller's own: every figure read against it is hypothetical."
     )
+    assumed: str = Field(
+        description="The count the caller assumed for each slice stating none, and the key prefix its figures carry; "
+        "empty where none is assumed."
+    )
     arms: list[str] = Field(description="The arms, as arm:<id>.")
     rows: list[SettleRow] = Field(description="The readings on this page, each criterion's places in order.")
     total: int = Field(description="The readings in all.")
@@ -214,17 +280,18 @@ class Settle(BaseModel):
 
 
 def _spread_figures(
-    report_input: ReportInput, arms: Sequence[str], key: str, where: str
-) -> tuple[list[CitedFigure], list[CitedFigure], list[CitedFigure]]:
-    """Each arm's count, what it counts, and its spread basis at a place, where its spread reads."""
-    found: dict[str, list[CitedFigure]] = {"n": [], "counts": [], "basis": []}
+    report_input: ReportInput, arms: Sequence[str], key: str, where: str, head: str
+) -> dict[str, list[CitedFigure]]:
+    """Each arm's count, what it counts, its repeats and its spread basis at a place, where its spread reads; ``head``
+    the assumption's key prefix, or empty."""
+    found: dict[str, list[CitedFigure]] = {"n": [], "counts": [], "repeats": [], "basis": []}
     for arm in arms:
         if where not in separation_wheres(report_input, (arm,), key):
             continue
         for field, figures in found.items():
-            figure, _why = cite_or_why(f"spread.{arm}.{key}.{where}.{field}", report_input)
+            figure, _why = cite_or_why(f"{head}spread.{arm}.{key}.{where}.{field}", report_input)
             figures += [figure] if figure is not None else []
-    return found["n"], found["counts"], found["basis"]
+    return found
 
 
 def _row(
@@ -238,16 +305,19 @@ def _row(
     estimate: Sequence[CitedFigure],
     line: CitedFigure | None,
     fields: Sequence[str],
+    head: str = "",
 ) -> SettleRow:
-    """One row: every field the prefix's key family reads, the first unstated one's reason as ``unsettled``."""
+    """One row: every field the prefix's key family reads, the first unstated one's reason as ``unsettled``; ``head``
+    the assumption's key prefix where one applies here, else empty. A row with no measure key (a margin's or floor's)
+    names no spread figures."""
     read: dict[str, CitedFigure | None] = {}
     why = ""
     for field in fields:
-        figure, reason = cite_or_why(f"{prefix}.{field}", report_input)
+        figure, reason = cite_or_why(f"{head}{prefix}.{field}", report_input)
         read[field] = figure
-        if figure is None and not why and field != "level":
+        if figure is None and not why and field not in _UNREPEATED:
             why = reason
-    counts, count_of, bases = _spread_figures(report_input, arms, key, where)
+    spread = _spread_figures(report_input, arms, key, where, head) if key else {}
     distance = read.get("distance")
     settles: Settles | None = None
     if distance is not None and isinstance(distance.value, int | float) and distance.value != 0:
@@ -264,11 +334,16 @@ def _row(
         cases_needed_80=read["cases_needed_80"],
         cases_needed_two_sided=read.get("cases_needed_two_sided"),
         cases_needed_two_sided_80=read.get("cases_needed_two_sided_80"),
+        trials_needed=read.get("trials_needed"),
+        trials_needed_80=read.get("trials_needed_80"),
+        trials_needed_two_sided=read.get("trials_needed_two_sided"),
+        trials_needed_two_sided_80=read.get("trials_needed_two_sided_80"),
         wrong_side=read["wrong_side"],
         level=read["level"],
-        counts=counts,
-        count_of=count_of,
-        basis=bases,
+        counts=spread.get("n", []),
+        count_of=spread.get("counts", []),
+        repeats=spread.get("repeats", []),
+        basis=spread.get("basis", []),
         unsettled=why if read["cases_needed"] is None or read["wrong_side"] is None else "",
     )
 
@@ -294,18 +369,27 @@ def _line_text(line: float) -> str:
     return text.removesuffix(".0")
 
 
+def _head(report_input: ReportInput, assumed: Assumed | None, arms: Sequence[str], key: str, where: str) -> str:
+    """The key prefix an assumed count gives a row's figures where it fills something there; empty elsewhere."""
+    return f"assumed.{assumed}." if assumed is not None and assumable(report_input, arms, key, where) else ""
+
+
 def _on_own_aspect(report_input: ReportInput, row: SettleRow, prefix: str) -> SettleRow:
-    """A criterion row on an aspect other than the lead, its count, what it counts and its spread basis read on that
-    aspect by the criterion's own settle keys, where a ``spread.`` key reads the lead aspect's."""
+    """A criterion row on an aspect other than the lead, its count, what it counts, its repeats and its spread basis
+    read on that aspect by the criterion's own settle keys, where a ``spread.`` key reads the lead aspect's."""
     found: dict[str, list[CitedFigure]] = {}
-    for field, named in (("n", "counts"), ("counts", "count_of"), ("basis", "basis")):
+    for field, named in (("n", "counts"), ("counts", "count_of"), ("repeats", "repeats"), ("basis", "basis")):
         figure, _why = cite_or_why(f"{prefix}.{field}", report_input)
         found[named] = [figure] if figure is not None else []
     return row.model_copy(update=found)
 
 
 def _criteria_rows(
-    report_input: ReportInput, arm: str, criteria: Sequence[str], bars_as: BarsAs = "warnings"
+    report_input: ReportInput,
+    arm: str,
+    criteria: Sequence[str],
+    bars_as: BarsAs = "warnings",
+    assumed: Assumed | None = None,
 ) -> list[SettleRow]:
     rows: list[SettleRow] = []
     for criterion_id in criteria:
@@ -315,10 +399,11 @@ def _criteria_rows(
         for where in wheres:
             place = "" if len(wheres) == 1 else "." + where.removeprefix("task.").removeprefix("cells.")
             value = cite(f"criteria.{criterion_id}.{arm}{place}.value", report_input)
-            prefix = f"settle.criteria.{criterion_id}.{arm}.{where}"
+            head = _head(report_input, assumed, (arm,), criterion.measure, where)
+            prefix = f"{head}settle.criteria.{criterion_id}.{arm}.{where}"
             row = _row(
                 report_input,
-                prefix,
+                f"settle.criteria.{criterion_id}.{arm}.{where}",
                 where=where,
                 against=f"criterion {criterion_id}",
                 arms=(arm,),
@@ -326,11 +411,50 @@ def _criteria_rows(
                 estimate=[value],
                 line=line,
                 fields=_LINE_FIELDS,
+                head=head,
             )
             on_lead = criterion_aspect(report_input, criterion) == lead_aspect(report_input)
             row = row if on_lead else _on_own_aspect(report_input, row, prefix)
             gates = criterion.kind in _GATING or (criterion.kind == "bar" and bars_as == "gates")
             rows.append(row.model_copy(update={"gates": gates}))
+    return rows
+
+
+def _margin_lines(report_input: ReportInput, arm: str) -> dict[str, str]:
+    """Every margin and floor a candidate's reading is read against, as ``decision_sensitivity`` names them
+    (``margin:<aspect>``, ``floor:<aspect>/<floor>``), each to the prefix of its ``settle.`` keys."""
+    lines: dict[str, str] = {}
+    for aspect in report_input.aspects:
+        for reading in aspect.readings:
+            margin = reading.margin if reading.margin is not None else aspect.margin
+            if reading.arm == arm and margin is not None:
+                lines[f"margin:{aspect.id}"] = f"settle.margin.{aspect.id}.{arm}"
+    for read in report_input.floors:
+        if read.arm == arm and read.margin is not None:
+            lines[f"floor:{read.aspect}/{read.floor}"] = f"settle.floor.{read.aspect}.{read.floor}.{arm}"
+    return lines
+
+
+def _margin_rows(report_input: ReportInput, arm: str, named: Sequence[str]) -> list[SettleRow]:
+    """A row per margin or floor named, read on one candidate's change from the control."""
+    lines = _margin_lines(report_input, arm)
+    rows: list[SettleRow] = []
+    for against in named:
+        prefix = lines[against]
+        change, _why = cite_or_why(f"{prefix}.change", report_input)
+        rows.append(
+            _row(
+                report_input,
+                prefix,
+                where="overall",
+                against=against,
+                arms=(arm,),
+                key="",
+                estimate=[change] if change is not None else [],
+                line=cite(f"{prefix}.line", report_input),
+                fields=_LINE_FIELDS,
+            )
+        )
     return rows
 
 
@@ -358,16 +482,18 @@ def _rows(
     measure: str | None,
     criterion: str | None,
     line: float | None,
+    against: str | None = None,
+    assumed: Assumed | None = None,
     bars_as: BarsAs = "warnings",
 ) -> tuple[list[SettleRow], str, bool]:
     """Every row the call names, how they are read (one- or two-sided), and whether the line is hypothetical."""
     if len(arms) == 2:
-        if criterion is not None or line is not None:
+        if criterion is not None or line is not None or against is not None:
             raise RefusedInput(
-                "two arms are settled against each other, not against a line, and criterion_id or hypothetical_line "
-                "is given",
-                remedy="omit criterion_id and hypothetical_line to settle the two arms apart, or name one arm",
-                parameters=("criterion_id", "hypothetical_line"),
+                "two arms are settled against each other, not against a line, and criterion_id, hypothetical_line or "
+                "against is given",
+                remedy="omit criterion_id, hypothetical_line and against to settle the two arms apart, or name one arm",
+                parameters=("criterion_id", "hypothetical_line", "against"),
             )
         first, second = arms
         key, wheres = _refuse_measure(report_input, measure, arms, "two arms are settled apart on one measure")
@@ -382,18 +508,26 @@ def _rows(
                 estimate=_means(report_input, arms, key, where),
                 line=None,
                 fields=_PAIR_FIELDS,
+                head=_head(report_input, assumed, arms, key, where),
             )
             for where in wheres
         ]
         return rows, _TWO_SIDED, False
     (arm,) = arms
+    given = [
+        name
+        for name, value in (("criterion_id", criterion), ("hypothetical_line", line), ("against", against))
+        if value is not None
+    ]
+    if len(given) > 1:
+        raise RefusedInput(
+            f"{' and '.join(given)} each name a line; settle reads one, or every line the arm is judged by with none "
+            "named",
+            remedy="name a declared criterion, a margin or floor (against), or a hypothetical line with its "
+            "measure_key; one, not both",
+            parameters=tuple(given),
+        )
     if line is not None:
-        if criterion is not None:
-            raise RefusedInput(
-                "criterion_id and hypothetical_line both name a line; settle reads one",
-                remedy="name a declared criterion, or give a hypothetical line with its measure_key, not both",
-                parameters=("criterion_id", "hypothetical_line"),
-            )
         key, wheres = _refuse_measure(report_input, measure, arms, "a hypothetical line is read on one measure")
         spelled = _line_text(line)
         cited_line = cite(f"settle.hypothetical.{spelled}.{arm}.{key}.{wheres[0]}.line", report_input)
@@ -408,10 +542,21 @@ def _rows(
                 estimate=_means(report_input, arms, key, where),
                 line=cited_line,
                 fields=_LINE_FIELDS,
+                head=_head(report_input, assumed, arms, key, where),
             )
             for where in wheres
         ]
         return rows, _ONE_SIDED, True
+    margins = list(_margin_lines(report_input, arm))
+    if against is not None:
+        if against not in margins:
+            raise RefusedInput(
+                f"against {against!r} names no margin or floor a reading of {_arm(arm)} is read against",
+                remedy=f"name one of {_listed(margins)}; or a criterion_id, or a hypothetical_line and measure_key",
+                parameters=("against",),
+                valid_values=margins,
+            )
+        return _margin_rows(report_input, arm, [against]), _AGAINST_MARGIN, False
     reading = [held.id for held in report_input.criteria if criterion_wheres(report_input, held.id, arm)]
     if criterion is not None and criterion not in reading:
         declared = criterion in {held.id for held in report_input.criteria}
@@ -422,20 +567,24 @@ def _rows(
         )
         raise RefusedInput(
             f"criterion_id {criterion!r} {fault}",
-            remedy=f"name a criterion reading {_arm(arm)}: {_listed(reading)}; or give a hypothetical_line and "
-            "measure_key",
+            remedy=f"name a criterion reading {_arm(arm)}: {_listed(reading)}; or a margin or floor (against: "
+            f"{_listed(margins)}); or give a hypothetical_line and measure_key",
             parameters=("criterion_id",),
             valid_values=reading,
         )
-    if not reading:
+    if criterion is not None:
+        return _criteria_rows(report_input, arm, [criterion], bars_as, assumed), _ONE_SIDED, False
+    if not reading and not margins:
         raise RefusedInput(
-            f"no declared criterion reads a figure for {_arm(arm)}, so there is no line to settle it against",
+            f"no declared criterion reads a figure for {_arm(arm)}, and no margin or floor is read on it, so there is "
+            "no line to settle it against",
             remedy="give a hypothetical_line with its measure_key (the line in the figure's own units), or name a "
             "second arm to settle the two apart",
             parameters=("hypothetical_line", "measure_key"),
         )
-    chosen = [criterion] if criterion is not None else reading
-    return _criteria_rows(report_input, arm, chosen, bars_as), _ONE_SIDED, False
+    rows = _criteria_rows(report_input, arm, reading, bars_as, assumed) + _margin_rows(report_input, arm, margins)
+    sided = " ".join(text for text, held in ((_ONE_SIDED, reading), (_AGAINST_MARGIN, margins)) if held)
+    return rows, sided, False
 
 
 def settle_cases(
@@ -445,12 +594,15 @@ def settle_cases(
     measure: str | None = None,
     criterion: str | None = None,
     line: float | None = None,
+    against: str | None = None,
+    assumed: Assumed | None = None,
     limit: int = SETTLE_PAGE,
     offset: int = 0,
     bars_as: BarsAs = "warnings",
 ) -> Settle:
-    """The cases that would settle each named reading: one arm against its criteria, one criterion or a hypothetical
-    line, or two arms apart on one measure.
+    """The cases that would settle each named reading: one arm against every line it is judged by (its criteria, the
+    margins its readings are read against, the floors read on it), one criterion, margin or floor, or a hypothetical
+    line; or two arms apart on one measure.
 
     :param report_input: The snapshot's report input.
     :ptype report_input: ReportInput
@@ -462,6 +614,12 @@ def settle_cases(
     :ptype criterion: str | None
     :param line: For one arm, a hypothetical line on ``measure``, in the figure's own units.
     :ptype line: float | None
+    :param against: For one arm, the one margin or floor to settle its reading against: ``margin:<aspect>`` or
+        ``floor:<aspect>/<floor>``.
+    :ptype against: str | None
+    :param assumed: A what-if: the cases each slice stating no count of its own is read as holding, or ``share``
+        (the arm's own count times the slice's traffic share); its figures are keyed ``assumed.<cases>.``.
+    :ptype assumed: Assumed | None
     :param limit: The most rows one page holds.
     :ptype limit: int
     :param offset: The first row the page holds.
@@ -474,7 +632,17 @@ def settle_cases(
     :raises RefusedInput: The arms, criterion, line or measure name nothing that can be settled, or no row reads.
     """
     refuse_arms(report_input, arms, (1, 2), "settle_cases")
-    rows, sided, hypothetical = _rows(report_input, arms, measure, criterion, line, bars_as)
+    rows, sided, hypothetical = _rows(
+        report_input, arms, measure, criterion, line, against=against, assumed=assumed, bars_as=bars_as
+    )
+    if assumed is not None and not any(row.basis and row.basis[0].key.startswith("assumed.") for row in rows):
+        raise RefusedInput(
+            f"assumed is {assumed!r}, and every row named reads a count its figures state, or is read against a "
+            "margin or floor: there is nothing to assume",
+            remedy="omit assumed; it fills a slice whose figure states no count (measure_read with by=task, stratum "
+            "or cell shows which state n or n_cases)",
+            parameters=("assumed",),
+        )
     if all(row.cases_needed is None and row.wrong_side is None for row in rows):
         raise RefusedInput(
             f"nothing named can be settled: {rows[0].unsettled}",
@@ -488,6 +656,7 @@ def settle_cases(
         reads_as=_READS_AS,
         sided=sided,
         hypothetical=hypothetical,
+        assumed=assumed_words(assumed),
         arms=[_arm(arm) for arm in arms],
         rows=page,
         total=len(rows),
