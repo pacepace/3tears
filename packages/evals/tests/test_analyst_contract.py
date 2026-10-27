@@ -91,8 +91,8 @@ ANALYST_MODULES = sorted(
 )
 
 #: The fields of a listing that page it, which are counts of rows and never figures, and the next page's call, whose
-#: arguments are the caller's own.
-PAGING = frozenset({"total", "offset", "next_offset", "limit", "next"})
+#: arguments are the caller's own; a key check pages by where its unread keys start, and says so in its progress line.
+PAGING = frozenset({"total", "offset", "next_offset", "limit", "next", "unread_from", "progress"})
 
 #: The fields every cited figure carries, by which one is found in a result's JSON.
 FIGURE_FIELDS = frozenset({"key", "reads", "value", "kind", "scale", "unit"})
@@ -900,6 +900,8 @@ async def test_no_analyst_tool_text_says_a_cost_counts_replies_where_the_snapsho
 
 
 #: Every analyst listing, the fixture snapshot it is read on, and a call whose rows run to more than one small page.
+#: ``figure_keys_check`` is sized like them but not paged: its next call would repeat the keys the caller holds, so its
+#: pages are an offset into them (held in ``test_analyst_keys``).
 _PAGED_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
     "campaign_overview": (KAIRO, {"limit": 7}),
     "caveats_list": (KAIRO, {"limit": 1}),
@@ -911,7 +913,6 @@ _PAGED_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
     "decision_sensitivity": ("r2", {"parameter": "threshold:pass_rate", "limit": 1}),
     "measure_breakdown": (KAIRO, {"measure_key": "persona.holds_character", "limit": 2}),
     "price_tradeoff": (KAIRO, {"gain_key": "persona.holds_character", "limit": 1}),
-    "figure_keys_check": (KAIRO, {"keys": ["arm:September", "arm:1017", "n_candidates", "judge.tier"], "limit": 1}),
     "block_render": (KAIRO, {"block_kind": "table", "query": {"source": "contrasts"}, "limit": 2}),
     "arms_compare": ("r1", {"arm_ids": ["atlas-l", "atlas-m"], "measure_key": "overall", "limit": 2}),
     "settle_cases": ("r1", {"arm_ids": ["atlas-m"], "limit": 3}),
@@ -978,7 +979,6 @@ _ROWS = {
     "block_render": "rows",
     "arms_compare": "rows",
     "settle_cases": "rows",
-    "figure_keys_check": "keys",
 }
 
 

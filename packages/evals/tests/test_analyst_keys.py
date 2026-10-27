@@ -13,11 +13,14 @@ Contracts held here (``threetears.evals.analysis.analyst.keys``, ``ops.analyst_k
 - **the Kairo editor's keys**: the four keys its editor could not verify through its cut read on the snapshot;
 - **the call**: a key repeated is read once, keys are paged, too many or none are refused; both the analyst's tool and
   the editor's cut carry it; through the action every call answers alike twice within the budget, its text writing
-  each figure as ``key|filters = reads``.
+  each figure as ``key|filters = reads``;
+- **the pages**: each says which of the keys sent it read and where the unread ones start, never writing the keys
+  back; following them reads every key once, and the last says every key is read.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -175,9 +178,12 @@ def test_a_repeated_key_is_read_once_and_the_keys_are_paged() -> None:
     keys = [f"arm:{arm.id}" for arm in held.arms]
     checked = figure_keys_check(held, [*keys, keys[0], f" {keys[1]} "], limit=2)
     assert checked.total == len(keys) and [row.asked for row in checked.keys] == keys[:2]
-    assert checked.next_offset == 2
+    assert checked.unread_from == 2 and "offset=2" in checked.progress
     rest = figure_keys_check(held, keys, limit=len(keys), offset=2)
-    assert [row.asked for row in rest.keys] == keys[2:] and rest.next_offset is None
+    assert [row.asked for row in rest.keys] == keys[2:] and rest.unread_from is None
+    assert f"all {len(keys)} keys read" in rest.progress
+    whole = figure_keys_check(held, keys)
+    assert whole.unread_from is None and whole.progress == f"all {len(keys)} keys read"
 
 
 def test_no_key_and_too_many_keys_are_refused() -> None:
@@ -241,6 +247,44 @@ async def test_every_call_answers_alike_twice_within_its_budget_writing_each_fig
                 cited = "|".join([figure["key"], *figure["filters"]])
                 line = re.escape(f"{cited} = {figure['reads']}")
                 assert re.search(rf"^\s*{line}$", first.text, re.MULTILINE), (where, cited)
+
+
+@pytest.mark.parametrize("role", ["analyst", "editor"])
+async def test_following_the_pages_reads_every_key_once_and_no_page_writes_the_keys_back(role: str) -> None:
+    """r4's 46 keys came back on every page's ``next:`` line, and r2 read the pages as overlapping. A page says where
+    the unread keys start; the caller sends the same keys from there, and the last page says every key is read."""
+    fixture, snapshots = off_loop(_seeded)
+    tool = _tool(role)
+    for name in ("r4", KAIRO):
+        snapshot = snapshots[name]
+        held = frozen_input(snapshot)
+        keys = list(dict.fromkeys(_keys(held)))[:30]
+        sent = {"action": "figure_keys_check", "snapshot_id": snapshot.id, "keys": keys, "limit": 7}
+        whole = await tool.call({**sent, "limit": len(keys)}, host=fixture.host, caller=CALLER)
+        assert whole.structured is not None and whole.structured["unread_from"] is None, whole.text
+        assert f"progress: all {len(keys)} keys read" in whole.text.splitlines()
+        read: list[str] = []
+        offset: int | None = 0
+        pages = 0
+        while offset is not None:
+            page = await tool.call({**sent, "offset": offset}, host=fixture.host, caller=CALLER)
+            assert page.ending == "ok" and page.structured is not None, page.text
+            assert "next" not in page.structured and not any(
+                line.startswith("next: ") for line in page.text.splitlines()
+            )
+            on_page = [row["asked"] for row in page.structured["keys"]]
+            assert "keys=" not in page.text and json.dumps(keys[1:3]) not in page.text, "no page writes the keys back"
+            read += on_page
+            offset = page.structured["unread_from"]
+            progress = page.structured["progress"]
+            assert f"progress: {progress}" in page.text.splitlines()[:3]
+            if offset is not None:
+                assert f"offset={offset}" in progress and f"{len(keys) - offset} unread" in progress
+            else:
+                assert f"all {len(keys)} keys read" in progress
+            pages += 1
+        assert pages > 1, "the control: more than one page"
+        assert read == keys, name
 
 
 async def test_too_many_keys_through_the_action_are_refused_naming_the_most() -> None:
