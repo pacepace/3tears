@@ -393,11 +393,12 @@ class ArmQuote:
 class ArmPrice:
     """What the host's pricer predicts one arm will cost, and how it knows.
 
-    :ivar predicted_usd: The predicted cost of the arm's whole run, in dollars, or ``None`` when the pricer
-        cannot predict it — unknown, which the launch never reads as $0. It is the figure the arm's cap
-        is held to, so a pricer whose prediction is a range returns its UPPER end: an arm admitted
-        because its central estimate fits is one that runs past its cap whenever the run lands above
-        the centre, after its generation was paid for.
+    :ivar predicted_usd: The arm's cap figure: what the launch checks the arm's cap against, in dollars, for its
+        whole run, or ``None`` when the pricer cannot predict it — unknown, which the launch never reads as $0. A
+        pricer whose prediction is a range returns at least its UPPER end: an arm admitted because its central
+        estimate fits is one that runs past its cap whenever the run lands above the centre, after its generation
+        was paid for. It may return more: ``history_launch_pricer`` returns the greater of the band's upper end and
+        the central estimate plus a 3% safety margin, and keeps the band's own end in :attr:`band_high_usd`.
     :ivar basis: How the prediction was made, or why there is none, in words a refusal quotes ("from 12
         priced past results, method usage-history").
     :ivar central_usd: For a pricer whose prediction is a range, its central estimate; ``None`` for one that

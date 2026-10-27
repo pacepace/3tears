@@ -498,8 +498,9 @@ class ArmEstimate(EvalBaseModel):
     :ivar case_source: ``stored`` for an arm over the template's stored cases, ``generated`` for one whose cases
         its launch generates.
     :ivar n_observations: ``case_count × k_runs``, the observations it would make; ``None`` with no plan.
-    :ivar predicted_usd: The figure the launch holds to the arm's cap — a range pricer's upper end — or ``None``
-        when nothing predicts it (unknown, never $0).
+    :ivar predicted_usd: The arm's cap figure, what the launch checks its cap against — at least a range pricer's
+        upper end, and for ``history_launch_pricer`` the greater of that end and the central estimate plus its 3%
+        safety margin — or ``None`` when nothing predicts it (unknown, never $0).
     :ivar central_usd: A range pricer's central estimate, never held to the cap; ``None`` for a single figure.
     :ivar low_usd: A range pricer's lower end; ``None`` otherwise.
     :ivar band_high_usd: A range pricer's upper end as its evidence computed it, where ``predicted_usd`` may stand
