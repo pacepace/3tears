@@ -29,6 +29,8 @@ from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
 from threetears.evals.schema.values import SweepableValue
 
+from packages.evals.tests.report_shapes_support import s4_change
+
 AXIS = "candidate_model"
 CANDIDATE = "model-b-rev2"
 INCUMBENT = "model-b"
@@ -179,6 +181,27 @@ class TestWordsAndEvidenceReadOnTheRuler:
         # As the scoreboard counts, never 0.9167; the check named by its expression, as code.
         assert stated["value"].text == "11 of 12"
         assert stated["measure"].text == '`call_count("music.queue_track") >= 2`'
+
+    def test_a_goal_check_its_template_names_is_stated_by_its_name(self) -> None:
+        surface = _surface(threshold=1500.0)
+        check = 'call_count("music.queue_track") >= 2'
+        # The frozen bundle is a real one's stored form, naming the check as its template declared it.
+        named = s4_change().bundles["billing"].model_copy(update={"goal_check_names": {check: "Two queued"}})
+        held = SimpleNamespace(decision_surface=surface, bundle=named.to_dict())
+        subject = SimpleNamespace(aspect=lambda label: held, aspects=[held])
+        cell = surface.cells[0]
+        row = EvidenceRow(
+            aspect="conversation",
+            cell_ref=cell_ref(cell.variant_key, cell.apparatus_class_id),
+            measure_id=f"goal_state:{check}",
+            reading="measure",
+            value=11 / 12,
+            n=12,
+            n_cases=4,
+            dispersion="sem 0.08",
+        )
+        (stated,) = evidence_rows(subject, [row], lambda ref: ref)  # type: ignore[arg-type]
+        assert (stated["measure"].text, stated["value"].text) == ("Two queued", "11 of 12")
 
 
 class TestARunSummaryStatesAMeasureOnOneRuler:

@@ -54,11 +54,12 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Literal
+from statistics import NormalDist, variance
+from typing import Literal, Self
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
-from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, AnalysisContextBundle, ArmScoreboard
 from threetears.evals.analysis.depth import Depth, Precision, precision
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
 from threetears.evals.analysis.numbers import format_number
@@ -92,9 +93,13 @@ from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.schema.base import EvalDocumentModel
 
 __all__ = [
+    "AggregateFigure",
+    "AggregateWeighting",
+    "ArmAggregate",
     "AspectReading",
     "BarState",
     "BarStatus",
+    "CampaignAggregate",
     "CampaignKind",
     "CampaignReadings",
     "FloorState",
@@ -102,6 +107,7 @@ __all__ = [
     "MeasureReading",
     "PairReading",
     "ShownReading",
+    "campaign_aggregate",
     "campaign_kind",
     "campaign_readings",
 ]
@@ -361,6 +367,21 @@ class BarStatus(EvalDocumentModel):
     margin: float | None = Field(description="The measure's declared margin the bar was read with; None with none.")
     reason: str = Field(default="", description="Why, in one plain sentence naming the arm.")
 
+    def missed_reason(self, measure: str) -> str:
+        """:attr:`reason` for a missed bar, with the measure called ``measure``: what a page says where it names the
+        measure by a name the readings do not carry (a goal check's declared display name), since a reading's words
+        never move with a name.
+
+        :param measure: What the page calls the bar's measure.
+        :ptype measure: str
+        :return: The sentence.
+        :rtype: str
+        :raises ValueError: The bar is not missed; only a missed bar's why follows from its status alone.
+        """
+        if self.status != "missed":
+            raise ValueError(f"the bar on {self.measure} is {self.status}, not missed, so its why is not its status's")
+        return _bar_reason(self.arm_label, "missed", measure, _BAR_STATES["missed"][1])
+
 
 class MeasureReading(EvalDocumentModel):
     """One arm's value on one measure on one aspect, with its interval: what a measurement reports."""
@@ -388,6 +409,138 @@ class MeasureReading(EvalDocumentModel):
     trials: int | None = Field(default=None, description="For the pass rate, the usable trials; None otherwise.")
     cases: int = Field(ge=0, description="The independent cases behind the value.")
     higher_is_better: bool | None = Field(default=None, description="Which way is better; None where undeclared.")
+
+
+# =============================================================================
+# Across aspects: each arm's figures, every aspect weighed alike
+# =============================================================================
+
+
+class AggregateFigure(EvalDocumentModel):
+    """One arm's figure across every aspect, each aspect weighed alike, with its interval; or withheld, naming the
+    aspects that lack it, since a mean over the aspects that have it would weigh the rest at nought."""
+
+    value: float | None = Field(
+        description="The equal-weight mean of the aspects' figures, in the figure's unit; None where withheld."
+    )
+    interval: tuple[float, float] | None = Field(
+        description=(
+            "The mean's interval at the aggregate's `level`, low then high, each aspect's standard error taken as "
+            "independent of the others' (`AggregateWeighting.intervals`), clipped to the values the figure can take; "
+            "None where withheld."
+        )
+    )
+    missing: list[str] = Field(
+        default_factory=list,
+        description="The labels of the aspects lacking the figure or its standard error, in the campaign's order.",
+    )
+
+    @model_validator(mode="after")
+    def _withheld_names_why(self) -> Self:
+        """Refuse a figure that is withheld without naming an aspect, or given beside a missing one.
+
+        :raises ValueError: ``value`` and ``interval`` are not both set or both None, or ``missing`` is empty exactly
+            when they are None.
+        """
+        if (self.value is None) != (self.interval is None):
+            raise ValueError("an aggregate figure carries its value and its interval together, or neither")
+        if (self.value is None) != bool(self.missing):
+            raise ValueError("an aggregate figure is withheld exactly when it names the aspects lacking it")
+        return self
+
+
+class AggregateWeighting(EvalDocumentModel):
+    """How a campaign's figures across aspects weigh each aspect, and what their intervals assume."""
+
+    basis: Literal["equal"] = Field(
+        default="equal", description="`equal`: every aspect weighs the same, whatever its cases or its trials."
+    )
+    weights: dict[str, float] = Field(description="Each aspect's weight, by its label; they sum to 1.")
+    intervals: Literal["aspects_independent"] = Field(
+        default="aspects_independent",
+        description=(
+            "`aspects_independent`: a mean's standard error is the root of the weighted sum of the aspects' squared "
+            "standard errors, as though no two aspects' figures moved together."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _weights_sum_to_one(self) -> Self:
+        """Refuse weights that do not sum to one, or a negative weight.
+
+        :raises ValueError: A weight is negative, or the weights sum to other than 1.
+        """
+        if any(weight < 0 for weight in self.weights.values()) or not math.isclose(
+            math.fsum(self.weights.values()), 1.0
+        ):
+            raise ValueError(f"an aggregate's weights are each at least nought and sum to 1; got {self.weights}")
+        return self
+
+
+class ArmAggregate(EvalDocumentModel):
+    """One arm's figures across every aspect: what it passes and what a reply costs it, and, for a change's candidate,
+    its change against the control. Descriptive: no figure here is tested, and none decides a reading, a floor or a
+    bar."""
+
+    arm: str = Field(description="The arm's variant key.")
+    arm_label: str = Field(description="What a reader calls the arm.")
+    pass_rate: AggregateFigure = Field(
+        description=(
+            "Its pass rate in percent: each aspect's usable trials passed, its standard error read off the Wilson "
+            "interval with the cases as the draws (`stats.pooled_rate_interval`)."
+        )
+    )
+    change: AggregateFigure | None = Field(
+        default=None,
+        description=(
+            "A change's candidate: its change against the control in points, each aspect's the row's own "
+            "(`AspectReading.change`), its standard error over the per-case shares the row reads. None for the "
+            "control and in a choice."
+        ),
+    )
+    cost: AggregateFigure = Field(
+        description=(
+            "What a reply costs it in US dollars: each aspect's scoreboard cost per reply, its standard error the "
+            "arm's one cell's on the cost per reply (an arm under several test setups on an aspect has none there)."
+        )
+    )
+    cheaper_on: list[str] | None = Field(
+        default=None,
+        description=(
+            "A change's candidate: the aspects where its cost per reply is below the control's, by the two points; "
+            "None for the control and in a choice."
+        ),
+    )
+    dearer_on: list[str] | None = Field(
+        default=None,
+        description=(
+            "A change's candidate: the aspects where its cost per reply is above the control's, by the two points; "
+            "None for the control and in a choice."
+        ),
+    )
+
+
+class CampaignAggregate(EvalDocumentModel):
+    """Every arm's figures across a campaign's aspects, with the weighting they are read under."""
+
+    weighting: AggregateWeighting = Field(description="How each aspect is weighed, and what the intervals assume.")
+    level: float = Field(gt=0.0, lt=1.0, description="The two-sided level every interval here is read at.")
+    arms: list[ArmAggregate] = Field(
+        description=(
+            "One entry per arm a scorecard column holds: a change's control, then each candidate with a row; a "
+            "choice's arms in the order its pairs name them."
+        )
+    )
+
+    def arm(self, variant_key: str) -> ArmAggregate | None:
+        """One arm's figures, by its variant key; None for an arm the aggregate does not hold.
+
+        :param variant_key: The arm's variant key.
+        :ptype variant_key: str
+        :return: Its figures, or None.
+        :rtype: ArmAggregate | None
+        """
+        return next((arm for arm in self.arms if arm.arm == variant_key), None)
 
 
 class CampaignReadings(EvalDocumentModel):
@@ -421,6 +574,13 @@ class CampaignReadings(EvalDocumentModel):
     )
     measures: list[MeasureReading] = Field(
         default_factory=list, description="A measurement's measures, aspect by aspect. Empty otherwise."
+    )
+    aggregate: CampaignAggregate | None = Field(
+        default=None,
+        description=(
+            "A change's or a choice's figures across every aspect, each aspect weighed alike (`campaign_aggregate`). "
+            "None for a measurement, and on readings frozen before the aggregate was read."
+        ),
     )
 
     @field_validator("aspects")
@@ -808,7 +968,8 @@ def campaign_readings(
         then the derived candidates). Required: a change whose candidates are derived from its runs names only its
         control, so the named arms alone would read it as a measurement.
     :ptype arms: Sequence[CampaignArm]
-    :return: The readings.
+    :return: The readings, a change's or a choice's with every arm's figures across aspects
+        (:func:`campaign_aggregate`).
     :rtype: CampaignReadings
     :raises RefusedInput: An aspect has no bundle, a bundle is keyed by a label the campaign does not hold, or a bundle
         reads another aspect than the one it is keyed by.
@@ -821,18 +982,21 @@ def campaign_readings(
     bars = _bar_statuses(campaign, checked, every)
     control = campaign.control or next((arm for arm in every if arm.role == "control"), None)
     if kind != "change" or control is None:
-        return CampaignReadings(
-            campaign_id=campaign.id,
-            alpha=alpha,
-            control=None,
-            control_label="",
-            aspects=labels,
-            readings=[],
-            floors=[],
-            kind=kind,
-            pairs=_pair_readings(campaign, checked, every, alpha) if kind == "choice" else [],
-            bars=bars,
-            measures=_measure_readings(campaign, checked, every) if kind == "measurement" else [],
+        return _aggregated(
+            CampaignReadings(
+                campaign_id=campaign.id,
+                alpha=alpha,
+                control=None,
+                control_label="",
+                aspects=labels,
+                readings=[],
+                floors=[],
+                kind=kind,
+                pairs=_pair_readings(campaign, checked, every, alpha) if kind == "choice" else [],
+                bars=bars,
+                measures=_measure_readings(campaign, checked, every) if kind == "measurement" else [],
+            ),
+            checked,
         )
     candidates = _candidates(campaign, every)
     rows: list[_Row] = []
@@ -949,16 +1113,19 @@ def campaign_readings(
         for row in rows
         if row.aspect == floor.aspect
     ]
-    return CampaignReadings(
-        campaign_id=campaign.id,
-        alpha=alpha,
-        control=control.variant_key,
-        control_label=control.label,
-        aspects=labels,
-        readings=readings,
-        floors=floors,
-        kind=kind,
-        bars=bars,
+    return _aggregated(
+        CampaignReadings(
+            campaign_id=campaign.id,
+            alpha=alpha,
+            control=control.variant_key,
+            control_label=control.label,
+            aspects=labels,
+            readings=readings,
+            floors=floors,
+            kind=kind,
+            bars=bars,
+        ),
+        checked,
     )
 
 
@@ -1127,6 +1294,11 @@ _BAR_STATES: dict[str, tuple[BarState, str]] = {
 _BAR_VERBS: dict[BarState, str] = {"met": "meets", "missed": "misses", "unclear": "is unclear on"}
 
 
+def _bar_reason(arm: str, status: BarState, measure: str, why: str) -> str:
+    """One arm against one bar, in one plain sentence: ``v2 misses the bar on cost: its whole interval …``."""
+    return f"{arm} {_BAR_VERBS[status]} the bar on {measure}: {why}"
+
+
 def _bar_statuses(
     campaign: EvalCampaign, bundles: Mapping[str, AnalysisContextBundle], arms: Sequence[CampaignArm]
 ) -> list[BarStatus]:
@@ -1173,7 +1345,7 @@ def _bar_statuses(
                         if shown.ci_low is not None and shown.ci_high is not None
                         else None,
                         margin=shown.margin,
-                        reason=f"{label} {_BAR_VERBS[status]} the bar on {heading}: {why}",
+                        reason=_bar_reason(label, status, heading, why),
                     )
                 )
     return statuses
@@ -1285,3 +1457,169 @@ def _points(rate: RateReading | None) -> tuple[float, float] | None:
     if rate is None or rate.interval is None:
         return None
     return 100 * rate.interval[0], 100 * rate.interval[1]
+
+
+# =============================================================================
+# Across aspects
+# =============================================================================
+
+#: The normal quantile a two-sided interval at the nominal level spans either side of its mean, in standard errors.
+_Z = NormalDist().inv_cdf(0.5 + INTERVAL_LEVEL / 2)
+
+#: The values each figure across aspects can take, which its interval is clipped to: percent, points, dollars.
+_RATE_BOUNDS = (0.0, 100.0)
+_CHANGE_BOUNDS = (-100.0, 100.0)
+_COST_BOUNDS = (0.0, math.inf)
+
+
+def _aggregated(readings: CampaignReadings, bundles: Mapping[str, AnalysisContextBundle]) -> CampaignReadings:
+    """The readings with every arm's figures across aspects read off them and the bundles."""
+    return readings.model_copy(update={"aggregate": campaign_aggregate(readings, bundles)})
+
+
+def campaign_aggregate(
+    readings: CampaignReadings, bundles: Mapping[str, AnalysisContextBundle]
+) -> CampaignAggregate | None:
+    """Every arm's figures across a campaign's aspects, each aspect weighed alike: what each arm passes and what a
+    reply costs it, and each change's candidate's change against the control.
+
+    Read off the readings and the aspects' bundles alone, so a campaign bundle frozen before the aggregate was read
+    gets the same one on reading it back. Each figure is the mean of the aspects' own, its interval the normal one
+    on that mean at the nominal level, each aspect's standard error taken as independent of the others', clipped to
+    the values the figure can take. A figure any aspect lacks, or lacks a standard error for, is withheld, naming
+    those aspects: a mean over the rest would weigh them at nought. Descriptive only: nothing here is tested, and no
+    figure decides a reading, a floor or a bar.
+
+    :param readings: What code read off the campaign.
+    :ptype readings: CampaignReadings
+    :param bundles: Each aspect's evidence, keyed by its label.
+    :ptype bundles: Mapping[str, AnalysisContextBundle]
+    :return: The figures; None for a measurement, and where fewer than two arms were compared on any aspect.
+    :rtype: CampaignAggregate | None
+    """
+    if readings.kind == "change" and readings.control is not None:
+        keys = [readings.control, *dict.fromkeys(row.arm for row in readings.readings)]
+    elif readings.kind == "choice":
+        keys = list(dict.fromkeys(key for pair in readings.pairs for key in (pair.first, pair.second)))
+    else:
+        return None
+    labels = readings.aspects
+    if len(keys) < 2 or not labels:
+        return None
+    weights = {label: 1 / len(labels) for label in labels}
+    names = readings.arm_labels()
+    held = {label: bundles[label] for label in labels if label in bundles}
+    arms = []
+    for key in keys:
+        candidate = readings.kind == "change" and key != readings.control
+        costs = {label: _cost_on(bundle, key) for label, bundle in held.items()}
+        arms.append(
+            ArmAggregate(
+                arm=key,
+                arm_label=names[key],
+                pass_rate=_figure(
+                    {label: _pass_rate_on(bundle, key) for label, bundle in held.items()}, weights, _RATE_BOUNDS
+                ),
+                change=_figure(
+                    {label: _change_on(readings, bundle, label, key) for label, bundle in held.items()},
+                    weights,
+                    _CHANGE_BOUNDS,
+                )
+                if candidate
+                else None,
+                cost=_figure(costs, weights, _COST_BOUNDS),
+                cheaper_on=_cost_sides(held, key, readings.control, below=True) if candidate else None,
+                dearer_on=_cost_sides(held, key, readings.control, below=False) if candidate else None,
+            )
+        )
+    return CampaignAggregate(weighting=AggregateWeighting(weights=weights), level=INTERVAL_LEVEL, arms=arms)
+
+
+def _figure(
+    on: Mapping[str, tuple[float, float] | None], weights: Mapping[str, float], bounds: tuple[float, float]
+) -> AggregateFigure:
+    """One figure across the aspects from each aspect's ``(value, standard error)``, or withheld naming the aspects
+    lacking one."""
+    if missing := [label for label in weights if on.get(label) is None]:
+        return AggregateFigure(value=None, interval=None, missing=missing)
+    read = {label: figure for label, figure in on.items() if figure is not None}
+    mean = math.fsum(weights[label] * value for label, (value, _) in read.items())
+    error = math.sqrt(math.fsum((weights[label] * spread) ** 2 for label, (_, spread) in read.items()))
+    low, high = max(bounds[0], mean - _Z * error), min(bounds[1], mean + _Z * error)
+    return AggregateFigure(value=mean, interval=(min(low, mean), max(high, mean)))
+
+
+def _board(bundle: AnalysisContextBundle, key: str) -> ArmScoreboard | None:
+    """One arm's scoreboard entry on an aspect; None where it did not run there."""
+    return next((board for board in bundle.scoreboard if board.variant_key == key), None)
+
+
+def _pass_rate_on(bundle: AnalysisContextBundle, key: str) -> tuple[float, float] | None:
+    """An arm's pass rate on an aspect in percent, its usable trials passed, and its standard error read off the
+    Wilson interval with the cases as the draws; None where it ran no usable trial or fewer than two cases, or where
+    its census counts more cases with a usable trial than usable trials, which no interval can be read over."""
+    board = _board(bundle, key)
+    if board is None or not board.usable or board.usable_cases > board.usable:
+        return None
+    interval = pooled_rate_interval(board.passed, board.usable, cases=board.usable_cases)
+    if interval is None:
+        return None
+    return 100 * board.passed / board.usable, 100 * (interval[1] - interval[0]) / (2 * _Z)
+
+
+def _change_on(
+    readings: CampaignReadings, bundle: AnalysisContextBundle, label: str, key: str
+) -> tuple[float, float] | None:
+    """A candidate's change against the control on an aspect in points, the row's own, and its standard error over
+    the per-case shares the row reads; None where it has no row there or too few cases to read one."""
+    row = next((row for row in readings.on_aspect(label) if row.arm == key), None)
+    if row is None or readings.control is None:
+        return None
+    rate = aspect_pass_rate(bundle, readings.control, key)
+    if rate is None or rate.samples is None:
+        return None
+    error = _difference_error(*rate.samples, paired=rate.paired)
+    return None if error is None else (row.change, 100 * error)
+
+
+def _difference_error(first: Sequence[float], second: Sequence[float], *, paired: bool) -> float | None:
+    """The standard error of ``mean(second) − mean(first)``: over the per-case differences where paired, else
+    Welch's; None below two values on a side."""
+    if len(first) < 2 or len(second) < 2:
+        return None
+    if paired and len(first) == len(second):
+        differences = [b - a for a, b in zip(first, second, strict=True)]
+        return math.sqrt(variance(differences) / len(differences))
+    return math.sqrt(variance(first) / len(first) + variance(second) / len(second))
+
+
+def _cost_on(bundle: AnalysisContextBundle, key: str) -> tuple[float, float] | None:
+    """What a reply costs an arm on an aspect, its scoreboard's cost per reply, and the standard error of its one
+    cell's cost per reply; None where it went unpriced, or ran under several test setups there, or none."""
+    board = _board(bundle, key)
+    if board is None or board.reply_cost_usd is None:
+        return None
+    errors = [
+        summary.sem
+        for cell in bundle.cell_measures
+        if cell.variant_key == key
+        for summary in cell.measures.measures
+        if summary.name == FLOOR_COST_MEASURE
+    ]
+    if len(errors) != 1 or errors[0] is None:
+        return None
+    return board.reply_cost_usd, errors[0]
+
+
+def _cost_sides(
+    bundles: Mapping[str, AnalysisContextBundle], key: str, control: str | None, *, below: bool
+) -> list[str]:
+    """The aspects where a candidate's cost per reply is below (or above) the control's, both priced there."""
+    sides = []
+    for label, bundle in bundles.items():
+        ours, theirs = _board(bundle, control or ""), _board(bundle, key)
+        if ours is None or theirs is None or ours.reply_cost_usd is None or theirs.reply_cost_usd is None:
+            continue
+        if (theirs.reply_cost_usd < ours.reply_cost_usd) if below else (theirs.reply_cost_usd > ours.reply_cost_usd):
+            sides.append(label)
+    return sides

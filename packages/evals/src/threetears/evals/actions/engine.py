@@ -213,6 +213,16 @@ Format = Annotated[
     Literal["markdown", "json", "html"],
     Field(description="The report's form: markdown (the memo), json (the schema's form), html (script-free)."),
 ]
+Trials = Annotated[
+    Literal["table", "all"],
+    Field(
+        description=(
+            "How much of each failed or lost trial the report lays out: table (the default) is the census line and "
+            "one row per such trial naming its stored result, read with result_get; all adds each one's full record "
+            "(what it asked, what the judge saw and said, and why). JSON carries no records either way."
+        )
+    ),
+]
 RowFactor = Annotated[
     str,
     Field(
@@ -455,6 +465,7 @@ class CampaignUpdateParams(EvalBaseModel):
     question: Annotated[str | None, CampaignChanges.model_fields["question"]] = None
     aspects: Annotated[list[dict[str, Any]] | None, CampaignChanges.model_fields["aspects"]] = None
     floors: Annotated[list[dict[str, Any]] | None, CampaignChanges.model_fields["floors"]] = None
+    short_names: Annotated[dict[str, str | None] | None, CampaignChanges.model_fields["short_names"]] = None
     exploratory: Annotated[bool, CampaignChanges.model_fields["exploratory"]] = False
     control_from_run_id: Annotated[str | None, CampaignChanges.model_fields["control_from_run_id"]] = None
 
@@ -540,6 +551,7 @@ class ReportReadParams(EvalBaseModel):
 
     campaign_id: CampaignId
     format: Format = "markdown"
+    trials: Trials = "table"
 
 
 class JudgeTemplateCreateParams(JudgeTemplateCreate):
@@ -1137,6 +1149,7 @@ async def _report_read(host: OpsHost, caller: Caller, params: ReportReadParams) 
         params.campaign_id,
         caller.scope_id,
         format=params.format,
+        trials=params.trials,
     )
 
 
@@ -1969,13 +1982,13 @@ def engine_actions() -> tuple[Action, ...]:
             example={"campaign_id": campaign_id, "question": "Is model-b as accurate as model-a, and cheaper?"},
             detail=(
                 "Changes only what it is sent: name, description, question, aspects (replacing them whole, holding "
-                "no runs) and floors. A declaration it writes is validated and gated as campaign_create's is, and "
+                "no runs), floors and short_names (what a page prints for each aspect). A declaration it writes is validated and gated as campaign_create's is, and "
                 "dated now. Aspects none of which declares a design withdraw the declaration, only beside "
                 "exploratory: true, which clears the question, floors and arms too; exploratory: true beside a "
                 "design is refused. control_from_run_id names one of the campaign's runs whose variant becomes the "
                 "control arm, resolved for you; null clears it. Once any aspect holds a run the declaration is "
                 "frozen: question, aspects and floors are refused in any form, and so is re-pointing or clearing a "
-                "control, which may be named once while none is; name and description stay editable, and an "
+                "control, which may be named once while none is; name, description and short_names stay editable, and an "
                 "amended declaration is a new campaign (campaign_create, adopting the aspects it keeps). Runs join "
                 "and leave through campaign_runs_add and campaign_runs_remove."
             ),
@@ -2223,7 +2236,14 @@ def engine_actions() -> tuple[Action, ...]:
             result=ReportDocument,
             handler=_report_read,
             render=render.render_report,
+            text_field="body",
             example={"campaign_id": campaign_id, "format": "markdown"},
+            detail=(
+                "Each aspect's trials section lists its failed and lost trials, one row each naming its stored result "
+                "(read it with result_get), then its passed trials. trials='all' adds each failed or lost trial's full "
+                "record (what it asked, what the judge saw and said, and why): most of a large campaign's page, so "
+                "read it when you need the records, or read one trial with result_get."
+            ),
         ),
         Action(
             name="bars_propose",

@@ -45,8 +45,8 @@ Every sentence here names the arms by the names the page gives them, never by th
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from functools import reduce
 from typing import Literal
 
@@ -71,7 +71,7 @@ from threetears.evals.analysis.stats import (
     cases_to_clear,
     difference_interval,
 )
-from threetears.evals.analysis.style import code, humanize, measure_name
+from threetears.evals.analysis.style import code, declared_check_name, humanize, measure_name
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.declaration import CostLower, DecisionClause, Floor, RateDrop
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of, rule_rates
@@ -224,6 +224,8 @@ class FloorReadings:
     is the t interval on the arm's cost per reply minus the control's at ``confidence``, computed from the per-case
     costs the bundle carries (``floor_contrasts``), uncorrected; None when none exists. ``cost_compared`` says whether
     any per-case costs were carried for the pair at all, so an absent interval reads as not compared or as no spread.
+    ``check_names`` is each goal check's declared display name by its expression
+    (``AnalysisContextBundle.goal_check_names``), which a floor naming a check no rate here carries is said by.
     """
 
     rates: tuple[RateReading, ...]
@@ -234,6 +236,7 @@ class FloorReadings:
     cost_interval: tuple[float, float] | None = None
     cost_compared: bool = False
     confidence: float = INTERVAL_LEVEL
+    check_names: Mapping[str, str] = field(default_factory=dict)
 
     def fewest_cases(self) -> int | None:
         """The fewer usable cases of the two arms; None when either was not counted."""
@@ -284,16 +287,25 @@ class FloorVerdict:
         return 100 * low, 100 * high
 
 
-def _reading_words(reading: str, readings: FloorReadings | None) -> str:
-    """A reading a floor names, as the page names it: the rate's own name where the arms carry it, else a key in
-    words, else a check's text as code."""
+def reading_words(reading: str, readings: FloorReadings | None, check_names: Mapping[str, str] | None = None) -> str:
+    """A reading a floor names, as the page names it: the rate's own name where the arms carry it, else a check by its
+    declared display name (``check_names``, else the readings'), else a key in words, else a check's text as code."""
     rates = readings.rates if readings is not None else ()
     if (rate := next((rate for rate in rates if rate.answers(reading)), None)) is not None:
         return rate.name
+    names = check_names if check_names is not None else readings.check_names if readings is not None else {}
+    if (named := names.get(reading)) is not None:
+        return named
     return humanize("dimension", reading) if reading.isidentifier() else code(reading)
 
 
-def floor_statement(clause: DecisionClause, *, candidate: str, readings: FloorReadings | None = None) -> str:
+def floor_statement(
+    clause: DecisionClause,
+    *,
+    candidate: str,
+    readings: FloorReadings | None = None,
+    check_names: Mapping[str, str] | None = None,
+) -> str:
     """One floor as the page says it, naming the arm: ``no pass rate drops by more than 2 points``,
     ``no tone rate drops by more than 2 points``, ``v2 costs less per reply``.
 
@@ -304,12 +316,16 @@ def floor_statement(clause: DecisionClause, *, candidate: str, readings: FloorRe
     :param readings: What the floor is read against, whose rate names a named reading is said by; None to say it
         from its key.
     :ptype readings: FloorReadings | None
+    :param check_names: Each goal check's declared display name by its expression
+        (``AnalysisContextBundle.goal_check_names``), for a floor on a check said without ``readings``; None reads
+        the names ``readings`` carries.
+    :ptype check_names: Mapping[str, str] | None
     :return: The floor, lower case, with no closing stop.
     :rtype: str
     """
     if isinstance(clause, CostLower):
         return f"{candidate} costs less per reply"
-    which = "pass" if clause.reading is None else _reading_words(clause.reading, readings)
+    which = "pass" if clause.reading is None else reading_words(clause.reading, readings, check_names)
     return f"no {which} rate drops by more than {format_number(clause.max_points)} points"
 
 
@@ -378,35 +394,6 @@ def evaluate_floor(
         reading=verdict.rate.reading() if verdict.rate is not None else None,
         interval=verdict.interval(),
         reason=verdict.reason,
-    )
-
-
-def floor_warning(verdict: FloorVerdict, *, candidate: str) -> str:
-    """The line a broken floor puts at the top of the page, the first thing a reader sees: the floor, its aspect, the
-    candidate and the interval it was broken on.
-
-    ``Floor broken on conversation: v2's pass rate falls past the 10-point margin on its whole interval, a drop of
-    12.3 to 35.2 points.`` A cost floor: ``Floor broken on conversation: v2 costs more per reply than v1 on the whole
-    interval.``
-
-    :param verdict: A broken floor, read on ``candidate``.
-    :ptype verdict: FloorVerdict
-    :param candidate: The candidate, by name.
-    :ptype candidate: str
-    :return: One sentence.
-    :rtype: str
-    """
-    lead = f"Floor broken on {verdict.floor.aspect}: "
-    clause = verdict.floor.clause
-    if isinstance(clause, CostLower) or verdict.rate is None:
-        return f"{lead}{verdict.reason}."
-    rate = verdict.rate
-    near, worst = rate.least_drop(), rate.worst_drop()
-    which = "pass rate" if rate.name == "the pass rate" else rate.name
-    span = "" if near is None or worst is None else f", a drop of {_points(near)} to {_points(worst)} points"
-    return (
-        f"{lead}{candidate}'s {which} falls past the {format_number(clause.max_points)}-point margin on its whole "
-        f"interval{span}."
     )
 
 
@@ -508,7 +495,7 @@ def _rate_floor(
     if not rates:
         if clause.reading is None:
             return "unclear", "no pass rate was measured on both arms", None, ()
-        return "unclear", f"{_reading_words(clause.reading, readings)} was not measured on both arms", None, ()
+        return "unclear", f"{reading_words(clause.reading, readings)} was not measured on both arms", None, ()
     if (fewest := readings.fewest_cases()) is None:
         reason = "the usable cases were not counted on both arms"
         return "unclear", reason, None, tuple(RateVerdict(rate, "unclear", reason) for rate in rates)
@@ -660,7 +647,12 @@ def _read_on(
 
 
 def floor_readings(
-    bundle: AnalysisContextBundle, control: str, candidate: str, *, confidence: float = INTERVAL_LEVEL
+    bundle: AnalysisContextBundle,
+    control: str,
+    candidate: str,
+    *,
+    confidence: float = INTERVAL_LEVEL,
+    check_names: Mapping[str, str] | None = None,
 ) -> FloorReadings:
     """The figures a floor is read against for one candidate on the bundle's aspect, from the bundle alone.
 
@@ -674,6 +666,11 @@ def floor_readings(
     comparison, where the family compared it. Cost is each arm's cost per reply, with the t interval on the per-case
     costs ``floor_contrasts`` carries, at ``confidence``. Each arm carries its usable cases.
 
+    A check's rate is named by its expression, as code, unless ``check_names`` is passed: a page passes the names its
+    aspect's template declares (``AnalysisContextBundle.goal_check_names``) and names each check by them. The
+    campaign's readings pass none, since their words are baked into what a campaign is fingerprinted by, which a name
+    must never move.
+
     :param bundle: The aspect's evidence.
     :ptype bundle: AnalysisContextBundle
     :param control: The control's variant key.
@@ -683,12 +680,15 @@ def floor_readings(
     :param confidence: The two-sided level every interval is read at: the nominal one for a floor; a campaign's
         readings pass the level their Holm step tests at.
     :ptype confidence: float
+    :param check_names: Each goal check's display name by its expression, which every rate, reason and floor sentence
+        on a check names it by; None names each by its expression.
+    :ptype check_names: Mapping[str, str] | None
     :return: The readings; no rate where either arm is off the scoreboard.
     :rtype: FloorReadings
     """
     boards = {board.variant_key: board for board in bundle.scoreboard}
     if control not in boards or candidate not in boards:
-        return FloorReadings(rates=())
+        return FloorReadings(rates=(), check_names=dict(check_names or {}))
     ours, theirs = boards[control], boards[candidate]
     lost_control, lost_candidate = sum(ours.lost.values()), sum(theirs.lost.values())
     rates = [
@@ -712,7 +712,11 @@ def floor_readings(
     for name, by_arm in sorted(measures.items()):
         if control in by_arm and candidate in by_arm:
             descriptor = bundle.measure_catalog.get(name)
-            heading = measure_name(name, descriptor.reader_name if descriptor is not None else None)
+            heading = measure_name(
+                name,
+                descriptor.reader_name if descriptor is not None else None,
+                declared=declared_check_name(check_names or {}, name),
+            )
             rates.append(
                 _read_on(
                     RateReading(
@@ -765,6 +769,7 @@ def floor_readings(
         cost_interval=cost_interval,
         cost_compared=cost is not None,
         confidence=confidence,
+        check_names=dict(check_names or {}),
     )
 
 
@@ -790,6 +795,54 @@ def aspect_pass_rate(
     """
     rates = floor_readings(bundle, control, candidate, confidence=confidence).rates
     return next((rate for rate in rates if rate.measure is None), None)
+
+
+def control_cannot_show(
+    bundle: AnalysisContextBundle,
+    control: str,
+    candidates: Sequence[str],
+    *,
+    margin: float | None,
+    passed: int,
+    trials: int,
+) -> tuple[Literal["drop", "gain"], ...]:
+    """What no candidate's pass rate can show against the control on one aspect, whatever it does: the one rule the
+    page's scorecard marks and the writer's view flags.
+
+    A drop is read on per-case shares, so whether one past the margin can show is decided on them: the largest drop a
+    candidate's values allow is the mean of the control's shares it reads, and where that is at or below the margin
+    for every candidate read on shares, no drop can pass it. Shares and trials differ where cases ran an uneven number
+    of usable trials, so the trial rate alone would flag a control that can still show a drop. At 100% of its trials
+    every share is one, and no gain can show.
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param control: The control's variant key.
+    :ptype control: str
+    :param candidates: Each candidate's variant key read against it on the aspect.
+    :ptype candidates: Sequence[str]
+    :param margin: The aspect's margin in points; None where none is declared, so no drop is read against one.
+    :ptype margin: float | None
+    :param passed: The trials the control passed.
+    :ptype passed: int
+    :param trials: The trials the control was measured on.
+    :ptype trials: int
+    :return: ``drop``, ``gain``, both or neither, in that order; neither where the control has no trial.
+    :rtype: tuple[Literal["drop", "gain"], ...]
+    """
+    if not trials:
+        return ()
+    bounds: list[Literal["drop", "gain"]] = []
+    if margin is not None:
+        rates = [aspect_pass_rate(bundle, control, candidate) for candidate in candidates]
+        shares = [
+            100 * sum(rate.samples[0]) / len(rate.samples[0]) for rate in rates if rate is not None and rate.samples
+        ]
+        if shares and all(share <= margin for share in shares):
+            bounds.append("drop")
+    if passed == trials:
+        bounds.append("gain")
+    return tuple(bounds)
 
 
 # =============================================================================
@@ -1010,15 +1063,40 @@ def floor_projection(verdict: FloorVerdict, *, per_case_usd: float | None = None
         return project_sample(
             half_width=(high - low) / 2, cases=fewest, margin=0.0, observed=(low + high) / 2, per_case_usd=per_case_usd
         )
+    found = rate_projections(verdict, per_case_usd=per_case_usd)
+    return None if found is None else reduce(SampleProjection.joined, (projection for _, projection in found))
+
+
+def rate_projections(
+    verdict: FloorVerdict, *, per_case_usd: float | None = None
+) -> tuple[tuple[RateVerdict, SampleProjection], ...] | None:
+    """Each rate an unclear rate floor left unclear, with the cases that would show it holds: what
+    :func:`floor_projection` joins into the floor's count, so a reader naming the rate that decides the count reads the
+    very projections the count is made of.
+
+    :param verdict: The floor as read on one candidate.
+    :ptype verdict: FloorVerdict
+    :param per_case_usd: What one case costs over every arm (:func:`case_cost_usd`); None where unpriced.
+    :ptype per_case_usd: float | None
+    :return: Each unclear rate and its projection, in the floor's order; None for a floor broken or held, a cost
+        floor, where the cases were not counted, where no rate is unclear, and where any unclear rate carries nothing
+        to project from (so the floor has no count).
+    :rtype: tuple[tuple[RateVerdict, SampleProjection], ...] | None
+    """
+    readings = verdict.readings
+    fewest = readings.fewest_cases() if readings is not None else None
+    clause = verdict.floor.clause
+    if verdict.outcome != "unclear" or fewest is None or fewest < 1 or not isinstance(clause, RateDrop):
+        return None
     found = [
-        project_rate(read.rate, cases=fewest, margin=clause.max_points, per_case_usd=per_case_usd)
+        (read, project_rate(read.rate, cases=fewest, margin=clause.max_points, per_case_usd=per_case_usd))
         for read in verdict.rates
         if read.outcome == "unclear"
     ]
-    projections = [projection for projection in found if projection is not None]
-    if not projections or len(projections) < len(found):
+    projected = tuple((read, projection) for read, projection in found if projection is not None)
+    if not projected or len(projected) < len(found):
         return None
-    return reduce(SampleProjection.joined, projections)
+    return projected
 
 
 def floors_projection(
@@ -1043,12 +1121,23 @@ def floors_projection(
     return reduce(SampleProjection.joined, projections)
 
 
-def projected_usd(value: float) -> str:
-    """A projected cost to two figures, since the cases it prices are about: ``$2.7``, ``$120``."""
+def projected_usd_value(value: float) -> float:
+    """A projected cost to two significant figures, since the cases it prices are about: ``2.7``, ``120``; nought
+    for none. The one rounding the page's price (:func:`projected_usd`) and the writer's view both state.
+
+    :param value: The cost, in US dollars.
+    :ptype value: float
+    :return: The cost to two figures.
+    :rtype: float
+    """
     if value <= 0:
-        return format_number(0.0, prefix="$")
-    places = 1 - math.floor(math.log10(value))
-    return format_number(round(value, places), prefix="$")
+        return 0.0
+    return round(value, 1 - math.floor(math.log10(value)))
+
+
+def projected_usd(value: float) -> str:
+    """A projected cost to two figures (:func:`projected_usd_value`), as the page prints it: ``$2.7``, ``$120``."""
+    return format_number(projected_usd_value(value), prefix="$")
 
 
 def projected_cell(projection: SampleProjection, need: CasesNeeded) -> str:
@@ -1120,16 +1209,19 @@ __all__ = [
     "SampleProjection",
     "aspect_pass_rate",
     "case_cost_usd",
+    "control_cannot_show",
     "evaluate_floor",
     "floor_projection",
     "floor_readings",
     "floor_statement",
-    "floor_warning",
     "floors_projection",
     "project_rate",
     "project_sample",
     "projected_cell",
     "projected_usd",
+    "projected_usd_value",
     "projection_note",
+    "rate_projections",
     "read_floor",
+    "reading_words",
 ]

@@ -45,6 +45,7 @@ from threetears.evals.analysis.report.decision import (
     project_sample,
     projected_cell,
     projection_note,
+    rate_projections,
     read_floor,
 )
 from threetears.evals.analysis import stats
@@ -338,6 +339,22 @@ def test_a_rate_with_nothing_to_project_from_projects_nothing() -> None:
     assert floors_projection([verdict], per_case_usd=PER_CASE) is None
 
 
+def test_a_floor_s_count_is_joined_from_exactly_the_rate_projections_that_name_its_deciding_rate() -> None:
+    """One source for a floor's count and the rate deciding it: each unclear rate's projection, joined. Where one
+    unclear rate has nothing to project from, the floor has no count and no rate is named for it."""
+    check = replace(CHARACTER.rates[0], name="the check's rate", measure="goal_state:reply.ok")
+    (verdict,) = _read(RULE, replace(CHARACTER, rates=(CHARACTER.rates[0], check)))
+    found = rate_projections(verdict, per_case_usd=PER_CASE)
+    assert found is not None and [read.rate.measure for read, _ in found] == [None, "goal_state:reply.ok"]
+    joined = found[0][1].joined(found[1][1])
+    assert floor_projection(verdict, per_case_usd=PER_CASE) == joined
+    bare = replace(check, samples=None)
+    (open_rate,) = _read(RULE, replace(CHARACTER, rates=(CHARACTER.rates[0], bare)))
+    assert [read.outcome for read in open_rate.rates] == ["unclear", "unclear"]
+    assert rate_projections(open_rate, per_case_usd=PER_CASE) is None
+    assert floor_projection(open_rate, per_case_usd=PER_CASE) is None
+
+
 # =============================================================================
 # 3. On the page, from the per-case values the bundle carries
 # =============================================================================
@@ -446,7 +463,8 @@ async def test_a_broken_page_tables_no_projection() -> None:
     """Twenty cases a side, the candidate failing half outright: the drop's whole interval is past the margin."""
     _, bundle = await _ruled(control=[3] * 20, candidate=[3] * 10 + [0] * 10)
     report = _page(bundle)
-    assert report_markdown(report).startswith("**Floor broken on ")
+    assert report_markdown(report).startswith("# ")
+    assert "\n**Adopting candidate overrides the 10-point floor it breaks on " in report_markdown(report)
     assert _projection_table(report) is None
     assert "Showing the floors hold" not in report_markdown(report)
 

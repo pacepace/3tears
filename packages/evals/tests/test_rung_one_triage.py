@@ -118,10 +118,16 @@ def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(
     assert re.fullmatch(r"\*\*emails: \d+/\d+ cases passed; \d+ misses: .+\*\*", lines[verdict])
     arm = lines[verdict - 2]
     assert " · " in arm
-    # The campaign's first screen names the one arm as the eval does, never `control`.
-    measures = [line for line in lines[: lines.index("## classify")] if line.startswith("| classify |")]
-    assert measures and all(line.startswith("| classify | triage |") for line in measures)
-    assert lint_page(page, names={arm.split(" · ")[0]}) == []
+    # The Scorecard names the one arm as the eval does, never `control`: one arm is measured, so its matrix has no
+    # Arm column and its title names the arm, and every folded row under it names the arm.
+    above = lines[: lines.index("## classify")]
+    assert "**triage by aspect**" in above and not any("control" in line for line in above)
+    matrix, *rows = [line for line in above if line.startswith("| classify |")]
+    assert matrix.startswith("| classify | 77.8 | 0.9 | 1 | 0.9048 | 0.8182 |")
+    assert rows and all(line.startswith("| classify | triage |") for line in rows)
+    # The matrix heads a column by each measure's name, as its folded rows name it: a name, not a header's words.
+    measured = {line.split(" | ")[2] for line in rows}
+    assert lint_page(page, names={arm.split(" · ")[0], *measured}) == []
 
 
 def test_the_toml_file_runs_from_another_directory_and_its_symmetric_field_misses_what_escalates_forgives(

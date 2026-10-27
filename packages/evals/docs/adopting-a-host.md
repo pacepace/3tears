@@ -657,6 +657,15 @@ code follows the same rule. A synchronous function that takes the storage or the
 fn, ...)`, as the action catalogue does for every synchronous operation. An async operation (`run_launch`,
 `job_poll`) offloads its own.
 
+**Off the loop is not off the GIL.** A read that is CPU-bound Python — `report_read` and `campaign_report` laying out
+a campaign's page, an export, a bundle assembled over many runs — holds the interpreter lock for as long as it
+computes, whichever executor runs it, and so shares one core with every eval run, lease renewal and request in its
+process: the loop still stalls at each await while it runs. A thread pool keeps the read from blocking the loop
+outright, not from slowing it. Where a process serves reads while it runs sweeps, keep the default `report_read`
+(`trials="table"`; `trials="all"` lays out every failed trial's record and costs most), read one trial with
+`result_get`, and if reads still contend with live runs, serve them from a process of their own over the same store.
+A cancelled call does not stop the work: the executor thread finishes it.
+
 **Size the database pool for the job leases too.** Beside the store calls on `blocking_executor`, each process
 renews its jobs' leases on a pool of its own, `LEASE_POOL_WORKERS` threads, every one of which may want a connection
 at once. Give the pool your `blocking_executor`'s workers plus `LEASE_POOL_WORKERS`, so a renewal never waits for a
@@ -857,7 +866,7 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v15.7), durable documents (v16.2), regenerable documents
+**Each version space moves on its own.** Core documents (v15.7), durable documents (v16.3), regenerable documents
 (v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`), the cell model
 (`CELL_MODEL_VERSION`) and the identity keys (`IDENTITY_VERSION`, 25) carry separate versions. The report has none: it is a page rendered from the bundle, which is the versioned machine
 form.

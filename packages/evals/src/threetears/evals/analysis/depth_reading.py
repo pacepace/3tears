@@ -122,29 +122,34 @@ class AspectDepth:
         return [line for subject in self.subjects for line in subject.lines()]
 
 
-def aspect_depth(bundle: AnalysisContextBundle, label_of: Callable[[str], str]) -> AspectDepth:
+def aspect_depth(
+    bundle: AnalysisContextBundle, label_of: Callable[[str], str], *, name: str | None = None
+) -> AspectDepth:
     """One aspect's depths, read off its bundle: every arm's, and every frontier subject's.
 
     :param bundle: The aspect's evidence.
     :ptype bundle: AnalysisContextBundle
     :param label_of: What a reader calls the arm a variant key names.
     :ptype label_of: Callable[[str], str]
+    :param name: What its sentences call the aspect; None calls it by its label.
+    :ptype name: str | None
     :return: The depths.
     :rtype: AspectDepth
     """
     arms = {label_of(board.variant_key): board.depth for board in bundle.scoreboard if board.depth is not None}
     subjects = [subject for subject in bundle.frontier.subjects if subject.points]
+    called = bundle.aspect if name is None else name
     return AspectDepth(
         aspect=bundle.aspect,
         arms=arms,
-        said=depth_sentence(bundle.aspect, dict(arms)),
+        said=depth_sentence(called, dict(arms)),
         subjects=[
             subject_depth(
                 subject,
                 label_of,
-                where=bundle.aspect
+                where=called
                 if len(subjects) == 1
-                else WHERE_SUBJECT.format(aspect=bundle.aspect, subject=subject.subject_label or subject.subject_id),
+                else WHERE_SUBJECT.format(aspect=called, subject=subject.subject_label or subject.subject_id),
             )
             for subject in subjects
         ],

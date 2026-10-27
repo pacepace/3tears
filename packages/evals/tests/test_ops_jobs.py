@@ -224,12 +224,11 @@ async def test_a_generation_is_a_job_polled_to_the_analysis_it_stored() -> None:
     assert line.id == status.analysis_id
     markdown = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
     assert (markdown.basis, markdown.analysis_id) == ("analysis", line.id)
-    # The page is that campaign's: titled by its name, below only its loud lines (a missed bar, and the memo's why
-    # beside it), with the question it declared quoted alone on the line under the title; then the memo's
-    # recommendation.
+    # The page is that campaign's: it opens on its title, its name, with nothing above it, and the question it
+    # declared quoted alone on the line under the title; then the memo's recommendation.
     assert fixture.campaign.question
     asked = " ".join(fixture.campaign.question.split())
-    assert f'\n# {fixture.campaign.name}\n"{asked}"\n' in markdown.body
+    assert markdown.body.startswith(f'# {fixture.campaign.name}\n"{asked}"\n')
     assert "**Recommended:**" in markdown.body and line.findings >= 1
     html = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="html")
     assert "<script" not in html.body.lower()

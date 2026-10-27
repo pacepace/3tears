@@ -25,6 +25,208 @@ packages (bumped in lock-step).
 - A search's or an answer's note of what it could not do comes before its results, right after the first line,
   so a reader keeping only the head of the prose keeps it.
 
+### evals: a page and the writer's view say once that a cost is its runs' provider routing's
+
+**Changed:** an eval's cost belongs to its provider routing, not its model (owner, 2026-10-25): one model routed
+across providers can cost several times more on one run than another. Wherever a campaign's page prints any cost
+figure (a cost reading, a cost floor, the cost/quality chart, the equal-weight aggregate), its first screen says once,
+after the other report-wide caveats, "Each cost figure reflects the provider routing of the runs it was measured on,
+not the model alone." (a `warnings` `DisclosureBlock`, source `cost`, id `caveat-cost`); no figure, fold or chart
+repeats it, and a page with no priced arm does not say it. An aspect's own page that prints a cost says the same line
+once, under its verdict among its report-wide caveats (a `header` `DisclosureBlock`, the same source and id). The
+glossary's "cost per reply" now reads "What production would spend per reply on the models the arm runs, as its runs
+were routed." The writer's view hands the same sentence once, in the
+campaign's `disclosures` as `cost_routing` (`[{aspects, said}]`, the priced aspects), on a campaign of one aspect too,
+and in no aspect's part. No reading, ranking, identity or fingerprint moves. See `packages/evals/MIGRATIONS.toml`.
+
+### evals: the writer prompt reads the view's new fields, and says each report-wide caveat no more than the page does
+
+**Changed:** the seeded writer prompt (`EVAL_ANALYSIS_GEN_DEFAULT`) moves, so every host pushes the new seed to its
+`eval_analysis_gen` store (`eval_prompt_reset`); a stored preset keeps the old text, which names `cases_to_settle`
+and an aspect's `late_criteria`, fields the view no longer carries. WHAT THE BUNDLE HOLDS names the view's new fields
+(`aggregate`, the per-arm `floors` rollup with the rate each floor `reads`, the campaign's `disclosures`, `to_settle`,
+`precision_means`, `control_floor`, `short_name`, each measure's `name`) and drops the descriptions they replace.
+Rule 11 no longer asks the summary to state each late criterion (a caveat is said once, at the level it applies to,
+and the page says it), keeps "Never discount a reading for when its runs ran", says only a `better` reading or an
+`improved` contrast is a gain, and points a choice at the view's `kind_means` instead of restating it. Rule 12 quotes
+`to_settle` with its kind, `never` calling for a change to the candidate, not more cases. Rule 9 raises a flagged
+`control_floor` first, as a validity finding, and names an aspect by its `short_name`. The prompt stays within its
+budget (24,299 of 24,300 characters, 13 rules); the rule ledger (`analysis/GEN_PROMPT_RULES.md`) names the words
+each added clause replaces. See `packages/evals/MIGRATIONS.toml`.
+
+### evals: the writer's view hands each fact once, at the altitude the memo claims it, spelled as the page spells it
+
+**Changed:** the campaign writer's view (`writer_view`, so `build_campaign_user_message` and what a reporter case
+renders) changes shape. Each unclear reading's `cases_to_settle` (it was the cases the interval was read over, not a
+sizing) is replaced by `to_settle`: `if_none` and `if_observed`, each a `kind` (`more`, `enough`, `lost`, `never`,
+`beyond`), the total `cases` where the kind counts some, and `usd` where priced, as the page's To settle table sizes
+it; `never` means no count of cases would show the reading within its margin, only a change to the candidate. The
+flat `floors` list becomes a rollup per arm (an arm with a broken floor first): `{arm, broken, unclear, held}`, each
+floor with its `aspect`, the rate it `reads` (was `speaks_for`; a check by its declared name), its figures, `why`
+(was `reason`) and, when unclear, `to_settle`; `status` and `reading` go, and a figure it lacks is left out. Over two
+or more aspects the view gains `aggregate`: each arm's `pass_rate_pct`, a change's candidate's `change_pts` and
+`cost_per_reply_usd` across aspects (`value` and `interval`, or `withheld_for` naming the aspects), `cheaper_on`,
+`dearer_on`, the `weighting` and `level`. Disclosures are handed once, at the campaign's level: `disclosures` (new at
+the top) holds `late_criteria` (each criterion with the `aspects` it was set late on; each aspect part's
+`late_criteria` is gone), `latency_contended` and `request_settings_disclosure` wherever carried, and any other
+disclosure two or more aspects carry alike, each as `[{aspects, said}]`, which those aspects' parts no longer repeat;
+a confound's explanation two or more aspects carry alike moves to a top-level `confound_catalog`, each wording as
+`[{aspects, said}]`. An aspect's part
+gains `short_name` where one is declared and `control_floor` (`{control, cannot_show: ["drop" | "gain"]}`) where the
+control's pass rate leaves no candidate able to show a drop past the margin or a gain, the rule the Scorecard marks
+(`report.decision.control_cannot_show`, new). Each measure in `measures` gains `name`, as the page names it: a check
+by its declared name, else its whole expression, any other measure by its reader name (a cost by `Production cost`,
+never `production_replicating_cost`). A change, every interval in points, a floor's `worst_drop` and `short_by`, and
+a comparison's half-widths read to the one decimal the page prints (a change of `53.33` is `53.3`); a projected cost
+to two figures. What a comparison's between-case share means is defined once, in a top-level `precision_means`,
+and each `precision` no longer carries `means`. No reading, identity, digest or fingerprint moves, and a campaign bundle frozen at shape 2 renders the
+same view as the one it was frozen from. See `packages/evals/MIGRATIONS.toml`.
+
+### evals: an aspect and a goal check may declare the name a page prints for them
+
+**Added:** `Aspect.short_name` (at most 32 characters, and no other aspect's label or short name) is what a
+campaign's page prints for an aspect in table cells and sentences, and `EvalTemplate.goal_check_names` maps a goal
+check's expression to the name a page prints for it (at most 32 characters, one name per check, each key a check the
+template declares). A name is declared, never derived: an aspect with none prints its full label, and a check with
+none its full expression, never shortened. `campaign_create` takes `short_name` on each aspect, adoption
+(`aspects_from`) carries it, and `campaign_update` takes `short_names` (an aspect's label to its name, or null to
+clear it), which stays editable once runs have joined. The bundle carries both (`AnalysisContextBundle.short_name`,
+`.goal_check_names`, read by `.check_name`), and `report.campaign.names` names each aspect and measure from them
+(`aspect_name`, `AspectNames`, `legend`, `measure_name_of`, `check_legend_blocks`). `style.measure_name` and `report.words.reading_heading`
+take a check's declared name as `declared=`, and `report.decision.floor_readings` and `floor_statement` take the
+names as `check_names=` (carried on `FloorReadings.check_names`, and on `AspectNames.check_names` for a part holding
+only an aspect's label). Every page names a named check by its name wherever it names one, its folds included: the
+tables and their headers, a floor's sentence and reasons, To settle, the call and a finding's evidence. A campaign's
+page states each name beside its expression once, in the **Checks** legend under Design & provenance
+(`check_names`), and a trial's failed-check line, on a page laid out with `trials="all"`, states both too. A campaign's readings name no
+check by a name, so no reading moves with one. Each name is written only when
+set and is no part of any identity, key, digest or fingerprint, and a `template_update` of `goal_check_names` alone
+leaves the template's `updated_at`: a run, a cell, a pool, a pairing, an analysis and a reporter case all key as
+before, no run loses its template's criteria, rejudging or take-up, and a template or campaign naming nothing is
+stored byte for byte as before. Two templates naming one check differently print it whole, logged. Durable v16.3:
+declare no name until every pod reading the store runs 16.3. See `packages/evals/MIGRATIONS.toml`.
+
+### evals: a campaign's Scorecard is one matrix per kind, with each floor and each control that cannot move marked in place
+
+**Changed:** what code read across a campaign's aspects moves off the first screen into its `scorecard` section,
+headed **Scorecard**. Its first table (`scorecard`) is one matrix with a row per aspect: a change's columns are its
+candidates, each cell the change in points with its interval against the margin and the reading; a choice's are its
+arms, each cell the pass rate and the arms it is shown ahead of; a measurement's are its one arm's measures. The
+per-row tables (`aspects`, `pairs`, `measures`) are folded under it, unchanged in their keys. A cell names its floor's
+status where the floor reads otherwise (`unclear; floor broken`), and the sentences that said so under the table are
+gone. A control at or below the margin is marked `cannot show a drop`, one at 100% `cannot show a gain`. A count over
+repeats reads `20 of 40 trials` wherever trials are not the cases beside them. **To settle** (`to_settle`, retitled from
+"To show no worse than the margin") holds a row's count on the pass rate and each unclear rate floor's on every rate
+it reads, naming the rate that decides each; the sentence promising the two agree is gone, since it held only for a
+floor on one rate. Where a floor's count is the row's own (the pass rate decides it, at the margin's points), the two
+are one row (`no worse than the 10-point margin, and the 10-point floor holds`). The level and error-rate lines are
+one paragraph, reworded and counted off the page's own arms and aspects, and no longer say the recommendation does
+not rest on the correction. Where a fold's contrast reads a row's own per-case
+values to another verdict, one line under the matrix names both and the interval each was read on. The matrix's last
+row, `All aspects (equal weight)`, holds what `equal_weight_cells` gives each arm, and a cell for an arm the matrix has
+no column for is refused, never dropped. Each such cell states its unit, which must be its column's (a change's
+control `%`, its candidates `pts`, a choice's arms `%`), and a cell handed back where no matrix holds arms is
+refused. `settle_blocks` takes the campaign and each aspect's page, which a floor's count is read from;
+`decision.rate_projections` (new) is each unclear rate's projection a floor's count joins.
+
+### evals: a campaign's depth tables are one sentence where a sentence says all they would
+
+**Changed:** On a campaign's page, the Depth table is one sentence where every arm ran each case alike on every
+aspect but at most three, which the sentence names ("Every arm ran each case once on every aspect but v3 twice on
+tone; ..."); a depth that varies within an arm, or arms of one aspect over different cases, keeps the table. The
+Pass^k depth table is one sentence for the campaign where pass^k is planned and compared at depth 1 on every aspect
+with no case left out, since it would print each arm's pass rate again. The Precision table drops a column empty on
+every row, and moves under Methods where every arm ran each case once. What extra repeats cannot lower is said once,
+in Design & provenance, where a comparison reads a between-case share. The writer's view is unchanged. See
+`packages/evals/MIGRATIONS.toml`.
+
+### evals: a campaign's readings carry each arm's figures across aspects, each aspect weighed alike, and its page draws cost against pass rate
+
+**Added:** `CampaignReadings.aggregate` (`CampaignAggregate`, new, with `ArmAggregate`, `AggregateFigure` and
+`AggregateWeighting`, from `campaign_readings.campaign_aggregate`) holds, for a change or a choice, each arm's pass
+rate and cost per reply across every aspect and, for a change's candidate, its change against the control, each the
+plain mean of the aspects' own figures with a 95% interval that takes the aspects as independent; and the aspects where
+a candidate's cost per reply is below or above the control's (`cheaper_on`, `dearer_on`). The weighting is stated in
+the JSON (`weighting`: `basis` `equal`, each aspect's `weights`, summing to 1, `intervals` `aspects_independent`). A
+figure any aspect lacks, or lacks a standard error for, is withheld (`value` null) and names those aspects
+(`missing`), never a mean over the rest. Descriptive only: nothing in it is tested, and no figure decides a reading, a
+floor or a bar. A measurement has none (`aggregate` null). Over two or more aspects the Scorecard matrix closes with
+an **All aspects (equal weight)** row (a change: the control's pass rate and each candidate's change; a choice: each
+arm's pass rate; a withheld one `— (withheld)`, with a line naming the aspects), and the methods say once how the
+aspects are weighed. Where the campaign compares more than one pair of figures (two or more aspects, or three or more
+arms), the Scorecard draws a **Cost and pass rate** chart (`ChartBlock` `cost_quality`, which `chart_svg` now draws):
+one point per arm, its cost per reply across and its pass rate up, both intervals drawn, no line between them, with a
+visually hidden table of every figure (Markdown prints the table); on one aspect its points are that aspect's own
+figures. An arm whose cost or pass rate is withheld is left off it, with a line naming the aspects. The campaign
+bundle's shape is 3 (`CAMPAIGN_BUNDLE_SHAPE`): a campaign bundle or frame frozen at shape 2 (a reporter case, a stored
+analysis) is read back as shape 3, its aggregate read off its own readings and aspects' bundles, and its fingerprint
+is unchanged, since the fingerprint reads a bundle at shape 2 without the aggregate: a frozen case still generates,
+calibrates and keeps its labels, a re-freeze of the same labels is still its live case, and a stored analysis still
+reproduces. See `packages/evals/MIGRATIONS.toml`.
+
+### evals: every page's first screen is the decision, and each report-wide caveat is said once
+
+**Changed:** A campaign's page and an aspect's own page open on their title, nothing above it and nothing announced
+with `role="alert"`. A campaign's page then reads the question, the writer's summary and recommendation, then what
+warns: one plain line per arm for the bars it misses, the floors it breaks and the guardrails it is not shown safe
+on, worded as what it means for the arm (`Adopting v2 overrides the 10-point floor it breaks on billing.`); an
+aspect's page says the same floor line under its verdict. Criteria set after their readings were visible, results
+with no ordered time, latency read under concurrency and request settings not confirmed are each one caveat line on
+the first screen and their detail stated once (a campaign's Design & provenance, verbatim per aspect; an aspect's
+methods), never one line per aspect or per criterion. `late_criteria_lines` is replaced by `timing_caveats`, and
+`report.decision.floor_warning` is removed. The memo's findings and next steps are their own sections. HTML links
+aspects in a campaign table to their folds, shows a long expression in a table by its start and a visible ellipsis,
+and draws a scorecard matrix's glyphs on one scale. Both are the page's own: a cell naming an aspect carries its
+fold's link from where it is built (`AspectNames.cell`, the link in `AspectNames.folds`, spelled once by `report.model.fold_anchor`), and a table drawn on one
+scale says so (`TableBlock.shared_scale`, new, default false); the HTML renders what the block says and reads no
+table's name or cell's text for it. `table_row` keeps a value that is already a cell.
+
+### evals: the campaign page is laid out by one module per part, and its model holds the parts to come
+
+**Changed:** `threetears.evals.analysis.report.campaign` lays a campaign's page out, one module per part (the
+warnings, the question and late criteria, the scorecard, depth, figures across aspects, the writer's and the person's
+words), and `report.campaign_page` re-exports what it exported, with `late_criteria_lines` and `AspectNames` (what the
+page calls each aspect) now among them. `campaign_warnings` and `campaign_verdict` take the `AspectNames` to name
+aspects by. Both serializers lay a page's sections out in the page's own order: an aspect's page by
+`Report.section_titles`, a campaign's by `CampaignReport.section_titles`, its sections up to Design & provenance
+before the aspect folds and the rest after (`CampaignReport.headed_sections`). The split itself moves no byte: a
+page built from the same inputs renders alike before and after it. **Added**, none of it set on a page laid out today: a campaign's own sections in `ReportSection` (`answer`,
+`warnings`, `scorecard`, `findings`, `next`, `provenance`), each laid out under its heading; `TableCell.flag`, a short
+marker printed after a cell's value; and the `cost_quality` chart, one `CostQualityPoint` per arm (new, provisional),
+which `chart_svg` refuses until it has a drawing. **Refused:** an aspect's page holding a block in a campaign's own
+section, and any page holding a block in the glossary, which the serializers write from the page's terms; each would
+otherwise vanish from the page. `CAMPAIGN_JSON_SHAPE` is 5; the JSON's keys do not move yet. See
+`packages/evals/MIGRATIONS.toml`.
+
+### evals: reading a campaign's report holds one analysis, and lays out its failed trials as a table by default (#951)
+
+**Fixed:** `campaign_report` (and `report_read`, the CLI `report`, the quick path's `Result.page`) hydrated every
+analysis of the campaign, archived ones included, each holding every aspect's frozen bundle, to lay out the newest
+live one: one read of an eight-aspect campaign cost 400-500 MB in production, and a json-then-html pair took a 2 GB
+container past its limit. The store now picks the reported analysis (`AnalysisStore.load_reported_analysis`, new on
+the port and on `EvalStorage`: one `by_doc_type` read filtered on the archived flag, newest first, limit one), so a
+read's memory no longer grows with the analyses archived. Analyses written at one instant are ordered by id after
+`created_at`, in `list_analyses_by_campaign` (so `analyses_list`) and in the reported one alike. A stored analysis's
+page also hashes each aspect's bundle once instead of twice. The analysis listings (`analyses_list`,
+`analyses_undescribable`) still read every analysis of a campaign; that is #954.
+
+**Changed:** each aspect's trials section on a campaign's page is, by default, the census line, one row per failed
+or lost trial naming its stored result (read it with `result_get`), and the passed trials' table. The full record of
+each failed or lost trial is opt-in: `report_read`'s new `trials` parameter (`table`, the default, or `all`), the
+same keyword on `campaign_report` and `analysis_report`, and the CLI's `report --trials all`. `TrialDetail` is the
+new literal. The one-aspect builders (`build_report`, `build_code_only_report`) keep laying out every record unless
+asked. The JSON form carries no records either way. A host implementing `AnalysisStore` itself adds
+`load_reported_analysis`.
+
+**Changed:** over MCP, `report_read`'s structured content no longer repeats its body: the text block is the body, and
+the structured content holds `campaign_id`, `basis`, `analysis_id` and `format`. An action opts in by declaring the
+result field its render returns verbatim (`Action.text_field`, new, default `None`), and the transport leaves that
+one field out; `report_read` is the only action that declares it, so every other action's structured content, a
+host's own actions included, is unchanged.
+
+**Docs:** the host-adoption guide says a CPU-bound read shares the interpreter lock with the eval runs in its process
+whatever executor runs it, beside the guidance on offloading store calls.
+
 ## v0.79.0 -- 2026-10-26
 
 ### search: a placeholder frame is not named as the article

@@ -525,6 +525,12 @@ def rebuild_bundle(case: ReporterCase) -> CampaignBundle:
       every stored read;
     - every frozen value must survive the rebuild unchanged — none altered by validation.
 
+    **A campaign bundle frozen at an earlier shape this build reads as its own is rebuilt at its own**
+    (:meth:`~threetears.evals.analysis.campaign_bundle.CampaignBundle.from_dict`): shape 2 lacks only the figures
+    across aspects, which the rebuild reads off the frozen readings and aspects' bundles, so a case frozen at 2 keeps
+    generating, calibrating and fingerprinting as the evidence it froze, and its labels stand. Its recorded
+    fingerprint is checked against the document as frozen, and the shape is the one value the rebuild moves.
+
     **A bundle frozen before one memo covered a campaign is refused**, before any of this: a case frozen over one
     aspect's bundle (before the campaign rewrite), or over a bundle of a shape before 59, holds no campaign bundle, so no rebuild can
     hand the writer what it now reads, and the case is frozen again from its campaign instead.
@@ -543,8 +549,8 @@ def rebuild_bundle(case: ReporterCase) -> CampaignBundle:
     :ptype case: ReporterCase
     :return: The bundle, carrying every frozen value.
     :rtype: CampaignBundle
-    :raises RefusedInput: The frozen bundle is not a campaign bundle of this build's shape, or an aspect's bundle in it
-        is of a shape from before a bundle read one aspect (59).
+    :raises RefusedInput: The frozen bundle is not a campaign bundle of a shape this build reads, or an aspect's bundle
+        in it is of a shape from before a bundle read one aspect (59).
     :raises ValueError: The frozen bundle does not validate, no longer digests to the recorded
         fingerprint, or loses or changes a frozen value in the round-trip.
     """
@@ -561,7 +567,9 @@ def rebuild_bundle(case: ReporterCase) -> CampaignBundle:
         )
     bundle = CampaignBundle.from_dict(frozen, what=what, remedy=remedy)
     added: list[str] = []
-    losses = _losses(frozen, bundle.to_dict(), "bundle", added)
+    # A bundle frozen at an earlier shape this build reads is rebuilt at this one; its shape is the one value the
+    # rebuild moves on purpose, and every other frozen value must survive.
+    losses = _losses({**frozen, "schema_version": bundle.schema_version}, bundle.to_dict(), "bundle", added)
     if losses:
         shown = "; ".join(losses[:5]) + (f"; and {len(losses) - 5} more" if len(losses) > 5 else "")
         raise ValueError(

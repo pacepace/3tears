@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from threetears.evals import Answer, Eval, Result
+from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
 from threetears.evals.analysis import (
     ArmServedModel,
     Report,
@@ -55,7 +56,7 @@ async def g2_ruled() -> tuple[Result, Report]:
 async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     lines = report_markdown(report).splitlines()
-    # The title is the campaign's name (no floor is broken on four cases, so none opens the page above it); the
+    # The title is the campaign's name (no floor is broken on four cases, so none warns under the verdict); the
     # question declared before the run is quoted whole on its own line under it, the contract the verdict reads; then
     # the subhead says what the question need not: each arm with its version. Then the verdict, which no floor decides.
     assert lines[0] == "# G2: can the cheaper model replace production?"
@@ -68,13 +69,15 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
     # The Decision section opens on the aspect's floors.
     assert "\n## Floors\n\n**Floors on classify**\n" in report_markdown(report)
     assert lines[5] == "**cheaper candidate passed less often than production; too few cases to call a difference.**"
+    # The page prints a cost, so the report-wide line on provider routing follows the verdict (owner, 2026-10-25).
+    assert lines[7] == COST_ROUTING_CAVEAT
     # Every arm's cost per reply is under a cent, so the cost is stated per 1,000 replies, and the header says so.
-    assert lines[7:10] == [
+    assert lines[9:12] == [
         "**Scoreboard**",
         "",
         "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Cost per 1,000 replies |",
     ]
-    assert lines[11] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
+    assert lines[13] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
     first = report_markdown(report).split("\n## ", 1)[0]
     # The case floor's caveat says what is withheld under four cases and why, in the reader's terms. Nothing else is
     # under the scoreboard: the design is on the arms line.

@@ -83,9 +83,9 @@ class TestTheToyAnalysisSerializesTwoWays:
         # who wrote the memo is in the methods.
         assert report.source.campaign_name == "chunk width sweep"
         assert report.title == "chunk width sweep"
-        # Only a broken floor's warning may stand above the title, each in bold with a blank line under it.
+        # The title is the first line: nothing stands above it.
         top = lines.index(f"# {report.title}")
-        assert all(line.startswith("**Floor broken on ") or not line for line in lines[:top])
+        assert top == 0
         assert lines[top + 1] == '"Is the wider chunk worth what it costs to retrieve?"', (
             "the question, under the title"
         )
@@ -107,6 +107,8 @@ class TestTheToyAnalysisSerializesTwoWays:
 
         assert page.startswith("<!doctype html>")
         assert page.index("<header>") < page.index(f"<h1>{_escaped(report.title)}</h1>") < page.index("</header>")
+        header = page[page.index("<header>") + len("<header>") : page.index("</header>")]
+        assert header.lstrip().startswith("<h1>") and 'role="alert"' not in page
         # The outcome bar is the page's one chart, beside its hidden table; the finding's intervals are glyphs in
         # its readings table, whose rows already print every figure a glyph draws.
         assert 'data-chart="outcome_bar"' in page and 'data-chart="interval_rows"' not in page

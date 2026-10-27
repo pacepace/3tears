@@ -549,7 +549,11 @@ To install the extra from a pre-release or an unreleased checkout, use the repos
 [the README shows](../README.md#install):
 `pip install "3tears-evals[fastmcp] @ git+https://github.com/pacepace/3tears.git@<tag>#subdirectory=packages/evals"`.
 
-A result carries its text and the result model's JSON as structured content. A refused call is an MCP
+A result carries its text and the result model's JSON as structured content, less the one field an action declares
+its text is (`Action.text_field`, the field its render returns verbatim). `report_read` declares `body`, so its
+structured content holds `campaign_id`, `basis`, `analysis_id` and `format`, the report is the text block, and a page
+of megabytes is sent once. No other engine action declares one, and a host's action sends its whole result unless it
+does. A refused call is an MCP
 error result (`isError`) carrying the teaching text, with the refusal as structured content:
 
 ```json

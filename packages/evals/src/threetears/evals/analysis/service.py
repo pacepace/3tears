@@ -31,7 +31,7 @@ import contextlib
 import json
 import re
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
@@ -59,8 +59,9 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_case_of,
     reporter_case_payload,
 )
-from threetears.evals.analysis.bundle.schema import BundleInspection
+from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection
 from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
+from threetears.evals.analysis.report.model import TrialDetail
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalCampaign
@@ -162,6 +163,11 @@ class AnalysisStore(CampaignReadStore, JobRecordStore, Protocol):
 
     def list_analyses_by_campaign(self, campaign_id: str, scope_id: str, /) -> list[EvalAnalysis]:
         """Every analysis of one campaign, newest first."""
+        ...
+
+    def load_reported_analysis(self, campaign_id: str, scope_id: str, /) -> EvalAnalysis | None:
+        """The campaign's newest analysis that is not archived — the one its page reports — read alone, never by
+        loading the campaign's other analyses; ``None`` when it has none."""
         ...
 
     def list_analysis_attempts_by_campaign(self, campaign_id: str, scope_id: str, /) -> list[EvalAnalysisAttempt]:
@@ -1495,6 +1501,8 @@ def _campaign_page(
     *,
     assembled_at: str,
     analysis: EvalAnalysis | None = None,
+    fingerprints: Mapping[str, str] | None = None,
+    trials: TrialDetail = "table",
 ) -> CampaignReport:
     """Lay a campaign bundle out as the campaign's page: code's readings, the memo where there is one, the call.
 
@@ -1509,14 +1517,26 @@ def _campaign_page(
     :ptype assembled_at: str
     :param analysis: The stored analysis whose memo the page lays out; None for a code-only page.
     :ptype analysis: EvalAnalysis | None
+    :param fingerprints: Each aspect's bundle fingerprint in the current version, by label, where it was just checked
+        against the bundle; an aspect not named is hashed.
+    :ptype fingerprints: Mapping[str, str] | None
+    :param trials: How much of each failed or lost trial each fold lays out (:data:`TrialDetail`).
+    :ptype trials: TrialDetail
     :return: The page.
     :rtype: CampaignReport
     """
     labels = bundle.readings.arm_labels()
     writer = analysis_writer(analysis) if analysis is not None else None
+    checked = fingerprints or {}
     reports = {
         aspect.aspect: build_code_only_report(
-            aspect, assembled_at=assembled_at, campaign_name=campaign.name, arm_labels=labels, writer=writer
+            aspect,
+            assembled_at=assembled_at,
+            campaign_name=campaign.name,
+            arm_labels=labels,
+            writer=writer,
+            bundle_fingerprint=checked.get(aspect.aspect),
+            trials=trials,
         )
         for aspect in bundle.aspects
     }
@@ -1564,17 +1584,30 @@ def _as_analysed(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> EvalC
     )
 
 
-def _analysis_page(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> CampaignReport:
+def _analysis_page(analysis: EvalAnalysis, campaign: EvalCampaign | None, *, trials: TrialDetail) -> CampaignReport:
     """A stored analysis laid out as its campaign's page, over everything frozen with it."""
+    bundle = analysis_campaign_bundle(analysis)
+    # Putting the bundle back together refused it unless each aspect's entry in the frame is that aspect's bundle
+    # fingerprint in the entry's version, so an entry in the current version is the one each fold's source names.
+    entries = analysis.campaign_bundle.get("aspects")
+    fingerprints = {
+        str(entry["aspect"]): str(entry["fingerprint"])
+        for entry in (entries if isinstance(entries, list) else [])
+        if isinstance(entry, dict) and str(entry.get("fingerprint", "")).startswith(FINGERPRINT_PREFIX)
+    }
     return _campaign_page(
         _as_analysed(analysis, campaign),
-        analysis_campaign_bundle(analysis),
+        bundle,
         assembled_at=analysis.generation.bundle_assembled_at,
         analysis=analysis,
+        fingerprints=fingerprints,
+        trials=trials,
     )
 
 
-def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> CampaignReport:
+def analysis_report(
+    storage: AnalysisStore, analysis_id: str, scope_id: str, *, trials: TrialDetail = "table"
+) -> CampaignReport:
     """Read one stored analysis as its campaign's page — the one page every door renders.
 
     Laid out over the bundles and code's readings frozen with the analysis at generation, so it reads as it was
@@ -1588,6 +1621,9 @@ def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> 
     :ptype analysis_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
+    :param trials: How much of each failed or lost trial the page lays out (:data:`TrialDetail`): by default their
+        table alone, each row naming its stored result; ``all`` adds each one's full record.
+    :ptype trials: TrialDetail
     :return: The page, ``basis="analysis"``; :meth:`~threetears.evals.analysis.report.CampaignReport.write` puts it
         in a directory, and :func:`~threetears.evals.analysis.report.serialize_report` serializes it.
     :rtype: CampaignReport
@@ -1595,10 +1631,12 @@ def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> 
     :raises RefusedInput: The analysis was written over a bundle of another shape.
     """
     analysis = get_analysis(storage, analysis_id, scope_id)
-    return _analysis_page(analysis, storage.load_campaign(analysis.campaign_id, scope_id))
+    return _analysis_page(analysis, storage.load_campaign(analysis.campaign_id, scope_id), trials=trials)
 
 
-def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignReport:
+def campaign_report(
+    host: EvalHost, campaign_id: str, scope_id: str, *, trials: TrialDetail = "table"
+) -> CampaignReport:
     """The campaign's page — THE answer to "what is this campaign's report", for every caller and every campaign.
 
     **The rule.** The campaign's newest analysis that is not archived, laid out over what was frozen with it
@@ -1610,7 +1648,9 @@ def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Campaign
     A campaign of one aspect has one fold, holding that aspect's page. A particular analysis, archived ones included,
     is read by its id through :func:`analysis_report`.
 
-    Costs no model call either way: the code-only page is storage reads and arithmetic.
+    Costs no model call either way: the code-only page is storage reads and arithmetic. It reads one analysis however
+    many the campaign holds: the store picks the newest not archived
+    (:meth:`AnalysisStore.load_reported_analysis`), so a read's memory does not grow with the analyses archived.
 
     :param host: The host: where the campaign and its analyses are read, and the vocabulary its evidence is
         assembled in when there is no analysis.
@@ -1619,30 +1659,36 @@ def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Campaign
     :ptype campaign_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
+    :param trials: How much of each failed or lost trial the page lays out (:data:`TrialDetail`): by default their
+        table alone, each row naming its stored result (``result_get`` reads it); ``all`` adds each one's full
+        record, which is most of a large campaign's page.
+    :ptype trials: TrialDetail
     :return: The page; its ``basis`` says which it is.
     :rtype: CampaignReport
     :raises NotFoundError: No campaign with that id in the scope.
     """
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
-    live = [analysis for analysis in list_analyses(host.storage, campaign_id, scope_id) if not analysis.archived]
-    if live:
-        return _analysis_page(live[0], campaign)
-    return _code_only_page(host, campaign)
+    reported = host.storage.load_reported_analysis(campaign_id, scope_id)
+    if reported is not None:
+        return _analysis_page(reported, campaign, trials=trials)
+    return _code_only_page(host, campaign, trials=trials)
 
 
-def _code_only_page(host: EvalHost, campaign: EvalCampaign) -> CampaignReport:
+def _code_only_page(host: EvalHost, campaign: EvalCampaign, *, trials: TrialDetail = "table") -> CampaignReport:
     """The campaign's code-only page over its evidence assembled now, whatever analyses it holds.
 
     :param host: The host: where the campaign's runs, results and insights are read, and its vocabulary.
     :ptype host: EvalHost
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
+    :param trials: How much of each failed or lost trial each fold lays out.
+    :ptype trials: TrialDetail
     :return: The page, ``basis="code_only"``.
     :rtype: CampaignReport
     """
     assembled_at = utc_now_iso()
     bundle = _assembled_campaign_bundle(campaign, storage=host.storage, profile=host.profile)
-    return _campaign_page(campaign, bundle, assembled_at=assembled_at)
+    return _campaign_page(campaign, bundle, assembled_at=assembled_at, trials=trials)
 
 
 def campaign_verdicts(host: EvalHost, campaign_id: str, scope_id: str) -> list[Verdict]:
@@ -1799,10 +1845,11 @@ def _reported_analysis(storage: AnalysisStore, campaign_id: str, scope_id: str, 
         )
     if named.archived:
         raise ValidationFailedError(f"analysis {analysis_id} is archived, so no page reports it", remedy=remedy)
-    live = [analysis for analysis in list_analyses(storage, campaign_id, scope_id) if not analysis.archived]
-    if live[0].id != analysis_id:
+    reported = storage.load_reported_analysis(campaign_id, scope_id)
+    if reported is None or reported.id != analysis_id:
         raise ValidationFailedError(
-            f"analysis {analysis_id} is not campaign {campaign_id}'s report: its page reports {live[0].id}",
+            f"analysis {analysis_id} is not campaign {campaign_id}'s report: its page reports "
+            f"{reported.id if reported is not None else 'no analysis'}",
             remedy=remedy,
         )
     return named
