@@ -271,4 +271,6 @@ def load_skill() -> AnalystSkill:
     return AnalystSkill(files=_read_tree(files("threetears.evals.analysis.analyst").joinpath("skill")))
 
 
-__all__ = ["AnalystSkill", "SkillText", "load_skill"]
+#: Empty until the report writer's sessions call the skill: ``AnalystSkill``, ``SkillText`` and ``load_skill`` join it
+#: with their first production caller (``tests/test_analyst_skill_exports.py`` holds the list).
+__all__: list[str] = []

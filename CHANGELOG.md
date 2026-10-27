@@ -32,7 +32,8 @@ the role file and its modules, then the index and three notes chosen by the camp
 row names the structural facts of the campaign it was reasoned on (`control`, `margin`, `factors`,
 `cross_cutting_task` and the rest, each a condition on the report input's data), and a campaign is given the notes
 sharing most of its facts, never chosen by its kind, design shape, name or measure keys. `withhold` leaves out a note
-and its index row, as a blind run does. `AnalystSkill.editor()` is the editor's text.
+and its index row, as a blind run does. `AnalystSkill.editor()` is the editor's text. The module's `__all__` stays
+empty until the report writer's sessions call these names, and `tests/test_analyst_skill_exports.py` lists them.
 
 ### evals: a chart of readings prints the level of the interval it draws
 
