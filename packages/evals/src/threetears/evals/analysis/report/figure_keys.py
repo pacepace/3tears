@@ -992,6 +992,19 @@ def _slice_figure(
 
 _SCOREBOARD_STATISTICS = ("ran", "usable", "passed", "cases", "lost", "failed", "reply_cost_usd", "test_cost_usd")
 
+#: How the examples count a failure, which ``count.failures`` counts by, and why it is not the scoreboard's ``failed``.
+_FAILURES_RULE = (
+    "A failure here is a nought on the primary judged dimension where the snapshot names one, else a trial that "
+    "failed: it is not `scoreboard.<arm>.failed`, which counts every trial that failed, for any cause, so the two "
+    "differ by design where trials fail on something else"
+)
+
+#: What the scoreboard's ``failed`` counts, beside ``count.failures``.
+_SCOREBOARD_FAILED = (
+    "`failed` counts every trial that failed, for any cause; `count.failures.<aspect>.<arm>` counts failures as the "
+    "examples do (a nought on the primary judged dimension, where there is one), so the two can differ"
+)
+
 
 def _scoreboard(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     arm_id, statistic = values
@@ -4540,7 +4553,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("scoreboard"),
         _keyed("<arm>", lambda ri: ri.scoreboard),
         _Statistic(_SCOREBOARD_STATISTICS),
-        what="how an arm's trials came out",
+        what="how an arm's trials came out. " + _SCOREBOARD_FAILED,
         resolve=_scoreboard,
     ),
     _family_of(
@@ -4682,7 +4695,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("scoreboard"),
         _Ids("<arm>", _aspect_board_arms),
         _Statistic(_SCOREBOARD_STATISTICS),
-        what="how an arm's trials came out on one aspect",
+        what="how an arm's trials came out on one aspect. " + _SCOREBOARD_FAILED,
         resolve=_aspect_scoreboard,
         example="aspects.speed.scoreboard.fast.v2.passed",
     ),
@@ -5023,8 +5036,9 @@ _FAMILIES: tuple[_Family, ...] = (
         "and guardrail, borderline counting as passing; `undecided` how many no gate figure fails while a gate has no "
         "figure for them somewhere: neither passed nor removed; `pairs` how many pairs of arms its pair readings read "
         "apart, `arm_pairs` how many pairs of arms there are; `examples` the failed trials the snapshot froze as "
-        "examples, `failures` the failed trials the run holds, which they were kept from (refused where the snapshot "
-        "does not count them: not known)",
+        "examples, `failures` the failed trials the run holds, which they were kept from, a failure counted as the "
+        "examples count one, not as the scoreboard's `failed` (refused where the snapshot does not count them: not "
+        "known)",
         resolve=_campaign_count,
         derived_statistics=("surviving", "undecided"),
         example="count.arms|words",
@@ -5116,7 +5130,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Ids("<arm>", _example_arms),
         what="how many of one arm's trials on one aspect failed, as the examples count a failure: the pool its examples "
         "were kept from (`count.failures` counts every one); not known, and refused, where the snapshot does not "
-        "count them",
+        "count them. " + _FAILURES_RULE,
         resolve=_failed_trials_count,
         example="count.failures.answers.fast.v2",
     ),

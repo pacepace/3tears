@@ -13,7 +13,9 @@ Contracts held here (``threetears.evals.analysis.report_input_build.report_input
 - **a planner's input counts nothing**, so its view is what it was;
 - **which cases two aspects ran** is counted off the bundle's case ids, keyed and listed by the overview, and reads
   as not known where the snapshot does not hold them;
-- **an example card names its aspect** where the input holds more than one.
+- **an example card names its aspect** where the input holds more than one;
+- **the failures key and the scoreboard's failed count** each say, in their own key text, that they count a failure
+  differently, and how.
 
 Every expectation is computed from the bundle or the input, never typed.
 """
@@ -35,6 +37,7 @@ from packages.evals.tests.analyst_support import (
 from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle
 from threetears.evals.analysis.analyst.blocks import block_render
 from threetears.evals.analysis.analyst.facts import campaign_overview, examples_list
+from threetears.evals.analysis.analyst.keys import figure_keys_check
 from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_input
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.errors import UnstatedFigure
@@ -89,6 +92,26 @@ def test_each_slices_failed_trials_are_counted_off_the_bundle(name: str) -> None
             (e.aspect, e.arm, e.stratum) == (example.aspect, example.arm, example.stratum) for e in held.examples
         )
         assert read[example.aspect or "", example.arm or "", example.stratum] >= kept
+
+
+def test_the_failures_key_and_the_scoreboards_failed_count_say_why_they_differ() -> None:
+    """Kairo's analyst read `count.failures` at 126 beside the scoreboard's 200 failed with no word on why: the two count
+    a failure differently by design. Each key's own text, as the key check serves it, names the other and the rule."""
+    held = _counted(KAIRO)
+    assert held.failed_trials is not None and held.primary_judged is not None
+    lead = held.aspects[0].id
+    differ = [
+        arm
+        for arm, row in held.scoreboard.items()
+        if resolve(f"count.failures.{lead}.{arm}", held).value != sum(row.failed.values())
+    ]
+    assert differ, "the control: an arm whose two counts differ"
+    arm = differ[0]
+    failures, board = figure_keys_check(held, [f"count.failures.{lead}.{arm}", f"scoreboard.{arm}.failed"]).keys
+    assert failures.status == board.status == "reads"
+    assert failures.what is not None and board.what is not None
+    assert "`scoreboard.<arm>.failed`" in failures.what and "primary judged dimension" in failures.what
+    assert "`count.failures.<aspect>.<arm>`" in board.what and "primary judged dimension" in board.what
 
 
 def test_an_aspect_whose_bundle_left_failures_out_is_not_counted_and_reads_as_not_known() -> None:
