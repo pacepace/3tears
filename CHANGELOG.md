@@ -18,6 +18,18 @@ aspect's rows (the lead's, or the one asked aspect's readings) and showed them a
 those rows on more than one aspect, the block is refused at `query.aspect`, listing each aspect (`held_aspects`), and
 one block per aspect naming it draws that aspect's rows.
 
+### evals: a check's measure is a pass rate in the report input
+
+**Fixed:** the report input built from a campaign's bundle gave no measure a grade (`Measure.grade`), so a goal-state
+check's pass rate (`goal_state:<expression>`) read as a bare number on the plain scale. Pages and analyst tools printed
+it as `0.65`, not `65%`, and refused the `pct` filter. Points filters, intervals, settle and compare in points, and block
+units were all off on it, and a price per point on it was 100 times too high: a gain of 0.2 was read as 0.2 points,
+not 20. A measure's grade is now read off what the measure is. `pass_fail` covers every goal-state family measure, a
+check by its descriptor (a boolean with a better end, or a measure declared `pass_fail`) and a measurement's pass rate
+(`passed`). `class_label` covers `match` and `accuracy`. Every other measure still has no grade. A campaign input
+carrying such measures (every one with goal-state checks) changes, and so does its snapshot id on a re-freeze. Stored
+inputs and snapshots still validate, since `grade` is optional.
+
 ### evals: a prices block draws an unbounded price as open above, a values table pads no digit a number was never rounded to
 
 **Fixed:** a price step whose gain's interval reaches zero was drawn with no interval at all, beside steps with one, so
