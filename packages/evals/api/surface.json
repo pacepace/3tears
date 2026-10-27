@@ -3498,7 +3498,7 @@
     },
     "threetears.evals.run.ArmPrice": {
       "kind": "dataclass",
-      "signature": "ArmPrice(predicted_usd: float | None, basis: str, central_usd: float | None = None, low_usd: float | None = None, method_id: str | None = None)",
+      "signature": "ArmPrice(predicted_usd: float | None, basis: str, central_usd: float | None = None, low_usd: float | None = None, band_high_usd: float | None = None, method_id: str | None = None)",
       "tier": "stable"
     },
     "threetears.evals.run.ArmQuote": {

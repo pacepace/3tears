@@ -13,22 +13,25 @@ building the arm's `ArmPrice` when every priced past result of the arm cost the 
 arm, three results at $0.0015 each). The cost band (`compute_estimate_cost`) read that history on the log scale, whose
 ends are `exp` of a mean of logs and round away from the arithmetic mean the central estimate is drawn from: both ends
 landed an ulp off the centre, here below it. The band now brackets its estimate, and never moves an end onto it by
-more than rounding. A history whose costs are all equal, or apart by rounding alone (within a billionth), gives no
-margin of error to compute, so its band is a 3% safety margin either side of the estimate (each cell's, and so the
-total's): the arm's predicted price, the figure a launch holds to its cap, is 3% above the estimate, and its low end
-3% below, never below $0. Its `band_basis` says so: "No spread in N past observations: each cost $X, so no margin of
-error can be computed from them, and the band is a 3% safety margin either side of the estimate". A history with any
-spread keeps the band its fit computes, however narrow. A log-scale end that misses the estimate by rounding alone
-(within a billionth of it) is set to it. A log-scale band that misses it by more, where the lognormal fit contradicts
-the history's mean (one outlier among near-equal costs), becomes the outer envelope of that band and the normal-theory
-band around the mean; its `band_basis` calls it an at-least-95% band, wider than either fit's because neither can be
-trusted alone, names the end the fit put where, and says why a lower end of $0 is $0. The upper end a launch is capped
-at is never the bare mean of a history that varied. Every figure in a basis is spelled by the package's one rule
-(`format_number`), never as an exponent, and so is every figure in the `ArmPrice.basis` the history pricer writes: in
-cents, a sub-cent arm's band read "$0.00-$0.00 around $0.00", hiding its margin, where it now reads
-"$0.004365-$0.004635 around $0.0045". The normal-theory band (a history holding a zero cost) is centred on the same
-estimate. `lognormal_sum_prediction_band` gives observations all equal a band of no width at exactly `n_future` times
-their value; read through their logs, eleven or more of them had a spread a few ulps above zero.
+more than rounding. A history whose costs are all equal, or apart by rounding alone (within a billionth), has a band
+of no width at exactly the estimate (each cell's and the total's), and its `band_basis` says no spread was seen in its
+N past observations. The band stays what the history computes wherever it is shown, however narrow: a reader may judge
+one or two percent significant. Where a cap is judged, the history pricer holds every arm to at least a 3% safety
+margin above its estimate: `ArmPrice.predicted_usd`, the figure a launch holds to the arm's cap, is the greater of the
+band's upper end and the estimate plus 3%, while `low_usd` and `central_usd` stay as computed and the band's own upper
+end rides along as `ArmPrice.band_high_usd` (new; also on `ArmEstimate`, and the end a cost pivot's plan reads). Where
+the margin binds, the basis states both: "the band from history is $a-$b (x% below to y% above $c); the cap reads $d,
+the 3% safety margin above the estimate, wider than the band". Where it does not, the basis names the band's upper end
+alone. A log-scale end that misses the estimate by rounding alone (within a billionth of it) is set to it. A log-scale
+band that misses it by more, where the lognormal fit contradicts the history's mean (one outlier among near-equal
+costs), becomes the outer envelope of that band and the normal-theory band around the mean; its `band_basis` calls it
+an at-least-95% band, wider than either fit's because neither can be trusted alone, names the end the fit put where,
+and says why a lower end of $0 is $0. The upper end a launch is capped at is never the bare mean of a history that
+varied. Every figure in a basis is spelled by the package's one rule (`format_number`), never as an exponent, and so
+is every figure in the `ArmPrice.basis` the history pricer writes: in cents, a sub-cent arm's band read "$0.00-$0.00
+around $0.00", three figures with one spelling. The normal-theory band (a history holding a zero cost) is centred on
+the same estimate. `lognormal_sum_prediction_band` gives observations all equal a band of no width at exactly
+`n_future` times their value; read through their logs, eleven or more of them had a spread a few ulps above zero.
 
 ### evals: `scope_export` pages a large scope instead of reading it whole
 

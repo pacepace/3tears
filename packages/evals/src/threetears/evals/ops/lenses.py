@@ -55,7 +55,11 @@ from threetears.evals.analysis.stats import (
 
 from threetears.evals.analysis.measurement_windows import measurement_window, measurement_window_disclosure
 from threetears.evals.analysis.cassette_mode import cassette_mode_disclosure
-from threetears.evals.analysis.lenses.cost_estimate import COST_ESTIMATE_MIN_BASIS, compute_estimate_cost
+from threetears.evals.analysis.lenses.cost_estimate import (
+    COST_BAND_SAFETY_MARGIN,
+    COST_ESTIMATE_MIN_BASIS,
+    compute_estimate_cost,
+)
 from threetears.evals.analysis.significance import format_significance
 from threetears.evals.analysis.completeness import completeness_disclosure
 
@@ -498,6 +502,8 @@ class ArmEstimate(EvalBaseModel):
         when nothing predicts it (unknown, never $0).
     :ivar central_usd: A range pricer's central estimate, never held to the cap; ``None`` for a single figure.
     :ivar low_usd: A range pricer's lower end; ``None`` otherwise.
+    :ivar band_high_usd: A range pricer's upper end as its evidence computed it, where ``predicted_usd`` may stand
+        above it by a safety margin (:attr:`~threetears.evals.run.ArmPrice.band_high_usd`); ``None`` otherwise.
     :ivar method_id: The estimator, or ``None`` for a pricer that names none.
     :ivar basis: How the prediction was made, or why there is none.
     :ivar outcome: What the launch's one pricing rule makes of it (:data:`~threetears.evals.run.ArmOutcome`).
@@ -525,6 +531,7 @@ class ArmEstimate(EvalBaseModel):
     outcome: ArmOutcome
     refusal: str | None
     remedy: str | None = None
+    band_high_usd: float | None = None
     call_ceiling_usd: float | None = None
     call_ceiling_lower_bound: bool = False
 
@@ -656,7 +663,8 @@ class LaunchEstimate(EvalBaseModel):
         :ptype run_ids: Sequence[str]
         :return: One :class:`~threetears.evals.analysis.lenses.cost_estimate.PlannedCost` per arm with a model, a plan
             and a prediction; the prediction's point is the pricer's central estimate where it gave a range (the
-            band then running from its lower to its upper end) and its single figure otherwise.
+            band then running from its lower end to its band's own upper end, never to a cap's safety margin above
+            it) and its single figure otherwise.
         :rtype: list[PlannedCost]
         """
         planned: list[PlannedCost] = []
@@ -664,6 +672,7 @@ class LaunchEstimate(EvalBaseModel):
             if arm.candidate_model is None or arm.n_observations is None or arm.predicted_usd is None:
                 continue
             ranged = arm.central_usd is not None
+            band_high = arm.band_high_usd if arm.band_high_usd is not None else arm.predicted_usd
             planned.append(
                 PlannedCost(
                     model=arm.candidate_model,
@@ -673,7 +682,7 @@ class LaunchEstimate(EvalBaseModel):
                     predicted=PredictedValue(
                         value=arm.central_usd if arm.central_usd is not None else arm.predicted_usd,
                         interval_low=arm.low_usd if ranged else None,
-                        interval_high=arm.predicted_usd if ranged else None,
+                        interval_high=band_high if ranged else None,
                         method_id=arm.method_id or LAUNCH_PRICER_METHOD,
                         computed_at=self.computed_at,
                     ),
@@ -927,6 +936,7 @@ def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimat
         predicted_usd=price.predicted_usd,
         central_usd=price.central_usd,
         low_usd=price.low_usd,
+        band_high_usd=price.band_high_usd,
         method_id=price.method_id,
         basis=price.basis,
         outcome=arm.outcome,
@@ -934,6 +944,31 @@ def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimat
         remedy=arm.remedy,
         call_ceiling_usd=plan.call_ceiling.usd if plan is not None and plan.call_ceiling is not None else None,
         call_ceiling_lower_bound=plan is not None and plan.call_ceiling is not None and plan.call_ceiling.lower_bound,
+    )
+
+
+def _band_from_history(low: float, centre: float, high: float) -> str:
+    """A band as the history computed it, for a basis whose cap reads a margin above it: its ends, and how far each
+    sits from the centre, so a reader can judge whether one or two percent matters.
+
+    :param low: The band's lower end.
+    :ptype low: float
+    :param centre: The central estimate.
+    :ptype centre: float
+    :param high: The band's upper end.
+    :ptype high: float
+    :return: The words, after "the band from history".
+    :rtype: str
+    """
+    if low == high:
+        return f"has no width, at {format_number(centre, prefix='$')}"
+
+    def share(gap: float) -> str:
+        return f"{format_number(100 * gap / centre)}%"
+
+    return (
+        f"is {format_number(low, prefix='$')}-{format_number(high, prefix='$')} ({share(centre - low)} below to "
+        f"{share(high - centre)} above {format_number(centre, prefix='$')})"
     )
 
 
@@ -959,7 +994,12 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
     and **its prediction is the band's upper end**, since the launch holds that figure to the arm's cap
     (:class:`~threetears.evals.run.ArmPrice`): a central estimate admits an arm that then runs past its cap
     about as often as the run lands above the centre. The central estimate and the lower end ride along beside
-    it. A history too thin to band (fewer than :data:`~threetears.evals.analysis.COST_ESTIMATE_MIN_BASIS` priced
+    it. **The prediction is never less than the central estimate plus**
+    the cost estimate's safety margin (``COST_BAND_SAFETY_MARGIN``) **of it**: a history with no
+    spread, or almost none, bands an arm at its estimate, which would cap it there. Where that floor stands above the
+    band's upper end, the prediction is the floor, the band's own upper end rides along as
+    :attr:`~threetears.evals.run.ArmPrice.band_high_usd`, and the basis states both: the band from history, with how
+    far each end sits from the estimate, and the cap the margin sets. A history too thin to band (fewer than :data:`~threetears.evals.analysis.COST_ESTIMATE_MIN_BASIS` priced
     past results) bounds nothing, and predicts nothing, as does a scope with no priced history of the
     condition — the launch reads both as unknown.
 
@@ -1014,17 +1054,28 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
                     f"{format_number(predicted.value, prefix='$')})"
                 ),
             )
+        low, centre, high = predicted.interval_low or 0.0, predicted.value, predicted.interval_high
+        floor = centre * (1 + COST_BAND_SAFETY_MARGIN)
+        if floor > high:
+            held = (
+                f"the band from history {_band_from_history(low, centre, high)}; the cap reads "
+                f"{format_number(floor, prefix='$')}, the {COST_BAND_SAFETY_MARGIN:.0%} safety margin above the "
+                "estimate, wider than the band"
+            )
+        else:
+            held = (
+                f"the upper end of the band {format_number(low, prefix='$')}-{format_number(high, prefix='$')} around "
+                f"{format_number(centre, prefix='$')}"
+            )
         return ArmPrice(
-            predicted_usd=predicted.interval_high,
-            central_usd=predicted.value,
+            predicted_usd=max(high, floor),
+            central_usd=centre,
             low_usd=predicted.interval_low,
+            band_high_usd=high,
             method_id=predicted.method_id,
             basis=(
-                f"{drawn_on}the upper end of the band {format_number(predicted.interval_low or 0.0, prefix='$')}-"
-                f"{format_number(predicted.interval_high, prefix='$')} around "
-                f"{format_number(predicted.value, prefix='$')}, method {predicted.method_id}, from "
-                f"{cell.n_historical} priced past result(s) of {condition}"
-                + (f" ({cell.band_basis})" if cell.band_basis else "")
+                f"{drawn_on}{held}, method {predicted.method_id}, from {cell.n_historical} priced past result(s) of "
+                f"{condition}" + (f" ({cell.band_basis})" if cell.band_basis else "")
             ),
         )
 

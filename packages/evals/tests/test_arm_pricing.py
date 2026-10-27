@@ -597,6 +597,9 @@ async def test_a_quote_reports_every_outcome_the_rule_can_reach_and_launches_not
         ({"predicted_usd": 1.0, "central_usd": 2.0, "basis": "b"}, "low <= central <= predicted"),
         ({"predicted_usd": 2.0, "central_usd": 1.0, "low_usd": 1.5, "basis": "b"}, "low <= central <= predicted"),
         ({"predicted_usd": 2.0, "low_usd": -1.0, "basis": "b"}, "0 or more"),
+        ({"predicted_usd": None, "band_high_usd": 1.0, "basis": "b"}, "upper end, which is the prediction"),
+        ({"predicted_usd": 1.0, "central_usd": 0.5, "band_high_usd": 1.5, "basis": "b"}, "band's own upper end"),
+        ({"predicted_usd": 2.0, "central_usd": 1.0, "band_high_usd": 0.5, "basis": "b"}, "band's own upper end"),
     ],
 )
 def test_an_arm_price_refuses_a_range_out_of_order(bad, said):

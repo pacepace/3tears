@@ -837,34 +837,86 @@ def test_the_history_pricer_bounds_an_arm_by_the_upper_band_of_its_template_and_
     assert price.low_usd is not None and price.low_usd < centre and price.method_id == "usage-history"
 
 
+def _dollars(value: float) -> str:
+    return format_number(value, prefix="$")
+
+
 @pytest.mark.parametrize("cost", [0.0015, 0.0005, 0.1, 1 / 3, 0.07])
 @pytest.mark.parametrize("n_history", [3, 4, 11])
 @pytest.mark.parametrize("case_count", [1, 3, 5])
-def test_the_history_pricer_prices_an_arm_whose_every_past_result_cost_the_same(
+def test_the_history_pricer_caps_an_arm_whose_every_past_result_cost_the_same_a_safety_margin_above_its_band(
     cost: float, n_history: int, case_count: int
 ):
-    """Discodon's second launch of one arm raised building the price: both ends of the band landed below its centre."""
+    """Discodon's second launch of one arm raised building the price: both ends of the band landed below its centre.
+
+    The band from a history with no spread has no width, and stays so; the cap reads the safety margin above it.
+    """
     host, storage = _priced_host()
     _history(storage, template_id="tpl-priced", model="m-priced", costs=[cost] * n_history)
 
     price = history_launch_pricer(host)(_quote(k_runs=1, case_count=case_count))
 
-    assert price.predicted_usd is not None and price.central_usd is not None and price.low_usd is not None
-    assert price.low_usd < price.central_usd < price.predicted_usd
-    assert price.predicted_usd == pytest.approx(price.central_usd * (1 + COST_BAND_SAFETY_MARGIN), rel=1e-12)
-    assert price.low_usd == pytest.approx(price.central_usd * (1 - COST_BAND_SAFETY_MARGIN), rel=1e-12)
-    assert "upper end of the band" in price.basis and "safety margin either side" in price.basis
+    centre, cap = price.central_usd, price.predicted_usd
+    assert centre is not None and cap is not None
+    assert price.low_usd == centre == price.band_high_usd, "the band as the history shows it: no width"
+    assert cap > centre and cap == pytest.approx(centre * (1 + COST_BAND_SAFETY_MARGIN), rel=1e-12)
+    assert (
+        f"the band from history has no width, at {_dollars(centre)}; the cap reads {_dollars(cap)}, the "
+        f"{COST_BAND_SAFETY_MARGIN:.0%} safety margin above the estimate, wider than the band, method usage-history"
+    ) in price.basis
+    assert f"No spread in {n_history} past observations" in price.basis
+
+
+def test_the_history_pricer_shows_a_narrow_band_as_computed_and_caps_the_arm_a_safety_margin_above_the_estimate():
+    """Half a percent either side is a spread the history shows: kept and stated, though the cap reads the margin."""
+    host, storage = _priced_host()
+    history = [1.0, 1.002, 0.998]
+    _history(storage, template_id="tpl-priced", model="m-priced", costs=history)
+    fit = lognormal_sum_prediction_band(history, 10)
+    assert fit is not None
+
+    price = history_launch_pricer(host)(_quote(k_runs=2, case_count=5))
+
+    centre, cap, low, high = price.central_usd, price.predicted_usd, price.low_usd, price.band_high_usd
+    assert centre is not None and cap is not None and low is not None and high is not None
+    assert (low, high) == fit, "the band is the fit's, not widened"
+    assert 0.004 < (high - centre) / centre < 0.01 and 0.004 < (centre - low) / centre < 0.01
+    assert cap == pytest.approx(centre * (1 + COST_BAND_SAFETY_MARGIN), rel=1e-12) and cap > high
+    below, above = format_number(100 * (centre - low) / centre), format_number(100 * (high - centre) / centre)
+    assert (
+        f"the band from history is {_dollars(low)}-{_dollars(high)} ({below}% below to {above}% above "
+        f"{_dollars(centre)}); the cap reads {_dollars(cap)}, the {COST_BAND_SAFETY_MARGIN:.0%} safety margin above "
+        "the estimate, wider than the band, method usage-history"
+    ) in price.basis
+
+
+def test_the_history_pricer_caps_an_arm_at_its_bands_own_upper_end_where_that_is_above_the_margin():
+    """Ten percent either side: the floor does not bind, and the basis says nothing of a margin."""
+    host, storage = _priced_host()
+    history = [0.9, 1.0, 1.1, 0.95, 1.05]
+    _history(storage, template_id="tpl-priced", model="m-priced", costs=history)
+    fit = lognormal_sum_prediction_band(history, 10)
+    assert fit is not None
+
+    price = history_launch_pricer(host)(_quote(k_runs=2, case_count=5))
+
+    centre, cap = price.central_usd, price.predicted_usd
+    assert centre is not None and cap is not None
+    assert (price.low_usd, price.band_high_usd) == fit
+    assert cap == price.band_high_usd and cap > centre * (1 + COST_BAND_SAFETY_MARGIN)
+    assert f"the upper end of the band {_dollars(fit[0])}-{_dollars(fit[1])} around {_dollars(centre)}" in price.basis
+    assert "safety margin" not in price.basis
 
 
 def test_a_sub_cent_arms_price_spells_its_band_and_centre_by_the_one_rule():
-    """In cents, three results at $0.0015 priced a three-case arm "$0.00-$0.00 around $0.00", hiding its margin."""
+    """In cents, a sub-cent arm's basis read "$0.00-$0.00 around $0.00": three figures, one spelling."""
     host, storage = _priced_host()
-    _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.0015] * 3)
+    _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.001, 0.0015, 0.002])
 
     price = history_launch_pricer(host)(_quote(k_runs=1, case_count=3))
 
     assert price.low_usd is not None and price.central_usd is not None and price.predicted_usd is not None
-    low, centre, high = (format_number(v, prefix="$") for v in (price.low_usd, price.central_usd, price.predicted_usd))
+    low, centre, high = (_dollars(v) for v in (price.low_usd, price.central_usd, price.predicted_usd))
     assert len({low, centre, high}) == 3, "three figures, three spellings"
     assert f"the upper end of the band {low}-{high} around {centre}, method usage-history" in price.basis
     assert centre == "$0.0045"

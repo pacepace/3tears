@@ -404,6 +404,11 @@ class ArmPrice:
         states a single figure. Never held to the cap — reported beside :attr:`predicted_usd`, and what a
         cost pivot sets beside the cost a run later observed.
     :ivar low_usd: For a range, its lower end; ``None`` otherwise.
+    :ivar band_high_usd: For a range, its upper end as the pricer's evidence computed it, where the figure the cap
+        reads may stand above it: a pricer holding every cap to a least headroom over its central estimate
+        (``history_launch_pricer``'s safety margin) sets :attr:`predicted_usd` to the greater of the two and keeps
+        this one, so the band a reader judges is the one the history shows. ``None`` for a single figure, or for a
+        range pricer whose upper end is the prediction itself.
     :ivar method_id: The estimator, so two predictions by different methods are never silently compared;
         ``None`` for a pricer that names none.
     """
@@ -412,25 +417,29 @@ class ArmPrice:
     basis: str
     central_usd: float | None = None
     low_usd: float | None = None
+    band_high_usd: float | None = None
     method_id: str | None = None
 
     def __post_init__(self) -> None:
         """Refuse a negative or non-finite figure, a range out of order, and a blank basis.
 
-        :raises ValueError: A figure is negative or not finite; ``low_usd`` or ``central_usd`` is given without a
-            prediction or out of order (``low <= central <= predicted``); or ``basis`` is blank.
+        :raises ValueError: A figure is negative or not finite; ``low_usd``, ``central_usd`` or ``band_high_usd`` is
+            given without a prediction or out of order (``low <= central <= band high <= predicted``); or ``basis`` is
+            blank.
         """
-        for name in ("predicted_usd", "central_usd", "low_usd"):
+        for name in ("predicted_usd", "central_usd", "low_usd", "band_high_usd"):
             value = getattr(self, name)
             if value is not None and not (math.isfinite(value) and value >= 0):
                 raise ValueError(f"a predicted cost is a finite amount, 0 or more; got {name}={value!r}")
-        if self.predicted_usd is None and (self.central_usd is not None or self.low_usd is not None):
+        if self.predicted_usd is None and any(
+            v is not None for v in (self.central_usd, self.low_usd, self.band_high_usd)
+        ):
             raise ValueError("a range has an upper end, which is the prediction; predicted_usd is None")
-        ordered = [v for v in (self.low_usd, self.central_usd, self.predicted_usd) if v is not None]
+        ordered = [v for v in (self.low_usd, self.central_usd, self.band_high_usd, self.predicted_usd) if v is not None]
         if ordered != sorted(ordered):
             raise ValueError(
-                f"a range runs low <= central <= predicted; got {self.low_usd!r}, {self.central_usd!r}, "
-                f"{self.predicted_usd!r}"
+                f"a range runs low <= central <= predicted, its band's own upper end between the last two; got "
+                f"{self.low_usd!r}, {self.central_usd!r}, {self.band_high_usd!r}, {self.predicted_usd!r}"
             )
         if not self.basis.strip():
             raise ValueError("an arm price says how it was made, or why there is none; basis is blank")
