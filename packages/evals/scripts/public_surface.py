@@ -1933,12 +1933,13 @@ def newest_release_tag(every: Iterable[str], version: str) -> str | None:
 
     :param every: Every tag in the checkout, on any ref.
     :ptype every: Iterable[str]
-    :param version: The version the tree prepares, as ``pyproject.toml`` states it.
+    :param version: The version the tree prepares, as ``pyproject.toml`` states it. A PEP 440 local label
+        (``0.80.0+analyst.1``, a line pinned between releases) is read as its public part, the release it builds on.
     :ptype version: str
     :return: The newest such tag, or ``None`` when there is none.
     :rtype: str | None
     """
-    prepared = _version_key(f"v{version}")
+    prepared = _version_key(f"v{version.split('+', 1)[0]}")
     finals = {
         tag: key for tag in every if (key := _version_key(tag)) is not None and (prepared is None or key <= prepared)
     }

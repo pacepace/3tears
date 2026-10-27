@@ -17,7 +17,9 @@ from threetears.enforcement.release.versions import parse_version, project_versi
 
 __all__ = ["lockstep_mismatches", "rewrite_lockstep_file", "write_project_version"]
 
-_SMOKE = re.compile(r'(__version__|[A-Za-z_]+_version) == "(\d+\.\d+\.\d+)"')
+#: a smoke assertion's version, with any PEP 440 local label (``"0.80.0+analyst.1"``) read as part of it, so
+#: ``verify`` names a labelled assertion against a plain release and a bump rewrites it.
+_SMOKE = re.compile(r'(__version__|[A-Za-z_]+_version) == "(\d+\.\d+\.\d+(?:\+[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*)?)"')
 _BAKE_DEFAULT = re.compile(r'^(\s*default = )"v(\d+\.\d+\.\d+)"$', re.MULTILINE)
 _BAKE_REF = re.compile(r":v(\d+\.\d+\.\d+)")
 #: a TOML table header: a LINE that is a header, never the header's text quoted in prose.
