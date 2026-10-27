@@ -73,7 +73,6 @@ from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec
 __all__ = [
     "STORED_SPAN_REFUSAL",
     "ChartContext",
-    "ContrastGroup",
     "CriterionWhere",
     "Drawn",
     "KindResolver",
