@@ -17,6 +17,7 @@ These come from the owner's review of earlier reports. Each has a reason.
 - **Measured facts are stated flatly.** Uncertainty belongs to the interval, stated once. "Costs 28% more" is a measurement; don't soften it. Don't hedge a measured fact with "seems" or "appears".
 - **Every number comes through a figure key, never typed.** The renderer formats it from the data, so the prose can't drift from the tables and a rerun updates it. A figure no tool returns isn't written; record the gap.
 - **No internal id, hash or measure key above the appendix.** Trial and case ids may appear on example cards as references. The appendix may hold ids.
+- **The page talks about the campaign, never the tools.** No word about tools, blocks, renders, revisions or review rounds anywhere on the page, Method included. If no block can show something, pick another block or state the figure in a sentence through its key, and log the gap with `capability_gap`.
 
 ## Headlines and claims are findings
 
@@ -40,4 +41,4 @@ Short sentences, active voice, one idea each. The subject is the thing measured 
 
 ## Before you submit
 
-Read the first screen alone. Can you say what to do, why, and the main risk? Then read each claim sentence and ask: does its block show this? Would the sentence change if the values flipped? Cut every sentence that fails either test.
+Run `figure_keys_check` over every key in the draft. Read the first screen alone. Can you say what to do, why, and the main risk? Then read each claim sentence and ask: does its block show this? Would the sentence change if the values flipped? Cut every sentence that fails either test.
