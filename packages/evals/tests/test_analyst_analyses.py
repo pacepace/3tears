@@ -42,6 +42,7 @@ from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, 
 from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, eval_catalogue
 from threetears.evals.analysis.analyst.analyses import GateRead, breakdown, dominance, sensitivity
 from threetears.evals.analysis.analyst.snapshot import frozen_input, report_snapshot
+from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report_decision import (
     DecisionAt,
@@ -160,9 +161,29 @@ def test_the_asked_standing_of_a_change_and_a_choice() -> None:
 # =============================================================================
 
 
+def _declared_axes(held: ReportInput) -> list[str]:
+    """The axes a snapshot declares, read off its own fields rather than through ``weighed_axes``: a gate or guardrail
+    criterion or a guardrail read, a control-role arm, an asked aspect, a contrast family's merit priority, and an arm
+    whose ``cost_per_1k`` key reads a number."""
+    costed = []
+    for arm in held.arms:
+        try:
+            costed.append(isinstance(resolve(f"cost_per_1k.{arm.id}", held).value, int | float))
+        except UnresolvableReference:
+            costed.append(False)
+    declared = {
+        "gates": any(criterion.kind in ("gate", "guardrail") for criterion in held.criteria) or bool(held.guardrails),
+        "control": any(arm.role == "control" for arm in held.arms),
+        "asked": any(aspect.asked for aspect in held.aspects),
+        "ranking": any(family.merit_axes for family in held.contrast_families),
+        "cost": any(costed),
+    }
+    return [axis for axis, holds in declared.items() if holds]
+
+
 def _cost_alone(held: ReportInput) -> bool:
     """Whether cost is the only axis the snapshot declares, with more than one option to rank by it."""
-    return set(weighed_axes(held)) <= {"cost"} and len(surviving_options(held)) > 1
+    return set(_declared_axes(held)) <= {"cost"} and len(surviving_options(held)) > 1
 
 
 @pytest.mark.parametrize("name", sorted(_all_inputs()))
@@ -175,7 +196,7 @@ def test_dominance_names_the_decisions_survivors_dominant_options_and_call(name:
     alone = _cost_alone(held)
     dominant = [] if alone else dominant_options(held)
     assert [_arm_id(arm) for arm in result["dominant"]] == dominant
-    assert result["weighs"] == list(weighed_axes(held))
+    assert result["weighs"] == list(weighed_axes(held)) == _declared_axes(held)
     assert result["dominant_with_axes"] == result["dominant"] and result["axes"] == []
     standing = asked_standing(held)
     for row in result["survivors"]:
@@ -208,6 +229,9 @@ def test_the_fixtures_hold_inputs_declaring_nothing_but_cost_and_the_rule_alone_
     dominant option, the cheapest, which the analysis withholds."""
     alone = [name for name, held in _all_inputs().items() if _cost_alone(held)]
     assert "r2 without its gates" in alone and "r1 reading only bars" in alone
+    declared = {axis for held in _all_inputs().values() for axis in _declared_axes(held)}
+    # No fixture declares a merit ranking, so that axis is held only by its own field's reading above.
+    assert declared >= {"gates", "control", "asked", "cost"}, "some fixture declares each axis"
     for name in alone:
         held = _all_inputs()[name]
         (cheapest,) = dominant_options(held)
