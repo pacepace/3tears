@@ -4,11 +4,14 @@ Contracts held here (``analysis.report.figure_keys`` level figures, ``analysis.r
 ``analysis.report.charts`` values tables, ``analysis.report.plan_page`` labels and money):
 
 - **a level prints as stated**: a pair's, a spread's, a compare's and a lever's level key reads in percent to every
-  digit the number rule keeps, so two levels that differ never print alike;
+  digit the number rule keeps, so two levels that differ never print alike, and a chart refused for mixing levels
+  (two contrasts at different levels) names them as the keys print them;
 - **a chart of readings prints the level of the interval it draws**: a forest of readings draws each one's
   ``within_interval``, at the nominal level with no correction, and prints that level, as a reading's level key does,
   never the gain interval's Holm step (``gain_confidence``): one candidate at a step past the nominal level prints the
-  nominal one, candidates at different steps draw together, and a reading stating no gain interval draws;
+  nominal one, candidates at different steps draw together, and a reading stating no gain interval draws; a reading
+  stating no within_interval (an aspect with no margin) states no level: its level key is unstated and its bars
+  print none;
 - **a confusion block names every panel's own columns and its axis**: with two axes the domain panel never sits
   under the complexity labels, and with two arms each panel names its arm and its axis;
 - **a check is named as the code it is**: a measure whose only name is its check's expression heads its column as
@@ -31,7 +34,7 @@ import pytest
 from packages.evals.tests.analyst_support import fixture_inputs, shape_snapshots
 from threetears.evals.analysis.analyst.blocks import block_render
 from threetears.evals.analysis.analyst.snapshot import frozen_input
-from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.numbers import format_number, group_thousands
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import BarsChart, ForestChart
@@ -43,6 +46,7 @@ from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.analysis.style import humanize
 from threetears.evals.analysis.summary import dollars_text
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.report_plan import ChartQuery, PlannedChart
 
 #: Every query field, empty: no filter, no limit.
@@ -111,6 +115,24 @@ def _forest(held: ReportInput, aspect: str, arms: list[str]) -> tuple[Any, Fores
     drawn = _drawn(held, "forest", query).data
     assert isinstance(drawn, ForestChart)
     return block_render(held, block_kind="forest", query=query), drawn
+
+
+def _bars(held: ReportInput, aspect: str, arms: list[str]) -> BarsChart:
+    """Diverging bars of the arms' readings on the aspect, as a page draws them."""
+    drawn = _drawn(held, "diverging_bars", _query("readings", aspect=aspect, arms=arms)).data
+    assert isinstance(drawn, BarsChart)
+    return drawn
+
+
+def _with_reading(held: ReportInput, aspect_id: str, reading: Reading) -> ReportInput:
+    """The input with one aspect's reading of ``reading.arm`` replaced by ``reading``."""
+    aspects = [
+        aspect.model_copy(update={"readings": [reading if r.arm == reading.arm else r for r in aspect.readings]})
+        if aspect.id == aspect_id
+        else aspect
+        for aspect in held.aspects
+    ]
+    return held.model_copy(update={"aspects": aspects})
 
 
 def _drew_within(chart: ForestChart, held: ReportInput, aspect: str) -> None:
@@ -187,23 +209,72 @@ def test_a_forest_over_readings_at_different_holm_steps_draws_at_the_one_level_i
         assert block.level == chart.level == _NOMINAL, (name, aspect.id)
         assert {row.id for row in chart.rows} == {r.arm for r in aspect.readings}
         _drew_within(chart, held, aspect.id)
+        bars = _bars(held, aspect.id, [r.arm for r in aspect.readings])
+        assert bars.level == _NOMINAL, (name, aspect.id)
 
 
 def test_a_reading_with_a_within_interval_and_no_gain_fields_draws_at_the_nominal_level() -> None:
     name, aspect_id, reading = _stepped_readings()[0]
     held = _inputs()[name]
-    bare = reading.model_copy(update={"gain_interval": None, "gain_confidence": None})
-    aspects = [
-        aspect.model_copy(update={"readings": [bare if r.arm == reading.arm else r for r in aspect.readings]})
-        if aspect.id == aspect_id
-        else aspect
-        for aspect in held.aspects
-    ]
-    stripped = held.model_copy(update={"aspects": aspects})
+    stripped = _with_reading(
+        held, aspect_id, reading.model_copy(update={"gain_interval": None, "gain_confidence": None})
+    )
     block, chart = _forest(stripped, aspect_id, [reading.arm])
     assert block.level == chart.level == _NOMINAL
     _drew_within(chart, stripped, aspect_id)
     assert format_figure(resolve(f"aspects.{aspect_id}.reading.{reading.arm}.level", stripped)) == _NOMINAL
+
+
+def test_a_reading_with_gain_fields_and_no_within_interval_states_no_level() -> None:
+    """An aspect with no margin: the reading states its gain interval and level, and no within_interval. No chart of
+    readings draws the gain interval, so nothing labels one: the level key is unstated, and its bars print no level."""
+    name, aspect_id, reading = _stepped_readings()[0]
+    assert reading.gain_interval is not None and reading.gain_confidence is not None
+    held = _with_reading(_inputs()[name], aspect_id, reading.model_copy(update={"within_interval": None}))
+    with pytest.raises(UnstatedFigure):
+        resolve(f"aspects.{aspect_id}.reading.{reading.arm}.level", held)
+    block = block_render(
+        held, block_kind="diverging_bars", query=_query("readings", aspect=aspect_id, arms=[reading.arm])
+    )
+    assert block.level == ""
+    bars = _bars(held, aspect_id, [reading.arm])
+    assert bars.level is None
+    assert all(row.lo is None and row.hi is None for row in bars.rows or [])
+
+
+def test_a_chart_refused_for_mixing_levels_names_each_level_as_its_key_prints_it() -> None:
+    """Two contrasts on one measure, each at its own level: one chart carries one interval level (GENERATOR §5.2), so
+    the forest is refused, naming each level as its contrast's level key prints it."""
+    found = []
+    for name, held in _inputs().items():
+        by_measure: dict[tuple[str | None, str], list[Any]] = {}
+        for contrast in held.contrasts:
+            if contrast.interval is not None:
+                by_measure.setdefault((contrast.aspect, contrast.measure), []).append(contrast)
+        found += [(name, held, pair[:2]) for pair in by_measure.values() if len({c.arm for c in pair[:2]}) == 2]
+    assert found, "no input holds two arms' contrasts with intervals on one measure"
+    name, held, (first, second) = found[0]
+    levels = {first.arm: "99%", second.arm: "97.5%"}
+    mixed = held.model_copy(
+        update={
+            "contrasts": [
+                c.model_copy(update={"level": levels[c.arm]}) if c in (first, second) else c for c in held.contrasts
+            ]
+        }
+    )
+    query = _query("contrasts", measures=[first.measure], arms=[first.arm, second.arm], aspect=first.aspect or "")
+    planned = PlannedChart.model_validate(
+        {"kind": "forest", "title": "", "query": query, "reference": [], "emphasis": ""}
+    )
+    _, faults = complete_chart(planned, mixed, "block")
+    refusals = [why for where, why in faults if where == "block.query" and "one interval level" in why]
+    assert refusals, (name, faults)
+    for contrast in (first, second):
+        printed = format_figure(resolve(f"contrast.{contrast.arm}.{contrast.measure}.level", mixed))
+        assert printed == levels[contrast.arm]
+        assert printed in refusals[0], (printed, refusals[0])
+    with pytest.raises(RefusedInput):
+        block_render(mixed, block_kind="forest", query=query)
 
 
 # =============================================================================
