@@ -47,7 +47,7 @@ from threetears.evals.analysis import (
     reads,
 )
 from threetears.evals.analysis.lenses.frontier import FrontierResult
-from threetears.evals.kernel import ValidationFailedError
+from threetears.evals.kernel import ResultKey, ValidationFailedError
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
 from threetears.evals.kernel.storage import EvalStorage
@@ -103,6 +103,13 @@ class FakeCountingStore:
     def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
         self.run_reads.append(run_id)
         return self._inner.query_eval_results_by_run(run_id, scope_id)
+
+    def query_eval_result_keys_by_run(self, run_id: str, scope_id: str, /) -> list[ResultKey]:
+        self.run_reads.append(run_id)
+        return self._inner.query_eval_result_keys_by_run(run_id, scope_id)
+
+    def load_eval_results(self, result_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
+        return self._inner.load_eval_results(result_ids, scope_id)
 
     def list_campaigns(self, scope_id: str, /) -> list[EvalCampaign]:
         return self._inner.list_campaigns(scope_id)
