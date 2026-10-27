@@ -1000,7 +1000,8 @@ def _holds_every_failure(aspect: AnalysisContextBundle, primary: str | None) -> 
     bundle; or the cap, which keeps every failed and lost trial before any that passed, kept one that passed, so only
     passed trials were left out, and a passed trial is no failure: with no primary judged dimension a failure is a
     failed trial, and with one, a nought on it fails the trial only where it decides pass, a capability dimension
-    (``JudgedMeasure.axis``). A primary dimension that does not (a boundary dimension, or one the bundle does not
+    (``JudgedMeasure.axis``) *(inferred: under a composite pass rule a normalised ordinal capability dimension could
+    read nought on a trial that passed)*. A primary dimension that does not (a boundary dimension, or one the bundle does not
     describe) can score nought on a trial that passed and was left out, so such an aspect is not held whole."""
     if aspect.trials_omitted == 0:
         return True

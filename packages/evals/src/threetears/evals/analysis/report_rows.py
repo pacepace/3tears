@@ -120,7 +120,6 @@ __all__ = [
     "config_grid",
     "lever_arms",
     "lever_place",
-    "place_of",
     "query_aspect",
     "query_rows",
 ]
@@ -484,7 +483,7 @@ def config_grid(report_input: ReportInput) -> ReportInput:
     return report_input.model_copy(update={"factors": [*factors, *kept], "configs": configs})
 
 
-def place_of(where: str, report_input: ReportInput) -> str:
+def _place_of(where: str, report_input: ReportInput) -> str:
     """An analysis row's place as a query's ``strata`` names it: :data:`OVERALL`, or the slice's id (a task's, a
     stratum's, or a cell's, which a separation key spells by its row and column).
 
@@ -506,7 +505,7 @@ def place_of(where: str, report_input: ReportInput) -> str:
 
 
 def _kept_place(where: str, query: ChartQuery, report_input: ReportInput) -> bool:
-    return not query.strata or place_of(where, report_input) in query.strata
+    return not query.strata or _place_of(where, report_input) in query.strata
 
 
 def _bar_reads(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow]:
@@ -600,16 +599,19 @@ def _compare(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow
         return
     for row in read.rows:
         if _kept_place(row.where, query, report_input):
-            yield SourceRow(place_of(row.where, report_input), row, key=measure, interval=_cited_interval(row.interval))
+            yield SourceRow(
+                _place_of(row.where, report_input), row, key=measure, interval=_cited_interval(row.interval)
+            )
 
 
 def _settle(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow]:
     """Each kept arm against every criterion reading it (``settle_cases``' rows), on the measures and places kept."""
     measures = set(query.measures)
     by_id = {criterion.id: criterion for criterion in report_input.criteria}
+    content = _ByContent.of(report_input)
     for arm in [held.id for held in report_input.arms if held.id in _arms(query, report_input)]:
         try:
-            read = _refused_or(_settled(_ByContent.of(report_input), arm))
+            read = _refused_or(_settled(content, arm))
         except RefusedInput:
             # NOSILENT: an arm no criterion reads, or none of whose readings settles, has no row; the checks say why.
             continue
@@ -620,7 +622,7 @@ def _settle(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow]
             if (measures and key not in measures) or not _kept_place(row.where, query, report_input):
                 continue
             against = criterion.id if criterion is not None else row.against
-            yield SourceRow(f"{arm}/{against}/{place_of(row.where, report_input)}", row, arm=arm, key=key)
+            yield SourceRow(f"{arm}/{against}/{_place_of(row.where, report_input)}", row, arm=arm, key=key)
 
 
 def lever_place(query: ChartQuery, report_input: ReportInput) -> str | None:

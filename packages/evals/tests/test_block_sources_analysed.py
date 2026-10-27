@@ -38,10 +38,11 @@ from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import BarsChart, DotIntervalChart
 from threetears.evals.analysis.report.plan_page.charting import measure_words
+from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_facts import fact_arms
-from threetears.evals.analysis.report_rows import config_grid, lever_arms, place_of, query_rows
+from threetears.evals.analysis.report_rows import config_grid, lever_arms, query_rows
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.report_plan import ChartQuery, PlannedChart
 
@@ -113,9 +114,11 @@ def test_a_compare_chart_draws_each_place_arms_compare_reads_with_its_interval(k
         rows = data.rows
         assert rows is not None
         drawn = {row.id: row for row in rows}
-        for row in read.rows:
+        selected = query_rows(_query("compare", arms=[first, second], measures=[key]), held)
+        assert [one.item for one in selected] == read.rows
+        for one, row in zip(selected, read.rows, strict=True):
             assert isinstance(row.difference.value, float)
-            shown = drawn[place_of(row.where, held)]
+            shown = drawn[one.label]
             factor = shown.value / row.difference.value if row.difference.value else 1.0
             assert factor in (pytest.approx(1.0), pytest.approx(1000.0)), factor
             if row.interval is not None and data.level:
@@ -386,27 +389,64 @@ def test_a_compare_block_names_its_arms_and_measure_by_reader_names_never_by_id_
             assert key not in printed, (key, printed)
 
 
-def _repeated() -> ReportInput:
-    """r2 with one gate, each arm's pass rate a count of trials over a third as many cases (three repeats each)."""
+def _counted(n_cases: int | None) -> ReportInput:
+    """r2 with one gate, each arm's pass rate a count of 1,200: over a third as many cases (three repeats each), or,
+    with no cases stated, 1,200 observations that say neither."""
     held = _inputs()["r2 with one gate"]
     data = held.model_dump(mode="json", by_alias=True, exclude_none=True)
     for stat in data["measures"]["pass_rate"]["per_arm"].values():
-        stat["n"], stat["n_cases"] = 1200, 400
+        stat["n"] = 1200
+        if n_cases is not None:
+            stat["n_cases"] = n_cases
     return ReportInput.model_validate(data)
 
 
-def test_a_settle_table_sets_each_size_beside_todays_count_in_its_own_unit() -> None:
-    held = _repeated()
+def _settle_table(held: ReportInput) -> tuple[list[Any], list[list[str]], dict[str, int]]:
     arm = held.arms[0].id
     rows = settle_cases(held, [arm], limit=_EVERY).rows
     block = block_render(held, block_kind="table", query=_query("settle", arms=[arm]), limit=_EVERY)
-    at = {column: block.columns.index(column) for column in block.columns}
-    for printed, row in zip(block.rows, rows, strict=True):
-        cells = printed.cells
+    assert len(block.rows) == len(rows)
+    return rows, [printed.cells for printed in block.rows], {column: i for i, column in enumerate(block.columns)}
+
+
+def test_a_settle_table_on_repeated_cases_sets_each_size_beside_todays_count_in_its_own_unit() -> None:
+    held = _counted(400)
+    stat = held.measures["pass_rate"].per_arm[held.arms[0].id]
+    rows, cells, at = _settle_table(held)
+    for row, printed in zip(rows, cells, strict=True):
         assert row.trials_needed is not None and row.repeats and row.cases_needed is not None
-        assert _numbers(cells[at["Cases needed, one-sided"]]) == _numbers(row.cases_needed.reads)
-        assert _numbers(cells[at["Trials needed, one-sided"]]) == _numbers(row.trials_needed.reads)
-        assert _numbers(cells[at["Repeats of a case"]]) == _numbers(row.repeats[0].reads)
-        stat = held.measures["pass_rate"].per_arm[arm]
-        assert _numbers(cells[at["Cases today"]]) == [float(stat.n_cases or 0)]
-        assert _numbers(cells[at["Trials today"]]) == [float(stat.n or 0)]
+        assert printed[at["Sizes count"]] == "cases"
+        assert _numbers(printed[at["Needed, one-sided"]]) == _numbers(row.cases_needed.reads)
+        assert _numbers(printed[at["Today"]]) == [float(stat.n_cases or 0)]
+        for side, figure in (("one-sided", row.trials_needed), ("two-sided", row.trials_needed_two_sided)):
+            assert figure is not None
+            assert _numbers(printed[at[f"Trials needed, {side}"]]) == _numbers(figure.reads)
+        assert _numbers(printed[at["Repeats of a case"]]) == _numbers(row.repeats[0].reads)
+        assert _numbers(printed[at["Trials today"]]) == [float(stat.n or 0)]
+
+
+def test_a_settle_table_on_a_count_stating_no_cases_says_what_its_sizes_count() -> None:
+    held = _counted(None)
+    stat = held.measures["pass_rate"].per_arm[held.arms[0].id]
+    rows, cells, at = _settle_table(held)
+    for row, printed in zip(rows, cells, strict=True):
+        assert row.count_of and row.cases_needed is not None
+        assert printed[at["Sizes count"]] == row.count_of[0].reads != "cases"
+        assert _numbers(printed[at["Needed, one-sided"]]) == _numbers(row.cases_needed.reads)
+        assert _numbers(printed[at["Today"]]) == [float(stat.n or 0)]
+        assert printed[at["Trials today"]] in ("", "—")
+
+
+def test_an_independent_compare_caption_says_how_both_arms_spreads_were_read_once_where_they_read_alike() -> None:
+    held = _counted(400)
+    first, second = held.arms[0].id, held.arms[1].id
+    block = block_render(
+        held, block_kind="dot_interval", query=_query("compare", arms=[first, second], measures=["pass_rate"])
+    )
+    basis = arms_compare(held, [first, second], "pass_rate").rows[0].basis
+    assert basis is not None and basis.reads.startswith("independent")
+    caption = next(note for note in block.notes if "independent" in note)
+    # Both arms' spreads read alike (a binomial spread on the distinct cases), so the caption says it once.
+    one = held.arms[0].id
+    words = resolve(f"spread.{one}.pass_rate.overall.basis", held).value
+    assert isinstance(words, str) and caption.count(words) == 1, caption
