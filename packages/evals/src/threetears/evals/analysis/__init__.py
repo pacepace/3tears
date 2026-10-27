@@ -548,7 +548,6 @@ __all__ = [
     "DEFAULT_WEIGHTING",
     "EQUIVALENCE_TEST_NAME",
     "EVAL_ANALYSIS_GEN_DEFAULT",
-    "EXPORT_PAGE_RESULTS",
     "HISTORY_METRICS",
     "LABEL_BANDS",
     "METRIC_COMPOSITE",
@@ -558,6 +557,7 @@ __all__ = [
     "PAIRED_TEST_NAME",
     "PROJECTED_METRICS",
     "READ_TIER_ROW_BUDGET",
+    "EXPORT_PAGE_RESULTS",
     "REPORTER_KIND",
     "REPORTER_KIND_CONTRACT",
     "SCOPED_METRICS_HELP",  # debt: retires when the English moves to one renderer
