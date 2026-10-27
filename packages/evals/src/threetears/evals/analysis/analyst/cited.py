@@ -16,7 +16,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.errors import UnstatedFigure
-from threetears.evals.analysis.report.figure_keys import FigureKind, Scale, format_figure, render, resolve
+from threetears.evals.analysis.report.figure_keys import Figure, FigureKind, Scale, format_figure, render, resolve
 from threetears.evals.analysis.report_input import ReportInput
 
 
@@ -25,8 +25,8 @@ class CitedFigure(BaseModel):
 
     :ivar key: The figure key's path, without braces (``reading.fast.v2.change``).
     :ivar reads: The figure as the page writes it: the key rendered with no filter.
-    :ivar value: The value the key resolves to: a number, an interval as its two ends, or text (an arm's id for an
-        arm figure).
+    :ivar value: The value the key resolves to: a number (a count a whole one), an interval as its two ends, or text
+        (an arm's id for an arm figure).
     :ivar kind: What the value is: a number, an interval, text, or an arm.
     :ivar scale: The scale a number is on (a share, a percent, points, dollars, a count, or plain).
     :ivar unit: The unit a plain number is in, when it has one.
@@ -38,7 +38,9 @@ class CitedFigure(BaseModel):
 
     key: str = Field(min_length=1, description="The figure key's path, without braces.")
     reads: str = Field(description="The figure as the page writes it: the key rendered with no filter.")
-    value: float | tuple[float, float] | str = Field(description="The value the key resolves to.")
+    value: int | float | tuple[float, float] | str = Field(
+        description="The value the key resolves to: a count as a whole number."
+    )
     kind: FigureKind = Field(description="What the value is: number, interval, text or arm.")
     scale: Scale = Field(description="The scale a number is on.")
     unit: str = Field(description="The unit a plain number is in; empty when it has none.")
@@ -70,6 +72,14 @@ class WrittenFigure(CitedFigure):
         return "|".join([self.key, *self.filters])
 
 
+def _whole(figure: Figure) -> int | float | tuple[float, float] | str:
+    """A figure's value, a count as the whole number it is (``170``, never ``170.0``)."""
+    value = figure.value
+    if figure.scale == "count" and isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
 def cite(key: str, report_input: ReportInput) -> CitedFigure:
     """The figure a key names on the report input, with the text the page writes it as.
 
@@ -86,7 +96,7 @@ def cite(key: str, report_input: ReportInput) -> CitedFigure:
     return CitedFigure(
         key=key,
         reads=render("{" + key + "}", report_input, {}),
-        value=figure.value,
+        value=_whole(figure),
         kind=figure.kind,
         scale=figure.scale,
         unit=figure.unit,
@@ -135,7 +145,7 @@ def cite_written(key: str, filters: tuple[str, ...], report_input: ReportInput) 
     return WrittenFigure(
         key=key,
         reads=reads,
-        value=figure.value,
+        value=_whole(figure),
         kind=figure.kind,
         scale=figure.scale,
         unit=figure.unit,

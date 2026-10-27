@@ -144,7 +144,7 @@ AssumedCases = Annotated[
     int | Literal["share"] | None,
     Field(
         description="A what-if for a slice whose figure states no count (so no spread): the cases each such slice is "
-        "read as holding, a whole number, or 'share' for the arm's own count times the slice's traffic share. Every "
+        "read as holding, a whole number, or 'share' for the arm's own distinct cases times the slice's traffic share. Every "
         "figure read under it is keyed assumed.<cases>. (or assumed.share.) so it reads as an assumption; a place "
         "whose figures state their count is read as they state it. Omitted: none assumed.",
     ),
@@ -409,7 +409,9 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
                 "cases_needed_80 (four in five do), wrong_side (how often a fresh run of today's size reads the "
                 "other way), level with its sidedness, and the count, what it counts (count_of) and the spread "
                 "basis it rests on, each a settle.* or spread.* key. Sizes count cases, each run as often as today "
-                "(repeats); trials_needed and its siblings are the trials that takes on a repeated design. A slice "
+                "(repeats); trials_needed and its siblings are the trials that takes on a repeated design, where a "
+                "pass/fail rate's spread is read on its distinct cases, each counted once (the widest its repeats "
+                "allow, so cases_needed is the most cases they could need). A slice "
                 "whose figure states no count has no spread: assumed_cases reads it under a what-if count, keyed "
                 "assumed.<cases>.*. A criterion declared on an aspect reads that aspect's figure, and each criterion "
                 "row says whether it gates as you read the bars (gates; bars_as). A p50 or p95, a figure with no "

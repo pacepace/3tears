@@ -39,7 +39,7 @@ often as today, with the trials it takes beside it. ``settle.margin.`` and ``set
 change from the control against minus an aspect's margin or a floor's, on the reading's own interval. Derived, read
 off stated spreads: a normal approximation, never a test the pipeline ran. ``assumed.<cases>.`` (or
 ``assumed.share.``) before a spread, compare or settle key reads it as if each slice whose figure states no count held
-that many cases (or the arm's own count times the slice's traffic share): a what-if the key names, refused overall and
+that many cases (or the arm's own distinct cases times the slice's traffic share): a what-if the key names, refused overall and
 where the figures state their count.
 
 **What else a sentence counts or compares.** ``count.examples`` and ``count.failures`` (per aspect and arm) say how
@@ -129,7 +129,7 @@ from threetears.evals.analysis.separation import (
 )
 from threetears.evals.analysis.style import humanize, measure_name
 from threetears.evals.analysis.summary import dollars_text
-from threetears.evals.kernel.metrics import goal_check_of
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of
 
 #: What a figure is: a number, an interval (low, high), a piece of text, or an arm (rendered by name and tag).
 FigureKind = Literal["number", "interval", "text", "arm"]
@@ -3127,14 +3127,23 @@ def _separated_keys(report_input: ReportInput, arms: Sequence[str]) -> list[str]
     return [key for key in keys if _wheres(report_input, arms, key)]
 
 
+#: The measures graded by class label whose figure is a share of counted trials: the ones the report input's build grades
+#: ``class_label`` (``report_input_build``'s grade rule). A figure graded so by another name may be a derived mean of
+#: shares (a balanced accuracy: the mean of each class's recall), which no binomial spread describes.
+_TRIAL_SHARE_LABELS = frozenset({MATCH_MEASURE, ACCURACY_MEASURE})
+
+
 def _rate_of(report_input: ReportInput, key: str) -> Literal["share", "percent"] | None:
-    """The scale a pass/fail rate is on (a measure graded pass/fail or by class label, a pass/fail judged dimension),
-    which a binomial spread reads; None for any other figure."""
+    """The scale a figure that is a share of counted trials is on, which a binomial spread reads: a measure graded
+    pass/fail (each observation a pass or a fail, the figure the share that passed), one graded by class label that the
+    build's grade rule names a share of trials (:data:`_TRIAL_SHARE_LABELS`), a pass/fail judged dimension. None for any
+    other figure: a derived mean of shares graded by class label under another name reads no binomial spread."""
     measure = report_input.measures.get(key)
     judged = report_input.judged.get(key)
-    graded = (measure is not None and measure.grade in ("pass_fail", "class_label")) or (
-        judged is not None and judged.scale == "pass_fail"
+    trial_share = measure is not None and (
+        measure.grade == "pass_fail" or (measure.grade == "class_label" and key in _TRIAL_SHARE_LABELS)
     )
+    graded = trial_share or (judged is not None and judged.scale == "pass_fail")
     scale, _unit = _scale_of(report_input, key)
     if graded and scale in ("share", "percent"):
         return "share" if scale == "share" else "percent"
@@ -3251,7 +3260,17 @@ def _basis_words(
         return _BASIS_WORDS[spread.basis]
     held = _held_where(report_input, arm_id, key, where, aspect)
     source = held.source if held is not None and held.source else _COUNT_SOURCES["own"]
-    return f"a pass/fail rate's binomial spread, from {source}"
+    words = f"a pass/fail rate's binomial spread, from {source}"
+    if spread.cases is None:
+        return words
+    return f"{words}, read on its distinct cases, each counted once: {_REPEATS_BOUND}"
+
+
+#: What a binomial spread on a repeated design is, as its basis says it: the wide end of what its repeats allow.
+_REPEATS_BOUND = (
+    "the widest spread its repeats allow (repeats read as independent would read it narrower by the root of the "
+    "repeats), so an interval or a size read from it is never narrower than the cases support"
+)
 
 
 def _family_level(report_input: ReportInput, contrast: Contrast) -> float | None:
@@ -3474,7 +3493,7 @@ def _settle_line(
 
 #: What a criterion's settle reads beside its sizes: the count the arm's spread rests on, what that count counts, and
 #: what the spread was read from, each on the criterion's own aspect (the ``spread.`` key's, on the lead aspect).
-_SETTLE_COUNT_FIELDS = ("n", "counts", "repeats", "basis")
+_SETTLE_COUNT_FIELDS = ("n", "counts", "cases", "repeats", "basis")
 
 
 def _criterion_count(
@@ -3486,6 +3505,8 @@ def _criterion_count(
         return _number(path, spread.n, "the count the figure's spread rests on", "count")
     if field == "repeats":
         return _number(path, spread.repeats, "the trials each case ran, where the count is trials", "plain")
+    if field == "cases":
+        return _number(path, spread.cases, "the distinct cases behind a count of trials", "count")
     if field == "counts":
         arm_id, key, where, aspect = at
         held = _stat_where(report_input, arm_id, key, where, aspect)
@@ -3830,7 +3851,8 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         "spread (its mean's over today's repeats, where the count is trials), in points for a rate; `n` the count it "
         "rests on and `counts` what that count counts (`cases`; `trials`, where a repeated case counts again; or "
         "`observations`, a statistic's own n that says neither); `cases` the distinct cases behind a count of trials "
-        "and `repeats` the trials each ran; `level` the level a result read from it is stated at; `basis` what the "
+        "and `repeats` the trials each ran (a binomial spread there is read on the cases, each counted once: the "
+        "widest its repeats allow); `level` the level a result read from it is stated at; `basis` what the "
         "standard error was read from (a stated interval or half-width at a stated level, a standard error, or a "
         "pass/fail rate's binomial spread from a count, naming where the count was read: its own, the slice's stated "
         "cases, or the arm's scoreboard); `interval`, `low` and `high` the interval it gives at that level (the mean "
@@ -3889,11 +3911,12 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         "the two-sided interval a page prints (`cases_needed_two_sided`, `cases_needed_two_sided_80`), each in cases "
         "where the figure states its cases (each run as often as today), else in what its count counts "
         "(`spread.<arm>.<measure>.<where>.counts`), and each with the trials it takes at today's repeats "
-        "(`trials_needed`, `trials_needed_80`, `trials_needed_two_sided`, `trials_needed_two_sided_80`); "
-        "`wrong_side`, how often a fresh run of today's size lands on the other side; `level` the level, with its "
-        "sidedness (`95% one-sided`); `n`, `counts`, `repeats` and `basis` the count the arm's spread rests on, what it "
-        "counts, the trials each case ran and what the spread was read from, as `spread.` reads them, on the "
-        "criterion's aspect",
+        "(`trials_needed`, `trials_needed_80`, `trials_needed_two_sided`, `trials_needed_two_sided_80`); on a "
+        "repeated design a binomial spread is read on the cases, each counted once, so a size is the most cases the "
+        "repeats could need; `wrong_side`, how often a fresh run of today's size lands on the other side; `level` the "
+        "level, with its sidedness (`95% one-sided`); `n`, `counts`, `cases`, `repeats` and `basis` the count the "
+        "arm's spread rests on, what it counts, the distinct cases and trials each ran, and what the spread was read "
+        "from, as `spread.` reads them, on the criterion's aspect",
         resolve=_settle_criterion_figure,
         derived=True,
         derived_note=_SEPARATION_NOTE,
@@ -3948,7 +3971,8 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
 
 # --- an assumed count: the separation families read as if each slice stating no count held one ---------------------
 
-#: How ``assumed.share.`` reads a slice's count: the arm's own count on the measure, times the slice's traffic share.
+#: How ``assumed.share.`` reads a slice's count: the arm's own distinct cases on the measure, times the slice's
+#: traffic share (and its trials times the share, on a repeated design).
 ASSUMED_SHARE = "share"
 
 #: What the grammar says of a figure read under an assumed count, in place of "descriptive, no interval".
@@ -3982,23 +4006,30 @@ def _slice_share(report_input: ReportInput, where: str) -> float | None:
 
 def _assumed_cases(
     report_input: ReportInput, assumed: int | None, arm_id: str, key: str, where: str, path: str
-) -> int | None:
-    """The cases an assumption gives one arm's figure at a slice, where its count is unstated; None where the figure
-    states its count (the assumption leaves it as it is). ``assumed`` None reads the arm's own count times the slice's
-    traffic share."""
+) -> dict[str, int] | None:
+    """The count an assumption gives one arm's figure at a slice, where its count is unstated, as the statistic's own
+    fields (``n_cases``, and ``n`` on a repeated design); None where the figure states its count (the assumption leaves
+    it as it is). ``assumed`` None reads the arm's own distinct cases times the slice's traffic share, and on a
+    repeated design its trials times the share as ``n``, so the slice keeps the arm's repeats."""
     held = _held_where(report_input, arm_id, key, where)
     if held is None or held.count is not None:
         return None
     if assumed is not None:
-        return assumed
+        return {"n_cases": assumed}
     share = _slice_share(report_input, where)
     overall = _held_where(report_input, arm_id, key, _OVERALL)
-    if share is None or overall is None or overall.count is None:
-        lacking = "a traffic share" if share is None else f"{arm_id}'s own count on {key!r}"
+    cases = None
+    if overall is not None and overall.count is not None:
+        cases = overall.cases if overall.cases is not None else overall.count if overall.counted == "cases" else None
+    if share is None or overall is None or cases is None:
+        lacking = "a traffic share" if share is None else f"{arm_id}'s own distinct cases on {key!r}"
         raise _unstated(
-            path, f"reads {where}'s cases as {arm_id}'s count times its traffic share, and it states no {lacking}"
+            path, f"reads {where}'s cases as {arm_id}'s cases times its traffic share, and it states no {lacking}"
         )
-    return max(1, round(overall.count * share))
+    filled = {"n_cases": max(1, round(cases * share))}
+    if overall.cases is not None and overall.count is not None:
+        filled["n"] = max(filled["n_cases"], round(overall.count * share))
+    return filled
 
 
 def _assumed_input(
@@ -4022,7 +4053,7 @@ def _assumed_input(
     def counted(per_arm: Mapping[str, Mapping[str, Stat]]) -> dict[str, dict[str, Stat]]:
         return {
             arm: {
-                measure: stat.model_copy(update={"n_cases": filled[arm]}) if arm in filled and measure == key else stat
+                measure: stat.model_copy(update=filled[arm]) if arm in filled and measure == key else stat
                 for measure, stat in figures.items()
             }
             for arm, figures in per_arm.items()
@@ -4062,7 +4093,11 @@ def _assumed_resolver(
         arms, key, where = reads(report_input, rest)
         figure = inner.resolve(_assumed_input(report_input, assumed, arms, key, where, path), rest, path)
         if isinstance(figure.value, str) and figure.kind == "text" and path.endswith(".basis"):
-            how = f"{assumed} cases" if assumed is not None else "the arm's own count times the slice's traffic share"
+            how = (
+                f"{assumed} cases"
+                if assumed is not None
+                else "the arm's own distinct cases times the slice's traffic share"
+            )
             own = f"from {_COUNT_SOURCES['own']}"
             said = figure.value.replace(own, f"from an assumed count ({how})")
             return replace(figure, value=said if said != figure.value else f"{figure.value}; the count assumed: {how}")
@@ -4099,7 +4134,7 @@ def _assumed_family(inner: _Family, reads: _Reads, *, counted: bool) -> _Family:
     how = (
         "as if each slice stating no count of its own held `<cases>` cases"
         if counted
-        else "as if each slice stating no count of its own held the arm's own count times the slice's traffic share"
+        else "as if each slice stating no count of its own held the arm's own distinct cases times the slice's traffic share"
     )
     return _family_of(
         *head,

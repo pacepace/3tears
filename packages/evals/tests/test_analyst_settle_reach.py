@@ -356,3 +356,73 @@ def test_an_assumed_key_where_the_slice_states_its_count_is_refused() -> None:
     arm, task = held.arms[0].id, held.tasks[0].id
     with pytest.raises(UnresolvableReference, match="states its own"):
         resolve(f"assumed.300.spread.{arm}.pass_rate.task.{task}.se", held)
+
+
+@cache
+def _uncounted_repeated() -> ReportInput:
+    """r2 with its gates read in each task, each overall pass rate stating three trials of each of its cases: a
+    repeated design whose tasks state no count."""
+    data = gates_in_each_task()
+    for arm, stat in data["measures"]["pass_rate"]["per_arm"].items():
+        cases = data["scoreboard"][arm]["cases"]
+        stat["n_cases"], stat["n"] = cases, 3 * cases
+    return ReportInput.model_validate(data)
+
+
+def test_a_share_on_a_repeated_design_reads_the_arms_cases_and_keeps_its_repeats() -> None:
+    """assumed share reads a task as holding the arm's distinct cases times its traffic share, and its trials times
+    the share, so the task keeps the arm's three repeats: never its trials times the share read as cases."""
+    held = _uncounted_repeated()
+    (pick,) = dominant_options(fixture_inputs()["r2"])
+    stat = held.measures["pass_rate"].per_arm[pick]
+    assert stat.n is not None and stat.n_cases is not None
+    rows = _per_task_rows(settle_cases(held, [pick], assumed="share", limit=WHOLE).rows)
+    checked = 0
+    for row in rows:
+        if not row.counts:
+            continue
+        task = next(task for task in held.tasks if f"task.{task.id}" == row.where)
+        assert task.share is not None
+        cases, trials = round(stat.n_cases * float(task.share)), round(stat.n * float(task.share))
+        assert [figure.value for figure in row.counts] == [trials]
+        assert [figure.value for figure in row.cases] == [cases]
+        assert [figure.value for figure in row.count_of] == ["trials"]
+        assert [figure.value for figure in row.repeats] == [pytest.approx(trials / cases)]
+        checked += 1
+    assert checked
+
+
+def test_a_count_is_cited_as_the_whole_number_it_is() -> None:
+    held = fixture_inputs()["r2"]
+    (pick,) = dominant_options(held)
+    gate = next(criterion for criterion in held.criteria if criterion.measure == "pass_rate")
+    (row,) = settle_cases(held, [pick], criterion=gate.id).rows
+    for figure in (row.cases_needed, row.cases_needed_two_sided, *row.counts):
+        assert figure is not None and isinstance(figure.value, int) and not isinstance(figure.value, bool)
+        assert figure.reads == f"{figure.value}" or figure.reads.replace(",", "") == f"{figure.value}"
+
+
+def test_a_derived_mean_of_shares_graded_by_class_label_reads_no_binomial_spread() -> None:
+    """r3's balanced accuracy is graded by class label but is the mean of each class's recall, no share of counted
+    trials: no binomial spread, so no interval, settle size or independent comparison is read on it. A cell's plain
+    accuracy, a share of its trials, still reads one."""
+    held = fixture_inputs()["r3"]
+    derived = [
+        key
+        for key, measure in held.measures.items()
+        if measure.grade == "class_label"
+        and all(s.ci is None and s.half_width is None and s.sem is None for s in measure.per_arm.values())
+    ]
+    plain = {"accuracy", "match"}
+    assert [key for key in derived if key not in plain], "the control: r3 grades a derived mean by class label"
+    for key in derived:
+        if key in plain:
+            continue
+        for arm in held.measures[key].per_arm:
+            with pytest.raises(UnstatedFigure, match="no share of counted trials"):
+                resolve(f"spread.{arm}.{key}.overall.se", held)
+    cell = next(iter(held.cells.values()))
+    arm = next(iter(cell.per_arm))
+    measure = next(key for key in cell.per_arm[arm] if key in plain and held.measures[key].grade == "class_label")
+    where = f"cells.{cell.row}.{cell.column}"
+    assert resolve(f"spread.{arm}.{measure}.{where}.basis", held).value != ""

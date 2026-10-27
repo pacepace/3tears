@@ -12,7 +12,8 @@ this order:
 1. its interval (``ci``), half its width over the two-sided normal quantile at the level the interval was stated at;
 2. its half-width, over the same quantile;
 3. its standard error (``sem``), as stated;
-4. for a pass/fail rate with a count, the binomial spread ``sqrt(p(1 - p) / n)``, ``p`` read as a share.
+4. for a pass/fail rate with a count, the binomial spread ``sqrt(p(1 - p) / n)``, ``p`` read as a share; where the
+   count is trials over fewer stated cases, ``n`` is the cases (see *What a case is*).
 
 An interval or a half-width is read only at a stated level: a level nobody stated would make the standard error a
 guess, so such a statistic is read by its ``sem`` or as a rate, or not at all *(inferred)*. A standard error or a
@@ -58,11 +59,13 @@ with every level it reports, and against a line gives the two-sided size beside 
 *What a case is.* A fresh run adds cases, each run as often as today's design runs one, so a size counts cases. The
 count a spread rests on may be trials, where a design repeats a case; where the figure also states its distinct cases,
 one case's spread is that of its mean over today's repeats, ``se * sqrt(cases)``, and the size counts cases at today's
-repeats (the trials it takes are that times the repeats). The standard error carries its own reading of repeats: a
-stated one is the pipeline's; a binomial spread read from a count of trials treats each repeat as independent, so
-where a case's repeats agree the cases needed are more, at most the trials it takes (every repeat agreeing, a case
-counts once whatever its repeats). Where the figure states no distinct cases the size counts what its count counts,
-and a caller says which.
+repeats (the trials it takes are that times the repeats). A stated standard error carries the pipeline's own reading
+of repeats. A binomial spread is read on the distinct cases, each counted once whatever its repeats: a case's mean
+over its repeats spreads between ``sqrt(p(1 - p) / repeats)`` (repeats independent) and ``sqrt(p(1 - p))`` (repeats
+agreeing), and the snapshot holds no per-case outcomes to say where, so the spread is read at the wide end
+*(inferred: the conservative bound, so neither an interval nor a size is ever narrower than the cases support; read
+as independent, the interval would be the root of the repeats narrower and the size that many times fewer cases)*.
+Where the figure states no distinct cases the size counts what its count counts, and a caller says which.
 
 **A stated difference** (:func:`difference_spread`): a candidate's reading against the control states its change and
 an interval at its own level, from paired cases; its standard error is the interval's half-width over the two-sided
@@ -242,14 +245,18 @@ def stat_spread(
         share = mean / scale
         if not 0.0 <= share <= 1.0:
             raise NoSpread(f"its mean is no rate between none and all ({rate} scale), so no binomial spread is read")
-        se = math.sqrt(share * (1.0 - share)) * scale / math.sqrt(count)
-        return Spread(mean, se, count, se * math.sqrt(distinct or count), level, "binomial", distinct)
+        per_case = math.sqrt(share * (1.0 - share)) * scale
+        return Spread(mean, per_case / math.sqrt(distinct or count), count, per_case, level, "binomial", distinct)
     else:
         if ci is not None or half_width is not None:
             what = "it states an interval at no stated level, and no standard error"
         else:
             what = "it states no interval, half-width or standard error"
-        tail = ", and no count to read a rate's spread from" if rate is not None else ", and is no pass/fail rate"
+        tail = (
+            ", and no count to read a rate's spread from"
+            if rate is not None
+            else ", and is no share of counted trials (a pass/fail rate) to read a binomial spread on"
+        )
         raise NoSpread(what + tail)
     if not math.isfinite(se) or se < 0:
         raise NoSpread("its interval reads no spread")

@@ -195,7 +195,12 @@ def _spread_se(held: ReportInput, arm: str, key: str, where: str) -> float | Non
     elif basis == "its standard error":
         assert stat.sem is not None and se == pytest.approx(stat.sem * points)
     else:
-        n = _number(resolve(f"spread.{arm}.{key}.{where}.n", held).value)
+        # A binomial spread rests on the distinct cases where the count is trials over fewer stated cases (each case
+        # counted once: the widest its repeats allow), else on the count.
+        try:
+            n = _number(resolve(f"spread.{arm}.{key}.{where}.cases", held).value)
+        except UnstatedFigure:
+            n = _number(resolve(f"spread.{arm}.{key}.{where}.n", held).value)
         assert stat.mean is not None
         share = stat.mean / 100 if points == 1.0 else stat.mean
         assert se == pytest.approx(math.sqrt(share * (1 - share) / n) * 100)
@@ -531,26 +536,37 @@ def test_each_line_row_says_what_its_count_and_so_its_sizes_count() -> None:
     assert "cases" in seen, "the control: the fixtures size on cases"
 
 
-def test_on_a_repeated_design_a_line_rows_sizes_count_cases_and_state_the_trials_they_take() -> None:
+def test_on_a_repeated_design_a_line_rows_sizes_count_cases_on_the_widest_spread_and_state_the_trials() -> None:
     """r2 with each pass rate stating three trials of each case: the count the spread rests on is trials, and the row
-    says so; a fresh run adds cases, so each size counts cases at today's repeats (one case's spread its mean's over
-    its three trials), and the trials each takes is beside it."""
+    says so. A fresh run adds cases, so each size counts cases at today's repeats; the binomial spread is read on the
+    400 distinct cases, each counted once (the widest its repeats allow, since the snapshot holds no per-case
+    outcomes), so the size is the most cases the repeats could need, the trials it takes beside it, and the basis and
+    the result's text say so. Read as independent trials it would be three times fewer cases: the low end."""
     data = reference_data("r2")
     for stat in data["measures"]["pass_rate"]["per_arm"].values():
         stat["n_cases"], stat["n"] = 400, 1200
     held = ReportInput.model_validate(data)
     (pick,) = dominant_options(_all_inputs()["r2"])
     gate = next(criterion for criterion in held.criteria if criterion.measure == "pass_rate")
-    (row,) = settle_cases(held, [pick], criterion=gate.id).rows
+    result = settle_cases(held, [pick], criterion=gate.id)
+    (row,) = result.rows
     assert [figure.value for figure in row.count_of] == ["trials"] and [f.value for f in row.counts] == [1200]
-    assert [figure.value for figure in row.repeats] == [3]
+    assert [figure.value for figure in row.cases] == [400] and [figure.value for figure in row.repeats] == [3]
     mean = held.measures["pass_rate"].per_arm[pick].mean
     assert mean is not None and row.cases_needed is not None and row.trials_needed is not None
     share = mean / 100
-    per_case = math.sqrt(share * (1 - share) / 1200) * 100 * math.sqrt(400)
-    expected = math.ceil((_NORMAL.inv_cdf(0.95) * per_case / (mean - float(gate.threshold))) ** 2)
-    assert row.cases_needed.value == expected, "a size in cases, each case's spread its mean's over its repeats"
+    per_case = math.sqrt(share * (1 - share)) * 100
+    distance = mean - float(gate.threshold)
+    expected = math.ceil((_NORMAL.inv_cdf(0.95) * per_case / distance) ** 2)
+    assert row.cases_needed.value == expected, "a size in cases, each case counted once: the widest spread"
     assert row.trials_needed.value == 3 * expected
+    independent = math.ceil((_NORMAL.inv_cdf(0.95) * per_case / math.sqrt(3) / distance) ** 2)
+    assert independent < expected, "the control: read as independent trials, fewer cases"
+    assert row.wrong_side is not None
+    assert row.wrong_side.value == pytest.approx(_NORMAL.cdf(-abs(distance) / (per_case / math.sqrt(400))))
+    (basis,) = row.basis
+    assert isinstance(basis.value, str) and "each counted once" in basis.value and "widest" in basis.value
+    assert "widest" in result.sided and "most cases" in result.sided
 
 
 def test_settling_one_arm_reads_every_criterion_it_is_judged_by_and_says_why_a_p95_is_not_sized() -> None:
