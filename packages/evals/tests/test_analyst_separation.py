@@ -417,7 +417,9 @@ def test_the_r2_editors_sum_is_what_settle_cases_says_of_the_pick_against_its_ga
 
 
 def _line_rows() -> Iterator[tuple[str, ReportInput, str, SettleRow]]:
-    """Every row settling one arm against the criteria it is judged by, on every fixture: (input, arm, row)."""
+    """Every row settling one arm against the criteria it is judged by, on every fixture: (input, arm, row). A row
+    against a margin or floor, which reads a reading's change rather than a measure, is held in
+    ``test_analyst_settle_reach``."""
     for name, held in _all_inputs().items():
         for arm in held.arms:
             try:
@@ -425,7 +427,8 @@ def _line_rows() -> Iterator[tuple[str, ReportInput, str, SettleRow]]:
             except RefusedInput:
                 continue
             for row in result.rows:
-                yield name, held, arm.id, row
+                if row.against.startswith("criterion "):
+                    yield name, held, arm.id, row
 
 
 def _measure_of(held: ReportInput, row: SettleRow) -> str:
@@ -528,9 +531,10 @@ def test_each_line_row_says_what_its_count_and_so_its_sizes_count() -> None:
     assert "cases" in seen, "the control: the fixtures size on cases"
 
 
-def test_on_a_repeated_design_a_line_rows_sizes_count_trials_and_say_so() -> None:
-    """r2 with each pass rate stating three trials of each case: the count the spread rests on is trials, so the sizes
-    are counts of trials, and the row says so."""
+def test_on_a_repeated_design_a_line_rows_sizes_count_cases_and_state_the_trials_they_take() -> None:
+    """r2 with each pass rate stating three trials of each case: the count the spread rests on is trials, and the row
+    says so; a fresh run adds cases, so each size counts cases at today's repeats (one case's spread its mean's over
+    its three trials), and the trials each takes is beside it."""
     data = reference_data("r2")
     for stat in data["measures"]["pass_rate"]["per_arm"].values():
         stat["n_cases"], stat["n"] = 400, 1200
@@ -539,12 +543,14 @@ def test_on_a_repeated_design_a_line_rows_sizes_count_trials_and_say_so() -> Non
     gate = next(criterion for criterion in held.criteria if criterion.measure == "pass_rate")
     (row,) = settle_cases(held, [pick], criterion=gate.id).rows
     assert [figure.value for figure in row.count_of] == ["trials"] and [f.value for f in row.counts] == [1200]
+    assert [figure.value for figure in row.repeats] == [3]
     mean = held.measures["pass_rate"].per_arm[pick].mean
-    assert mean is not None and row.cases_needed is not None
+    assert mean is not None and row.cases_needed is not None and row.trials_needed is not None
     share = mean / 100
-    per_case = math.sqrt(share * (1 - share)) * 100
+    per_case = math.sqrt(share * (1 - share) / 1200) * 100 * math.sqrt(400)
     expected = math.ceil((_NORMAL.inv_cdf(0.95) * per_case / (mean - float(gate.threshold))) ** 2)
-    assert row.cases_needed.value == expected, "a size in trials, read on the trials' binomial spread"
+    assert row.cases_needed.value == expected, "a size in cases, each case's spread its mean's over its repeats"
+    assert row.trials_needed.value == 3 * expected
 
 
 def test_settling_one_arm_reads_every_criterion_it_is_judged_by_and_says_why_a_p95_is_not_sized() -> None:
