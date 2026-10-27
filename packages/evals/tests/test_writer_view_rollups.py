@@ -27,7 +27,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, LateC
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle, writer_view
 from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.analysis.depth import REPEATS_FLOOR
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.decision import NeedKind
 from threetears.evals.analysis.report.model import CampaignReport, TableBlock, TableCell

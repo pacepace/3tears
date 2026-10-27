@@ -97,7 +97,7 @@ from threetears.evals.analysis.bundle.schema import (
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_user_message
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.prose_refs import reference_grammar, render_prose_figures
 from threetears.evals.analysis.references import (
     CellAddress,

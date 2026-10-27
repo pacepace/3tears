@@ -11,7 +11,7 @@ from collections.abc import Collection
 from itertools import chain, product
 from typing import TYPE_CHECKING, Literal
 
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
     ScoreRecord,
@@ -110,7 +110,7 @@ def _within_level_dispersion(
     different dimension sets (:func:`~threetears.evals.analysis.reporting.pooled_composite_basis`), the spread
     is partly the difference between those sets, and the text carries the sets beside the number.
 
-    :return: ``"±"`` and the mean within-level SEM in :func:`~threetears.evals.analysis.numbers.format_number`'s
+    :return: ``"±"`` and the mean within-level SEM in :func:`~threetears.evals.kernel.numbers.format_number`'s
         spelling, followed by the ragged-composite disclosure in parentheses where the pool is ragged, or
         ``"unscored"``.
     :rtype: str

@@ -325,7 +325,7 @@ async def test_a_preparation_that_never_finishes_ends_the_attempt_failed_and_rel
     release.set()
 
     assert status.state == "failed"
-    assert status.detail == f"refused before any call: preparation did not finish in {budget_s:g} s"
+    assert status.detail == f"refused before any call: preparation did not finish in {format_number(budget_s)} s"
     assert [writer.calls for writer in fixture.writers] == [[] for _ in fixture.writers], "nothing was sent"
     assert [writer.closed for writer in fixture.writers] == ([] if hangs_in == "assembly" else [1])
     await fixture.host.launch.job_manager.wait_for([job.job_id.rpartition(":")[2]])

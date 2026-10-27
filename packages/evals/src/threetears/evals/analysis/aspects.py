@@ -17,7 +17,7 @@ from collections.abc import Sequence
 
 from pydantic import Field
 
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import Aspect, AspectDesign, CampaignArm, Floor
 from threetears.evals.kernel.errors import RefusedInput

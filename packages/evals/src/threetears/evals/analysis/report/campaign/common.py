@@ -8,7 +8,7 @@ from dataclasses import replace
 
 from threetears.evals.analysis.arms import arm_names
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.style import ArmName, arm_name
 from threetears.evals.kernel.declaration import Floor
 

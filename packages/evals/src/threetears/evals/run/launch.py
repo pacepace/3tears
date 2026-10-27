@@ -46,6 +46,7 @@ from threetears.evals.kernel.arguments import normalize_blank
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.sweepables import CORE_SWEEPABLES
 from threetears.evals.kernel.metrics import RUN_MARGIN_MEASURES, declaration_of, run_margin_refusal
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.identity import derive_context_identity, variant_levers_of_run
 from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
@@ -393,17 +394,23 @@ class ArmQuote:
 class ArmPrice:
     """What the host's pricer predicts one arm will cost, and how it knows.
 
-    :ivar predicted_usd: The predicted cost of the arm's whole run, in dollars, or ``None`` when the pricer
-        cannot predict it — unknown, which the launch never reads as $0. It is the figure the arm's cap
-        is held to, so a pricer whose prediction is a range returns its UPPER end: an arm admitted
-        because its central estimate fits is one that runs past its cap whenever the run lands above
-        the centre, after its generation was paid for.
+    :ivar predicted_usd: The arm's cap figure: what the launch checks the arm's cap against, in dollars, for its
+        whole run, or ``None`` when the pricer cannot predict it — unknown, which the launch never reads as $0. A
+        pricer whose prediction is a range returns at least its UPPER end: an arm admitted because its central
+        estimate fits is one that runs past its cap whenever the run lands above the centre, after its generation
+        was paid for. It may return more: ``history_launch_pricer`` returns the greater of the band's upper end and
+        the central estimate plus a 3% safety margin, and keeps the band's own end in :attr:`band_high_usd`.
     :ivar basis: How the prediction was made, or why there is none, in words a refusal quotes ("from 12
         priced past results, method usage-history").
     :ivar central_usd: For a pricer whose prediction is a range, its central estimate; ``None`` for one that
         states a single figure. Never held to the cap — reported beside :attr:`predicted_usd`, and what a
         cost pivot sets beside the cost a run later observed.
     :ivar low_usd: For a range, its lower end; ``None`` otherwise.
+    :ivar band_high_usd: For a range, its upper end as the pricer's evidence computed it, where the figure the cap
+        reads may stand above it: a pricer holding every cap to a least headroom over its central estimate
+        (``history_launch_pricer``'s safety margin) sets :attr:`predicted_usd` to the greater of the two and keeps
+        this one, so the band a reader judges is the one the history shows. ``None`` for a single figure, or for a
+        range pricer whose upper end is the prediction itself.
     :ivar method_id: The estimator, so two predictions by different methods are never silently compared;
         ``None`` for a pricer that names none.
     """
@@ -412,25 +419,32 @@ class ArmPrice:
     basis: str
     central_usd: float | None = None
     low_usd: float | None = None
+    band_high_usd: float | None = None
     method_id: str | None = None
 
     def __post_init__(self) -> None:
         """Refuse a negative or non-finite figure, a range out of order, and a blank basis.
 
-        :raises ValueError: A figure is negative or not finite; ``low_usd`` or ``central_usd`` is given without a
-            prediction or out of order (``low <= central <= predicted``); or ``basis`` is blank.
+        :raises ValueError: A figure is negative or not finite; ``low_usd``, ``central_usd`` or ``band_high_usd`` is
+            given without a prediction or out of order (``low <= central <= band high <= predicted``); or ``basis`` is
+            blank.
         """
-        for name in ("predicted_usd", "central_usd", "low_usd"):
+        for name in ("predicted_usd", "central_usd", "low_usd", "band_high_usd"):
             value = getattr(self, name)
             if value is not None and not (math.isfinite(value) and value >= 0):
                 raise ValueError(f"a predicted cost is a finite amount, 0 or more; got {name}={value!r}")
-        if self.predicted_usd is None and (self.central_usd is not None or self.low_usd is not None):
-            raise ValueError("a range has an upper end, which is the prediction; predicted_usd is None")
-        ordered = [v for v in (self.low_usd, self.central_usd, self.predicted_usd) if v is not None]
+        if self.predicted_usd is None and any(
+            v is not None for v in (self.central_usd, self.low_usd, self.band_high_usd)
+        ):
+            raise ValueError(
+                "a range's figures (low_usd, central_usd, band_high_usd) sit beside a cap figure, the prediction, "
+                "and there is none: predicted_usd is None"
+            )
+        ordered = [v for v in (self.low_usd, self.central_usd, self.band_high_usd, self.predicted_usd) if v is not None]
         if ordered != sorted(ordered):
             raise ValueError(
-                f"a range runs low <= central <= predicted; got {self.low_usd!r}, {self.central_usd!r}, "
-                f"{self.predicted_usd!r}"
+                f"a range runs low <= central <= predicted, its band's own upper end between the last two; got "
+                f"{self.low_usd!r}, {self.central_usd!r}, {self.band_high_usd!r}, {self.predicted_usd!r}"
             )
         if not self.basis.strip():
             raise ValueError("an arm price says how it was made, or why there is none; basis is blank")
@@ -443,9 +457,9 @@ class LaunchPricer(Protocol):
     launch generates alike (:attr:`ArmQuote.case_source`) — so one launch never prices two arms by two rules.
 
     A port on :class:`LaunchHost` because the prediction is a read over history — an analysis — and the
-    run package imports no analysis: the host composes one. ``threetears.evals.ops.history_launch_pricer``
-    is the engine's own, over the scope's per-observation usage history; a host with a rate card of its
-    own prices from that instead. Called off the event loop, through the host's blocking executor.
+    run package imports no analysis: the host composes one. ``threetears.evals.ops.history_launch_pricer`` is
+    the engine's own, over the scope's per-observation usage history; a host with a rate card of its own prices
+    from that instead. Called off the event loop, through the host's blocking executor.
     """
 
     def __call__(self, quote: ArmQuote, /) -> ArmPrice:
@@ -2970,8 +2984,8 @@ def _largest_call_over_cap(
         f"stop budget_stopped before its next cell, after spending more than the cap on it. {refused}"
     )
     room = (
-        f" (${_cents_up(ceiling.usd + price.predicted_usd):.2f} also leaves room for the "
-        f"${price.predicted_usd:.2f} the arm is predicted to spend around it)"
+        f" (${_cents_up(ceiling.usd + price.predicted_usd):.2f} also leaves room for the arm's "
+        f"{format_number(price.predicted_usd, prefix='$')} cap figure around it)"
         if price.predicted_usd is not None
         else ""
     )
@@ -2991,8 +3005,8 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
 
     First, an arm is refused when its largest call's ceiling (:attr:`ArmPlan.call_ceiling`) is above its cap on
     its own: its run reserves that ceiling before making the call and refuses the call, so the run could never
-    complete it, whatever the arm is predicted to cost in all. Then an arm is refused when its predicted cost is
-    above the cap its run will be held to, or when nothing
+    complete it, whatever the arm is predicted to cost in all. Then an arm is refused when its cap figure
+    (:attr:`ArmPrice.predicted_usd`) is above the cap its run will be held to, or when nothing
     predicts it and that cap is one the run would merely inherit (the host's configured ceiling, which nobody
     chose for this run): unknown is not $0. An arm with a cap the launch named and no prediction goes ahead —
     the named cap is the most the operator chose to risk on a run nobody could price, and the run's own cost
@@ -3063,7 +3077,8 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
         )
         return verdict(
             "refused",
-            f"{what} is predicted to cost ${price.predicted_usd:.2f} ({price.basis}), above its ${cap:.2f} cap. "
+            f"{what} has a cap figure of {format_number(price.predicted_usd, prefix='$')}, the spend its cap is "
+            f"checked against ({price.basis}), above its {format_number(cap, prefix='$')} cap. "
             f"{refused}",
             f"fewer cases, a smaller k_runs or a cheaper model brings it under; {raise_it}",
         )

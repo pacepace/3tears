@@ -5,6 +5,8 @@ compiler and the MCP renders all state numbers from one analysis, often on one l
 would spell one analysis's latency ``1.235e+04`` in its value column and ``12,346`` in the interval
 beside it. Anything that
 shows a reader a number imports it from here, and nothing here imports anything of the engine's.
+It lives in ``kernel``, the package both ``run`` and ``analysis`` may import, so a launch's refusal spells its
+figures by the same rule as a report; ``threetears.evals.analysis`` re-exports its public names.
 Over the trees listed in ``_SPELLING_TREES`` in ``tests/test_numbers.py``,
 that is checked from the source by that test, which names each deliberate fixed spelling it allows — such as a
 probability, pass^k, a percentage — and flags every other format spec that chooses digits.
@@ -114,4 +116,4 @@ def format_signed(value: float | None) -> str:
     return f"+{text}" if positive and not text.startswith("<") else text
 
 
-__all__ = ["ABSENT", "WHOLE_FROM", "WRITTEN_FROM", "format_number", "format_signed"]
+__all__ = ["ABSENT", "format_number", "format_signed"]
