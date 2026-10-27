@@ -30,6 +30,8 @@ A point estimate on the right side of a gate whose interval crosses the line is 
 - **The interval crosses the line:** more cases can settle it. Name how many.
 - **The interval is clear of the line on the wrong side:** more cases won't help. The candidate has to change.
 
+State every band a sweep returns. `decision_sensitivity` cuts the line's range into bands where the call stays the same. Give each band's call, including the ones far from today's line and the side that loosens it, and check that the sweep reached the ends you care about. A band you did not sweep is unknown, not "the call holds".
+
 Read each line one way. Say once whether a line is read on the point estimate or on the whole interval, and use that reading everywhere it appears: the call, Watch, the explore controls and Omitted.
 
 Treat near options' noise even-handedly. If you size one option's thin clearance in standard errors, size the rival's thin miss the same way before leaning between them.
