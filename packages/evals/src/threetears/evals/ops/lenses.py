@@ -272,8 +272,13 @@ def scope_export(
     format: str | None = None,
     status: str | None = "completed",
     run_ids: list[str] | None = None,
+    after_run_id: str | None = None,
 ) -> ScoreExport:
-    """The scope's observations as flat rows, in CSV or JSON, for analysis elsewhere.
+    """The scope's observations as flat rows, in CSV or JSON, for analysis elsewhere, a page at a time when large.
+
+    A scope whose runs' matrices hold more than :data:`~threetears.evals.analysis.EXPORT_PAGE_RESULTS` results is
+    exported in pages of whole runs, oldest first: each page's ``page.next_after_run_id`` is the ``after_run_id`` of
+    the next (:func:`~threetears.evals.analysis.export_results`).
 
     :param host: The host whose store and vocabulary are read.
     :ptype host: EvalHost
@@ -283,11 +288,15 @@ def scope_export(
     :ptype format: str | None
     :param status: Only runs with this status; ``"all"`` exports every run.
     :ptype status: str | None
-    :param run_ids: Only these runs — archived ones included, since they were named.
+    :param run_ids: Only these runs — archived ones included, since they were named. Never paged: two or more
+        whose results would pass the ceiling are refused.
     :ptype run_ids: list[str] | None
+    :param after_run_id: The previous page's ``page.next_after_run_id``; ``None`` reads the first page.
+    :ptype after_run_id: str | None
     :return: The export.
     :rtype: ScoreExport
-    :raises ValidationFailedError: The format is not one there is, or the status is no run's.
+    :raises ValidationFailedError: The format is not one there is, the status is no run's, the named runs would pass
+        the ceiling, or ``after_run_id`` is given with ``run_ids`` or is no run in the scope.
     """
     return export_results(
         host.storage,
@@ -296,6 +305,7 @@ def scope_export(
         fmt=format,
         status=status,
         run_ids=run_ids,
+        after_run_id=after_run_id,
         profile=host.profile,
     )
 
@@ -1402,11 +1412,41 @@ def detectable_effect_lines(block: DetectableEffects) -> list[str]:
     return lines
 
 
-def export_text(export: ScoreExport) -> str:
-    """An export as text: a line of its row count and what it left out, then the body itself."""
+def export_text(export: ScoreExport, *, next_call: str | None = None) -> str:
+    """An export as text: a line of its row count and what it left out, its page, then the body itself.
+
+    :param export: The export.
+    :ptype export: ScoreExport
+    :param next_call: How the calling surface spells the call that reads the next page, set under the page's lines;
+        ``None`` names none.
+    :ptype next_call: str | None
+    :return: The text.
+    :rtype: str
+    """
     lines = [f"export ({export.format}, {export.n_records} row(s))"]
     lines += exclusion_lines(export.exclusions)
     lines += _completeness(export.completeness_disclosures)
+    page = export.page
+    if page is not None:
+        total = page.runs_before + len(page.run_ids) + page.runs_after
+        held = (
+            f"runs {page.runs_before + 1}-{page.runs_before + len(page.run_ids)} of {total}"
+            if page.run_ids
+            else f"no runs, of {total}"
+        )
+        lines.append(f"page: {held}, oldest first; at most {page.result_ceiling} results a page")
+        unread = [
+            f"{count} {what}"
+            for count, what in (
+                (page.archived_runs, "archived run(s)"),
+                (page.runs_outside_status, "run(s) of another status"),
+            )
+            if count
+        ]
+        if unread:
+            lines.append("left out, not read: " + ", ".join(unread))
+        if page.next_after_run_id is not None and next_call is not None:
+            lines.append(next_call)
     return "\n".join(lines) + "\n\n" + export.body
 
 

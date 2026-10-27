@@ -149,6 +149,7 @@ from threetears.evals.analysis.generator import (
 )
 from threetears.evals.analysis.numbers import ABSENT, format_number, format_signed
 from threetears.evals.analysis.reads import (
+    EXPORT_PAGE_RESULTS,
     READ_TIER_ROW_BUDGET,
     compare_two_runs,
     comparison_sets,
@@ -394,7 +395,7 @@ from threetears.evals.analysis.lenses.frontier import (
 )
 from threetears.evals.kernel.scoring import UnpooledReason
 from threetears.evals.analysis.lenses.history import HistoryResult, MeasureSeries, RegressionFlag, SeriesPoint
-from threetears.evals.analysis.lenses.export import ExportFormat, ScoreExport
+from threetears.evals.analysis.lenses.export import ExportFormat, ExportPage, ScoreExport
 from threetears.evals.analysis.service import AnalysisStore
 
 
@@ -547,6 +548,7 @@ __all__ = [
     "DEFAULT_WEIGHTING",
     "EQUIVALENCE_TEST_NAME",
     "EVAL_ANALYSIS_GEN_DEFAULT",
+    "EXPORT_PAGE_RESULTS",
     "HISTORY_METRICS",
     "LABEL_BANDS",
     "METRIC_COMPOSITE",
@@ -667,6 +669,7 @@ __all__ = [
     "CostEstimate",
     "CostEstimateCell",
     "ExportFormat",
+    "ExportPage",
     "HistoryResult",
     "LatencyPartition",
     "MeasureSeries",
