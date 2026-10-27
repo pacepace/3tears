@@ -467,8 +467,8 @@ def computed_interval(
 
 
 def computed_notes(context: ChartContext) -> tuple[str, ...]:
-    """What a chart whose intervals are computed here says of them (:data:`COMPUTED`), and, where a figure's count is
-    trials (a case run again counts again), that each repeat was read as independent; nothing otherwise.
+    """What a chart whose intervals are computed here says of them (:data:`COMPUTED`), and, where a case ran more than
+    once, that the interval is read on the distinct cases, at the widest spread the repeats allow; nothing otherwise.
 
     :param context: The chart being resolved.
     :ptype context: ChartContext
@@ -486,12 +486,14 @@ def computed_notes(context: ChartContext) -> tuple[str, ...]:
 
 
 def _counts_trials(report_input: ReportInput, arm: str, key: str) -> bool:
-    """Whether an arm's overall spread on a figure rests on a count of trials (a case run again counts again)."""
+    """Whether an arm's overall spread on a figure was read where a case ran more than once (its ``repeats`` key
+    reads only on such a design), so on the distinct cases, each counted once."""
     try:
-        return resolve(f"spread.{arm}.{key}.overall.counts", report_input).value == "trials"
+        resolve(f"spread.{arm}.{key}.overall.repeats", report_input)
     except UnresolvableReference:
-        # NOSILENT: a figure whose count is unstated rests on no trials; its interval reads none at all.
+        # NOSILENT: a figure whose cases each ran once has no repeats; its interval needs no word on them.
         return False
+    return True
 
 
 def figure_interval(context: ChartContext, key: str, arm: str, stat: Stat) -> tuple[float, float] | None:

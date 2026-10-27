@@ -371,16 +371,16 @@ LEVER_EFFECT_GROUP = "{setting}"
 LEVER_CROSS_TEMPLATE = "at {second} less at {first}"
 LEVER_CROSS_GROUP = "{setting} effect, across {across}"
 
-#: A chart whose intervals code computed from each rate's count, where its figures state none.
+#: A chart whose intervals code computed from each rate's binomial spread, where its figures state none.
 COMPUTED_NOTE = (
-    "Each interval is computed from the rate's count: its binomial spread, by the normal approximation, held to 0 to "
-    "100%. A rate of none or all has none."
+    "Each interval is computed here from the rate's binomial spread, by the normal approximation, held to 0 to 100%. "
+    "A rate of none or all has none."
 )
 
-#: Beside it, where a count is trials over fewer cases: what reading each repeat as independent does.
+#: Beside it, where a case ran more than once: what count the spread was read on.
 COMPUTED_REPEATS_NOTE = (
-    "Each repeat of a case is read as independent, so where a case's repeats agree the interval is narrower than its "
-    "cases support."
+    "Where a case ran more than once, the interval is read on the distinct cases, each counted once: the widest "
+    "spread its repeats allow."
 )
 
 #: A chart of blind human preference, about the no-preference point.

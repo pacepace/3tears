@@ -75,7 +75,7 @@ from threetears.evals.analysis.report.plan_page.look import quantity
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
 from threetears.evals.analysis.report.plan_page.resolve_changes import compare_basis
 from threetears.evals.analysis.report.plan_page.resolve_magnitudes import price_notes, settle_label, settle_notes
-from threetears.evals.analysis.analyst.cited import CitedFigure, cite_if
+from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.compare import ComparisonRow
 from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow
 from threetears.evals.analysis.analyst.settle import SettleRow
@@ -418,14 +418,12 @@ def _settle(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
 
 
 def _today(context: ChartContext, arm: str, key: str, row: SettleRow) -> _Row:
-    """Today's count beside a settle row's sizes, in both units the sizes are: its distinct cases (the count itself
-    where it counts cases, else the spread's ``cases`` key) and its trials (the count where it counts trials), each
-    as its key reads it, so a size in cases never sits against a count of trials unlabelled."""
+    """Today's count beside a settle row's sizes, in both units the sizes are: its distinct cases (the row's ``cases``
+    where its count is trials over fewer cases, else the count itself where it counts cases) and its trials (the count
+    where it counts trials), each as its key reads it, so a size in cases never sits against a count of trials."""
     count = row.counts[0] if row.counts else None
     counted = str(row.count_of[0].value) if row.count_of else ""
-    cases: CitedFigure | None = count if counted == "cases" else None
-    if cases is None and counted == "trials" and key:
-        cases = cite_if(f"spread.{arm}.{key}.{row.where}.cases", context.report_input)
+    cases = row.cases[0] if row.cases else count if counted == "cases" else None
     return {"today_cases": _read(cases), "today_trials": _read(count if counted == "trials" else None)}
 
 
