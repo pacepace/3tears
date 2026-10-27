@@ -250,7 +250,8 @@ def scope_frontier(
     :ptype scope_id: str
     :param bar: The pass^k each variant must clear, in ``[0, 1]``; ``None`` or blank ranks without a verdict.
     :ptype bar: float | str | None
-    :param subject_id: Only this subject's variants; others are counted as filtered out.
+    :param subject_id: Only this subject's variants; what the others count as is
+        :func:`~threetears.evals.analysis.frontier`'s ``subject_id`` (filtered out, or, past the read budget, unread).
     :ptype subject_id: str | None
     :param status: Only runs with this status; ``"all"`` ranks every run.
     :ptype status: str | None

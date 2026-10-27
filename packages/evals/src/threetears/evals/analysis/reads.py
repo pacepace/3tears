@@ -432,8 +432,10 @@ def _refuse_past_budget(
     )
 
 
-def _narrowed_read_disclosure(subject_id: str, *, tiers: bool = False) -> str:
+def narrowed_read_disclosure(subject_id: str, *, tiers: bool = False) -> str:
     """What an answer read for one subject alone, past :data:`READ_TIER_ROW_BUDGET`, did not count.
+
+    The one wording, which the regression watch's judged alerts carry too.
 
     :param subject_id: The subject read.
     :ptype subject_id: str
@@ -450,8 +452,8 @@ def _narrowed_read_disclosure(subject_id: str, *, tiers: bool = False) -> str:
     )
     return (
         f"Read for subject {subject_id!r} alone: the scope is past the read tier's budget of {READ_TIER_ROW_BUDGET} "
-        "results, so only this subject's runs were read; other subjects' results are not counted as filtered out, "
-        f"and results whose run is missing are not counted at all{tiered}."
+        "results, so only this subject's runs were read; other subjects' results, and results whose run is missing, "
+        f"are not counted{tiered}."
     )
 
 
@@ -783,7 +785,7 @@ def pivot(
         raise ValidationFailedError(e.fault, remedy=e.remedy) from e
     _observe_read("pivot", scope_id, started, *observed, cells_out=len(table.cells))
     if narrowed and subject_id:
-        return table.model_copy(update={"narrowed_read_disclosure": _narrowed_read_disclosure(subject_id)})
+        return table.model_copy(update={"narrowed_read_disclosure": narrowed_read_disclosure(subject_id)})
     return table
 
 
@@ -892,7 +894,7 @@ def frontier(
     if narrowed and subject is not None:
         # Kept, and said: a judge's agreement here pooled over this subject's results alone, where a whole-scope
         # read pools every subject's, so its tier can differ from the whole read's for the same subject.
-        result.narrowed_read_disclosure = _narrowed_read_disclosure(subject, tiers=bool(tiers))
+        result.narrowed_read_disclosure = narrowed_read_disclosure(subject, tiers=bool(tiers))
     return result.model_dump(mode="json")
 
 
@@ -982,7 +984,7 @@ def history(
     except HistoryError as e:
         raise ValidationFailedError(e.fault, remedy=e.remedy) from e
     if narrowed and subject is not None:
-        return result.model_copy(update={"narrowed_read_disclosure": _narrowed_read_disclosure(subject)})
+        return result.model_copy(update={"narrowed_read_disclosure": narrowed_read_disclosure(subject)})
     return result
 
 

@@ -51,6 +51,7 @@ from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
 from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.quick import EXIT_REFUSED, run_cli
 from threetears.evals.ops import RegressionAlert, RegressionSink, RegressionWatch, history_text, pivot_text
 from threetears.evals.run.reads import list_runs
 from threetears.evals.kernel.evidence_tiers import CALIBRATION_MIN_RESULTS
@@ -292,7 +293,9 @@ class TestACallNarrowedToRunsThatFitIsAnswered:
         assert whole.narrowed_read_disclosure is None
         assert table.narrowed_read_disclosure is not None
         assert table.narrowed_read_disclosure.startswith(NARROWED_SAID)
-        assert "other subjects' results are not counted as filtered out" in table.narrowed_read_disclosure
+        assert "other subjects' results, and results whose run is missing, are not counted" in (
+            table.narrowed_read_disclosure
+        )
         assert "evidence tier" not in table.narrowed_read_disclosure
         assert table.narrowed_read_disclosure in pivot_text(table)
         assert "narrowed_read_disclosure" not in whole.model_dump()
@@ -611,7 +614,7 @@ class TestTheRegressionWatch:
         assert transcript.evidence_tier == "calibrated"
         assert transcript.narrowed_read_disclosure is not None
         assert transcript.narrowed_read_disclosure.startswith(f"Read for subject {NARROW!r} alone")
-        assert "Each judge's evidence tier was read on this subject's results alone" in (
+        assert "each judge's evidence tier was read on this subject's results alone" in (
             transcript.narrowed_read_disclosure
         )
 
@@ -641,6 +644,42 @@ class TestTheRegressionWatch:
         assert f"holds about 24 results, past READ_TIER_ROW_BUDGET={BUDGET}" in message
         assert "nothing an operator can narrow" in message and "#996" in message
         assert "subject_filter" not in message and "subject_id" not in message
+
+
+class TestTheFrontierCommand:
+    """The quick CLI's ``frontier`` names its own flag in a refusal past the budget, never the action's filter."""
+
+    def _refused(self, storage: EvalStorage, capsys: pytest.CaptureFixture[str], *subject: str) -> str:
+        host = toyhost_host(storage=storage)
+        code = run_cli(["frontier", "--scope", SCOPE, *subject], host_factory=lambda: host)
+        stderr = capsys.readouterr().err
+        assert code == EXIT_REFUSED, stderr
+        assert "subject_filter" not in stderr and "subject_id" not in stderr
+        return stderr
+
+    def test_a_scope_past_the_budget_is_told_to_name_a_subject(
+        self, budget: int, scope: tuple[EvalStorage, list[EvalRun]], capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        stderr = self._refused(scope[0], capsys)
+
+        assert f"frontier would aggregate about {7 * CASES} results, past the {budget}" in stderr
+        assert "filter it to one subject with --subject" in stderr
+        assert f"answered when they hold {budget} results or fewer" in stderr
+
+    def test_a_subject_past_the_budget_is_told_nothing_narrower_exists(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        scope: tuple[EvalStorage, list[EvalRun]],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 3 * CASES)
+        stderr = self._refused(scope[0], capsys, "--subject", NARROW)
+
+        assert (
+            f"this subject alone holds about {4 * CASES} results, past the budget of {3 * CASES}, and the frontier "
+            "command has no narrower filter"
+        ) in stderr
+        assert "--subject" not in stderr
 
 
 def test_a_campaign_report_reads_its_runs_by_id_past_the_budget(monkeypatch: pytest.MonkeyPatch) -> None:

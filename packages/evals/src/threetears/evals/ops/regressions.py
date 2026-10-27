@@ -54,6 +54,7 @@ from threetears.evals.analysis.agreement import (
     judge_self_agreement,
     tier_for_judges,
 )
+from threetears.evals.analysis.reads import narrowed_read_disclosure
 from threetears.evals.analysis.reporting import METRIC_COMPOSITE, METRIC_OUTCOME, METRIC_TRANSCRIPT
 from threetears.evals.analysis.lenses.history import (
     HistoryError,
@@ -74,12 +75,6 @@ from threetears.evals.run.reads import list_runs
 from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
-
-#: What a judged alert adds to its history's narrowed-read sentence: where its judges' tier was read.
-_NARROWED_TIERS = (
-    "Each judge's evidence tier was read on this subject's results alone, where a whole-scope read pools every "
-    "subject's."
-)
 
 #: The history measures a judge's scores make, each read off the dimensions named here: the composite off every
 #: dimension the result was scored on (``None``), a dual axis off its own.
@@ -207,10 +202,9 @@ class RegressionWatch:
             # names a filter the watch already applies, and nothing narrower exists for it.
             if "result_budget" in refused.details:
                 log.error(
-                    "eval.regression watch checked nothing on run=%s scope_id=%s: the history of the run's subject "
-                    "alone holds about %s results, past READ_TIER_ROW_BUDGET=%s, so no regression on this run was "
-                    "looked for. The watch already reads one subject; there is nothing an operator can narrow until "
-                    "the read tier is computed in the store (#996)",
+                    "eval.regression watch checked nothing on run=%s scope_id=%s: the history it reads for this run "
+                    "holds about %s results, past READ_TIER_ROW_BUDGET=%s, so no regression on this run was looked "
+                    "for; there is nothing an operator can narrow until the read tier is computed in the store (#996)",
                     run_id,
                     scope_id,
                     refused.details.get("results_returned", refused.details.get("results_estimated")),
@@ -263,7 +257,7 @@ class RegressionWatch:
         results: list[EvalResult] | None = None
         # Every series the watch alerts on is one of this run's contestants, all of the run's own subject, so the
         # history is read for that subject: a scope past the read tier's budget is still checked wherever the subject
-        # fits. A run no longer stored reads the whole scope's history, as the watch did before.
+        # fits. A run no longer stored reads the whole scope's history.
         run = self.host.storage.load_eval_run(run_id, scope_id)
         subject_id = run.subject_snapshot.subject_id if run is not None else None
         for measure in self.measures:
@@ -323,8 +317,8 @@ class RegressionWatch:
                         graded_by=graded_by,
                         evidence_tier=tier,
                         narrowed_read_disclosure=(
-                            f"{history.narrowed_read_disclosure} {_NARROWED_TIERS}"
-                            if graded_by == "judge" and history.narrowed_read_disclosure
+                            narrowed_read_disclosure(subject_id, tiers=True)
+                            if graded_by == "judge" and history.narrowed_read_disclosure and subject_id is not None
                             else None
                         ),
                     )

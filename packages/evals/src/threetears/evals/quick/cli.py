@@ -546,8 +546,8 @@ def run_cli(
                 # The remedy names the action's and Python's filter; here it is a flag, or nothing narrower.
                 budget = refused.details["result_budget"]
                 raise _Refused(
-                    f"{refused.message}; this subject alone is past the {budget}, and the frontier command has no "
-                    "narrower filter"
+                    f"{refused.message}; this subject alone holds about {refused.details['results_estimated']} "
+                    f"results, past the budget of {budget}, and the frontier command has no narrower filter"
                     if args.subject
                     else f"{refused.message}; filter it to one subject with --subject: a frontier of one subject "
                     f"reads only that subject's runs, and is answered when they hold {budget} results or fewer"
