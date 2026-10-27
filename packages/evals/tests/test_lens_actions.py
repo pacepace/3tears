@@ -45,6 +45,7 @@ from threetears.evals.analysis import (
     ScoreExport,
     campaign_report,
 )
+from threetears.evals.analysis.lenses.cost_estimate import COST_BAND_SAFETY_MARGIN
 from threetears.evals.analysis.reporting import ScoreProjection
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.ops import (
@@ -321,7 +322,11 @@ async def test_an_arm_whose_every_past_result_cost_the_same_launches_under_an_en
         )
 
     (arm,) = estimate.arms
-    assert arm.low_usd == arm.central_usd == arm.predicted_usd == pytest.approx(0.0015 * CASES)
+    assert arm.low_usd is not None and arm.central_usd is not None and arm.predicted_usd is not None
+    assert arm.low_usd < arm.central_usd < arm.predicted_usd
+    assert arm.central_usd == pytest.approx(0.0015 * CASES)
+    assert arm.predicted_usd == pytest.approx(0.0015 * CASES * (1 + COST_BAND_SAFETY_MARGIN), rel=1e-12)
+    assert arm.low_usd == pytest.approx(0.0015 * CASES * (1 - COST_BAND_SAFETY_MARGIN), rel=1e-12)
     assert len(first) == len(second) == 1 and first != second
 
 

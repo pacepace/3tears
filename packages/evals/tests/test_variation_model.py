@@ -29,6 +29,7 @@ import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import COST_ESTIMATE_MIN_BASIS
+from threetears.evals.analysis.lenses.cost_estimate import COST_BAND_SAFETY_MARGIN
 from threetears.evals.analysis.stats import lognormal_sum_prediction_band
 from threetears.evals.schema import EvalRun
 from threetears.evals.kernel import (
@@ -847,8 +848,11 @@ def test_the_history_pricer_prices_an_arm_whose_every_past_result_cost_the_same(
 
     price = history_launch_pricer(host)(_quote(k_runs=1, case_count=case_count))
 
-    assert price.predicted_usd is not None
-    assert price.low_usd == price.central_usd == price.predicted_usd
+    assert price.predicted_usd is not None and price.central_usd is not None and price.low_usd is not None
+    assert price.low_usd < price.central_usd < price.predicted_usd
+    assert price.predicted_usd == pytest.approx(price.central_usd * (1 + COST_BAND_SAFETY_MARGIN), rel=1e-12)
+    assert price.low_usd == pytest.approx(price.central_usd * (1 - COST_BAND_SAFETY_MARGIN), rel=1e-12)
+    assert "upper end of the band" in price.basis and "safety margin either side" in price.basis
 
 
 def test_the_history_pricer_never_holds_an_arm_to_its_mean_where_the_log_scale_fit_disagrees_with_it():

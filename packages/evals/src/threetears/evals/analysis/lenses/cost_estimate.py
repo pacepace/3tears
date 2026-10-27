@@ -111,6 +111,15 @@ _COST_BAND_INDEPENDENCE = (
 #: that and far below a cent. A gap wider than this is a real disagreement or a real spread, never rounding.
 _BAND_ROUNDING_REL_TOL = 1e-9
 
+#: The band either side of the estimate, as a share of it, of a history with no spread: every past cost equal, or apart
+#: by :data:`_BAND_ROUNDING_REL_TOL` alone. A margin of error is drawn from a spread, and a spread of zero over any
+#: number of observations bounds nothing: it says how often past costs differed (never), not how far a sweep's could.
+#: Nothing else the estimate reads gives one either, since it reads each result's total alone. So the band is a safety
+#: margin rather than a measurement (owner ruling, 2026-10-27): a band of no width capped the arm at its estimate, and a
+#: sweep costing a hair more stopped against its cap partway. Three percent is the owner's figure; the basis says the
+#: band is this margin and not a fit. A history with any spread keeps the band its fit computes, however narrow.
+COST_BAND_SAFETY_MARGIN = 0.03
+
 
 def _normal_theory_band(history: Sequence[float], n_observations: int, estimate: float) -> tuple[float, float]:
     """``t(0.95, n-1) * s * sqrt(m + m^2/n)`` either side of ``estimate``, floored at zero.
@@ -150,14 +159,14 @@ def _cost_band(history: Sequence[float], n_observations: int, estimate: float) -
 
     - **The history never varied** (its cheapest and dearest observations within :data:`_BAND_ROUNDING_REL_TOL` of
       each other, so a history one float step apart is one that never varied). Every past cost equal is a spread
-      measured at zero, and the band is what every
-      band here makes of a zero spread: no width, exactly at ``estimate``. Computed through the log scale it was not:
-      ``exp`` of a mean of logs rounds away from the arithmetic mean, and three results at $0.0015 each put both ends
-      an ulp below the centre. A zero width is a claim the history makes, not one it proves, so the basis says in
-      words that no spread was seen and that a sweep varying at all lands outside the band. It is kept rather than
-      refused: no history short of tens of times the sweep's size bounds the chance a draw differs below the band's
-      tail, so a size floor would refuse every arm whose cost is a flat per-call rate; and a minimum width has nothing
-      in a spread of zero to draw it from.
+      measured at zero, from which no margin of error can be computed, so the band is ``estimate`` times one minus and
+      one plus :data:`COST_BAND_SAFETY_MARGIN`: a safety margin, and the basis says so. Both ends move, not only the
+      upper one a launch caps: nothing in a flat history says the sweep errs one way, and a lower end at ``estimate``
+      would claim it cannot cost less. The margin is under one, so the lower end stays at or above zero, and the band
+      brackets ``estimate`` exactly, never through the log scale: ``exp`` of a mean of logs rounds away from the
+      arithmetic mean, and three results at $0.0015 each put both of that band's ends an ulp below the centre. It is
+      kept rather than refused: no history short of tens of times the sweep's size bounds the chance a draw differs,
+      so a size floor would refuse every arm whose cost is a flat per-call rate.
     - **The log-scale band misses ``estimate`` by rounding alone** (within :data:`_BAND_ROUNDING_REL_TOL` of it): its
       ends and the arithmetic mean are different sums, so a history that varies only by rounding leaves them an ulp
       apart either way. The end that fell short is set to ``estimate``, which moves it by rounding.
@@ -181,12 +190,13 @@ def _cost_band(history: Sequence[float], n_observations: int, estimate: float) -
     """
     n = len(history)
     if math.isclose(min(history), max(history), rel_tol=_BAND_ROUNDING_REL_TOL):
+        margin = estimate * COST_BAND_SAFETY_MARGIN
         return (
-            estimate,
-            estimate,
-            f"No spread in {n} past observations: each cost {format_number(history[0], prefix='$')}, so the band has "
-            f"no width and is the estimate itself; a sweep whose cost varies at all lands outside it. "
-            f"{_COST_BAND_INDEPENDENCE}",
+            estimate - margin,
+            estimate + margin,
+            f"No spread in {n} past observations: each cost {format_number(history[0], prefix='$')}, so no margin of "
+            f"error can be computed from them, and the band is a {COST_BAND_SAFETY_MARGIN:.0%} safety margin either "
+            f"side of the estimate; a sweep whose cost varies by more lands outside it. {_COST_BAND_INDEPENDENCE}",
         )
     log_band = lognormal_sum_prediction_band(history, n_observations)
     if log_band is None:

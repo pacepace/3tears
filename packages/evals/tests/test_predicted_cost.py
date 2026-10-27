@@ -26,6 +26,7 @@ import pytest
 from threetears.evals.analysis import COST_PREDICTION_METHOD, PredictedValue, pivot
 from threetears.evals.analysis.reporting import METRIC_COMPOSITE, METRIC_COST_USD, ScoreRecord
 from threetears.evals.analysis.lenses.cost_estimate import (
+    COST_BAND_SAFETY_MARGIN,
     CostEstimate,
     CostEstimateCell,
     PlannedCost,
@@ -138,19 +139,41 @@ def _band_of(costs: list[float], *, n_test_cases: int, k_runs: int = 1) -> Predi
     return predicted
 
 
+def _assert_the_safety_margin(predicted: PredictedValue) -> None:
+    """The band of a history with no spread: the estimate less and plus the margin, ordered, never below zero."""
+    low, value, high = predicted.interval_low, predicted.value, predicted.interval_high
+    assert low is not None and high is not None
+    assert 0.0 <= low <= value <= high
+    assert low == pytest.approx(value * (1 - COST_BAND_SAFETY_MARGIN), rel=1e-12, abs=0.0)
+    assert high == pytest.approx(value * (1 + COST_BAND_SAFETY_MARGIN), rel=1e-12, abs=0.0)
+    if value > 0.0:
+        assert low < value < high, "a margin, not a band of no width"
+
+
 class TestTheBandBracketsItsOwnEstimate:
     """A launch holds the band's upper end to the cap and refuses a range out of order, so the band brackets the point."""
 
     @pytest.mark.parametrize("cost", _REPEATED_COSTS)
     @pytest.mark.parametrize("n_history", [3, 4, 5, 7, 11, 20])
     @pytest.mark.parametrize("n_test_cases", [1, 3, 10])
-    def test_a_history_that_never_varied_has_a_band_of_no_width_at_its_estimate(
+    def test_a_history_that_never_varied_has_a_safety_margin_either_side_of_its_estimate(
         self, cost: float, n_history: int, n_test_cases: int
     ) -> None:
         """Discodon's second launch of one arm: three results at $0.0015 each put both ends an ulp below the centre."""
         predicted = _band_of([cost] * n_history, n_test_cases=n_test_cases)
 
-        assert predicted.interval_low == predicted.value == predicted.interval_high
+        _assert_the_safety_margin(predicted)
+
+    @pytest.mark.parametrize("cost", _REPEATED_COSTS[:-1])
+    @pytest.mark.parametrize("n_history", [3, 5, 11])
+    @pytest.mark.parametrize("apart", ["one float step", "a ten-billionth"])
+    def test_a_history_apart_by_rounding_alone_has_the_same_safety_margin(
+        self, cost: float, n_history: int, apart: str
+    ) -> None:
+        odd = math.nextafter(cost, math.inf) if apart == "one float step" else cost * (1 + 1e-10)
+        predicted = _band_of([cost] * (n_history - 1) + [odd], n_test_cases=4)
+
+        _assert_the_safety_margin(predicted)
 
     @pytest.mark.parametrize("cost", _REPEATED_COSTS[:-1])
     @pytest.mark.parametrize("n_history", [3, 5, 11])
@@ -173,10 +196,10 @@ class TestTheBandBracketsItsOwnEstimate:
         cell = _cell_of([cost, cost, math.nextafter(cost, math.inf)], n_test_cases=3)
 
         assert cell.predicted is not None
-        assert cell.predicted.interval_low == cell.predicted.value == cell.predicted.interval_high
+        _assert_the_safety_margin(cell.predicted)
         assert cell.band_basis is not None and cell.band_basis.startswith("No spread in 3 past observations")
 
-    def test_the_total_of_bands_of_no_width_brackets_the_total_estimate(self) -> None:
+    def test_the_total_of_safety_margins_is_the_margin_either_side_of_the_total_estimate(self) -> None:
         runs_and_results = [_history(model, [cost] * 4) for model, cost in (("a", 0.0015), ("b", 0.1), ("c", 1 / 3))]
         estimate = compute_estimate_cost(
             [run for run, _ in runs_and_results],
@@ -188,17 +211,59 @@ class TestTheBandBracketsItsOwnEstimate:
             profile=PROFILE,
         )
 
-        assert estimate.total_interval_low is not None and estimate.total_interval_high is not None
-        assert estimate.total_interval_low == estimate.total_estimated_cost == estimate.total_interval_high
+        total, low, high = estimate.total_estimated_cost, estimate.total_interval_low, estimate.total_interval_high
+        assert total is not None and low is not None and high is not None
+        assert low < total < high
+        assert low == pytest.approx(total * (1 - COST_BAND_SAFETY_MARGIN), rel=1e-12)
+        assert high == pytest.approx(total * (1 + COST_BAND_SAFETY_MARGIN), rel=1e-12)
 
-    def test_a_history_that_never_varied_says_its_band_is_a_spread_of_none_seen(self) -> None:
+    def test_a_history_that_never_varied_says_its_band_is_a_safety_margin_not_a_measurement(self) -> None:
         cell = _cell_of([0.0015] * 3, n_test_cases=3)
 
         assert cell.band_basis is not None
         assert cell.band_basis.startswith(
-            "No spread in 3 past observations: each cost $0.0015, so the band has no width"
+            "No spread in 3 past observations: each cost $0.0015, so no margin of error can be computed from them, "
+            f"and the band is a {COST_BAND_SAFETY_MARGIN:.0%} safety margin either side of the estimate; "
+            "a sweep whose cost varies by more lands outside it."
         )
-        assert "a sweep whose cost varies at all lands outside it" in cell.band_basis
+
+    @pytest.mark.parametrize(
+        ("history", "n_test_cases", "k_runs", "band"),
+        [
+            pytest.param([0.10, 0.20, 0.30], 4, 1, (0.130251518983799, 13.066686453423454), id="lognormal fit"),
+            pytest.param([0.18, 0.20, 0.22], 5, 2, (1.5918604844164332, 2.9111365454593385), id="close lognormal fit"),
+            pytest.param(
+                [0.0015, 0.0015, 0.0015 * (1 + 1e-8)],
+                3,
+                1,
+                (0.004499999923867831, 0.004500000106132172),
+                id="a spread just past rounding",
+            ),
+            pytest.param([0.0, 1.0, 1.1, 1.2, 0.9], 50, 1, (10.569709400771444, 73.43029059922857), id="normal theory"),
+            pytest.param([0.001] * 19 + [0.1], 20, 5, (0.0, 1.7299325231203468), id="envelope, high outlier"),
+            pytest.param(
+                [1.0] * 99 + [1e-6], 100, 1, (96.19389728248241, 433.1945222405597), id="envelope, low outlier"
+            ),
+        ],
+    )
+    def test_a_history_with_any_spread_keeps_the_band_its_fit_computes(
+        self, history: list[float], n_test_cases: int, k_runs: int, band: tuple[float, float]
+    ) -> None:
+        """The margin is only for a history with no spread: these ends are the ones computed before it existed.
+
+        Recorded on the change's parent; held to a trillionth rather than to the bit, since one platform's ``exp``
+        and ``log`` round the low outlier's lower end an ulp apart from another's; the safety margin is billions of
+        times wider than that. Where the band is the lognormal fit's own, it is that fit's ends to the bit.
+        """
+        cell = _cell_of(history, n_test_cases=n_test_cases, k_runs=k_runs)
+
+        predicted = cell.predicted
+        assert predicted is not None
+        assert (predicted.interval_low, predicted.interval_high) == pytest.approx(band, rel=1e-12, abs=0.0)
+        assert cell.band_basis is not None and "safety margin" not in cell.band_basis
+        if cell.band_basis.startswith("95% prediction band for the sweep's total from a lognormal fit"):
+            fit = lognormal_sum_prediction_band(history, n_test_cases * k_runs)
+            assert (predicted.interval_low, predicted.interval_high) == fit
 
     def test_a_high_outlier_the_log_scale_fit_discounts_never_pulls_the_upper_end_to_the_estimate(self) -> None:
         """One runaway result among 19 cheap ones: the fit's upper end sits 15% under the mean's prediction."""

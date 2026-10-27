@@ -13,10 +13,13 @@ building the arm's `ArmPrice` when every priced past result of the arm cost the 
 arm, three results at $0.0015 each). The cost band (`compute_estimate_cost`) read that history on the log scale, whose
 ends are `exp` of a mean of logs and round away from the arithmetic mean the central estimate is drawn from: both ends
 landed an ulp off the centre, here below it. The band now brackets its estimate, and never moves an end onto it by
-more than rounding. A history whose costs are all equal, or apart by rounding alone, has a band of no width at exactly
-the estimate (each cell's and the total's), and its `band_basis` says no spread was seen and that a sweep varying at
-all lands outside it. A log-scale end that misses the estimate by rounding alone (within a billionth of it) is set to
-it. A log-scale band that misses it by more, where the lognormal fit contradicts the history's mean (one outlier among
+more than rounding. A history whose costs are all equal, or apart by rounding alone (within a billionth), gives no
+margin of error to compute, so its band is a 3% safety margin either side of the estimate (each cell's, and so the
+total's): the arm's predicted price, the figure a launch holds to its cap, is 3% above the estimate, and its low end
+3% below, never below $0. Its `band_basis` says so: "No spread in N past observations: each cost $X, so no margin of
+error can be computed from them, and the band is a 3% safety margin either side of the estimate". A history with any
+spread keeps the band its fit computes, however narrow. A log-scale end that misses the estimate by rounding alone
+(within a billionth of it) is set to it. A log-scale band that misses it by more, where the lognormal fit contradicts the history's mean (one outlier among
 near-equal costs), becomes the outer envelope of that band and the normal-theory band around the mean; its
 `band_basis` calls it an at-least-95% band, wider than either fit's because neither can be trusted alone, names the
 end the fit put where, and says why a lower end of $0 is $0. The upper end a launch is capped at is never the bare
