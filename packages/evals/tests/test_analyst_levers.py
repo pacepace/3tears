@@ -6,12 +6,17 @@ Contracts held here (``threetears.evals.analysis.report.figure_keys``'s lever fa
 - **the pairs**: every effect a listing carries is between two arms whose settings, a setting an arm leaves out read
   as the control's, differ in the listed setting alone; every such pair holding a mean on the measure is listed once,
   overall and within a place;
-- **the figures**: an effect is the second arm's mean minus the first's, read off the input's own figures; its interval
-  is recovered from the two arms' own intervals (``ci``, or the mean give or take ``half_width``) by the formula the
-  design note states, computed here; with either arm stating none there is no interval, and its key is unstated;
+- **the figures**: an effect, its interval, level and basis are what ``compare.<to>.<from>.<measure>.<where>`` reads
+  for the same two arms (one spread rule for both; compare's own keys are held to the input in
+  ``test_analyst_separation.py``), so an interval exists wherever compare's does; on r2, whose pass rates state only a
+  count, every effect's interval is the binomial one computed here from the input; with no spread there is no
+  interval, and its key is unstated;
 - **the interactions**: each pairs two effects of one move whose starting and ending arms differ in exactly one other
   setting (``across``); its difference is the second effect minus the first, its interval recovered from theirs; its
   verdict follows from the intervals (reverses, differs, within) or is ``no_interval``; a fixture holds a reversal;
+  every such pair of moves is listed once, however the arms are ordered (a move listed the other way round is read in
+  the first's direction);
+- **the order**: effects, then interactions; within each, the rows with an interval first;
 - **the refusals**: arms varying no setting, arms none of which differ in one setting alone (naming what a pair also
   differs in), a setting, place or measure the snapshot does not hold, and a measure no lever pair holds overall, each
   refused naming the call that answers instead;
@@ -24,7 +29,9 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from dataclasses import dataclass
 from functools import cache
+from statistics import NormalDist
 from typing import Any
 
 import pytest
@@ -68,17 +75,6 @@ def _stat(held: ReportInput, key: str, arm: str, place: str | None) -> Stat | No
     return held_at[0].get(arm, {}).get(key) if len(held_at) == 1 else None
 
 
-def _ends(stat: Stat) -> tuple[float, float, float] | None:
-    """A figure's mean and the interval it states on it, or None for no interval."""
-    assert stat.mean is not None
-    mean = float(stat.mean)
-    if stat.ci is not None:
-        return mean, float(stat.ci[0]), float(stat.ci[1])
-    if stat.half_width is not None:
-        return mean, mean - float(stat.half_width), mean + float(stat.half_width)
-    return None
-
-
 def _recovered(one: tuple[float, float, float], two: tuple[float, float, float]) -> tuple[float, float]:
     """The design note's interval on ``two - one``: low ``d - sqrt((b - l_b)^2 + (u_a - a)^2)``, high
     ``d + sqrt((u_b - b)^2 + (a - l_a)^2)``."""
@@ -87,14 +83,47 @@ def _recovered(one: tuple[float, float, float], two: tuple[float, float, float])
     return d - math.sqrt((b - low_b) ** 2 + (high_a - a) ** 2), d + math.sqrt((high_b - b) ** 2 + (a - low_a) ** 2)
 
 
-def _expected_effect(
-    held: ReportInput, key: str, first: str, second: str, place: str | None
-) -> tuple[float, tuple[float, float] | None]:
+def _where(held: ReportInput, place: str | None) -> str:
+    """A lever place as a separation key's ``<where>`` spells it."""
+    if place is None:
+        return "overall"
+    if any(task.id == place for task in held.tasks):
+        return f"task.{place}"
+    if any(stratum.id == place for stratum in held.strata):
+        return f"strata.{place}"
+    return f"cells.{place}"
+
+
+@dataclass(frozen=True)
+class _Expected:
+    """What the compare family reads for a move: its difference, interval, level and basis (None where unstated)."""
+
+    change: float
+    interval: tuple[float, float] | None
+    level: object
+    basis: object
+
+
+def _expected_effect(held: ReportInput, key: str, first: str, second: str, place: str | None, scale: str) -> _Expected:
+    """The second arm minus the first and its interval, as the compare family reads them, in the figure's own units
+    on ``scale`` (compare reads a share-scale rate in points)."""
     one, two = _stat(held, key, first, place), _stat(held, key, second, place)
     assert one is not None and two is not None and one.mean is not None and two.mean is not None
-    change = float(two.mean) - float(one.mean)
-    ends = _ends(one), _ends(two)
-    return change, (_recovered(ends[0], ends[1]) if ends[0] is not None and ends[1] is not None else None)
+    prefix = f"compare.{second}.{first}.{key}.{_where(held, place)}"
+    factor = 100.0 if scale == "share" else 1.0
+    difference = resolve(f"{prefix}.difference", held).value
+    assert isinstance(difference, float | int)
+    try:
+        interval = resolve(f"{prefix}.interval", held).value
+    except UnstatedFigure:
+        return _Expected(float(difference) / factor, None, None, None)
+    assert isinstance(interval, tuple)
+    try:
+        level = resolve(f"{prefix}.level", held).value
+    except UnstatedFigure:
+        level = None
+    ends = (interval[0] / factor, interval[1] / factor)
+    return _Expected(float(difference) / factor, ends, level, resolve(f"{prefix}.basis", held).value)
 
 
 def _all(held: ReportInput, key: str, place: str | None) -> LeverEffects:
@@ -165,17 +194,20 @@ def test_each_lever_pair_is_listed_once_its_effect_the_second_mean_minus_the_fir
     assert len(listed) == len(expected), "each pair once"
     for row, (setting, first, second) in zip(read.effects, listed, strict=True):
         assert _differ(settings, first, second) == [setting]
-        change, interval = _expected_effect(held, key, first, second, place)
-        assert row.figures[0].key.endswith(".effect") and row.figures[0].value == pytest.approx(change)
-        if interval is None:
+        expected = _expected_effect(held, key, first, second, place, row.figures[0].scale)
+        assert row.figures[0].key.endswith(".effect") and row.figures[0].value == pytest.approx(expected.change)
+        if expected.interval is None:
             assert len(row.figures) == 1
             with pytest.raises(UnstatedFigure):
                 resolve(row.figures[0].key.removesuffix(".effect") + ".interval", held)
         else:
             assert row.figures[1].key.endswith(".interval")
-            assert row.figures[1].value == pytest.approx(interval)
+            assert row.figures[1].value == pytest.approx(expected.interval)
             stem = row.figures[0].key.removesuffix(".effect")
-            assert (resolve(f"{stem}.low", held).value, resolve(f"{stem}.high", held).value) == pytest.approx(interval)
+            ends = (resolve(f"{stem}.low", held).value, resolve(f"{stem}.high", held).value)
+            assert ends == pytest.approx(expected.interval)
+            beside = {figure.key.rsplit(".", 1)[1]: figure.value for figure in row.figures[2:]}
+            assert beside == {"basis": expected.basis} | ({} if expected.level is None else {"level": expected.level})
 
 
 @pytest.mark.parametrize(("name", "key", "place"), READS)
@@ -201,14 +233,15 @@ def test_each_interaction_is_one_move_in_contexts_one_setting_apart_and_its_verd
         assert row.across != row.setting
         assert settings[a1][row.setting] == settings[a2][row.setting]
         assert settings[b1][row.setting] == settings[b2][row.setting]
-        one, two = _expected_effect(held, key, a1, b1, place), _expected_effect(held, key, a2, b2, place)
-        assert row.figures[0].value == pytest.approx(two[0] - one[0])
-        if one[1] is None or two[1] is None:
+        scale = row.first.scale
+        one, two = _expected_effect(held, key, a1, b1, place, scale), _expected_effect(held, key, a2, b2, place, scale)
+        assert row.figures[0].value == pytest.approx(two.change - one.change)
+        if one.interval is None or two.interval is None or one.level != two.level:
             assert row.verdict == "no_interval" and len(row.figures) == 1
             continue
-        low, high = _recovered((one[0], *one[1]), (two[0], *two[1]))
+        low, high = _recovered((one.change, *one.interval), (two.change, *two.interval))
         assert row.figures[1].value == pytest.approx((low, high))
-        sides = [1 if lo > 0 else -1 if hi < 0 else 0 for lo, hi in (one[1], two[1])]
+        sides = [1 if lo > 0 else -1 if hi < 0 else 0 for lo, hi in (one.interval, two.interval)]
         if sides[0] * sides[1] < 0:
             assert row.verdict == "reverses"
         else:
@@ -219,6 +252,123 @@ def test_a_fixture_holds_an_effect_that_reverses_across_another_setting() -> Non
     """The control for the verdicts: one prompt helps one model and hurts another, beyond their intervals."""
     verdicts = {row.verdict for name, key, place in READS for row in _all(INPUTS[name], key, place).interactions}
     assert {"reverses", "within", "no_interval"} <= verdicts
+
+
+def test_a_pass_rate_with_a_count_gives_every_effect_the_binomial_interval_compare_gives() -> None:
+    """r2's pass rates state a count and no interval. Every effect between two of its arms carries the interval the two
+    rates' binomial spreads give, combined as independent, as arms_compare reads them: computed here from the input."""
+    held = INPUTS["r2"]
+    read = _all(held, "pass_rate", None)
+    measure = held.measures["pass_rate"]
+    z = NormalDist().inv_cdf(0.975)
+    assert read.effects
+    for row in read.effects:
+        first, second = str(row.from_arm.value), str(row.to_arm.value)
+        assert len(row.figures) > 1, f"{row.figures[0].key}: no interval"
+        means, errors = [], []
+        for arm in (first, second):
+            mean, count = measure.per_arm[arm].mean, held.scoreboard[arm].usable or held.scoreboard[arm].cases
+            assert mean is not None and count is not None
+            means.append(float(mean))
+            errors.append(math.sqrt(mean / 100 * (1 - mean / 100) / count) * 100)
+        change = means[1] - means[0]
+        half = z * math.hypot(*errors)
+        assert row.figures[1].value == pytest.approx((change - half, change + half))
+
+
+def _moves(held: ReportInput, key: str, place: str | None) -> dict[str, list[frozenset[str]]]:
+    """Every lever pair holding a mean on the measure, by setting, unordered."""
+    settings = _settings(held)
+    found: dict[str, list[frozenset[str]]] = {}
+    for first in settings:
+        for second in settings:
+            differ = _differ(settings, first, second)
+            if first < second and len(differ) == 1:
+                one, two = _stat(held, key, first, place), _stat(held, key, second, place)
+                if one is not None and one.mean is not None and two is not None and two.mean is not None:
+                    found.setdefault(differ[0], []).append(frozenset((first, second)))
+    return found
+
+
+def _expected_crossings(held: ReportInput, key: str, place: str | None) -> set[frozenset[frozenset[str]]]:
+    """Every two moves of one setting between the same two values whose contexts differ in exactly one other setting,
+    unordered: computed from the arms' settings, whatever order the input lists the arms in."""
+    settings = _settings(held)
+    found: set[frozenset[frozenset[str]]] = set()
+    for setting, moves in _moves(held, key, place).items():
+        for one in moves:
+            for two in moves:
+                if one == two:
+                    continue
+                values = {repr(settings[arm][setting]) for arm in one}
+                if values != {repr(settings[arm][setting]) for arm in two}:
+                    continue
+                matched = [(a, b) for a in one for b in two if repr(settings[a][setting]) == repr(settings[b][setting])]
+                differs = [_differ(settings, a, b) for a, b in matched]
+                if len(differs) == 2 and differs[0] == differs[1] and len(differs[0]) == 1:
+                    found.add(frozenset((one, two)))
+    return found
+
+
+def _listed_crossings(read: LeverEffects, key: str, place: str | None) -> list[frozenset[frozenset[str]]]:
+    tail = f".{key}" + (f".{place}" if place is not None else "") + ".effect"
+    listed = []
+    for row in read.interactions:
+        moves = []
+        for figure in (row.first, row.second):
+            stem = figure.key.removeprefix(f"lever.{row.setting}.").removesuffix(tail)
+            moves.append(next(frozenset(pair) for pair in _arm_pairs(read, stem)))
+        listed.append(frozenset(moves))
+    return listed
+
+
+def _arm_pairs(read: LeverEffects, stem: str) -> list[tuple[str, str]]:
+    """The arm pair a stem ``<from>.<to>`` names, by the arms the listing's effects name."""
+    arms = {str(row.from_arm.value) for row in read.effects} | {str(row.to_arm.value) for row in read.effects}
+    return [(a, b) for a in arms for b in arms if f"{a}.{b}" == stem]
+
+
+def _reordered(held: ReportInput) -> ReportInput:
+    """An input with the arms of its last model listed in reverse, so a move on a setting of three or more values runs
+    one way in that model's context and the other way in the rest."""
+    last = held.arms[-1].settings.get("model")
+    reversed_arms = [arm for arm in held.arms if arm.settings.get("model") == last][::-1]
+    others = [arm for arm in held.arms if arm.settings.get("model") != last]
+    return held.model_copy(update={"arms": [*others, *reversed_arms]})
+
+
+@pytest.mark.parametrize("name", ["r2", "r2 reordered"])
+def test_every_two_moves_of_one_setting_one_context_apart_are_listed_once_however_the_arms_are_ordered(
+    name: str,
+) -> None:
+    held = _reordered(INPUTS["r2"]) if name == "r2 reordered" else INPUTS[name]
+    key = "pass_rate"
+    read = lever_effects(held, key, limit=10_000)
+    listed = _listed_crossings(read, key, None)
+    expected = _expected_crossings(held, key, None)
+    assert expected, "the control: the input holds moves one context apart"
+    assert len(listed) == len(set(listed)), "each once"
+    assert set(listed) == expected
+
+
+def _one_arm_uncounted(held: ReportInput) -> ReportInput:
+    """r2 with its first arm's scoreboard gone: that arm's pass rate rests on no count, so its effects have no
+    interval while the rest do."""
+    board = {arm: row for arm, row in held.scoreboard.items() if arm != held.arms[0].id}
+    return held.model_copy(update={"scoreboard": board})
+
+
+def test_rows_with_an_interval_lead_effects_and_interactions_alike() -> None:
+    held = _one_arm_uncounted(INPUTS["r2"])
+    read = lever_effects(held, "pass_rate", limit=10_000)
+    for rows in (read.effects, read.interactions):
+        has = [len(row.figures) > 1 for row in rows]
+        assert True in has and False in has, "the control: some rows have an interval and some do not"
+        assert has == sorted(has, reverse=True), "every row with an interval before every row without"
+    for name, key, place in READS:
+        for rows in (_all(INPUTS[name], key, place).effects, _all(INPUTS[name], key, place).interactions):
+            has = [len(row.figures) > 1 for row in rows]
+            assert has == sorted(has, reverse=True), (name, key, place)
 
 
 def test_every_setting_the_arms_vary_is_listed_with_its_values_on_every_page() -> None:

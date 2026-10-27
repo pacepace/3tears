@@ -65,7 +65,7 @@ One tool, `evals_analyst`; each call is `{"action": "<name>", ...}` and, but for
 
 **Help.** `action='help'` lists the actions; `topic='<action>'` gives one's parameters and an example; `topic='figure_keys'` the figure-key grammar's rules, filters and path groups, and `topic='figure_keys.<group>'` a group's forms. **Paging.** Every result that grows with the campaign is paged, the overview included, each page sized to one result. A page with more ends with `next: action=…, offset=N`: send that call. **Refusals** end with `recovery: {…}` (the parameters at fault, those accepted, an example, valid values): build the next call from it.
 
-**Not available yet:** `render_report`, `settle` (cases needed to separate a reading), `confound_check`: log a `capability_gap` and say it in words. Exemplars are files (`exemplars/INDEX.md`).
+**Not available yet:** `render_report`, `confound_check`: log a `capability_gap` and say it in words. Exemplars are files (`exemplars/INDEX.md`).
 
 **The editor** has the same tool without the freeze and blocks.
 

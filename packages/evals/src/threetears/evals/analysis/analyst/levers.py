@@ -10,28 +10,40 @@ the control's value, the input's own rule; with none, it is unstated, and agrees
 setting *varies* when the arms hold more than one value of it. Two arms are a *lever pair* for a setting when their
 settings differ in it and agree on every other (:func:`~threetears.evals.analysis.report.figure_keys.lever_of`).
 
-**An effect** is the second arm's mean on a measure or judged dimension minus the first's: overall (the measure's
-by-arm figure, the lead aspect's), or within one task, stratum or target-matrix cell. It is signed as the measure
-reads; ``higher_is_better`` says which way is better. Every lever pair is listed once, ordered from the arm holding the
+**An effect** is the second arm minus the first on a measure or judged dimension: overall (the measure's by-arm
+figure, the lead aspect's), or within one task, stratum or target-matrix cell. It is signed as the measure reads;
+``higher_is_better`` says which way is better. Every lever pair is listed once, ordered from the arm holding the
 control's value where one does, else in the input's arm order; any lever pair is a key, either way round
 (``lever.<setting>.<from>.<to>.<measure>[.<place>].effect``).
 
-**Its interval** is recovered from the two arms' own intervals on their means (``ci``, or the mean give or take
-``half_width``), at their level, by the method of variance estimates recovery (MOVER; Zou and Donner, 2008): for
-means ``a`` (interval ``l_a`` to ``u_a``) and ``b`` (``l_b`` to ``u_b``), the effect ``d = b - a`` runs from
-``d - sqrt((b - l_b)^2 + (u_a - a)^2)`` to ``d + sqrt((u_b - b)^2 + (a - l_a)^2)``. **It assumes the two figures are
+**Its interval** is the one the compare family reads for the same two arms at the same place
+(``compare.<to>.<from>.<measure>.<where>``; :mod:`~threetears.evals.analysis.analyst.compare`), so a lever and a
+comparison of the same arms never disagree on whether an interval exists or what it is: one spread rule for both
+(:mod:`~threetears.evals.analysis.separation`). Overall, where a contrast states one of the two arms against the other
+(the control) on the lead aspect, the effect is that paired estimate, its difference and its interval at its family's
+level. Otherwise the effect is the two means' difference, and its interval combines the two arms' own spreads as
+independent samples: each arm's standard error is read from its stated interval or half-width at the stated level,
+its standard error, or, for a pass/fail rate with a count, its binomial spread. **That assumes the two figures are
 independent.** Where the arms ran the same cases their figures move together and the paired interval would be
-narrower, so this one is the conservative, wider one. With either arm stating no interval the effect is a point
-difference: descriptive, with no interval and no test. Nothing here is a significance test, and no interval is made
-up: an end comes from intervals the input states, or there is none.
+narrower, so this one is the conservative, wider one. With no spread to read for either arm the effect is a point
+difference: descriptive, with no interval and no test. Every effect's ``basis`` says which it is, and its ``level``
+the interval's level. Nothing here is a significance test.
 
-**An interaction** compares the same move (the same setting, from the same value to the same value) made in two
-contexts that differ in exactly one other setting: the second move's effect minus the first's (``difference``), with
-the interval recovered the same way from the two effects' intervals (four distinct arms, read as independent). Its
-verdict: ``reverses`` (both effects' intervals clear zero, on opposite sides), ``differs`` (the difference's interval
-clears zero: the effect's size changes beyond its intervals), ``within`` (the difference's interval holds zero), or
-``no_interval`` (an effect has none, so only the point estimates can be compared, and are). A setting whose effect
-reverses or differs across another is not one effect: report it per level of the other setting.
+**An interaction** compares the same move (the same setting, between the same two values) made in two contexts that
+differ in exactly one other setting: the second move's effect minus the first's (``difference``). Two moves between
+the same two values are the same move whichever way each was listed; the second is read in the first's direction
+(from the first's starting value), so an interaction is found however the arms are ordered. Its interval is recovered
+from the two effects' intervals by the method of variance estimates recovery (MOVER; Zou and Donner, 2008), four
+distinct arms read as independent: for effects ``a`` (interval ``l_a`` to ``u_a``) and ``b`` (``l_b`` to ``u_b``),
+the difference ``d = b - a`` runs from ``d - sqrt((b - l_b)^2 + (u_a - a)^2)`` to ``d + sqrt((u_b - b)^2 +
+(a - l_a)^2)``, at the two effects' common level (two intervals at different levels do not combine, and give none).
+Its verdict: ``reverses`` (both effects' intervals clear zero, on opposite sides), ``differs`` (the difference's
+interval clears zero: the effect's size changes beyond its intervals), ``within`` (the difference's interval holds
+zero), or ``no_interval`` (an effect has none, so only the point estimates can be compared, and are). A setting whose
+effect reverses or differs across another is not one effect: report it per level of the other setting.
+
+**Order.** Effects come first, then interactions; within each, the rows with an interval lead (they say the most), in
+the order above, and the rows with none follow.
 
 **What it refuses**, each with the call that answers instead: a measure, place or setting the snapshot does not hold;
 a snapshot whose arms vary no setting; and one where no two arms differ in exactly one setting, since every pair that
@@ -66,11 +78,13 @@ LeverVerdict = Literal["reverses", "differs", "within", "no_interval"]
 
 #: What every effect and interaction rests on, as the result states it.
 _ASSUMPTION = (
-    "Each effect is the second arm's mean minus the first's, between two arms whose settings differ in one setting "
-    "alone. Its interval is recovered from the two arms' own intervals as if their figures were independent (MOVER), "
-    "at their level: conservative where the arms ran the same cases. An interaction's interval is recovered the same "
-    "way from its two effects'. With either side stating no interval there is none: a point difference, descriptive, "
-    "with no test."
+    "Each effect is the second arm minus the first, between two arms whose settings differ in one setting alone, read "
+    "as arms_compare reads the same two arms: paired where a contrast pairs them overall, else the two means' "
+    "difference with the two arms' own spreads (a stated interval, half-width or standard error, or a pass/fail rate's "
+    "binomial spread from its count) combined as if independent, which is conservative where the arms ran the same "
+    "cases; each effect's basis and level say which. An interaction's interval is recovered from its two effects' as "
+    "if independent (MOVER), at their common level. With no spread to read there is no interval: a point difference, "
+    "descriptive, with no test. Rows with an interval come first."
 )
 
 #: What reads each arm's settings and figures, for a refusal's remedy.
@@ -107,7 +121,8 @@ class EffectRow(_Lever):
     from_value: CitedFigure | None = Field(description="The setting's value where the move starts.")
     to_value: CitedFigure | None = Field(description="Its value where it ends.")
     figures: list[CitedFigure] = Field(
-        description="The effect (`effect`: to's mean minus from's) and its interval, where both arms state one."
+        description="The effect (`effect`: to minus from), then, where a spread reads, its interval, its level and its "
+        "basis (paired or independent)."
     )
 
 
@@ -119,7 +134,8 @@ class InteractionRow(_Lever):
     first: CitedFigure = Field(description="The first move's effect.")
     second: CitedFigure = Field(description="The second move's effect, in the other context.")
     figures: list[CitedFigure] = Field(
-        description="The second effect minus the first (`difference`) and its interval, where both effects hold one."
+        description="The second effect minus the first (`difference`), then its interval and level, where both effects "
+        "hold one at one level."
     )
     verdict: LeverVerdict = Field(
         description="reverses: both effects clear zero on opposite sides; differs: the difference clears zero; "
@@ -132,7 +148,10 @@ class LeverEffects(_Lever):
 
     measure: str = Field(description="The measure or judged dimension read, by key.")
     place: str | None = Field(description="The task, stratum or cell it is read within; None for overall.")
-    level: str | None = Field(description="The confidence level of the arms' intervals, and so of every interval here.")
+    level: str | None = Field(
+        description="The level the measure states its own intervals at; each effect's interval states its own level "
+        "beside it (a pairing contrast's family level, else this, else 95%)."
+    )
     higher_is_better: bool | None = Field(description="Which way the measure is better, where it says.")
     assumption: str = Field(description="What every effect and interval here rests on.")
     settings: list[SettingRow] = Field(description="Every setting the arms vary, on every page.")
@@ -234,6 +253,17 @@ def _stem(setting: str, first: str, second: str, measure: str, place: str | None
 _Move = tuple[str, str, str]
 
 
+def _move_stem(move: _Move, measure: str, place: str | None) -> str:
+    setting, first, second = move
+    return _stem(setting, first, second, measure, place)
+
+
+def _crossing_stem(crossed: tuple[_Move, _Move, str], measure: str, place: str | None) -> str:
+    """An interaction's key stem: the first move's, then ``vs.<from>.<to>`` of the second."""
+    one, two, _across = crossed
+    return f"{_move_stem(one, measure, place)}.vs.{two[1]}.{two[2]}"
+
+
 def _holds_mean(report_input: ReportInput, measure: str, arm: str, place: str | None) -> bool:
     """Whether an arm holds a mean on the measure, overall or within the place."""
     if place is None:
@@ -259,16 +289,29 @@ def _effect_row(
     """One lever pair's effect, and its interval where both arms state one."""
     setting, first, second = move
     stem = _stem(setting, first, second, measure, place)
-    interval = cite_if(f"{stem}.interval", report_input)
-    effect = cite(f"{stem}.effect", report_input)
     return EffectRow(
         setting=setting,
         from_arm=cite(f"arm:{first}", report_input),
         to_arm=cite(f"arm:{second}", report_input),
         from_value=_value_figure(report_input, settings, first, setting),
         to_value=_value_figure(report_input, settings, second, setting),
-        figures=[effect] if interval is None else [effect, interval],
+        figures=_with_interval(report_input, stem, "effect", ("level", "basis")),
     )
+
+
+def _with_interval(report_input: ReportInput, stem: str, field: str, beside: Sequence[str]) -> list[CitedFigure]:
+    """A key's point figure, then its interval and the figures beside it, where an interval reads."""
+    point = cite(f"{stem}.{field}", report_input)
+    interval = cite_if(f"{stem}.interval", report_input)
+    if interval is None:
+        return [point]
+    found = [cite_if(f"{stem}.{other}", report_input) for other in beside]
+    return [point, interval, *(figure for figure in found if figure is not None)]
+
+
+def _has_interval(report_input: ReportInput, stem: str) -> bool:
+    """Whether a lever or interaction key reads an interval."""
+    return cite_if(f"{stem}.interval", report_input) is not None
 
 
 def _clears(interval: CitedFigure | None) -> int:
@@ -290,8 +333,9 @@ def _verdict(first: EffectRow, second: EffectRow, difference: CitedFigure | None
 def _crossed(
     settings: Mapping[str, Mapping[str, SettingValue]], moves: Sequence[_Move]
 ) -> list[tuple[_Move, _Move, str]]:
-    """Every two moves of one setting, from one value to one value, whose contexts differ in exactly one other
-    setting, with that setting: in the moves' order."""
+    """Every two moves of one setting between the same two values whose contexts differ in exactly one other setting,
+    with that setting: in the moves' order, the second read in the first's direction (flipped where it was listed the
+    other way round), so the arms' order never hides one."""
     found: list[tuple[_Move, _Move, str]] = []
     for index, one in enumerate(moves):
         setting, first, second = one
@@ -299,12 +343,17 @@ def _crossed(
             if two[0] != setting:
                 continue
             start, end = two[1], two[2]
+            if (
+                settings[first][setting] == settings[end][setting]
+                and settings[second][setting] == settings[start][setting]
+            ):
+                start, end = end, start
             same = settings[first][setting] == settings[start][setting] and (
                 settings[second][setting] == settings[end][setting]
             )
             across = lever_of(settings, first, start)
             if same and across not in (None, setting) and lever_of(settings, second, end) == across:
-                found.append((one, two, str(across)))
+                found.append((one, (setting, start, end), str(across)))
     return found
 
 
@@ -318,16 +367,15 @@ def _interaction_row(
     """Two effects of one move in contexts one other setting apart: the second minus the first, and the verdict."""
     one, two, across = crossed
     first, second = (_effect_row(report_input, settings, move, measure, place) for move in (one, two))
-    stem = f"{_stem(*one, measure, place)}.vs.{two[1]}.{two[2]}"
-    difference = cite(f"{stem}.difference", report_input)
-    interval = cite_if(f"{stem}.interval", report_input)
+    stem = _crossing_stem(crossed, measure, place)
+    figures = _with_interval(report_input, stem, "difference", ("level",))
     return InteractionRow(
         setting=one[0],
         across=across,
         first=first.figures[0],
         second=second.figures[0],
-        figures=[difference] if interval is None else [difference, interval],
-        verdict=_verdict(first, second, interval),
+        figures=figures,
+        verdict=_verdict(first, second, figures[1] if len(figures) > 1 else None),
     )
 
 
@@ -411,6 +459,8 @@ def lever_effects(
             parameters=("place_filter",) if place_filter is not None else ("measure_key",),
         )
     crossed = _crossed(settings, moves)
+    moves.sort(key=lambda move: not _has_interval(report_input, _move_stem(move, measure_key, place_filter)))
+    crossed.sort(key=lambda pair: not _has_interval(report_input, _crossing_stem(pair, measure_key, place_filter)))
     total = len(moves) + len(crossed)
     end = offset + limit
     shown_moves = moves[offset:end]

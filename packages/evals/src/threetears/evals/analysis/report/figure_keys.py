@@ -33,8 +33,9 @@ fields read the same at the declared ``meta.volume_per_month``. All are derived 
 spread on a figure, ``compare.<arm>.<arm>.<measure>.<where>.*`` the difference between two arms with its interval (a
 contrast's own where one pairs them, else independent), and ``settle.*`` the cases a design needs to separate an arm
 from a declared criterion's threshold, a hypothetical line (``settle.hypothetical.<line>.``, the line a number in the
-key), or another arm (:mod:`~threetears.evals.analysis.separation`). Derived, read off stated spreads: a normal
-approximation, never a test the pipeline ran.
+key), or another arm (:mod:`~threetears.evals.analysis.separation`): one-sided against a line, with the two-sided
+size beside it, and two-sided between arms, each ``level`` a text that says which. Derived, read off stated spreads: a
+normal approximation, never a test the pipeline ran.
 
 **A figure held on more than one aspect is named by its aspect.** Every figure that sits on an aspect has an
 ``aspects.<aspect>.`` form. Where the input holds a contrast's arm and measure, a stratum id or a contrast family on
@@ -363,6 +364,12 @@ def _is_lead(report_input: ReportInput, aspect_id: str) -> bool:
     asked = [aspect.id for aspect in report_input.aspects if aspect.asked]
     lead = asked[0] if asked else next((aspect.id for aspect in report_input.aspects), None)
     return aspect_id == lead
+
+
+def _on_lead(report_input: ReportInput, contrast: Contrast) -> bool:
+    """Whether a contrast is read on the lead aspect, the one an arm's overall figures (the by-arm maps) belong to: it
+    names that aspect, or none. A contrast on another aspect pairs another aspect's figures, never the overall ones."""
+    return contrast.aspect is None or _is_lead(report_input, contrast.aspect)
 
 
 def _held_apart(
@@ -1752,11 +1759,13 @@ def _gain_table(report_input: ReportInput, key: str) -> Measure | Judged:
 
 
 def _gain_contrasts(report_input: ReportInput, key: str, control: str) -> list[Contrast]:
-    """The contrasts that state a candidate against the control on the axis, with their difference."""
+    """The contrasts that state a candidate against the control on the axis, with their difference, on the lead aspect
+    the axis's own figures belong to (:func:`_on_lead`)."""
     return [
         contrast
         for contrast in report_input.contrasts
         if contrast.measure == key
+        and _on_lead(report_input, contrast)
         and contrast.delta is not None
         and contrast.arm != control
         and contrast.control in (None, control)
@@ -1784,8 +1793,8 @@ def gain_axis(report_input: ReportInput, key: str) -> GainAxis:
     """A measure or judged dimension as a trade's gain axis: which way is better, and where it places each arm.
 
     The axis reads its arms' **contrasts** against the control when the input has a control and every other arm
-    holding a figure on the axis holds exactly one contrast on it that states its difference: the paired estimate,
-    which the contrast's interval belongs to. Otherwise it reads each arm's **overall mean**, which carries no paired
+    holding a figure on the axis holds exactly one contrast on it that states its difference, on the lead aspect whose
+    figures the arms' own means are: the paired estimate, which the contrast's interval belongs to. Otherwise it reads each arm's **overall mean**, which carries no paired
     interval; and where no arm states an overall mean, each arm's figures **pooled** over the slices holding them
     (:func:`pooled_figures`). A judged dimension is read higher is better.
 
@@ -2651,9 +2660,10 @@ def _named_reading_arms(report_input: ReportInput, prior: tuple[str, ...]) -> li
 #: Where a separation key reads an arm's own figure, rather than one within a slice.
 _OVERALL = "overall"
 
-#: What an arm's spread on a figure reads: its mean, its standard error, the spread of one case, the count it rests on,
-#: the level a result read from it is stated at, and what the standard error was read from.
-_SPREAD_FIELDS = ("mean", "se", "per_case", "n", "level", "basis")
+#: What an arm's spread on a figure reads: its mean, its standard error, the spread of one case, the count it rests on
+#: and what that count counts (cases, trials or observations), the level a result read from it is stated at, and what
+#: the standard error was read from.
+_SPREAD_FIELDS = ("mean", "se", "per_case", "n", "counts", "level", "basis")
 
 #: What two arms' difference reads: the first minus the second, its interval, the interval's ends and half-width, its
 #: level, and whether it is the paired estimate a contrast states or two independent arms' spreads combined.
@@ -2661,12 +2671,22 @@ _COMPARE_FIELDS = ("difference", "interval", "low", "high", "half_width", "level
 
 #: What settling two arms apart reads: their difference, the cases each needs for an interval centred on it to clear
 #: zero (``cases_needed``: half such designs clear; ``cases_needed_80``: four in five), how often a fresh run of today's
-#: size reads the other arm ahead, and the two-sided level.
+#: size reads the other arm ahead, and the level, its sidedness (two-sided) in its words.
 _SETTLE_PAIR_FIELDS = ("difference", "cases_needed", "cases_needed_80", "wrong_side", "level")
 
-#: What settling an arm against a line reads: its distance from the line toward passing, the cases needed (as for two
-#: arms, one-sided), how often a fresh run of today's size lands on the other side, and the one-sided level.
-_SETTLE_LINE_FIELDS = ("distance", "cases_needed", "cases_needed_80", "wrong_side", "level")
+#: What settling an arm against a line reads: its distance from the line toward passing (negative where today's figure
+#: misses), the cases a one-sided bound needs to sit wholly on today's side of the line, the cases the two-sided
+#: interval a page prints needs for the same, how often a fresh run of today's size lands on the other side, and the
+#: level, its sidedness (one-sided) in its words.
+_SETTLE_LINE_FIELDS = (
+    "distance",
+    "cases_needed",
+    "cases_needed_80",
+    "cases_needed_two_sided",
+    "cases_needed_two_sided_80",
+    "wrong_side",
+    "level",
+)
 
 #: A hypothetical line's fields: the line itself, then what settling an arm against it reads.
 _HYPOTHETICAL_FIELDS = ("line", *_SETTLE_LINE_FIELDS)
@@ -2709,23 +2729,57 @@ def _separation_places(report_input: ReportInput) -> list[_Place]:
     ]
 
 
-def _stat_where(report_input: ReportInput, arm_id: str, key: str, where: str) -> tuple[Stat, float | None] | None:
-    """An arm's statistic on a measure or judged dimension at ``where``, with the count it rests on (its own ``n``,
-    else its ``n_cases``, else the place's: the slice's cases, or overall the arm's usable trials, else its cases);
-    None where the input states no mean there."""
+#: What a count a spread rests on counts: distinct cases, trials (a case run again counts again), or observations (a
+#: statistic's own ``n``, where nothing says whether it counts cases or trials).
+_Counted = Literal["cases", "trials", "observations"]
+
+
+def _separation_place(report_input: ReportInput, where: str) -> _Place | None:
+    """The one slice a separation key's ``<where>`` names (:func:`_separation_places`), found by its kind and id alone,
+    since every key reads it once per arm and place; None where it names none, or a cell or stratum held twice."""
+    kind, _dot, named = where.partition(".")
+    found: list[_Place] = []
+    if kind == "task":
+        found = [_Place(where, task.per_arm, task.n_cases) for task in report_input.tasks if task.id == named]
+    elif kind == "cells":
+        cells = report_input.cells.values()
+        found = [_Place(where, cell.per_arm, cell.n_cases) for cell in cells if _cell_spelling(cell) == named]
+    elif kind == "strata":
+        strata = report_input.strata
+        found = [_Place(where, stratum.per_arm, stratum.n_cases) for stratum in strata if stratum.id == named]
+    return found[0] if len(found) == 1 else None
+
+
+def _stat_where(
+    report_input: ReportInput, arm_id: str, key: str, where: str
+) -> tuple[Stat, float | None, _Counted | None] | None:
+    """An arm's statistic on a measure or judged dimension at ``where``, with the count it rests on and what that count
+    counts: its own ``n`` (observations; cases where its ``n_cases`` equals it, trials where its ``n_cases`` is
+    fewer), else its ``n_cases`` (cases), else the place's: the slice's cases, or overall the arm's usable trials,
+    else its cases. None where the input states no mean there."""
+    fallback: tuple[int | None, _Counted | None] = (None, None)
     if where == _OVERALL:
         table = report_input.measures.get(key) or report_input.judged.get(key)
         stat = table.per_arm.get(arm_id) if table is not None else None
         board = report_input.scoreboard.get(arm_id)
-        fallback = None if board is None else board.usable if board.usable is not None else board.cases
+        if board is not None:
+            fallback = (board.usable, "trials") if board.usable is not None else (board.cases, "cases")
     else:
-        place = next((held for held in _separation_places(report_input) if held.where == where), None)
+        place = _separation_place(report_input, where)
         stat = place.per_arm.get(arm_id, {}).get(key) if place is not None else None
-        fallback = None if place is None else place.n_cases
+        fallback = (None, None) if place is None else (place.n_cases, "cases")
     if stat is None or stat.mean is None:
         return None
-    count = stat.n if stat.n is not None else stat.n_cases if stat.n_cases is not None else fallback
-    return stat, None if count is None else float(count)
+    count: int | None
+    counted: _Counted | None
+    if stat.n is not None:
+        count = stat.n
+        counted = "observations" if stat.n_cases is None else "cases" if stat.n <= stat.n_cases else "trials"
+    elif stat.n_cases is not None:
+        count, counted = stat.n_cases, "cases"
+    else:
+        count, counted = fallback
+    return stat, None if count is None else float(count), None if count is None else counted
 
 
 def _wheres(report_input: ReportInput, arms: Sequence[str], key: str) -> list[str]:
@@ -2764,13 +2818,15 @@ def _where_words(where: str) -> str:
     return "overall" if where == _OVERALL else f"in {where}"
 
 
-def _spread(report_input: ReportInput, arm_id: str, key: str, where: str, path: str) -> Spread:
-    """An arm's spread on a figure at ``where`` (:func:`~threetears.evals.analysis.separation.stat_spread`), refused as
-    unstated, with why, where the input gives none."""
+def _read_spread(report_input: ReportInput, arm_id: str, key: str, where: str) -> Spread:
+    """An arm's spread on a figure at ``where`` (:func:`~threetears.evals.analysis.separation.stat_spread`).
+
+    :raises NoSpread: The input gives none; its words are what a refusal says after the key.
+    """
     held = _stat_where(report_input, arm_id, key, where)
     if held is None:
-        raise _unstated(path, f"names {arm_id}'s mean on {key!r} {_where_words(where)}, which the input does not state")
-    stat, count = held
+        raise NoSpread(f"names {arm_id}'s mean on {key!r} {_where_words(where)}, which the input does not state")
+    stat, count, _counted = held
     try:
         return stat_spread(
             float(stat.mean) if stat.mean is not None else None,
@@ -2782,9 +2838,17 @@ def _spread(report_input: ReportInput, arm_id: str, key: str, where: str, path: 
             rate=_rate_of(report_input, key),
         )
     except NoSpread as none:
-        raise _unstated(
-            path, f"reads {arm_id}'s spread on {key!r} {_where_words(where)}, and the figure has none: {none}"
+        raise NoSpread(
+            f"reads {arm_id}'s spread on {key!r} {_where_words(where)}, and the figure has none: {none}"
         ) from none
+
+
+def _spread(report_input: ReportInput, arm_id: str, key: str, where: str, path: str) -> Spread:
+    """An arm's spread on a figure at ``where``, refused as unstated, with why, where the input gives none."""
+    try:
+        return _read_spread(report_input, arm_id, key, where)
+    except NoSpread as none:
+        raise _unstated(path, str(none)) from none
 
 
 def _apart(report_input: ReportInput, path: str, key: str, value: float, what: str, *, change: bool) -> Figure:
@@ -2816,6 +2880,12 @@ def _spread_figure(report_input: ReportInput, values: tuple[str, ...], path: str
         return _apart(report_input, path, key, value, f"the figure's {field}", change=False)
     if field == "n":
         return _number(path, spread.n, "the count the figure's spread rests on", "count")
+    if field == "counts":
+        held = _stat_where(report_input, arm_id, key, where)
+        counted = None if held is None else held[2]
+        if counted is None:
+            raise _unstated(path, "names what the figure's count counts, and it rests on no count")
+        return Figure(path=path, kind="text", value=counted)
     if field == "level":
         return _number(path, spread.level, "the level a result read from it is stated at", "share")
     return Figure(path=path, kind="text", value=_BASIS_WORDS[spread.basis])
@@ -2832,7 +2902,8 @@ def _family_level(report_input: ReportInput, contrast: Contrast) -> float | None
 
 def _paired(report_input: ReportInput, arm_id: str, other: str, key: str) -> Contrast | None:
     """The one contrast stating one of the two arms against the other (the control) on ``key``, with its difference
-    and interval: the paired estimate, which the compare family reads overall in place of the arms' own spreads."""
+    and interval, on the lead aspect whose figures ``overall`` reads (:func:`_on_lead`): the paired estimate, which the
+    compare family reads overall in place of the arms' own spreads."""
     control = _control(report_input)
     if control is None or control.id not in (arm_id, other):
         return None
@@ -2842,11 +2913,77 @@ def _paired(report_input: ReportInput, arm_id: str, other: str, key: str) -> Con
         for contrast in report_input.contrasts
         if contrast.arm == candidate
         and contrast.measure == key
+        and _on_lead(report_input, contrast)
         and contrast.control in (None, control.id)
         and contrast.delta is not None
         and contrast.interval is not None
     ]
     return held[0] if len(held) == 1 else None
+
+
+@dataclass(frozen=True)
+class _Difference:
+    """One arm minus another on a figure at one place, with its interval: the compare family's reading, which the lever
+    family reads too, so the two never disagree on whether an interval exists or what it is.
+
+    :ivar difference: The first minus the second, in the figure's own units: a pairing contrast's difference where one
+        pairs them, else the two means'.
+    :ivar low: The interval's low end, in the same units.
+    :ivar high: Its high end.
+    :ivar level: Its level, as a share; None where a contrast's interval states none.
+    :ivar basis: Paired or independent, and from what, in words.
+    """
+
+    difference: float
+    low: float
+    high: float
+    level: float | None
+    basis: str
+
+
+def _mean_difference(report_input: ReportInput, arm_id: str, other: str, key: str, where: str) -> float | None:
+    """The first arm's mean minus the second's at ``where``; None where either states none."""
+    means = [_stat_where(report_input, arm, key, where) for arm in (arm_id, other)]
+    if means[0] is None or means[1] is None or means[0][0].mean is None or means[1][0].mean is None:
+        return None
+    return float(means[0][0].mean) - float(means[1][0].mean)
+
+
+def _read_difference(report_input: ReportInput, arm_id: str, other: str, key: str, where: str) -> _Difference:
+    """The first arm minus the second on a figure at ``where``, with its interval: overall, the contrast pairing them
+    where one does (:func:`_paired`), else the two arms' own spreads combined as independent
+    (:func:`~threetears.evals.analysis.separation.independent_difference`).
+
+    :raises NoSpread: Neither a pairing contrast nor both arms' spreads give an interval; its words say why.
+    """
+    contrast = _paired(report_input, arm_id, other, key) if where == _OVERALL else None
+    if contrast is not None and contrast.delta is not None and contrast.interval is not None:
+        sign = 1.0 if contrast.arm == arm_id else -1.0
+        low, high = sorted((sign * float(contrast.interval[0]), sign * float(contrast.interval[1])))
+        return _Difference(
+            difference=sign * float(contrast.delta),
+            low=low,
+            high=high,
+            level=_family_level(report_input, contrast),
+            basis=(
+                f"paired: the contrast of {contrast.arm} against the control on {key!r}, its own interval, corrected "
+                "within its family"
+            ),
+        )
+    first = _read_spread(report_input, arm_id, key, where)
+    second = _read_spread(report_input, other, key, where)
+    difference, half = independent_difference(first, second, first.level)
+    return _Difference(
+        difference=difference,
+        low=difference - half,
+        high=difference + half,
+        level=first.level,
+        basis=(
+            f"independent: each arm's own spread ({_BASIS_WORDS[first.basis]}; {_BASIS_WORDS[second.basis]}), "
+            "combined as if the arms ran different cases, which reads wider than a paired interval where they ran the "
+            "same"
+        ),
+    )
 
 
 def _compare_figure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
@@ -2855,32 +2992,15 @@ def _compare_figure(report_input: ReportInput, values: tuple[str, ...], path: st
         raise _refuse(path, "compares an arm with itself; name two arms")
     contrast = _paired(report_input, arm_id, other, key) if where == _OVERALL else None
     if field == "difference" and contrast is None:
-        means = [_stat_where(report_input, arm, key, where) for arm in (arm_id, other)]
-        if means[0] is None or means[1] is None or means[0][0].mean is None or means[1][0].mean is None:
+        difference = _mean_difference(report_input, arm_id, other, key, where)
+        if difference is None:
             raise _unstated(path, f"names the two arms' means on {key!r} {_where_words(where)}, which one lacks")
-        difference = float(means[0][0].mean) - float(means[1][0].mean)
         return _apart(report_input, path, key, difference, "the two arms' difference", change=True)
-    level: float | None
-    if contrast is not None and contrast.delta is not None and contrast.interval is not None:
-        sign = 1.0 if contrast.arm == arm_id else -1.0
-        difference = sign * float(contrast.delta)
-        low, high = sorted((sign * float(contrast.interval[0]), sign * float(contrast.interval[1])))
-        level = _family_level(report_input, contrast)
-        basis = (
-            f"paired: the contrast of {contrast.arm} against the control on {key!r}, its own interval, corrected "
-            "within its family"
-        )
-    else:
-        first = _spread(report_input, arm_id, key, where, path)
-        second = _spread(report_input, other, key, where, path)
-        level = first.level
-        difference, half = independent_difference(first, second, level)
-        low, high = difference - half, difference + half
-        basis = (
-            f"independent: each arm's own spread ({_BASIS_WORDS[first.basis]}; {_BASIS_WORDS[second.basis]}), "
-            "combined as if the arms ran different cases, which reads wider than a paired interval where they ran the "
-            "same"
-        )
+    try:
+        read = _read_difference(report_input, arm_id, other, key, where)
+    except NoSpread as none:
+        raise _unstated(path, str(none)) from none
+    difference, low, high, level, basis = read.difference, read.low, read.high, read.level, read.basis
     if field == "basis":
         return Figure(path=path, kind="text", value=basis)
     if field == "level":
@@ -2913,7 +3033,7 @@ def _settle_pair_figure(report_input: ReportInput, values: tuple[str, ...], path
     if field == "difference":
         return _apart(report_input, path, key, difference, "the two arms' difference", change=True)
     if field == "level":
-        return _number(path, first.level, "the two-sided level", "share")
+        return _sided_level(path, first.level, 2)
     if field == "wrong_side":
         share = _settled(path, lambda: wrong_side_share(difference, math.hypot(first.se, second.se)))
         return _number(path, share, "how often a fresh run of today's size reads the other arm ahead", "share")
@@ -2925,6 +3045,13 @@ def _settle_pair_figure(report_input: ReportInput, values: tuple[str, ...], path
     return _number(path, cases, "the cases each arm needs", "count")
 
 
+def _sided_level(path: str, level: float, sided: Literal[1, 2]) -> Figure:
+    """A settle figure's level as words that carry its sidedness (``95% one-sided``), so no citation of it reads as the
+    two-sided intervals a page prints when it is not one."""
+    percent = format_number(level * 100)
+    return Figure(path=path, kind="text", value=f"{percent}% {'one-sided' if sided == 1 else 'two-sided'}")
+
+
 def _settle_line(
     report_input: ReportInput,
     path: str,
@@ -2934,20 +3061,23 @@ def _settle_line(
     higher_is_better: bool,
     field: str,
 ) -> Figure:
-    """What settling an arm's figure against a line reads, at ``field``: one-sided, toward passing."""
+    """What settling an arm's figure against a line reads, at ``field``: its distance toward passing, and the sizes at
+    which an interval centred on it sits wholly on today's side of the line (clearing it where today's figure passes,
+    confirming the miss where it fails), one-sided and, beside it, two-sided as a page prints its intervals."""
     distance = spread.mean - line if higher_is_better else line - spread.mean
     if field == "distance":
         return _apart(report_input, path, key, distance, "the figure's distance from the line", change=True)
     if field == "level":
-        return _number(path, spread.level, "the one-sided level", "share")
+        return _sided_level(path, spread.level, 1)
     if field == "wrong_side":
         share = _settled(path, lambda: wrong_side_share(distance, spread.se))
         return _number(path, share, "how often a fresh run of today's size lands on the other side", "share")
     per_case = spread.per_case
     if per_case is None:
         raise _unstated(path, "names the cases a design needs, which needs the count the figure rests on")
-    power = POWER if field == "cases_needed_80" else 0.5
-    cases = _settled(path, lambda: cases_to_separate(per_case, distance, spread.level, sided=1, power=power))
+    power = POWER if field.endswith("_80") else 0.5
+    sided: Literal[1, 2] = 2 if "two_sided" in field else 1
+    cases = _settled(path, lambda: cases_to_separate(per_case, distance, spread.level, sided=sided, power=power))
     return _number(path, cases, "the cases a design needs", "count")
 
 
@@ -3109,9 +3239,11 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         _Statistic(_SPREAD_FIELDS, "<field>"),
         what="an arm's spread on a measure or judged dimension, `overall` or within a slice (`task.<task>`, "
         "`cells.<row>.<column>`, `strata.<stratum>`): `se` the standard error of its mean and `per_case` one case's "
-        "spread, in points for a rate; `n` the count it rests on; `level` the level a result read from it is stated "
-        "at; `basis` what the standard error was read from (a stated interval or half-width at a stated level, a "
-        "standard error, or a pass/fail rate's binomial spread from its count)",
+        "spread, in points for a rate; `n` the count it rests on and `counts` what that count counts (`cases`; "
+        "`trials`, where a repeated case counts again; or `observations`, a statistic's own n that says neither); "
+        "`level` the level a result read from it is stated at; `basis` what the standard error was read from (a "
+        "stated interval or half-width at a stated level, a standard error, or a pass/fail rate's binomial spread "
+        "from its count)",
         resolve=_spread_figure,
         derived=True,
         derived_note=_SEPARATION_NOTE,
@@ -3139,10 +3271,11 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         _Ids("<measure>", _pair_keys),
         _Ids("<where>", _pair_wheres),
         _Statistic(_SETTLE_PAIR_FIELDS, "<field>"),
-        what="the cases each of two arms needs for an interval on their difference, centred on today's, to clear "
-        "zero at the two-sided level: `cases_needed` (half such designs clear if the truth equals today's "
-        "difference), `cases_needed_80` (four in five do); `wrong_side` how often a fresh run of today's size reads "
-        "the other arm ahead",
+        what="the cases each of two arms needs for a two-sided interval on their difference, centred on today's, to "
+        "clear zero: `cases_needed` (half such designs clear if the truth equals today's difference), "
+        "`cases_needed_80` (four in five do), each counting what the arms' spread counts (`spread.<arm>.<measure>."
+        "<where>.counts`: trials, not cases, on a repeated design); `wrong_side` how often a fresh run of today's size "
+        "reads the other arm ahead; `level` the level, with its sidedness (`95% two-sided`)",
         resolve=_settle_pair_figure,
         derived=True,
         derived_note=_SEPARATION_NOTE,
@@ -3155,10 +3288,14 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         _Ids("<arm>", _criterion_figure_arms),
         _Ids("<where>", _criterion_figure_wheres),
         _Statistic(_SETTLE_LINE_FIELDS, "<field>"),
-        what="an arm's mean against a declared criterion's threshold, where it reads it: `distance` toward passing, "
-        "the cases a design needs for a one-sided interval centred on today's figure to clear the line "
-        "(`cases_needed`: half such designs; `cases_needed_80`: four in five), and `wrong_side`, how often a fresh "
-        "run of today's size lands on the other side",
+        what="an arm's mean against a declared criterion's threshold, where it reads it: `distance` toward passing "
+        "(negative where today's figure misses); the cases a design needs for a one-sided bound centred on today's "
+        "figure to sit wholly on today's side of the line, clearing it where the figure passes and confirming the "
+        "miss where it misses (`cases_needed`: half such designs; `cases_needed_80`: four in five), and the same for "
+        "the two-sided interval a page prints (`cases_needed_two_sided`, `cases_needed_two_sided_80`), each "
+        "counting what the arm's spread counts (`spread.<arm>.<measure>.<where>.counts`: trials, not cases, on a "
+        "repeated design); `wrong_side`, how often a fresh run of today's size lands on the other side; `level` the "
+        "level, with its sidedness (`95% one-sided`)",
         resolve=_settle_criterion_figure,
         derived=True,
         derived_note=_SEPARATION_NOTE,
@@ -3183,12 +3320,12 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
 
 # --- lever effects: one setting moved between two arms that differ in it alone ------------------------------------
 
-#: A lever effect's fields: the second arm's mean on the measure minus the first's (``effect``), and the interval on it
-#: from the two arms' own intervals.
-_LEVER_FIELDS = ("effect", "interval", "low", "high")
+#: A lever effect's fields: the second arm on the measure minus the first (``effect``), the interval on it as the compare
+#: family reads the same two arms (its ends, its level), and whether that interval is paired or independent.
+_LEVER_FIELDS = ("effect", "interval", "low", "high", "level", "basis")
 
-#: An interaction's fields: the second move's effect minus the first's (``difference``), and the interval on it.
-_INTERACTION_FIELDS = ("difference", "interval", "low", "high")
+#: An interaction's fields: the second move's effect minus the first's (``difference``), the interval on it, its level.
+_INTERACTION_FIELDS = ("difference", "interval", "low", "high", "level")
 
 
 def arm_settings(report_input: ReportInput) -> dict[str, dict[str, SettingValue]]:
@@ -3274,25 +3411,42 @@ def _place_figures(report_input: ReportInput, place: str, path: str) -> Mapping[
     return held[0]
 
 
-def _lever_mean(
-    report_input: ReportInput, key: str, arm: str, place: str | None, path: str
-) -> tuple[float, tuple[float, float] | None]:
-    """One arm's mean on a measure, overall or within a place, and the interval its figure states on it (``ci``, or
-    the mean give or take ``half_width``); None for no interval."""
-    if place is None:
-        table = report_input.measures.get(key) or report_input.judged.get(key)
-        stat = table.per_arm.get(arm) if table is not None else None
-    else:
-        stat = _place_figures(report_input, place, path).get(arm, {}).get(key)
-    where = "" if place is None else f" in {place}"
-    if stat is None or stat.mean is None:
-        raise _unstated(path, f"names {arm}'s mean on {key}{where}, which the input does not state")
-    mean = float(stat.mean)
-    if stat.ci is not None:
-        return mean, (float(stat.ci[0]), float(stat.ci[1]))
-    if stat.half_width is not None:
-        return mean, (mean - float(stat.half_width), mean + float(stat.half_width))
-    return mean, None
+def _lever_where(report_input: ReportInput, place: str, path: str) -> str:
+    """A lever key's ``<place>`` as a separation key's ``<where>`` spells it: ``overall`` for none, else the task, the
+    stratum or the cell it names."""
+    if not place:
+        return _OVERALL
+    _place_figures(report_input, place, path)
+    if any(task.id == place for task in report_input.tasks):
+        return f"task.{place}"
+    if any(stratum.id == place for stratum in report_input.strata):
+        return f"strata.{place}"
+    return f"cells.{place}"
+
+
+@dataclass(frozen=True)
+class _Effect:
+    """A move's effect and, where one reads, the interval on it (:class:`_Difference`), or why none does."""
+
+    change: float
+    read: _Difference | None
+    why: str
+
+
+def _lever_effect(report_input: ReportInput, values: tuple[str, ...], path: str) -> _Effect:
+    """A move's effect, read as the compare family reads the arm it ends at against the arm it starts from (one spread
+    rule for both): ``values`` = (from, to, measure, place)."""
+    first, second, key, place = values
+    where = _lever_where(report_input, place, path)
+    try:
+        read = _read_difference(report_input, second, first, key, where)
+    except NoSpread as none:
+        change = _mean_difference(report_input, second, first, key, where)
+        if change is None:
+            words = "" if where == _OVERALL else f" in {place}"
+            raise _unstated(path, f"names {first}'s and {second}'s means on {key}{words}, which one lacks") from none
+        return _Effect(change, None, str(none))
+    return _Effect(read.difference, read, "")
 
 
 def _recovered(first: tuple[float, float, float], second: tuple[float, float, float]) -> tuple[float, float]:
@@ -3303,44 +3457,30 @@ def _recovered(first: tuple[float, float, float], second: tuple[float, float, fl
     return change - math.hypot(two - two_low, one_high - one), change + math.hypot(two_high - two, one - one_low)
 
 
-def _lever_effect(
-    report_input: ReportInput, values: tuple[str, ...], path: str
-) -> tuple[float, tuple[float, float] | None, str]:
-    """A move's effect, the interval on it, and why there is none: from ``values`` = (from, to, measure, place)."""
-    first, second, key, place = values
-    one, one_interval = _lever_mean(report_input, key, first, place or None, path)
-    two, two_interval = _lever_mean(report_input, key, second, place or None, path)
-    if one_interval is None or two_interval is None:
-        missing = first if one_interval is None else second
-        return two - one, None, f"{missing}'s figure on {key} states no interval"
-    return two - one, _recovered((one, *one_interval), (two, *two_interval)), ""
-
-
-def _lever_figure(
-    report_input: ReportInput,
-    key: str,
-    change: float,
-    interval: tuple[float, float] | None,
-    why: str,
-    field: str,
-    path: str,
-) -> Figure:
+def _lever_figure(report_input: ReportInput, key: str, effect: _Effect, field: str, path: str) -> Figure:
     scale, unit = _scale_of(report_input, key)
     if field in ("effect", "difference"):
-        return Figure(path=path, kind="number", value=change, scale=scale, unit=unit, change=True)
-    if interval is None:
-        raise _unstated(path, f"names an interval, which the input does not state: {why}")
+        return Figure(path=path, kind="number", value=effect.change, scale=scale, unit=unit, change=True)
+    read = effect.read
+    if read is None:
+        raise _unstated(path, f"names an interval, which none reads: {effect.why}")
+    if field == "basis":
+        return Figure(path=path, kind="text", value=read.basis)
+    if field == "level":
+        if read.level is None:
+            raise _unstated(path, "names the level of the contrast's interval, which the input does not state")
+        return _number(path, read.level, "the interval's level", "share")
     if field == "interval":
-        return Figure(path=path, kind="interval", value=interval, scale=scale, unit=unit, change=True)
-    end = interval[0] if field == "low" else interval[1]
+        return Figure(path=path, kind="interval", value=(read.low, read.high), scale=scale, unit=unit, change=True)
+    end = read.low if field == "low" else read.high
     return Figure(path=path, kind="number", value=end, scale=scale, unit=unit, change=True)
 
 
 def _lever(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     """``lever.<setting>.<from>.<to>.<measure>[.<place>].<field>``."""
     _setting_id, first, second, key, *place, field = values
-    change, interval, why = _lever_effect(report_input, (first, second, key, place[0] if place else ""), path)
-    return _lever_figure(report_input, key, change, interval, why, field, path)
+    effect = _lever_effect(report_input, (first, second, key, place[0] if place else ""), path)
+    return _lever_figure(report_input, key, effect, field, path)
 
 
 def _interaction_froms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
@@ -3375,12 +3515,21 @@ def _interaction(report_input: ReportInput, values: tuple[str, ...], path: str) 
     first's, and the interval on it from theirs."""
     _setting_id, first, second, key, *place, start, end, field = values
     where = place[0] if place else ""
-    one, one_interval, one_why = _lever_effect(report_input, (first, second, key, where), path)
-    two, two_interval, two_why = _lever_effect(report_input, (start, end, key, where), path)
-    if one_interval is None or two_interval is None:
-        return _lever_figure(report_input, key, two - one, None, one_why or two_why, field, path)
-    interval = _recovered((one, *one_interval), (two, *two_interval))
-    return _lever_figure(report_input, key, two - one, interval, "", field, path)
+    one = _lever_effect(report_input, (first, second, key, where), path)
+    two = _lever_effect(report_input, (start, end, key, where), path)
+    change = two.change - one.change
+    if one.read is None or two.read is None:
+        return _lever_figure(report_input, key, _Effect(change, None, one.why or two.why), field, path)
+    if one.read.level != two.read.level:
+        why = "its two effects' intervals are at different levels, which do not combine"
+        return _lever_figure(report_input, key, _Effect(change, None, why), field, path)
+    first_read, second_read = one.read, two.read
+    low, high = _recovered(
+        (first_read.difference, first_read.low, first_read.high),
+        (second_read.difference, second_read.low, second_read.high),
+    )
+    read = _Difference(change, low, high, first_read.level, "")
+    return _lever_figure(report_input, key, _Effect(change, read, ""), field, path)
 
 
 #: The slots every lever key begins with: the setting moved, the arm it moves from and the one it moves to (differing
@@ -3398,13 +3547,16 @@ _SECOND_MOVE = (_Word("vs"), _Ids("<from>", _interaction_froms), _Ids("<to>", _i
 _PLACE = _Ids("<place>", _lever_places)
 
 #: What the grammar says of a lever figure, in place of "descriptive, no interval".
-_LEVER_NOTE = "Derived: computed here from two arms' stated figures and their intervals, never a test the pipeline ran."
+_LEVER_NOTE = "Derived: computed here from two arms' stated figures and their spreads, never a test the pipeline ran."
 
 #: What every lever key's figures are: computed here, from two arms' figures the input states.
 _LEVER_BASIS = (
-    "Computed here: `interval` (its ends `low`, `high`) is recovered from the two figures' own intervals as if "
-    "independent (MOVER), so it is conservative where they share cases; with either figure stating none there is "
-    "no interval. levers_effects lists them"
+    "Computed here, as `compare.<to>.<from>.<measure>.<where>` reads the same two arms: an effect's `interval` (its "
+    "ends `low`, `high`, its `level`) is a contrast's own where one pairs the two arms overall, else the two arms' own "
+    "spreads combined as independent (a stated interval, half-width or standard error, or a pass/fail rate's binomial "
+    "spread from its count), and its `basis` says which; an interaction's is recovered from its two effects' intervals "
+    "as if independent (MOVER), at their common level; with no spread to read there is no interval. levers_effects "
+    "lists them"
 )
 
 
@@ -3934,8 +4086,9 @@ _FAMILIES: tuple[_Family, ...] = (
     _family_of(
         *_LEVER,
         _Statistic(_LEVER_FIELDS, "<field>"),
-        what="a lever's effect: one setting moved between two arms whose settings differ in it alone, `<to>`'s mean "
-        "on a measure or judged dimension minus `<from>`'s (`effect`), overall. " + _LEVER_BASIS,
+        what="a lever's effect: one setting moved between two arms whose settings differ in it alone, `<to>` minus "
+        "`<from>` on a measure or judged dimension (`effect`: a pairing contrast's difference, else the two means'), "
+        "overall. " + _LEVER_BASIS,
         resolve=_lever,
         derived=True,
         derived_note=_LEVER_NOTE,

@@ -31,13 +31,26 @@ there. Where the snapshot holds a paired estimate (a contrast of one arm against
 reads that instead, and says so.
 
 **The cases that would settle a reading** (:func:`cases_to_separate`). The cases one design needs for an interval at
-the level, centred on today's estimate, to clear the line (an arm against a gate, floor, bar or a hypothetical line:
-one-sided, since only one side of the line is the question) or zero (two arms: two-sided, each arm running that many):
-``ceil((z * per_case / distance) ** 2)``, with the two arms' per-case spreads combined as the root of their sum of
-squares. If the truth equals today's estimate, half of all designs of that size clear and half do not: it is the size
-at which clearing becomes a coin toss, not a promise. :data:`POWER` sizes the design four in five of which clear
-(``z`` plus the one-sided quantile of the power) *(inferred: the conventional 80% power, offered beside the coin-toss
-size so a reader sees both)*.
+the level, centred on today's estimate, to sit wholly on today's side of the line (an arm against a gate, floor, bar
+or a hypothetical line) or of zero (two arms, each running that many): ``ceil((z * per_case / distance) ** 2)``, with
+the two arms' per-case spreads combined as the root of their sum of squares. The size is read on the distance's size
+alone, so it settles whichever side today's estimate is on: for an estimate on the passing side it is the size that
+would show the line cleared, for one on the failing side the size that would confirm the miss; a caller says which.
+If the truth equals today's estimate, half of all designs of that size clear and half do not: it is the size at which
+clearing becomes a coin toss, not a promise. :data:`POWER` sizes the design four in five of which clear (``z`` plus
+the one-sided quantile of the power) *(inferred: the conventional 80% power, offered beside the coin-toss size so a
+reader sees both)*.
+
+*Sidedness.* Against a line the question is one-sided (only one side of the line is asked), so ``z`` is the one-sided
+quantile (1.645 at 95%); between two arms it is two-sided (1.96 at 95%). An interval a report prints is two-sided, and
+a one-sided bound at a level is a two-sided interval at a lower one (95% one-sided is 90% two-sided), so the one-sided
+size is smaller than the size at which the interval the page prints clears. A caller therefore states the sidedness
+with every level it reports, and against a line gives the two-sided size beside the one-sided one (``sided=2``).
+
+*What a case is.* The count a spread rests on is whatever count the figure states: distinct cases, or trials where a
+design repeats a case. A design size read from it counts the same thing, so on a repeated design it is a count of
+trials, not of cases; and it reads each trial as independent, which understates the spread where a case's repeats
+agree. A caller says which the count counts.
 
 **How often today's design lands on the wrong side** (:func:`wrong_side_share`): if the truth equals today's estimate,
 a fresh run of today's size reads its estimate on the other side of the line (or the other arm ahead) with probability

@@ -39,6 +39,7 @@ __all__ = [
     "WIDE",
     "WIDE_FRONTIER",
     "action_calls",
+    "aspect_tagged",
     "budget_inputs",
     "compared_pair",
     "read_actions",
@@ -351,6 +352,34 @@ def frontier_widened(held: ReportInput, *, arms: int) -> ReportInput:
         document["measures"]["cost_per_1k"]["per_arm"][copy]["mean"] = 0.01 * (7 / 6) ** number
         document["measures"]["pass_rate"]["per_arm"][copy]["mean"] = 99.5 - 9 * 0.9**number
     return ReportInput.model_validate(document)
+
+
+def aspect_tagged(held: ReportInput) -> tuple[ReportInput, str, str]:
+    """An input whose contrasts name their aspect, and whose lead aspect's contrast of one arm on one measure is
+    untested while another aspect holds a tested contrast of that arm on the same measure key (its difference and
+    interval the lead one's mirrored, so a reading of it is told apart from the arms' own means).
+
+    The lead aspect is the first asked, else the first; every contrast naming no aspect is put on it. The contrast
+    made untested is the first that states a difference and an interval.
+
+    :param held: The input: two aspects or more, and a contrast stating a difference and an interval.
+    :ptype held: ReportInput
+    :return: The tagged input, and the arm and measure whose lead contrast is untested.
+    :rtype: tuple[ReportInput, str, str]
+    """
+    asked = [aspect.id for aspect in held.aspects if aspect.asked]
+    lead = asked[0] if asked else held.aspects[0].id
+    other = next(aspect.id for aspect in held.aspects if aspect.id != lead)
+    document = held.model_dump(mode="json", by_alias=True)
+    contrasts = document["contrasts"]
+    for contrast in contrasts:
+        contrast["aspect"] = contrast["aspect"] or lead
+    target = next(c for c in contrasts if c["delta"] is not None and c["interval"] is not None)
+    low, high = target["interval"]
+    mirrored = {**_copy(target), "aspect": other, "delta": -target["delta"], "interval": [-high, -low]}
+    target.update(delta=None, interval=None, verdict="untested", reason="too few shared cases on this aspect")
+    contrasts.append(mirrored)
+    return ReportInput.model_validate(document), target["arm"], target["measure"]
 
 
 def action_calls(action: Action, held: ReportInput, snapshot_id: str) -> list[dict[str, Any]]:

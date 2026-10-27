@@ -89,15 +89,18 @@ def analyst_levers_actions() -> tuple[Action, ...]:
             example={"snapshot_id": _EXAMPLE_SNAPSHOT, "measure_key": "pass_rate", "setting_filter": "retry"},
             detail=(
                 "An effect is read only between two arms whose settings differ in one setting alone (a setting an arm "
-                "leaves out has the control's value): the second arm's mean minus the first's, overall or within "
-                "place_filter (a task, stratum or cell). Its interval is recovered from the two arms' own intervals "
-                "as if independent (assumption says so), and there is none where either arm states none. An "
+                "leaves out has the control's value): the second arm minus the first, overall or within place_filter "
+                "(a task, stratum or cell). Its interval, level and basis are what arms_compare reads for the same two "
+                "arms there: a pairing contrast's overall, else the two arms' own spreads (a pass/fail rate's binomial "
+                "spread from its count among them) combined as independent; there is none where no spread reads. An "
                 "interaction is the same move made where one other setting differs (across): the second effect minus "
-                "the first, and a verdict: reverses, differs (beyond the intervals), within, or no_interval. A setting "
+                "the first, its interval recovered from theirs, and a verdict: reverses, differs (beyond the "
+                "intervals), within, or no_interval. A setting "
                 "whose effect reverses or differs is not one effect: report it per level of the other setting. Every "
                 "lever pair is listed once; any pair, either way round, is a key (lever.<setting>.<from>.<to>."
                 "<measure>[.<place>].effect, help topic figure_keys.levers). Arms that isolate no setting are refused, "
-                "naming what each pair also differs in. Effects come first, then interactions; without a limit a page "
+                "naming what each pair also differs in. Effects come first, then interactions, each with the rows "
+                "holding an interval first; without a limit a page "
                 f"holds as many as fit one result, up to {LEVERS_LIMIT}."
             ),
         ),

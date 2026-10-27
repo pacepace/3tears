@@ -21,6 +21,25 @@ kit's `bars` row takes `lo` without `hi` as an interval open above (`kit/API.md`
 (`per 1,000 conversations`), not per the page's cost basis. A gate matrix's task costs are likewise per what the task
 cost measure counts: `task_costs` returns `TaskCosts`, a dict that also names the measure it read.
 
+### evals: settle says which side it settles, its sidedness and what it counts; a lever reads its interval as compare does
+
+**Fixed:** a `settle_cases` row against a line says which side today's estimate is on (`settles`: `clears`, or
+`misses`, where its sizes would confirm the miss rather than show the line cleared). Its `level` is a text that carries
+its sidedness (`95% one-sided`; a two-arm row's `95% two-sided`), and beside the one-sided sizes it gives the sizes at
+which the two-sided interval a page prints clears (`cases_needed_two_sided`, `cases_needed_two_sided_80`). Each row
+says what its count, and so its sizes, count (`count_of`: cases, trials where a repeated case counts again, or
+observations), read from the new `spread.<arm>.<measure>.<where>.counts` key.
+
+**Fixed:** `compare.*` and the price keys' gain axis pair a candidate with the control only by a contrast on the lead
+aspect (or one naming no aspect), so another aspect's contrast on the same measure key is never read as the overall
+paired difference.
+
+**Changed:** a lever effect's interval is the one `arms_compare` reads for the same two arms at the same place (a
+pairing contrast's overall, else the two arms' own spreads, a pass/fail rate's binomial spread from its count among
+them), so an effect has an interval wherever a comparison does; `lever.*` keys gain `level` and `basis`, an
+interaction's `level`. `levers_effects` lists the rows with an interval first, and finds an interaction of one move
+between the same two values however the arms are ordered.
+
 ### evals: the analyst's texts say what the snapshot's cost counts, and a prices block reads its money and its refusals plainly
 
 **Fixed:** no analyst-tool text says a cost is per reply where the snapshot's cost counts something else. Static
