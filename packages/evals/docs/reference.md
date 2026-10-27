@@ -1600,7 +1600,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `scope_out_of_run_spend` | `read` | `purpose_filter?`, `launch_group_filter?`, `template_filter?` | List what the engine spent outside any run — case generations, rubric proposals and analysis generations — with totals. |
 | `scope_history` | `read` | `metric?`, `min_absolute_change?`, `min_relative_change?`, `subject_filter?`, `run_status?` | Series one measure over time for each contestant in the scope, flagging regressions. |
 | `scope_frontier` | `read` | `bar?`, `subject_filter?`, `run_status?` | Rank each subject's variants on quality, cost and latency, and name the cheapest that clears a bar. |
-| `scope_export` | `read` | `export_format?`, `run_status?`, `export_run_ids?`, `export_after_run_id?` | Export the scope's observations as flat rows, CSV or JSON, for analysis elsewhere. |
+| `scope_export` | `read` | `export_format?`, `run_status?`, `export_run_ids?`, `export_after_run_id?`, `export_after_case_id?` | Export the scope's observations as flat rows, CSV or JSON, for analysis elsewhere. |
 
 ### Curate
 
@@ -1670,7 +1670,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `dim_filter` | `string` or `null` | List only the configs asking for this dimension. |
 | `expected` | `integer` or `'pass'` \| `'fail'` | The verdict the output must get: 'pass' or 'fail' (or 1 / 0) on a pass/fail dimension, a score from 1 to 5 on an ordinal one. Refused, naming both, when the dimension's scale cannot hold it. |
 | `exploratory` | `boolean` | True says no aspect of the campaign declares a design: someone learning to run evals, or testing an intuition with no settled question. Its report and analysis say once that its readings confirm nothing, and each aspect's design is inferred from its runs; it names no question, arm, floor or margin. Required when no aspect declares a design, and refused beside one. An assertion checked and never stored: a campaign is exploratory exactly while no aspect declares a design. |
-| `export_after_run_id` | `string` or `null` | The previous page's page.next_after_run_id: read the export page that starts after that run; omitted reads the first page. |
+| `export_after_case_id` | `string` or `null` | The previous page's page.next_after_case_id, beside export_after_run_id: read the page of that run that starts after this case of it; omitted starts at the run after it. |
+| `export_after_run_id` | `string` or `null` | The previous page's page.next_after_run_id: read the export page that starts after that run, or inside it with export_after_case_id; omitted reads the first page. |
 | `export_format` | `'csv'` \| `'json'` | The export's form: csv (flat rows, a column per lever) or json (the rows and what was left out). |
 | `export_run_ids` | array of `string` or `null` | Export only these runs, archived ones included since they are named; omitted exports all. Never paged: two or more whose results would pass one page's ceiling are refused. |
 | `floors` (on `campaign_create`) | array of `object` | Lines a candidate is warned for crossing, each {aspect, clause}: clause {kind: rate_drop, max_points, reading?} (no pass rate, or the named one, may drop by more than max_points) or {kind: cost_lower} (it must cost less per reply). A floor only warns, on an aspect that declares a design, of a campaign that names a control: without one a floor is read against nothing, and a bar is declared instead. Each aspect, kind and reading once. |

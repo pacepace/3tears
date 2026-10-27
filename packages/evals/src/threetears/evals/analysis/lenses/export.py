@@ -184,23 +184,45 @@ class ExportPage(EvalBaseModel):
     """Which runs one page of a paged export holds, and the call that reads the next.
 
     An export of a scope too large to read in one call is paged by runs, oldest first (by when each run was created,
-    then by id), each page holding whole runs up to a ceiling of results. Carried beside the body, never in it: a
-    page's body is the same serialization a whole export's is, over that page's runs.
+    then by id), each page holding whole runs up to a ceiling of results. A run larger than the ceiling is paged by
+    its cases instead, in its own order, each page holding whole cases of that one run up to the ceiling; so is one
+    run the caller named. The cursor is one place in that order: a run, and when the next page goes on inside it, the
+    case it starts after. Carried beside the body, never in it: a page's body is the same serialization a whole
+    export's is, over that page's runs or that run's cases, and a CSV page's columns are its own, so pages join by
+    column name.
 
-    A paged export reads each run's results by run, so its ``exclusions`` count only what those reads returned:
-    results of runs the narrowing left out are not read (``archived_runs`` and ``runs_outside_status`` count those
-    runs), and results that name no run in the scope are not reached at all.
+    A paged export reads each run's results by run, or a run's by its cases, so its ``exclusions`` count only what
+    those reads returned: results of runs the narrowing left out are not read (``archived_runs`` and
+    ``runs_outside_status`` count those runs), and results that name no run in the scope, or no case of their run,
+    are not reached at all.
     """
 
     result_ceiling: int = Field(
         description="The most results one export call reads, estimated from each run's matrix before any is read; "
-        "a page holds whole runs up to it, and one run larger than it alone."
+        "a page holds whole runs up to it, and a run larger than it is paged by its cases."
     )
     run_ids: list[str] = Field(description="The runs this page holds, in export order.")
     runs_before: int = Field(description="Runs of the narrowed scope held by the pages before this one.")
     runs_after: int = Field(description="Runs of the narrowed scope the pages after this one hold.")
+    case_ids: list[str] | None = Field(
+        default=None,
+        description="When this page holds part of one run, the cases of it the page holds, in the run's order; None "
+        "when it holds whole runs.",
+    )
+    cases_before: int = Field(default=0, description="Cases of this page's run held by the pages before this one.")
+    cases_after: int = Field(default=0, description="Cases of this page's run the pages after this one hold.")
     next_after_run_id: str | None = Field(
-        description="The run the next page starts after, which the next call names; None when this page is the last."
+        description="The run the next page starts after, or inside, which the next call names; None when this page is "
+        "the last."
+    )
+    next_after_case_id: str | None = Field(
+        default=None,
+        description="When the next page goes on inside next_after_run_id, the case of it that page starts after, which "
+        "the next call names with it; None when the next page starts at the run after it.",
+    )
+    named_run_ids: list[str] | None = Field(
+        default=None,
+        description="The runs the export named, which the next call names again; None for an export of the scope.",
     )
     run_status: str | None = Field(description="The run status the pages are narrowed to; None for every status.")
     archived_runs: int = Field(description="Archived runs in the scope, left out of every page and not read.")

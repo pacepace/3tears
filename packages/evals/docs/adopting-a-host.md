@@ -732,8 +732,16 @@ before a page is slow, and you can alert on `elapsed_ms` instead.
 
 **An export is bounded; the aggregating lenses are not yet.** `export_results` estimates from the run listing how
 many results a scope holds before it reads any, and past `EXPORT_PAGE_RESULTS` (1,000) it exports in pages of whole
-runs (`ScoreExport.page`), each read run by run, so one call never holds the scope. `pivot`, `frontier`, `history`
-and the budget lenses still read every result in the scope: their answer is an aggregate, which a page cannot give.
+runs (`ScoreExport.page`), each read run by run, so one call never holds the scope. A run past the ceiling, in the
+scope's pages or named alone, is exported in pages of whole cases of it, the cursor naming the case
+(`page.next_after_case_id`). `pivot`, `frontier`, `history` and the budget lenses still read every result in the
+scope: their answer is an aggregate, which a page cannot give.
+
+**A run is read a page at a time.** A run's summary (`summarize_run`, `run_get`), a take-up of it (`job_resume`) and
+the offer of one (`resumable_jobs`) read its results a page of whole cases at a time, `RUN_RESULTS_PAGE` (200) at
+the run's `k`, so none holds a large run's results whole. Each page is one `by_doc_type` read of the run's results
+whose `test_case_id` is one of the page's (`field_in`), which your store already serves: nothing to add. A page read
+reaches only results whose case is one of their run's cases, which every result the engine writes is.
 
 ## Stored data: what is kept
 

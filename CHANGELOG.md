@@ -52,15 +52,64 @@ before, byte for byte, with `page: null`. A larger scope is exported in pages of
 names the page's runs, how many come before and after it, the archived runs and runs of another status left out
 unread, and `next_after_run_id`. A paged export's exclusion counts cover only that page's reads: results whose run
 was deleted are not reached. A whole-scope read that returns more results than its listing promised is not
-serialized; the export pages instead. One run larger than the ceiling is a page of its own.
+serialized; the export pages instead. A run larger than the ceiling is paged by its cases (below).
 
 **Changed (MCP):** `scope_export` takes `export_after_run_id`, the previous page's `page.next_after_run_id`, and the
 text of a page with a next names the call, repeating a non-default `export_format` and `run_status`:
-`More: action='scope_export', export_after_run_id='<id>'`. `export_run_ids` is never paged: two or more named runs
-whose estimated results pass the ceiling are refused (`VALIDATION_FAILED`, naming the ceiling and the results they
-would read, with `details` `runs_named`, `results_estimated` and `result_ceiling`); one named run is exported whole.
-`export_after_run_id` with `export_run_ids`, or naming a run no longer in the scope, is refused. An unknown format
-is now refused before anything is read. An agent that exported a scope in one call must follow the pages.
+`More: action='scope_export', export_after_run_id='<id>'`. Two or more named runs (`export_run_ids`) whose
+estimated results pass the ceiling are refused (`VALIDATION_FAILED`, naming the ceiling and the results they would
+read, with `details` `runs_named`, `results_estimated` and `result_ceiling`); one named run past it is paged by its
+cases. `export_after_run_id` naming a run no longer in the scope, or given with `export_run_ids` other than to go on
+inside the one run they name, is refused. An unknown format is now refused before anything is read. An agent that
+exported a scope in one call must follow the pages.
+
+### evals: a run's stored results are read a page at a time, never whole
+
+**Fixed:** three readers still loaded every stored result of a run at once, and a result carries its judge's
+reasoning, its kind's payload, its world events, its deliveries and its rescores, so their memory grew with the run:
+a run's summary (`summarize_run`, so `run_get`, `quick`'s summaries and the CLI's), a take-up of a run (`job_resume`,
+`resume_run`, `resume_launch`) together with the offer of one (`resumable_jobs`, which read every resumable run of a
+scope in one call), and an export of one run past `EXPORT_PAGE_RESULTS`. Each now reads its run a page of whole
+cases at a time (`threetears.evals.kernel.run_pages`, new: `RUN_RESULTS_PAGE`, 200 results at the run's `k`;
+`iter_run_results`, `run_case_pages`, `read_case_page`), each page one store read of the run's results whose case is
+one of the page's (`EvalStorage.query_eval_results_of_cases`, new, one `by_doc_type` with a `field_in` on
+`test_case_id`, which every `DocumentStore` already serves: a host adds nothing). A page holds whole cases, in the
+run's case order; one case holding more rows than a page is a page of its own. A page's results are ordered by case,
+`k`, model, when stored and id, so a reader gives one answer at any page size. A page reaches only results whose case
+is one of their run's cases, which every result the engine writes is (the runner runs the run's cases, and a
+witnessed cell names one of them).
+
+- **`summarize_run`** folds each result into its tallies as it is read. Counts, minimums and maximums stream; every
+  sum (a measure's or a dimension's mean, a role's dollars, the run's total) is kept exactly and rounded once, as
+  `math.fsum` rounds, so the summary does not move with the page size or the store's order. A mean was `sum(values) /
+  len(values)` and is now the correctly rounded sum over the count: the same figure wherever Python's compensated
+  `sum` already rounds correctly, which was every case in 20,000 random trials, and on the toy host's stored runs
+  byte for byte. Three readings need every value at once and keep one small record per value, never the result:
+  the label statistics (each classification and its case, for an interval clustered by case), the second judges'
+  agreement (each pair of scores, for kappa and its interval) and the errors listed. The errors are now in the
+  run's case order, then `k`, where they were in the store's order. To stream them, `inter_judge_agreement`,
+  `self_judging_models`, `unconfirmed_model_identities` and `request_settings_readings` each read through a tally
+  (`InterJudgeTally` in `threetears.evals.analysis.agreement`; `SelfJudgingTally`, `ModelIdentityTally` and
+  `RequestSettingsTally` in `threetears.evals.analysis.reporting`, new), with the same answers.
+- **A take-up** keeps each stored row as a `StoredCell` (new in `threetears.evals.run`: the row's `CellSummary`, its
+  harness fault, its exclusion cause, its superseded spend and its metered calls landed and refused), read page by
+  page. **Changed:** `StoredCells.done` is a tuple of `StoredCell`, `StoredCells.replaced` maps a cell to its
+  `StoredCell`, and `RunResumption.rows` is a tuple of `StoredCell`, where each held the stored `EvalResult`s.
+  `resumable_jobs` reads each resumable run's rows a page at a time, one run after another, where it read every
+  run's in one call: more store calls, none of them a run's whole volume.
+- **An export of one run past the ceiling**, in a scope's pages or named alone in `export_run_ids`, is paged by its
+  cases, each page whole cases of the run up to the ceiling. The cursor is the same one, carrying the case:
+  `ExportPage` gains `case_ids`, `cases_before`, `cases_after`, `next_after_case_id` (the case the next page starts
+  after, inside `next_after_run_id`) and `named_run_ids` (the run the next call names again). A CSV page's columns
+  are its own, so pages join by column name. **Changed:** the lenses' store protocol (`LensStore`) gains
+  `query_eval_results_of_cases`, which `EvalStorage` has; a host that hands the lenses a store of its own adds it.
+
+**Changed (MCP):** `scope_export` takes `export_after_case_id`, the previous page's `page.next_after_case_id`, beside
+`export_after_run_id`, and the text of a page inside a run names it (and `export_run_ids` for a named run):
+`More: action='scope_export', export_after_run_id='<run>', export_after_case_id='<case>'`, with the page line
+`page: run 2 of 7, its cases 1-1000 of 2400`. `export_after_case_id` without `export_after_run_id`, or naming no case
+of that run, is refused (`VALIDATION_FAILED`, `details` `after_run_id` and `after_case_id`). A run archived or
+moved to another status between its pages is left, and the next page starts at the run after it.
 
 ## v0.80.0 -- 2026-10-26
 

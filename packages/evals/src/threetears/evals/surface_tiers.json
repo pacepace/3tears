@@ -899,6 +899,7 @@
 "threetears.evals.run.stamp_witnessed_judge": "provisional",
 "threetears.evals.run.start_job_work": "provisional",
 "threetears.evals.run.start_run": "host-contract",
+"threetears.evals.run.StoredCell": "provisional",
 "threetears.evals.run.StoredCells": "provisional",
 "threetears.evals.run.SubjectResolver": "host-contract",
 "threetears.evals.run.sweep_abandoned_runs": "stable",

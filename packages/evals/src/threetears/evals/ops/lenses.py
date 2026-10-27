@@ -277,12 +277,14 @@ def scope_export(
     status: str | None = "completed",
     run_ids: list[str] | None = None,
     after_run_id: str | None = None,
+    after_case_id: str | None = None,
 ) -> ScoreExport:
     """The scope's observations as flat rows, in CSV or JSON, for analysis elsewhere, a page at a time when large.
 
     A scope whose runs' matrices hold more than :data:`~threetears.evals.analysis.EXPORT_PAGE_RESULTS` results is
-    exported in pages of whole runs, oldest first: each page's ``page.next_after_run_id`` is the ``after_run_id`` of
-    the next (:func:`~threetears.evals.analysis.export_results`).
+    exported in pages of whole runs, oldest first, and a run past it in pages of its cases: each page's
+    ``page.next_after_run_id`` is the ``after_run_id`` of the next, and its ``page.next_after_case_id`` the
+    ``after_case_id`` (:func:`~threetears.evals.analysis.export_results`).
 
     :param host: The host whose store and vocabulary are read.
     :ptype host: EvalHost
@@ -292,15 +294,19 @@ def scope_export(
     :ptype format: str | None
     :param status: Only runs with this status; ``"all"`` exports every run.
     :ptype status: str | None
-    :param run_ids: Only these runs — archived ones included, since they were named. Never paged: two or more
-        whose results would pass the ceiling are refused.
+    :param run_ids: Only these runs — archived ones included, since they were named. Two or more whose results
+        would pass the ceiling are refused; one past it is paged by its cases.
     :ptype run_ids: list[str] | None
     :param after_run_id: The previous page's ``page.next_after_run_id``; ``None`` reads the first page.
     :ptype after_run_id: str | None
+    :param after_case_id: The previous page's ``page.next_after_case_id``; ``None`` starts at the run after
+        ``after_run_id``.
+    :ptype after_case_id: str | None
     :return: The export.
     :rtype: ScoreExport
     :raises ValidationFailedError: The format is not one there is, the status is no run's, the named runs would pass
-        the ceiling, or ``after_run_id`` is given with ``run_ids`` or is no run in the scope.
+        the ceiling, ``after_run_id`` is no run in the scope or is given with ``run_ids`` other than inside the one
+        run they name, or ``after_case_id`` is given alone or is no case of that run.
     """
     return export_results(
         host.storage,
@@ -310,6 +316,7 @@ def scope_export(
         status=status,
         run_ids=run_ids,
         after_run_id=after_run_id,
+        after_case_id=after_case_id,
         profile=host.profile,
     )
 
@@ -1488,6 +1495,12 @@ def export_text(export: ScoreExport, *, next_call: str | None = None) -> str:
             if page.run_ids
             else f"no runs, of {total}"
         )
+        if page.case_ids is not None:
+            cases = page.cases_before + len(page.case_ids) + page.cases_after
+            held = (
+                f"run {page.runs_before + 1} of {total}, its cases "
+                f"{page.cases_before + 1}-{page.cases_before + len(page.case_ids)} of {cases}"
+            )
         lines.append(f"page: {held}, oldest first; at most {page.result_ceiling} results a page")
         unread = [
             f"{count} {what}"

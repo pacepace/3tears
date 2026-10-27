@@ -177,7 +177,11 @@ estimator bias, and each property the engine misses stays in the suite as a stri
 against the nominal.
 
 **A run's memory should scale with its matrix, never with how much a cell produced.**
-How talkative a candidate is should not decide whether a run survives. Nothing measures this yet.
+How talkative a candidate is should not decide whether a run survives. While a run executes, the runner keeps one
+`CellSummary` per cell, never the result. The readers of a stored run read it the same way: its summary, a take-up
+of it and an offer of one read its results a page of whole cases at a time (`threetears.evals.kernel.run_pages`,
+`RUN_RESULTS_PAGE`), and so does an export of a run past `EXPORT_PAGE_RESULTS`. `tests/test_run_reads_paged.py`
+measures the largest read each hands out; nothing yet measures the run loop's own peak.
 
 ## Rationale
 

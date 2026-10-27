@@ -2458,6 +2458,35 @@ class EvalStorage:
         items = self._store.by_doc_type("eval_result", scope_id, field_in={"eval_run_id": list(dict.fromkeys(run_ids))})
         return self._hydrate_all(EvalResult, items)
 
+    def query_eval_results_of_cases(
+        self, run_id: str, test_case_ids: Sequence[str], scope_id: str, /
+    ) -> list[EvalResult]:
+        """Every result of one run whose case is one of ``test_case_ids``, in one store call.
+
+        The page read of a run walked a page at a time (:mod:`~threetears.evals.kernel.run_pages`): a reader of a
+        whole run (its summary, a take-up of it, an export of it past the ceiling) reads it case page by case page,
+        so it never holds every result at once. One ``by_doc_type`` with the run's id as an equality and the cases as
+        a membership predicate, so a host's store serves it with the port it already implements.
+
+        :param run_id: The run.
+        :ptype run_id: str
+        :param test_case_ids: The cases. Empty asks the store nothing; one named twice is read once.
+        :ptype test_case_ids: Sequence[str]
+        :param scope_id: The scope the run lives in.
+        :ptype scope_id: str
+        :return: Their results, in the store's order.
+        :rtype: list[EvalResult]
+        """
+        if not test_case_ids:
+            return []
+        items = self._store.by_doc_type(
+            "eval_result",
+            scope_id,
+            field_in={"test_case_id": list(dict.fromkeys(test_case_ids))},
+            eval_run_id=run_id,
+        )
+        return self._hydrate_all(EvalResult, items)
+
     def query_eval_result_ids_by_run(self, run_id: str, scope_id: str) -> list[str]:
         """The ids of every result stored for one run, read off the rows without reconstructing them.
 

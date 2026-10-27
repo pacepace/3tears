@@ -482,47 +482,81 @@ def unconfirmed_model_identities(
         every response named its model, or nothing was called.
     :rtype: list[UnconfirmedModelIdentity]
     """
-    by_id = {run.id: run for run in runs}
-    readings: list[UnconfirmedModelIdentity] = []
-    candidate: list[ResultServedReading] = []
-    judge_served: set[str] = set()
-    judge_requested: set[str] = set()
-    n_scores = n_unnamed = 0
+    tally = ModelIdentityTally(runs)
     for result in results:
+        tally.add(result)
+    return tally.identities()
+
+
+class ModelIdentityTally:
+    """:func:`unconfirmed_model_identities` read one result at a time, for a reader that walks results it does not
+    hold: counts and the sets of model ids, never a result."""
+
+    def __init__(self, runs: Iterable[EvalRun]) -> None:
+        """Start a tally over results of ``runs``.
+
+        :param runs: The runs the results belong to; a result whose run is absent names no requested judge.
+        :ptype runs: Iterable[EvalRun]
+        """
+        self._by_id = {run.id: run for run in runs}
+        self._candidate_total = self._candidate_unrecorded = 0
+        self._candidate_requested: set[str] = set()
+        self._candidate_served: set[str] = set()
+        self._judge_served: set[str] = set()
+        self._judge_requested: set[str] = set()
+        self._n_scores = self._n_unnamed = 0
+
+    def add(self, result: EvalResult) -> None:
+        """Read one result's candidate calls and judge scores.
+
+        :param result: The result.
+        :ptype result: EvalResult
+        """
         if (reading := served_reading(result)) is not None:
-            candidate.append(reading)
-        run = by_id.get(result.eval_run_id)
+            self._candidate_total += 1
+            self._candidate_served |= reading.served
+            if reading.unrecorded:
+                self._candidate_unrecorded += 1
+                self._candidate_requested.add(reading.requested)
+        run = self._by_id.get(result.eval_run_id)
         axes = (score for score in (result.transcript_score, result.outcome_score) if score is not None)
         for score in (*result.rubric_scores, *axes):
-            n_scores += 1
+            self._n_scores += 1
             if score.served_model:
-                judge_served.add(score.served_model)
+                self._judge_served.add(score.served_model)
                 continue
-            n_unnamed += 1
+            self._n_unnamed += 1
             if run is not None and (asked := dim_judge_model(run, score.dim)) is not None:
-                judge_requested.add(asked)
-    unconfirmed = [reading for reading in candidate if reading.unrecorded]
-    if unconfirmed:
-        readings.append(
-            UnconfirmedModelIdentity(
-                role="candidate",
-                requested=sorted({reading.requested for reading in unconfirmed}),
-                served_models=sorted(frozenset[str]().union(*(reading.served for reading in candidate))),
-                n_unrecorded=len(unconfirmed),
-                n_total=len(candidate),
+                self._judge_requested.add(asked)
+
+    def identities(self) -> list[UnconfirmedModelIdentity]:
+        """Each role some response named no model for, over every result read so far.
+
+        :return: As :func:`unconfirmed_model_identities` returns it.
+        :rtype: list[UnconfirmedModelIdentity]
+        """
+        readings: list[UnconfirmedModelIdentity] = []
+        if self._candidate_unrecorded:
+            readings.append(
+                UnconfirmedModelIdentity(
+                    role="candidate",
+                    requested=sorted(self._candidate_requested),
+                    served_models=sorted(self._candidate_served),
+                    n_unrecorded=self._candidate_unrecorded,
+                    n_total=self._candidate_total,
+                )
             )
-        )
-    if n_unnamed:
-        readings.append(
-            UnconfirmedModelIdentity(
-                role="judge",
-                requested=sorted(judge_requested),
-                served_models=sorted(judge_served),
-                n_unrecorded=n_unnamed,
-                n_total=n_scores,
+        if self._n_unnamed:
+            readings.append(
+                UnconfirmedModelIdentity(
+                    role="judge",
+                    requested=sorted(self._judge_requested),
+                    served_models=sorted(self._judge_served),
+                    n_unrecorded=self._n_unnamed,
+                    n_total=self._n_scores,
+                )
             )
-        )
-    return readings
+        return readings
 
 
 def model_identity_disclosure(identities: Sequence[UnconfirmedModelIdentity]) -> str | None:
@@ -753,27 +787,57 @@ def request_settings_readings(runs: Iterable[EvalRun], results: Iterable[EvalRes
         did.
     :rtype: list[RequestSettingsReading]
     """
-    by_id = {run.id: run for run in runs}
-    judge, simulator = _Tally(), _Tally()
+    tally = RequestSettingsTally(runs)
     for result in results:
-        run = by_id.get(result.eval_run_id)
+        tally.add(result)
+    return tally.readings()
+
+
+class RequestSettingsTally:
+    """:func:`request_settings_readings` read one result at a time, for a reader that walks results it does not hold:
+    each role's counts and distinct settings, never a result."""
+
+    def __init__(self, runs: Iterable[EvalRun]) -> None:
+        """Start a tally over results of ``runs``.
+
+        :param runs: The runs the results belong to; a result whose run is absent counts as asking nothing recorded.
+        :ptype runs: Iterable[EvalRun]
+        """
+        self._by_id = {run.id: run for run in runs}
+        self._judge, self._simulator = _Tally(), _Tally()
+
+    def add(self, result: EvalResult) -> None:
+        """Read one result's judge scores and simulator calls.
+
+        :param result: The result.
+        :ptype result: EvalResult
+        """
+        run = self._by_id.get(result.eval_run_id)
         axes = (score for score in (result.transcript_score, result.outcome_score) if score is not None)
         for score in (*result.rubric_scores, *axes):
             if score.judge_temperature is None:
                 continue
             sent = score.judge_sent_settings
-            judge.unit(None if run is None else run.judge_asked_settings, None if sent is None else [sent])
+            self._judge.unit(None if run is None else run.judge_asked_settings, None if sent is None else [sent])
         reported = [row.sent_settings for row in result.usage if row.role == "simulator"]
         if reported:
             # One unit per result: unverified when any of its rows is, else every distinct value its rows hold.
             distinct = {
                 request_settings_order(value): value for values in reported if values is not None for value in values
             }
-            simulator.unit(
+            self._simulator.unit(
                 None if run is None else run.simulator_asked_settings,
                 None if None in reported else [distinct[form] for form in sorted(distinct)],
             )
-    return [reading for reading in (judge.reading("judge"), simulator.reading("simulator")) if reading is not None]
+
+    def readings(self) -> list[RequestSettingsReading]:
+        """The judge's reading then the simulated user's, over every result read so far.
+
+        :return: As :func:`request_settings_readings` returns it.
+        :rtype: list[RequestSettingsReading]
+        """
+        readings = (self._judge.reading("judge"), self._simulator.reading("simulator"))
+        return [reading for reading in readings if reading is not None]
 
 
 def request_settings_disclosure(readings: Sequence[RequestSettingsReading]) -> str | None:
@@ -1856,21 +1920,43 @@ def self_judging_models(run: EvalRun, results: Iterable[EvalResult]) -> list[str
     :return: The shared models.
     :rtype: list[str]
     """
-    results = list(results)
-    judges = {*(run.effective_judges or {}).values(), *([run.judge_model] if run.judge_model else [])}
-    judges |= {score.served_model for result in results for score in result.rubric_scores if score.served_model}
-    if not judges:
-        return []
-    candidates = {run.candidate_model}
-    candidates |= {
-        model
-        for result in results
-        for row in result.usage
-        if row.role == "candidate"
-        for model in (row.model, row.served_model)
-        if model
-    }
-    return sorted(judges & candidates)
+    tally = SelfJudgingTally(run)
+    for result in results:
+        tally.add(result)
+    return tally.models()
+
+
+class SelfJudgingTally:
+    """:func:`self_judging_models` read one result at a time, for a reader that walks results it does not hold: the
+    two sets of model ids, never a result."""
+
+    def __init__(self, run: EvalRun) -> None:
+        """Start a tally over ``run``'s results, from its pins and its candidate model.
+
+        :param run: The run.
+        :ptype run: EvalRun
+        """
+        self._judges = {*(run.effective_judges or {}).values(), *([run.judge_model] if run.judge_model else [])}
+        self._candidates = {run.candidate_model}
+
+    def add(self, result: EvalResult) -> None:
+        """Read the models one result's scores name as judging it and its candidate rows name as answering.
+
+        :param result: The result.
+        :ptype result: EvalResult
+        """
+        self._judges |= {score.served_model for score in result.rubric_scores if score.served_model}
+        self._candidates |= {
+            model for row in result.usage if row.role == "candidate" for model in (row.model, row.served_model) if model
+        }
+
+    def models(self) -> list[str]:
+        """The models that both judged and answered, over every result read so far, sorted.
+
+        :return: The shared models; empty when none did.
+        :rtype: list[str]
+        """
+        return sorted(self._judges & self._candidates)
 
 
 def self_judging_text(models: list[str], whose: str) -> str:
@@ -1905,11 +1991,13 @@ __all__ = [
     "METRIC_TOTAL_MS",
     "METRIC_TRANSCRIPT",
     "model_identity_disclosure",
+    "ModelIdentityTally",
     "NULL_LEVEL",
     "request_settings_disclosure",
     "request_settings_readings",
     "RequestSettingsReading",
     "RequestSettingsRole",
+    "RequestSettingsTally",
     "SentSettingsShare",
     "SentSettingsState",
     "place_results",
@@ -1926,6 +2014,7 @@ __all__ = [
     "ScoreRecord",
     "self_judging_models",
     "self_judging_text",
+    "SelfJudgingTally",
     "unconfirmed_model_identities",
     "UnconfirmedModelIdentity",
 ]
