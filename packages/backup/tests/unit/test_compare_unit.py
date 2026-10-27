@@ -6,12 +6,12 @@ from pydantic import SecretStr
 
 from threetears.backup.config import BackupConfig
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid7
 
 import pytest
 
-from threetears.backup.compare import uuid7_upper_bound
+from threetears.backup.compare import DriftComparator, uuid7_upper_bound
 from threetears.backup.drivers import PostgresDriver, YugabyteDriver, driver_by_name
 
 
@@ -87,3 +87,50 @@ class TestClusterEnumeration:
         assert "scratch_probe_hub2".startswith(prefixes)
         assert not "aibots".startswith(prefixes)
         assert not "dipp".startswith(prefixes)
+
+
+class _OneTable:
+    """a database with one table, ``s.t``, whose cutoff column is of a given type; it records what each count binds."""
+
+    def __init__(self, data_type: str) -> None:
+        self.data_type = data_type
+        self.bound: list[object] = []
+
+    async def fetch(self, query: str, *args: object) -> list[dict[str, str]]:
+        if "information_schema.tables" in query:
+            return [{"table_schema": "s", "table_name": "t"}]
+        return [{"column_name": "date_created", "data_type": self.data_type}]
+
+    async def fetchrow(self, query: str, *args: object) -> dict[str, int]:
+        self.bound.extend(args)
+        return {"n": 1, "s": 7}
+
+    async def close(self) -> None:
+        return None
+
+
+class TestTheCutoffMatchesItsColumn:
+    """the cutoff is bound as the column compares it: aware for a zoned column, naive UTC for a naive one."""
+
+    @staticmethod
+    async def _bound(data_type: str, as_of: datetime) -> tuple[list[object], str]:
+        database = _OneTable(data_type)
+
+        async def connect(dsn: str) -> _OneTable:
+            return database
+
+        report = await DriftComparator(connect, restored_dsn="restored", live_dsn="live").compare(as_of=as_of)  # type: ignore[arg-type]
+        return database.bound, report.tables[0].cutoff
+
+    @pytest.mark.asyncio
+    async def test_a_naive_column_is_bound_the_instant_as_naive_utc(self) -> None:
+        as_of = datetime(2026, 10, 26, 19, 27, 5, tzinfo=timezone(timedelta(hours=-5)))
+        bound, cutoff = await self._bound("timestamp without time zone", as_of)
+        assert cutoff == "column:date_created"
+        assert bound == [datetime(2026, 10, 27, 0, 27, 5)] * 2, "both sides' counts are bound naive UTC"
+
+    @pytest.mark.asyncio
+    async def test_a_zoned_column_is_bound_the_instant_as_it_is(self) -> None:
+        as_of = datetime(2026, 10, 27, 0, 27, 5, tzinfo=UTC)
+        bound, _ = await self._bound("timestamp with time zone", as_of)
+        assert bound == [as_of, as_of]

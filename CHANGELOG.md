@@ -8,6 +8,14 @@ packages (bumped in lock-step).
 
 ## v0.80.0 -- 2026-10-26
 
+### backup: a drill compares a naive-timestamp table against the backup's moment
+
+**Fixed:** a drill failed on the first database holding a table whose cutoff column (`date_created` and
+the like) is `timestamp without time zone`. The comparator bound the backup's aware moment to that column,
+and asyncpg refused it ("can't subtract offset-naive and offset-aware datetimes"). Seen on a hub's
+scheduled drill when it reached a newly backed-up database. A naive column is now bound the moment as its
+naive UTC wall clock, and a zoned column the instant as before.
+
 ### agent-tools, core: an edge-cacheable read may narrow its scopes by a second namespace node
 
 **New:** `RestAffordance.scope_qualifier_node`, beside `scope_node`. A reader who sees every child tool node beneath
