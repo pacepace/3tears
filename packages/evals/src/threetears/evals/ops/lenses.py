@@ -148,7 +148,8 @@ def scope_pivot(
     :return: The table.
     :rtype: PivotTable
     :raises ValidationFailedError: The pivot cannot be answered honestly — see
-        :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate.
+        :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate, or the scope is past
+        :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
     """
     plan: list[PlannedCost] | None = None
     if predicted_cost is not None:
@@ -213,7 +214,8 @@ def scope_history(
     :ptype status: str | None
     :return: The series.
     :rtype: HistoryResult
-    :raises ValidationFailedError: The metric cannot be seriesed, or the status is no run's.
+    :raises ValidationFailedError: The metric cannot be seriesed, or the status is no run's, or the scope is past
+        :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
     """
     return history(
         host.storage,
@@ -248,13 +250,16 @@ def scope_frontier(
     :ptype scope_id: str
     :param bar: The pass^k each variant must clear, in ``[0, 1]``; ``None`` or blank ranks without a verdict.
     :ptype bar: float | str | None
-    :param subject_id: Only this subject's variants; others are counted as filtered out.
+    :param subject_id: Only this subject's variants; what the others count as is
+        :func:`~threetears.evals.analysis.frontier`'s ``subject_id`` (filtered out, or, past the read budget, unread).
     :ptype subject_id: str | None
     :param status: Only runs with this status; ``"all"`` ranks every run.
     :ptype status: str | None
     :return: The frontier.
     :rtype: FrontierResult
-    :raises ValidationFailedError: The bar is not a number in ``[0, 1]``, or the status is no run's.
+    :raises ValidationFailedError: The bar is not a number in ``[0, 1]``, or the status is no run's, or the scope is
+        past :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs
+        that fit.
     """
     return FrontierResult.model_validate(
         frontier(
@@ -1265,6 +1270,8 @@ def pivot_text(table: PivotTable) -> str:
         f"{table.weighting}: {table.n_observations} observation(s), {table.n_filtered_out} filtered out",
         f"formula: {table.formula}",
     ]
+    if table.narrowed_read_disclosure:
+        lines.append(table.narrowed_read_disclosure)
     for cell in table.cells:
         spread = f", sem {format_number(cell.sem)}" if cell.sem is not None else ""
         unmeasured = f", {cell.n_unmeasured} unmeasured" if cell.n_unmeasured else ""
@@ -1347,6 +1354,8 @@ def history_text(result: HistoryResult) -> str:
             "materiality threshold); a step reads equivalent only when shown inside it"
         ),
     ]
+    if result.narrowed_read_disclosure:
+        lines.append(result.narrowed_read_disclosure)
     if result.attribution_disclosure:
         lines.append(result.attribution_disclosure)
     if result.identity_span_disclosure:

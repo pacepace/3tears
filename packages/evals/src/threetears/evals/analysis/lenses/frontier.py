@@ -13,6 +13,8 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from fractions import Fraction
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
+from pydantic import Field
+
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.analysis.agreement import judge_key, tier_for_judges
 from threetears.evals.analysis.contention import (
@@ -876,6 +878,12 @@ class FrontierResult(EvalDocumentModel):
     #: dominance test and "fastest" — and how much; ``None`` when every latency ranked was read
     #: serially (:mod:`~threetears.evals.analysis.contention`).
     contended_latency_disclosure: str | None = None
+    #: Set when the scope was past :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and only one subject's runs
+    #: were read (:func:`~threetears.evals.analysis.reads.frontier`): the sentence naming the subject and what was
+    #: therefore not counted (other subjects' results in ``n_filtered_out``, results whose run is missing, and other
+    #: subjects' results in each judge's evidence tier). ``None`` on a whole-scope read, and then left out of a dump,
+    #: so an answer read whole serializes, and digests, as it did before the field existed.
+    narrowed_read_disclosure: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 def _frontier_point(

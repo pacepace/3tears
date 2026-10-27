@@ -2485,6 +2485,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "what it left out and which runs measured less than they promised. A ranking pooled over the rows "
                 "that most rows contradict is flagged. A judged measure over several subjects is refused unless "
                 "subject_filter names one."
+                " A scope whose runs hold more results than the read tier aggregates in one call is refused, naming its"
+                " budget, unless subject_filter narrows it to runs that fit: an aggregate is never paged. A narrowed"
+                " answer reads only that subject's runs, and its narrowed_read_disclosure says what it did not count."
             ),
         ),
         Action(
@@ -2564,6 +2567,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "where the suite changed is marked so a new denominator does not read as a regression. A step that "
                 "misses significance reads not_separated, never no change; only an equivalence test against the "
                 "measure's declared materiality threshold reads equivalent."
+                " A scope whose runs hold more results than the read tier aggregates in one call is refused, naming its"
+                " budget, unless subject_filter narrows it to runs that fit: an aggregate is never paged. A narrowed"
+                " answer reads only that subject's runs, and its narrowed_read_disclosure says what it did not count."
             ),
         ),
         Action(
@@ -2582,6 +2588,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "every axis it measured. With a bar, a variant clears it only when its whole pass^k interval is at or "
                 "above it, and the verdict names the cheapest that cleared, beside every rival it was not shown cheaper "
                 "than. The arms of one compare share a subject, so its models rank on one frontier. Spends nothing."
+                " A scope whose runs hold more results than the read tier aggregates in one call is refused, naming its"
+                " budget, unless subject_filter narrows it to runs that fit: an aggregate is never paged. A narrowed"
+                " answer reads only that subject's runs, and its narrowed_read_disclosure says what it did not count."
             ),
         ),
         Action(

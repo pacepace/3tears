@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an aggregate refuses a scope past the read budget instead of reading it whole
+
+**Changed:** the aggregating lenses read their scope's results into Python, and an aggregate cannot be paged as `scope_export` is since v0.80.0
+(part of a pivot reads as the whole of it), so past a budget they refuse instead (owner, 2026-10-27; the SQL pushdown
+is #996). `comparison_sets`, `pivot`, `frontier`, `history`, `program_budget` and `orphaned_runs` (and
+`scope_pivot`, `scope_frontier` and `scope_history`, operations and actions) make `scope_export`'s estimate, before
+reading anything, and hold it to `READ_TIER_ROW_BUDGET` (50,000, until now only the level of the read-tier log
+line). A scope within it is read whole, as before. A scope past it is refused (`VALIDATION_FAILED`, with `details`
+`runs`, `results_estimated` and `result_budget`; one WARNING line `eval.read_tier lens=... refused`), naming the
+estimate, the budget and the filters that narrow that call, unless the call narrows to runs that fit, which it
+then reads run by run: a pivot, frontier or history of one subject (`subject_filter`, `subject_id` in Python) reads
+every run of that subject, any status and archived ones too, so its status and archival counts stay exact, and
+counts no other subject's results; `comparison_sets` reads only the runs it groups (a campaign, named runs, a run
+status). `program_budget` and `orphaned_runs` take no filter, so past the budget they are refused. A read that
+returns more than the budget (a deleted run's results are in no listing) is not aggregated: a call for one subject
+reads that subject's runs instead, and any other call is refused, its `details` adding `results_returned`. Campaign
+reports read their runs by id and are unaffected. A narrowed pivot, frontier or history says what it did not count
+in `narrowed_read_disclosure` (new on `PivotTable`, `HistoryResult` and `FrontierResult`, printed in each one's text,
+and left out of a dump while unset, so no stored bundle's fingerprint moves); a narrowed frontier's judge tiers are
+read on that subject's results alone, and it says that too. `RegressionWatch` now reads the history of the completed
+run's own subject, so a scope past the budget is still checked wherever that subject fits; a judged alert read that
+way carries `RegressionAlert.narrowed_read_disclosure` (new). When the subject alone is past the budget, the watch
+logs at ERROR that it checked nothing and that nothing narrower exists (`eval.regression watch checked nothing on
+run=...`), and `RegressionWatch.check` raises the refusal. The `frontier` command's refusal names `--subject`.
+
 ## v0.80.0 -- 2026-10-27
 
 ### backup: a drill compares a naive-timestamp table against the backup's moment
