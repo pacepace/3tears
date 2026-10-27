@@ -171,6 +171,7 @@ __all__ = [
     "decision_at",
     "implied_caveats",
     "dominant_options",
+    "every_caveat",
     "floors_not_held",
     "margin_sensitivity",
     "report_caveats",
@@ -559,6 +560,20 @@ def implied_caveats(report_input: ReportInput) -> list[ImpliedCaveat]:
             )
         )
     return found
+
+
+def every_caveat(report_input: ReportInput) -> list[Caveat | ImpliedCaveat]:
+    """Every caveat code assigns on a report input: the ones it states, then the ones what it holds implies.
+
+    The one set a caveat id is known by: the analyst's ``caveats_list`` pages it, and a report document's validity
+    (:func:`~threetears.evals.kernel.report_doc.report_doc_validity`) reads its ids, so the two cannot disagree.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: :func:`report_caveats`, then :func:`implied_caveats`, each in its own order.
+    :rtype: list[Caveat | ImpliedCaveat]
+    """
+    return [*report_caveats(report_input), *implied_caveats(report_input)]
 
 
 # --- gates and survivors -------------------------------------------------------------------------------------------

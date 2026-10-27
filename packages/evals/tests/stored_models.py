@@ -38,6 +38,8 @@ from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileAgreement
 from threetears.evals.kernel.campaign import EvalReportPlan, ReportPlanProvenance, report_plan_id
+from threetears.evals.kernel.report_doc import EvalReportDoc
+from packages.evals.tests.report_doc_support import converted_doc
 from packages.evals.tests.report_plan_support import r5_input, r5_plan
 from threetears.evals.analysis.analyst.snapshot import report_snapshot
 from threetears.evals.analysis.report_input import ReportInput
@@ -295,6 +297,17 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
         scope_id="uni-1",
         campaign_id=None,
         source="report_input",
+        created_by="agent:test",
+    ),
+    # The third prototype's Kairo document, as the writing loop stores one with a finding it left open.
+    "EvalReportDoc": lambda: EvalReportDoc(
+        scope_id="uni-1",
+        snapshot_id="report-snapshot:0b5b9abb32a03ae7801253cf2df6cfeb",
+        campaign_id="campaign-1",
+        doc=converted_doc("prototype3/kairo"),
+        ending="stored_with_findings",
+        findings=[{"claim": "c4", "severity": "should_fix", "finding": "The off-lane share is a lead."}],
+        generation={"turns": [{"role": "analyst", "round": 1, "cost_usd": None}], "bounces": 0},
         created_by="agent:test",
     ),
     # The reference Kairo plan, as a planned generation stores it beside its analysis.

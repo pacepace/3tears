@@ -1,0 +1,435 @@
+{
+  "schema": "report-doc/1",
+  "story": "decision",
+  "headline": "Keep production: no candidate passes more requests without losing ground, since {arm:v2} fails far more billing requests and {arm:v4} cites policy on far fewer tone replies.",
+  "lede": "Both losses are clear of zero after correcting for every comparison the campaign made, and {arm:v3} separates from production on nothing at the same price. What could change the answer is a {arm:v4} that cites policy again: it costs {cost.uplift.v4|abs|pct} less per reply, but on {aspects.billing.cases|words} cases its billing and tone readings are unresolved.",
+  "flag": "Each request set ran {aspects.billing.cases|words} cases: only large differences separate from production, so most candidate readings here are unresolved, not equal.",
+  "recommends": [
+    "production"
+  ],
+  "confidence": {
+    "form": "high_if_immaterial",
+    "caveats": [
+      {
+        "id": "unsettled:billing",
+        "label": null,
+        "material_if": "only if {arm:v4}'s lost policy citations were fixed or accepted: then whether its billing drop stays within the margin decides between keeping production and a cheaper switch. It cannot change the call for {arm:v3}, which costs the same and gains nothing.",
+        "checked": null
+      },
+      {
+        "id": "unsettled:tone",
+        "label": null,
+        "material_if": "only on the same condition as billing: {arm:v4}'s tone reading could still reach past the margin. For {arm:v3} it cannot change the call.",
+        "checked": null
+      },
+      {
+        "id": "unsettled:refunds",
+        "label": null,
+        "material_if": "only if the refund total check is broken: then the refunds set says nothing about any arm, and a candidate could be losing ground there unseen. If the check is sound, production truly gets no refund total right and no candidate can fall below it.",
+        "checked": null
+      },
+      {
+        "id": "best_of_n",
+        "label": null,
+        "material_if": "only where a candidate is picked; this report picks none, so it bears only on a later re-test of {arm:v4}.",
+        "checked": null
+      },
+      {
+        "id": "apparatus:grader_version",
+        "label": null,
+        "material_if": "only if the grader changed between arms' runs: both rule-outs are scripted check results. It is also one of the two unrecorded facts most likely to explain production getting no refund total right, which the refund check in Next tests.",
+        "checked": null
+      },
+      {
+        "id": "apparatus:simulator_model",
+        "label": null,
+        "material_if": "only if a different model played the user for some arms than for others; nothing records it.",
+        "checked": null
+      },
+      {
+        "id": "apparatus:simulator_request_settings",
+        "label": null,
+        "material_if": "only if the simulated user's budget or effort differed between arms; nothing records it.",
+        "checked": null
+      },
+      {
+        "id": "apparatus:simulator_sent_settings",
+        "label": null,
+        "material_if": "only if the simulated user's request settings differed between arms; nothing records it.",
+        "checked": null
+      },
+      {
+        "id": "apparatus:ocr_engine_version",
+        "label": null,
+        "material_if": "only if the transcription build differed between arms; none of the checks here reads a transcription directly.",
+        "checked": null
+      },
+      {
+        "id": "apparatus:world:document_language",
+        "label": null,
+        "material_if": "only if documents arrived in a different language for some arms, which would test the field labels rather than the model.",
+        "checked": null
+      },
+      {
+        "id": "apparatus:world:handwriting_present",
+        "label": null,
+        "material_if": "only if some arms saw handwritten annotations and others did not.",
+        "checked": null
+      },
+      {
+        "id": "apparatus:world:ingest_backlog",
+        "label": null,
+        "material_if": "only if the queue the subject was told about differed between arms, since a long queue trades thoroughness for speed.",
+        "checked": null
+      },
+      {
+        "id": "apparatus:world:operator_corrections",
+        "label": null,
+        "material_if": "only if a human correction arrived mid-run for some arms and before the first turn for others.",
+        "checked": null
+      },
+      {
+        "id": "apparatus:world:payment_hold",
+        "label": null,
+        "material_if": "only if a payment hold took effect at posting for some arms and from the first turn for others.",
+        "checked": null
+      },
+      {
+        "id": "apparatus:world:scan_quality",
+        "label": null,
+        "material_if": "only if some arms were given degraded scans and others clean ones.",
+        "checked": null
+      },
+      {
+        "id": "apparatus:world:supervisor_signoff",
+        "label": null,
+        "material_if": "only if the supervisor sign-off a check reads differed between arms' scenarios.",
+        "checked": null
+      },
+      {
+        "id": "apparatus:world:vendor_template",
+        "label": null,
+        "material_if": "only if the template the totals are graded against differed between arms or is wrong for refunds: it is the other fact most likely to explain production getting no refund total right, which the refund check in Next tests.",
+        "checked": null
+      }
+    ]
+  },
+  "decision": [
+    {
+      "slot": "recommendation",
+      "text": "Keep production. The question allowed a switch only for a candidate that passes more requests without losing any set, and none does."
+    },
+    {
+      "slot": "why_not",
+      "text": "{arm:v2}: the only candidate clearly better anywhere, on the tone set, but down {aspects.billing.contrast.v2.passed.delta|abs|pts} points on billing. {arm:v4}: {cost.uplift.v4|abs|pct} cheaper per reply, but its policy-citation drop on tone replies breaks the floor set for it. {arm:v3}: separates from production on no set and costs the same, so switching buys nothing."
+    },
+    {
+      "slot": "watch",
+      "text": "{arm:v4} is the option that could reverse this. Even with its citations fixed, its billing drop could reach {aspects.billing.flip_margin.v4|abs|pts} points on the interval the margin is read against, past a margin of {aspects.billing.margin|int}, so today's run cannot clear it. A reading that counts {arm:v2}'s tone gain and treats no floor as a gate would rank {arm:v2} above production; {arm:v2}'s billing floor is broken on its whole interval, which the question's own rule forbids. No check grades tone itself: the tone set is scored on totals and policy citation, so {arm:v2}'s tone gain is a gain in getting totals right on those requests."
+    },
+    {
+      "slot": "next",
+      "text": "Fix {arm:v4}'s policy citations on tone requests, then re-run it on billing and tone with more cases: the only route this campaign leaves to a cheaper model."
+    }
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "text": "{arm:v2} passes {aspects.billing.contrast.v2.passed.delta|abs|pts} points fewer billing requests than production, clear of zero and of the margin; neither other candidate separates from production there.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "forest",
+          "query": {
+            "source": "contrasts",
+            "aspect": "billing",
+            "measures": [
+              "passed"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": "margin",
+          "emphasis": "",
+          "caption": "Billing pass rate, change against production in points, with the margin the question allowed."
+        },
+        {
+          "block": "forest",
+          "query": {
+            "source": "readings",
+            "aspect": "billing",
+            "measures": [],
+            "arms": [
+              "v3",
+              "v4"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": "margin",
+          "emphasis": "",
+          "caption": "The interval each unresolved candidate's billing margin verdict is read on, against the margin; it differs from the corrected interval above."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c2",
+      "text": "{arm:v4} cites policy on far fewer tone replies than production, which cites it on every one; the drop is clear of zero after correction and breaks the citation floor the campaign set.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "forest",
+          "query": {
+            "source": "contrasts",
+            "aspect": "tone",
+            "measures": [
+              "goal_state:reply.cites_policy"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Change in the share of tone replies citing policy against production, as a fraction of one, corrected for every comparison."
+        },
+        {
+          "block": "table",
+          "query": {
+            "source": "floors",
+            "aspect": "tone",
+            "measures": [],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "The citation floor read on each candidate. Largest drop is the far end of each interval. {arm:v2} and {arm:v3} cite on every reply yet read unclear, because this many cases cannot show a perfect rate holding within the floor."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c3",
+      "text": "{arm:v4} is the only cheaper option, at {scoreboard.v4.reply_cost_usd|usd_per_1k}; the other candidates cost what production costs.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "bars",
+          "query": {
+            "source": "measures",
+            "aspect": "billing",
+            "measures": [
+              "cost_usd"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "per_1k",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Cost per 1,000 replies by arm; every reply of an arm cost the same."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c4",
+      "text": "The one clear gain any candidate shows is {arm:v2}'s on the tone set, up {aspects.tone.contrast.v2.passed.delta|pts} points over production, which passes only {aspects.tone.reading.v2.control_passed} tone requests; the gain comes with {arm:v2}'s billing loss.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "forest",
+          "query": {
+            "source": "contrasts",
+            "aspect": "tone",
+            "measures": [
+              "passed"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": "margin",
+          "emphasis": "",
+          "caption": "Tone-set pass rate, change against production in points, with the margin."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c5",
+      "text": "Production gets no refund total right, so the refunds set cannot show any candidate losing ground; {arm:v2} gets the most right, and that rise is not separated after correction.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "dot_interval",
+          "query": {
+            "source": "measures",
+            "aspect": "refunds",
+            "measures": [
+              "goal_state:reply.total == case.total"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Share of refund replies whose total matches the case, by arm, as a fraction of one."
+        },
+        {
+          "block": "forest",
+          "query": {
+            "source": "contrasts",
+            "aspect": "refunds",
+            "measures": [
+              "passed"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": "margin",
+          "emphasis": "",
+          "caption": "Refunds pass rate, change against production in points, with the margin."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    }
+  ],
+  "explore": [
+    {
+      "control": "Margin on each request set",
+      "binds": "how far a candidate's pass rate may fall behind production's on billing, tone or refunds",
+      "outcome": "The call holds at every margin swept on billing and on tone. {arm:v4} would read within the billing margin only above {aspects.billing.flip_margin.v4|abs|pts} points, and it would still break the citation floor."
+    },
+    {
+      "control": "Policy-citation floor on the tone set",
+      "binds": "decides {arm:v4} only; {arm:v2} and {arm:v3} read unclear at the declared floor and hold it above {aspects.tone.floor.tone/rate_drop/reply.cites_policy.v2.held_above|abs|pts} points",
+      "outcome": "{arm:v4} breaks it at any floor under {aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.broken_at|abs|pts} points, the near end of its drop's interval, and holds it only above {aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.held_above|abs|pts}. {arm:v2} and {arm:v3} cite on every reply; {aspects.billing.cases|words} cases cannot show that holding within the floor, and the call does not move."
+    }
+  ],
+  "omitted": [
+    {
+      "what": "The reading intervals for the other sets",
+      "why": "They agree in direction with the corrected contrasts shown; c1 shows them for the two unresolved billing candidates, where the margin verdict cited in Watch is read."
+    },
+    {
+      "what": "Policy citation on the billing and refunds sets",
+      "why": "Every arm cites policy in every reply there; nothing separates."
+    },
+    {
+      "what": "Cost contrasts reported as not separated",
+      "why": "Each arm's cost is the same on every reply, so the difference is a price, not a measured spread; the test reads not separated only because no value range was declared. It doesn't change the call."
+    },
+    {
+      "what": "The production-cost measure",
+      "why": "It repeats cost per reply and adds nothing."
+    },
+    {
+      "what": "Failure examples",
+      "why": "The frozen failures carry no reply text, input or expected value, only the name of the failing check, which the rates already show."
+    },
+    {
+      "what": "{arm:v3}'s doubled runs on the tone set",
+      "why": "It describes the method and changes no call. Noted in Method."
+    },
+    {
+      "what": "Correction details beyond the family size and level",
+      "why": "They describe the method; Method states them once."
+    },
+    {
+      "what": "The reading that ranks {arm:v2} above production",
+      "why": "Addressed in Watch: it counts the tone gain and treats no floor as a gate, so it ignores the question's own rule."
+    },
+    {
+      "what": "Each arm's raw citation rate on the tone set",
+      "why": "The corrected change in c2 carries the same fact with the interval the lede relies on."
+    }
+  ],
+  "next": [
+    {
+      "text": "Fix {arm:v4}'s policy citation on tone requests, then re-run {arm:v4} on billing and tone with more cases than today's {aspects.billing.cases|words}. No case count is given: the campaign declared its lines as margins and floors against production, and the sizing computation reads only declared criteria.",
+      "settles": "Whether the cheaper model holds the citation floor and stays within the margins on both sets, which decides between keeping production and switching to it."
+    },
+    {
+      "text": "Check the refund cases' expected totals, the grading template and the grader version against a few hand-graded replies.",
+      "settles": "Whether refunds is a real measure or a broken check; until then no candidate can be shown to lose ground there."
+    },
+    {
+      "text": "Declare a check or judge that grades tone itself.",
+      "settles": "Whether the tone set measures tone at all; today it scores totals and policy citation."
+    },
+    {
+      "text": "Record the grader, simulator and world settings on every run.",
+      "settles": "Turns the unrecorded apparatus caveats into checked lines."
+    }
+  ],
+  "method": [
+    {
+      "term": "Cases and repeats",
+      "text": "{aspects.billing.cases|words} cases per request set, one run per case, except {arm:v3} on the tone set, which ran each case {aspects.tone.depth.v3.repeats|words} times.",
+      "caveats": []
+    },
+    {
+      "term": "What pass means",
+      "text": "Each reply is scored by scripted checks: its total matches the case's total, and it cites policy. The campaign does not state its pass rule; on every set the pass counts match the replies that pass both. No judge and no human rating are involved.",
+      "caveats": []
+    },
+    {
+      "term": "Intervals and correction",
+      "text": "Changes against production are contrasts corrected together by Holm's method across {aspects.billing.family.family_size|words} comparisons, each interval at {aspects.billing.family.level}. Rates by arm carry confidence intervals over cases.",
+      "caveats": []
+    },
+    {
+      "term": "Margin verdicts",
+      "text": "Whether a candidate stays within a margin, and the margin at which that flips, are read on each arm's own reading interval, not on the corrected contrasts the other charts show. The two intervals differ by arm, and neither is always the wider: for {arm:v4} on billing the reading interval reaches further below zero, which is why Watch cites a larger possible drop than c1's first chart shows. Both read the same direction for every arm and set.",
+      "caveats": []
+    },
+    {
+      "term": "Margins and floors",
+      "text": "Each set allows a candidate to fall {aspects.billing.margin|int} points behind production. The tone set's floor speaks for policy citation, not for the tone pass rate, and allows {aspects.tone.floor.tone/rate_drop/reply.cites_policy.v4.margin|int} points; the two are shown apart.",
+      "caveats": []
+    },
+    {
+      "term": "Cost basis",
+      "text": "A fixed cost per reply for each arm, the same on every case.",
+      "caveats": []
+    },
+    {
+      "term": "What wasn't compared",
+      "text": "Latency was not recorded. No traffic shares were declared, so no routing between arms was weighed.",
+      "caveats": []
+    },
+    {
+      "term": "Source",
+      "text": "The evidence frozen for campaign s1 on its run date, {meta.run_date}.",
+      "caveats": []
+    }
+  ]
+}

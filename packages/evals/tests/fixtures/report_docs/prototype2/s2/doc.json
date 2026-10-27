@@ -1,0 +1,362 @@
+{
+  "schema": "report-doc/1",
+  "story": "decision",
+  "headline": "Use {arm:beta}, provisionally: of the arms inside both bars it gets the total right most often, but this run cannot separate it from the cheaper {arm:gamma}.",
+  "lede": "{arm:beta} leads {arm:gamma} by {aspects.answers.pair.beta.gamma.change|pts} points on the right total, an interval that reaches below zero, while {arm:alpha}, the strongest answerer, misses both bars. If a larger run shows the lead is noise, {arm:gamma}, cheaper and faster, becomes the pick.",
+  "flag": "Only the cost and turn-time bars were set in advance. Nothing declared how often an arm must get the total right, or what a point of it is worth.",
+  "recommends": [
+    "beta"
+  ],
+  "confidence": {
+    "form": "low",
+    "caveats": [
+      {
+        "id": "best_of_n",
+        "label": null,
+        "material_if": "the lead of the arm picked shrinks on fresh cases, as the best of a few tends to; then the cheaper and faster arm is the pick",
+        "checked": null
+      },
+      {
+        "id": "nothing_declared",
+        "label": null,
+        "material_if": "the owner values the cheaper arm's lower cost or turn time inside the bars, or needs a minimum answer rate; either ranks the arms inside the bars differently from answering alone",
+        "checked": null
+      },
+      {
+        "id": "no_control",
+        "label": null,
+        "material_if": "a paired read over the shared cases moves the beta-against-gamma verdict; today's corrected pair interval already reaches below zero, so pairing could only firm up or dissolve the lead, not reverse the bar verdicts",
+        "checked": null
+      },
+      {
+        "id": "apparatus:world:ingest_backlog",
+        "label": null,
+        "material_if": "the queued backlog differed between arms' runs; the extractor trades thoroughness for speed under backlog, so it would move both turn time and answer rate, the two things this call rests on",
+        "checked": null
+      },
+      {
+        "id": "apparatus:grader_version",
+        "label": null,
+        "material_if": "a different grader tolerance or key scored one arm's runs, moving its answer rate with no change in what it extracted",
+        "checked": null
+      },
+      {
+        "id": "apparatus:ocr_engine_version",
+        "label": null,
+        "material_if": "a different OCR build fed one arm's runs, so a missed total was never legible to it",
+        "checked": null
+      },
+      {
+        "id": "apparatus:simulator_model",
+        "label": null,
+        "material_if": "a different model played the user for one arm's runs",
+        "checked": null
+      },
+      {
+        "id": "apparatus:simulator_request_settings",
+        "label": null,
+        "material_if": "the simulated user ran with a different output cap or reasoning budget for one arm's runs",
+        "checked": null
+      },
+      {
+        "id": "apparatus:simulator_sent_settings",
+        "label": null,
+        "material_if": "the simulated user's calls were sent with different request settings for one arm's runs",
+        "checked": null
+      },
+      {
+        "id": "apparatus:world:scan_quality",
+        "label": null,
+        "material_if": "one arm saw cleaner scans than another",
+        "checked": null
+      },
+      {
+        "id": "apparatus:world:document_language",
+        "label": null,
+        "material_if": "one arm saw documents in a language its field labels don't match",
+        "checked": null
+      },
+      {
+        "id": "apparatus:world:handwriting_present",
+        "label": null,
+        "material_if": "handwritten annotation differed between arms' documents",
+        "checked": null
+      },
+      {
+        "id": "apparatus:world:vendor_template",
+        "label": null,
+        "material_if": "the adjudicated template graded against differed between arms' runs",
+        "checked": null
+      },
+      {
+        "id": "apparatus:world:payment_hold",
+        "label": null,
+        "material_if": "a payment hold was in force from the first turn for one arm and not another",
+        "checked": null
+      },
+      {
+        "id": "apparatus:world:operator_corrections",
+        "label": null,
+        "material_if": "operator corrections arrived at different points for different arms",
+        "checked": null
+      },
+      {
+        "id": "apparatus:world:supervisor_signoff",
+        "label": null,
+        "material_if": "supervisor sign-off differed between arms' runs, changing what the goal check reads",
+        "checked": null
+      },
+      {
+        "id": "unreported:orchestration_ms (llm_ms, tool_ms were not measured, so the parts cannot account for the whole.)",
+        "label": null,
+        "material_if": "a fix needs to know which part of the turn is slow; the bar reads whole-turn time, which is measured, so the call does not rest on the parts",
+        "checked": null
+      }
+    ]
+  },
+  "decision": [
+    {
+      "slot": "recommendation",
+      "text": "Use {arm:beta}. It clears both bars and gets the total right in {pass_rate.beta|pct} of trials, the most of any arm that clears them. Nothing separates it from {arm:gamma}, and the campaign's own rule for an unseparated pick falls back to cost, which would choose {arm:gamma}. This report departs from that rule because the question ranks answering inside the bars, and a saving the bars already allow buys nothing it asks for."
+    },
+    {
+      "slot": "why_not",
+      "text": "{arm:alpha} costs {scoreboard.alpha.reply_cost_usd|usd_per_1k} against a bar of {criteria.answers/bar/cost_usd.threshold|usd_per_1k}, and misses the turn-time bar too, each by its whole interval. Its answer lead over {arm:beta} is not separated either ({aspects.answers.pair.alpha.beta.interval|interval} points)."
+    },
+    {
+      "slot": "why_not",
+      "text": "{arm:gamma} is cheaper and faster, and the pipeline's dominance reading favours it over {arm:beta} for that reason, since nothing separates them on answering. It gets the total right in {pass_rate.gamma|pct} of trials, and both arms sit inside the bars, so its saving is not what the question ranks."
+    },
+    {
+      "slot": "watch",
+      "text": "Turn time is {arm:beta}'s nearest line: {weakest.margin} under the bar on its mean, and its p95 reaches {measure.total_ms.beta.p95}. If today's gap is the true one, a rerun of today's size still reads {arm:gamma} ahead {settle.beta.gamma.goal_state:reply.total == case.total.overall.wrong_side|pct} of the time."
+    },
+    {
+      "slot": "what_settles_it",
+      "text": "A larger run of {arm:beta} and {arm:gamma} on fresh cases, the same cases for both, at today's {repeats|int} repeats each: about {settle.beta.gamma.goal_state:reply.total == case.total.overall.cases_needed_80|int} trials per arm separates them in most such runs if today's gap is real. Repeating today's {cases|int} cases more often does not count toward it."
+    }
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "text": "{arm:alpha} misses both bars by its whole interval; {arm:beta} and {arm:gamma} clear both.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "bars",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "cost_usd"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "per_1k",
+            "small_multiples_by": "none"
+          },
+          "reference": "budget",
+          "emphasis": "",
+          "caption": "Cost per 1,000 replies; the dashed line is the declared cost bar."
+        },
+        {
+          "block": "bars",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "total_ms"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": "budget",
+          "emphasis": "",
+          "caption": "Mean turn time with its interval; the dashed line is the declared turn-time bar."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c2",
+      "text": "Inside the bars, {arm:beta} gets the total right more often than {arm:gamma}, but the corrected gap of {aspects.answers.pair.beta.gamma.change|pts} points reaches below zero ({aspects.answers.pair.beta.gamma.interval|interval}); the chart shows each arm's own spread, not that gap.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "dot_interval",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "goal_state:reply.total == case.total"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "beta",
+          "caption": "Share of trials with the right total, with each arm's own interval. The corrected gap between arms has no chart; the sentence above carries it."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c3",
+      "text": "Every failure is a wrong total: all {n_candidates|words} arms cite the policy in every trial.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "table",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "goal_state:reply.cites_policy",
+              "goal_state:reply.total == case.total"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Both checks per arm as a share of trials, with intervals."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    }
+  ],
+  "explore": [
+    {
+      "control": "Cost bar",
+      "binds": "{arm:alpha}; {arm:beta} below its own cost",
+      "outcome": "Lowering the bar under {scoreboard.beta.reply_cost_usd|usd_per_1k} leaves {arm:gamma} the only arm inside. Raising it to {scoreboard.alpha.reply_cost_usd|usd_per_1k} does not admit {arm:alpha} alone, since it also misses the turn-time bar."
+    },
+    {
+      "control": "Turn-time bar",
+      "binds": "{arm:alpha}; {arm:beta} if tightened",
+      "outcome": "A bar that cuts into or below {arm:beta}'s interval ({aspects.answers.bar.total_ms.beta.interval|interval}) but stays above {arm:gamma}'s ({aspects.answers.bar.total_ms.gamma.interval|interval}) leaves {arm:gamma} the only arm inside; below {arm:gamma}'s, no arm qualifies. {arm:alpha} needs a bar above {aspects.answers.bar.total_ms.alpha.interval|interval}."
+    },
+    {
+      "control": "Minimum answer rate (none declared)",
+      "binds": "every arm",
+      "outcome": "Read on each arm's estimate, a floor between {pass_rate.gamma|pct} and {pass_rate.beta|pct} leaves {arm:beta} the only arm inside the bars that meets it, and a floor above {pass_rate.beta|pct} leaves none, since {arm:alpha} misses both bars. Read on whole intervals, as the bars are, no floor separates {arm:beta} from {arm:gamma}: their intervals overlap."
+    }
+  ],
+  "omitted": [
+    {
+      "what": "Price per point of answer rate between arms",
+      "why": "The tool's figure is per whole unit of a rate held as a fraction, not per point, and no price per point was declared; the cost gap and the answer gap are shown separately."
+    },
+    {
+      "what": "Unpaired interval on beta against alpha, which just clears zero",
+      "why": "Uncorrected and read as independent; the corrected pair reading does not separate them, and showing both would invite reading a separation."
+    },
+    {
+      "what": "Unpaired interval on beta against gamma",
+      "why": "Same verdict as the corrected pair reading, which is the one cited."
+    },
+    {
+      "what": "p95 turn time for alpha and gamma",
+      "why": "The bar reads the mean; only beta's p95, near the bar's value, is in Watch."
+    },
+    {
+      "what": "Failure example cards",
+      "why": "The frozen failures carry no reply, excerpt or expected total, so cards would show only ids."
+    },
+    {
+      "what": "A hypothetical answer-rate floor sweep in which alpha dominates above beta's rate",
+      "why": "Code ignored the bars in that sweep; with the bars applied no arm qualifies there, which the explore control says in words."
+    },
+    {
+      "what": "Production cost per reply",
+      "why": "Identical to measured spend for every arm, so the cost bar reads the same either way (Method)."
+    },
+    {
+      "what": "Trials run, passed and failed per arm, and the settle sizing as a block",
+      "why": "No block draws the settle sizing; its figures sit in What settles it and Next, and the trial counts in Method."
+    }
+  ],
+  "next": [
+    {
+      "text": "Re-run {arm:beta} and {arm:gamma} on fresh cases, the same cases for both, at today's {repeats|int} repeats each, sized for about {settle.beta.gamma.goal_state:reply.total == case.total.overall.cases_needed_80|int} trials per arm.",
+      "settles": "Whether {arm:beta}'s lead is real; if it is not, {arm:gamma}, cheaper and faster, is the pick."
+    },
+    {
+      "text": "Declare a minimum answer rate, and whether it is read on the estimate or the whole interval.",
+      "settles": "Whether {arm:gamma} is acceptable at all, and whether any arm inside the bars is good enough; at today's estimates a floor above {arm:beta}'s rate leaves none."
+    },
+    {
+      "text": "Record the grader, OCR build, simulator and world settings, ingest backlog first, on every run.",
+      "settles": "Turns the open apparatus caveats into checked lines; a backlog that differed between arms could move both turn time and answer rate."
+    },
+    {
+      "text": "Compare which cases each arm gets wrong.",
+      "settles": "Whether the gap between {arm:beta} and {arm:gamma} sits on a few hard cases, which a targeted fix could close, or spreads across the cases, which only a larger run settles."
+    }
+  ],
+  "method": [
+    {
+      "term": "Cases and repeats",
+      "text": "{cases|int} cases, each run {repeats|int} times per arm, {scoreboard.beta.ran|int} trials per arm; intervals are over cases, not trials.",
+      "caveats": []
+    },
+    {
+      "term": "Pass",
+      "text": "A trial passes when the reply's total matches the case total. Citing the policy is checked too, and every arm passes it every time.",
+      "caveats": []
+    },
+    {
+      "term": "Intervals",
+      "text": "Each arm's rate carries its own interval at {spread.beta.goal_state:reply.total == case.total.overall.level}. Differences between arms are corrected across every pair of arms, read at {aspects.answers.pair.beta.gamma.confidence}.",
+      "caveats": []
+    },
+    {
+      "term": "Bars as the condition",
+      "text": "The question asks which arm answers within the cost and turn-time bars, so both bars rule options out here. The pipeline reads bars as warnings, so every arm survives there; it has {arm:gamma} dominating {arm:beta} and {arm:beta} dominating {arm:alpha}, each on cost with answering not separated, while {arm:gamma} does not dominate {arm:alpha}, which is ahead of it ({aspects.answers.pair.alpha.gamma.interval|interval} points). This report removes {arm:alpha} on the bars and ranks answering above cost inside them, which is why it picks {arm:beta} over the pipeline's cost tie-break.",
+      "caveats": []
+    },
+    {
+      "term": "Rerun risk",
+      "text": "How often a rerun reads the other arm ahead assumes today's gap is the true one. It sizes a rerun's risk, not the evidence that {arm:beta} is ahead, so the pick does not rest on it and it sits in Watch.",
+      "caveats": []
+    },
+    {
+      "term": "Settle sizing",
+      "text": "The trials needed to separate two arms count trials as fresh cases at today's repeats, read as independent arms; a paired read on shared cases needs fewer.",
+      "caveats": []
+    },
+    {
+      "term": "Cost basis",
+      "text": "Spend per reply across all roles, which equals production cost per reply for every arm.",
+      "caveats": []
+    },
+    {
+      "term": "No control",
+      "text": "No arm is a control; arms compare in pairs.",
+      "caveats": []
+    },
+    {
+      "term": "Not measured",
+      "text": "How turn time splits between model and tool time.",
+      "caveats": []
+    },
+    {
+      "term": "Source",
+      "text": "Campaign {meta.campaign}, run {meta.run_date}.",
+      "caveats": []
+    }
+  ]
+}

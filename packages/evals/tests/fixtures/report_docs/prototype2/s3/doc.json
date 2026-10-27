@@ -1,0 +1,306 @@
+{
+  "schema": "report-doc/1",
+  "story": "status",
+  "headline": "Don't rely on {arm:solo} for the clarity cases yet: it is judged correct on only {aspects.clarity.bar.answer.correct.solo.value} of them against a {aspects.clarity.bar.answer.correct.solo.bar} bar; its accuracy pass is unsettled.",
+  "lede": "The clarity-case shortfall is clear: its whole interval ({aspects.clarity.bar.answer.correct.solo.interval|interval}) sits below the bar. A calibration showing the judge marks right answers wrong on those cases would change the answer.",
+  "flag": "One arm, no control: both bars warn and never gate, so nothing here blocks a release by rule, and the judge behind every figure has no human calibration.",
+  "recommends": [],
+  "confidence": {
+    "form": "high_if_immaterial",
+    "caveats": [
+      {
+        "id": "judge_uncalibrated",
+        "label": null,
+        "material_if": "only if the judge marks right answers wrong on the clarity cases: the fix-first call rests entirely on its correctness grading, and every figure here is an absolute judged rate",
+        "checked": null
+      },
+      {
+        "id": "nothing_declared",
+        "label": null,
+        "material_if": "only if the owner's real line for correctness sits below the top of the clarity cases' interval: the declared bars warn and never gate, so no rule says what is good enough to ship",
+        "checked": null
+      },
+      {
+        "id": "unreported:judge_temperature",
+        "label": null,
+        "material_if": "only if the judge sampled differently between the accuracy and clarity runs, which would make the gap between the two case sets partly the judge's",
+        "checked": null
+      }
+    ]
+  },
+  "decision": [
+    {
+      "slot": "recommendation",
+      "text": "Not ready on the clarity cases. {arm:solo} answers them correctly {aspects.clarity.bar.answer.correct.solo.value} of the time, clearly under its {aspects.clarity.bar.answer.correct.solo.bar} bar, and more cases will not change that. Whether the cause is the model, the judge or the run setup stays open until the case check and the judge calibration come back."
+    },
+    {
+      "slot": "what_is_tangled",
+      "text": "How clear {arm:solo}'s answers are has no answer yet. The clarity aspect's bar reads correctness, not clarity, and the clarity score has no declared line and no stated scale."
+    },
+    {
+      "slot": "watch",
+      "text": "The accuracy bar is the nearest line: {aspects.accuracy.bar.answer.correct.solo.value} against {aspects.accuracy.bar.answer.correct.solo.bar}, with an interval of {aspects.accuracy.bar.answer.correct.solo.interval|interval} that reaches below it. It passes on its point estimate only. Settling it takes at least {settle.criteria.accuracy/bar/answer.correct.solo.overall.cases_needed_two_sided_80|int} trials drawn from new cases; that sizing treats trials as independent, so it is a lower bound."
+    },
+    {
+      "slot": "next",
+      "text": "First confirm whether the two aspects ran the same cases; that decides whether the judge calibration or a fix to the model comes next."
+    }
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "text": "On the clarity cases, {arm:solo} is judged correct {aspects.clarity.bar.answer.correct.solo.value} of the time, and its whole interval sits below the {aspects.clarity.bar.answer.correct.solo.bar} bar.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "dot_interval",
+          "query": {
+            "source": "judged",
+            "aspect": "clarity",
+            "measures": [
+              "answer.correct"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Answers judged correct on the clarity cases, against the bar. Interval {aspects.clarity.bar.answer.correct.solo.interval|interval}, wholly below it."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c2",
+      "text": "On the accuracy cases, {arm:solo} is judged correct {aspects.accuracy.bar.answer.correct.solo.value} of the time: above the {aspects.accuracy.bar.answer.correct.solo.bar} bar on its point estimate, with an interval that reaches below it.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "dot_interval",
+          "query": {
+            "source": "judged",
+            "aspect": "accuracy",
+            "measures": [
+              "answer.correct"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Answers judged correct on the accuracy cases, against the bar. Interval {aspects.accuracy.bar.answer.correct.solo.interval|interval}, crossing it."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c3",
+      "text": "The clarity score is somewhat lower on the clarity cases than on the accuracy cases, a gap near its noise on a score with no stated scale, and no line says what score is clear enough.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "table",
+          "query": {
+            "source": "judged",
+            "aspect": "clarity",
+            "measures": [
+              "answer.clear"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Clarity cases: the judge's clarity score, standard error {aspects.clarity.judged.answer.clear.solo.sem}."
+        },
+        {
+          "block": "table",
+          "query": {
+            "source": "judged",
+            "aspect": "accuracy",
+            "measures": [
+              "answer.clear"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Accuracy cases: the same score, standard error {aspects.accuracy.judged.answer.clear.solo.sem}. The campaign states no scale for it."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c4",
+      "text": "On the accuracy run a single case fails, on both its repeats; the clarity failures the snapshot keeps fall on other case ids, which pass every accuracy trial if the ids name the same cases.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "examples",
+          "query": {
+            "source": "examples",
+            "aspect": "clarity",
+            "measures": [],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Failed clarity-case trials, up to three the snapshot keeps; no reply or judge reason was recorded."
+        },
+        {
+          "block": "examples",
+          "query": {
+            "source": "examples",
+            "aspect": "accuracy",
+            "measures": [],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Every failed accuracy-case trial: {aspects.accuracy.scoreboard.solo.failed|words}, on one case."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    }
+  ],
+  "explore": [
+    {
+      "control": "The correctness bar",
+      "binds": "The status of both case sets against their bars",
+      "outcome": "The clarity cases miss at any bar above the top of their interval ({aspects.clarity.bar.answer.correct.solo.interval|interval}); the accuracy cases stay unsettled at any bar inside theirs ({aspects.accuracy.bar.answer.correct.solo.interval|interval}). The bars warn and never gate, so no setting changes a call."
+    }
+  ],
+  "omitted": [
+    {
+      "what": "Cost",
+      "why": "Flat at {cost_per_1k.solo|usd_per_1k} with one arm, so it decides nothing; one line in Method."
+    },
+    {
+      "what": "The campaign-wide scoreboard, the clarity bar's criterion-level figure, the code's dominance reading and its count of failed bars",
+      "why": "They read the clarity bar on the accuracy cases' figure ({criteria.clarity/bar/answer.correct.solo.value}) and the scoreboard counts only the accuracy trials, contradicting the clarity aspect's own bar reading ({aspects.clarity.bar.answer.correct.solo.value}, missed); the page cites the per-aspect figures only."
+    },
+    {
+      "what": "A sample size for the clarity bar",
+      "why": "The sizing tool reads the clarity bar on the wrong aspect's figure, and the miss is already clear of the line, so more cases would not change it."
+    },
+    {
+      "what": "Moving either bar's threshold",
+      "why": "A bar warns and never gates, so code makes no call to move; the explore control states the status bands in words."
+    },
+    {
+      "what": "The failed trials' content",
+      "why": "No reply, reason or excerpt was recorded for any of them; only their case ids carry information, shown as the detail claim."
+    },
+    {
+      "what": "Pass rate as its own measure",
+      "why": "A pass is an answer judged correct, so it repeats the correctness figures."
+    },
+    {
+      "what": "The unrecorded apparatus caveats (grader version, OCR build, simulator model and settings, world settings)",
+      "why": "Whether they varied is unknown; they land once in Method because they qualify the rig, not one finding."
+    },
+    {
+      "what": "The production-replicating cost measure",
+      "why": "Identical to the measuring spend on every trial; describes the method."
+    }
+  ],
+  "next": [
+    {
+      "text": "Confirm whether the accuracy and clarity aspects ran the same cases. The ids suggest they did: the clarity failures fall on cases that pass every accuracy trial.",
+      "settles": "If they are the same cases, the same items read correct in one run and wrong in the other, which points at the judge or the run setup before the model: calibrate the judge next. If not, the clarity cases are simply harder: read and fix the failures next."
+    },
+    {
+      "text": "Collect human correctness ratings on the clarity cases and calibrate the judge against them.",
+      "settles": "Whether the miss is the model's or the judge's: turns the judge caveat, which the call rests on, into evidence."
+    },
+    {
+      "text": "Record replies and judge reasons for the failed clarity-case trials, read them, and fix what they share; then re-run the clarity cases.",
+      "settles": "Whether the shortfall is a fixable failure mode in the model, and whether a fix clears the bar."
+    },
+    {
+      "text": "Declare what clarity means: a scale for the clarity score and a line on it, or point the clarity bar at the clarity score.",
+      "settles": "The second half of the question, how clear the answers are, which today has nothing to be read against."
+    },
+    {
+      "text": "Add new accuracy cases, at least {settle.criteria.accuracy/bar/answer.correct.solo.overall.cases_needed_two_sided_80|int} trials in all; more repeats of the same cases will not do.",
+      "settles": "Whether accuracy clears its bar, if the true rate is near today's estimate; the sizing treats trials as independent, so it is a floor, not a target."
+    }
+  ],
+  "method": [
+    {
+      "term": "Cases and repeats",
+      "text": "Accuracy: {aspects.accuracy.cases|int} cases, {aspects.accuracy.repeats|int} repeats each. Clarity: {aspects.clarity.cases|int} cases, {aspects.clarity.repeats|int} repeats each. Each aspect ran its own trials.",
+      "caveats": []
+    },
+    {
+      "term": "What pass means",
+      "text": "A trial passes when the judge marks the answer correct. The campaign states nothing more, for either aspect.",
+      "caveats": []
+    },
+    {
+      "term": "Bars",
+      "text": "The accuracy aspect carries a bar of {aspects.accuracy.bar.answer.correct.solo.bar} and the clarity aspect one of {aspects.clarity.bar.answer.correct.solo.bar}, both on answer correctness and declared before the run. A bar warns and never gates. The clarity aspect's bar reads correctness, not the clarity score.",
+      "caveats": []
+    },
+    {
+      "term": "Intervals",
+      "text": "Over cases, at the level each reading prints. No block draws a bar reading's interval beside its line, so each correctness chart shows the value and the bar and its caption carries the interval. The clarity score carries a standard error only, and no block draws both aspects in one table.",
+      "caveats": []
+    },
+    {
+      "term": "The judge",
+      "text": "Correctness and clarity are both judged, with {judged.answer.correct.calibration_ratings|int} human calibration ratings; the judge's tier is undetermined and its sampling temperature unreported.",
+      "caveats": []
+    },
+    {
+      "term": "Cost basis",
+      "text": "{cost_per_1k.solo|usd_per_1k}, the same on every trial.",
+      "caveats": []
+    },
+    {
+      "term": "Unrecorded apparatus",
+      "text": "The grader version, OCR build, simulator model and its settings, and the world settings were not recorded on every run, so whether any varied between the accuracy and clarity runs cannot be established.",
+      "caveats": []
+    },
+    {
+      "term": "What wasn't compared",
+      "text": "No control, no other arm and no prior run: every figure is absolute.",
+      "caveats": []
+    },
+    {
+      "term": "Source",
+      "text": "The {meta.campaign} campaign, run {meta.run_date}.",
+      "caveats": []
+    },
+    {
+      "term": "Sample sizes",
+      "text": "The accuracy sizing counts trials as independent draws; failures here sit on whole cases, so the trials have to come from new cases and the figure is a lower bound.",
+      "caveats": []
+    }
+  ]
+}

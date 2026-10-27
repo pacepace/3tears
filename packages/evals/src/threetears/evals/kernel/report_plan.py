@@ -79,8 +79,9 @@ _SlotKey = Literal[
 ]
 #: GENERATOR §2.6: why an option is in the options table.
 _OptionRole = Literal["recommended", "lean", "control", "near_miss", "most_accurate", "cheapest", "alternative"]
-#: The kit's chart kinds (``analysis.report.charts.KIT_CHARTS``, one name each) plus a plain table.
-_PlanChartKind = Literal[
+#: The kit's chart kinds (``analysis.report.charts.KIT_CHARTS``, one name each) plus a plain table: what a plan's chart
+#: and a report document's evidence block (:mod:`threetears.evals.kernel.report_doc`) may be drawn as.
+PlanChartKind = Literal[
     "forest",
     "bars",
     "diverging_bars",
@@ -122,8 +123,9 @@ _ChartSource = Literal[
 _ChartTransform = Literal["none", "per_1k", "arm_minus_control"]
 #: What a chart repeats its panel by.
 _SmallMultiplesBy = Literal["none", "arm", "aspect", "task"]
-#: What a reference line is: the kit's reference kinds (``analysis.report.charts.ChartReference.kind``).
-_ReferenceKind = Literal["floor", "budget", "margin", "no_preference"]
+#: What a reference line is: the kit's reference kinds (``analysis.report.charts.ChartReference.kind``), on a plan's
+#: chart or a report document's evidence block.
+ReferenceKind = Literal["floor", "budget", "margin", "no_preference"]
 #: An explore control's widget.
 _ControlKind = Literal["slider", "segmented", "toggle", "select"]
 #: The tables Full results prints.
@@ -311,7 +313,7 @@ class ChartQuery(_Plan):
 class _PlannedChartReference(_Plan):
     """A reference line as the planner asks for it: what kind of line it is."""
 
-    kind: _ReferenceKind
+    kind: ReferenceKind
 
 
 class ChartReference(_PlannedChartReference):
@@ -324,7 +326,7 @@ class ChartReference(_PlannedChartReference):
 class PlannedChart(_Plan):
     """A chart as the planner chooses it: kind, title, what it reads, a reference line and the one thing it stresses."""
 
-    kind: _PlanChartKind
+    kind: PlanChartKind
     title: ModelProse = Field(description="The chart's title; empty when the section headline says it.")
     query: ChartQuery
     reference: Sequence[_PlannedChartReference] = Field(max_length=1, description="At most one reference line.")
@@ -558,7 +560,7 @@ class StructureChart(_Plan):
     """A chart as the structure call chooses it: kind, what it reads, a reference line and the one thing it stresses.
     Its title is prose, written by the prose call."""
 
-    kind: _PlanChartKind
+    kind: PlanChartKind
     query: ChartQuery
     reference: list[_PlannedChartReference] = Field(max_length=1, description="At most one reference line.")
     emphasis: str = Field(description="The one arm or row bolded or ringed, by id; empty for none.")
@@ -677,10 +679,12 @@ __all__ = [
     "OptionRow",
     "Options",
     "PlanArm",
+    "PlanChartKind",
     "PlanProse",
     "PlanStructure",
     "PlannedChart",
     "PlannedReport",
+    "ReferenceKind",
     "ReportPlan",
     "Section",
     "Signals",

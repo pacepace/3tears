@@ -738,6 +738,7 @@ def test_drop_derived_clears_analyses_insights_and_report_snapshots_and_keeps_th
         "eval_analysis": 1,
         "eval_insight": 1,
         "eval_judge_profile": 0,
+        "eval_report_doc": 0,
         "eval_report_plan": 0,
         "eval_report_snapshot": 1,
     }

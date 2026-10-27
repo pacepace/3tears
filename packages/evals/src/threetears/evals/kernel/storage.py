@@ -54,6 +54,7 @@ from threetears.evals.kernel.campaign import (
     EvalSweep,
     generation_slot_id,
 )
+from threetears.evals.kernel.report_doc import EvalReportDoc
 from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import (
@@ -809,7 +810,7 @@ _ANALYSIS_HEAVY_FIELDS: tuple[str, ...] = ("aspects", "campaign_bundle", "docume
 
 
 def _analysis_order(document: dict[str, Any]) -> tuple[str, str]:
-    """A stored analysis's place among its campaign's, greatest newest: its ``created_at``, then its id."""
+    """A stored document's place among its kind's, greatest newest: its ``created_at``, then its id."""
     return str(document.get("created_at") or ""), str(document.get("id") or "")
 
 
@@ -1502,6 +1503,55 @@ class EvalStorage:
         it would write that no longer reads or no longer matches its digest, and writes the fresh one in its place.
         """
         return self._store.delete(snapshot_id, scope_id)
+
+    def save_report_doc(self, report: EvalReportDoc) -> None:
+        """Persist a report document in the scope it names, only where none is stored under its id.
+
+        A report document is immutable: writing a report again stores a new one beside it, never over it.
+
+        :raises ConflictError: A report document is already stored under its id.
+        :raises StorageError: Any other write failure.
+        """
+        self._save(report.to_dict(), create_only=True)
+
+    def load_report_doc(self, report_id: str, scope_id: str) -> EvalReportDoc | None:
+        """Load a report document by id within a scope, or ``None`` when none resolves.
+
+        :raises ValidationError: The stored document does not read under this build's model (a regenerable bump, or a
+            ``report-doc/1`` shape this build no longer accepts).
+        """
+        return self._load(EvalReportDoc, report_id, scope_id)
+
+    def list_report_docs(
+        self, scope_id: str, *, snapshot_id: str | None = None, campaign_id: str | None = None
+    ) -> list[EvalReportDoc]:
+        """Every report document in a scope, newest first, written from one snapshot or for one campaign when named.
+
+        Newest is by ``created_at``, then the greatest id, so two written at one instant list in one order on every
+        store.
+
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param snapshot_id: Only the documents written from this snapshot; ``None`` for any.
+        :ptype snapshot_id: str | None
+        :param campaign_id: Only the documents of this campaign; ``None`` for any.
+        :ptype campaign_id: str | None
+        :return: The documents.
+        :rtype: list[EvalReportDoc]
+        :raises ValidationError: A stored document does not read under this build's model.
+        """
+        filters: dict[str, Any] = {
+            field: value for field, value in (("snapshot_id", snapshot_id), ("campaign_id", campaign_id)) if value
+        }
+        items = self._store.by_doc_type("eval_report_doc", scope_id, **filters)
+        return self._hydrate_all(EvalReportDoc, sorted(items, key=_analysis_order, reverse=True))
+
+    def delete_report_doc(self, report_id: str, scope_id: str) -> bool:
+        """Delete a report document by id within a scope, raw, reporting whether there was one.
+
+        Raw, so a document no model of this build reads can be deleted.
+        """
+        return self._store.delete(report_id, scope_id)
 
     def save_analysis_attempt(self, attempt: EvalAnalysisAttempt, *, if_match: str | None = None) -> None:
         """Persist one generation attempt's record in the scope it names; conditionally when ``if_match`` is given.
@@ -2859,7 +2909,8 @@ class EvalStorage:
         return deleted
 
     def drop_derived(self, scopes: Iterable[str]) -> DerivedDropped:
-        """Delete every derived document in the scopes named — analyses, insights, judge profiles — and nothing else.
+        """Delete every derived document in the scopes named — analyses, insights, report plans, snapshots and documents,
+        judge profiles — and nothing else.
 
         The operator step for a regenerable bump (:data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`):
         a document written under the old version is refused on read, and assembling a campaign's evidence reads the
