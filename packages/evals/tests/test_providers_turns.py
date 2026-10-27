@@ -248,8 +248,16 @@ async def test_a_turn_without_tools_or_system_marks_only_the_last_message() -> N
 
 
 async def test_a_thinking_budget_goes_as_enabled_thinking_and_must_sit_below_the_turn_s_cap() -> None:
+    # A Claude 4 model takes a budget; a Claude 5 one refuses it (the next test).
     server = Server(CASES["opening"]["reply"])
-    model = opus(server, effort=2048)
+    model = Model(
+        "claude-opus-4-8",
+        provider="anthropic",
+        api_key="test-key",
+        effort=2048,
+        catalogue=catalogue(),
+        http=httpx.AsyncClient(transport=httpx.MockTransport(server)),
+    )
 
     await model.turn(system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=4096)
     with pytest.raises(ValueError, match=r"max_tokens \(2048\) must exceed the thinking budget \(2048\)"):
@@ -258,6 +266,26 @@ async def test_a_thinking_budget_goes_as_enabled_thinking_and_must_sit_below_the
     assert server.bodies[0]["thinking"] == {"type": "enabled", "budget_tokens": 2048}
     assert "output_config" not in server.bodies[0]
     assert len(server.bodies) == 1, "the refused turn sent nothing"
+
+
+@pytest.mark.parametrize(
+    ("effort", "refusal"),
+    [
+        (2048, r"claude-opus-5-5 thinks adaptively only and refuses a thinking budget \(2048 tokens\)"),
+        ("none", r"claude-opus-5-5 thinks adaptively only and cannot have thinking turned off"),
+    ],
+)
+async def test_a_claude_5_model_with_a_budget_or_no_thinking_is_refused_before_anything_is_sent(
+    effort: int | str, refusal: str
+) -> None:
+    server = Server(CASES["opening"]["reply"])
+    model = opus(server, effort=effort)
+
+    with pytest.raises(ValueError, match=refusal):
+        await model.turn(system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=4096)
+    with pytest.raises(ValueError, match=refusal):
+        Model(MODEL, provider="anthropic", api_key="k", effort=effort, turn_recording="unused-turns.jsonl")
+    assert server.bodies == []
 
 
 async def test_a_last_message_of_only_thinking_is_refused_before_anything_is_sent() -> None:

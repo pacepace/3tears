@@ -52,6 +52,7 @@ from threetears.evals.providers.wire import (
     reported_cost,
     request_body,
     turn_body,
+    turn_settings_refusal,
 )
 from threetears.evals.run import JUDGE_REQUEST_SETTINGS, SIMULATOR_REQUEST_SETTINGS
 from threetears.evals.schema import (
@@ -85,11 +86,6 @@ _CACHE_APPROXIMATE: Final = ";cache-approximate"
 #: When this module was imported. Under ``RECORD=1`` a recording last written before it is from an earlier run and
 #: is started afresh; one written since is this run's, and is added to.
 _IMPORTED_AT: Final = time.time()
-
-#: Why a tool turn refuses a model built with a temperature: thinking takes none, and a Claude 5.5 model takes none at all.
-_TURNS_TAKE_NO_TEMPERATURE: Final = (
-    "tool turns send no temperature (a Claude 5.5 model takes none, nor does thinking): build the model without one"
-)
 
 #: The engine's roles (:data:`~threetears.evals.kernel.host.CompletionRole`).
 _ROLES: Final = frozenset(get_args(CompletionRole))
@@ -264,10 +260,9 @@ class _Live:
             f"threetears_evals_read_for_call_{id(self):x}", default=None
         )
 
-    @property
-    def asks_temperature(self) -> bool:
-        """Whether the model was built with a temperature, which a tool turn never sends."""
-        return self._asked.temperature is not None
+    def turn_refusal(self) -> str | None:
+        """Why the model's settings send no tool turn (:func:`turn_settings_refusal`), or ``None``."""
+        return turn_settings_refusal(self.model_name, self._asked)
 
     def http_client(self) -> httpx.AsyncClient:
         """The client it sends through: the one handed in, else the one it opens, once, and :meth:`aclose` closes."""
@@ -673,8 +668,9 @@ class Model:
     **Tool turns.** On Anthropic, :meth:`turn` sends one turn of a tool-calling loop (the
     :class:`~threetears.evals.schema.ToolTurnClient` port) and :meth:`turn_price_ceiling` bounds it; any other route
     is refused, naming the one that works. ``turn_recording=`` records or replays them per named session
-    (:meth:`turn_session`, through :class:`~threetears.evals.testing.RecordedTurns`): a file that exists is replayed
-    and ``RECORD=1`` records it afresh, as ``recording=`` is for completions.
+    (:meth:`turn_session`, through :class:`~threetears.evals.testing.RecordedTurns`): a file that exists is always
+    replayed, whatever ``RECORD`` says, and one that does not is recorded live; a turn recording is never recorded
+    again. With one set, :meth:`turn` itself refuses and names :meth:`turn_session`.
 
     **HTTP.** A model sends through a client it opens itself on its first live call, set up by ``transport=``,
     ``timeout=`` and ``headers=``, or through one handed in with ``http=``. :meth:`aclose` closes the one it opened
@@ -732,8 +728,8 @@ class Model:
         :param recording: A JSONL recording to replay, or to record into; a relative path is read beside the eval
             file being loaded (``python -m threetears.evals FILE``), else in the working directory.
         :ptype recording: str | os.PathLike[str] | None
-        :param turn_recording: A tool-turn recording to replay, or to record into, per session
-            (:meth:`turn_session`); read where ``recording`` is. Anthropic only. A model replaying one still sends its
+        :param turn_recording: A tool-turn recording, per session (:meth:`turn_session`): replayed when the file
+            exists, whatever ``RECORD`` says, else recorded live; read where ``recording`` is. Anthropic only. A model replaying one still sends its
             completions live, so it still needs a key unless ``recording`` replays those.
         :ptype turn_recording: str | os.PathLike[str] | None
         :param catalogue: The price catalogue to share with other models, or ``None`` for one of its own.
@@ -767,8 +763,9 @@ class Model:
             variable), ``transport``, ``timeout`` or ``headers`` beside ``http``, ``own_http`` without it, or a
             setting that is the caller's error (an effort that is neither a word nor a budget, a budget not below
             ``max_tokens``, an Anthropic budget below 1024), or a ``catalogue_fetch_timeout`` that is not above zero;
-            a ``turn_recording`` on a route other than Anthropic's, or beside a temperature, or to be recorded by a
-            model that replays its completions and so has no live client.
+            a ``turn_recording`` on a route other than Anthropic's, beside settings a tool turn refuses (a temperature;
+            on a Claude 5 model, a thinking budget or ``effort='none'``), or to be recorded by a model that replays its
+            completions and so has no live client.
         """
         if catalogue_fetch_timeout is not None and catalogue_fetch_timeout <= 0:
             raise ValueError(f"catalogue_fetch_timeout {catalogue_fetch_timeout} is not above zero seconds")
@@ -813,9 +810,10 @@ class Model:
         self._turns: RecordedTurns | None = None
         if self.turn_recording is not None:
             self._refuse_turns_off_anthropic()
-            if temperature is not None:
-                raise ValueError(_TURNS_TAKE_NO_TEMPERATURE)
-            if self.turn_recording.exists() and not rerecording:
+            if (refused := turn_settings_refusal(id, asked)) is not None:
+                raise ValueError(refused)
+            # A turn recording that exists is only ever replayed, whatever RECORD says: it is never recorded again.
+            if self.turn_recording.exists():
                 self._turns = RecordedTurns.replay(self.turn_recording)
             elif replaying:
                 raise ValueError(
@@ -855,8 +853,7 @@ class Model:
         )
         self._live = live
         if self.turn_recording is not None and self._turns is None:
-            fresh = rerecording and self.turn_recording.exists() and self.turn_recording.stat().st_mtime < _IMPORTED_AT
-            self._turns = RecordedTurns.record(live, self.turn_recording, replace=fresh)
+            self._turns = RecordedTurns.record(live, self.turn_recording)
         if self.recording is None:
             self._client = live
             return
@@ -1002,9 +999,11 @@ class Model:
         :ptype max_tokens: int
         :return: The model's reply.
         :rtype: TurnReply
-        :raises ValueError: A route other than Anthropic's, naming the one that works; a model built with a
-            temperature; one that replays its completions and sends nothing live; or a turn the wire refuses (no
-            messages, a cap not above a thinking budget).
+        :raises ValueError: A route other than Anthropic's, naming the one that works; a model with a
+            ``turn_recording``, whose turns go through :meth:`turn_session`; settings a tool turn refuses (a
+            temperature; on a Claude 5 model, a thinking budget or ``effort='none'``); a model that replays its
+            completions and sends nothing live; or a turn the wire refuses (no messages, a cap not above a thinking
+            budget).
         :raises ProviderError: The provider refused or failed the turn.
         :raises httpx.HTTPError: The request could not be sent, or timed out.
         """
@@ -1040,7 +1039,8 @@ class Model:
 
         With no ``turn_recording`` the session is the model itself, live. With one, it is the recording's session of
         that name (:meth:`RecordedTurns.turn_session <threetears.evals.testing.RecordedTurns.turn_session>`):
-        replayed, or sent live and recorded, the snapshot id held in each reply as ``{snapshot}``.
+        replayed, or sent live and recorded, the snapshot id held in each reply as ``{snapshot}`` and each price
+        ceiling it answers kept for its turn.
 
         :param name: The session's name (``analyst``, ``editor-1``).
         :ptype name: str
@@ -1065,13 +1065,18 @@ class Model:
     def _turn_client(self) -> _Live:
         """The live client a tool turn goes through, or the refusal naming why this model sends none."""
         self._refuse_turns_off_anthropic()
+        if self._turns is not None:
+            raise ValueError(
+                f"this model records or replays its tool turns in {self.turn_recording}, so a turn goes through a "
+                "named session: send it through model.turn_session(name, snapshot=...)"
+            )
         if self._live is None:
             raise ValueError(
                 f"this model replays its completions from {self.recording} and sends nothing live, so it sends no "
                 "tool turns: build it with a key, and replay turns from a turn_recording"
             )
-        if self._live.asks_temperature:
-            raise ValueError(_TURNS_TAKE_NO_TEMPERATURE)
+        if (refused := self._live.turn_refusal()) is not None:
+            raise ValueError(refused)
         return self._live
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:

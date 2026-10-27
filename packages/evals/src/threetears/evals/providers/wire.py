@@ -61,6 +61,7 @@ __all__ = [
     "read_turn",
     "request_body",
     "turn_body",
+    "turn_settings_refusal",
 ]
 
 
@@ -525,6 +526,42 @@ _TURN_STOPS: Final[Mapping[str, TurnStopReason]] = {
     "model_context_window_exceeded": "truncated",
     "pause_turn": "truncated",
 }
+
+
+#: Claude 5 models (``claude-opus-5-5``, ``claude-sonnet-5``), which think adaptively only: a thinking budget, or
+#: thinking turned off, is answered with a 400.
+_ADAPTIVE_THINKING_ONLY: Final = re.compile(r"claude-[a-z]+-5(?![0-9])")
+
+
+def turn_settings_refusal(model: str, sent: WireSettings) -> str | None:
+    """Why a model built with ``sent`` sends no tool turn, or ``None`` when it can send one.
+
+    A tool turn sends no temperature (a Claude 5.5 takes none, nor does thinking), and a Claude 5 model thinks
+    adaptively only, so a thinking budget or the effort word ``none`` would be refused by the provider after the
+    turn was built: each is refused here, before anything is sent, naming the setting that works.
+
+    :param model: The model id.
+    :ptype model: str
+    :param sent: The model's settings.
+    :ptype sent: WireSettings
+    :return: The refusal, or ``None``.
+    :rtype: str | None
+    """
+    if sent.temperature is not None:
+        return "tool turns send no temperature (a Claude 5.5 model takes none, nor does thinking): build the model without one"
+    if _ADAPTIVE_THINKING_ONLY.search(model.lower()) is None:
+        return None
+    if sent.reasoning_max_tokens is not None:
+        return (
+            f"{model} thinks adaptively only and refuses a thinking budget ({sent.reasoning_max_tokens} tokens): build "
+            "the model with an effort word (effort='high', say) instead"
+        )
+    if sent.reasoning_effort == "none":
+        return (
+            f"{model} thinks adaptively only and cannot have thinking turned off (effort='none'): build the model with "
+            "an effort word other than 'none' instead"
+        )
+    return None
 
 
 def _breakpoint(block: Mapping[str, Any]) -> dict[str, Any]:  # Any: a JSON object

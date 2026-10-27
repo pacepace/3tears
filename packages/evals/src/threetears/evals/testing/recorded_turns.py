@@ -7,38 +7,47 @@ sent would refuse every replay after such a change (the brittleness that made ma
 round's), in the order they came, and never a byte of what was sent. A replay hands back a session's next reply
 whatever it is asked, so the loop runs as recorded for as long as the code asks what it asked when it was recorded.
 
+**Price ceilings replay too.** A loop admits each turn on its price ceiling, and a budget that refused a turn is an
+ending a replay must reach as the recording did. So each ceiling a recording session answered is kept against the
+turn it bounded (the session's next), the refused turn's included, and a replay answers that turn's recorded ceiling
+rather than a price of its own; a session that asks a ceiling for a turn it recorded none for is refused, naming the
+turn. A replayed reply's ``cost_usd`` is the recorded one, the historical fact of what the turn cost when it was made.
+
 **The snapshot id is a placeholder.** A loop's replies name the snapshot they read (a tool call's arguments, a
 submission), and a fixture's snapshot id moves whenever the fixture is frozen again. Each string of a recorded reply
 holds the session's snapshot id as ``{snapshot}``, and a replay writes the snapshot it is given back in its place. A
 reply already holding the literal ``{snapshot}`` is refused when it is recorded, so a replay never writes an id where
 the model wrote the placeholder's text.
 
-**Drift is a refusal that names its turn.** A session asked one turn more than it holds raises
-:class:`~threetears.evals.testing.RecordingRefused` naming the session and the turn, and :meth:`RecordedTurns.unconsumed`
-names the sessions a replay left turns of. Either means the code now runs differently from when the recording was
-made. The remedy is to the code, or to the recorded reply as data: a turn recording is never recorded again, since a
-second paid run would answer differently and hide what changed.
+**Drift is a refusal that names its turn, and nothing is recorded twice.** A session asked one turn more than it
+holds raises :class:`~threetears.evals.testing.RecordingRefused` naming the session and the turn, and
+:meth:`RecordedTurns.unconsumed` names the sessions a replay left turns of. Either means the code now runs
+differently from when the recording was made. The remedy is to the code, or to the recorded reply as data: a turn
+recording that exists is only ever replayed (:meth:`RecordedTurns.record` refuses one), since a second paid run would
+answer differently and hide what changed.
 
-**The file.** One JSON object per line, appended as each turn returns and before its reply is handed back: the
-recorder's format version (:attr:`RecordedTurns.FORMAT_VERSION`), when it was written, the session's name, the turn's
-index in that session (from 0), and the reply (:meth:`~threetears.evals.schema.TurnReply.to_json`). Recording onto a
-file that exists appends to it, each session's turns numbered after the ones it holds; a fresh recording removes the
-file first, and only when asked (``record(..., replace=True)``). A line of another format, one whose index is not its
-session's next, or one this recorder does not write refuses the whole file by its line number. Costs replay as
-recorded, the historical fact of what each turn cost when it was made.
+**The file.** One JSON object per line, appended as each event happens: the recorder's format version
+(:attr:`RecordedTurns.FORMAT_VERSION`), when it was written, the session's name, the index (from 0) of the turn the
+line belongs to, and its ``kind``: a ``ceiling`` line holds the ceiling answered for that turn (``null`` when the
+client could not bound it; a later one for the same turn replaces it), and a ``reply`` line holds the turn's reply
+(:meth:`~threetears.evals.schema.TurnReply.to_json`), written before the reply is handed back. A line of another
+format, one for any turn but its session's next, or one this recorder does not write refuses the whole file by its
+line number.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar, Self
 
-from threetears.evals.schema.turns import TurnToolSpec, ToolTurnClient, TurnMessage, TurnReply
+from threetears.evals.schema.turns import ToolTurnClient, TurnMessage, TurnReply, TurnToolSpec
 from threetears.evals.testing.recorded_completions import RecordingRefused
 
 __all__ = ["RecordedTurns"]
@@ -46,8 +55,11 @@ __all__ = ["RecordedTurns"]
 #: What a recorded reply holds in place of the session's snapshot id.
 _SNAPSHOT_PLACEHOLDER = "{snapshot}"
 
-#: The top-level members every recorded line carries, and nothing else at this format version.
-_LINE_MEMBERS = frozenset({"recorder_version", "recorded_at", "session", "index", "reply"})
+#: The top-level members each kind of line carries, and nothing else at this format version.
+_LINE_MEMBERS: Mapping[str, frozenset[str]] = {
+    "reply": frozenset({"recorder_version", "recorded_at", "session", "index", "kind", "reply"}),
+    "ceiling": frozenset({"recorder_version", "recorded_at", "session", "index", "kind", "ceiling"}),
+}
 
 #: What a drifted replay's refusal tells its reader to do.
 _DRIFT_REMEDY = (
@@ -55,38 +67,61 @@ _DRIFT_REMEDY = (
     "data (a turn recording is never recorded again)"
 )
 
+#: What a refusal to read a recording tells its reader to do.
+_UNREADABLE_REMEDY = "restore the file from version control; a turn recording is edited as data, never recorded again"
+
 #: Serialises every append in this process, so two sessions recording onto one file never interleave a line.
 _APPEND_LOCK = threading.Lock()
+
+
+@dataclass(slots=True)
+class _SessionLines:
+    """One session's lines as read: its replies' JSON in order, and the ceiling recorded for each turn that has one."""
+
+    replies: list[dict[str, Any]] = field(default_factory=list)  # Any: JSON objects
+    ceilings: dict[int, float | None] = field(default_factory=dict)
 
 
 class RecordedTurns:
     """A tool-turn recording: the replies of each named session, replayed in order, or recorded from a live client.
 
     :meth:`replay` reads a file; :meth:`record` wraps a live :class:`~threetears.evals.schema.ToolTurnClient` and
-    appends each reply it returns. Either way :meth:`turn_session` hands out one session's client, which a loop
-    sends that session's turns through: a replaying one answers the session's next recorded reply and sends nothing
-    (its price ceiling is ``0.0``); a recording one sends to the live client and keeps its reply.
-    ``threetears.evals.providers.Model`` builds one from ``turn_recording=``.
+    keeps each reply it returns and each price ceiling it answers. Either way :meth:`turn_session` hands out one
+    session's client, which a loop sends that session's turns through: a replaying one answers the session's next
+    recorded reply and the ceiling recorded for that turn, and sends nothing; a recording one sends to the live client
+    and keeps what it says. ``threetears.evals.providers.Model`` builds one from ``turn_recording=``.
 
     :cvar FORMAT_VERSION: The recording format this build writes, and the only one it reads.
     """
 
     FORMAT_VERSION: ClassVar[int] = 1
 
-    def __init__(
-        self, path: Path, *, inner: ToolTurnClient | None, held: Mapping[str, Sequence[Mapping[str, Any]]]
-    ) -> None:
-        """Hold a read recording; :meth:`replay` and :meth:`record` build one.
+    def __init__(self, path: str | os.PathLike[str], *, inner: ToolTurnClient | None) -> None:
+        """Open a recording: read it to replay (``inner`` is ``None``), or start one, recorded through ``inner``.
 
         :param path: The recording.
-        :ptype path: Path
+        :ptype path: str | os.PathLike[str]
         :param inner: The live client a recording sends through, or ``None`` to replay.
         :ptype inner: ToolTurnClient | None
-        :param held: Session -> its recorded replies' JSON, in order, the snapshot id still a placeholder.
-        :ptype held: Mapping[str, Sequence[Mapping[str, Any]]]
+        :raises RecordingRefused: Replaying, the file is missing or holds a line this recorder does not write, named
+            by number; recording, the file exists: a turn recording is replayed, never recorded again.
         """
-        self.path = path
-        self._book = _Book(path, inner, {name: [dict(reply) for reply in replies] for name, replies in held.items()})
+        self.path = Path(path)
+        if inner is None:
+            if not self.path.is_file():
+                raise RecordingRefused(
+                    self.path, "there is no such turn recording", "record it once against the live model"
+                )
+            sessions = _read_recording(self.path)
+        else:
+            if self.path.exists():
+                raise RecordingRefused(
+                    self.path,
+                    "it exists, and a turn recording is replayed, never recorded again",
+                    "replay it (RecordedTurns.replay), and fix drift in the code or in the recorded reply as data",
+                )
+            sessions = {}
+        self._book = _Book(self.path, inner, sessions)
 
     @classmethod
     def replay(cls, path: str | os.PathLike[str]) -> Self:
@@ -98,32 +133,21 @@ class RecordedTurns:
         :rtype: RecordedTurns
         :raises RecordingRefused: The file is missing, or holds a line this recorder does not write, named by number.
         """
-        recording = Path(path)
-        if not recording.is_file():
-            raise RecordingRefused(
-                recording, "there is no such turn recording", "record it once against the live model"
-            )
-        return cls(recording, inner=None, held=_read_recording(recording))
+        return cls(path, inner=None)
 
     @classmethod
-    def record(cls, client: ToolTurnClient, path: str | os.PathLike[str], *, replace: bool = False) -> Self:
-        """Record the turns sent through ``client`` onto ``path``.
+    def record(cls, client: ToolTurnClient, path: str | os.PathLike[str]) -> Self:
+        """Record the turns sent through ``client`` onto ``path``, a file that does not exist yet.
 
         :param client: The live client each turn is sent through.
         :ptype client: ToolTurnClient
-        :param path: The recording, appended to when it exists.
+        :param path: The recording to make.
         :ptype path: str | os.PathLike[str]
-        :param replace: Remove the file first, so the recording starts afresh.
-        :ptype replace: bool
         :return: The recorder.
         :rtype: RecordedTurns
-        :raises RecordingRefused: The file to append to holds a line this recorder does not write.
+        :raises RecordingRefused: The file exists: a turn recording is replayed, never recorded again.
         """
-        recording = Path(path)
-        if replace:
-            recording.unlink(missing_ok=True)
-        held = _read_recording(recording) if recording.is_file() else {}
-        return cls(recording, inner=client, held=held)
+        return cls(path, inner=client)
 
     def turn_session(self, name: str, *, snapshot: str) -> ToolTurnClient:
         """The client one session's turns go through; asked again for the same name, it carries on where it was.
@@ -151,7 +175,7 @@ class RecordedTurns:
         book = self._book
         if book.inner is not None:
             return {}
-        left = {name: len(replies) - book.served.get(name, 0) for name, replies in book.held.items()}
+        left = {name: len(lines.replies) - book.served.get(name, 0) for name, lines in book.sessions.items()}
         return {name: count for name, count in sorted(left.items()) if count}
 
 
@@ -160,14 +184,14 @@ class _Book:
 
     :ivar path: The recording.
     :ivar inner: The live client a recording sends through, or ``None`` while replaying.
-    :ivar held: Session -> its replies' JSON, in order, the snapshot id a placeholder.
+    :ivar sessions: Session -> its lines: replies (the snapshot id a placeholder) and recorded ceilings.
     :ivar served: Session -> how many of its turns have been served (replaying) or recorded (recording).
     """
 
-    def __init__(self, path: Path, inner: ToolTurnClient | None, held: dict[str, list[dict[str, Any]]]) -> None:
+    def __init__(self, path: Path, inner: ToolTurnClient | None, sessions: dict[str, _SessionLines]) -> None:
         self.path = path
         self.inner = inner
-        self.held = held
+        self.sessions = sessions
         self.served: dict[str, int] = {}
 
     async def turn(
@@ -181,9 +205,9 @@ class _Book:
         max_tokens: int,
     ) -> TurnReply:
         """The session's next reply: the recorded one, or the live client's, recorded before it is handed back."""
+        index = self.served.get(name, 0)
         if self.inner is None:
-            replies = self.held.get(name, [])
-            index = self.served.get(name, 0)
+            replies = self.sessions[name].replies if name in self.sessions else []
             if index >= len(replies):
                 holds = f"holds {len(replies)} recorded turns" if replies else "holds no recorded turns"
                 raise RecordingRefused(
@@ -193,30 +217,50 @@ class _Book:
             return TurnReply.from_json(_restored(replies[index], snapshot))
         reply = await self.inner.turn(system=system, messages=messages, tools=tools, max_tokens=max_tokens)
         kept = _held(reply.to_json(), snapshot, self.path)
-        with _APPEND_LOCK:
-            replies = self.held.setdefault(name, [])
-            line = {
-                "recorder_version": RecordedTurns.FORMAT_VERSION,
-                "recorded_at": datetime.now(UTC).isoformat(),
-                "session": name,
-                "index": len(replies),
-                "reply": kept,
-            }
-            written = json.dumps(line, ensure_ascii=False, allow_nan=False)
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as file:
-                file.write(written + "\n")
-            replies.append(kept)
-            self.served[name] = len(replies)
+        self._append(name, index, "reply", kept)
+        self.sessions.setdefault(name, _SessionLines()).replies.append(kept)
+        self.served[name] = index + 1
         return reply
 
     def ceiling(
-        self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int
+        self,
+        name: str,
+        *,
+        system: str,
+        messages: Sequence[TurnMessage],
+        tools: Sequence[TurnToolSpec],
+        max_tokens: int,
     ) -> float | None:
-        """The live client's ceiling while recording; ``0.0`` while replaying, which sends nothing."""
+        """The session's next turn's ceiling: the one recorded for it, or the live client's, recorded."""
+        index = self.served.get(name, 0)
         if self.inner is None:
-            return 0.0
-        return self.inner.turn_price_ceiling(system=system, messages=messages, tools=tools, max_tokens=max_tokens)
+            ceilings = self.sessions[name].ceilings if name in self.sessions else {}
+            if index not in ceilings:
+                raise RecordingRefused(
+                    self.path,
+                    f"session {name!r} recorded no price ceiling for its turn {index + 1}, and one was asked",
+                    _DRIFT_REMEDY,
+                )
+            return ceilings[index]
+        ceiling = self.inner.turn_price_ceiling(system=system, messages=messages, tools=tools, max_tokens=max_tokens)
+        self._append(name, index, "ceiling", ceiling)
+        self.sessions.setdefault(name, _SessionLines()).ceilings[index] = ceiling
+        return ceiling
+
+    def _append(self, name: str, index: int, kind: str, value: object) -> None:
+        line = {
+            "recorder_version": RecordedTurns.FORMAT_VERSION,
+            "recorded_at": datetime.now(UTC).isoformat(),
+            "session": name,
+            "index": index,
+            "kind": kind,
+            kind: value,
+        }
+        written = json.dumps(line, ensure_ascii=False, allow_nan=False)
+        with _APPEND_LOCK:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as file:
+                file.write(written + "\n")
 
 
 class _Session:
@@ -237,7 +281,7 @@ class _Session:
     def turn_price_ceiling(
         self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int
     ) -> float | None:
-        return self._book.ceiling(system=system, messages=messages, tools=tools, max_tokens=max_tokens)
+        return self._book.ceiling(self._name, system=system, messages=messages, tools=tools, max_tokens=max_tokens)
 
 
 def _held(value: Any, snapshot: str, path: Path) -> Any:  # Any: a JSON value
@@ -268,10 +312,9 @@ def _restored(value: Any, snapshot: str) -> Any:  # Any: a JSON value
     return value
 
 
-def _read_recording(path: Path) -> dict[str, list[dict[str, Any]]]:  # Any: JSON objects
-    """Session -> its recorded replies' JSON, in order; any line this recorder does not write refuses the file."""
-    held: dict[str, list[dict[str, Any]]] = {}
-    remedy = "restore the file from version control; a turn recording is edited as data, never recorded again"
+def _read_recording(path: Path) -> dict[str, _SessionLines]:
+    """Session -> its lines as read; any line this recorder does not write refuses the whole file by its number."""
+    sessions: dict[str, _SessionLines] = {}
     with path.open(encoding="utf-8") as file:
         for number, text in enumerate(file, start=1):
             if not text.strip():
@@ -279,30 +322,48 @@ def _read_recording(path: Path) -> dict[str, list[dict[str, Any]]]:  # Any: JSON
             try:
                 line = json.loads(text)
             except json.JSONDecodeError as unread:
-                raise RecordingRefused(path, f"line {number} is not JSON ({unread.msg})", remedy) from unread
-            if not isinstance(line, dict) or set(line) != _LINE_MEMBERS:
-                raise RecordingRefused(path, f"line {number} is not a line this recorder writes", remedy)
+                raise _unreadable(path, f"line {number} is not JSON ({unread.msg})") from unread
+            kind = line.get("kind") if isinstance(line, dict) else None
+            if not isinstance(kind, str) or kind not in _LINE_MEMBERS or set(line) != _LINE_MEMBERS[kind]:
+                raise _unreadable(path, f"line {number} is not a line this recorder writes")
             version = line["recorder_version"]
             if version != RecordedTurns.FORMAT_VERSION:
-                raise RecordingRefused(
+                raise _unreadable(
                     path,
                     f"line {number} is recorder format {version!r}, and this build reads format "
                     f"{RecordedTurns.FORMAT_VERSION}",
-                    remedy,
                 )
-            name, index, reply = line["session"], line["index"], line["reply"]
-            if not isinstance(name, str) or not name or not isinstance(reply, dict):
-                raise RecordingRefused(path, f"line {number} names no session or holds no reply", remedy)
-            replies = held.setdefault(name, [])
-            if index != len(replies):
-                raise RecordingRefused(
+            name, index = line["session"], line["index"]
+            if not isinstance(name, str) or not name:
+                raise _unreadable(path, f"line {number} names no session")
+            lines = sessions.setdefault(name, _SessionLines())
+            if index != len(lines.replies):
+                raise _unreadable(
                     path,
-                    f"line {number} is turn index {index!r} of session {name!r}, whose next is {len(replies)}",
-                    remedy,
+                    f"line {number} is for turn index {index!r} of session {name!r}, whose next is "
+                    f"{len(lines.replies)}",
                 )
+            if kind == "ceiling":
+                lines.ceilings[index] = _read_ceiling(path, number, line["ceiling"])
+                continue
+            reply = line["reply"]
+            if not isinstance(reply, dict):
+                raise _unreadable(path, f"line {number} holds no reply")
             try:
                 TurnReply.from_json(reply)
             except ValueError as unread:
-                raise RecordingRefused(path, f"line {number}'s reply cannot be read: {unread}", remedy) from unread
-            replies.append(reply)
-    return held
+                raise _unreadable(path, f"line {number}'s reply cannot be read: {unread}") from unread
+            lines.replies.append(reply)
+    return sessions
+
+
+def _read_ceiling(path: Path, number: int, value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        raise _unreadable(path, f"line {number}'s ceiling {value!r} is neither a finite number nor null")
+    return float(value)
+
+
+def _unreadable(path: Path, problem: str) -> RecordingRefused:
+    return RecordingRefused(path, problem, _UNREADABLE_REMEDY)

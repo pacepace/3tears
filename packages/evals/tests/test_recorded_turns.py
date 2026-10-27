@@ -110,7 +110,6 @@ async def test_a_recording_replays_each_session_in_order_with_the_snapshot_writt
     replay = RecordedTurns.replay(path)
     analyst = replay.turn_session("analyst", snapshot=REPLAYED_ON)
     editor = replay.turn_session("editor-1", snapshot=REPLAYED_ON)
-    assert analyst.turn_price_ceiling(system="x", messages=ask("x"), tools=(), max_tokens=1) == 0.0
     first = await analyst.turn(system="anything", messages=ask("else entirely"), tools=(), max_tokens=1)
     review = await editor.turn(system="", messages=ask("?"), tools=(), max_tokens=1)
     assert replay.unconsumed() == {"analyst": 1}
@@ -134,7 +133,8 @@ async def test_the_file_holds_replies_alone_with_the_snapshot_as_a_placeholder(t
     assert RECORDED_ON not in text
     assert "{snapshot}" in text
     assert [(line["session"], line["index"]) for line in lines] == [("analyst", 0), ("editor-1", 0), ("analyst", 1)]
-    assert all(set(line) == {"recorder_version", "recorded_at", "session", "index", "reply"} for line in lines)
+    assert all(line["kind"] == "reply" for line in lines), "no ceiling was asked, so none is kept"
+    assert all(set(line) == {"recorder_version", "recorded_at", "session", "index", "kind", "reply"} for line in lines)
     assert "ONLY-MARK" not in text, "no request bytes are kept: no system prompt, message or tool result"
 
 
@@ -185,19 +185,99 @@ async def test_a_model_given_an_existing_turn_recording_replays_it_and_sends_not
     assert idle.sent == 0
 
 
-async def test_recording_onto_an_existing_file_numbers_each_session_after_what_it_holds(tmp_path: Path) -> None:
+async def test_an_existing_recording_is_never_recorded_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "turns.jsonl"
     await record_two_sessions(path)
-    model = opus(Server(reply({"type": "text", "text": "again"}, stop="end_turn")))
+    held = path.read_text(encoding="utf-8")
 
-    recorder = RecordedTurns.record(model, path)
-    await recorder.turn_session("editor-1", snapshot=RECORDED_ON).turn(
-        system="", messages=ask("?"), tools=(), max_tokens=1
+    with pytest.raises(RecordingRefused, match="it exists, and a turn recording is replayed, never recorded again"):
+        RecordedTurns.record(opus(Server()), path)
+    monkeypatch.setenv("RECORD", "1")
+    idle = Server()
+    session = opus(idle, turn_recording=path).turn_session("analyst", snapshot=REPLAYED_ON)
+    first = await session.turn(system="", messages=ask("?"), tools=(), max_tokens=1)
+
+    assert first.text == f"Reading {REPLAYED_ON}.", "RECORD=1 still replays a turn recording that exists"
+    assert idle.sent == 0
+    assert path.read_text(encoding="utf-8") == held
+
+
+async def test_each_ceiling_a_session_answered_is_kept_for_its_turn_and_replayed(tmp_path: Path) -> None:
+    path = tmp_path / "turns.jsonl"
+    model = opus(Server(reply({"type": "text", "text": "one"}, stop="end_turn")), turn_recording=path)
+    await model.refresh_prices()
+    witness = opus(Server())
+    await witness.refresh_prices()
+    asked: dict[str, Any] = {"system": "s", "tools": TOOLS, "max_tokens": 1000}
+    recording = model.turn_session("analyst", snapshot=RECORDED_ON)
+
+    first_ceiling = recording.turn_price_ceiling(messages=ask("a"), **asked)
+    await recording.turn(messages=ask("a"), **asked)
+    # The budget refuses the second turn on its ceiling: no reply is ever recorded for it.
+    refused_ceiling = recording.turn_price_ceiling(messages=ask("a much longer conversation " * 50), **asked)
+
+    assert first_ceiling == witness.turn_price_ceiling(messages=ask("a"), **asked), "a recording passes it through"
+    assert first_ceiling is not None and refused_ceiling is not None and refused_ceiling > first_ceiling
+    replay = RecordedTurns.replay(path).turn_session("analyst", snapshot=REPLAYED_ON)
+    assert replay.turn_price_ceiling(messages=ask("anything"), **asked) == first_ceiling
+    replayed = await replay.turn(messages=ask("anything"), **asked)
+    assert replay.turn_price_ceiling(messages=ask("anything"), **asked) == refused_ceiling, (
+        "the refused turn's ceiling replays, so the budget ends the replay where it ended the recording"
     )
+    assert replayed.cost_usd == pytest.approx(100 * 0.000004 + 10 * 0.00002), "the cost is still the recorded one"
 
-    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-    assert (lines[-1]["session"], lines[-1]["index"]) == ("editor-1", 1)
-    assert recorder.unconsumed() == {}, "a recorder has nothing to consume"
+
+async def test_a_ceiling_asked_for_a_turn_that_recorded_none_is_refused_naming_the_turn(tmp_path: Path) -> None:
+    path = tmp_path / "turns.jsonl"
+    await record_two_sessions(path)
+    replay = RecordedTurns.replay(path).turn_session("editor-1", snapshot=REPLAYED_ON)
+
+    with pytest.raises(RecordingRefused, match=r"session 'editor-1' recorded no price ceiling for its turn 1"):
+        replay.turn_price_ceiling(system="", messages=ask("?"), tools=(), max_tokens=1)
+
+
+async def test_a_model_with_a_turn_recording_sends_turns_only_through_a_session(tmp_path: Path) -> None:
+    model = opus(Server(), turn_recording=tmp_path / "turns.jsonl")
+
+    with pytest.raises(ValueError, match=r"send it through model\.turn_session\(name, snapshot=\.\.\.\)"):
+        await model.turn(system="", messages=ask("?"), tools=(), max_tokens=1)
+    with pytest.raises(ValueError, match="turn_session"):
+        model.turn_price_ceiling(system="", messages=ask("?"), tools=(), max_tokens=1)
+
+
+def test_a_turn_recording_beside_a_temperature_is_refused_when_the_model_is_built(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="tool turns send no temperature"):
+        opus(Server(), turn_recording=tmp_path / "turns.jsonl", temperature=0.3)
+    assert not (tmp_path / "turns.jsonl").exists()
+
+
+async def replaying_completions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A completion recording of one call, which a model built on it replays with no live client."""
+    monkeypatch.delenv("RECORD", raising=False)
+    path = tmp_path / "completions.jsonl"
+    recorder = opus(Server(reply({"type": "text", "text": "hello"}, stop="end_turn")), recording=path)
+    await recorder.generate(system="", user="hi")
+    return path
+
+
+async def test_a_turn_recording_to_record_on_a_model_replaying_its_completions_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    completions = await replaying_completions(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="is recorded live, and this model replays its completions"):
+        Model(MODEL, provider="anthropic", recording=completions, turn_recording=tmp_path / "turns.jsonl")
+
+
+async def test_a_model_replaying_its_completions_sends_no_tool_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    replaying = Model(MODEL, provider="anthropic", recording=await replaying_completions(tmp_path, monkeypatch))
+
+    with pytest.raises(ValueError, match="replays its completions from .* and sends nothing live"):
+        await replaying.turn(system="", messages=ask("?"), tools=(), max_tokens=1)
+    with pytest.raises(ValueError, match="sends nothing live"):
+        replaying.turn_session("analyst", snapshot=RECORDED_ON)
 
 
 async def test_a_reply_already_holding_the_placeholder_is_refused_when_it_is_recorded(tmp_path: Path) -> None:
@@ -217,15 +297,45 @@ async def test_a_reply_already_holding_the_placeholder_is_refused_when_it_is_rec
         (["not json"], r"line 1 is not JSON"),
         ([{"session": "a"}], r"line 1 is not a line this recorder writes"),
         (
-            [{"recorder_version": 9, "recorded_at": "t", "session": "a", "index": 0, "reply": {}}],
+            [{"recorder_version": 1, "recorded_at": "t", "session": "a", "index": 0, "reply": {}}],
+            r"line 1 is not a line this recorder writes",
+        ),
+        (
+            [{"recorder_version": 9, "recorded_at": "t", "session": "a", "index": 0, "kind": "reply", "reply": {}}],
             r"line 1 is recorder format 9",
         ),
         (
-            [{"recorder_version": 1, "recorded_at": "t", "session": "a", "index": 1, "reply": {}}],
-            r"line 1 is turn index 1 of session 'a', whose next is 0",
+            [{"recorder_version": 1, "recorded_at": "t", "session": "a", "index": 1, "kind": "reply", "reply": {}}],
+            r"line 1 is for turn index 1 of session 'a', whose next is 0",
         ),
         (
-            [{"recorder_version": 1, "recorded_at": "t", "session": "a", "index": 0, "reply": {"content": []}}],
+            [{"recorder_version": 1, "recorded_at": "t", "session": "a", "index": 1, "kind": "ceiling", "ceiling": 1}],
+            r"line 1 is for turn index 1 of session 'a', whose next is 0",
+        ),
+        (
+            [
+                {
+                    "recorder_version": 1,
+                    "recorded_at": "t",
+                    "session": "a",
+                    "index": 0,
+                    "kind": "ceiling",
+                    "ceiling": "1",
+                }
+            ],
+            r"line 1's ceiling '1' is neither a finite number nor null",
+        ),
+        (
+            [
+                {
+                    "recorder_version": 1,
+                    "recorded_at": "t",
+                    "session": "a",
+                    "index": 0,
+                    "kind": "reply",
+                    "reply": {"content": []},
+                }
+            ],
             r"line 1's reply cannot be read",
         ),
     ],

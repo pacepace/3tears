@@ -20,15 +20,19 @@ output, cache-read and cache-write tokens, and its cost with `price_source`; a c
 `Model.turn` sends one tool turn to Anthropic over httpx, no SDK: the tool definitions, `tool_result` blocks (with
 `is_error` only on a refusal), three `cache_control` breakpoints (the system prompt, the last tool, the last
 message), every thinking block sent back exactly as its reply carried it, and the model's own effort or thinking
-budget. Any other route is refused before anything is sent, naming the one that works, as is a model built with a
-temperature. `Model.turn_price_ceiling` bounds a turn from the catalogue's rates.
+budget. Any other route is refused before anything is sent, naming the one that works, as are settings the provider
+would refuse: a temperature, and on a Claude 5 model (which thinks adaptively only) a thinking budget or
+`effort="none"`. `Model.turn_price_ceiling` bounds a turn from the catalogue's rates.
 
 `threetears.evals.testing.RecordedTurns` keeps a tool-calling loop's replies alone, per named session and in order,
 with the session's snapshot id held as `{snapshot}` and written back on replay; no request bytes are kept, so a replay
-runs with its tools live. A session asked one turn more than it holds is refused naming the session and the turn, and
-`unconsumed()` names the turns a replay left; the remedy is to the code or the recorded reply, never a re-recording.
-`Model(turn_recording=)` records or replays one (`RECORD=1` records afresh), and `Model.turn_session(name,
-snapshot=)` hands out a session's client: the model itself when there is no recording.
+runs with its tools live. Each price ceiling a session answered is kept for the turn it bounded and replayed, so an
+ending a budget forced replays as recorded; costs replay as recorded. A session asked one turn more than it holds is
+refused naming the session and the turn, and `unconsumed()` names the turns a replay left; the remedy is to the code
+or the recorded reply. A turn recording is never recorded again: one that exists always replays, whatever `RECORD`
+says, and `RecordedTurns.record` refuses one. `Model(turn_recording=)` replays the file when it exists and records it
+live when it does not, and `Model.turn_session(name, snapshot=)` hands out a session's client (the model itself when
+there is no recording); with a recording set, `Model.turn` refuses and names `turn_session`.
 
 ### all packages: the report-kit analyst line's pins carry a local version label
 
