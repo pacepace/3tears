@@ -14,8 +14,9 @@ Every string a mounted tool returns is made here, so the conventions hold in one
   same call as ``next`` in its structured result; its last page carries neither, and no ``next_offset``
   (:func:`render_page`). Every page says in words how much of the whole it holds, in the unit its result pages
   (:func:`page_unit`: flips, options, cards…): ``all 77 options shown`` on a page holding every one, else which it
-  holds and how many follow, and ``no flips`` where there are none to page, never that the page shows nothing, since
-  what it holds beside them (a sweep's segments, its call) is still above. A complete result never reads as a cut one.
+  holds and how many follow; a result with none to page says nothing of paging, and says in its own words what an
+  empty list means where that carries meaning (a sweep with no flips: the call holds over the whole range). A complete
+  result never reads as a cut one.
 - **A result reads as every fact it carries.** One generic renderer prints any result model field by field
   (:func:`render_model`); a few results keep their own: a started job says how to poll it and a finished one
   what to read next, a page of results how to read the next, one result its counted goal verdicts, and a report
@@ -481,7 +482,7 @@ def render_page(
     :param unit: What its ``total`` counts, one and many (:func:`page_unit`): ``("flip", "flips")``.
     :ptype unit: tuple[str, str]
     :return: The text, with how much of the whole it holds in words (``all 77 options shown``; ``flips 1 to 40 of 77
-        shown; 37 follow``; ``no flips; the page above is the whole result``), then ``next: …`` as its last line while
+        shown; 37 follow``; nothing where its total is none), then ``next: …`` as its last line while
         a page follows; the JSON, with ``next`` (the next call's arguments) beside ``next_offset`` while a page
         follows, and neither on the last page.
     :rtype: tuple[str, dict[str, Any]]
@@ -518,7 +519,6 @@ def page_unit(result: BaseModel) -> tuple[str, str]:
 #: How a page says how much of the whole it holds (:func:`_shown_line`), ``{one}`` and ``{many}`` its unit.
 _ALL_SHOWN: Final = "all {total} {many} shown"
 _ONE_SHOWN: Final = "the one {one} shown"
-_NONE_SHOWN: Final = "no {many}; the page above is the whole result"
 _SOME_SHOWN: Final = "{many} {first} to {last} of {total} shown; {left} {follow}"
 _LAST_SHOWN: Final = "{many} {first} to {total} of {total} shown; none follow"
 _PAST_SHOWN: Final = "none from {one} {first}: {total} {counted} in all"
@@ -526,8 +526,8 @@ _PAST_SHOWN: Final = "none from {one} {first}: {total} {counted} in all"
 
 def _shown_line(total: Any, offset: Any, next_offset: int | None, unit: tuple[str, str]) -> str:
     """How much of the whole a page holds, in words and in its unit: every one (``all 77 options shown``), else which
-    it holds and how many follow, or that there are none to page; empty for a result that states no total and
-    offset."""
+    it holds and how many follow; empty for a result that states no total and offset, or whose total is none, since
+    a line about paging nothing is no fact about the result."""
     if not isinstance(total, int) or not isinstance(offset, int):
         return ""
     one, many = unit
@@ -542,7 +542,7 @@ def _shown_line(total: Any, offset: Any, next_offset: int | None, unit: tuple[st
             follow="follows" if left == 1 else "follow",
         )
     if total == 0:
-        return _NONE_SHOWN.format(many=many)
+        return ""
     if offset >= total:
         return _PAST_SHOWN.format(one=one, first=offset + 1, total=total, counted=one if total == 1 else many)
     if offset == 0:

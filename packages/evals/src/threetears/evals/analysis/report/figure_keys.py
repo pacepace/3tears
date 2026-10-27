@@ -3360,10 +3360,18 @@ def _family_level(report_input: ReportInput, contrast: Contrast) -> float | None
     return level_share(families[0].level) if len(families) == 1 else None
 
 
-def _correction_words(report_input: ReportInput, contrast: Contrast) -> str:
+def correction_words(report_input: ReportInput, contrast: Contrast) -> str:
     """Whether a contrast's interval is corrected, as the one family on its aspect states it (``correction``), never
     asserted: corrected by the method it names, not corrected where it names ``none``, and unstated where it names none
-    or no one family is on the contrast's aspect."""
+    or no one family is on the contrast's aspect. A ``compare.*.basis`` key and a compare block's words say it alike.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param contrast: The contrast.
+    :ptype contrast: Contrast
+    :return: The words, after the contrast's "its own interval, ".
+    :rtype: str
+    """
     families = [family for family in report_input.contrast_families if family.aspect == contrast.aspect]
     if len(families) != 1:
         return "and no one contrast family on its aspect says whether it is corrected"
@@ -3472,7 +3480,7 @@ def _read_difference(report_input: ReportInput, arm_id: str, other: str, key: st
             level=_family_level(report_input, contrast),
             basis=(
                 f"paired: the contrast of {contrast.arm} against the control on {key!r}, its own interval, "
-                f"{_correction_words(report_input, contrast)}"
+                f"{correction_words(report_input, contrast)}"
             ),
         )
     first = _read_spread(report_input, arm_id, key, where)
@@ -6588,4 +6596,5 @@ __all__ = [
     "on_lead_aspect",
     "pairing_contrast",
     "passed_aspects",
+    "correction_words",
 ]

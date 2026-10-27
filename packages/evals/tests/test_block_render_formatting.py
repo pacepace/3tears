@@ -16,8 +16,8 @@ Contracts held here (``analysis.report.charts`` values tables, ``analysis.report
 - **one arm-label rule**: a bar chart names an arm's row as every other chart does, its letter tag first;
 - **a page of a block holds as many rows as fit in one result**, up to its limit, and says how many follow;
 - **a paged result says how much of the whole it holds, in what it counts**: ``all N cards shown`` on a complete page,
-  else which it holds and how many follow, before the next page's call; and where it counts none (a sweep with no
-  flips), that there are none to page, never that the page shows nothing.
+  else which it holds and how many follow, before the next page's call; where it counts none it says nothing of paging,
+  and a sweep with no flips says what that means, that the call holds over the whole range it swept.
 
 Every expectation is computed from the input the block reads (r1 to r5, the misfits, Kairo round 2).
 """
@@ -304,6 +304,47 @@ def test_a_compare_block_names_what_its_intervals_count_only_where_the_input_sta
     assert "unit is unstated" not in said, "the block holds no paired row"
 
 
+def _paired_reads(held: ReportInput) -> list[tuple[str, str, str, str]]:
+    """Each contrast a compare block overall reads as its paired estimate, with what its one family says of its
+    correction: its candidate, the control, the measure, and the correction (empty where none is stated)."""
+    control = next((arm.id for arm in held.arms if arm.role == "control"), None)
+    found = []
+    for contrast in held.contrasts:
+        families = [family for family in held.contrast_families if family.aspect == contrast.aspect]
+        if control is None or contrast.interval is None or len(families) != 1:
+            continue
+        try:
+            rows = arms_compare(held, [contrast.arm, control], contrast.measure, limit=_EVERY).rows
+        except RefusedInput:
+            continue  # a contrast on a measure the arms state no mean on: no compare block reads it
+        if rows and rows[0].paired_with == f"arm:{contrast.arm}":
+            found.append((contrast.arm, control, contrast.measure, (families[0].correction or "").strip()))
+    return found
+
+
+def test_a_compare_blocks_paired_interval_is_called_corrected_only_where_its_family_corrects() -> None:
+    """r4's family says its correction is none, so its paired interval is not corrected; a family naming a method
+    corrects. Both the chart's note and the table's basis column read the family, never assert the correction."""
+    kinds: set[str] = set()
+    for held in _inputs().values():
+        for arm, control, measure, correction in _paired_reads(held):
+            query = _query("compare", arms=[arm, control], measures=[measure], strata=["overall"])
+            chart, table = _drawn(held, "diverging_bars", query), _drawn(held, "table", query)
+            assert chart is not None and table is not None
+            (said,) = [note for note in chart.notes if note.startswith("The interval is paired:")]
+            (column,) = {cell for cell in _column(table, "Read as") if cell.startswith("paired:")}
+            for basis in (said, column):
+                if correction.lower() == "none":
+                    kinds.add("none")
+                    assert "corrected within" not in basis and "not corrected" in basis, basis
+                elif correction:
+                    kinds.add("named")
+                    assert f"corrected within its family ({correction})" in basis, basis
+                else:
+                    assert "corrected within" not in basis and "unstated" in basis, basis
+    assert kinds == {"none", "named"}, "the control: a family saying none and one naming its correction"
+
+
 def test_a_compare_block_whose_arms_ran_each_case_once_says_nothing_of_narrow_intervals() -> None:
     data = _inputs()["r4"].model_dump(mode="json", by_alias=True, exclude_none=True)
     data["scoreboard"] = {
@@ -539,12 +580,14 @@ def test_a_page_says_how_much_of_the_whole_it_holds_in_what_it_counts() -> None:
     assert text.splitlines()[-1] == "the one flip shown"
     text, _structured = _shown(_Listing(rows=[], total=3, offset=4, next_offset=None), params)
     assert text.splitlines()[-1] == "none from flip 5: 3 flips in all"
-    text, _structured = _shown(_Listing(rows=[], total=0, offset=0, next_offset=None), params)
-    assert text.splitlines()[-1] == "no flips; the page above is the whole result"
+    empty = _Listing(rows=[], total=0, offset=0, next_offset=None)
+    text, _structured = _shown(empty, params)
+    assert text == render_cited(empty), "a result with none to page says nothing of paging"
 
 
-async def test_a_sweep_with_no_flips_says_it_has_none_to_page_and_never_that_the_page_shows_nothing() -> None:
-    """r4's margin sweep on an aspect with no reading flips nowhere, and its page still holds the segment and call."""
+async def test_a_sweep_with_no_flips_says_the_call_holds_over_the_whole_range_and_nothing_of_paging() -> None:
+    """r4's margin sweep on an aspect with no reading flips nowhere: its page holds the segment and call, and says in
+    the sweep's own words what its empty list of flips means, naming the range as the sweep spells it."""
     fixture, snapshots = off_loop(_seeded)
     held = frozen_input(snapshots["r4"])
     seen = 0
@@ -558,9 +601,23 @@ async def test_a_sweep_with_no_flips_says_it_has_none_to_page_and_never_that_the
             continue
         seen += 1
         assert page.structured["segments"], "the control: a sweep with no flips still holds its one segment"
-        assert page.text.splitlines()[-1] == "no flips; the page above is the whole result"
-        assert "none to show" not in page.text
+        assert page.structured["holds"] and page.structured["picks_hold"]
+        lines = page.text.splitlines()
+        said = f"the call holds over the whole range: {page.structured['swept']}"
+        assert lines[lines.index("flips: []") + 1] == said, page.text
+        assert sum(line.startswith("the call holds") for line in lines) == 1
+        assert not any(" shown" in line or "page above" in line or "none to show" in line for line in lines)
     assert seen, "the control: r4 sweeps a margin with no flips"
+
+
+async def test_an_empty_listing_ends_on_its_own_fields_and_says_nothing_of_paging() -> None:
+    """r1 holds no reading and no contrast: each listing reads as its empty lists, never as a page of nothing."""
+    fixture, snapshots = off_loop(_seeded)
+    for action, field in (("readings_list", "aspects"), ("contrasts_list", "contrasts")):
+        page = await _call(fixture, {"action": action, "snapshot_id": snapshots["r1"].id})
+        assert page.structured is not None and page.structured["total"] == 0, page.text
+        assert f"{field}: []" in page.text.splitlines()
+        assert page.text.splitlines()[-1] == "offset: 0", page.text
 
 
 async def test_a_complete_overview_says_all_of_it_is_shown() -> None:

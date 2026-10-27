@@ -391,10 +391,10 @@ SETTLE_NO_SIZE = "none settles it at today's estimate"
 #: How a compare chart's intervals were read, in the analysis's own words.
 BASIS_NOTE = "The interval is {basis}."
 
-#: How a compare row's interval reads where a contrast pairs the two arms, in reader names.
-PAIRED_BASIS_TEMPLATE = (
-    "paired: the contrast of {arm} against the control on {measure}, its own interval, corrected within its family"
-)
+#: How a compare row's interval reads where a contrast pairs the two arms, in reader names, then whether it is
+#: corrected as the contrast's family says (``corrected``: :func:`~threetears.evals.analysis.report.figure_keys.
+#: correction_words`), never asserted.
+PAIRED_BASIS_TEMPLATE = "paired: the contrast of {arm} against the control on {measure}, its own interval, {corrected}"
 
 #: What a settle table's sizes count on a repeated design: the distinct cases.
 CASES_WORD = "cases"

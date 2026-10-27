@@ -251,6 +251,31 @@ async def _options_dominance(host: OpsHost, caller: Caller, params: DominancePar
     )
 
 
+#: What a sweep with no flips in its range says beside its empty list, the range as the sweep spells it (``swept``).
+_SWEEP_HOLDS = "the call holds over the whole range: {swept}"
+
+
+def _render_sensitivity(result: Sensitivity) -> str:
+    """A sweep as text (:func:`~threetears.evals.actions.render.render_cited`), and where it lists no flip in its range
+    and its call and picks hold, what that empty list means, in one line after it (:data:`_SWEEP_HOLDS`): an empty
+    ``flips`` alone read to an analyst as a sweep that reported nothing.
+
+    Only a sweep with no flips gains the line, and it is never paged past its one page, so a page sized by
+    :func:`~threetears.evals.actions.render.render_cited` alone is sized as this writes it.
+
+    :param result: The sweep.
+    :ptype result: Sensitivity
+    :return: The text.
+    :rtype: str
+    """
+    text = render_cited(result)
+    if result.total or not (result.holds and result.picks_hold):
+        return text
+    lines = text.split("\n")
+    at = lines.index("flips: []") + 1 if "flips: []" in lines else len(lines)
+    return "\n".join([*lines[:at], _SWEEP_HOLDS.format(swept=result.swept), *lines[at:]])
+
+
 async def _decision_sensitivity(host: OpsHost, caller: Caller, params: SensitivityParams) -> Sensitivity:
     limit, fits = page_sizing("decision_sensitivity", params, SENSITIVITY_PAGE)
     return await decision_sensitivity(
@@ -328,7 +353,7 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
             params=SensitivityParams,
             result=Sensitivity,
             handler=_decision_sensitivity,
-            render=render_cited,
+            render=_render_sensitivity,
             paged=True,
             example={"snapshot_id": _EXAMPLE_SNAPSHOT, "parameter": "margin:answers"},
             detail=(
