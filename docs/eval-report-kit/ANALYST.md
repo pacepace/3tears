@@ -32,10 +32,10 @@ The analyst and critic never share context. The critic sees what a reader would 
 
 ## 3. The analyst skill
 
-A skill made of modular prompt files, loaded together. They carry expertise, not rules to match.
+A skill made of modular prompt files, loaded together. They carry expertise, not rules to match. The skill ships in the evals package as data, at `packages/evals/src/threetears/evals/analysis/analyst/skill/`, and `threetears.evals.analysis.analyst.skill` assembles each role's system text from it.
 
 ```
-skills/campaign-analyst/
+packages/evals/src/threetears/evals/analysis/analyst/skill/
   SKILL.md            role, the workflow (§4), the output format (§5), tool overview
   principles.md       what a report is for, honest emphasis, elision, confounds, confidence, next steps
   stories.md          story forms: decision, tradeoff, diagnosis, status, exploratory, and mixing them
@@ -43,10 +43,13 @@ skills/campaign-analyst/
   statistics.md       reading intervals, margins, corrected vs. uncorrected, small strata, zero counts
   writing.md          headlines as findings, reader names, one caveat in one place, short sentences
   exemplars/
-    INDEX.md          one line per exemplar: the eval, the story, the trap
+    INDEX.md          one line per exemplar: the eval, the story, the trap, and its structure
     kairo-round2.md   reasoning note (Appendix A)
     r1 … r4.md        reasoning notes for the four synthetic references
+  editor.md           the report editor's system text: the rubric (§7) and the review it returns
 ```
+
+An analyst is given the exemplars whose structure its campaign shares most: facts of the report input such as an arm being the control, a margin declared or a criterion applying within each task, each a condition on data. Selection never reads the eval's kind, its design's shape or any name, and it chooses only what the analyst reads, never a part of the report.
 
 GENERATOR's content moves into these files, rewritten as judgment ("lead with the change's size when the interval excludes zero, because…") rather than lookups ("if shape D then forest").
 

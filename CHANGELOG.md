@@ -17,6 +17,23 @@ as its public part; `threetears-release` still refuses to bump, sync or verify o
 labelled smoke assertion against a plain release. `docker-bake.hcl` keeps `v0.80.0`, since an image tag cannot
 carry `+`.
 
+### evals: the analyst skill ships in the package, and each role's system text is assembled from it
+
+**Added (provisional):** the analyst skill is package data under `threetears/evals/analysis/analyst/skill/`
+(`SKILL.md`, its five modules, the reasoning notes and their `exemplars/INDEX.md`), and ships in the wheel; it was
+read from `docs/eval-report-kit/analyst/`, which now only points at the package. A new `editor.md` there is the report
+editor's system text: ANALYST.md §7's rubric (7 items scored 0 to 2; a pass is no 0 and at least 11 of 14), the
+findings it returns (`must_fix` or `should_fix`, by claim), and the fenced JSON review it answers with; code adds up
+the scores. `threetears.evals.analysis.analyst.skill` (new) reads it: `load_skill()` returns an `AnalystSkill`, which
+refuses a skill that is not whole (a module missing, a note the index does not name or names without a file, a
+structural fact code does not read) and has a `digest` over every file. `AnalystSkill.analyst(report_input,
+withhold=())` is the analyst's system text as a `SkillText` (`text`, `files`, `exemplars`, `structure`, `digest`):
+the role file and its modules, then the index and three notes chosen by the campaign's structure. Each note's index
+row names the structural facts of the campaign it was reasoned on (`control`, `margin`, `factors`,
+`cross_cutting_task` and the rest, each a condition on the report input's data), and a campaign is given the notes
+sharing most of its facts, never chosen by its kind, design shape, name or measure keys. `withhold` leaves out a note
+and its index row, as a blind run does. `AnalystSkill.editor()` is the editor's text.
+
 ### evals: a chart of readings prints the level of the interval it draws
 
 **Fixed:** a forest (or diverging bars) of readings draws each reading's `within_interval`, at the nominal level with no
