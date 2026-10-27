@@ -29,6 +29,17 @@ gained, whose low and high ends are read off the gain's interval where a contras
 leaves open is refused as unbounded, never written as a number). ``cost_per_month.<arm>`` and the ``monthly_`` price
 fields read the same at the declared ``meta.volume_per_month``. All are derived and marked so.
 
+**A cost some trials did not report.** ``cost.unreported.<arm>.<field>`` reads the page's cost
+(``cost_per_1k.<arm>``) where some of the arm's trials report no cost: ``missing`` counts them (the trials the arm's
+scoreboard says ran, less the cost measure's observations), ``free`` is the cost per 1,000 had each of them cost
+nothing (the mean times observations over trials run: the least the arm's mean over every trial can be), and
+``at_p95`` had each cost the arm's own 95th percentile, a what-if, not a ceiling: the snapshot holds no highest
+cost, so nothing caps what a missing trial could have cost. Its inputs are the measure the page's cost is read from,
+overall on the arm (its mean, observations ``n`` and ``p95``), and the arm's ``scoreboard.<arm>.ran``. It reads each
+observation as one trial's, so it refuses, as unstated, a cost the page reads from the scoreboard or blends over
+tasks (no observations are counted), an arm whose measure or scoreboard leaves ``n`` or ``ran`` unstated, and a
+measure with more observations than trials run, whose observations are not one per trial. All derived.
+
 **Two arms apart, and the cases that would settle a reading.** ``spread.<arm>.<measure>.<where>.*`` reads an arm's
 spread on a figure, ``compare.<arm>.<arm>.<measure>.<where>.*`` the difference between two arms with its interval (a
 contrast's own where one pairs them, else independent), and ``settle.*`` the cases a design needs to separate an arm
@@ -75,8 +86,9 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal, get_args
 
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.analysis.numbers import format_number, group_thousands
+from threetears.evals.analysis.numbers import format_number, group_thousands, spell_multiple, spell_price
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
 from threetears.evals.analysis.report.cost_unit import REPLIES, CostBasis, per_count, per_noun
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
@@ -128,7 +140,6 @@ from threetears.evals.analysis.separation import (
     wrong_side_share,
 )
 from threetears.evals.analysis.style import humanize, measure_name
-from threetears.evals.analysis.summary import dollars_text
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of
 
 #: What a figure is: a number, an interval (low, high), a piece of text, or an arm (rendered by name and tag).
@@ -156,8 +167,10 @@ _FILTER_MEANS: dict[str, str] = {
     "pct": "a rate as a percent",
     "pts": "a change in points, signed, one decimal at most",
     "abs": "the magnitude, without its sign",
-    "usd": "dollars",
-    "int": "the nearest whole number, its thousands separated",
+    "usd": "dollars, three significant figures at least (`$0.302`, where cents would round a price a reader "
+    "multiplies to `$0.30`)",
+    "int": "the nearest whole number, its thousands separated; a multiple keeps its unit (`21 times`), every other "
+    "unit is left for the prose to write",
     "pct10": "a rate rounded to the nearest 10%",
     "interval": "an interval's two ends, joined by 'to'",
     "usd_per_1k": "dollars per 1,000 of what the cost counts, with the words (`per 1,000 conversations` where the "
@@ -990,6 +1003,19 @@ def _slice_figure(
 
 
 _SCOREBOARD_STATISTICS = ("ran", "usable", "passed", "cases", "lost", "failed", "reply_cost_usd", "test_cost_usd")
+
+#: How the examples count a failure, which ``count.failures`` counts by, and why it is not the scoreboard's ``failed``.
+_FAILURES_RULE = (
+    "A failure here is a nought on the primary judged dimension where the snapshot names one, else a trial that "
+    "failed: it is not `scoreboard.<arm>.failed`, which counts every trial that failed, for any cause, so the two "
+    "differ by design where trials fail on something else"
+)
+
+#: What the scoreboard's ``failed`` counts, beside ``count.failures``.
+_SCOREBOARD_FAILED = (
+    "`failed` counts every trial that failed, for any cause; `count.failures.<aspect>.<arm>` counts failures as the "
+    "examples do (a nought on the primary judged dimension, where there is one), so the two can differ"
+)
 
 
 def _scoreboard(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
@@ -2543,6 +2569,12 @@ _COST_GAP_FIELDS = ("per_1k", "monthly", "multiple")
 #: The unit a cost multiple is written in.
 MULTIPLE_UNIT = "times"
 
+#: The units a figure keeps under every filter, rounding included: a multiple's ``times`` is what makes it one, and
+#: ``21`` alone reads as a count. A multiple's own spelling rounds to the figures a ratio supports
+#: (:func:`~threetears.evals.analysis.numbers.spell_multiple`: ``21 times``, ``2.4 times``); ``int`` writes it whole.
+#: Every other unit is left off under ``int``, which prose writes after the key (``{…p95|int} ms``).
+_KEPT_UNITS = frozenset({MULTIPLE_UNIT})
+
 
 def _cost_gap_seconds(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
     return [arm for arm in _costs_per_thousand(report_input) if arm != prior[-1]]
@@ -2561,6 +2593,52 @@ def _cost_gap(report_input: ReportInput, values: tuple[str, ...], path: str) -> 
     if not costs[second]:
         raise _unstated(path, f"names {first}'s cost as a multiple of {second}'s, and {second} costs nothing")
     return Figure(path=path, kind="number", value=costs[first] / costs[second], scale="plain", unit=MULTIPLE_UNIT)
+
+
+# --- a cost some trials did not report -----------------------------------------------------------------------------
+
+#: What a cost some trials did not report reads: how many did not, the cost per 1,000 with each counted free, and with
+#: each counted at the arm's own 95th percentile.
+_UNREPORTED_FIELDS = ("missing", "free", "at_p95")
+
+
+def _unreported(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    """One arm's cost read with its unreported trials counted free, or at its 95th percentile (this module's account).
+
+    :raises UnstatedFigure: The page's cost is not read off one measure's overall figures, the measure or the
+        scoreboard leaves the observations or the trials run unstated, or the observations outnumber the trials.
+    """
+    arm, field = values
+    source = cost_basis(report_input).source
+    measure = report_input.measures.get(source)
+    stat = measure.per_arm.get(arm) if measure is not None else None
+    if measure is None or stat is None or stat.mean is None:
+        raise _unstated(path, f"names the trials {arm}'s cost leaves out, and its cost is read off no measure's figure")
+    row = report_input.scoreboard.get(arm)
+    ran = row.ran if row is not None else None
+    if stat.n is None or ran is None:
+        raise _unstated(
+            path,
+            f"counts the trials {arm}'s cost leaves out, and the snapshot states no {'n' if stat.n is None else 'trials run'}",
+        )
+    if stat.n > ran:
+        raise _unstated(
+            path,
+            f"counts the trials {arm}'s cost leaves out, and its cost has more observations than the arm ran trials, "
+            "so they are not one per trial",
+        )
+    missing = ran - stat.n
+    if field == "missing":
+        return _count(path, missing)
+    factor = _PER_THOUSAND_FACTORS[measure.unit or ""]
+    if field == "free":
+        return Figure(path=path, kind="number", value=stat.mean * stat.n / ran * factor, scale="usd_per_1k")
+    if stat.p95 is None:
+        raise _unstated(
+            path, f"names {arm}'s cost with its missing trials at its 95th percentile, which it does not state"
+        )
+    filled = (stat.mean * stat.n + stat.p95 * missing) / ran
+    return Figure(path=path, kind="number", value=filled * factor, scale="usd_per_1k")
 
 
 # --- an aspect's pair readings, floors and bars ----------------------------------------------------------------------
@@ -3282,6 +3360,21 @@ def _family_level(report_input: ReportInput, contrast: Contrast) -> float | None
     return level_share(families[0].level) if len(families) == 1 else None
 
 
+def _correction_words(report_input: ReportInput, contrast: Contrast) -> str:
+    """Whether a contrast's interval is corrected, as the one family on its aspect states it (``correction``), never
+    asserted: corrected by the method it names, not corrected where it names ``none``, and unstated where it names none
+    or no one family is on the contrast's aspect."""
+    families = [family for family in report_input.contrast_families if family.aspect == contrast.aspect]
+    if len(families) != 1:
+        return "and no one contrast family on its aspect says whether it is corrected"
+    correction = (families[0].correction or "").strip()
+    if not correction:
+        return "and its family states no correction, so whether it is corrected is unstated"
+    if correction.lower() == "none":
+        return "not corrected across its family (the family's correction is none)"
+    return f"corrected within its family ({correction})"
+
+
 def _paired(report_input: ReportInput, arm_id: str, other: str, key: str) -> Contrast | None:
     """The one contrast stating one of the two arms against the other (the control) on ``key``, with its difference
     and interval, on the lead aspect whose figures ``overall`` reads (:func:`on_lead_aspect`): the paired estimate, which the
@@ -3378,8 +3471,8 @@ def _read_difference(report_input: ReportInput, arm_id: str, other: str, key: st
             high=high,
             level=_family_level(report_input, contrast),
             basis=(
-                f"paired: the contrast of {contrast.arm} against the control on {key!r}, its own interval, corrected "
-                "within its family"
+                f"paired: the contrast of {contrast.arm} against the control on {key!r}, its own interval, "
+                f"{_correction_words(report_input, contrast)}"
             ),
         )
     first = _read_spread(report_input, arm_id, key, where)
@@ -3762,6 +3855,217 @@ def _settle_floor_figure(report_input: ReportInput, values: tuple[str, ...], pat
     return _settle_line(report_input, path, spread, "", -float(read.margin), True, field, in_points=True)
 
 
+# --- settling two arms apart on an aspect's pass rate: trials passed over usable, on its scoreboard -------------------
+
+#: What settling two arms apart on an aspect's pass rate reads: each arm's rate, their difference, the sizes and trials
+#: (as two arms apart on a measure), how often a fresh run reads the other arm ahead, the level, the trials each case ran
+#: today, and what the spread was read from (its count basis).
+_PASSED_FIELDS = (
+    "first",
+    "second",
+    "difference",
+    "cases_needed",
+    "cases_needed_80",
+    "trials_needed",
+    "trials_needed_80",
+    "wrong_side",
+    "level",
+    "repeats",
+    "basis",
+)
+
+
+def _passing_board(report_input: ReportInput, aspect_id: str) -> dict[str, ScoreboardRow]:
+    """The arms an aspect's scoreboard states a pass rate for: trials passed, and usable trials above none."""
+    return {
+        arm: row
+        for arm, row in _aspect_board(report_input, aspect_id).items()
+        if row.passed is not None and row.usable is not None and row.usable > 0
+    }
+
+
+def _passed_aspects(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]:
+    return [aspect.id for aspect in report_input.aspects if len(_passing_board(report_input, aspect.id)) >= 2]
+
+
+def _passed_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return list(_passing_board(report_input, prior[-1]))
+
+
+def _passed_others(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return [arm for arm in _passing_board(report_input, prior[-2]) if arm != prior[-1]]
+
+
+@dataclass(frozen=True)
+class _PassedApart:
+    """Two arms apart on an aspect's pass rate, in points: the difference, its spread, the level, today's repeats where
+    both arms ran each case alike, and what the spread was read from."""
+
+    difference: float
+    se: float
+    per_case: float | None
+    level: float
+    repeats: float | None
+    basis: str
+
+
+def _board_repeats(rows: Sequence[ScoreboardRow]) -> float | None:
+    """The trials each case ran today, where every arm states its cases and ran each as often; None otherwise."""
+    repeats = {
+        float(row.usable) / float(row.cases)
+        for row in rows
+        if row.usable is not None and row.cases is not None and row.cases > 0
+    }
+    return repeats.pop() if len(repeats) == 1 and all(row.cases for row in rows) else None
+
+
+def _passed_reading(
+    report_input: ReportInput, aspect_id: str, arm_id: str, other: str
+) -> tuple[Reading, tuple[float, float], float] | None:
+    """The reading that pairs the two arms on the aspect, its interval, and the sign that makes it the first minus the
+    second: one of them is the control, and the other's reading states an interval at a level; None otherwise."""
+    control = _control(report_input)
+    if control is None or control.id not in (arm_id, other):
+        return None
+    candidate = other if arm_id == control.id else arm_id
+    aspect = _aspect_by_id(report_input, aspect_id)
+    held = [
+        reading
+        for reading in aspect.readings
+        if reading.arm == candidate
+        and reading.gain_interval is not None
+        and level_share(reading.gain_confidence) is not None
+    ]
+    if len(held) != 1 or held[0].gain_interval is None:
+        return None
+    low, high = held[0].gain_interval
+    return held[0], (float(low), float(high)), 1.0 if candidate == arm_id else -1.0
+
+
+def _passed_apart(report_input: ReportInput, aspect_id: str, arm_id: str, other: str, path: str) -> _PassedApart:
+    """Two arms apart on an aspect's pass rate (its scoreboard's trials passed over usable), in points: paired where the
+    aspect's reading of a candidate against the control states its interval (its own change, interval and level, the
+    cases each arm ran), else each arm's binomial spread from its own count, read on its distinct cases where its
+    scoreboard states them, combined as independent."""
+    board = _passing_board(report_input, aspect_id)
+    rows = (board[arm_id], board[other])
+    repeats = _board_repeats(rows)
+    paired = _passed_reading(report_input, aspect_id, arm_id, other)
+    if paired is not None:
+        reading, interval, sign = paired
+        try:
+            spread = difference_spread(
+                float(reading.change),
+                interval,
+                level_share(reading.gain_confidence),
+                tuple(float(count) for count in reading.cases),
+            )
+        except NoSpread as none:
+            raise _unstated(
+                path, f"reads {reading.arm}'s reading on {aspect_id}, which has no spread: {none}"
+            ) from none
+        return _PassedApart(
+            difference=sign * spread.mean,
+            se=spread.se,
+            per_case=spread.per_case,
+            level=spread.level,
+            repeats=repeats,
+            basis=(
+                f"paired: {reading.arm}'s reading on {aspect_id} against the control, its own change and interval at "
+                "its stated level, over the cases each arm ran (the reading's cases); a size counts cases each arm "
+                "runs, each run as often as today"
+            ),
+        )
+    spreads = []
+    for arm, row in zip((arm_id, other), rows, strict=True):
+        try:
+            spreads.append(
+                stat_spread(
+                    float(row.passed or 0) / float(row.usable or 1),
+                    n=float(row.usable or 0),
+                    rate="share",
+                    cases=None if row.cases is None else float(row.cases),
+                )
+            )
+        except NoSpread as none:
+            raise _unstated(path, f"reads {arm}'s pass rate on {aspect_id}, which has no spread: {none}") from none
+    first, second = spreads
+    per_case = (
+        None if first.per_case is None or second.per_case is None else 100 * math.hypot(first.per_case, second.per_case)
+    )
+    on_cases = first.cases is not None and second.cases is not None
+    counted = (
+        f"read on its distinct cases, each counted once: {_REPEATS_BOUND}"
+        if on_cases
+        else "read on its usable trials as if each were independent, which reads narrower than its cases would where "
+        "a case ran more than once"
+    )
+    return _PassedApart(
+        difference=100 * (first.mean - second.mean),
+        se=100 * math.hypot(first.se, second.se),
+        per_case=per_case,
+        level=first.level,
+        repeats=repeats,
+        basis=(
+            f"independent: each arm's trials passed over usable on {aspect_id}'s scoreboard, a pass/fail rate's "
+            f"binomial spread {counted}; combined as if the arms ran different cases"
+        ),
+    )
+
+
+def _settle_passed_figure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect_id, arm_id, other, field = values
+    if arm_id == other:
+        raise _refuse(path, "settles an arm against itself; name two arms")
+    board = _passing_board(report_input, aspect_id)
+    if field in ("first", "second"):
+        row = board[arm_id if field == "first" else other]
+        rate = float(row.passed or 0) / float(row.usable or 1)
+        return _number(path, rate, "the arm's pass rate on the aspect: trials passed over usable", "share")
+    apart = _passed_apart(report_input, aspect_id, arm_id, other, path)
+    if field == "difference":
+        return _number(path, apart.difference, "the two arms' difference in pass rate", "points", change=True)
+    if field == "basis":
+        return Figure(path=path, kind="text", value=apart.basis)
+    if field == "level":
+        return _sided_level(path, apart.level, 2)
+    if field == "repeats":
+        return _number(path, apart.repeats, "the trials each case ran today, where both arms ran each alike", "plain")
+    if field == "wrong_side":
+        share = _settled(path, lambda: wrong_side_share(apart.difference, apart.se))
+        return _number(path, share, "how often a fresh run of today's size reads the other arm ahead", "share")
+    per_case = apart.per_case
+    if per_case is None:
+        raise _unstated(path, "names the cases a design needs, which needs the count each arm's rate rests on")
+    power = POWER if field.endswith("_80") else 0.5
+    cases = _settled(path, lambda: cases_to_separate(per_case, apart.difference, apart.level, sided=2, power=power))
+    if field.startswith("trials_"):
+        if apart.repeats is None:
+            raise _unstated(
+                path,
+                "names the trials a size takes, and the two arms' scoreboards state no cases, or ran them a different "
+                "number of times",
+            )
+        return _number(path, math.ceil(cases * apart.repeats - 1e-9), "the trials the cases take", "count")
+    return _number(path, cases, "the cases each arm needs", "count")
+
+
+def passed_aspects(report_input: ReportInput, arms: Sequence[str]) -> list[str]:
+    """The aspects whose scoreboard states a pass rate for every one of ``arms`` (trials passed over usable), which a
+    ``settle.passed.<aspect>.`` key settles them apart on, in the input's aspect order.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param arms: The arms, by id.
+    :ptype arms: Sequence[str]
+    :return: The aspects, by id; empty where none holds every arm's pass rate.
+    :rtype: list[str]
+    """
+    return [
+        aspect for aspect in _passed_aspects(report_input) if set(arms) <= set(_passing_board(report_input, aspect))
+    ]
+
+
 def separation_wheres(report_input: ReportInput, arms: Sequence[str], key: str) -> list[str]:
     """Where a ``spread.``, ``compare.`` or ``settle.`` key can read every one of ``arms`` on a measure or judged
     dimension, as its ``<where>`` slot spells it: ``overall`` first, then ``task.<task>``, ``cells.<row>.<column>`` and
@@ -3995,6 +4299,25 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         derived=True,
         derived_note=_SEPARATION_NOTE,
         example="settle.floor.answers.answers/rate_drop/*.fast.v2.wrong_side",
+    ),
+    _family_of(
+        _Word("settle"),
+        _Word(TRIAL_PASS_NAME),
+        _Ids("<aspect>", _passed_aspects),
+        _Ids("<arm>", _passed_arms),
+        _Ids("<arm>", _passed_others),
+        _Statistic(_PASSED_FIELDS, "<field>"),
+        what="two arms apart on an aspect's pass rate (its scoreboard's trials passed over usable), the first minus "
+        "the second: `first` and `second` each arm's rate, `difference` in points, then what two arms' settle reads "
+        "(`cases_needed`, `cases_needed_80`, `trials_needed`, `trials_needed_80`, `wrong_side`, `level` two-sided); "
+        "`repeats` the trials each case ran today; `basis` the count basis: paired where the aspect's reading of a "
+        "candidate against the control states its interval (its own change and interval, over the cases each arm "
+        "ran), else each arm's binomial spread from its own trials, read on its distinct cases where its scoreboard "
+        "states them, combined as independent",
+        resolve=_settle_passed_figure,
+        derived=True,
+        derived_note=_SEPARATION_NOTE,
+        example="settle.passed.answers.fast.v2.base.cases_needed",
     ),
 )
 
@@ -4533,7 +4856,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("scoreboard"),
         _keyed("<arm>", lambda ri: ri.scoreboard),
         _Statistic(_SCOREBOARD_STATISTICS),
-        what="how an arm's trials came out",
+        what="how an arm's trials came out. " + _SCOREBOARD_FAILED,
         resolve=_scoreboard,
     ),
     _family_of(
@@ -4675,7 +4998,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("scoreboard"),
         _Ids("<arm>", _aspect_board_arms),
         _Statistic(_SCOREBOARD_STATISTICS),
-        what="how an arm's trials came out on one aspect",
+        what="how an arm's trials came out on one aspect. " + _SCOREBOARD_FAILED,
         resolve=_aspect_scoreboard,
         example="aspects.speed.scoreboard.fast.v2.passed",
     ),
@@ -5016,8 +5339,9 @@ _FAMILIES: tuple[_Family, ...] = (
         "and guardrail, borderline counting as passing; `undecided` how many no gate figure fails while a gate has no "
         "figure for them somewhere: neither passed nor removed; `pairs` how many pairs of arms its pair readings read "
         "apart, `arm_pairs` how many pairs of arms there are; `examples` the failed trials the snapshot froze as "
-        "examples, `failures` the failed trials the run holds, which they were kept from (refused where the snapshot "
-        "does not count them: not known)",
+        "examples, `failures` the failed trials the run holds, which they were kept from, a failure counted as the "
+        "examples count one, not as the scoreboard's `failed` (refused where the snapshot does not count them: not "
+        "known)",
         resolve=_campaign_count,
         derived_statistics=("surviving", "undecided"),
         example="count.arms|words",
@@ -5109,7 +5433,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Ids("<arm>", _example_arms),
         what="how many of one arm's trials on one aspect failed, as the examples count a failure: the pool its examples "
         "were kept from (`count.failures` counts every one); not known, and refused, where the snapshot does not "
-        "count them",
+        "count them. " + _FAILURES_RULE,
         resolve=_failed_trials_count,
         example="count.failures.answers.fast.v2",
     ),
@@ -5148,10 +5472,22 @@ _FAMILIES: tuple[_Family, ...] = (
         _Ids("<arm>", _cost_gap_seconds),
         _Statistic(_COST_GAP_FIELDS, "<field>"),
         what="two arms' costs apart, the first's minus the second's: `per_1k` per 1,000 of what the cost counts, "
-        "`monthly` per month at the declared monthly volume, `multiple` the first's cost over the second's",
+        "`monthly` per month at the declared monthly volume, `multiple` the first's cost over the second's, read with its "
+        "unit under every filter (`21 times`, `2.4 times`: whole from ten up, one decimal below)",
         resolve=_cost_gap,
         derived=True,
         example="cost.gap.fast.v2.base.multiple",
+    ),
+    _family_of(
+        _Word("cost.unreported"),
+        _keyed("<arm>", _costs_per_thousand),
+        _Statistic(_UNREPORTED_FIELDS, "<field>"),
+        what="an arm's cost where some of its trials report none: `missing` how many (trials run less the cost's "
+        "observations), `free` the cost per 1,000 had each cost nothing (the least the mean over every trial can be), "
+        "`at_p95` had each cost the arm's own 95th percentile (a what-if, not a ceiling: the snapshot holds no "
+        "highest cost); refused where the cost is not read off one measure's observations, one per trial",
+        resolve=_unreported,
+        derived=True,
     ),
 )
 
@@ -5498,7 +5834,9 @@ def _plus(text: str, value: float) -> str:
 
 
 def _money(value: float, signed: bool) -> str:
-    text = dollars_text(abs(value))
+    """Dollars as a key writes them: to three significant figures at least (:func:`spell_price`), so a price a reader
+    multiplies by a volume reaches the monthly figure beside it."""
+    text = spell_price(abs(value))
     if value < 0:
         return f"-{text}"
     return _plus(text, value) if signed else text
@@ -5581,7 +5919,10 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
         if figure.scale not in ("count", "plain", "points", "usd_per_1m"):
             raise _refuse(figure.path, f"cannot read as a whole number: it is on the {figure.scale} scale")
         text = group_thousands(format_number(float(round(value))))
-        return _Spelled(_plus(text, value) if signed else text)
+        text = _plus(text, value) if signed else text
+        return _Spelled(f"{text} {figure.unit}" if figure.unit in _KEPT_UNITS else text)
+    if figure.unit in _KEPT_UNITS:
+        return _Spelled(f"{spell_multiple(value)} {figure.unit}")
     text = format_number(value)
     text = _plus(text, value) if signed else text
     if not figure.unit:
@@ -6090,8 +6431,8 @@ _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
     ),
     (
         "cost",
-        "cost per 1,000 of what the cost counts and per month, cost uplift, and a move between options priced per "
-        "point",
+        "cost per 1,000 of what the cost counts and per month, cost uplift, a cost some trials did not report, and a "
+        "move between options priced per point",
         frozenset({"cost_per_1k", "cost", "price", "cost_per_month"}),
     ),
     (
@@ -6227,4 +6568,5 @@ __all__ = [
     "separation_wheres",
     "on_lead_aspect",
     "pairing_contrast",
+    "passed_aspects",
 ]

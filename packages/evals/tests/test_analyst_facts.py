@@ -60,8 +60,8 @@ from threetears.evals.analysis.report_decision import (
     surviving_options,
     unsettled_arms,
 )
-from threetears.evals.analysis.report_margins import criterion_figures
-from threetears.evals.analysis.report_input import Aspect, ReportInput, Stat
+from threetears.evals.analysis.report_margins import CriterionFigure, criterion_figures
+from threetears.evals.analysis.report_input import Aspect, Criterion, ReportInput, Stat
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import EvalReportSnapshot
 from threetears.evals.kernel.errors import RefusedInput
@@ -866,6 +866,20 @@ def _undescribed(held: ReportInput) -> list[str]:
     ]
 
 
+def _borders(criterion: Criterion, figure: CriterionFigure) -> bool:
+    """Whether a figure clears its criterion's line on its point estimate while its interval reaches past the line."""
+    if figure.ci is not None:
+        low, high = figure.ci
+    elif figure.half_width is not None:
+        low, high = figure.value - figure.half_width, figure.value + figure.half_width
+    else:
+        return False
+    line = float(criterion.threshold)
+    if criterion.direction == "higher_is_better":
+        return figure.value >= line and low < line
+    return figure.value <= line and high > line
+
+
 def _expected_implied(held: ReportInput) -> dict[str, tuple[list[str], list[str]]]:
     """The implied caveats an input's holdings raise, by id, each with the arms and measures it touches, read off the
     input (the judge's partial calibration is held by its own test below)."""
@@ -894,6 +908,14 @@ def _expected_implied(held: ReportInput) -> dict[str, tuple[list[str], list[str]
         ]
         if cleared:
             expected[f"point_estimate:{criterion.id}"] = (list(dict.fromkeys(cleared)), [criterion.measure])
+        bordering = [
+            arm
+            for arm in survivors
+            for figure in criterion_figures(held, criterion, arm)
+            if _borders(criterion, figure)
+        ]
+        if bordering:
+            expected[f"borderline:{criterion.id}"] = (list(dict.fromkeys(bordering)), [criterion.measure])
     candidates = [arm.id for arm in held.arms if arm.role == "challenger"]
     if len(candidates) >= MANY:
         expected["best_of_n"] = (candidates, [])
@@ -914,7 +936,7 @@ def test_caveats_list_raises_what_the_snapshot_implies_each_with_when_it_matters
 def test_every_implied_kind_is_raised_by_some_fixture() -> None:
     """The control for the walk above: each implied kind but a partly calibrated judge is raised on the fixtures."""
     kinds = {row.kind for _, held in map(_held, FIXTURES) for row in caveats_list(held).caveats}
-    assert {"judge_unstated", "no_control", "nothing_declared", "point_estimate", "best_of_n"} <= kinds
+    assert {"judge_unstated", "no_control", "nothing_declared", "point_estimate", "borderline", "best_of_n"} <= kinds
 
 
 def test_a_gate_cleared_on_a_point_estimate_cites_its_threshold_and_each_clearance() -> None:
@@ -936,6 +958,27 @@ def test_a_gate_cleared_on_a_point_estimate_cites_its_threshold_and_each_clearan
             )
             raised += 1
     assert raised, "the control: a fixture's survivor clears a gate on a point estimate"
+
+
+def test_a_gate_a_survivor_clears_on_a_borderline_figure_is_a_caveat_citing_its_threshold_and_each_clearance() -> None:
+    """r1's pick cleared its resolve gate on its point estimate with an interval reaching below the line, and its
+    analyst found no caveat id to carry that with: ``borderline:<criterion>`` is it, citing the line and each gap."""
+    raised = 0
+    for _, held in map(_held, FIXTURES):
+        for row in caveats_list(held).caveats:
+            if row.kind != "borderline":
+                continue
+            criterion = row.id.partition(":")[2]
+            keys = [figure.key for figure in row.figures]
+            assert row.source == "implied" and row.reach == "report" and row.matters_if
+            assert keys[0] == f"criteria.{criterion}.threshold"
+            assert keys[1:] and all(
+                key.startswith(f"criteria.{criterion}.") and key.endswith(".gap") for key in keys[1:]
+            )
+            assert all(figure.value >= 0 for figure in row.figures[1:]), "the figure clears the line"
+            assert all(any(key.startswith(f"criteria.{criterion}.{arm}.") for key in keys) for arm in row.touches_arms)
+            raised += 1
+    assert raised, "the control: a fixture's survivor clears a gate on a borderline figure"
 
 
 def test_a_judge_stated_uncalibrated_on_some_dimensions_is_raised_where_the_whole_judge_is_not() -> None:

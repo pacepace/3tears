@@ -26,6 +26,14 @@ arithmetic and its design note are :mod:`~threetears.evals.analysis.separation`.
   same level, each arm running the cases named. Read as independent arms: a paired design over the same cases needs
   fewer where the arms agree case by case *(inferred: the snapshot holds no case-level differences to size a paired
   design by)*.
+- *Two arms apart on an aspect's pass rate* (two ``arm_ids`` and ``measure_key`` ``passed``, the name the snapshot's
+  contrasts give a trial's pass, where no measure of that key is held): a row per aspect whose scoreboard states both
+  arms' trials passed over usable (``where`` ``aspects.<aspect>``), keyed ``settle.passed.<aspect>.``, two-sided.
+  Paired where the aspect's reading of a candidate against the control states its interval (its own change and
+  interval, at its level, over the cases each arm ran); otherwise each arm's binomial spread from its own trials, read
+  on its distinct cases where its scoreboard states them (the widest its repeats allow), combined as independent. The
+  row cites each arm's usable trials and cases from the aspect's scoreboard, its repeats, and the basis: the count
+  basis the sizes rest on.
 - *An assumed count* (``assumed``, a what-if the caller states): a slice whose figure states no count has no spread to
   read; read as if each such slice held that many cases, or (``share``) the arm's own distinct cases times the
   slice's traffic share (and, on a repeated design, its trials times the share). Every figure read under it is keyed ``assumed.<cases>.`` or ``assumed.share.``, so it reads as an assumption
@@ -41,6 +49,12 @@ count, else the arm's own stated spread times the root of its count.
 - *Which way it settles* (``settles``): the sizes are read on the distance's size, so they settle whichever side
   today's estimate is on. A row whose estimate passes says ``clears`` (the size would show the line cleared); one whose
   estimate misses says ``misses`` (the size would confirm the miss, never that the arm clears).
+- *An estimate exactly on its line* (``settles``: ``on_the_line``) is answered, never refused: a fresh run of today's
+  size reads it on the wrong side half the time (``wrong_side``, one half), no finite size settles it at today's
+  estimate (its sizes are absent, ``unsettled`` says why), and ``what_would`` says what would: only a truth away from
+  the line can be settled, so the run that would is sized for a truth the caller assumes, by a hypothetical line that
+  far from today's (its sizes are the sizes for that truth, on today's spread). Two arms with equal estimates read the
+  same way: either arm ahead half the time, and only a true difference can be settled.
 - *Sidedness*: a line row's sizes are for a one-sided bound, and its ``level`` reads ``95% one-sided``; since a page
   prints two-sided intervals, a line row gives beside them the sizes at which the two-sided interval at the level
   sits on today's side (``cases_needed_two_sided``, ``cases_needed_two_sided_80``). A two-arm row is two-sided, and
@@ -58,8 +72,8 @@ count, else the arm's own stated spread times the root of its count.
 
 **What it refuses**, teaching: the wrong number of arms; a criterion the snapshot does not declare, or one reading no
 figure for the arm; a hypothetical line with no measure, or a measure that states no direction; a line written only
-in exponent notation; and a call where no row can be read (every figure a p50 or p95, no spread, no count, or each
-estimate exactly on its line), naming why. A row that cannot be read among others that can is listed with why
+in exponent notation; and a call where no row can be read (every figure a p50 or p95, no spread, or no count),
+naming why. A row that cannot be read among others that can is listed with why
 (``unsettled``), never dropped.
 
 **No branch on the kind of eval.** Every condition is on what the snapshot holds: a declared criterion, a stated
@@ -84,9 +98,11 @@ from threetears.evals.analysis.analyst.compare import (
     refuse_arms,
     unkeyed_strata,
 )
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.report.figure_keys import (
     assumable,
     criterion_wheres,
+    passed_aspects,
     separation_wheres,
 )
 from threetears.evals.analysis.report_input import ReportInput
@@ -176,8 +192,9 @@ _UNREPEATED = frozenset(
 #: the slice's traffic share).
 Assumed = int | Literal["share"]
 
-#: Which side of its line today's estimate is on, so which way a row's sizes settle it.
-Settles = Literal["clears", "misses"]
+#: Which side of its line today's estimate is on, so which way a row's sizes settle it; ``on_the_line`` where it sits
+#: exactly on it, which no size settles at today's estimate.
+Settles = Literal["clears", "misses", "on_the_line"]
 
 _MODEL = ConfigDict(frozen=True, extra="forbid")
 
@@ -196,7 +213,10 @@ class SettleRow(BaseModel):
 
     model_config = _MODEL
 
-    where: str = Field(description="overall, or the slice: task.<task>, cells.<row>.<column> or strata.<stratum>.")
+    where: str = Field(
+        description="overall, or the slice: task.<task>, cells.<row>.<column> or strata.<stratum>; aspects.<aspect> "
+        "for two arms apart on an aspect's pass rate."
+    )
     name: CitedFigure | None = Field(description="What a reader calls the slice; None overall.")
     against: str = Field(
         description="What the reading is settled against: criterion <id>, the hypothetical line, or arm:<id>."
@@ -209,7 +229,8 @@ class SettleRow(BaseModel):
     )
     settles: Settles | None = Field(
         description="Against a line, which side today's estimate is on, so what the sizes would settle: clears (the "
-        "line cleared) or misses (the miss confirmed); None between arms or with no distance."
+        "line cleared), misses (the miss confirmed), or on_the_line (exactly on it: no size settles it at today's "
+        "estimate, what_would says what would); None between arms or with no distance."
     )
     cases_needed: CitedFigure | None = Field(
         description="The size at which half such designs settle it, sized at the level's sidedness."
@@ -250,6 +271,11 @@ class SettleRow(BaseModel):
     )
     basis: list[CitedFigure] = Field(description="What each arm's spread was read from.")
     unsettled: str = Field(description="Why no design size is read here; empty where one is.")
+    what_would: str = Field(
+        default="",
+        description="Where today's estimate sits exactly on its line (or two arms read alike), what would settle it "
+        "and the call that sizes it; empty otherwise.",
+    )
     gates: bool | None = Field(
         default=None,
         description="Against a declared criterion, whether it removes an option that misses it as the caller reads "
@@ -303,6 +329,29 @@ def _spread_figures(
     return found
 
 
+def _on_the_line(against: str, arms: Sequence[str], key: str) -> str:
+    """What would settle a reading whose estimate sits exactly on its line, or two arms read alike, and the call that
+    sizes it (this module's An estimate exactly on its line); ``key`` empty where no hypothetical line on the figure
+    reads it (a margin's or floor's change, a criterion on another aspect)."""
+    if len(arms) == 2:
+        return (
+            "the two arms read alike, so either reads ahead half the time and no finite size settles which is ahead: "
+            "only a true difference can be; arms_compare gives the interval on how large it may be"
+        )
+    head = (
+        "only a truth away from the line can be settled, and a run of any size centred on the line reads either side "
+        "alike"
+    )
+    if key:
+        return (
+            f"{head}: size the run for the truth you assume with settle_cases, arm_ids=[{arms[0]!r}], "
+            f"measure_key={key!r} and hypothetical_line set that far from this line on the side you would settle; its "
+            "cases_needed is the size for a truth that far off, on today's spread"
+        )
+    parameter = f"threshold:{against.removeprefix('criterion ')}" if against.startswith("criterion ") else against
+    return f"{head}: decision_sensitivity on {parameter} gives the call on either side of it"
+
+
 def _row(
     report_input: ReportInput,
     prefix: str,
@@ -329,8 +378,15 @@ def _row(
     spread = _spread_figures(report_input, arms, key, where, head) if key else {}
     distance = read.get("distance")
     settles: Settles | None = None
+    what_would = ""
     if distance is not None and isinstance(distance.value, int | float) and distance.value != 0:
         settles = "clears" if distance.value > 0 else "misses"
+    elif distance is not None and isinstance(distance.value, int | float):
+        settles = "on_the_line"
+        what_would = _on_the_line(against, arms, key)
+    difference = read.get("difference")
+    if difference is not None and isinstance(difference.value, int | float) and difference.value == 0:
+        what_would = _on_the_line(against, arms, key)
     return SettleRow(
         where=where,
         name=place_name(report_input, where),
@@ -355,6 +411,7 @@ def _row(
         repeats=spread.get("repeats", []),
         basis=spread.get("basis", []),
         unsettled=why if read["cases_needed"] is None or read["wrong_side"] is None else "",
+        what_would=what_would,
     )
 
 
@@ -431,6 +488,8 @@ def _criteria_rows(
             )
             on_lead = criterion_aspect(report_input, criterion) == lead_aspect(report_input)
             row = row if on_lead else _on_own_aspect(report_input, row, prefix)
+            if row.what_would and not on_lead:
+                row = row.model_copy(update={"what_would": _on_the_line(row.against, (arm,), "")})
             gates = criterion.kind in _GATING or (criterion.kind == "bar" and bars_as == "gates")
             rows.append(row.model_copy(update={"gates": gates}))
     return rows
@@ -474,12 +533,59 @@ def _margin_rows(report_input: ReportInput, arm: str, named: Sequence[str]) -> l
     return rows
 
 
+#: How two arms apart on an aspect's pass rate are read.
+_PASSED_SIDED = (
+    "two-sided at the level, on each aspect's pass rate (trials passed over usable, its scoreboard's): each arm running "
+    "cases_needed, an interval on the difference centred on today's excludes zero, half such designs at "
+    "cases_needed and four in five at cases_needed_80 if the truth equals today's difference; basis says the count "
+    "the spread rests on: paired, the aspect's reading of a candidate against the control (its own interval, over "
+    "the cases each arm ran), else each arm's binomial spread from its own trials, read on its distinct cases where "
+    "its scoreboard states them; trials_needed counts the trials that takes at today's repeats"
+)
+
+
+def _passed_rows(report_input: ReportInput, first: str, second: str) -> list[SettleRow]:
+    """A row per aspect stating both arms' pass rates: the two apart on it, by the ``settle.passed.`` keys, each arm's
+    trials and cases as its scoreboard on the aspect states them."""
+    rows: list[SettleRow] = []
+    for aspect in passed_aspects(report_input, (first, second)):
+        prefix = f"settle.{TRIAL_PASS_NAME}.{aspect}.{first}.{second}"
+        row = _row(
+            report_input,
+            prefix,
+            where=f"aspects.{aspect}",
+            against=_arm(second),
+            arms=(first, second),
+            key="",
+            estimate=[cite(f"{prefix}.first", report_input), cite(f"{prefix}.second", report_input)],
+            line=None,
+            fields=_PAIR_FIELDS,
+        )
+        boards = [f"aspects.{aspect}.scoreboard.{arm}" for arm in (first, second)]
+        counts = [figure for board in boards if (figure := cite_or_why(f"{board}.usable", report_input)[0])]
+        cases = [figure for board in boards if (figure := cite_or_why(f"{board}.cases", report_input)[0])]
+        repeats, _why = cite_or_why(f"{prefix}.repeats", report_input)
+        rows.append(
+            row.model_copy(
+                update={
+                    "counts": counts,
+                    "cases": cases,
+                    "repeats": [repeats] if repeats is not None else [],
+                    "basis": [cite(f"{prefix}.basis", report_input)],
+                }
+            )
+        )
+    return rows
+
+
 def _refuse_measure(
     report_input: ReportInput, measure: str | None, arms: Sequence[str], need: str
 ) -> tuple[str, list[str]]:
-    """The measure and the places the arms hold it at, refusing one that is absent or held nowhere by all of them."""
+    """The measure and the places the arms hold it at, refusing one that is absent or held nowhere by all of them;
+    for two arms whose aspect states both pass rates, the refusal names the pass rate (``passed``) among them."""
     known = list(dict.fromkeys([*report_input.measures, *report_input.judged]))
-    shared = [key for key in known if separation_wheres(report_input, arms, key)]
+    passed = [TRIAL_PASS_NAME] if len(arms) == 2 and passed_aspects(report_input, arms) else []
+    shared = [*passed, *(key for key in known if separation_wheres(report_input, arms, key))]
     wheres = separation_wheres(report_input, arms, measure) if measure in known else []
     if measure is None or not wheres:
         fault = "is not given" if measure is None else f"names {measure!r}, which the arms do not all state a mean on"
@@ -512,6 +618,9 @@ def _rows(
                 parameters=("criterion_id", "hypothetical_line", "against"),
             )
         first, second = arms
+        held = {*report_input.measures, *report_input.judged}
+        if measure == TRIAL_PASS_NAME and measure not in held and passed_aspects(report_input, arms):
+            return _passed_rows(report_input, first, second), _PASSED_SIDED, False
         key, wheres = _refuse_measure(report_input, measure, arms, "two arms are settled apart on one measure")
         rows = [
             _row(

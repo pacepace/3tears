@@ -25,7 +25,16 @@ from typing import Annotated, Literal, get_args
 from pydantic import Field
 
 from threetears.evals.actions.catalogue import Action, Caller
-from threetears.evals.actions.params import ArmFilter, AspectFilter, MeasureKey, Offset, SizedLimit, SnapshotId
+from threetears.evals.actions.params import (
+    ARM_FORMS,
+    ArmFilter,
+    ArmId,
+    AspectFilter,
+    MeasureKey,
+    Offset,
+    SizedLimit,
+    SnapshotId,
+)
 from threetears.evals.actions.render import page_sizing, render_cited
 from threetears.evals.ops.analyst_analyses import (
     BREAKDOWN_PAGE,
@@ -103,10 +112,12 @@ class SensitivityParams(EvalBaseModel):
     range_low: float | None = Field(
         default=None,
         description="Where the sweep starts, in the criterion's units; omitted, zero for a margin or a floor and no "
-        "lower end for a threshold.",
+        "lower end for a threshold, so every flip is walked. A start past a change in the call is named in unswept.",
     )
     range_high: float | None = Field(
-        default=None, description="Where the sweep ends, in the criterion's units; omitted, no upper end."
+        default=None,
+        description="Where the sweep ends, in the criterion's units; omitted, no upper end. An end short of a change "
+        "in the call is named in unswept.",
     )
     bars_as: BarsAsParam = "warnings"
     limit: SizedLimit = None
@@ -129,11 +140,11 @@ class BreakdownParams(EvalBaseModel):
 
 #: The arms a separation reads: one meaning for both actions that take them.
 ArmIds = Annotated[
-    list[str],
+    list[ArmId],
     Field(
         min_length=1,
         max_length=2,
-        description="One arm or two, by their ids in the snapshot: arms_compare reads two, the first minus the "
+        description="One arm or two, each " + ARM_FORMS + ": arms_compare reads two, the first minus the "
         "second; settle_cases reads one against a line, or two apart.",
     ),
 ]
@@ -329,7 +340,13 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
                 "criterion's figure for an arm), and the call is read on each piece, with each routable task's pick "
                 "(the cheapest arm passing there and in every cross-cutting task) where the snapshot holds routable "
                 "tasks; segments join pieces with the same call and picks; holds says whether the declared call "
-                "stands across the range, picks_hold whether the picks do. hypothetical:<measure> sweeps a gate the "
+                "stands across the range, picks_hold whether the picks do. With no range a sweep walks every flip; a "
+                "range you give that stops short of a change in the call or a pick names that side in unswept (its "
+                "nearest flip, how many, the call past it, and whether that side loosens the line): state every band "
+                "the whole sweep returns. barred lists each arm a cross-cutting task's gate keeps out of every "
+                "pick, with the gates it fails there and the tasks whose own gates it passes. A margin over an aspect "
+                "with no reading of a candidate says code never reads it against a margin. "
+                "hypothetical:<measure> sweeps a gate the "
                 "snapshot does not declare, read where it states the statistic (overall, else in each task or cell); "
                 "the result is marked hypothetical and its flips are the arms' own figures. Flips are paged with "
                 "limit and offset, each page holding the segments that start at its flips; without a limit a page "
@@ -374,8 +391,13 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
                 "stratum where both state a mean, each by its compare.* keys, in points for a rate. The interval is "
                 "paired where a contrast states one arm against the other (the control) overall, else the two arms' "
                 "own spreads combined as independent (a stated interval or half-width at its level, a standard "
-                "error, or a pass/fail rate's binomial spread from its count); basis says which, excludes_zero "
-                "whether the interval clears zero, ahead which arm reads better where it does. A measure neither arm "
+                "error, or a pass/fail rate's binomial spread from its count); basis says which, and whether a "
+                "paired interval is corrected as its family's own correction says, excludes_zero "
+                "whether the interval clears zero, ahead which arm reads better where it does. counts says what each "
+                "arm's count counts (cases, trials or observations); a paired row's contrast states none "
+                "(counted_unstated). may_be_narrow marks an interval that may be too narrow, where it counts trials "
+                "or an unstated unit and the arms ran more trials than cases (nested cites them): say so where you "
+                "cite it. A measure neither arm "
                 "states a spread for is refused, naming measure_read for the two means. A normal approximation, "
                 "never a test the pipeline ran. A slice whose figures state no count has no binomial spread: "
                 "assumed_cases reads it under a what-if count, keyed assumed.<cases>.compare.*. Without a limit a "
@@ -402,7 +424,10 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
                 "hypothetical_line on measure_key, which the snapshot does not declare (keyed "
                 "settle.hypothetical.*); one-sided, with the two-sided sizes a page's intervals need beside "
                 "(cases_needed_two_sided, cases_needed_two_sided_80). Two arms with measure_key: apart, "
-                "overall and in each slice holding both; two-sided, as independent arms. Each row gives today's "
+                "overall and in each slice holding both; two-sided, as independent arms. Two arms with measure_key "
+                "passed: apart on each aspect's pass rate (trials passed over usable, keyed settle.passed.*), paired "
+                "on the aspect's reading where one pairs them, else each arm's binomial spread; its basis states the "
+                "count it rests on. Each row gives today's "
                 "estimate and line, the distance, settles (clears where today's estimate passes, misses where the "
                 "sizes would confirm a miss), cases_needed (an interval at the snapshot's level centred on today's "
                 "estimate sits wholly on today's side: half such designs do if the truth equals today's estimate), "
@@ -414,9 +439,10 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
                 "allow, so cases_needed is the most cases they could need). A slice "
                 "whose figure states no count has no spread: assumed_cases reads it under a what-if count, keyed "
                 "assumed.<cases>.*. A criterion declared on an aspect reads that aspect's figure, and each criterion "
-                "row says whether it gates as you read the bars (gates; bars_as). A p50 or p95, a figure with no "
-                "spread or count, "
-                "and an estimate exactly on its line say why in unsettled. Without a limit a page holds as many "
+                "row says whether it gates as you read the bars (gates; bars_as). A p50 or p95, and a figure with no "
+                "spread or count, say why in unsettled. An estimate exactly on its line is answered: settles reads "
+                "on_the_line, wrong_side one half, no size settles it at today's estimate, and what_would names the "
+                "call that sizes a run for a truth away from the line. Without a limit a page holds as many "
                 f"rows as fit one result, up to {SETTLE_PAGE}."
             ),
         ),

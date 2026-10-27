@@ -13,12 +13,12 @@ page's own code, and returns its values table, never the picture.
 
 from __future__ import annotations
 
-from typing import Any, get_args
+from typing import Annotated, Any, get_args
 
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import BeforeValidator, Field, ValidationError, field_validator, model_validator
 
 from threetears.evals.actions.catalogue import Action, Caller
-from threetears.evals.actions.params import Limit, Offset, SnapshotId
+from threetears.evals.actions.params import ARM_FORMS, Limit, Offset, SnapshotId, written_arm
 from threetears.evals.actions.render import page_fits, render_cited
 from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, PlannedChart
 from threetears.evals.ops.analyst_blocks import BLOCK_ROWS, BlockCatalog, RenderedBlock, block_catalog, block_render
@@ -62,8 +62,9 @@ class BlockRenderParams(EvalBaseModel):
     )
     query: dict[str, Any] = Field(
         description=(
-            "What the block reads: source (required, a source the kind draws), then any of aspect, measures, arms, "
-            "strata, limit, transform and small_multiples_by; a field left out is empty: no filter, no limit."
+            "What the block reads: source (required, a source the kind draws), then any of aspect, measures, arms "
+            "(each " + ARM_FORMS + "), strata, limit, transform and small_multiples_by; a field left out is empty: "
+            "no filter, no limit."
         )
     )
     reference: str | None = Field(
@@ -71,7 +72,10 @@ class BlockRenderParams(EvalBaseModel):
         description="The reference line to draw, which code keys from the snapshot; omitted draws none.",
         json_schema_extra={"enum": list(_REFERENCES)},
     )
-    emphasis: str = Field(default="", description="The one arm, stratum or task to stress, by id; empty for none.")
+    emphasis: Annotated[str, BeforeValidator(written_arm)] = Field(
+        default="",
+        description=f"The one arm, stratum or task to stress, by id (an arm also {ARM_FORMS}); empty for none.",
+    )
     title: str = Field(default="", description="The block's title, figure keys allowed; empty for none.")
     limit: Limit = BLOCK_ROWS
     offset: Offset = 0
@@ -79,10 +83,14 @@ class BlockRenderParams(EvalBaseModel):
     @field_validator("query")
     @classmethod
     def _a_chart_query(cls, query: dict[str, Any]) -> dict[str, Any]:
-        """The query with every field it leaves out empty, refused where it is no chart query.
+        """The query with every field it leaves out empty, each arm it names read to its id by the one rule every
+        action's arms share (:func:`~threetears.evals.actions.params.written_arm`), refused where it is no chart query.
 
         :raises ValueError: The query names no source, a field a chart query does not hold, or a value out of range.
         """
+        arms = query.get("arms")
+        if isinstance(arms, list):
+            query = {**query, "arms": [written_arm(arm) for arm in arms]}
         try:
             filled = ChartQuery.model_validate({**_EMPTY_QUERY, **query})
         except ValidationError as invalid:
