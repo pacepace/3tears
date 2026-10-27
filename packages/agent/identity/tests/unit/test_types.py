@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from threetears.agent.identity.types import (
     IDENTITY_BLOCK_KEY_VALUES,
     IDENTITY_BLOCK_TIERS,
@@ -9,6 +11,8 @@ from threetears.agent.identity.types import (
     IdentityBlockKey,
     IdentityTier,
     IdentityVersionStatus,
+    check_variant,
+    variant_label,
 )
 
 
@@ -52,3 +56,22 @@ def test_tier_assignment_matches_signed_off_model() -> None:
     }
     assert {b for b, t in IDENTITY_BLOCK_TIERS.items() if t is IdentityTier.TIER_1} == tier1
     assert {b for b, t in IDENTITY_BLOCK_TIERS.items() if t is IdentityTier.TIER_2} == tier2
+
+
+@pytest.mark.parametrize("name", ["", "alt", "second_copy", "v2", "a" * 32])
+def test_check_variant_takes_a_name_a_block_takes(name: str) -> None:
+    assert check_variant(name) == name
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Alt", "with-dash", "with space", " ", "a" * 33, "dot.ted", "ü", None, 3],
+)
+def test_check_variant_refuses_any_other_name(name: object) -> None:
+    with pytest.raises(ValueError, match="not a name a block takes"):
+        check_variant(name)  # type: ignore[arg-type]
+
+
+def test_variant_label_names_the_block_and_its_variant() -> None:
+    assert variant_label("presence", "") == "presence"
+    assert variant_label("presence", "alt") == "presence/alt"

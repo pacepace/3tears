@@ -25,9 +25,10 @@ from threetears.core.testing.sqla_parity import assert_tables_equivalent
 
 
 def _reference_identity_versions_table(metadata: sa.MetaData) -> sa.Table:
-    """Hand-written reference Table for parity testing (v001).
+    """Hand-written reference Table for parity testing (v003).
 
-    Frozen v0.15.0 canonical shape.
+    The v0.15.0 canonical shape plus v003's ``variant`` column, with the
+    one-active and history indexes keyed on it.
     """
     if "identity_versions" in metadata.tables:
         return metadata.tables["identity_versions"]
@@ -53,6 +54,7 @@ def _reference_identity_versions_table(metadata: sa.MetaData) -> sa.Table:
             ),
             nullable=False,
         ),
+        SAColumn("variant", Text(), nullable=False, server_default="''"),
         SAColumn("content", Text(), nullable=False),
         SAColumn("rationale", Text(), nullable=True),
         SAColumn("content_hash", Text(), nullable=False),
@@ -75,19 +77,21 @@ def _reference_identity_versions_table(metadata: sa.MetaData) -> sa.Table:
         SAColumn("date_created", DateTime(timezone=True), nullable=False),
         SAColumn("date_updated", DateTime(timezone=True), nullable=True),
         sa.Index(
-            "uq_identity_active_per_block",
+            "uq_identity_active_per_variant",
             "agent_id",
             "customer_id",
             "user_id",
             "block_key",
+            "variant",
             unique=True,
             postgresql_where=sa_text("status = 'active'"),
         ),
         sa.Index(
-            "idx_identity_block_history",
+            "idx_identity_variant_history",
             "agent_id",
             "user_id",
             "block_key",
+            "variant",
             "date_created",
         ),
         sa.Index(

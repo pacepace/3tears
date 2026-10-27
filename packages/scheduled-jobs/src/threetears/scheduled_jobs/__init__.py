@@ -68,6 +68,7 @@ from threetears.scheduled_jobs.events import (
     EVENT_FIRE_COMPLETED,
     EVENT_FIRE_DISPATCHED,
     EVENT_FIRE_DRIFT,
+    EVENT_FIRE_DUE_AGAIN,
     EVENT_FIRE_FAILED,
     EVENT_FIRE_HANDED_OFF,
     EVENT_FIRE_REAPED,
@@ -93,6 +94,7 @@ from threetears.scheduled_jobs.metrics import (
 )
 from threetears.scheduled_jobs.migrations import register
 from threetears.scheduled_jobs.protocols import (
+    ClaimUndoStore,
     DueSchedule,
     FireStore,
     ScheduleStore,
@@ -127,6 +129,7 @@ __all__ = [
     "EVENT_FIRE_COMPLETED",
     "EVENT_FIRE_DISPATCHED",
     "EVENT_FIRE_DRIFT",
+    "EVENT_FIRE_DUE_AGAIN",
     "EVENT_FIRE_FAILED",
     "EVENT_FIRE_HANDED_OFF",
     "EVENT_FIRE_REAPED",
@@ -149,6 +152,7 @@ __all__ = [
     "SCHEDULED_JOBS_TICK_DURATION_SECONDS",
     "UNROUTED_KIND_REASON",
     "BackgroundDispatch",
+    "ClaimUndoStore",
     "DispatchCallback",
     "DispatchRoutes",
     "DueSchedule",

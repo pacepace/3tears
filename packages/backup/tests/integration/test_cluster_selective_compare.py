@@ -65,7 +65,7 @@ def cluster_dsn() -> Any:
     major = _client_tool_major()
     if major is None:
         pytest.skip("cannot determine pg client version")
-    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
+    from testcontainers.community.postgres import PostgresContainer  # noqa: PLC0415
 
     with PostgresContainer(f"postgres:{major}") as container:
         url = container.get_connection_url()

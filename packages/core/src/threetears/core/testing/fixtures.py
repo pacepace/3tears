@@ -207,7 +207,7 @@ def db_container(db_image: str) -> Iterator[str]:
         pytest.skip("Docker not available")
     stagger_container_start()
 
-    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
+    from testcontainers.community.postgres import PostgresContainer  # noqa: PLC0415
 
     with PostgresContainer(db_image) as container:
         raw_url = container.get_connection_url()

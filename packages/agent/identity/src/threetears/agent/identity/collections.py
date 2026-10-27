@@ -7,9 +7,10 @@ L1 / L2 / L3 tiers stay coherent; ``date_updated`` is the CAS fence.
 
 A version is an immutable snapshot in a **linear** parent-pointer chain
 (``parent_version_id``); exactly one ``active`` version exists per
-``(agent_id, customer_id, user_id, block_key)`` (a partial unique index
-enforces it). User isolation is the ``user_id`` WHERE clause, NOT RBAC:
-every metallm user shares one ``agent_id`` (the partition), so ``user_id``
+``(agent_id, customer_id, user_id, block_key, variant)`` (a partial unique
+index enforces it). ``variant`` is a consumer-named copy of a block with its
+own chain; ``""`` is the block itself. User isolation is the ``user_id`` WHERE clause, NOT RBAC:
+a consumer's users can share one ``agent_id`` (the partition), so ``user_id``
 is the sole boundary -- the reads below take it as a required parameter.
 
 This chunk (T2.1a) ships the schema + table factory + the read paths
@@ -56,7 +57,7 @@ log = get_logger(__name__)
 # with the migration DDL). No embedding column -- identity blocks are not
 # semantically searched.
 _IDENTITY_SELECT_COLUMNS = (
-    "version_id, agent_id, customer_id, user_id, block_key, content, "
+    "version_id, agent_id, customer_id, user_id, block_key, variant, content, "
     "rationale, content_hash, parent_version_id, status, proposer_agent_id, "
     "consenter_user_id, date_created, date_updated"
 )
@@ -98,7 +99,7 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
             Column("version_id", UUID_TYPE),
             Column("agent_id", UUID_TYPE, partition=True),
             # customer_id / user_id are nullable scope grains (like memory /
-            # intention). metallm sets both + filters reads on user_id; a
+            # intention). A per-user consumer sets both + filters reads on user_id; a
             # null here is an agent-internal / global block. Both immutable
             # (write-once): a version never moves across scopes.
             Column("customer_id", UUID_TYPE, immutable=True, nullable=True),
@@ -112,6 +113,10 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
                 enum_name="identity_block_key",
                 immutable=True,
             ),
+            # which copy of the block: a consumer-named variant with its own
+            # chain and its own active version; '' is the block itself.
+            # Immutable: a version never moves between variants.
+            Column("variant", STRING_TYPE, immutable=True, server_default="''"),
             # the immutable snapshot fields: a version's content + audit are
             # fixed at creation; a change produces a NEW version.
             Column("content", STRING_TYPE, immutable=True),
@@ -138,25 +143,27 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
         ],
         cas_column="date_updated",
         indexes=(
-            # exactly one active version per (agent, customer, user, block).
-            # Partial UNIQUE on status='active' -- the linear-chain single-
-            # winner invariant. (Column set + WHERE here; the raw v001 DDL
-            # carries the CREATE UNIQUE INDEX form for parity + L1 parity.)
+            # exactly one active version per (agent, customer, user, block,
+            # variant). Partial UNIQUE on status='active' -- the linear-chain
+            # single-winner invariant. (Column set + WHERE here; the raw v003
+            # DDL carries the CREATE UNIQUE INDEX form for parity + L1 parity.)
             SchemaIndex(
-                "uq_identity_active_per_block",
+                "uq_identity_active_per_variant",
                 "agent_id",
                 "customer_id",
                 "user_id",
                 "block_key",
+                "variant",
                 where=f"status = '{IdentityVersionStatus.ACTIVE.value}'",
                 unique=True,
             ),
-            # a block's version history, most-recent-first (DESC lives in DDL).
+            # a block variant's version history, most-recent-first (DESC lives in DDL).
             SchemaIndex(
-                "idx_identity_block_history",
+                "idx_identity_variant_history",
                 "agent_id",
                 "user_id",
                 "block_key",
+                "variant",
                 "date_created",
             ),
             # the pending consent / veto queue: proposed versions per user.
@@ -201,13 +208,14 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
         customer_id: UUID | None,
         user_id: UUID | None,
         block_key: str,
+        variant: str = "",
     ) -> IdentityVersionEntity | None:
-        """Return the active version for a scope+block, or ``None``.
+        """Return the active version for a scope+block+variant, or ``None``.
 
         This is the consumer's prompt-assembly read: the content the next
         turn injects for ``block_key``. The partial unique index
-        ``uq_identity_active_per_block`` enforces at most one active row per
-        block **when the scope grains are populated** (metallm always sets
+        ``uq_identity_active_per_variant`` enforces at most one active row per
+        block variant **when the scope grains are populated** (a per-user consumer sets
         ``customer_id`` + ``user_id``). For the rare agent-internal case
         where a grain is NULL, Postgres treats NULLs as distinct in the
         unique index, so the caller (the write path, T2.1b) maintains
@@ -223,12 +231,14 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
         :ptype user_id: UUID | None
         :param block_key: the identity block
         :ptype block_key: str
+        :param variant: the block's variant; ``""`` is the block itself
+        :ptype variant: str
         :return: the active version entity, or ``None``
         :rtype: IdentityVersionEntity | None
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: the scan by (agent, customer, user, block, status)
+        # cache-bypass: the scan by (agent, customer, user, block, variant, status)
         # is not primary-key addressable, so it stays on the Collection
         # (single entry point). ORDER BY date_created DESC makes the read
         # deterministic even in the NULL-grain edge where the partial unique
@@ -238,12 +248,13 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
             "WHERE agent_id = $1 "
             "AND customer_id IS NOT DISTINCT FROM $2 "
             "AND user_id IS NOT DISTINCT FROM $3 "
-            f"AND block_key = $4 AND status = '{IdentityVersionStatus.ACTIVE.value}' "
+            f"AND block_key = $4 AND variant = $5 AND status = '{IdentityVersionStatus.ACTIVE.value}' "
             "ORDER BY date_created DESC",
             agent_id,
             customer_id,
             user_id,
             block_key,
+            variant,
         )
         return self._row_to_entity(row) if row is not None else None
 
@@ -254,8 +265,9 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
         customer_id: UUID | None,
         user_id: UUID | None,
         block_key: str,
+        variant: str = "",
     ) -> list[IdentityVersionEntity]:
-        """Return a block's full version history, most-recent-first.
+        """Return a block variant's full version history, most-recent-first.
 
         :param agent_id: partition column; required
         :ptype agent_id: UUID
@@ -265,6 +277,8 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
         :ptype user_id: UUID | None
         :param block_key: the identity block
         :ptype block_key: str
+        :param variant: the block's variant; ``""`` is the block itself
+        :ptype variant: str
         :return: version entities, newest first
         :rtype: list[IdentityVersionEntity]
         """
@@ -275,12 +289,13 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
             "WHERE agent_id = $1 "
             "AND customer_id IS NOT DISTINCT FROM $2 "
             "AND user_id IS NOT DISTINCT FROM $3 "
-            "AND block_key = $4 "
+            "AND block_key = $4 AND variant = $5 "
             "ORDER BY date_created DESC",
             agent_id,
             customer_id,
             user_id,
             block_key,
+            variant,
         )
         return [self._row_to_entity(row) for row in rows]
 
