@@ -104,7 +104,7 @@
    "description": "For each two aspects, the cases both ran and the cases only one ran; none where the input does not hold the aspects' case ids."
   },
   "apparatus": {
-   "anyOf": [{"type": "array", "items": {"$ref": "#/$defs/RunApparatus"}}, {"type": "null"}],
+   "anyOf": [{"type": "array", "items": {"$ref": "#/$defs/RunRig"}}, {"type": "null"}],
    "description": "The rig each run was measured with, for each run that recorded one past a serial run pinning and declaring nothing; none where no run did, or the bundle carried none."
   }
  },
@@ -938,7 +938,7 @@
    "additionalProperties": false,
    "description": "What a role's calls were asked for: the output cap, the reasoning asked, and whether every parameter was enforced."
   },
-  "RunApparatus": {
+  "RunRig": {
    "type": "object",
    "required": ["run", "aspect", "cell_concurrency"],
    "properties": {

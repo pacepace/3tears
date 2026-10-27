@@ -5195,9 +5195,11 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
         ge=0,
         exclude_if=lambda value: value is None,
         description=(
-            "Calls of this row's that a forced tool choice was refused on and that were then asked again unforced and "
-            "answered in the same call: what they cost is in the row, so they explain attempts and latency, never a "
-            "failure. None = not counted (the engine counts none on its own rows); 0 = counted, and none."
+            "This row's calls a forced tool choice was refused on and that were then asked again unforced and "
+            "answered in the same call, counted beside this row's `call_count` (which counts its answered calls) and "
+            "never in it: what they cost is in the row, so they explain attempts and latency, never a failure. Counted "
+            "per row, never a role's or a cell's total repeated on each row. None = not counted (the engine counts "
+            "none on its own rows); 0 = counted, and none."
         ),
     )
     unanswered_lost: int | None = Field(
@@ -5205,20 +5207,21 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
         ge=0,
         exclude_if=lambda value: value is None,
         description=(
-            "Calls of this row's role that were sent and never answered, so the turn they belonged to ended in error: "
-            "a timeout, a cancel, a provider error after the request was sent, a stream cut mid-way. Not counted: a "
-            "call that never reached the provider (a connect failure, an open circuit), and an auth or payment "
-            "failure, which is the rig's. None = not counted; 0 = counted, and none."
+            "This row's calls that were sent and never answered, so the turn they belonged to ended in error (a "
+            "timeout, a cancel, a provider error after the request was sent, a stream cut mid-way), counted beside "
+            "this row's `call_count` and never in it. Not counted: a call that never reached the provider (a connect "
+            "failure, an open circuit), and an auth or payment failure, which is the rig's. Counted per row, never a "
+            "role's or a cell's total repeated on each row. None = not counted; 0 = counted, and none."
         ),
     )
     unanswered_reasons: dict[str, int] | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
         description=(
-            "How many of the unanswered calls each reason accounts for, by the host's own reason word ('timeout', "
-            "'cancelled', 'http_529'). Set only beside a counted unanswered_retried or unanswered_lost, and summing to "
-            "no more than they do: a call whose host gave no reason is counted there and not here. None = no reasons "
-            "were counted."
+            "This row's unanswered calls by the host's own reason word ('timeout', 'cancelled', 'http_529'), each "
+            "word mapped to how many of them it accounts for, at least 1. Set only beside a counted "
+            "unanswered_retried or unanswered_lost, and summing to no more than they do: a call whose host gave no "
+            "reason is counted there and not here. None = no reasons were counted."
         ),
     )
 

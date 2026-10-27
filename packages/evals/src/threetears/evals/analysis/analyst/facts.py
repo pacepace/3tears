@@ -76,7 +76,8 @@ from threetears.evals.analysis.report_input import (
     PriorInsight,
     Reading,
     ReportInput,
-    RunApparatus,
+    RequestSettings,
+    RunRig,
     Stat,
 )
 from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS
@@ -378,6 +379,61 @@ class CaveatRef(_Fact):
     source: Literal["stated", "implied"] = Field(description=_CAVEAT_SOURCE)
 
 
+class RigRow(_Fact):
+    """The runs measured with one rig: every field of their apparatus but the execution modes alike, which are summed."""
+
+    runs: list[str] = Field(description="The runs measured with it, by id, in the input's order.")
+    arms: list[str] = Field(description="The arms those runs ran, by id; a run the design placed in no arm names none.")
+    aspects: list[str] = Field(description="The aspects those runs ran, by id.")
+    judges: dict[str, str] | None = Field(
+        description="The model each judged dimension was asked of; none: not recorded."
+    )
+    judge_asked: RequestSettings | None = Field(description="What every judge call was asked for; none: not recorded.")
+    judge_temperature: float | None = Field(
+        description="The temperature judge calls were asked at; none: not recorded."
+    )
+    simulator: str | None = Field(description="The simulated user's model; none: none was pinned.")
+    measure_latency: bool | None = Field(description="Whether latency was declared under test; none: nothing declared.")
+    arm_schedule: str | None = Field(description="How the arms shared time; none: not recorded.")
+    cell_concurrency: int = Field(description="How many cells executed at once; 1 is serial.")
+    rubric_scales: dict[str, str] = Field(description="The scale each rubric dimension was answered on.")
+    execution_modes: dict[str, int] = Field(
+        description="The runs' results by the execution mode each recorded, summed."
+    )
+
+
+def _rigs(report_input: ReportInput) -> list[RigRow]:
+    """The input's run rigs, one row per rig in first-seen order: runs alike in every field but their execution modes
+    share one row, which names them and sums those."""
+    grouped: dict[str, tuple[RunRig, list[RunRig]]] = {}
+    for rig in report_input.apparatus or ():
+        shape = rig.model_dump_json(exclude={"run", "arm", "aspect", "execution_modes"})
+        grouped.setdefault(shape, (rig, []))[1].append(rig)
+    rows: list[RigRow] = []
+    for first, members in grouped.values():
+        modes: dict[str, int] = {}
+        for member in members:
+            for mode, count in member.execution_modes.items():
+                modes[mode] = modes.get(mode, 0) + count
+        rows.append(
+            RigRow(
+                runs=[member.run for member in members],
+                arms=list(dict.fromkeys(member.arm for member in members if member.arm is not None)),
+                aspects=list(dict.fromkeys(member.aspect for member in members)),
+                judges=first.judges,
+                judge_asked=first.judge_asked,
+                judge_temperature=first.judge_temperature,
+                simulator=first.simulator,
+                measure_latency=first.measure_latency,
+                arm_schedule=first.arm_schedule,
+                cell_concurrency=first.cell_concurrency,
+                rubric_scales=dict(first.rubric_scales),
+                execution_modes=dict(sorted(modes.items())),
+            )
+        )
+    return rows
+
+
 class CampaignOverview(_Fact):
     """What the snapshot holds: the campaign, its arms, aspects, measures, criteria, caveats and prior insights."""
 
@@ -396,12 +452,13 @@ class CampaignOverview(_Fact):
     late_set_at: CitedFigure | None = Field(description="When they were set, where they share one date.")
     prior_insights: list[PriorInsight] = Field(description="What earlier campaigns concluded.")
     # Left out when empty, so an input whose runs recorded no apparatus reads as it did before the field existed.
-    apparatus: list[RunApparatus] = Field(
+    apparatus: list[RigRow] = Field(
         default_factory=list,
         exclude_if=lambda value: not value,
-        description="The rig each run was measured with: the judge each dimension was asked of and what it was asked "
-        "for, the simulated user, whether latency was under test, the arms' schedule, the cells run at once, each "
-        "result's execution mode and each rubric dimension's scale. On every page.",
+        description="The rigs the runs were measured with, one row per rig, naming the runs measured with it: the judge "
+        "each dimension was asked of and what it was asked for, the simulated user, whether latency was under test, the "
+        "arms' schedule, the cells run at once, each rubric dimension's scale and the runs' results by execution mode. "
+        "Paged as rows, after the prior insights.",
     )
     names: dict[str, dict[str, str]] = Field(
         description="The one name a reader is shown for each id, by kind (aspect, measure, judged, stratum, task, "
@@ -423,10 +480,11 @@ def _unanswered(report_input: ReportInput, arm_id: str) -> list[CitedFigure]:
     row = report_input.scoreboard.get(arm_id)
     if row is None or not row.unanswered:
         return []
-    count = cite(f"calls.unanswered.{arm_id}", report_input)
-    if not count.value:
+    if not any(held.retried or held.lost for held in row.unanswered.values()):
         return []
-    return [count, *_figures((f"calls.unanswered.{arm_id}.{field}" for field in _UNANSWERED), report_input)]
+    # The bare count is not counted where a role counted one kind only, so it is cited where it reads.
+    keys = [f"calls.unanswered.{arm_id}", *(f"calls.unanswered.{arm_id}.{field}" for field in _UNANSWERED)]
+    return _figures(keys, report_input)
 
 
 def _late_name(late: LateCriterion) -> str:
@@ -552,8 +610,8 @@ def campaign_overview(
 ) -> CampaignOverview:
     """What a snapshot holds, read first: every id the other tools take, and the campaign's own figures.
 
-    Its rows (arms, aspects, measures, criteria, cells, caveats, late criteria, prior insights, then each reader name)
-    are paged in that order, ``limit`` from ``offset`` (every one where ``limit`` is None); the campaign's own figures
+    Its rows (arms, aspects, measures, criteria, cells, caveats, late criteria, prior insights, the runs' rigs, then each
+    reader name) are paged in that order, ``limit`` from ``offset`` (every one where ``limit`` is None); the campaign's own figures
     (its meta, candidates, cases, repeats, when the late criteria were set) are on every page.
 
     :param report_input: The snapshot's frozen report input.
@@ -634,7 +692,19 @@ def campaign_overview(
         for criterion in late
     ]
     insights = list(report_input.prior_insights)
-    sections: list[Sequence[object]] = [arms, aspects, measures, criteria, cells, caveats, late_rows, insights, named]
+    rigs = _rigs(report_input)
+    sections: list[Sequence[object]] = [
+        arms,
+        aspects,
+        measures,
+        criteria,
+        cells,
+        caveats,
+        late_rows,
+        insights,
+        rigs,
+        named,
+    ]
     total = sum(len(section) for section in sections)
     end = total if limit is None else min(offset + limit, total)
     paged = _windowed(sections, offset, end)
@@ -653,8 +723,8 @@ def campaign_overview(
         late_criteria=[late_rows[index] for index in paged[6]],
         late_set_at=cite_if("late_criteria.set_at", report_input) if late else None,
         prior_insights=[insights[index] for index in paged[7]],
-        apparatus=list(report_input.apparatus or ()),
-        names=_names_of(names, [named[index] for index in paged[8]], whole=limit is None),
+        apparatus=[rigs[index] for index in paged[8]],
+        names=_names_of(names, [named[index] for index in paged[9]], whole=limit is None),
         total=total,
         offset=offset,
         next_offset=end if end < total else None,

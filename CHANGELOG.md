@@ -19,23 +19,27 @@ carry `+`.
 
 ### evals: the calls nobody answered, a run's rig and a background model's served name reach the report input; a rubric scale is never assumed
 
-**Added:** a usage row counts its role's calls that went unanswered, beside its spend and never inside it:
-`RoleUsage.unanswered_retried` (a forced tool choice refused, then answered unforced in the same call),
-`unanswered_lost` (sent and never answered, so the turn ended in error; a connect failure, an open circuit and an
-auth or payment failure are not counted) and `unanswered_reasons` (each host reason word's count). Each is None when
-not counted and left out of the stored row when unset; reasons need a count beside them and never outnumber it.
-A kind's rows pass through `CandidateTelemetry` unchanged, and no cost reading reads them. The bundle sums them per arm
-and role (`ArmScoreboard.unanswered`, `RoleUnanswered`: retried, lost, reasons, the answered calls, the share of every
-call sent, and the trials that counted none); the report input copies them (`ScoreboardRow.unanswered`, `Unanswered`);
-the keys `calls.unanswered.<arm>` (retried and lost together) and `.retried`, `.lost`, `.calls`, `.share`, `.reasons`,
-`.uncounted`, with an `aspects.<aspect>.` form, read them, a share over several roles derived; the analyst's overview
-cites them on the arm's row, and the options table flags them on the cost cell, only where any went unanswered.
+**Added:** a usage row counts its own calls that went unanswered, beside its `call_count` and its spend and never
+inside them: `RoleUsage.unanswered_retried` (this row's calls a forced tool choice was refused on, then answered
+unforced in the same call), `unanswered_lost` (this row's calls sent and never answered, so the turn ended in error; a
+connect failure, an open circuit and an auth or payment failure are not counted) and `unanswered_reasons` (this row's
+unanswered calls by the host's reason word, word to count, each at least 1). Each is None when not counted and left out
+of the stored row when unset; reasons need a count beside them and never outnumber it. A kind's rows pass through
+`CandidateTelemetry` unchanged, and no cost reading reads them. The bundle sums them per arm and role
+(`ArmScoreboard.unanswered`, `RoleUnanswered`: retried, lost, reasons, the answered calls, the share of every call
+sent, and the trials that counted none); the report input copies them (`ScoreboardRow.unanswered`, `Unanswered`); the
+keys `calls.unanswered.<arm>` (retried and lost together) and `.retried`, `.lost`, `.calls`, `.share`, `.reasons`,
+`.uncounted`, with an `aspects.<aspect>.` form, read them, a share over several roles derived, and the bare count and
+the share refused as not counted where a role counted only one kind; the analyst's overview cites them on the arm's
+row, and the options table flags them on the cost cell ("1 call unanswered"), only where any went unanswered.
 
 **Added:** a run's apparatus reaches the bundle and the report input: each run summary carries `apparatus`
-(`RunApparatus`: `effective_judges`, `judge_asked_settings`, `judge_temperature`, `simulator_model`, `measure_latency`,
-`arm_schedule`, `cell_concurrency`, `rubric_scales`, and the results by `execution_mode`), and the report input lists
-each run's (`apparatus`, `RunApparatus`, `RequestSettings`) by run, arm and aspect; `campaign_overview` shows it on
-every page. A run that recorded nothing past a serial run pinning and declaring nothing carries none.
+(`threetears.evals.analysis.RunApparatus`: `effective_judges`, `judge_asked_settings`, `judge_temperature`,
+`simulator_model`, `measure_latency`, `arm_schedule`, `cell_concurrency`, `rubric_scales`, and the results by
+`execution_mode`), and the report input lists each run's (`apparatus`, the report-input part `RunRig`, with
+`RequestSettings`) by run, arm and aspect. `campaign_overview` shows the rigs as paged rows, one per rig naming the runs
+measured with it (`RigRow`; the runs' execution modes summed). A run that recorded nothing past a serial run pinning and
+declaring nothing carries none.
 
 **Added:** `AsyncDelivery.served_model`, the model the work's responses named, folded into the `inner_agent` row's
 `served_model` (refused on a substituted entry). Core schema minor 15.8.
@@ -45,8 +49,21 @@ every page. A run that recorded nothing past a serial run pinning and declaring 
 `ordinal` whatever its scale, so a pass/fail one read as 1 to 5; it now reads its run's `rubric_scales`, a reserved
 dual-score axis reads 1 to 5 by construction, and a dimension with no recorded scale is refused.
 
-Every new field is left out of its document when unset, so a bundle, report input, overview and stored row that set
-none is the one it was before, byte for byte, and its digest and fingerprint stay put.
+**Fingerprints:** a stored bundle, a frozen report input and every committed fixture keep their bytes and digests:
+each new field is left out of its document when unset. A bundle assembled again over runs that now carry an apparatus
+does not: almost every launched run does (any run with a rubric, a pinned judge or a latency declaration), so its
+fingerprint moves, and a reporter-bank case or an analysis that pinned a memo written before this change reports that
+it does not reproduce. Re-freeze those cases over the re-assembled bundle. A usage row that counted unanswered calls
+moves its bundle's fingerprint the same way.
+
+**For hosts (Discodon's handover):** the counts go per usage row, beside that row's `call_count`, never a cell's or a
+role's total repeated on each row: a cell whose candidate calls ran on several clients reports each client's row with
+its own `unanswered_retried` and `unanswered_lost`. A `kind_payload` mirror counted per cell, summed over its clients,
+moves onto the rows it was summed from. Reasons are a map of word to count (`{"timeout": 2}`), each at least 1, never
+more than the row's counts, and set only beside a count; a list of distinct words is no longer the shape. Leave a count
+None where it was not counted: 0 says it was counted and none went unanswered. The fields a host writes are
+`RoleUsage.unanswered_retried`, `RoleUsage.unanswered_lost`, `RoleUsage.unanswered_reasons` and
+`AsyncDelivery.served_model`, all additive and optional.
 
 ### evals: an overall that is the plain mean of its cells reads an interval derived from theirs
 

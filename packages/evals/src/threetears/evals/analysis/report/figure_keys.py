@@ -2708,6 +2708,15 @@ def _unanswered_figure(rows: Sequence[Unanswered], field: str | None, path: str)
     """One figure of an arm's unanswered calls, summed over every role that counted them: the bare count (retried and
     lost), a kind's count, the answered calls, the share of every call sent, the reasons, or the trials uncounted."""
     retried, lost = _unanswered_sum(rows, "retried"), _unanswered_sum(rows, "lost")
+    if field in (None, "share"):
+        # Both kinds together, so a kind some role did not count is not counted there, never a zero beside the other.
+        uncounted = sorted({kind for row in rows for kind in ("retried", "lost") if getattr(row, kind) is None})
+        if uncounted:
+            raise _unstated(
+                path,
+                f"counts the retried and lost calls together, and a role of the arm did not count its "
+                f"{' or '.join(uncounted)} ones: not counted; read `.retried` and `.lost` apart",
+            )
     if field is None:
         return _count(path, (retried or 0) + (lost or 0))
     if field in ("retried", "lost"):
@@ -5136,7 +5145,8 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("calls.unanswered"),
         _keyed("<arm>", _unanswered_arms),
         what="how many of an arm's calls went unanswered, retried and lost together, summed over every role that "
-        "counted them: beside its cost, never in it (the cost counts the answered calls). " + _UNANSWERED_RULE,
+        "counted them: beside its cost, never in it (the cost counts the answered calls); not counted, and refused, "
+        "where a role counted only one kind. " + _UNANSWERED_RULE,
         resolve=_unanswered,
         example="calls.unanswered.fast.v2",
     ),

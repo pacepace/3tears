@@ -1993,6 +1993,8 @@ The engine's own measures (`METRIC_DESCRIPTORS`), grouped by family in the order
 | `completion_tokens` | — | — | tokens | Output tokens a role produced. |
 | `reasoning_tokens` | — | — | tokens | The reasoning share of completion_tokens. |
 | `call_count` | — | — | calls | How many calls a role made — and it counts a different thing per role: LLM rounds for the candidate, attempts including parse retries for the judge, searches for external. |
+| `unanswered_retried` | — | — | calls | A usage row's calls a forced tool choice was refused on and that were answered unforced in the same call: beside the row's call_count, never in it, and in no cost. |
+| `unanswered_lost` | — | — | calls | A usage row's calls sent and never answered, so the turn they belonged to ended in error: beside the row's call_count, never in it, and in no cost. |
 | `provider_units` | — | — | provider-defined | Units of a provider's own metered quantity that an external role consumed — a search API's credits, a video API's quota units — named by the row's provider_unit. |
 | `context_tokens_in` | — | — | tokens | How much context the candidate was carrying — a stratification covariate, not a quality measure. |
 | `reasoning_ratio` | — | — | — | How much of the candidate's output was reasoning. |

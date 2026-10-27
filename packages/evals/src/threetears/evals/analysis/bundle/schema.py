@@ -2524,7 +2524,8 @@ class RoleUnanswered(EvalDocumentModel):
         le=1.0,
         description=(
             "The unanswered calls (retried and lost) as a share of every call the counting rows sent (answered and "
-            "unanswered). None where `calls` is, or nothing was sent."
+            "unanswered). None where `calls` is, where a counting row counted only one of the two kinds (not counted, "
+            "never zero), or where nothing was sent."
         ),
     )
     results_uncounted: int = Field(

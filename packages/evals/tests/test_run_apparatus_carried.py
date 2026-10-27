@@ -12,8 +12,8 @@ dimension's scale; each result records the execution mode it ran in. Contracts h
   overview, never a default standing in for it; ``measure_latency`` False and None stay two answers;
 - **the report input**: ``apparatus`` lists each run that recorded one, by run, arm and aspect, its judge's asked
   settings copied; an input over runs that recorded none carries no ``apparatus`` key;
-- **the overview**: ``campaign_overview`` shows the apparatus on every page, and leaves the field out where the input
-  holds none.
+- **the overview**: ``campaign_overview`` shows each rig once, naming the runs measured with it, and leaves the field
+  out where the input holds none (``test_overview_text_and_rigs.py`` holds its text and its page budget).
 """
 
 from __future__ import annotations
@@ -159,13 +159,21 @@ def test_the_input_round_trips_with_its_apparatus() -> None:
 # --- the overview ---------------------------------------------------------------------------------------------------
 
 
-def test_the_overview_shows_the_apparatus_on_every_page() -> None:
+def test_the_overview_shows_each_rig_once_naming_its_runs() -> None:
     held = report_input(campaign_over(_rigged()))
-    whole = campaign_overview(held, "snap")
-    assert whole.apparatus == held.apparatus
-    first = campaign_overview(held, "snap", limit=1)
-    later = campaign_overview(held, "snap", limit=1, offset=1)
-    assert first.apparatus == later.apparatus == held.apparatus
+    assert held.apparatus is not None
+    rows = campaign_overview(held, "snap").apparatus
+    assert sorted(run for row in rows for run in row.runs) == sorted(rig.run for rig in held.apparatus)
+    by_run = {rig.run: rig for rig in held.apparatus}
+    for row in rows:
+        (first, *_) = (by_run[run] for run in row.runs)
+        assert (row.judges, row.judge_asked, row.simulator, row.measure_latency, row.cell_concurrency) == (
+            first.judges,
+            first.judge_asked,
+            first.simulator,
+            first.measure_latency,
+            first.cell_concurrency,
+        )
 
 
 def test_the_overview_of_an_input_with_no_apparatus_leaves_the_field_out() -> None:

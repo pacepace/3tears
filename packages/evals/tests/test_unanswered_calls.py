@@ -16,7 +16,9 @@ never answered. They stand beside the row's spend and never inside it. Contracts
 - **the keys**: ``calls.unanswered.<arm>`` reads retried and lost together, by field beside it, on the lead aspect
   and by aspect; an arm no role counted for is no key; a share over two roles is computed, and marked derived;
 - **beside the cost**: the analyst's overview cites them on the arm's row, and the options table flags them on its
-  cost cell, only where any went unanswered.
+  cost cell ("1 call unanswered", "3 calls unanswered"), only where any went unanswered;
+- **not counted is never zero**: where a role counted only one kind, the bare count and the share are refused as not
+  counted, and the kind it counted reads alone.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.run_facts_support import ASPECT, CASES, aspect_bundle, campaign_over, result_of, run_of
 from threetears.evals.analysis.analyst.facts import campaign_overview
-from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import format_figure, resolve
 from threetears.evals.analysis.report.plan_page.build import plan_page
 from threetears.evals.analysis.report_input import ReportInput, Unanswered
@@ -266,7 +268,7 @@ def test_a_share_over_two_roles_is_computed_from_their_counts_and_marked_derived
         update={
             "unanswered": {
                 **(row.unanswered or {}),
-                "inner_agent": Unanswered(retried=None, lost=2, calls=10, share=2 / 12),
+                "inner_agent": Unanswered(retried=0, lost=2, calls=10, share=2 / 12),
             }
         }
     )
@@ -296,20 +298,56 @@ def test_the_overview_of_an_arm_whose_calls_all_came_back_cites_none() -> None:
     assert all(not row.unanswered for row in campaign_overview(held, "snap").arms)
 
 
-def test_the_options_table_flags_them_on_the_cost_cell_only_where_any_went_unanswered() -> None:
-    """On the Kairo reference plan, whose options table has a cost column: one arm given unanswered calls."""
+def _flag_change(unanswered: Unanswered) -> tuple[str | None, str | None]:
+    """On the Kairo reference plan, whose options table has a cost column: the one cost flag that changes when its
+    first arm is given ``unanswered``, before and after."""
     plan = dataset.load_plan(dataset.HERE / "r5" / "anchor.plan.json")
     held = dataset.report_input_of("r5")
     arm = next(iter(held.scoreboard))
-    counted = held.scoreboard[arm].model_copy(
-        update={"unanswered": {"candidate": Unanswered(retried=0, lost=3, calls=297, share=0.01)}}
-    )
+    counted = held.scoreboard[arm].model_copy(update={"unanswered": {"candidate": unanswered}})
     flagged = plan_page(plan, held.model_copy(update={"scoreboard": {**held.scoreboard, arm: counted}}))
     unflagged = plan_page(plan, held)
     flags = [row["cost_per_1k"].flag for row in flagged.options.table.rows]
     before = [row["cost_per_1k"].flag for row in unflagged.options.table.rows]
     changed = [(old, new) for old, new in zip(before, flags, strict=True) if old != new]
     assert len(changed) == 1
-    old, new = changed[0]
-    assert new is not None and new.endswith("3 calls unanswered")
-    assert old is None or new == f"{old}; 3 calls unanswered"
+    return changed[0]
+
+
+@pytest.mark.parametrize(
+    ("unanswered", "said"),
+    [
+        (Unanswered(retried=0, lost=3, calls=297, share=0.01), "3 calls unanswered"),
+        (Unanswered(retried=0, lost=1, calls=299, share=1 / 300), "1 call unanswered"),
+        (Unanswered(retried=None, lost=2, calls=298), "2 calls lost unanswered"),
+    ],
+    ids=["several", "one", "lost-only"],
+)
+def test_the_options_table_flags_them_on_the_cost_cell(unanswered: Unanswered, said: str) -> None:
+    old, new = _flag_change(unanswered)
+    assert new is not None and new.endswith(said)
+    assert old is None or new == f"{old}; {said}"
+
+
+def test_the_options_table_flags_nothing_where_none_went_unanswered() -> None:
+    with pytest.raises(AssertionError):
+        _flag_change(Unanswered(retried=0, lost=0, calls=300, share=0.0))
+
+
+def test_the_bare_count_and_the_share_are_not_counted_where_a_role_counted_one_kind() -> None:
+    usage = [[_counting(retried=None, lost=1)]] * CASES
+    held = report_input(campaign_over(_trials(usage)))
+    for key in (f"calls.unanswered.{FAST}", f"calls.unanswered.{FAST}.share"):
+        with pytest.raises(UnstatedFigure, match="not counted"):
+            resolve(key, held)
+    assert format_figure(resolve(f"calls.unanswered.{FAST}.lost", held)) == str(CASES)
+    with pytest.raises(UnstatedFigure, match="no role of the arm counted"):
+        resolve(f"calls.unanswered.{FAST}.retried", held)
+    _, bundle, _ = aspect_bundle(_trials(usage))
+    (fast,) = [row for row in bundle.scoreboard if row.unanswered]
+    assert (fast.unanswered[0].calls, fast.unanswered[0].share) == (3 * CASES, None)
+    rows = {row.arm.key: row for row in campaign_overview(held, "snap").arms}
+    assert [figure.key for figure in rows[f"arm:{FAST}"].unanswered] == [
+        f"calls.unanswered.{FAST}.lost",
+        f"calls.unanswered.{FAST}.uncounted",
+    ]

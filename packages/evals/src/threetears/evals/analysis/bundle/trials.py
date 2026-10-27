@@ -339,7 +339,9 @@ def _unanswered(results: Sequence[EvalResult]) -> list[RoleUnanswered]:
             )
         )
         unanswered = (retried or 0) + (lost or 0)
-        sent = None if calls is None else calls + unanswered
+        # A share over both kinds, so a row that counted only one of them leaves the share not counted, never a zero.
+        both = all(row.unanswered_retried is not None and row.unanswered_lost is not None for row in rows)
+        sent = None if calls is None or not both else calls + unanswered
         entries.append(
             RoleUnanswered(
                 role=role,

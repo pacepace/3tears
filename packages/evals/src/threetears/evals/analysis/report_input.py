@@ -509,7 +509,7 @@ class RequestSettings(_Part):
     strict_output: bool = Field(default=False, description="Whether the request enforced every parameter it carried.")
 
 
-class RunApparatus(_Part):
+class RunRig(_Part):
     """The rig one run of one arm was measured with, as the run recorded it at launch."""
 
     run: str = Field(description="The run's id.")
@@ -676,7 +676,7 @@ class ReportInput(_Part):
     )
     # Left out of the document when unset, as an input over runs that recorded no apparatus leaves it, so its digest
     # is as it was.
-    apparatus: list[RunApparatus] | None = Field(
+    apparatus: list[RunRig] | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
         description="The rig each run was measured with, for each run that recorded one past a serial run pinning and "

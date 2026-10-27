@@ -89,7 +89,7 @@ from threetears.evals.analysis.report_input import (
     Reading,
     ReportInput,
     RequestSettings,
-    RunApparatus,
+    RunRig,
     ScoreboardRow,
     ShortRun,
     Stat,
@@ -548,10 +548,10 @@ class _Builder:
             for row in aspect.scoreboard
         }
 
-    def apparatus(self) -> list[RunApparatus] | None:
-        """The rig each run was measured with, aspect by aspect in the input's order and each aspect's runs in its
-        arms' order, for each run whose summary carries one; None where none does, so the input carries no key."""
-        held: list[RunApparatus] = []
+    def apparatus(self) -> list[RunRig] | None:
+        """The rig each run was measured with, aspect by aspect in the input's order and each aspect's runs in its run
+        summaries' order, for each run whose summary carries one; None where none does, so the input carries no key."""
+        held: list[RunRig] = []
         for aspect in self.ordered:
             arms = [
                 *([aspect.design.control_arm] if aspect.design.control_arm is not None else []),
@@ -565,7 +565,7 @@ class _Builder:
                 key = arm_of.get(summary.run_id)
                 asked = rig.judge_asked_settings
                 held.append(
-                    RunApparatus(
+                    RunRig(
                         run=summary.run_id,
                         arm=self.arm(key) if key is not None else None,
                         aspect=aspect.aspect,
