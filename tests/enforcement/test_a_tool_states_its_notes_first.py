@@ -85,6 +85,10 @@ NOTE_BUILT_AFTER_ON_PURPOSE: dict[str, str] = {
         "a one-line result whose parenthetical names its units, on the same line as the number it qualifies, "
         "so no head of the result keeps the number without it"
     ),
+    "packages/evals/src/threetears/evals/analysis/report_plan_facts.py:_answers:' warning(s) on the recommended '": (
+        "no note: a plan check's fault text counting the warnings code raised on the recommended option, which "
+        "an answer's position must fall among; the word is the plan field's name, not a note on a body"
+    ),
     "packages/agent/tools/src/threetears/agent/tools/builtin/analyze_media.py:_handle_document:window_note": (
         "the prompt an analyser model reads, not a tool result: the window note follows the document fence it "
         "describes, as HAND_PLACED records"
