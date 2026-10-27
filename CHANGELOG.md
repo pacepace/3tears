@@ -62,7 +62,23 @@ would read, with `details` `runs_named`, `results_estimated` and `result_ceiling
 `export_after_run_id` with `export_run_ids`, or naming a run no longer in the scope, is refused. An unknown format
 is now refused before anything is read. An agent that exported a scope in one call must follow the pages.
 
+### object-store: a presign no longer holds the event loop
+
+**Fixed:** `S3ObjectStore.presigned_get_url` opened an aiobotocore client for every URL, building a whole botocore
+client class on the loop each time: ~100 ms a URL on cobalt dev's shared CPU, so a load presigning a file per
+partition stalled its loop over and over. A store that opened its own session now signs on a worker thread with one
+synchronous botocore client, built on first use and kept; its URLs are the ones the aiobotocore client signs. A store
+given a session (a test's fake, a caller's aioboto3) presigns through it as before.
+
 ## v0.80.0 -- 2026-10-26
+
+### backup: a drill compares a naive-timestamp table against the backup's moment
+
+**Fixed:** a drill failed on the first database holding a table whose cutoff column (`date_created` and
+the like) is `timestamp without time zone`. The comparator bound the backup's aware moment to that column,
+and asyncpg refused it ("can't subtract offset-naive and offset-aware datetimes"). Seen on a hub's
+scheduled drill when it reached a newly backed-up database. A naive column is now bound the moment as its
+naive UTC wall clock, and a zoned column the instant as before.
 
 ### agent-tools, core: an edge-cacheable read may narrow its scopes by a second namespace node
 
