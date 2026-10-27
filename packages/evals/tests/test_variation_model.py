@@ -834,6 +834,22 @@ def test_the_history_pricer_bounds_an_arm_by_the_upper_band_of_its_template_and_
     assert price.low_usd is not None and price.low_usd < centre and price.method_id == "usage-history"
 
 
+@pytest.mark.parametrize("cost", [0.0015, 0.0005, 0.1, 1 / 3, 0.07])
+@pytest.mark.parametrize("n_history", [3, 4, 11])
+@pytest.mark.parametrize("case_count", [1, 3, 5])
+def test_the_history_pricer_prices_an_arm_whose_every_past_result_cost_the_same(
+    cost: float, n_history: int, case_count: int
+):
+    """Discodon's second launch of one arm raised building the price: both ends of the band landed below its centre."""
+    host, storage = _priced_host()
+    _history(storage, template_id="tpl-priced", model="m-priced", costs=[cost] * n_history)
+
+    price = history_launch_pricer(host)(_quote(k_runs=1, case_count=case_count))
+
+    assert price.predicted_usd is not None
+    assert price.low_usd == price.central_usd == price.predicted_usd
+
+
 def test_the_history_pricer_prices_an_arm_over_stored_cases_by_the_same_rule():
     """One rule for both sources: the same history, cases and repeats bound a stored-case arm exactly as a generating one."""
     host, storage = _priced_host()

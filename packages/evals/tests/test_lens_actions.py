@@ -87,9 +87,11 @@ def evals() -> MountedTool:
     return eval_catalogue().mount_all(standard_tools())[0]
 
 
-def _priced(fixture: OpsFixture) -> OpsFixture:
-    """Store a run of the toy template launched as a toy arm will be, with three priced results; price by history.
+def _priced(fixture: OpsFixture, costs: tuple[float, ...] = PRICED_COSTS) -> OpsFixture:
+    """Store a run of the toy template launched as a toy arm will be, with priced results; price by history.
 
+    :param costs: What each stored result cost; three, close together, unless a test needs other history.
+    :ptype costs: tuple[float, ...]
     :return: The fixture over a host whose launch pricer is the engine's history pricer.
     :rtype: OpsFixture
     """
@@ -105,7 +107,7 @@ def _priced(fixture: OpsFixture) -> OpsFixture:
         apparatus_settings={"reviewer_pool": TOYHOST_REVIEWER_POOL},
     )
     storage.save_eval_run(run)
-    for index, cost in enumerate(PRICED_COSTS):
+    for index, cost in enumerate(costs):
         storage.save_eval_result(
             make_eval_result(
                 id=f"priced-{index}",
@@ -301,6 +303,26 @@ async def test_an_estimate_handed_back_as_predicted_cost_sits_beside_the_cost_ob
     assert cell.predicted is not None and cell.predicted.method_id == "usage-history"
     assert f"- {template_id} / {PRICED_MODEL}: 0.2 (measured; n=3, 2 case(s)" in outcome.text
     assert "; predicted 0.2 [" in outcome.text
+
+
+async def test_an_arm_whose_every_past_result_cost_the_same_launches_under_an_enforced_cap() -> None:
+    """Discodon launched one arm twice; the second, priced from history that never varied, raised building its price."""
+    fixture = off_loop(_priced, off_loop(ops_fixture), (0.0015,) * 3)
+    launching = _launching(toyhost_template().id, PRICED_MODEL, k_runs=1)
+    assert fixture.host.launch.settings().enforcement_enabled
+
+    estimate = await launch_estimate(fixture.host, LaunchArguments(**launching), TOYHOST_SCOPE)
+    async with asyncio.timeout(10):
+        first = await launched_runs(
+            fixture.host, await run_launch(fixture.host, LaunchArguments(**launching), TOYHOST_SCOPE)
+        )
+        second = await launched_runs(
+            fixture.host, await run_launch(fixture.host, LaunchArguments(**launching), TOYHOST_SCOPE)
+        )
+
+    (arm,) = estimate.arms
+    assert arm.low_usd == arm.central_usd == arm.predicted_usd == pytest.approx(0.0015 * CASES)
+    assert len(first) == len(second) == 1 and first != second
 
 
 async def test_after_the_launch_each_predicted_cell_says_how_much_of_it_the_launch_made(evals: MountedTool) -> None:

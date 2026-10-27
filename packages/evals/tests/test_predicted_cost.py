@@ -18,6 +18,7 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pytest
@@ -110,6 +111,71 @@ class TestTheEstimateWritesAPredictionPerPlannedCell:
         estimate = compute_estimate_cost([run], results, models=["sonnet"], k_runs=1, n_test_cases=1, profile=PROFILE)
         predicted = estimate.cells[0].predicted
         assert predicted is not None and predicted.computed_at and predicted.computed_at != STAMP
+
+
+#: Costs a history repeats exactly: ones whose log does not round-trip through ``exp`` (0.0015, 0.0005, 0.07), ones
+#: whose repeated sum carries rounding error (0.1, 1/3), and a zero, which takes the normal-theory band.
+_REPEATED_COSTS = (0.0015, 0.0005, 0.1, 1 / 3, 0.07, 2.5, 0.0)
+
+
+def _band_of(costs: list[float], *, n_test_cases: int, k_runs: int = 1) -> PredictedValue:
+    run, results = _history("sonnet", costs)
+    estimate = compute_estimate_cost(
+        [run], results, models=["sonnet"], k_runs=k_runs, n_test_cases=n_test_cases, computed_at=STAMP, profile=PROFILE
+    )
+    (cell,) = estimate.cells
+    assert cell.predicted is not None
+    return cell.predicted
+
+
+class TestTheBandBracketsItsOwnEstimate:
+    """A launch holds the band's upper end to the cap and refuses a range out of order, so the band brackets the point."""
+
+    @pytest.mark.parametrize("cost", _REPEATED_COSTS)
+    @pytest.mark.parametrize("n_history", [3, 4, 5, 7, 11, 20])
+    @pytest.mark.parametrize("n_test_cases", [1, 3, 10])
+    def test_a_history_that_never_varied_has_a_band_of_no_width_at_its_estimate(
+        self, cost: float, n_history: int, n_test_cases: int
+    ) -> None:
+        """Discodon's second launch of one arm: three results at $0.0015 each put both ends an ulp below the centre."""
+        predicted = _band_of([cost] * n_history, n_test_cases=n_test_cases)
+
+        assert predicted.interval_low == predicted.value == predicted.interval_high
+
+    @pytest.mark.parametrize("cost", _REPEATED_COSTS[:-1])
+    @pytest.mark.parametrize("n_history", [3, 5, 11])
+    @pytest.mark.parametrize("n_test_cases", [1, 3, 10])
+    def test_a_history_varying_by_rounding_alone_has_a_band_that_still_brackets_its_estimate(
+        self, cost: float, n_history: int, n_test_cases: int
+    ) -> None:
+        """One cost a single ulp off the rest: the log-scale ends and the arithmetic centre are different sums."""
+        history = [cost] * (n_history - 1) + [math.nextafter(cost, math.inf)]
+
+        predicted = _band_of(history, n_test_cases=n_test_cases)
+
+        assert predicted.interval_low is not None and predicted.interval_high is not None
+        assert predicted.interval_low <= predicted.value <= predicted.interval_high
+
+    def test_the_total_of_bands_of_no_width_brackets_the_total_estimate(self) -> None:
+        runs_and_results = [_history(model, [cost] * 4) for model, cost in (("a", 0.0015), ("b", 0.1), ("c", 1 / 3))]
+        estimate = compute_estimate_cost(
+            [run for run, _ in runs_and_results],
+            [result for _, results in runs_and_results for result in results],
+            models=["a", "b", "c"],
+            k_runs=3,
+            n_test_cases=7,
+            computed_at=STAMP,
+            profile=PROFILE,
+        )
+
+        assert estimate.total_interval_low is not None and estimate.total_interval_high is not None
+        assert estimate.total_interval_low == estimate.total_estimated_cost == estimate.total_interval_high
+
+    @pytest.mark.parametrize("cost", [0.0015, 0.1, 1 / 3, 0.07])
+    @pytest.mark.parametrize("n_history", [3, 11, 20])
+    def test_the_log_scale_band_of_a_history_that_never_varied_has_no_width(self, cost: float, n_history: int) -> None:
+        """Identical costs have exactly no spread; the log scale's rounding gave them some at eleven and more."""
+        assert lognormal_sum_prediction_band([cost] * n_history, 3) == (3 * cost, 3 * cost)
 
 
 class TestThePivotSetsThePredictionBesideTheObservedCost:
