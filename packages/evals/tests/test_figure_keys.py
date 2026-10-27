@@ -314,7 +314,8 @@ class TestFilters:
     def test_usd_per_1k_states_its_ruler(self):
         assert _figure("scoreboard.September.reply_cost_usd", "usd_per_1k") == "$1.89 per 1,000 replies"
         assert _figure("cost_per_1k.September", "usd_per_1k") == "$1.89 per 1,000 replies"
-        assert _figure("contrast.1017.production_replicating_cost.delta", "usd_per_1k") == "+$0.49 per 1,000 replies"
+        # Under a dollar a price keeps its third significant figure, which cents would round away.
+        assert _figure("contrast.1017.production_replicating_cost.delta", "usd_per_1k") == "+$0.492 per 1,000 replies"
 
     def test_a_price_per_million_states_its_ruler_in_what_its_label_counts(self):
         counted = _counted("r3", "cost_per_1m")

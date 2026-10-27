@@ -1,7 +1,10 @@
 """A key check, as an action of the ``Investigate: facts`` workflow.
 
 ``figure_keys_check`` is an :class:`~threetears.evals.actions.catalogue.Action` over its operation in
-:mod:`threetears.evals.ops.analyst_keys`, rendered by :func:`~threetears.evals.actions.render.render_cited`. It
+:mod:`threetears.evals.ops.analyst_keys`, rendered by :func:`~threetears.evals.actions.render.render_cited`. It is
+sized to one result like every analyst listing, but not ``paged``: a paged action's next call repeats every argument
+the caller sent, and this one's argument is the list of keys, which the caller already holds. Its page says where the
+unread keys start instead (:mod:`~threetears.evals.analysis.analyst.keys`). It
 belongs to the facts workflow, so the analyst's tool and the editor's cut of it, read off the workflows, both carry
 it: the analyst checks a draft's keys before it submits, and the editor checks every key of the report it tests.
 :func:`~threetears.evals.actions.analyst.analyst_actions` gathers :func:`analyst_keys_actions` beside the facts.
@@ -71,7 +74,6 @@ def analyst_keys_actions() -> tuple[Action, ...]:
             result=KeysChecked,
             handler=_figure_keys_check,
             render=render_cited,
-            paged=True,
             example={
                 "snapshot_id": _EXAMPLE_SNAPSHOT,
                 "keys": ["{n_candidates}", "arm:fast.v2", "reading.fast.v2.change|abs|pts"],
@@ -83,7 +85,9 @@ def analyst_keys_actions() -> tuple[Action, ...]:
                 "reads nothing: unstated (well formed; the snapshot states no such figure) or refused (it names "
                 "nothing the snapshot holds, reads two ways, or carries a filter its figure does not suit), with the "
                 "resolver's own refusal and what to write instead. Keys are checked once each, in the order given; "
-                f"without a limit a page holds as many as fit one result, up to {KEYS_LIMIT}."
+                f"without a limit a page holds as many as fit one result, up to {KEYS_LIMIT}. A page never writes the "
+                "keys back: its progress line says which of them it read and, where some are unread, to send the "
+                "same keys again with offset=unread_from; the last page says all of them are read."
             ),
         ),
     )

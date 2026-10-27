@@ -29,6 +29,17 @@ gained, whose low and high ends are read off the gain's interval where a contras
 leaves open is refused as unbounded, never written as a number). ``cost_per_month.<arm>`` and the ``monthly_`` price
 fields read the same at the declared ``meta.volume_per_month``. All are derived and marked so.
 
+**A cost some trials did not report.** ``cost.unreported.<arm>.<field>`` reads the page's cost
+(``cost_per_1k.<arm>``) where some of the arm's trials report no cost: ``missing`` counts them (the trials the arm's
+scoreboard says ran, less the cost measure's observations), ``free`` is the cost per 1,000 had each of them cost
+nothing (the mean times observations over trials run: the least the arm's mean over every trial can be), and
+``at_p95`` had each cost the arm's own 95th percentile, a what-if, not a ceiling: the snapshot holds no highest
+cost, so nothing caps what a missing trial could have cost. Its inputs are the measure the page's cost is read from,
+overall on the arm (its mean, observations ``n`` and ``p95``), and the arm's ``scoreboard.<arm>.ran``. It reads each
+observation as one trial's, so it refuses, as unstated, a cost the page reads from the scoreboard or blends over
+tasks (no observations are counted), an arm whose measure or scoreboard leaves ``n`` or ``ran`` unstated, and a
+measure with more observations than trials run, whose observations are not one per trial. All derived.
+
 **Two arms apart, and the cases that would settle a reading.** ``spread.<arm>.<measure>.<where>.*`` reads an arm's
 spread on a figure, ``compare.<arm>.<arm>.<measure>.<where>.*`` the difference between two arms with its interval (a
 contrast's own where one pairs them, else independent), and ``settle.*`` the cases a design needs to separate an arm
@@ -77,7 +88,7 @@ from typing import Literal, get_args
 
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.analysis.numbers import format_number, group_thousands
+from threetears.evals.analysis.numbers import format_number, group_thousands, spell_multiple, spell_price
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
 from threetears.evals.analysis.report.cost_unit import REPLIES, CostBasis, per_count, per_noun
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
@@ -129,7 +140,6 @@ from threetears.evals.analysis.separation import (
     wrong_side_share,
 )
 from threetears.evals.analysis.style import humanize, measure_name
-from threetears.evals.analysis.summary import dollars_text
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of
 
 #: What a figure is: a number, an interval (low, high), a piece of text, or an arm (rendered by name and tag).
@@ -157,8 +167,10 @@ _FILTER_MEANS: dict[str, str] = {
     "pct": "a rate as a percent",
     "pts": "a change in points, signed, one decimal at most",
     "abs": "the magnitude, without its sign",
-    "usd": "dollars",
-    "int": "the nearest whole number, its thousands separated",
+    "usd": "dollars, three significant figures at least (`$0.302`, where cents would round a price a reader "
+    "multiplies to `$0.30`)",
+    "int": "the nearest whole number, its thousands separated; a multiple keeps its unit (`21 times`), every other "
+    "unit is left for the prose to write",
     "pct10": "a rate rounded to the nearest 10%",
     "interval": "an interval's two ends, joined by 'to'",
     "usd_per_1k": "dollars per 1,000 of what the cost counts, with the words (`per 1,000 conversations` where the "
@@ -991,6 +1003,19 @@ def _slice_figure(
 
 
 _SCOREBOARD_STATISTICS = ("ran", "usable", "passed", "cases", "lost", "failed", "reply_cost_usd", "test_cost_usd")
+
+#: How the examples count a failure, which ``count.failures`` counts by, and why it is not the scoreboard's ``failed``.
+_FAILURES_RULE = (
+    "A failure here is a nought on the primary judged dimension where the snapshot names one, else a trial that "
+    "failed: it is not `scoreboard.<arm>.failed`, which counts every trial that failed, for any cause, so the two "
+    "differ by design where trials fail on something else"
+)
+
+#: What the scoreboard's ``failed`` counts, beside ``count.failures``.
+_SCOREBOARD_FAILED = (
+    "`failed` counts every trial that failed, for any cause; `count.failures.<aspect>.<arm>` counts failures as the "
+    "examples do (a nought on the primary judged dimension, where there is one), so the two can differ"
+)
 
 
 def _scoreboard(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
@@ -2544,6 +2569,12 @@ _COST_GAP_FIELDS = ("per_1k", "monthly", "multiple")
 #: The unit a cost multiple is written in.
 MULTIPLE_UNIT = "times"
 
+#: The units a figure keeps under every filter, rounding included: a multiple's ``times`` is what makes it one, and
+#: ``21`` alone reads as a count. A multiple's own spelling rounds to the figures a ratio supports
+#: (:func:`~threetears.evals.analysis.numbers.spell_multiple`: ``21 times``, ``2.4 times``); ``int`` writes it whole.
+#: Every other unit is left off under ``int``, which prose writes after the key (``{…p95|int} ms``).
+_KEPT_UNITS = frozenset({MULTIPLE_UNIT})
+
 
 def _cost_gap_seconds(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
     return [arm for arm in _costs_per_thousand(report_input) if arm != prior[-1]]
@@ -2562,6 +2593,52 @@ def _cost_gap(report_input: ReportInput, values: tuple[str, ...], path: str) -> 
     if not costs[second]:
         raise _unstated(path, f"names {first}'s cost as a multiple of {second}'s, and {second} costs nothing")
     return Figure(path=path, kind="number", value=costs[first] / costs[second], scale="plain", unit=MULTIPLE_UNIT)
+
+
+# --- a cost some trials did not report -----------------------------------------------------------------------------
+
+#: What a cost some trials did not report reads: how many did not, the cost per 1,000 with each counted free, and with
+#: each counted at the arm's own 95th percentile.
+_UNREPORTED_FIELDS = ("missing", "free", "at_p95")
+
+
+def _unreported(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    """One arm's cost read with its unreported trials counted free, or at its 95th percentile (this module's account).
+
+    :raises UnstatedFigure: The page's cost is not read off one measure's overall figures, the measure or the
+        scoreboard leaves the observations or the trials run unstated, or the observations outnumber the trials.
+    """
+    arm, field = values
+    source = cost_basis(report_input).source
+    measure = report_input.measures.get(source)
+    stat = measure.per_arm.get(arm) if measure is not None else None
+    if measure is None or stat is None or stat.mean is None:
+        raise _unstated(path, f"names the trials {arm}'s cost leaves out, and its cost is read off no measure's figure")
+    row = report_input.scoreboard.get(arm)
+    ran = row.ran if row is not None else None
+    if stat.n is None or ran is None:
+        raise _unstated(
+            path,
+            f"counts the trials {arm}'s cost leaves out, and the snapshot states no {'n' if stat.n is None else 'trials run'}",
+        )
+    if stat.n > ran:
+        raise _unstated(
+            path,
+            f"counts the trials {arm}'s cost leaves out, and its cost has more observations than the arm ran trials, "
+            "so they are not one per trial",
+        )
+    missing = ran - stat.n
+    if field == "missing":
+        return _count(path, missing)
+    factor = _PER_THOUSAND_FACTORS[measure.unit or ""]
+    if field == "free":
+        return Figure(path=path, kind="number", value=stat.mean * stat.n / ran * factor, scale="usd_per_1k")
+    if stat.p95 is None:
+        raise _unstated(
+            path, f"names {arm}'s cost with its missing trials at its 95th percentile, which it does not state"
+        )
+    filled = (stat.mean * stat.n + stat.p95 * missing) / ran
+    return Figure(path=path, kind="number", value=filled * factor, scale="usd_per_1k")
 
 
 # --- an aspect's pair readings, floors and bars ----------------------------------------------------------------------
@@ -4779,7 +4856,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("scoreboard"),
         _keyed("<arm>", lambda ri: ri.scoreboard),
         _Statistic(_SCOREBOARD_STATISTICS),
-        what="how an arm's trials came out",
+        what="how an arm's trials came out. " + _SCOREBOARD_FAILED,
         resolve=_scoreboard,
     ),
     _family_of(
@@ -4921,7 +4998,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("scoreboard"),
         _Ids("<arm>", _aspect_board_arms),
         _Statistic(_SCOREBOARD_STATISTICS),
-        what="how an arm's trials came out on one aspect",
+        what="how an arm's trials came out on one aspect. " + _SCOREBOARD_FAILED,
         resolve=_aspect_scoreboard,
         example="aspects.speed.scoreboard.fast.v2.passed",
     ),
@@ -5262,8 +5339,9 @@ _FAMILIES: tuple[_Family, ...] = (
         "and guardrail, borderline counting as passing; `undecided` how many no gate figure fails while a gate has no "
         "figure for them somewhere: neither passed nor removed; `pairs` how many pairs of arms its pair readings read "
         "apart, `arm_pairs` how many pairs of arms there are; `examples` the failed trials the snapshot froze as "
-        "examples, `failures` the failed trials the run holds, which they were kept from (refused where the snapshot "
-        "does not count them: not known)",
+        "examples, `failures` the failed trials the run holds, which they were kept from, a failure counted as the "
+        "examples count one, not as the scoreboard's `failed` (refused where the snapshot does not count them: not "
+        "known)",
         resolve=_campaign_count,
         derived_statistics=("surviving", "undecided"),
         example="count.arms|words",
@@ -5355,7 +5433,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Ids("<arm>", _example_arms),
         what="how many of one arm's trials on one aspect failed, as the examples count a failure: the pool its examples "
         "were kept from (`count.failures` counts every one); not known, and refused, where the snapshot does not "
-        "count them",
+        "count them. " + _FAILURES_RULE,
         resolve=_failed_trials_count,
         example="count.failures.answers.fast.v2",
     ),
@@ -5394,10 +5472,22 @@ _FAMILIES: tuple[_Family, ...] = (
         _Ids("<arm>", _cost_gap_seconds),
         _Statistic(_COST_GAP_FIELDS, "<field>"),
         what="two arms' costs apart, the first's minus the second's: `per_1k` per 1,000 of what the cost counts, "
-        "`monthly` per month at the declared monthly volume, `multiple` the first's cost over the second's",
+        "`monthly` per month at the declared monthly volume, `multiple` the first's cost over the second's, read with its "
+        "unit under every filter (`21 times`, `2.4 times`: whole from ten up, one decimal below)",
         resolve=_cost_gap,
         derived=True,
         example="cost.gap.fast.v2.base.multiple",
+    ),
+    _family_of(
+        _Word("cost.unreported"),
+        _keyed("<arm>", _costs_per_thousand),
+        _Statistic(_UNREPORTED_FIELDS, "<field>"),
+        what="an arm's cost where some of its trials report none: `missing` how many (trials run less the cost's "
+        "observations), `free` the cost per 1,000 had each cost nothing (the least the mean over every trial can be), "
+        "`at_p95` had each cost the arm's own 95th percentile (a what-if, not a ceiling: the snapshot holds no "
+        "highest cost); refused where the cost is not read off one measure's observations, one per trial",
+        resolve=_unreported,
+        derived=True,
     ),
 )
 
@@ -5744,7 +5834,9 @@ def _plus(text: str, value: float) -> str:
 
 
 def _money(value: float, signed: bool) -> str:
-    text = dollars_text(abs(value))
+    """Dollars as a key writes them: to three significant figures at least (:func:`spell_price`), so a price a reader
+    multiplies by a volume reaches the monthly figure beside it."""
+    text = spell_price(abs(value))
     if value < 0:
         return f"-{text}"
     return _plus(text, value) if signed else text
@@ -5827,7 +5919,10 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
         if figure.scale not in ("count", "plain", "points", "usd_per_1m"):
             raise _refuse(figure.path, f"cannot read as a whole number: it is on the {figure.scale} scale")
         text = group_thousands(format_number(float(round(value))))
-        return _Spelled(_plus(text, value) if signed else text)
+        text = _plus(text, value) if signed else text
+        return _Spelled(f"{text} {figure.unit}" if figure.unit in _KEPT_UNITS else text)
+    if figure.unit in _KEPT_UNITS:
+        return _Spelled(f"{spell_multiple(value)} {figure.unit}")
     text = format_number(value)
     text = _plus(text, value) if signed else text
     if not figure.unit:
@@ -6336,8 +6431,8 @@ _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
     ),
     (
         "cost",
-        "cost per 1,000 of what the cost counts and per month, cost uplift, and a move between options priced per "
-        "point",
+        "cost per 1,000 of what the cost counts and per month, cost uplift, a cost some trials did not report, and a "
+        "move between options priced per point",
         frozenset({"cost_per_1k", "cost", "price", "cost_per_month"}),
     ),
     (

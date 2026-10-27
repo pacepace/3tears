@@ -27,6 +27,25 @@ cases (`may_be_narrow`, `nested`), with a note saying why once. Every analyst ac
 **Fixed:** a paired comparison's basis said "corrected within its family" whatever its family said; it now reads the
 family's own correction (not corrected where it says none, unstated where it says nothing).
 
+### evals: a multiple keeps its unit, a price its third figure; the key check pages without repeating the keys; a borderline gate's caveat and a bound on a cost some trials did not report
+
+**Fixed:** `{cost.gap.<a>.<b>.multiple|int}` printed "21", dropping the unit; a multiple now reads with "times" under
+every filter it takes, and its own spelling rounds to what a ratio supports (`numbers.spell_multiple`: whole from ten
+up, one decimal from one to ten, two significant figures below). Figure-key money keeps a third significant figure
+from ten cents to a dollar (`numbers.spell_price`): "$0.30 per 1,000 calls" beside "$1,208 a month" at 4,000,000 calls
+now reads "$0.302", so a reader's product reaches the monthly figure. `count.failures` and the scoreboard's `failed`
+each say in their key text that they count a failure differently, and how.
+
+**Changed:** `figure_keys_check` is sized to one result but no longer a paged action: a page never writes the keys
+back. It carries a `progress` line (which of the keys sent it read, and where the unread ones start, or that all N are
+read), and `KeysChecked.next_offset` is now `unread_from`: send the same keys with that offset.
+
+**Added:** the implied caveat `borderline:<criterion>`, for a gate or guardrail a surviving option clears on its
+point estimate while the figure's interval reaches past the line, citing the line and each clearance.
+`cost.unreported.<arm>.<field>`: `missing` (trials run less the cost's observations), `free` (the cost per 1,000 with
+each counted at nothing, the least the mean can be) and `at_p95` (each at the arm's own 95th percentile, a what-if:
+the snapshot holds no highest cost), refused where the page's cost is not read off one measure's observations.
+
 ### evals: a comparison says what pairs it, and the settle table says what its sizes count
 
 **Added:** `ComparisonRow.paired_with` on `arms_compare`'s rows: `arm:<id>` where a contrast pairs the two arms, else null; `figure_keys.pairing_contrast` is the one rule for what pairs two arms, read by the compare keys, `arms_compare` and the compare block's level.

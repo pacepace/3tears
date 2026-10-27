@@ -10,6 +10,12 @@ filters (``reading.fast.v2.change|abs|pts``), either in braces (``{cost_per_1k.b
 (``arm:fast.v2``). Each is checked once, in the order given; a key repeated is checked at its first place. At most
 :data:`KEYS_MOST` keys a call, and the rows are paged.
 
+**A page is an offset into the keys the caller sent, and never repeats them.** The caller holds its own list, so a
+page says which of its keys it read and where the next page starts (``unread_from``), and the next call sends the
+same keys with that offset. A page that wrote the whole list back as its next call (the W2 prototype's, 46 keys on
+every ``next:`` line) spent its reader's context on keys it already had, and read as pages that overlapped. The
+last page says every key was read, and how many.
+
 **Each key's row** is one of three:
 
 - ``reads``: the figure, written through its filters as the page writes it (a
@@ -117,10 +123,17 @@ class KeysChecked(BaseModel):
     model_config = _MODEL
 
     reads_as: str = Field(description="What this is.")
+    progress: str = Field(
+        description="Which of the keys sent this page read, and how to read the rest: the same keys, from "
+        "unread_from; or that every key is read."
+    )
     keys: list[KeyCheck] = Field(description="Each key on this page, in the order asked.")
     total: int = Field(description="The distinct keys asked about.")
     offset: int = Field(description="The first key this page holds.")
-    next_offset: int | None = Field(description="The offset of the next page; None when this is the last.")
+    unread_from: int | None = Field(
+        description="Where the keys this call left unread start: send the same keys with this offset. None when "
+        "the page reads to the last key."
+    )
 
 
 def _unbraced(written: str) -> str:
@@ -228,8 +241,21 @@ def figure_keys_check(
     end = offset + len(window)
     return KeysChecked(
         reads_as=_READS_AS,
+        progress=_progress(offset, end, len(distinct)),
         keys=[_check(key, report_input) for key in window],
         total=len(distinct),
         offset=offset,
-        next_offset=end if end < len(distinct) else None,
+        unread_from=end if end < len(distinct) else None,
     )
+
+
+def _progress(offset: int, end: int, total: int) -> str:
+    """Which keys a page read, of the ones sent, and how to read the rest, without repeating them."""
+    if offset >= total:
+        return f"no key from offset={offset}: the call sent {total} distinct keys, read from offset=0"
+    if offset == 0 and end == total:
+        return f"all {total} keys read"
+    read = f"keys {offset + 1} to {end} of {total} read"
+    if end < total:
+        return f"{read}; {total - end} unread: send the same keys again with offset={end}"
+    return f"{read}, the last of them: with the pages before offset={offset}, all {total} keys read"

@@ -44,6 +44,9 @@ one.
                                           warns)
 ``point_estimate:<criterion>``            a gate or guardrail a surviving option clears only on a point estimate:
                                           the figure it reads holds no interval there (a percentile never does)
+``borderline:<criterion>``                a gate or guardrail a surviving option clears on its point estimate while
+                                          the figure's interval reaches the wrong side of the line (the gate check's
+                                          borderline, which counts as passing)
 ``best_of_n``                             a pick among three candidates or more: the best of many reads
                                           high by chance
 ========================================  ==========================================================================
@@ -140,7 +143,7 @@ from typing import Literal
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS
-from threetears.evals.analysis.report_gates import GateCheck, GateStatus, gate_check
+from threetears.evals.analysis.report_gates import GateCheck, GateStatus, gate_check, gate_findings
 from threetears.evals.analysis.report_input import (
     Aspect,
     Contrast,
@@ -445,13 +448,41 @@ def _point_estimates(report_input: ReportInput) -> Iterator[ImpliedCaveat]:
             )
 
 
+def _borderlines(report_input: ReportInput) -> Iterator[ImpliedCaveat]:
+    """A ``borderline:<criterion>`` caveat for each gate or guardrail a surviving option clears at some place on its
+    point estimate while the figure's interval there reaches the wrong side of the line: the gate check's borderline
+    (:func:`~threetears.evals.analysis.report_gates.gate_findings`), which the decision counts as passing."""
+    survivors = surviving_options(report_input)
+    for criterion in report_input.criteria:
+        if criterion.kind not in ("gate", "guardrail"):
+            continue
+        at = tuple(
+            (arm, finding.task, finding.cell)
+            for arm in survivors
+            for finding in gate_findings(report_input, arm, criterion=criterion.id)
+            if finding.status == "borderline"
+        )
+        if at:
+            yield ImpliedCaveat(
+                f"borderline:{criterion.id}",
+                "borderline",
+                "report",
+                "it matters where the call rests on an option clearing this line: its figure clears it, but the "
+                "interval reaches past it, so the evidence allows a true figure on the wrong side and a re-run of the "
+                "same size can read short of the line",
+                arms=tuple(dict.fromkeys(arm for arm, _task, _cell in at)),
+                measures=(criterion.measure,),
+                at=at,
+            )
+
+
 def implied_caveats(report_input: ReportInput) -> list[ImpliedCaveat]:
     """The caveats what the report input holds implies, beyond the ones it states (this module's Implied caveats).
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
-    :return: The judge's, then no control, nothing declared, each gate cleared on a point estimate, then a pick among
-        many; each once, in that order.
+    :return: The judge's, then no control, nothing declared, each gate cleared on a point estimate, each gate cleared
+        on a borderline figure, then a pick among many; each once, in that order.
     :rtype: list[ImpliedCaveat]
     """
     found: list[ImpliedCaveat] = []
@@ -510,6 +541,7 @@ def implied_caveats(report_input: ReportInput) -> list[ImpliedCaveat]:
             )
         )
     found += _point_estimates(report_input)
+    found += _borderlines(report_input)
     candidates = [arm.id for arm in report_input.arms if arm.role == "challenger"]
     if len(candidates) >= _MANY_OPTIONS:
         found.append(
