@@ -38,9 +38,9 @@ def _version(**overrides: object) -> IdentityVersionEntity:
         "customer_id": _USER,
         "user_id": _USER,
         "block_key": "personality",
-        "content": "You are Saoirse.",
+        "content": "You are the agent.",
         "rationale": "seed",
-        "content_hash": content_hash("You are Saoirse."),
+        "content_hash": content_hash("You are the agent."),
         "parent_version_id": None,
         "status": "active",
         "proposer_agent_id": _AGENT,
@@ -163,14 +163,14 @@ class TestSeedActive:
                 coll,
                 _authorizer(),
                 block_key="personality",
-                content="You are Saoirse.",
+                content="You are the agent.",
                 **self._seed_kw,
             )
         assert out.status == "active"
         assert out.parent_version_id is None  # root
         assert out.proposer_agent_id is None and out.consenter_user_id is None
         assert out.rationale is None
-        assert out.content_hash == content_hash("You are Saoirse.")
+        assert out.content_hash == content_hash("You are the agent.")
         coll.save_entity.assert_awaited_once()
         ev.assert_not_awaited()  # a silent baseline, never in the veto queue
 
@@ -358,3 +358,106 @@ class TestRollback:
                 **_kwargs(),
             )
         assert out is None
+
+
+class TestVariants:
+    """A variant travels from the call to the row, the reads and the events, and a version keeps its own."""
+
+    async def test_propose_reads_and_writes_the_named_variant(self) -> None:
+        coll = _collection(active=None)
+        with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock) as ev:
+            out = await lifecycle.propose(
+                coll,
+                _authorizer(),
+                block_key="presence",
+                content="v2",
+                rationale="r",
+                proposer_agent_id=_AGENT,
+                variant="alt",
+                **_kwargs(),
+            )
+        assert coll.resolve_active.await_args.kwargs["variant"] == "alt"
+        assert out is not None and out.variant == "alt"
+        assert ev.await_args.args[0].variant == "alt"
+
+    async def test_propose_without_a_variant_is_the_block_itself(self) -> None:
+        coll = _collection(active=None)
+        with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock):
+            out = await lifecycle.propose(
+                coll,
+                _authorizer(),
+                block_key="presence",
+                content="v2",
+                rationale="r",
+                proposer_agent_id=_AGENT,
+                **_kwargs(),
+            )
+        assert coll.resolve_active.await_args.kwargs["variant"] == ""
+        assert out is not None and out.variant == ""
+
+    async def test_a_name_a_block_does_not_take_is_refused_before_anything_is_read(self) -> None:
+        coll = _collection(active=None)
+        with patch(_AUTHZ, new_callable=AsyncMock), pytest.raises(ValueError, match="not a name a block takes"):
+            await lifecycle.propose(
+                coll,
+                _authorizer(),
+                block_key="presence",
+                content="v2",
+                rationale="r",
+                proposer_agent_id=_AGENT,
+                variant="Not-A-Name",
+                **_kwargs(),
+            )
+        coll.resolve_active.assert_not_awaited()
+        coll.save_entity.assert_not_awaited()
+
+    async def test_seed_resolves_and_writes_its_variant(self) -> None:
+        coll = _collection(active=None)
+        with patch(_AUTHZ, new_callable=AsyncMock):
+            root = await lifecycle.seed_active(
+                coll,
+                _authorizer(),
+                agent_id=_AGENT,
+                customer_id=_USER,
+                user_id=_USER,
+                block_key="presence",
+                content="base",
+                variant="alt",
+            )
+        assert coll.resolve_active.await_args.kwargs["variant"] == "alt"
+        assert root.variant == "alt" and root.status == "active"
+
+    async def test_consent_supersedes_within_the_proposals_variant(self) -> None:
+        prior = _version(block_key="presence", variant="alt", content="old")
+        proposed = _version(block_key="presence", variant="alt", status="proposed", parent_version_id=prior.version_id)
+        coll = _collection(active=prior, get_result=proposed)
+        with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock) as ev:
+            await lifecycle.consent(
+                coll, _authorizer(), version_id=proposed.version_id, consenter_user_id=_USER, **_kwargs()
+            )
+        assert coll.resolve_active.await_args.kwargs["variant"] == "alt"
+        assert {c.args[0].variant for c in ev.await_args_list} == {"alt"}
+
+    async def test_out_of_date_names_the_variant(self) -> None:
+        active = _version(block_key="presence", variant="alt")
+        stale = _version(block_key="presence", variant="alt", status="proposed", parent_version_id=uuid4())
+        coll = _collection(active=active, get_result=stale)
+        with (
+            patch(_AUTHZ, new_callable=AsyncMock),
+            pytest.raises(lifecycle.IdentityProposalOutOfDate, match="presence/alt"),
+        ):
+            await lifecycle.consent(
+                coll, _authorizer(), version_id=stale.version_id, consenter_user_id=_USER, **_kwargs()
+            )
+
+    async def test_rollback_clones_into_the_targets_variant(self) -> None:
+        target = _version(block_key="presence", variant="alt", status="superseded", content="earlier")
+        prior = _version(block_key="presence", variant="alt", content="current")
+        coll = _collection(active=prior, get_result=target)
+        with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock) as ev:
+            clone = await lifecycle.rollback(
+                coll, _authorizer(), target_version_id=target.version_id, consenter_user_id=_USER, **_kwargs()
+            )
+        assert coll.resolve_active.await_args.kwargs["variant"] == "alt"
+        assert clone is not None and clone.variant == "alt"
+        assert ev.await_args.args[0].variant == "alt"

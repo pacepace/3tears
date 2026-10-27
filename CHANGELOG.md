@@ -72,6 +72,32 @@ failure, re-opening the bucket and retrying once. The refusal is client-side aga
 advertised `max_payload`, so the retry could only fail the same way. It still reaches the caller as a
 `KvError` naming the bucket and key.
 
+### agent-identity: a block can keep variants, each with its own version chain
+
+**Added:** a consumer can keep several texts of one identity block and choose which applies where.
+- `identity_versions.variant` names the copy (`""` is the block itself). Each variant has its own chain and its
+  own active version: the one-active rule is now per `(agent, customer, user, block_key, variant)`. A variant takes
+  its block's consent tier.
+- `propose`, `seed_active`, `resolve_active` and `find_versions_for_block` take `variant: str = ""`. `consent`,
+  `reject` and `rollback` read it off the version, so a rollback stays in its variant. The four identity events
+  carry `variant`.
+- `check_variant`: a name is up to 32 lowercase letters, digits or underscores. The package gives a name no
+  meaning.
+- `load_identity_propose_tool(..., variants=("",))` binds which variants the tool may write. Any other name is
+  refused without a proposal. The `variant` argument, and the names in the description, appear only when the
+  host opened a variant, so a default host's tool is exactly what it was. A bare string for `variants` raises.
+- `variant_label(block_key, variant)`: `presence` or `presence/alt`, as the tool and the errors name a block.
+
+Why a column and not more block keys: a block key is a platform enum, so a consumer that wanted a second text of
+a block would need a platform release and a key that means something only to it. A variant is the consumer's own
+name over the platform's blocks, with the block's tier, and needs no release to add.
+
+Migration **v003** adds the column (`NOT NULL DEFAULT ''`, so every existing row is the block itself) and moves
+the indexes onto it: `uq_identity_active_per_variant` and `idx_identity_variant_history` are created before
+`uq_identity_active_per_block` and `idx_identity_block_history` are dropped. Replay is a no-op. A caller that names
+no variant reads and writes exactly what it did before; one that builds its L1 table from
+`identity_versions_table` gets the column with it.
+
 ## v0.80.0 -- 2026-10-27
 
 ### backup: a drill compares a naive-timestamp table against the backup's moment
