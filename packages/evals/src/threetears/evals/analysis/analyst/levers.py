@@ -59,7 +59,7 @@ compared on one prompt are read the same way.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -157,6 +157,8 @@ class LeverEffects(_Lever):
     settings: list[SettingRow] = Field(description="Every setting the arms vary, on every page.")
     effects: list[EffectRow] = Field(description="This page's effects, by setting, each lever pair once.")
     interactions: list[InteractionRow] = Field(description="This page's interactions, after every effect.")
+    #: What its total counts, one and many: its page says how much of the whole it holds in it.
+    page_unit: ClassVar[tuple[str, str]] = ("effect or interaction", "effects and interactions")
     total: int = Field(description="Effects and interactions in every page.")
     offset: int = Field(description="The rows skipped before this page.")
     next_offset: int | None = Field(description="The next page's offset; none on the last page.")

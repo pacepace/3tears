@@ -1185,7 +1185,7 @@ One of the charts a report draws, with every value it draws, so it prints as a t
 | `bars` | `list[OutcomeBar]` | `[]` | An outcome bar's arms, one bar each. |
 | `rows` | `list[IntervalRow]` | `[]` | An interval chart's rows, in drawn order. |
 | `points` | `list[CostQualityPoint]` | `[]` | A cost/quality chart's arms, one point each, in drawn order. |
-| `unit` | `str` | `''` | The unit an interval chart's values, or a cost/quality chart's costs, are stated in; empty for none. |
+| `unit` | `str` | `''` | The unit an interval chart's values, or a cost/quality chart's costs, are stated in; for a kit chart of what an analysis computes (two arms' difference, a lever's effect), the unit its values table spells its values at where its format names none (a point to one decimal); empty for none. |
 | `zero_line` | `bool` | `False` | Whether the chart draws a line at zero (a difference's). |
 | `margin` | `float \| None` | `None` | A margin band either side of zero, on the chart's ruler; None when none declared. |
 | `data` | `KitChart \| None` | `None` | A kit kind's chart data, as the kit's `data-chart` contract names it (kit/API.md); None for the report's own three kinds. |

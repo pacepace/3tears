@@ -75,6 +75,8 @@ from threetears.evals.analysis.report.plan_page.words import (
     BASIS_NOTE,
     COMPARE_NARROW_NOTE,
     COMPARE_NESTED_TEMPLATE,
+    COMPARE_STATED_COUNT,
+    COMPARE_UNSTATED_COUNT,
     COMPARE_NOTE,
     HUMAN_PREF_NOTE,
     LEVER_CROSS_GROUP,
@@ -559,8 +561,9 @@ def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tu
 
 def narrow_notes(context: ChartContext) -> tuple[str, ...]:
     """What a compare chart or table says, once, where a row's interval may be too narrow (``may_be_narrow``): each
-    arm that ran more trials than cases, by its reader name and the trials and cases its key reads; empty where no
-    row is marked.
+    arm that ran more trials than cases, by its reader name and the trials and cases its key reads, said as a may,
+    since a marked row's interval may count cases; then the unit only where the input states it (an unpaired row's
+    ``counts``: trials or observations), and that a paired row's unit is unstated. Empty where no row is marked.
 
     :param context: The chart being resolved, over the compare source.
     :ptype context: ChartContext
@@ -568,10 +571,14 @@ def narrow_notes(context: ChartContext) -> tuple[str, ...]:
     :rtype: tuple[str, ...]
     """
     nested: dict[str, str] = {}
+    stated: dict[str, None] = {}
+    unstated = False
     for row in context.rows():
         item = row.item
         if not isinstance(item, ComparisonRow) or not item.may_be_narrow:
             continue
+        unstated = unstated or item.counted_unstated
+        stated.update(dict.fromkeys(str(figure.value) for figure in item.counts if figure.value != "cases"))
         by_arm: dict[str, list[str]] = {}
         for figure in item.nested:
             arm = figure.key.removeprefix(_SCOREBOARD).rpartition(".")[0]
@@ -580,7 +587,11 @@ def narrow_notes(context: ChartContext) -> tuple[str, ...]:
             nested.setdefault(
                 arm, COMPARE_NESTED_TEMPLATE.format(arm=_arm_name(context, arm), trials=trials, cases=cases)
             )
-    return (COMPARE_NARROW_NOTE.format(nested="; ".join(nested.values())),) if nested else ()
+    if not nested:
+        return ()
+    counted = COMPARE_STATED_COUNT.format(units=" or ".join(stated)) if stated else ""
+    counted += COMPARE_UNSTATED_COUNT if unstated else ""
+    return (COMPARE_NARROW_NOTE.format(nested="; ".join(nested.values()), counted=counted),)
 
 
 #: How a scoreboard figure's key opens, before its arm: ``scoreboard.<arm>.<field>``.

@@ -84,7 +84,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -303,6 +303,8 @@ class Settle(BaseModel):
     )
     arms: list[str] = Field(description="The arms, as arm:<id>.")
     rows: list[SettleRow] = Field(description="The readings on this page, each criterion's places in order.")
+    #: What its total counts, one and many: its page says how much of the whole it holds in it.
+    page_unit: ClassVar[tuple[str, str]] = ("reading", "readings")
     total: int = Field(description="The readings in all.")
     offset: int = Field(description="The first reading this page holds.")
     next_offset: int | None = Field(description="The offset of the next page; None when this is the last.")

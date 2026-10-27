@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -254,6 +254,8 @@ class ArmsComparison(BaseModel):
         "empty where none is assumed."
     )
     rows: list[ComparisonRow] = Field(description="The places on this page: overall first, then each slice.")
+    #: What its total counts, one and many: its page says how much of the whole it holds in it.
+    page_unit: ClassVar[tuple[str, str]] = ("place", "places")
     total: int = Field(description="The places both arms hold the measure at.")
     offset: int = Field(description="The first place this page holds.")
     next_offset: int | None = Field(description="The offset of the next page; None when this is the last.")

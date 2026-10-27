@@ -15,8 +15,9 @@ Contracts held here (``analysis.report.charts`` values tables, ``analysis.report
   and the side that passes, and an overall criterion drawn on each task's figures says it is the overall line;
 - **one arm-label rule**: a bar chart names an arm's row as every other chart does, its letter tag first;
 - **a page of a block holds as many rows as fit in one result**, up to its limit, and says how many follow;
-- **a paged result says how much of the whole it holds**: ``all N shown`` on a complete page, else its rows and how
-  many follow, before the next page's call.
+- **a paged result says how much of the whole it holds, in what it counts**: ``all N cards shown`` on a complete page,
+  else which it holds and how many follow, before the next page's call; and where it counts none (a sweep with no
+  flips), that there are none to page, never that the page shows nothing.
 
 Every expectation is computed from the input the block reads (r1 to r5, the misfits, Kairo round 2).
 """
@@ -60,6 +61,9 @@ _EMPTY: dict[str, Any] = {
     "transform": "none",
     "small_multiples_by": "none",
 }
+
+#: How a compare block says its interval may be too narrow: as a may, on what the interval counts.
+NARROW_IF = "may be too narrow if these intervals count trials nested in cases"
 
 #: More rows than any fixture's block holds: one page of all of them.
 _EVERY = 200
@@ -233,6 +237,25 @@ def test_a_settle_row_on_its_line_says_no_size_settles_it_and_what_would() -> No
 
 
 # =============================================================================
+# A matrix prints every cost at one precision
+# =============================================================================
+
+#: A cost as a matrix's cell prints it, before what it is per.
+_COST = re.compile(r"\$([\d,]+)(?:\.(\d+))? per ")
+
+
+def test_a_gate_matrix_prints_every_cost_at_one_precision_whatever_else_its_cell_says() -> None:
+    """r1's matrix: a pick's cell and a failing cell read unlike a passing one, and their costs still read alike."""
+    block = _drawn(_inputs()["r1"], "gate_matrix", _query("tasks"))
+    assert block is not None
+    costs = [found for row in block.rows for cell in row.cells[1:] for found in _COST.findall(cell)]
+    assert len(costs) > 1, "the control: r1's matrix prices its cells"
+    under_a_hundred = {len(decimals) for whole, decimals in costs if len(whole) < 3}
+    assert under_a_hundred == {1}, costs
+    assert any(cell.endswith("(Cheapest passing)") for row in block.rows for cell in row.cells), "the control"
+
+
+# =============================================================================
 # A compare chart says once where its interval may be too narrow
 # =============================================================================
 
@@ -257,6 +280,28 @@ def test_a_compare_block_whose_interval_may_be_too_narrow_says_so_once_with_each
         assert len(said) == 1, (kind, block.notes)
         for figure in narrow[0].nested:
             assert figure.reads in said[0], (kind, figure.reads, said[0])
+        # A may, never a fact: the paired row's unit is unstated, so the note neither calls it counting trials nor
+        # says reading it on the cases would widen it.
+        assert NARROW_IF in said[0], said[0]
+        assert "unit is unstated" in said[0], said[0]
+        assert "would be wider" not in said[0] and "counting trials" not in said[0], said[0]
+        assert "observations" not in said[0], "the control: no unpaired row on this block states a unit"
+
+
+def test_a_compare_block_names_what_its_intervals_count_only_where_the_input_states_it() -> None:
+    held = _inputs()["r4"]
+    first, second, key = _paired(held)
+    read = arms_compare(held, [first, second], key, limit=_EVERY)
+    unpaired = [row for row in read.rows if row.may_be_narrow and not row.counted_unstated]
+    assert unpaired, "the control: r4's slices read the two arms' own spreads"
+    stated = {str(figure.value) for row in unpaired for figure in row.counts if figure.value != "cases"}
+    assert stated == {"observations"}, stated
+    place = unpaired[0].where.removeprefix("strata.")
+    block = _drawn(held, "table", _query("compare", arms=[first, second], measures=[key], strata=[place]))
+    assert block is not None
+    (said,) = [note for note in block.notes if "too narrow" in note]
+    assert NARROW_IF in said and "count: observations" in said, said
+    assert "unit is unstated" not in said, "the block holds no paired row"
 
 
 def test_a_compare_block_whose_arms_ran_each_case_once_says_nothing_of_narrow_intervals() -> None:
@@ -427,7 +472,9 @@ class _Params(BaseModel):
 
 
 def _text_of(page: RenderedBlock, params: BaseModel) -> str:
-    text, _structured = render_page("block_render", params, render_cited(page), page.model_dump(mode="json"))
+    text, _structured = render_page(
+        "block_render", params, render_cited(page), page.model_dump(mode="json"), page.page_unit
+    )
     return text
 
 
@@ -446,7 +493,7 @@ async def test_a_page_of_example_cards_holds_as_many_as_fit_in_one_result_and_sa
     assert page.structured is not None, page.text
     if len(_text_of(whole, params)) <= TEXT_BUDGET:
         assert len(page.structured["rows"]) == whole.total == 9, "nine cards that fit one result are one page"
-        assert page.text.splitlines()[-1] == "all 9 shown"
+        assert page.text.splitlines()[-1] == "all 9 cards shown"
 
     first = await _call(fixture, {**asked, "query": {"source": "examples"}})
     assert first.structured is not None and len(first.text) <= TEXT_BUDGET
@@ -457,7 +504,8 @@ async def test_a_page_of_example_cards_holds_as_many_as_fit_in_one_result_and_sa
     )
     assert len(_text_of(longer, params)) > TEXT_BUDGET, "the page holds every card that fits, not fewer"
     left = every.total - held_rows
-    assert first.text.splitlines()[-2] == f"rows 1 to {held_rows} of {every.total} shown; {left} follow"
+    follow = "follows" if left == 1 else "follow"
+    assert first.text.splitlines()[-2] == f"cards 1 to {held_rows} of {every.total} shown; {left} {follow}"
     assert first.text.splitlines()[-1].startswith("next: action='block_render'")
 
 
@@ -470,23 +518,49 @@ class _Listing(BaseModel):
     next_offset: int | None
 
 
-def test_a_page_says_how_much_of_the_whole_it_holds() -> None:
+def _shown(listing: _Listing, params: BaseModel) -> tuple[str, dict[str, Any]]:
+    return render_page("x_list", params, render_cited(listing), listing.model_dump(mode="json"), ("flip", "flips"))
+
+
+def test_a_page_says_how_much_of_the_whole_it_holds_in_what_it_counts() -> None:
     params = _Params(snapshot_id="s")
-    whole = _Listing(rows=["a", "b", "c"], total=3, offset=0, next_offset=None)
-    text, structured = render_page("x_list", params, render_cited(whole), whole.model_dump(mode="json"))
-    assert text.splitlines()[-1] == "all 3 shown" and "next" not in structured
-    first = _Listing(rows=["a", "b"], total=3, offset=0, next_offset=2)
-    text, _structured = render_page("x_list", params, render_cited(first), first.model_dump(mode="json"))
+    text, structured = _shown(_Listing(rows=["a", "b", "c"], total=3, offset=0, next_offset=None), params)
+    assert text.splitlines()[-1] == "all 3 flips shown" and "next" not in structured
+    text, _structured = _shown(_Listing(rows=["a", "b"], total=3, offset=0, next_offset=2), params)
     assert text.splitlines()[-2:] == [
-        "rows 1 to 2 of 3 shown; 1 follow",
+        "flips 1 to 2 of 3 shown; 1 follows",
         "next: action='x_list', snapshot_id='s', offset=2",
     ]
-    last = _Listing(rows=["c"], total=3, offset=2, next_offset=None)
-    text, _structured = render_page("x_list", params, render_cited(last), last.model_dump(mode="json"))
-    assert text.splitlines()[-1] == "rows 3 to 3 of 3 shown; none follow"
-    empty = _Listing(rows=[], total=0, offset=0, next_offset=None)
-    text, _structured = render_page("x_list", params, render_cited(empty), empty.model_dump(mode="json"))
-    assert text.splitlines()[-1] == "none to show"
+    text, _structured = _shown(_Listing(rows=["a"], total=3, offset=0, next_offset=1), params)
+    assert text.splitlines()[-2] == "flips 1 to 1 of 3 shown; 2 follow"
+    text, _structured = _shown(_Listing(rows=["c"], total=3, offset=2, next_offset=None), params)
+    assert text.splitlines()[-1] == "flips 3 to 3 of 3 shown; none follow"
+    text, _structured = _shown(_Listing(rows=["a"], total=1, offset=0, next_offset=None), params)
+    assert text.splitlines()[-1] == "the one flip shown"
+    text, _structured = _shown(_Listing(rows=[], total=3, offset=4, next_offset=None), params)
+    assert text.splitlines()[-1] == "none from flip 5: 3 flips in all"
+    text, _structured = _shown(_Listing(rows=[], total=0, offset=0, next_offset=None), params)
+    assert text.splitlines()[-1] == "no flips; the page above is the whole result"
+
+
+async def test_a_sweep_with_no_flips_says_it_has_none_to_page_and_never_that_the_page_shows_nothing() -> None:
+    """r4's margin sweep on an aspect with no reading flips nowhere, and its page still holds the segment and call."""
+    fixture, snapshots = off_loop(_seeded)
+    held = frozen_input(snapshots["r4"])
+    seen = 0
+    for aspect in held.aspects:
+        page = await _call(
+            fixture,
+            {"action": "decision_sensitivity", "snapshot_id": snapshots["r4"].id, "parameter": f"margin:{aspect.id}"},
+        )
+        assert page.structured is not None, page.text
+        if page.structured["total"] != 0:
+            continue
+        seen += 1
+        assert page.structured["segments"], "the control: a sweep with no flips still holds its one segment"
+        assert page.text.splitlines()[-1] == "no flips; the page above is the whole result"
+        assert "none to show" not in page.text
+    assert seen, "the control: r4 sweeps a margin with no flips"
 
 
 async def test_a_complete_overview_says_all_of_it_is_shown() -> None:
@@ -494,4 +568,4 @@ async def test_a_complete_overview_says_all_of_it_is_shown() -> None:
     snapshot = snapshots[KAIRO]
     overview = await _call(fixture, {"action": "campaign_overview", "snapshot_id": snapshot.id})
     assert overview.structured is not None and overview.structured.get("next_offset") is None, overview.text
-    assert overview.text.splitlines()[-1] == f"all {overview.structured['total']} shown"
+    assert overview.text.splitlines()[-1] == f"all {overview.structured['total']} rows shown"

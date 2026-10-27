@@ -969,6 +969,45 @@ async def test_following_next_reads_every_row_once_and_the_last_page_names_no_ne
     assert sorted(seen, key=_tag) == sorted(_page_rows(action, whole.structured), key=_tag)
 
 
+#: What each listing's total counts, as its pages name it: a sweep pages flips and a dominance read options, never
+#: "rows" of either; a listing of mixed rows (the overview's arms, aspects and the rest) names them rows.
+_UNITS = {
+    "campaign_overview": "rows",
+    "caveats_list": "caveats",
+    "options_dominance": "options",
+    "readings_list": "rows",
+    "contrasts_list": "contrasts",
+    "measure_read": "rows",
+    "examples_list": "examples",
+    "decision_sensitivity": "flips",
+    "measure_breakdown": "slices",
+    "price_tradeoff": "options",
+    "block_render": "rows",
+    "arms_compare": "places",
+    "settle_cases": "readings",
+    "levers_effects": "effects and interactions",
+}
+
+
+@pytest.mark.parametrize("action", sorted(_PAGED_CALLS))
+async def test_a_page_says_how_much_of_the_whole_it_holds_in_what_its_listing_counts(action: str) -> None:
+    fixture, snapshots = off_loop(_seeded)
+    name, call = _PAGED_CALLS[action]
+    snapshot = snapshots[name]
+    tool = _analyst_tool()
+    first = await _call(tool, fixture, {"action": action, "snapshot_id": snapshot.id, **call})
+    assert first.structured is not None and first.structured.get("next") is not None, first.text
+    total, held = first.structured["total"], first.structured["next_offset"]
+    left = total - held
+    unit = _UNITS[action]
+    assert first.text.splitlines()[-2] == (
+        f"{unit} 1 to {held} of {total} shown; {left} {'follows' if left == 1 else 'follow'}"
+    )
+    whole = await _call(tool, fixture, {"action": action, "snapshot_id": snapshot.id, **call, "limit": 200})
+    assert whole.structured is not None, whole.text
+    assert whole.text.splitlines()[-1] == f"all {total} {unit} shown"
+
+
 #: The field each listing's rows are in; the readings are grouped by aspect, each group's rows by kind.
 _ROWS = {
     "caveats_list": "caveats",

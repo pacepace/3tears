@@ -42,7 +42,7 @@ measure, which aspect a figure sits on. A filter naming nothing the input holds 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -384,6 +384,8 @@ class CampaignOverview(_Fact):
         description="The one name a reader is shown for each id, by kind (aspect, measure, judged, stratum, task, "
         "criterion), then id."
     )
+    #: What its total counts, one and many: its page says how much of the whole it holds in it.
+    page_unit: ClassVar[tuple[str, str]] = ("row", "rows")
     total: int = Field(
         description="The rows the overview holds: its arms, aspects, measures, criteria, cells, caveats, late "
         "criteria, prior insights and names, paged in that order; the campaign's own figures are on every page."
@@ -702,6 +704,8 @@ class ReadingsListing(_Fact):
     """A page of every aspect's readings, pair readings, floors and bars."""
 
     aspects: list[AspectReadings] = Field(description="The page's rows, by aspect, in the input's order.")
+    #: What its total counts, one and many: its page says how much of the whole it holds in it.
+    page_unit: ClassVar[tuple[str, str]] = ("row", "rows")
     total: int = Field(description="Rows in every page: readings, pairs, floors and bars.")
     offset: int = Field(description="The rows skipped before this page.")
     next_offset: int | None = Field(description="The next page's offset; none on the last page.")
@@ -875,6 +879,8 @@ class ContrastListing(_Fact):
 
     contrasts: list[ContrastRow] = Field(description="The page's contrasts, in the input's order.")
     families: list[FamilyRow] = Field(description="The contrast families, on the filtered aspect where one is.")
+    #: What its total counts, one and many: its page says how much of the whole it holds in it.
+    page_unit: ClassVar[tuple[str, str]] = ("contrast", "contrasts")
     total: int = Field(description="Contrasts in every page.")
     offset: int = Field(description="The contrasts skipped before this page.")
     next_offset: int | None = Field(description="The next page's offset; none on the last page.")
@@ -997,6 +1003,8 @@ class MeasureFigures(_Fact):
     )
     slices: list[SliceRow] = Field(description="The slices this page's rows are read within; none by arm.")
     rows: list[FigureRow] = Field(description="The page's rows: by slice, then arm, in the input's order.")
+    #: What its total counts, one and many: its page says how much of the whole it holds in it.
+    page_unit: ClassVar[tuple[str, str]] = ("row", "rows")
     total: int = Field(description="Rows in every page.")
     offset: int = Field(description="The rows skipped before this page.")
     next_offset: int | None = Field(description="The next page's offset; none on the last page.")
@@ -1268,6 +1276,8 @@ class ExampleListing(_Fact):
         description="Per aspect and arm the filters keep (and stratum, where stratum_filter names one), the examples "
         "frozen against the failed trials the run had, whatever the outcome filter: what the examples are a sample of."
     )
+    #: What its total counts, one and many: its page says how much of the whole it holds in it.
+    page_unit: ClassVar[tuple[str, str]] = ("example", "examples")
     total: int = Field(description="Examples in every page.")
     offset: int = Field(description="The examples skipped before this page.")
     next_offset: int | None = Field(description="The next page's offset; none on the last page.")
@@ -1435,6 +1445,8 @@ class CaveatListing(_Fact):
     """Every caveat the snapshot carries, in the order a report lands them."""
 
     caveats: list[CaveatRow] = Field(description="Each caveat on this page: the stated ones, then the implied.")
+    #: What its total counts, one and many: its page says how much of the whole it holds in it.
+    page_unit: ClassVar[tuple[str, str]] = ("caveat", "caveats")
     total: int = Field(description="The caveats the snapshot carries, stated and implied.")
     offset: int = Field(description="The first caveat this page holds.")
     next_offset: int | None = Field(description="The offset of the next page of caveats; None when this is the last.")

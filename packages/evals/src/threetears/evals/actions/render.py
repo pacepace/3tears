@@ -12,8 +12,10 @@ Every string a mounted tool returns is made here, so the conventions hold in one
 - **A page names the call to the next.** A paged action's result (:attr:`~threetears.evals.actions.Action.paged`)
   ends with ``next: action='…', …, offset=N`` — the arguments the caller sent, ``offset`` advanced — and carries the
   same call as ``next`` in its structured result; its last page carries neither, and no ``next_offset``
-  (:func:`render_page`). Every page says in words how much of the whole it holds: ``all 77 shown`` on a page holding
-  every row, else which rows it holds and how many follow, so a complete result never reads as a cut one.
+  (:func:`render_page`). Every page says in words how much of the whole it holds, in the unit its result pages
+  (:func:`page_unit`: flips, options, cards…): ``all 77 options shown`` on a page holding every one, else which it
+  holds and how many follow, and ``no flips`` where there are none to page, never that the page shows nothing, since
+  what it holds beside them (a sweep's segments, its call) is still above. A complete result never reads as a cut one.
 - **A result reads as every fact it carries.** One generic renderer prints any result model field by field
   (:func:`render_model`); a few results keep their own: a started job says how to poll it and a finished one
   what to read next, a page of results how to read the next, one result its counted goal verdicts, and a report
@@ -463,7 +465,9 @@ def _next_page_line(call: Mapping[str, Any]) -> str:
     return "next: " + ", ".join(spelled)
 
 
-def render_page(action: str, params: BaseModel, text: str, structured: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def render_page(
+    action: str, params: BaseModel, text: str, structured: dict[str, Any], unit: tuple[str, str]
+) -> tuple[str, dict[str, Any]]:
     """A paged action's text and structured result, each naming the next page's call, or ending on the last page.
 
     :param action: The paged action.
@@ -474,13 +478,16 @@ def render_page(action: str, params: BaseModel, text: str, structured: dict[str,
     :ptype text: str
     :param structured: The result's JSON.
     :ptype structured: dict[str, Any]
-    :return: The text, with how much of the whole it holds in words (``all 77 shown``; ``rows 1 to 40 of 77 shown;
-        37 follow``), then ``next: …`` as its last line while a page follows; the JSON, with ``next`` (the next call's
-        arguments) beside ``next_offset`` while a page follows, and neither on the last page.
+    :param unit: What its ``total`` counts, one and many (:func:`page_unit`): ``("flip", "flips")``.
+    :ptype unit: tuple[str, str]
+    :return: The text, with how much of the whole it holds in words (``all 77 options shown``; ``flips 1 to 40 of 77
+        shown; 37 follow``; ``no flips; the page above is the whole result``), then ``next: …`` as its last line while
+        a page follows; the JSON, with ``next`` (the next call's arguments) beside ``next_offset`` while a page
+        follows, and neither on the last page.
     :rtype: tuple[str, dict[str, Any]]
     """
     offset = structured.get(_NEXT_OFFSET)
-    shown = _shown_line(structured.get("total"), structured.get("offset"), offset)
+    shown = _shown_line(structured.get("total"), structured.get("offset"), offset, unit)
     text = f"{text}\n{shown}" if shown else text
     if offset is None:
         return text, {key: value for key, value in structured.items() if key != _NEXT_OFFSET}
@@ -488,28 +495,59 @@ def render_page(action: str, params: BaseModel, text: str, structured: dict[str,
     return f"{text}\n{_next_page_line(call)}", {**structured, "next": call}
 
 
-#: How a page says how much of the whole it holds (:func:`_shown_line`).
-_ALL_SHOWN: Final = "all {total} shown"
-_NONE_SHOWN: Final = "none to show"
-_SOME_SHOWN: Final = "rows {first} to {last} of {total} shown; {left} follow"
-_LAST_SHOWN: Final = "rows {first} to {total} of {total} shown; none follow"
-_PAST_SHOWN: Final = "none from row {first}: {total} in all"
+def page_unit(result: BaseModel) -> tuple[str, str]:
+    """What a paged result's ``total`` counts, one and many, as the result says it: its ``page_unit``, a class
+    variable (``("flip", "flips")``), or a property where it differs by instance (a block's rows are cards on an
+    examples block).
+
+    :param result: A paged result.
+    :ptype result: BaseModel
+    :return: The unit, one and many.
+    :rtype: tuple[str, str]
+    :raises TypeError: The result names no ``page_unit`` of two non-empty words.
+    """
+    unit = getattr(result, "page_unit", None)
+    if not (isinstance(unit, tuple) and len(unit) == 2 and all(isinstance(word, str) and word for word in unit)):
+        raise TypeError(
+            f"{type(result).__name__} is a page and names no page_unit: what its total counts, one and many, such as "
+            "('flip', 'flips')"
+        )
+    return unit[0], unit[1]
 
 
-def _shown_line(total: Any, offset: Any, next_offset: int | None) -> str:
-    """How much of the whole a page holds, in words: every row (``all 77 shown``), else its rows and how many follow;
-    empty for a result that states no total and offset."""
+#: How a page says how much of the whole it holds (:func:`_shown_line`), ``{one}`` and ``{many}`` its unit.
+_ALL_SHOWN: Final = "all {total} {many} shown"
+_ONE_SHOWN: Final = "the one {one} shown"
+_NONE_SHOWN: Final = "no {many}; the page above is the whole result"
+_SOME_SHOWN: Final = "{many} {first} to {last} of {total} shown; {left} {follow}"
+_LAST_SHOWN: Final = "{many} {first} to {total} of {total} shown; none follow"
+_PAST_SHOWN: Final = "none from {one} {first}: {total} {counted} in all"
+
+
+def _shown_line(total: Any, offset: Any, next_offset: int | None, unit: tuple[str, str]) -> str:
+    """How much of the whole a page holds, in words and in its unit: every one (``all 77 options shown``), else which
+    it holds and how many follow, or that there are none to page; empty for a result that states no total and
+    offset."""
     if not isinstance(total, int) or not isinstance(offset, int):
         return ""
+    one, many = unit
     if next_offset is not None:
-        return _SOME_SHOWN.format(first=offset + 1, last=next_offset, total=total, left=total - next_offset)
+        left = total - next_offset
+        return _SOME_SHOWN.format(
+            many=many,
+            first=offset + 1,
+            last=next_offset,
+            total=total,
+            left=left,
+            follow="follows" if left == 1 else "follow",
+        )
     if total == 0:
-        return _NONE_SHOWN
+        return _NONE_SHOWN.format(many=many)
     if offset >= total:
-        return _PAST_SHOWN.format(first=offset + 1, total=total)
+        return _PAST_SHOWN.format(one=one, first=offset + 1, total=total, counted=one if total == 1 else many)
     if offset == 0:
-        return _ALL_SHOWN.format(total=total)
-    return _LAST_SHOWN.format(first=offset + 1, total=total)
+        return _ONE_SHOWN.format(one=one) if total == 1 else _ALL_SHOWN.format(total=total, many=many)
+    return _LAST_SHOWN.format(many=many, first=offset + 1, total=total)
 
 
 #: The most characters a page a caller does not size runs to: what one tool result may take of an analyst's context.
@@ -555,7 +593,9 @@ def page_fits(action: str, params: BaseModel) -> Callable[[BaseModel], bool]:
     """
 
     def fits(page: BaseModel) -> bool:
-        text, _structured = render_page(action, params, render_cited(page), page.model_dump(mode="json"))
+        text, _structured = render_page(
+            action, params, render_cited(page), page.model_dump(mode="json"), page_unit(page)
+        )
         return len(text) <= _PAGE_TEXT
 
     return fits
@@ -851,6 +891,7 @@ __all__ = [
     "render_jobs_started",
     "render_model",
     "page_fits",
+    "page_unit",
     "render_page",
     "render_primer",
     "render_report",
