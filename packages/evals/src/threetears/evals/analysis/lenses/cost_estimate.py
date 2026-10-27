@@ -196,7 +196,8 @@ def _cost_band(history: Sequence[float], n_observations: int, estimate: float) -
             estimate + margin,
             f"No spread in {n} past observations: each cost {format_number(history[0], prefix='$')}, so no margin of "
             f"error can be computed from them, and the band is a {COST_BAND_SAFETY_MARGIN:.0%} safety margin either "
-            f"side of the estimate; a sweep whose cost varies by more lands outside it. {_COST_BAND_INDEPENDENCE}",
+            f"side of the estimate; a sweep whose total lands more than {COST_BAND_SAFETY_MARGIN:.0%} from the estimate "
+            f"falls outside it. {_COST_BAND_INDEPENDENCE}",
         )
     log_band = lognormal_sum_prediction_band(history, n_observations)
     if log_band is None:

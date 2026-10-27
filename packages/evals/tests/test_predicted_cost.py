@@ -224,7 +224,7 @@ class TestTheBandBracketsItsOwnEstimate:
         assert cell.band_basis.startswith(
             "No spread in 3 past observations: each cost $0.0015, so no margin of error can be computed from them, "
             f"and the band is a {COST_BAND_SAFETY_MARGIN:.0%} safety margin either side of the estimate; "
-            "a sweep whose cost varies by more lands outside it."
+            f"a sweep whose total lands more than {COST_BAND_SAFETY_MARGIN:.0%} from the estimate falls outside it."
         )
 
     @pytest.mark.parametrize(
