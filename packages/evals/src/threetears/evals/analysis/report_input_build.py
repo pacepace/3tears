@@ -469,8 +469,9 @@ class _Builder:
         ]
 
     def criteria(self) -> list[Criterion]:
-        """Every absolute threshold the campaign declares: each aspect's bars. A floor is read against the control,
-        not a threshold, so it is a floor, never a criterion."""
+        """Every absolute threshold the campaign declares: each aspect's bars, each naming the aspect it is declared
+        on, whose figures it reads. A floor is read against the control, not a threshold, so it is a floor, never a
+        criterion."""
         return [
             Criterion(
                 id=f"{aspect.aspect}/bar/{bar.measure_id}",
@@ -478,6 +479,7 @@ class _Builder:
                 measure=bar.measure_id,
                 direction=bar.direction,
                 threshold=bar.threshold,
+                aspect=aspect.aspect,
             )
             for aspect in self.bundle.aspects
             if aspect.declared is not None

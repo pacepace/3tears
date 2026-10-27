@@ -445,7 +445,11 @@
      "type": "boolean",
      "description": "Whether it is standing policy rather than this campaign's."
     },
-    "label": {"type": ["string", "null"], "description": "What a reader calls it."}
+    "label": {"type": ["string", "null"], "description": "What a reader calls it."},
+    "aspect": {
+     "type": ["string", "null"],
+     "description": "The aspect whose figures it reads, by id: the lead aspect's are the by-arm maps, any other's its by_aspect figures; none: the lead aspect's (the first asked, else the first)."
+    }
    },
    "additionalProperties": false,
    "description": "A declared threshold: a gate, floor, bar or guardrail on one measure.\n\nA criterion states the rule; one gate function applies it, so the page, the options and any explore control\ncannot disagree. ``floors`` and ``bars`` carry the pipeline's own statuses where it read them."

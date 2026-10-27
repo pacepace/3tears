@@ -34,6 +34,23 @@ snapshot does not declare, on one measure, in its stated direction, read where t
 (overall, else in each task, else in each cell): the call at every line, as if that gate held. The result is marked
 hypothetical; its flips are the arms' own figures.
 
+**How bars are read is the caller's choice** (``bars_as``). A declared bar warns and never removes an option, as the
+snapshot declares it (``warnings``, the default); the analyst may read the bars as gates instead (``gates``), when
+the question it answers makes them the condition, and every result says which reading it took. Code never chooses
+the reading, from the question or from anything else: the parameter is the analyst's. Read as gates, a bar removes
+an option that misses it and its threshold moves the call in a sweep; read as warnings, dominance lists each bar (and
+each floor criterion) a survivor misses or borders as a warning beside its gates, and a bar's sweep lists where each
+arm's figure crosses its line while the call holds.
+
+**Unknown is not a fail.** A gate with no figure for an option at a place it reads is unknown there
+(:mod:`~threetears.evals.analysis.report_margins`): the option is not shown to pass, so it does not survive, and it is
+not removed by a figure either. Dominance lists such an option as undecided, with each place it is unknown at; its
+removed options list only the figures they fail on, and their unknown places beside. Code never infers a figure the
+snapshot does not state. Where a gate read in each task or cell has no figure there, and the option's figure over
+every case misses the line, the result hands the analyst and the editor the implied fact as an interpretive note,
+labelled inferred and conditional (if the places split the cases between them, some place misses too), never as a
+verdict.
+
 **Every number is a key.** Segment ends are the flip figures themselves (``aspects.<aspect>.flip_margin.<arm>``, a
 floor's ``held_above`` and ``broken_at``, a criterion's ``value`` at a place); a range end the caller asked for is
 never echoed as a number, since no key states it. Counts and levels are words or keys, never bare numbers.
@@ -67,22 +84,34 @@ from threetears.evals.analysis.report_decision import (
 )
 from threetears.evals.analysis.report_gates import GateFinding, GateStatus, gate_check, gate_findings, routing_picks
 from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, ReportInput
-from threetears.evals.analysis.report_margins import CriterionFigure, criterion_figures
+from threetears.evals.analysis.report_margins import (
+    CriterionFigure,
+    criterion_aspect,
+    criterion_figures,
+    criterion_place,
+    criterion_unknowns,
+    lead_aspect,
+    undecided_arms,
+)
 from threetears.evals.kernel.errors import RefusedInput
 
 __all__ = [
     "BREAKDOWN_PAGE",
     "DOMINANCE_PAGE",
+    "IMPLIED_READS_AS",
     "SENSITIVITY_PAGE",
+    "BarsAs",
     "Breakdown",
     "Dominance",
     "GateRead",
+    "ImpliedFact",
     "Sensitivity",
     "SliceBy",
     "breached_guardrails",
     "breakdown",
     "dominance",
     "gate_reads",
+    "read_bars_as",
     "sensitivity",
 ]
 
@@ -94,6 +123,18 @@ CODE_CALL_READS_AS = (
 
 #: The criterion kinds that gate an option, as the gate check reads them.
 _GATING = frozenset({"gate", "guardrail"})
+
+#: The criterion kinds that warn and never gate, as the snapshot declares them.
+_WARNING = frozenset({"bar", "floor"})
+
+#: How the caller reads the declared bars: as the warnings the snapshot declares them, or as gates.
+BarsAs = Literal["warnings", "gates"]
+
+#: What an implied fact is, said on every one.
+IMPLIED_READS_AS = (
+    "inferred, not stated: an interpretive fact for the analyst and the editor to weigh, conditional on the places "
+    "splitting the cases between them; never a verdict, and no gate reads it"
+)
 
 #: The slices one breakdown page holds unless the caller asks for more: a slice reads one line per figure, per arm.
 BREAKDOWN_PAGE = 12
@@ -183,9 +224,10 @@ class GateRead(BaseModel):
     place: str | None = Field(
         description="Where the figure sits, as its key names it: a task's id or a cell's <row>.<column>; None overall."
     )
-    status: Literal["fail", "borderline", "no_figure"] = Field(
+    status: Literal["fail", "borderline", "unknown"] = Field(
         description="fail: the figure misses the threshold; borderline: its interval crosses it, which counts as "
-        "passing; no_figure: the input states no figure there, which fails."
+        "passing; unknown: the input states no figure there, so the option is neither shown to pass nor shown to "
+        "fail there."
     )
     figures: list[CitedFigure] = Field(
         description="The threshold, then the figure, its interval's ends where stated, and its gap toward passing."
@@ -216,8 +258,7 @@ def _gate_read(report_input: ReportInput, arm: str, finding: GateFinding) -> Gat
         where = _place(report_input, figure)
     else:
         where = _finding_place(report_input, finding)
-    status: Literal["fail", "borderline", "no_figure"] = "no_figure" if figure is None else finding.status
-    return GateRead(criterion=criterion.id, place=where, status=status, figures=figures)
+    return GateRead(criterion=criterion.id, place=where, status=finding.status, figures=figures)
 
 
 def _finding_place(report_input: ReportInput, finding: GateFinding) -> str | None:
@@ -233,17 +274,18 @@ def _stated(keys: Sequence[str], report_input: ReportInput) -> list[CitedFigure]
     return [figure for key in keys if (figure := cite_if(key, report_input)) is not None]
 
 
-def gate_reads(report_input: ReportInput, arm: str, status: Literal["fail", "borderline"]) -> list[GateRead]:
-    """Every figure an arm fails, or holds borderline, on the gates and guardrails, each by the keys that state it:
-    the gate check's own findings (:func:`~threetears.evals.analysis.report_gates.gate_findings`), keyed, so a
-    reason's numbers reach a reader as figures.
+def gate_reads(report_input: ReportInput, arm: str, status: Literal["fail", "borderline", "unknown"]) -> list[GateRead]:
+    """Every figure an arm fails, holds borderline or has none at, on the gates and guardrails, each by the keys that
+    state it: the gate check's own findings (:func:`~threetears.evals.analysis.report_gates.gate_findings`), keyed, so
+    a reason's numbers reach a reader as figures.
 
     :param report_input: The snapshot's report input.
     :ptype report_input: ReportInput
     :param arm: The arm's id.
     :ptype arm: str
-    :param status: ``fail`` for the figures it fails on, ``borderline`` for the ones it holds borderline.
-    :ptype status: Literal["fail", "borderline"]
+    :param status: ``fail`` for the figures it fails on, ``borderline`` for the ones it holds borderline, ``unknown``
+        for the places with no figure.
+    :ptype status: Literal["fail", "borderline", "unknown"]
     :return: Each, in the criteria's order.
     :rtype: list[GateRead]
     """
@@ -252,6 +294,102 @@ def gate_reads(report_input: ReportInput, arm: str, status: Literal["fail", "bor
         for finding in gate_findings(report_input, arm)
         if finding.status == status
     ]
+
+
+def _read_as_gates(report_input: ReportInput, kinds: frozenset[str]) -> ReportInput:
+    """The input with every criterion of ``kinds`` read as a gate, and nothing else changed: each criterion's figures,
+    and so every key citing them, read as they did."""
+    criteria = [
+        criterion.model_copy(update={"kind": "gate"}) if criterion.kind in kinds else criterion
+        for criterion in report_input.criteria
+    ]
+    return report_input.model_copy(update={"criteria": criteria})
+
+
+def read_bars_as(report_input: ReportInput, bars_as: BarsAs) -> ReportInput:
+    """The input as the caller reads its bars (this module's How bars are read): as declared for ``warnings``, every
+    bar read as a gate for ``gates``. A bar's figures, and every key citing them, read the same either way.
+
+    :param report_input: The snapshot's report input.
+    :ptype report_input: ReportInput
+    :param bars_as: ``warnings`` or ``gates``, as the caller chose.
+    :ptype bars_as: BarsAs
+    :return: The input read so.
+    :rtype: ReportInput
+    """
+    return report_input if bars_as == "warnings" else _read_as_gates(report_input, frozenset({"bar"}))
+
+
+def _warnings(report_input: ReportInput, arm: str) -> list[GateRead]:
+    """Each figure an arm misses, holds borderline or has none at on the criteria that warn (bars and floors, as the
+    input reads them), by the keys that state it: what the gate check would find were they gates."""
+    warning = {criterion.id for criterion in report_input.criteria if criterion.kind in _WARNING}
+    if not warning:
+        return []
+    as_gates = _read_as_gates(report_input, _WARNING)
+    return [
+        _gate_read(report_input, arm, found) for found in gate_findings(as_gates, arm) if found.criterion in warning
+    ]
+
+
+class ImpliedFact(BaseModel):
+    """What the figures an option does have imply about a place a gate has none for it: inferred, never a verdict."""
+
+    model_config = _MODEL
+
+    criterion: str = Field(description="The gate or guardrail, by id, whose places hold no figure for the option.")
+    reads_as: str = Field(description="What this is: inferred and conditional, an interpretive fact, never a verdict.")
+    statement: str = Field(description="The inference, in words.")
+    figures: list[CitedFigure] = Field(
+        description="The threshold, then the option's figure over every case that the inference rests on."
+    )
+
+
+#: What a place is called in an implied fact, by where the criterion reads.
+_PLACE_WORDS = {"task": "task", "cell": "target-matrix cell"}
+
+
+def _implied(report_input: ReportInput, arm: str) -> list[ImpliedFact]:
+    """For each gate read in every task or every cell with no figure for the arm somewhere, where the arm's figure over
+    every case (the lead aspect's, at the criterion's statistic) misses the line: the implied fact that some place
+    misses it too, if the places split the cases between them (this module's Unknown is not a fail)."""
+    found: list[ImpliedFact] = []
+    lead = lead_aspect(report_input)
+    for criterion in report_input.criteria:
+        place = criterion_place(criterion)
+        if (
+            criterion.kind not in _GATING
+            or place == "overall"
+            or criterion.task is not None
+            or criterion_aspect(report_input, criterion) != lead
+            or not criterion_unknowns(report_input, criterion, arm)
+        ):
+            continue
+        overall = criterion.model_copy(update={"scope": "overall", "task": None})
+        figures = criterion_figures(report_input, overall, arm)
+        if not figures:
+            continue
+        threshold = float(criterion.threshold)
+        value = figures[0].value
+        if not (value < threshold if criterion.direction == "higher_is_better" else value > threshold):
+            continue
+        cited = cite_if(
+            _figure_key(report_input, criterion.measure, arm, criterion.statistic, figures[0]), report_input
+        )
+        if cited is None:
+            continue
+        words = _PLACE_WORDS[place]
+        found.append(
+            ImpliedFact(
+                criterion=criterion.id,
+                reads_as=IMPLIED_READS_AS,
+                statement=f"{_arm(arm)}'s {criterion.statistic} over every case misses the line; if the {words}s "
+                f"split the cases between them (none in two, none in none), at least one {words}'s {criterion.statistic} "
+                "misses it too, so the gate would not pass in every one",
+                figures=[cite(f"criteria.{criterion.id}.threshold", report_input), cited],
+            )
+        )
+    return found
 
 
 def breached_guardrails(report_input: ReportInput, arm: str) -> list[str]:
@@ -273,6 +411,10 @@ class SurvivorRow(BaseModel):
     gate_status: GateStatus = Field(description="pass or borderline: borderline counts as passing.")
     borders: list[GateRead] = Field(
         description="Each figure it holds borderline on, by the keys that state it; empty when it passes."
+    )
+    warnings: list[GateRead] = Field(
+        description="Each figure it misses, holds borderline or has none at on a criterion that warns (a bar read as "
+        "a warning, a floor criterion), on the criterion's own aspect, by the keys that state it; it stays a survivor."
     )
     standing: StandingWord = Field(description="Its standing on the asked aspects.")
     behind: list[str] = Field(description="In a choice, the arms an asked pair shows ahead of it, as arm:<id>.")
@@ -302,6 +444,28 @@ class OutRow(BaseModel):
     arm: str = Field(description="The option, as arm:<id>.")
     gates: list[GateRead] = Field(description="Each gate or guardrail figure it fails on, by the keys that state it.")
     breached: list[str] = Field(description="Each guardrail the pipeline read breached for it, by name.")
+    unknown: list[GateRead] = Field(
+        description="Each place a gate or guardrail has no figure for it: unknown there, not among what removed it."
+    )
+
+
+class UndecidedRow(BaseModel):
+    """One option neither shown to pass nor removed: no gate figure fails it, and a gate has no figure for it."""
+
+    model_config = _MODEL
+
+    arm: str = Field(description="The option, as arm:<id>.")
+    unknown: list[GateRead] = Field(
+        description="Each place a gate or guardrail has no figure for it, with the threshold it would be read against."
+    )
+    borders: list[GateRead] = Field(description="Each figure it holds borderline on, by the keys that state it.")
+    warnings: list[GateRead] = Field(
+        description="Each figure it misses, holds borderline or has none at on a criterion that warns, by its keys."
+    )
+    implied: list[ImpliedFact] = Field(
+        description="What its figures over every case imply about the places with none, inferred and labelled so; "
+        "never a verdict, and empty where nothing is implied."
+    )
 
 
 class AxisArm(BaseModel):
@@ -336,6 +500,14 @@ class Dominance(BaseModel):
         description="The options on this page that survive the gates, in the input's arm order."
     )
     out: list[OutRow] = Field(description="The options on this page the gates or a guardrail removed.")
+    undecided: list[UndecidedRow] = Field(
+        description="The options on this page neither shown to pass nor removed: a gate has no figure for them "
+        "somewhere and none they have fails. Code's call reads only the survivors."
+    )
+    bars_as: BarsAs = Field(
+        description="How the declared bars were read, as the caller chose: warnings (they never remove an option) or "
+        "gates."
+    )
     weighs: list[str] = Field(
         description="The axes code's decision weighs, as the snapshot declares them: gates, control, asked, ranking, "
         "cost."
@@ -351,10 +523,12 @@ class Dominance(BaseModel):
     )
     code_call: CodeCall = Field(description="Code's call on the declared criteria: its reading, never a constraint.")
     total: int = Field(
-        description="The options the snapshot holds; a page lists the survivors and the removed among them."
+        description="The options the snapshot holds; a page lists the survivors, the removed and the undecided among "
+        "them."
     )
     offset: int = Field(description="The first option this page holds, in the input's arm order.")
     next_offset: int | None = Field(description="The offset of the next page of options; None when this is the last.")
+    notes: list[str] = Field(description="How the result was read, where that is not the default, and why.")
 
 
 def _contrast_key(contrast: Contrast) -> str:
@@ -511,14 +685,48 @@ def _code_reading(report_input: ReportInput, decision: DecisionAt) -> DecisionAt
     return decision
 
 
+#: What a dominance result says where some options are undecided.
+_UNDECIDED_NOTE = (
+    "undecided: {arms}. A gate or guardrail has no figure for them at some place it reads and none they have fails, "
+    "so they are neither shown to pass nor removed; code's call reads only the survivors. Each one's unknown places "
+    "are listed, with any fact its figures over every case imply, labelled inferred"
+)
+
+#: What a sweep says where some options are undecided at the criteria as declared.
+_SWEEP_UNDECIDED_NOTE = (
+    "undecided at the criteria as declared: {arms}. A gate or guardrail has no figure for them at some place it reads "
+    "and none they have fails, so no value swept passes them there; code's call reads only the survivors"
+)
+
+
+def _named_arms(arms: Sequence[str]) -> str:
+    """Arms as a note names them, as arm:<id>, the first few and how many more."""
+    named = ", ".join(_arm(arm) for arm in arms[:_SHOWN])
+    return named + (f", and {len(arms) - _SHOWN} more" if len(arms) > _SHOWN else "")
+
+
+#: What a result says where the caller read the bars as gates.
+_BARS_AS_GATES_NOTE = (
+    "bars read as gates, as the caller chose (bars_as=gates): an option missing a declared bar is removed, which the "
+    "snapshot declares as a warning"
+)
+
+
 def dominance(
-    report_input: ReportInput, axes: Sequence[str] = (), *, limit: int | None = None, offset: int = 0
+    report_input: ReportInput,
+    axes: Sequence[str] = (),
+    *,
+    limit: int | None = None,
+    offset: int = 0,
+    bars_as: BarsAs = "warnings",
 ) -> Dominance:
     """Which options survive the gates, which dominates on the decision's axes, and what extra axes say beside them.
 
     A page holds the options from ``offset``, ``limit`` of them in the input's arm order (every one where ``limit`` is
-    None): each survivor's row, each removed option's, and each survivor's figure on every extra axis. What is read
-    over every option (the dominant ones, the best on each axis, code's call) is on every page.
+    None): each survivor's row, each removed option's, each undecided one's, and each survivor's figure on every extra
+    axis. What is read over every option (the dominant ones, the best on each axis, code's call) is on every page.
+    The declared bars are read as ``bars_as`` says (this module's How bars are read), every figure cited as the
+    snapshot states it.
 
     The survivors, the dominant options and code's call are :mod:`~threetears.evals.analysis.report_decision`'s own
     (:func:`~threetears.evals.analysis.report_decision.surviving_options`,
@@ -536,10 +744,13 @@ def dominance(
     :ptype limit: int | None
     :param offset: The first option the page holds, in the input's arm order.
     :ptype offset: int
-    :return: The survivors, the options removed, the dominant ones, the extra axes and code's call.
+    :param bars_as: How to read the declared bars: ``warnings`` as declared, or ``gates``.
+    :ptype bars_as: BarsAs
+    :return: The survivors, the options removed and undecided, the dominant ones, the extra axes and code's call.
     :rtype: Dominance
     :raises RefusedInput: An axis names no measure or judged dimension the input holds.
     """
+    report_input = read_bars_as(report_input, bars_as)
     known = [*report_input.measures, *report_input.judged]
     unknown = [axis for axis in axes if axis not in known]
     if unknown:
@@ -594,6 +805,7 @@ def dominance(
                 arm=_arm(arm),
                 gate_status=check.status,
                 borders=gate_reads(report_input, arm, "borderline"),
+                warnings=_warnings(report_input, arm),
                 standing=held.standing,
                 behind=[_arm(other) for other in held.behind],
                 why=list(held.why),
@@ -602,16 +814,32 @@ def dominance(
                 figures=[*figures, *_standing_figures(report_input, arm)],
             )
         )
-    kept = set(survivors)
+    undecided = undecided_arms(report_input)
+    kept = set(survivors) | set(undecided)
     out = [
         OutRow(
             arm=_arm(arm.id),
             gates=gate_reads(report_input, arm.id, "fail"),
             breached=breached_guardrails(report_input, arm.id),
+            unknown=gate_reads(report_input, arm.id, "unknown"),
         )
         for arm in report_input.arms
         if arm.id not in kept and arm.id in window
     ]
+    undecided_rows = [
+        UndecidedRow(
+            arm=_arm(arm),
+            unknown=gate_reads(report_input, arm, "unknown"),
+            borders=gate_reads(report_input, arm, "borderline"),
+            warnings=_warnings(report_input, arm),
+            implied=_implied(report_input, arm),
+        )
+        for arm in undecided
+        if arm in window
+    ]
+    notes = [_BARS_AS_GATES_NOTE] if bars_as == "gates" else []
+    if undecided:
+        notes.append(_UNDECIDED_NOTE.format(arms=_named_arms(undecided)))
     dominant = [] if alone else dominant_options(report_input)
     dominant_with_axes = [arm for arm in survivors if all(with_axes(arm, other) for other in survivors if other != arm)]
     declared = _code_reading(report_input, decision_at(report_input))
@@ -619,6 +847,8 @@ def dominance(
     return Dominance(
         survivors=rows,
         out=out,
+        undecided=undecided_rows,
+        bars_as=bars_as,
         weighs=list(weighed_axes(report_input)),
         dominant=[_arm(arm) for arm in dominant],
         axes=[
@@ -636,6 +866,7 @@ def dominance(
         total=len(order),
         offset=offset,
         next_offset=end if end < len(order) else None,
+        notes=notes,
     )
 
 
@@ -724,6 +955,10 @@ class Sensitivity(BaseModel):
     offset: int = Field(description="The first flip this page holds.")
     next_offset: int | None = Field(description="The offset of the next page of flips; None when this is the last.")
     notes: list[str] = Field(description="What the sweep could not read, and why.")
+    bars_as: BarsAs = Field(
+        description="How the declared bars were read, as the caller chose: warnings (they never move the call) or "
+        "gates."
+    )
 
 
 @dataclass(frozen=True)
@@ -968,11 +1203,21 @@ def _threshold_sweep(
         for arm in report_input.arms
         for key, place in _criterion_keys(report_input, criterion, arm.id, "value")
     ]
-    notes = (
-        []
-        if criterion.kind in _GATING
-        else [f"a {criterion.kind} criterion warns and never gates, so moving its threshold moves no option"]
-    )
+    notes: list[str] = []
+    if criterion.kind == "bar":
+        notes.append(
+            "a bar read as a warning never gates, so moving its threshold moves no option: each flip is where an arm's "
+            "figure crosses the line, its status on the bar changing there; read the bars as gates (bars_as=gates) "
+            "for the call as if the bar gated"
+        )
+    elif criterion.kind not in _GATING:
+        notes.append(f"a {criterion.kind} criterion warns and never gates, so moving its threshold moves no option")
+    unknown = [arm.id for arm in report_input.arms if criterion_unknowns(report_input, criterion, arm.id)]
+    if unknown:
+        notes.append(
+            f"{_named_arms(unknown)}: no figure at some place this criterion reads (unknown "
+            "there): no threshold passes or fails them there, so no flip is listed for those places"
+        )
     return _Sweep(
         swept=words,
         declared=cite(f"criteria.{criterion.id}.threshold", report_input),
@@ -1094,11 +1339,22 @@ def _line_sweep(report_input: ReportInput, spec: str, low: float | None, high: f
         low=low,
         high=high,
         notes=[
-            f"a hypothetical line: the snapshot declares no gate on {key!r}; every call is code's reading as if a gate "
-            f"on its {statistic} held at the line, the declared criteria unchanged"
+            f"a hypothetical line on the {statistic} of {key!r}, read {line.scope.replace('_', ' ')}, which the "
+            f"snapshot does not declare{_declared_on(report_input, key)}; every call is code's reading as if a gate "
+            "held at the line, the declared criteria unchanged"
         ],
         hypothetical=True,
     )
+
+
+def _declared_on(report_input: ReportInput, key: str) -> str:
+    """The criteria the snapshot declares on a measure, as a hypothetical sweep's note names them beside its line."""
+    declared = [
+        f"{criterion.id} ({criterion.kind}, {criterion.statistic}, {criterion.scope.replace('_', ' ')})"
+        for criterion in report_input.criteria
+        if criterion.measure == key
+    ]
+    return f" (it declares {', '.join(declared)} on it)" if declared else ""
 
 
 def _refuse_parameter(report_input: ReportInput, parameter: str, fault: str) -> RefusedInput:
@@ -1172,6 +1428,7 @@ def sensitivity(
     range_high: float | None = None,
     limit: int = SENSITIVITY_PAGE,
     offset: int = 0,
+    bars_as: BarsAs = "warnings",
 ) -> Sensitivity:
     """How code's call moves as one declared criterion moves: where each arm's status flips, and the call between.
 
@@ -1192,10 +1449,14 @@ def sensitivity(
     :ptype limit: int
     :param offset: The first flip the page lists.
     :ptype offset: int
+    :param bars_as: How to read the declared bars: ``warnings`` as declared, or ``gates`` (this module's How bars are
+        read); a bar's threshold sweeps either way.
+    :ptype bars_as: BarsAs
     :return: The segments, the flips on this page, and whether the call holds across the range.
     :rtype: Sensitivity
     :raises RefusedInput: The parameter names nothing this input holds, or the range is not one.
     """
+    report_input = read_bars_as(report_input, bars_as)
     sweep = _sweep_of(report_input, parameter, range_low, range_high)
     inside = sorted(
         (
@@ -1214,9 +1475,12 @@ def sensitivity(
     segments = [
         segment for low, segment in _segments(pieces) if (offset == 0 if low is None else offset <= at[id(low)] < end)
     ]
-    notes = list(sweep.notes)
+    notes = [*([_BARS_AS_GATES_NOTE] if bars_as == "gates" else []), *sweep.notes]
     if len(inside) < len(sweep.cuts):
         notes.append("flips outside the range swept are not listed")
+    undecided = undecided_arms(report_input)
+    if undecided:
+        notes.append(_SWEEP_UNDECIDED_NOTE.format(arms=_named_arms(undecided)))
     return Sensitivity(
         parameter=parameter,
         hypothetical=sweep.hypothetical,
@@ -1243,6 +1507,7 @@ def sensitivity(
         offset=offset,
         next_offset=end if end < len(inside) else None,
         notes=notes,
+        bars_as=bars_as,
     )
 
 

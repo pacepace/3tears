@@ -3,7 +3,8 @@
 Contracts held here (``threetears.evals.analysis.analyst.analyses``, ``ops.analyst_analyses``,
 ``actions.analyst_analyses``, and the helpers they read in ``analysis.report_decision``):
 
-- **dominance** names exactly the decision's survivors (``surviving_options``) and dominant options
+- **dominance** names exactly the decision's survivors (``surviving_options``), the undecided options apart from the
+  removed (``undecided_arms``), and dominant options
   (``dominant_options``), each survivor's gate status and asked standing as the gate check and ``asked_standing``
   read them, and code's call as ``decision_at`` reads it, labelled as code's reading; with one option dominant, every
   other survivor names it among those dominating it; extra axes are descriptive and only narrow who dominates;
@@ -58,7 +59,7 @@ from threetears.evals.analysis.report_decision import (
 )
 from threetears.evals.analysis.report_gates import gate_check, gate_findings, routing_picks
 from threetears.evals.analysis.report_input import Criterion, ReportInput
-from threetears.evals.analysis.report_margins import criterion_figures, flip_margin
+from threetears.evals.analysis.report_margins import criterion_figures, flip_margin, undecided_arms
 from threetears.evals.kernel import EvalReportSnapshot
 from threetears.evals.kernel.errors import RefusedInput
 
@@ -192,7 +193,10 @@ def test_dominance_names_the_decisions_survivors_dominant_options_and_call(name:
     result = dominance(held).model_dump(mode="json")
     survivors = surviving_options(held)
     assert [_arm_id(row["arm"]) for row in result["survivors"]] == survivors
-    assert [_arm_id(row["arm"]) for row in result["out"]] == [arm.id for arm in held.arms if arm.id not in survivors]
+    undecided = undecided_arms(held)
+    assert [_arm_id(row["arm"]) for row in result["undecided"]] == undecided
+    removed = [arm.id for arm in held.arms if arm.id not in survivors and arm.id not in undecided]
+    assert [_arm_id(row["arm"]) for row in result["out"]] == removed
     alone = _cost_alone(held)
     dominant = [] if alone else dominant_options(held)
     assert [_arm_id(arm) for arm in result["dominant"]] == dominant
@@ -282,9 +286,8 @@ def _gate_figures_as_found(held: ReportInput, arm: str, gates: Sequence[GateRead
     """Each gate read is one gate-check finding of that status, in order, citing the criterion's threshold and, where
     the input states the arm's figure, that figure and its gap."""
     findings = [finding for finding in gate_findings(held, arm) if finding.status == status]
-    assert [(gate.criterion, gate.status) for gate in gates] == [
-        (finding.criterion, status if finding.figure is not None else "no_figure") for finding in findings
-    ]
+    expected = [(finding.criterion, finding.status) for finding in findings]
+    assert [(gate.criterion, gate.status) for gate in gates] == expected
     for gate, finding in zip(gates, findings, strict=True):
         criterion = next(held_criterion for held_criterion in held.criteria if held_criterion.id == gate.criterion)
         cited = {figure.key.rsplit(".", 1)[1]: figure.value for figure in gate.figures}
@@ -303,6 +306,9 @@ def test_a_removed_option_carries_each_figure_it_fails_on_and_a_survivor_each_it
     result = dominance(held)
     for row in result.out:
         _gate_figures_as_found(held, _arm_id(row.arm), row.gates, "fail")
+        _gate_figures_as_found(held, _arm_id(row.arm), row.unknown, "unknown")
+    for undecided in result.undecided:
+        _gate_figures_as_found(held, _arm_id(undecided.arm), undecided.unknown, "unknown")
     for survivor in result.survivors:
         _gate_figures_as_found(held, _arm_id(survivor.arm), survivor.borders, "borderline")
 

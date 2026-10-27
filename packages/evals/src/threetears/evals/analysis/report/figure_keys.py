@@ -91,12 +91,15 @@ from threetears.evals.analysis.report_input import (
 from threetears.evals.analysis.report_margins import (
     CriterionFigure,
     Margin,
+    criterion_aspect,
     criterion_figures,
     criterion_misses,
     criterion_passes,
     criterion_places,
+    criterion_unknowns,
     flip_margin,
     surviving_arms,
+    undecided_arms,
     weakest_margin,
 )
 from threetears.evals.analysis.separation import (
@@ -1254,7 +1257,7 @@ def _task_figure(report_input: ReportInput, values: tuple[str, ...], path: str) 
     return _slice_figure(report_input, per_arm, (arm_id, key, statistic), path, f"task {task_id}")
 
 
-_CRITERION_FIELDS = ("threshold", "measure", "statistic", "direction")
+_CRITERION_FIELDS = ("threshold", "measure", "statistic", "direction", "aspect")
 
 
 def _criterion(report_input: ReportInput, criterion_id: str) -> Criterion:
@@ -1272,6 +1275,11 @@ def _criterion_field(report_input: ReportInput, values: tuple[str, ...], path: s
         return _text(path, _measure_reader_name(criterion.measure, report_input), "the criterion's measure")
     if field == "statistic":
         return _text(path, criterion.statistic, "the criterion's statistic")
+    if field == "aspect":
+        aspect = criterion_aspect(report_input, criterion)
+        if aspect is None or aspect not in {held.id for held in report_input.aspects}:
+            raise _unstated(path, "names the aspect the criterion reads, and the input holds no such aspect")
+        return _text(path, reader_name("aspect", aspect, report_input), "the aspect whose figures the criterion reads")
     return _text(path, DIRECTION_WORDS[criterion.direction], "the criterion's direction")
 
 
@@ -2266,9 +2274,10 @@ def _steps_count(report_input: ReportInput, values: tuple[str, ...], path: str) 
 # --- counts: what a sentence counts, keyed so prose never types one ------------------------------------------------
 
 #: What ``count.<what>`` counts in the campaign: its arms (every option, the control among them), aspects, tasks,
-#: strata, target-matrix cells, configs of a factorial grid, gates and guardrails, every declared criterion, and the
-#: options surviving every gate and guardrail.
-_COUNTED = ("arms", "aspects", "tasks", "strata", "cells", "configs", "gates", "criteria", "surviving")
+#: strata, target-matrix cells, configs of a factorial grid, gates and guardrails, every declared criterion, the
+#: options surviving every gate and guardrail, and the options undecided: no gate figure fails them, and a gate has no
+#: figure for them somewhere.
+_COUNTED = ("arms", "aspects", "tasks", "strata", "cells", "configs", "gates", "criteria", "surviving", "undecided")
 
 #: The criterion kinds that remove an option that misses them, as the gates count them.
 _GATE_KINDS = frozenset({"gate", "guardrail"})
@@ -2296,6 +2305,8 @@ def _campaign_count(report_input: ReportInput, values: tuple[str, ...], path: st
     }
     if what == "surviving":
         return _count(path, len(surviving_arms(report_input)))
+    if what == "undecided":
+        return _count(path, len(undecided_arms(report_input)))
     return _count(path, counted[what])
 
 
@@ -2321,9 +2332,14 @@ def _failing_count(report_input: ReportInput, values: tuple[str, ...], path: str
     return _count(path, criterion_misses(report_input, _criterion(report_input, criterion_id), arm_id))
 
 
+def _unknown_count(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    criterion_id, arm_id = values
+    return _count(path, criterion_unknowns(report_input, _criterion(report_input, criterion_id), arm_id))
+
+
 def _failed_count(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     (arm_id,) = values
-    missed = [criterion for criterion in _gates(report_input) if not criterion_passes(report_input, criterion, arm_id)]
+    missed = [criterion for criterion in _gates(report_input) if criterion_misses(report_input, criterion, arm_id)]
     return _count(path, len(missed))
 
 
@@ -2616,8 +2632,17 @@ def _margin_name(margin: Margin, report_input: ReportInput) -> str:
 def _weakest(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     found = weakest_margin(report_input)
     if found is None:
+        undecided = undecided_arms(report_input)
+        why = (
+            f"; undecided: {_listed(undecided)}. A gate has no figure for them somewhere and none they have fails, so "
+            "no figure of theirs could change the call alone (`count.unknown.<criterion>.<arm>` counts the places)"
+            if undecided
+            else ""
+        )
         raise _refuse(
-            path, "names the weakest margin, and the input reads no figure against a criterion, margin or floor"
+            path,
+            "names the weakest margin, and the input reads no figure against a criterion, margin or floor that could "
+            f"change the call alone{why}",
         )
     field = values[0]
     if field == "arm":
@@ -2759,17 +2784,26 @@ def _separation_place(report_input: ReportInput, where: str) -> _Place | None:
 
 
 def _stat_where(
-    report_input: ReportInput, arm_id: str, key: str, where: str
+    report_input: ReportInput, arm_id: str, key: str, where: str, aspect: str | None = None
 ) -> tuple[Stat, float | None, _Counted | None] | None:
     """An arm's statistic on a measure or judged dimension at ``where``, with the count it rests on and what that count
     counts: its own ``n`` (observations; cases where its ``n_cases`` equals it, trials where its ``n_cases`` is
     fewer), else its ``n_cases`` (cases), else the place's: the slice's cases, or overall the arm's usable trials,
-    else its cases. None where the input states no mean there."""
+    else its cases. Overall, ``aspect`` names an aspect other than the lead whose figures (``by_aspect``) and
+    scoreboard are read instead (a criterion declared on it); a slice holds no other aspect's figures. None where
+    the input states no mean there."""
     fallback: tuple[int | None, _Counted | None] = (None, None)
+    if aspect is not None and where != _OVERALL:
+        return None
     if where == _OVERALL:
         table = report_input.measures.get(key) or report_input.judged.get(key)
-        stat = table.per_arm.get(arm_id) if table is not None else None
-        board = report_input.scoreboard.get(arm_id)
+        per_arm = None if table is None else table.per_arm if aspect is None else table.by_aspect.get(aspect, {})
+        stat = per_arm.get(arm_id) if per_arm is not None else None
+        held = {candidate.id for candidate in report_input.aspects}
+        boards = (
+            report_input.scoreboard if aspect is None else _aspect_board(report_input, aspect) if aspect in held else {}
+        )
+        board = boards.get(arm_id)
         if board is not None:
             fallback = (board.usable, "trials") if board.usable is not None else (board.cases, "cases")
     else:
@@ -2826,12 +2860,13 @@ def _where_words(where: str) -> str:
     return "overall" if where == _OVERALL else f"in {where}"
 
 
-def _read_spread(report_input: ReportInput, arm_id: str, key: str, where: str) -> Spread:
-    """An arm's spread on a figure at ``where`` (:func:`~threetears.evals.analysis.separation.stat_spread`).
+def _read_spread(report_input: ReportInput, arm_id: str, key: str, where: str, aspect: str | None = None) -> Spread:
+    """An arm's spread on a figure at ``where`` (:func:`~threetears.evals.analysis.separation.stat_spread`), on another
+    aspect's figure where ``aspect`` names one (:func:`_stat_where`).
 
     :raises NoSpread: The input gives none; its words are what a refusal says after the key.
     """
-    held = _stat_where(report_input, arm_id, key, where)
+    held = _stat_where(report_input, arm_id, key, where, aspect)
     if held is None:
         raise NoSpread(f"names {arm_id}'s mean on {key!r} {_where_words(where)}, which the input does not state")
     stat, count, _counted = held
@@ -2851,10 +2886,13 @@ def _read_spread(report_input: ReportInput, arm_id: str, key: str, where: str) -
         ) from none
 
 
-def _spread(report_input: ReportInput, arm_id: str, key: str, where: str, path: str) -> Spread:
-    """An arm's spread on a figure at ``where``, refused as unstated, with why, where the input gives none."""
+def _spread(
+    report_input: ReportInput, arm_id: str, key: str, where: str, path: str, aspect: str | None = None
+) -> Spread:
+    """An arm's spread on a figure at ``where`` (on another aspect's, where ``aspect`` names one), refused as unstated,
+    with why, where the input gives none."""
     try:
-        return _read_spread(report_input, arm_id, key, where)
+        return _read_spread(report_input, arm_id, key, where, aspect)
     except NoSpread as none:
         raise _unstated(path, str(none)) from none
 
@@ -3089,6 +3127,28 @@ def _settle_line(
     return _number(path, cases, "the cases a design needs", "count")
 
 
+#: What a criterion's settle reads beside its sizes: the count the arm's spread rests on, what that count counts, and
+#: what the spread was read from, each on the criterion's own aspect (the ``spread.`` key's, on the lead aspect).
+_SETTLE_COUNT_FIELDS = ("n", "counts", "basis")
+
+
+def _criterion_count(
+    report_input: ReportInput, path: str, spread: Spread, at: tuple[str, str, str, str | None], field: str
+) -> Figure:
+    """A criterion settle's ``n``, ``counts`` or ``basis``: what ``spread.<arm>.<measure>.<where>`` reads, on the
+    criterion's aspect."""
+    if field == "n":
+        return _number(path, spread.n, "the count the figure's spread rests on", "count")
+    if field == "counts":
+        arm_id, key, where, aspect = at
+        held = _stat_where(report_input, arm_id, key, where, aspect)
+        counted = None if held is None else held[2]
+        if counted is None:
+            raise _unstated(path, "names what the figure's count counts, and it rests on no count")
+        return Figure(path=path, kind="text", value=counted)
+    return Figure(path=path, kind="text", value=_BASIS_WORDS[spread.basis])
+
+
 def _criterion_wheres(report_input: ReportInput, criterion: Criterion, arm_id: str) -> list[str]:
     """Where a criterion reads an arm, as ``<where>`` spells it."""
     found: list[str] = []
@@ -3100,6 +3160,12 @@ def _criterion_wheres(report_input: ReportInput, criterion: Criterion, arm_id: s
     return found
 
 
+def _criterion_other_aspect(report_input: ReportInput, criterion: Criterion) -> str | None:
+    """The aspect a criterion reads where it is not the lead one (whose figures sit in ``by_aspect``); None for the
+    lead's."""
+    return None if criterion.aspect is None or _is_lead(report_input, criterion.aspect) else criterion.aspect
+
+
 def _settle_criterion_figure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     criterion_id, arm_id, where, field = values
     criterion = _criterion(report_input, criterion_id)
@@ -3107,7 +3173,10 @@ def _settle_criterion_figure(report_input: ReportInput, values: tuple[str, ...],
         raise _unstated(
             path, f"reads a {criterion.statistic}, which states no spread to size a design by; settle reads a mean"
         )
-    spread = _spread(report_input, arm_id, criterion.measure, where, path)
+    aspect = _criterion_other_aspect(report_input, criterion)
+    spread = _spread(report_input, arm_id, criterion.measure, where, path, aspect)
+    if field in _SETTLE_COUNT_FIELDS:
+        return _criterion_count(report_input, path, spread, (arm_id, criterion.measure, where, aspect), field)
     higher = criterion.direction == "higher_is_better"
     return _settle_line(report_input, path, spread, criterion.measure, float(criterion.threshold), higher, field)
 
@@ -3295,15 +3364,17 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         _keyed("<criterion>", lambda ri: [criterion.id for criterion in ri.criteria]),
         _Ids("<arm>", _criterion_figure_arms),
         _Ids("<where>", _criterion_figure_wheres),
-        _Statistic(_SETTLE_LINE_FIELDS, "<field>"),
-        what="an arm's mean against a declared criterion's threshold, where it reads it: `distance` toward passing "
+        _Statistic((*_SETTLE_LINE_FIELDS, *_SETTLE_COUNT_FIELDS), "<field>"),
+        what="an arm's mean against a declared criterion's threshold, where it reads it, on the aspect the criterion "
+        "reads: `distance` toward passing "
         "(negative where today's figure misses); the cases a design needs for a one-sided bound centred on today's "
         "figure to sit wholly on today's side of the line, clearing it where the figure passes and confirming the "
         "miss where it misses (`cases_needed`: half such designs; `cases_needed_80`: four in five), and the same for "
         "the two-sided interval a page prints (`cases_needed_two_sided`, `cases_needed_two_sided_80`), each "
         "counting what the arm's spread counts (`spread.<arm>.<measure>.<where>.counts`: trials, not cases, on a "
         "repeated design); `wrong_side`, how often a fresh run of today's size lands on the other side; `level` the "
-        "level, with its sidedness (`95% one-sided`)",
+        "level, with its sidedness (`95% one-sided`); `n`, `counts` and `basis` the count the arm's spread rests on, "
+        "what it counts and what the spread was read from, as `spread.` reads them, on the criterion's aspect",
         resolve=_settle_criterion_figure,
         derived=True,
         derived_note=_SEPARATION_NOTE,
@@ -3699,7 +3770,8 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("criteria"),
         _keyed("<criterion>", lambda ri: [criterion.id for criterion in ri.criteria]),
         _Statistic(_CRITERION_FIELDS, "<field>"),
-        what="a declared criterion: its threshold in its measure's units, the measure, statistic and direction",
+        what="a declared criterion: its threshold in its measure's units, the measure, statistic and direction, and "
+        "the aspect whose figures it reads (its own, else the lead aspect)",
         resolve=_criterion_field,
     ),
     _family_of(
@@ -4135,9 +4207,10 @@ _FAMILIES: tuple[_Family, ...] = (
         _Statistic(_COUNTED, "<what>"),
         what="how many the campaign holds: arms (every option, the control among them), aspects, tasks, strata, "
         "cells, configs, gates (gates and guardrails), criteria; `surviving` is how many options survive every gate "
-        "and guardrail, borderline counting as passing",
+        "and guardrail, borderline counting as passing; `undecided` how many no gate figure fails while a gate has no "
+        "figure for them somewhere: neither passed nor removed",
         resolve=_campaign_count,
-        derived_statistics=("surviving",),
+        derived_statistics=("surviving", "undecided"),
         example="count.arms|words",
     ),
     _family_of(
@@ -4159,15 +4232,25 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("count.failing"),
         _keyed("<criterion>", _criterion_ids),
         _ARM,
-        what="how many of a criterion's places an arm misses: a figure on the wrong side of the threshold, or none",
+        what="how many of a criterion's places an arm misses: a figure on the wrong side of the threshold (a place "
+        "with no figure is unknown, counted by `count.unknown`)",
         resolve=_failing_count,
         derived=True,
         example="count.failing.cell_floor.fast.v2|words",
     ),
     _family_of(
+        _Word("count.unknown"),
+        _keyed("<criterion>", _criterion_ids),
+        _ARM,
+        what="how many of a criterion's places hold no figure for an arm: unknown there, neither passed nor missed",
+        resolve=_unknown_count,
+        derived=True,
+        example="count.unknown.p95.fast.v2|words",
+    ),
+    _family_of(
         _Word("count.failed"),
         _ARM,
-        what="how many gates and guardrails an arm misses somewhere they read",
+        what="how many gates and guardrails an arm misses on a figure somewhere they read",
         resolve=_failed_count,
         derived=True,
         example="count.failed.fast.v2",

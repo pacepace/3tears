@@ -42,6 +42,7 @@ __all__ = [
     "aspect_tagged",
     "budget_inputs",
     "compared_pair",
+    "criterion_on_another_aspect",
     "read_actions",
     "fixture_inputs",
     "fixture_snapshots",
@@ -116,18 +117,27 @@ def _examples_calls(held: ReportInput) -> list[dict[str, Any]]:
     return [{}, {"offset": 10}] + ([{"arm_filter": arm}] if arm is not None else [])
 
 
+def _bars(held: ReportInput) -> list[str]:
+    """The bars the input declares as criteria, by id."""
+    return [criterion.id for criterion in held.criteria if criterion.kind == "bar"]
+
+
 def _dominance_calls(held: ReportInput) -> list[dict[str, Any]]:
-    """The decision's own axes, then two extra ones where the input holds them."""
+    """The decision's own axes, then two extra ones where the input holds them, then its bars read as gates where it
+    declares one."""
     keys = [*held.measures, *held.judged]
-    return [{}, {"axes": keys[:2]}] if keys else [{}]
+    calls: list[dict[str, Any]] = [{}, {"axes": keys[:2]}] if keys else [{}]
+    return calls + ([{"bars_as": "gates"}] if _bars(held) else [])
 
 
 def _sensitivity_calls(held: ReportInput) -> list[dict[str, Any]]:
-    """The first margin, floor and gate the input declares, one sweep each."""
+    """The first margin, floor and gate the input declares, one sweep each, and its first bar read as a gate."""
     margins = [f"margin:{aspect.id}" for aspect in held.aspects if aspect.readings]
     floors = [f"floor:{read.aspect}/{read.floor}" for read in held.floors]
     gates = [f"threshold:{criterion.id}" for criterion in held.criteria if criterion.kind in ("gate", "guardrail")]
-    return [{"parameter": found[0]} for found in (margins, floors, gates) if found]
+    calls = [{"parameter": found[0]} for found in (margins, floors, gates) if found]
+    bars = _bars(held)
+    return calls + ([{"parameter": f"threshold:{bars[0]}", "bars_as": "gates"}] if bars else [])
 
 
 def _breakdown_calls(held: ReportInput) -> list[dict[str, Any]]:
@@ -380,6 +390,42 @@ def aspect_tagged(held: ReportInput) -> tuple[ReportInput, str, str]:
     target.update(delta=None, interval=None, verdict="untested", reason="too few shared cases on this aspect")
     contrasts.append(mirrored)
     return ReportInput.model_validate(document), target["arm"], target["measure"]
+
+
+def criterion_on_another_aspect(held: ReportInput) -> tuple[ReportInput, str, str]:
+    """An input whose first criterion read overall on a mean is copied onto another aspect: the copy names the first
+    aspect that is not the lead (the first asked, else the first), and that aspect's figures on the criterion's
+    measure are the lead's mirrored across the threshold (each mean and interval end reflected in it), so a reader
+    taking the lead's figure for the copy's reads the wrong side of the line.
+
+    :param held: The input: two aspects or more, and a criterion read overall on a mean every arm states.
+    :ptype held: ReportInput
+    :return: The tagged input, the copy's id (``<criterion>@<aspect>``) and its aspect.
+    :rtype: tuple[ReportInput, str, str]
+    """
+    asked = [aspect.id for aspect in held.aspects if aspect.asked]
+    lead = asked[0] if asked else held.aspects[0].id
+    other = next(aspect.id for aspect in held.aspects if aspect.id != lead)
+    document = held.model_dump(mode="json", by_alias=True)
+    criterion = next(
+        criterion
+        for criterion in document["criteria"]
+        if criterion["scope"] == "overall" and criterion["statistic"] == "mean" and criterion.get("task") is None
+    )
+    table = document["measures"].get(criterion["measure"]) or document["judged"][criterion["measure"]]
+    line = float(criterion["threshold"])
+    mirrored: dict[str, Any] = {}
+    for arm, stat in table["per_arm"].items():
+        copy = _copy(stat)
+        copy["mean"] = 2 * line - stat["mean"]
+        if stat.get("ci") is not None:
+            low, high = stat["ci"]
+            copy["ci"] = [2 * line - high, 2 * line - low]
+        mirrored[arm] = copy
+    table["by_aspect"][other] = mirrored
+    copied = f"{criterion['id']}@{other}"
+    document["criteria"].append({**_copy(criterion), "id": copied, "aspect": other})
+    return ReportInput.model_validate(document), copied, other
 
 
 def action_calls(action: Action, held: ReportInput, snapshot_id: str) -> list[dict[str, Any]]:

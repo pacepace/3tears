@@ -20,7 +20,8 @@ measure) and the named, weighted ``strata`` of more than one stratification.
 **More than one aspect.** The by-arm maps (``scoreboard``, each measure's and judged dimension's ``per_arm``) read the
 lead aspect: the first the campaign asks about, else the first. Every other aspect's figures sit beside them, in its
 own ``Aspect.scoreboard`` and each measure's ``by_aspect``; a contrast, contrast family, stratum and example names
-its aspect. A choice's pair readings sit on their aspect (``Aspect.pairs``).
+its aspect, and so does a criterion declared on one aspect, which reads that aspect's figures. A choice's pair
+readings sit on their aspect (``Aspect.pairs``).
 """
 
 from __future__ import annotations
@@ -250,6 +251,13 @@ class Criterion(_Part):
     task: str | None = Field(default=None, description="The one task the criterion applies within.")
     standing: bool = Field(default=False, description="Whether it is standing policy rather than this campaign's.")
     label: str | None = Field(default=None, description="What a reader calls it.")
+    # Left out of the document when unset, so an input frozen before the field existed digests as it did.
+    aspect: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The aspect whose figures it reads, by id: the lead aspect's are the by-arm maps, any other's its "
+        "by_aspect figures; none: the lead aspect's (the first asked, else the first).",
+    )
 
 
 class Stat(_Part):
