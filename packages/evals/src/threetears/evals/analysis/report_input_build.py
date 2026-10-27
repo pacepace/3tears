@@ -21,6 +21,16 @@ everywhere, and carries the short name it declares (``Arm.short_name``), which `
 the pipeline could not test is carried with its reason rather than dropped. On more than one aspect the by-arm maps
 read the lead aspect (the first asked, else the first) and every other aspect's figures sit beside them.
 
+**A measure's grade is what one observation of it is** (``Measure.grade``), read off what the measure is, never off
+what kind of eval the campaign is. ``pass_fail``: each observation passes or fails and the measure is the share that
+passed: every measure of the goal-state family (a check's own ``goal_state:<expression>``, each a 1 or a 0 by its
+descriptor), a check by its descriptor (``MetricDescriptor.is_check``: a boolean with a better end, or a scorer graded
+0 or 1), and a measurement's pass rate (a reading counting the trials that passed). ``class_label``: each observation
+is a classification right or wrong, ``match`` and ``accuracy``, its 0 or 1. Every other measure carries none, a share
+that grades no observation among them (pass^k, a label's precision, recall or F1, a reasoning share): its figure is not
+a count of passes, so no binomial spread may be read on it. A graded measure with no unit reads on the share scale, so
+it prints as a percent and a point of it is a percentage point.
+
 **What the input does not carry.** A categorical or free-text measure is described, with no figure: it has none to
 copy. Where one arm ran an aspect under more than one rig, its figures are its first rig's, and ``caveats.unreported``
 says so.
@@ -80,7 +90,7 @@ from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
-from threetears.evals.kernel.metrics import goal_check_of
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, MetricDescriptor, goal_check_of
 from threetears.evals.kernel.surface import CellFacts
 
 __all__ = ["planner_view", "report_input"]
@@ -549,9 +559,16 @@ class _Builder:
                     held[measured.arm_label] = Stat(
                         mean=measured.value, ci=measured.interval, n=measured.trials, n_cases=measured.cases
                     )
+                described = aspect.measure_catalog.get(measured.measure)
                 facts.setdefault(
                     measured.measure,
-                    {"label": measured.name, "higher_is_better": measured.higher_is_better},
+                    {
+                        "label": measured.name,
+                        "higher_is_better": measured.higher_is_better,
+                        "grade": "pass_fail"
+                        if measured.passed is not None
+                        else (_grade(described) if described is not None else None),
+                    },
                 )
         level = _level(INTERVAL_LEVEL)
         return {
@@ -567,18 +584,20 @@ class _Builder:
         }
 
     def measure_facts(self, aspect: AnalysisContextBundle, name: str) -> dict[str, Any]:
-        """What one measure is, as the page names it: its name, unit, direction, merit axis and definition."""
+        """What one measure is, as the page names it: its name, unit, direction, merit axis, definition and grade
+        (:func:`_grade`; a goal-state check the catalog does not describe is still a check's pass rate)."""
         facts = aspect.measure_catalog.get(name)
         check = goal_check_of(name)
         label = (aspect.check_name(name) or check) if check is not None else None
         if facts is None:
-            return {"label": label}
+            return {"label": label, "grade": "pass_fail" if check is not None else None}
         return {
             "label": label if label is not None else measure_name(name, facts.reader_name),
             "unit": facts.unit,
             "higher_is_better": facts.higher_is_better,
             "merit_axis": facts.merit_axis,
             "means": capped_text(facts.reader_prose or facts.description or "", MEANING_CHARS) or None,
+            "grade": _grade(facts),
         }
 
     def judged(self) -> dict[str, Judged]:
@@ -799,6 +818,16 @@ class _Builder:
             short_runs=list(short.values()),
             unreported=list(unreported),
         )
+
+
+def _grade(facts: MetricDescriptor) -> Literal["pass_fail", "class_label"] | None:
+    """What one observation of a measure is, by its descriptor (this module's grade rule): ``pass_fail`` for the
+    goal-state family and a check, ``class_label`` for ``match`` and ``accuracy``, else None."""
+    if facts.name in (MATCH_MEASURE, ACCURACY_MEASURE):
+        return "class_label"
+    if facts.family == "goal_state" or facts.is_check:
+        return "pass_fail"
+    return None
 
 
 def _level(level: float | None) -> str | None:
