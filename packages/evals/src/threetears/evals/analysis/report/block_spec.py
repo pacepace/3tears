@@ -53,8 +53,11 @@ keeps, and names the frontier's options); a forest selects a row with no interva
 key does not resolve; it stresses something that is no arm, stratum or task (or an option the plan's table lists);
 and a chart drawn as each arm less the control (diverging bars over measures, judged figures, strata or tasks; a
 difference heatmap naming fewer than two arms, which otherwise draws its second arm less its first) on an input that
-names no control. :func:`small_multiple_faults` refuses panels on a kind the kit does not panel (its chart model
-carries no ``panels``).
+names no control; panels by aspect over a source that reads one aspect where the query names none (measures and
+judged figures and the scoreboard read the lead aspect's, readings the one asked aspect's) where the input holds what
+the query selects on another aspect too (:func:`held_aspects`): those panels would show one aspect as all of them, so
+the fault names each aspect to draw a block of, naming it in ``query.aspect``. :func:`small_multiple_faults` refuses
+panels on a kind the kit does not panel (its chart model carries no ``panels``).
 
 Every fault is ``(field path, why)``, the path under the one the caller names the chart by.
 """
@@ -99,6 +102,7 @@ __all__ = [
     "chart_faults",
     "complete_chart",
     "contrast_level",
+    "held_aspects",
     "line_statistics",
     "small_multiple_faults",
 ]
@@ -619,6 +623,69 @@ def chart_faults(
     """
     yield from _query_faults(path, chart, report_input, set(options))
     yield from _no_control_faults(path, chart, report_input)
+    yield from _aspect_panel_faults(path, chart, report_input)
+
+
+#: The sources that read one aspect where a query names none: the lead aspect's figures and scoreboard, the one asked
+#: aspect's readings (:mod:`~threetears.evals.analysis.report_rows`).
+_ONE_ASPECT_SOURCES = frozenset({"measures", "judged", "scoreboard", "readings"})
+
+
+def held_aspects(query: ChartQuery, report_input: ReportInput) -> list[str]:
+    """The aspects the input holds what a query over a one-aspect source selects on, by id, the lead first (the first
+    asked, else the first): figures on the measures or judged dimensions it keeps (the lead's are the by-arm maps,
+    another's its ``by_aspect`` entry), a scoreboard (the lead's is the input's own), or readings, each of an arm it
+    keeps. Empty where the query names an aspect or its source reads every aspect's rows.
+
+    :param query: The query.
+    :ptype query: ChartQuery
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The aspect ids, in the input's order after the lead.
+    :rtype: list[str]
+    """
+    source = query.source
+    if query.aspect or source not in _ONE_ASPECT_SOURCES:
+        return []
+    arms = set(query.arms) or {arm.id for arm in report_input.arms}
+    asked = [aspect.id for aspect in report_input.aspects if aspect.asked]
+    lead = asked[0] if asked else next((aspect.id for aspect in report_input.aspects), None)
+    held: dict[str, None] = {}
+    if source == "readings":
+        held |= {a.id: None for a in report_input.aspects if any(reading.arm in arms for reading in a.readings)}
+    elif source == "scoreboard":
+        if lead is not None and arms & set(report_input.scoreboard):
+            held[lead] = None
+        held |= {a.id: None for a in report_input.aspects if a.scoreboard is not None and arms & set(a.scoreboard)}
+    else:
+        tables = [report_input.measures] if source == "measures" else [report_input.judged]
+        figures = [table[key] for table in tables for key in table if not query.measures or key in query.measures]
+        if lead is not None and any(arms & set(table.per_arm) for table in figures):
+            held[lead] = None
+        for aspect in report_input.aspects:
+            if any(arms & set(table.by_aspect.get(aspect.id, {})) for table in figures):
+                held[aspect.id] = None
+    order = [lead, *(aspect.id for aspect in report_input.aspects)]
+    return sorted(held, key=order.index)
+
+
+def _aspect_panel_faults(path: str, chart: ChartSpec, report_input: ReportInput) -> Iterator[_Fault]:
+    """Panels by aspect over a one-aspect source naming no aspect, where the input holds its selection on several."""
+    query = chart.query
+    if query.small_multiples_by != "aspect":
+        return
+    aspects = held_aspects(query, report_input)
+    if len(aspects) < _COMPARED_PAIR:
+        return
+    named = ", ".join(f"{aspect!r}" for aspect in aspects)
+    yield (
+        f"{path}.query.small_multiples_by",
+        (
+            f"is 'aspect', and a {query.source!r} query naming no aspect reads one aspect's rows, while the input "
+            f"holds them on {len(aspects)} aspects: draw one block per aspect, naming it in query.aspect ({named}), "
+            "with small_multiples_by 'none'"
+        ),
+    )
 
 
 def small_multiple_faults(path: str, chart: ChartSpec) -> Iterator[_Fault]:

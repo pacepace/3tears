@@ -45,6 +45,7 @@ from threetears.evals.analysis import (
     planned_page_html,
     planned_page_markdown,
 )
+from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_count, per_noun
 from threetears.evals.analysis.report.figure_keys import cost_basis, format_figure, resolve
 from threetears.evals.analysis.report.plan_page.build import plan_page
@@ -270,6 +271,41 @@ def test_a_task_matrix_prices_its_costs_per_what_the_task_cost_measure_counts() 
     assert isinstance(block, ChartBlock) and isinstance(block.data, GateMatrixChart)
     assert block.data.cost_unit == per_count(noun)
     assert any(f" {per_count(noun)}" in cell for row in block.values_table()[1] for cell in row)
+
+
+def test_a_task_matrix_whose_tasks_costs_count_different_things_is_refused_naming_each_cost_measure() -> None:
+    """A matrix prints one cost unit, so where tasks' costs are read on measures counting different things it is
+    refused, naming each. r1 states every task's cost on a per-1k measure; given a cost measure per reply too, a task
+    that states only that one is costed on it, per reply, beside tasks costed per what the per-1k measure counts."""
+    held = _input("r1")
+    (per_1k,) = [key for key, measure in held.measures.items() if measure.unit == "usd_per_1k"]
+    spec = _spec("gate_matrix", "tasks")
+    drawn = _resolved(held, spec, "r1")
+    assert isinstance(drawn.data, GateMatrixChart) and drawn.data.cost_unit, "the control: r1's matrix prices its tasks"
+    data = held.model_dump(mode="json", by_alias=True, exclude_none=True)
+    reply = "reply_cost"
+    assert reply not in data["measures"]
+    data["measures"][reply] = {
+        "label": "Cost per reply",
+        "unit": "usd",
+        "higher_is_better": False,
+        "merit_axis": "cost",
+        "per_arm": {arm: {"mean": stat["mean"] / 1000} for arm, stat in data["measures"][per_1k]["per_arm"].items()},
+    }
+    moved = data["tasks"][0]
+    for figures in moved["per_arm"].values():
+        figures[reply] = {"mean": figures.pop(per_1k)["mean"] / 1000}
+    mixed = ReportInput.model_validate(data)
+    measures = {task.id: task_costs(mixed, task.id).measure for task in mixed.tasks}
+    assert measures[moved["id"]] == reply, "the control: the task stating only a reply cost is costed on it"
+    assert set(measures.values()) == {reply, per_1k}, "the control: the other tasks stay on the per-1k measure"
+    nouns = {per_noun(mixed.measures[key]) for key in (reply, per_1k)}
+    assert len(nouns) == 2, "the control: the two cost measures count different things"
+    with pytest.raises(UnresolvableReference) as refused:
+        _resolved(mixed, spec, "r1")
+    said = str(refused.value)
+    assert "counting different things" in said and "one cost unit" in said, said
+    assert all(key in said for key in (reply, per_1k)), said
 
 
 def test_r1s_matrix_marks_a_pick_on_every_routable_task_some_arm_can_take() -> None:

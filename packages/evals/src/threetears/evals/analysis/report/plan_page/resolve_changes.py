@@ -5,8 +5,10 @@ about a centre).
 
 - *readings*: a row per candidate, its change and the interval the reading was read on, bold where separated
   (the interval clear of zero), its note in GENERATOR §3's words (worse, better, not separated);
-- *contrasts*: a row per arm and measure, grouped under the measure's reader name where the chart reads several, a
-  rate's delta in points, bold where the contrast regressed or improved. A comparison the query asks for that the
+- *contrasts*: a row per arm and measure, grouped under the measure's reader name where the chart reads several (and
+  under the aspect's too where two aspects' contrasts share a measure, a query naming no aspect selecting both; in a
+  panel per aspect where the plan asks for panels by aspect and the contrasts sit on several), a rate's delta in
+  points, bold where the contrast regressed or improved. A comparison the query asks for that the
   input holds no contrast of is named in a caption, never filled in.
 
 **diverging_bars** reads a change about its centre:
@@ -37,6 +39,8 @@ from threetears.evals.analysis.report.plan_page.charting import (
     Drawn,
     KindResolver,
     chart_block,
+    contrast_groups,
+    contrast_words,
     figure_stat,
     figure_unit,
     interval_words,
@@ -70,7 +74,7 @@ _NO_PREFERENCE = 50.0
 
 @dataclass(frozen=True)
 class _Change:
-    """One drawn change: its row's id, label, colour and group, its value and interval, and how it reads."""
+    """One drawn change: its row's id, label, colour, group and panel, its value and interval, and how it reads."""
 
     id: str
     label: str
@@ -81,6 +85,7 @@ class _Change:
     note: str
     tip: list[str]
     group: str | None = None
+    panel: str | None = None
 
 
 @dataclass(frozen=True)
@@ -132,22 +137,30 @@ def _reading_changes(context: ChartContext) -> tuple[list[_Change], Quantity]:
     return changes, drawn
 
 
-def _contrast_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[str, ...]]:
-    """Each selected contrast as a change, a rate's delta in points, grouped by measure where there are several; and
-    the caption naming each asked pair the input holds no contrast of."""
+def _contrast_changes(
+    context: ChartContext, *, by_aspect: bool = False
+) -> tuple[list[_Change], Quantity, tuple[str, ...]]:
+    """Each selected contrast as a change, a rate's delta in points; and the caption naming each asked pair the input
+    holds no contrast of.
+
+    Where ``by_aspect`` (the chart panels, and its query asks for panels by aspect) and the contrasts sit on more than
+    one aspect, each change carries its aspect's name as its panel, grouped within it by measure where there are
+    several. Otherwise the changes are grouped by measure where there are several groups, a measure whose contrasts
+    sit on more than one aspect a group per aspect, each naming it."""
     report_input = context.report_input
     contrasts = [row.item for row in context.rows() if isinstance(row.item, Contrast)]
-    keys = list(dict.fromkeys([*context.query.measures, *(contrast.measure for contrast in contrasts)]))
-    grouped = len({contrast.measure for contrast in contrasts}) > 1
+    groups = contrast_groups(context, contrasts, context.query.measures)
+    panelled = by_aspect and len({group.aspect for group in groups}) > 1
+    grouped = len({group.key for group in groups}) > 1 if panelled else len(groups) > 1
     drawn: Quantity | None = None
     changes: list[_Change] = []
-    for key in keys:
-        on_key = {contrast.arm: contrast for contrast in contrasts if contrast.measure == key}
-        for arm in context.arm_order(on_key):
-            contrast = on_key[arm]
+    for group in groups:
+        named = group.aspect if group.split or panelled else None
+        for arm in context.arm_order(group.by_arm):
+            contrast = group.by_arm[arm]
             if contrast.delta is None:
                 continue
-            unit = figure_unit(report_input, key, kind=contrast.kind)
+            unit = figure_unit(report_input, group.key, kind=contrast.kind)
             here = quantity(unit, change=True)
             drawn = drawn or here
             look = context.look.arm(arm)
@@ -157,11 +170,12 @@ def _contrast_changes(context: ChartContext) -> tuple[list[_Change], Quantity, t
                 if contrast.interval is not None
                 else None
             )
-            words = measure_words(report_input, key, kind=contrast.kind)
+            words = contrast_words(report_input, contrast, named)
             direction = {"regressed": "worse", "improved": "better"}.get(contrast.verdict, "")
             tip = [look.name, words, figure_text(value, here)]
             if interval is not None:
                 tip[2] += f", {interval_words(*interval, here)}"
+            shown = contrast_words(report_input, contrast, None) if panelled else words
             changes.append(
                 _Change(
                     id=arm,
@@ -172,7 +186,8 @@ def _contrast_changes(context: ChartContext) -> tuple[list[_Change], Quantity, t
                     strong=contrast.verdict in _DIRECTED,
                     note=" ".join(part for part in (figure_text(value, here), change_words(direction)) if part),
                     tip=tip,
-                    group=words if grouped else None,
+                    group=shown if grouped else None,
+                    panel=named if panelled else None,
                 )
             )
     return changes, drawn or quantity("points"), _missing_contrasts(context, contrasts)
@@ -291,6 +306,7 @@ def _with_group(change: _Change, group: str | None, label: str | None = None) ->
         note=change.note,
         tip=change.tip,
         group=group,
+        panel=change.panel,
     )
 
 
@@ -486,7 +502,12 @@ def _diverging(context: ChartContext) -> Drawn:
         changes, drawn = _reading_changes(context)
         changes = [_with_group(change, None) for change in changes]
     elif source == "contrasts":
-        changes, drawn, notes = _contrast_changes(context)
+        changes, drawn, notes = _contrast_changes(context, by_aspect=context.query.small_multiples_by == "aspect")
+        if any(change.panel is not None for change in changes):
+            by_aspect: dict[str, list[_Change]] = {}
+            for change in changes:
+                by_aspect.setdefault(change.panel or "", []).append(change)
+            panels = [_Panel(title=name, tag=None, color=None, rows=rows) for name, rows in by_aspect.items()]
     elif source in ("measures", "judged"):
         changes, drawn, notes = _figure_changes(context)
     elif source in ("strata", "tasks"):

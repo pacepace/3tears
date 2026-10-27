@@ -59,7 +59,11 @@ from threetears.evals.analysis.report.charts import ChartReference, KitChart, Le
 from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, format_figure, resolve
 from threetears.evals.analysis.report.plan_page.look import PageLook, Quantity, figure_text, quantity, series_token
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
-from threetears.evals.analysis.report.plan_page.words import MISSING_TEMPLATE, REFERENCE_TEMPLATE
+from threetears.evals.analysis.report.plan_page.words import (
+    ASPECT_MEASURE_TEMPLATE,
+    MISSING_TEMPLATE,
+    REFERENCE_TEMPLATE,
+)
 from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import criterion_place
 from threetears.evals.analysis.report_rows import SourceRow, query_rows
@@ -73,7 +77,9 @@ __all__ = [
     "Drawn",
     "KindResolver",
     "chart_block",
+    "contrast_groups",
     "contrast_unit",
+    "contrast_words",
     "count_text",
     "criterion_line",
     "drawn_keys",
@@ -281,6 +287,75 @@ def measure_words(report_input: ReportInput, key: str, *, kind: str | None = Non
     if key in report_input.judged:
         return report_input.judged[key].label or measure_name(key)
     return measure_name(key)
+
+
+@dataclass(frozen=True)
+class ContrastGroup:
+    """One measure's selected contrasts read on one aspect, by arm (:func:`contrast_groups`).
+
+    :ivar key: The measure.
+    :ivar aspect: The reader name of the aspect they were read on; None where the input names no aspect.
+    :ivar split: Whether the measure's selected contrasts sit on more than one aspect, so a reader is told which.
+    :ivar by_arm: The contrasts, by arm.
+    """
+
+    key: str
+    aspect: str | None
+    split: bool
+    by_arm: dict[str, Contrast]
+
+
+def contrast_groups(
+    context: ChartContext, contrasts: Sequence[Contrast], keys: Iterable[str] = ()
+) -> list[ContrastGroup]:
+    """The selected contrasts by measure, then by the aspect each was read on.
+
+    A query naming no aspect selects every aspect's contrasts, so two aspects may each hold a contrast of one arm on
+    one measure key; keyed by arm alone, one would replace the other unseen. A contrast naming no aspect is read on
+    the lead one (the first asked, else the first), as the input's by-arm maps are.
+
+    :param context: The chart being resolved.
+    :ptype context: ChartContext
+    :param contrasts: The contrasts it selects.
+    :ptype contrasts: Sequence[Contrast]
+    :param keys: Measures to take first, in this order; the rest follow in the contrasts' order.
+    :ptype keys: Iterable[str]
+    :return: The groups, a measure's together, its aspects in the contrasts' order.
+    :rtype: list[ContrastGroup]
+    """
+    aspects = context.report_input.aspects
+    lead = next((aspect.id for aspect in aspects if aspect.asked), next((aspect.id for aspect in aspects), None))
+    groups: list[ContrastGroup] = []
+    for key in dict.fromkeys([*keys, *(contrast.measure for contrast in contrasts)]):
+        on_key = [contrast for contrast in contrasts if contrast.measure == key]
+        read_on = list(dict.fromkeys(contrast.aspect or lead for contrast in on_key))
+        for aspect in read_on:
+            groups.append(
+                ContrastGroup(
+                    key=key,
+                    aspect=context.look.reader("aspect", aspect) if aspect is not None else None,
+                    split=len(read_on) > 1,
+                    by_arm={c.arm: c for c in on_key if (c.aspect or lead) == aspect},
+                )
+            )
+    return groups
+
+
+def contrast_words(report_input: ReportInput, contrast: Contrast, aspect: str | None) -> str:
+    """What a reader calls a contrast's measure, naming the aspect it was read on where one is given
+    (:class:`ContrastGroup`).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param contrast: The contrast.
+    :ptype contrast: Contrast
+    :param aspect: The aspect's reader name, where the reader is told it; None where not.
+    :ptype aspect: str | None
+    :return: The words.
+    :rtype: str
+    """
+    words = measure_words(report_input, contrast.measure, kind=contrast.kind)
+    return ASPECT_MEASURE_TEMPLATE.format(measure=words, aspect=aspect) if aspect is not None else words
 
 
 def figure_stat(report_input: ReportInput, key: str, arm: str, aspect: str = "") -> Stat | None:

@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a block over several aspects shows each one, or is refused naming a block per aspect
+
+**Fixed:** a contrasts table or change chart over a query naming no aspect kept one aspect's contrast of an arm on a
+measure and dropped the other's, with no aspect named. Each is kept now, under the measure's words naming its aspect
+(`pass rate, on tone`) wherever a measure's contrasts sit on more than one aspect. Diverging bars over contrasts asked
+for panels by aspect draw a panel per aspect.
+
+**Fixed:** panels by aspect over measures, judged figures, the scoreboard or readings, with no aspect named, read one
+aspect's rows (the lead's, or the one asked aspect's readings) and showed them as all of them. Where the input holds
+those rows on more than one aspect, the block is refused at `query.aspect`, listing each aspect (`held_aspects`), and
+one block per aspect naming it draws that aspect's rows.
+
 ### evals: a prices block draws an unbounded price as open above, a values table pads no digit a number was never rounded to
 
 **Fixed:** a price step whose gain's interval reaches zero was drawn with no interval at all, beside steps with one, so

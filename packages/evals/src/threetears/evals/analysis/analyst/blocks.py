@@ -47,6 +47,7 @@ from threetears.evals.analysis.report.block_spec import (
     block_look,
     chart_faults,
     complete_chart,
+    held_aspects,
     line_statistics,
     small_multiple_faults,
 )
@@ -94,6 +95,19 @@ _STEPLESS_REMEDY = (
 
 #: The parameters a ``prices`` block's step-less refusal sits at: its gain axis, and the arms it keeps.
 _STEP_PARAMETERS = frozenset({"query.measures", "query.arms"})
+
+#: Where a block in panels by aspect over a source reading one aspect sends its caller: a block per aspect.
+_ASPECT_REMEDY = (
+    "draw one block per aspect, each naming its aspect in query.aspect ({aspects}) with query.small_multiples_by "
+    "'none'; the lead aspect's block reads the figures the snapshot holds by arm, another aspect's its own"
+)
+
+#: The parameter a refusal of panels by aspect sits at, and the one its remedy sets.
+_PANELS_BY = "query.small_multiples_by"
+_ASPECT = "query.aspect"
+
+#: The parameter a fault on the query as a whole sits at (it selects nothing).
+_QUERY = "query"
 
 #: What the remedy above says where no gain axis's frontier takes a step.
 _NO_STEPPED_AXIS = "none does on this snapshot, so no prices block draws"
@@ -316,6 +330,15 @@ def block_render(
                 ),
                 parameters=list(at_fault),
                 valid_values=stepped,
+            )
+        aspects = held_aspects(spec.query, report_input) if spec.query.small_multiples_by == "aspect" else []
+        # A query reading one aspect selects nothing where several are asked: naming one is the remedy there too.
+        if len(aspects) > 1 and _PANELS_BY in at_fault and set(at_fault) <= {_PANELS_BY, _QUERY}:
+            raise RefusedInput(
+                f"the {block_kind!r} block over {query.source!r} cannot be drawn: {said}",
+                remedy=_ASPECT_REMEDY.format(aspects=", ".join(aspects)),
+                parameters=[_ASPECT],
+                valid_values=aspects,
             )
         raise RefusedInput(
             f"the {block_kind!r} block over {query.source!r} cannot be drawn: {said}",

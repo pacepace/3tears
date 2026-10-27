@@ -24,6 +24,7 @@ Contracts held here (``analysis.report.block_spec``, ``analysis.analyst.blocks``
 
 from __future__ import annotations
 
+from collections import Counter
 import functools
 import json
 import re
@@ -32,7 +33,7 @@ from typing import Any, get_args
 
 import pytest
 
-from packages.evals.tests.analyst_support import KAIRO, fixture_inputs, fixture_snapshots
+from packages.evals.tests.analyst_support import KAIRO, aspect_tagged, budget_inputs, fixture_inputs, fixture_snapshots
 from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
@@ -47,7 +48,9 @@ from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, resolve
 from threetears.evals.analysis.report.plan_page.build import plan_page
-from threetears.evals.analysis.report_input import Cell, ReportInput, Stratum, Task
+from threetears.evals.analysis.report.plan_page.charting import measure_words
+from threetears.evals.analysis.report.plan_page.words import ASPECT_MEASURE_TEMPLATE
+from threetears.evals.analysis.report_input import Cell, Contrast, ReportInput, Stratum, Task
 from threetears.evals.analysis.report_plan_checks import raised_warnings
 from threetears.evals.analysis.report_plan_facts import complete_plan
 from threetears.evals.analysis.report_rows import SourceRow, query_rows
@@ -497,6 +500,163 @@ def test_a_table_over_several_measures_is_a_row_per_arm_with_a_column_per_measur
     assert drawn.total == len(arms), name
     measured = [column for column in drawn.columns if not column.endswith("interval")]
     assert len(measured) == 1 + len(keys), (name, drawn.columns)
+
+
+def _aspect_contrasts() -> dict[str, ReportInput]:
+    """Inputs whose contrasts are read on several aspects: r4 with one arm's contrast on one measure key held on two
+    (the lead aspect's untested), and the shape campaign s1, three asked aspects each contrasting every arm."""
+    return {"r4 tagged": aspect_tagged(_inputs()["r4"])[0], "s1": budget_inputs()["s1"]}
+
+
+@pytest.mark.parametrize("name", list(_aspect_contrasts()))
+def test_a_contrasts_block_keeps_each_aspects_contrast_and_names_the_aspect_where_two_share_a_key(name: str) -> None:
+    """A contrasts query naming no aspect selects every aspect's contrasts. Where two aspects hold a contrast of one
+    arm on one measure key, the table and the change charts keep both, each under the measure's words naming its
+    aspect, never one in place of the other; a measure whose contrasts sit on one aspect keeps its plain words. Bars
+    asked for in panels by aspect draw a panel per aspect the measure's contrasts sit on, each titled by its name; a
+    dot strip asked for them draws a strip per aspect, each naming it."""
+    held = _aspect_contrasts()[name]
+    names = {aspect.id: aspect.name for aspect in held.aspects}
+    assert all(c.aspect is not None and names[c.aspect] for c in held.contrasts), "the control: every aspect is named"
+    on = {
+        measure: {c.aspect for c in held.contrasts if c.measure == measure}
+        for measure in dict.fromkeys(c.measure for c in held.contrasts)
+    }
+    shared = Counter((c.arm, c.measure) for c in held.contrasts)
+    assert max(shared.values()) > 1, "the control: two aspects hold one arm's contrast on one key"
+
+    def words(contrast: Contrast) -> str:
+        plain = measure_words(held, contrast.measure, kind=contrast.kind)
+        assert contrast.aspect is not None
+        split = len(on[contrast.measure]) > 1
+        return ASPECT_MEASURE_TEMPLATE.format(measure=plain, aspect=names[contrast.aspect]) if split else plain
+
+    table = block_render(held, block_kind="table", query=_query("contrasts"), limit=200)
+    assert table.total == len(held.contrasts)
+    measured = table.columns.index("Measure")
+    assert Counter(row.cells[measured] for row in table.rows) == Counter(words(c) for c in held.contrasts)
+    for key, aspects in on.items():
+        stated = [c for c in held.contrasts if c.measure == key and c.delta is not None]
+        if not stated:
+            continue
+        bars = block_render(held, block_kind="diverging_bars", query=_query("contrasts", measures=[key]), limit=200)
+        assert bars.total == len(stated), key
+        if len(aspects) > 1:
+            grouped = bars.columns.index("Group")
+            assert Counter(row.cells[grouped] for row in bars.rows) == Counter(words(c) for c in stated), key
+        else:
+            assert "Group" not in bars.columns, key
+        query = _query("contrasts", measures=[key], small_multiples_by="aspect")
+        panelled = block_render(held, block_kind="diverging_bars", query=query, limit=200)
+        assert panelled.total == len(stated), key
+        if len({c.aspect for c in stated}) > 1:
+            titled = panelled.columns.index("Panel")
+            assert Counter(row.cells[titled] for row in panelled.rows) == Counter(
+                names[c.aspect] for c in stated if c.aspect is not None
+            ), key
+        strips = block_render(held, block_kind="dot_interval", query=query, limit=200)
+        assert strips.total == len(stated), key
+        if len(aspects) > 1:
+            stripped = strips.columns.index("Panel")
+            assert Counter(row.cells[stripped] for row in strips.rows) == Counter(words(c) for c in stated), key
+
+
+#: The sources that read one aspect where a query names none, and a kind that panels each.
+_ONE_ASPECT = (("measures", "bars"), ("judged", "bars"), ("scoreboard", "bars"), ("readings", "diverging_bars"))
+
+
+def _lead(held: ReportInput) -> str:
+    asked = [aspect.id for aspect in held.aspects if aspect.asked]
+    return asked[0] if asked else held.aspects[0].id
+
+
+def _aspects_holding(held: ReportInput, source: str) -> list[str]:
+    """The aspects the input holds a source's rows on, the lead first: figures by arm (the lead's) or by aspect, a
+    scoreboard (the lead's is the input's own), readings."""
+    lead = _lead(held)
+    if source == "readings":
+        found = [aspect.id for aspect in held.aspects if aspect.readings]
+    elif source == "scoreboard":
+        found = [lead] * bool(held.scoreboard) + [aspect.id for aspect in held.aspects if aspect.scoreboard]
+    else:
+        tables = (held.measures if source == "measures" else held.judged).values()
+        found = [lead] * any(table.per_arm for table in tables)
+        found += [aspect.id for aspect in held.aspects if any(table.by_aspect.get(aspect.id) for table in tables)]
+    return sorted(set(found), key=[lead, *(aspect.id for aspect in held.aspects)].index)
+
+
+def _as_lead(held: ReportInput, source: str, aspect: str) -> ReportInput:
+    """The input with one aspect's rows where a query naming none reads them: its figures by arm (an aspect holding
+    none of a measure reads the lead's, as the source does), its scoreboard, or it the one aspect asked and holding
+    readings."""
+    data = held.model_dump(mode="json", by_alias=True, exclude_none=True)
+    if source in ("measures", "judged"):
+        for table in data[source].values():
+            table["per_arm"] = table.get("by_aspect", {}).get(aspect, table["per_arm"])
+            table["by_aspect"] = {}
+    elif source == "scoreboard":
+        own = next(one for one in data["aspects"] if one["id"] == aspect).get("scoreboard")
+        data["scoreboard"] = own if own is not None else data["scoreboard"]
+    else:
+        for one in data["aspects"]:
+            one["asked"] = one["id"] == aspect
+            if one["id"] != aspect:
+                one["readings"] = []
+    return ReportInput.model_validate(data)
+
+
+def _keys(held: ReportInput, source: str) -> list[list[str]]:
+    """The measure sets a block reads in one unit: each measure or judged dimension alone, the scoreboard's count of
+    usable trials, or all readings."""
+    if source in ("measures", "judged"):
+        return [[key] for key in (held.measures if source == "measures" else held.judged)]
+    return [["usable"]] if source == "scoreboard" else [[]]
+
+
+@pytest.mark.parametrize("name", ["s1", "s3"])
+def test_panels_by_aspect_over_a_source_reading_one_aspect_are_refused_naming_a_block_per_aspect(name: str) -> None:
+    """Measures, judged figures and the scoreboard read the lead aspect's rows where a query names no aspect, and
+    readings the one asked aspect's, so panels by aspect would show one aspect as all of them. Where the input holds
+    the rows on several, the block is refused at ``query.aspect``, listing each aspect; one block per aspect, naming
+    it, draws that aspect's rows: the lead's by-arm figures, another's own, as a block naming none draws an input
+    whose lead rows they are. Where the input holds them on one aspect, nothing is refused for it."""
+    held = budget_inputs()[name]
+    refused: set[str] = set()
+    compared: set[str] = set()
+    for source, kind in _ONE_ASPECT:
+        aspects = _aspects_holding(held, source)
+        for measures in _keys(held, source):
+            query = _query(source, measures=measures, small_multiples_by="aspect")
+            if len(aspects) < 2:
+                try:
+                    block_render(held, block_kind=kind, query=query, limit=200)
+                except RefusedInput as refusal:
+                    assert "one block per aspect" not in refusal.fault, (source, refusal.fault)
+                continue
+            with pytest.raises(RefusedInput) as caught:
+                block_render(held, block_kind=kind, query=query, limit=200)
+            refusal = caught.value
+            assert refusal.parameters == ("query.aspect",), (source, refusal.parameters)
+            assert refusal.valid_values == tuple(aspects), (source, refusal.valid_values)
+            assert "query.aspect" in refusal.remedy and all(aspect in refusal.remedy for aspect in aspects)
+            refused.add(source)
+            for aspect in aspects:
+                named = _query(source, measures=measures, aspect=aspect)
+                try:
+                    drawn = block_render(held, block_kind=kind, query=named, limit=200)
+                except RefusedInput as other:
+                    assert "one block per aspect" not in other.fault, (source, aspect, other.fault)
+                    continue
+                expected = block_render(
+                    _as_lead(held, source, aspect), block_kind=kind, query=_query(source, measures=measures), limit=200
+                )
+                assert (drawn.columns, [row.cells for row in drawn.rows]) == (
+                    expected.columns,
+                    [row.cells for row in expected.rows],
+                ), (source, measures, aspect)
+                compared.add(source)
+    assert refused, "the control: the campaign holds some one-aspect source's rows on several aspects"
+    assert compared == refused, "the control: every refused source draws one block per aspect somewhere"
 
 
 def _holds_intervals(held: ReportInput, query: ChartQuery) -> bool:
