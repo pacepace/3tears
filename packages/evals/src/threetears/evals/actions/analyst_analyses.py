@@ -112,10 +112,12 @@ class SensitivityParams(EvalBaseModel):
     range_low: float | None = Field(
         default=None,
         description="Where the sweep starts, in the criterion's units; omitted, zero for a margin or a floor and no "
-        "lower end for a threshold.",
+        "lower end for a threshold, so every flip is walked. A start past a change in the call is named in unswept.",
     )
     range_high: float | None = Field(
-        default=None, description="Where the sweep ends, in the criterion's units; omitted, no upper end."
+        default=None,
+        description="Where the sweep ends, in the criterion's units; omitted, no upper end. An end short of a change "
+        "in the call is named in unswept.",
     )
     bars_as: BarsAsParam = "warnings"
     limit: SizedLimit = None
@@ -338,7 +340,13 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
                 "criterion's figure for an arm), and the call is read on each piece, with each routable task's pick "
                 "(the cheapest arm passing there and in every cross-cutting task) where the snapshot holds routable "
                 "tasks; segments join pieces with the same call and picks; holds says whether the declared call "
-                "stands across the range, picks_hold whether the picks do. hypothetical:<measure> sweeps a gate the "
+                "stands across the range, picks_hold whether the picks do. With no range a sweep walks every flip; a "
+                "range you give that stops short of a change in the call or a pick names that side in unswept (its "
+                "nearest flip, how many, the call past it, and whether that side loosens the line): state every band "
+                "the whole sweep returns. barred lists each arm a cross-cutting task's gate keeps out of every "
+                "pick, with the gates it fails there and the tasks whose own gates it passes. A margin over an aspect "
+                "with no reading of a candidate says code never reads it against a margin. "
+                "hypothetical:<measure> sweeps a gate the "
                 "snapshot does not declare, read where it states the statistic (overall, else in each task or cell); "
                 "the result is marked hypothetical and its flips are the arms' own figures. Flips are paged with "
                 "limit and offset, each page holding the segments that start at its flips; without a limit a page "

@@ -29,6 +29,20 @@ the caller names; none is added.
 call (:func:`~threetears.evals.analysis.report_gates.routing_picks`: the cheapest arm passing in the task and in every
 cross-cutting task), so a gate that moves a routed plan without moving the one-option call shows it.
 
+**A sweep's reach.** With no range, a sweep walks every flip: a threshold or a hypothetical line from no lower end
+to no upper end, a margin or a floor from zero up. A range the caller gives can stop short of a flip where the call or
+a routable task's pick changes; the result then says so for each side it cut (``unswept``): the nearest such flip past
+the range's end, how many there are, the call past it, and whether that side loosens the line. It never leaves the
+caller to infer it from a note. A margin sweep over an aspect with no reading of some candidate says so too: code's rule
+reads a margin against a reading alone, so no margin moves the call on that candidate, and a contrast on the aspect is
+not read against a margin.
+
+**Which arms the per-task picks hold back.** A task that runs inside every other task (cross-cutting) bars an arm
+failing a gate there from every routed task, even one whose own gates it passes. Where the snapshot holds routable and
+cross-cutting tasks, the sweep lists each arm so barred at the criteria as declared (``barred``): the cross-cutting
+task, each gate it fails there by its keys, and the routable tasks whose own gates it passes, so a per-task pick is
+never silently cheaper or dearer than a reader expects.
+
 **Hypothetical lines.** ``hypothetical:<measure>`` (or ``hypothetical:<measure>/<statistic>``) sweeps a gate the
 snapshot does not declare, on one measure, in its stated direction, read where the snapshot states the statistic
 (overall, else in each task, else in each cell): the call at every line, as if that gate held. The result is marked
@@ -100,11 +114,13 @@ __all__ = [
     "DOMINANCE_PAGE",
     "SENSITIVITY_PAGE",
     "BarsAs",
+    "Barred",
     "Breakdown",
     "Dominance",
     "GateRead",
     "Sensitivity",
     "SliceBy",
+    "Unswept",
     "breached_guardrails",
     "breakdown",
     "dominance",
@@ -917,6 +933,38 @@ class Segment(BaseModel):
     )
 
 
+#: Which end of the caller's range a flip lies past.
+UnsweptSide = Literal["below_range_low", "above_range_high"]
+
+
+class Unswept(BaseModel):
+    """One side of the range the caller gave, past which the call or a routable task's pick changes."""
+
+    model_config = _MODEL
+
+    side: UnsweptSide = Field(description="Which end of the range swept the change lies past.")
+    loosens: bool = Field(
+        description="Whether this side loosens the line: a lower threshold where higher is better (a higher one "
+        "where lower is), or a wider margin or floor; a line loosened admits options the range swept never reads."
+    )
+    nearest: Flip = Field(description="The nearest flip past that end where the call or a pick changes.")
+    changes: int = Field(description="The flips past that end where the call or a pick changes.")
+    call_past: Call = Field(description="Code's call just past the nearest flip, away from the range.")
+
+
+class Barred(BaseModel):
+    """One arm a cross-cutting task's gate keeps out of every routable task's pick, at the criteria as declared."""
+
+    model_config = _MODEL
+
+    arm: str = Field(description="The arm barred, as arm:<id>.")
+    task: str = Field(description="The cross-cutting task it fails a gate in, by id: it runs inside every task.")
+    gates: list[GateRead] = Field(description="Each gate or guardrail it fails there, by the keys that state it.")
+    passes_tasks: list[str] = Field(
+        description="The routable tasks whose own gates it passes, which it is held back from all the same."
+    )
+
+
 class Sensitivity(BaseModel):
     """How code's call moves as one declared criterion moves over a range."""
 
@@ -955,6 +1003,17 @@ class Sensitivity(BaseModel):
     bars_as: BarsAs = Field(
         description="How the declared bars were read, as the caller chose: warnings (they never move the call) or "
         "gates."
+    )
+    unswept: list[Unswept] = Field(
+        default_factory=list,
+        description="Each side of the range given past which the call or a routable task's pick changes; empty "
+        "where the range walks every such flip (always, with no range given).",
+    )
+    barred: list[Barred] = Field(
+        default_factory=list,
+        description="Each arm a cross-cutting task's gate keeps out of every routable task's pick at the criteria as "
+        "declared, which the per-task picks hold back; empty where the snapshot holds no routable and cross-cutting "
+        "tasks, or none is barred.",
     )
 
 
@@ -1417,6 +1476,131 @@ def _sweep_of(report_input: ReportInput, parameter: str, range_low: float | None
     )
 
 
+#: What a sweep says where the caller's range stops short of a change, once per side (``unswept`` holds the keys).
+_UNSWEPT_NOTE = (
+    "the call or a routable task's pick changes past the range swept ({sides}): unswept names the nearest such flip "
+    "and the call past it; omit range_low and range_high (or widen the range) to walk every flip"
+)
+
+#: What a margin sweep says of candidates the aspect holds no reading of.
+_NO_READING_NOTE = (
+    "aspect {aspect} holds no reading of {arms}: code's rule reads a margin only against a reading, so no margin moves "
+    "the call on them, and it never reads a contrast against a margin; a contrast's interval is within any margin "
+    "wider than minus its low end, past any at or below minus its high end, and open between (contrasts_list holds "
+    "the intervals)"
+)
+
+#: What a sweep says where per-task picks hold arms back.
+_BARRED_NOTE = (
+    "the per-task picks hold back {arms}: each fails a gate in a cross-cutting task, which runs inside every task, so "
+    "it takes no task, even one whose own gates it passes (barred names the gates by their keys)"
+)
+
+
+def _loosens(parameter: str, sweep: _Sweep, side: UnsweptSide) -> bool:
+    """Whether moving the line past ``side`` loosens it: a margin or a floor wider; a threshold or a hypothetical line
+    toward worse figures (lower where higher is better, higher where lower is)."""
+    if parameter.partition(":")[0] in ("margin", "floor"):
+        return side == "above_range_high"
+    return side == ("below_range_low" if sweep.boundary == "below" else "above_range_high")
+
+
+def _piece_past(pieces: Sequence[_Piece], value: float, side: UnsweptSide) -> _Piece:
+    """The piece just past a flip, away from the range: the one ending at it below the range, starting at it above."""
+    for piece in pieces:
+        end = piece.high if side == "below_range_low" else piece.low
+        if end is not None and end.value == value:
+            return piece
+    raise ValueError(f"no piece of the sweep meets the flip at {value}")
+
+
+def _unswept(
+    report_input: ReportInput, parameter: str, sweep: _Sweep, given: tuple[float | None, float | None]
+) -> list[Unswept]:
+    """Each side of the caller's range past which the call or a routable task's pick changes, read on the sweep over
+    its default range (every flip); empty where no range is given."""
+    range_low, range_high = given
+    if range_low is None and range_high is None:
+        return []
+    whole = _sweep_of(report_input, parameter, None, None)
+    cuts = sorted(whole.cuts, key=lambda cut: cut.value)
+    inside = [
+        cut
+        for cut in cuts
+        if (whole.low is None or cut.value >= whole.low) and (whole.high is None or cut.value <= whole.high)
+    ]
+    pieces = _pieces(whole, inside)
+
+    def moves(cut: _Cut) -> bool:
+        return _changes(pieces, cut.value, lambda piece: piece.call) or _changes(
+            pieces, cut.value, lambda piece: piece.read.picks
+        )
+
+    found: list[Unswept] = []
+    sides: tuple[tuple[UnsweptSide, list[_Cut]], ...] = (
+        ("below_range_low", [cut for cut in inside if sweep.low is not None and cut.value < sweep.low and moves(cut)]),
+        (
+            "above_range_high",
+            [cut for cut in inside if sweep.high is not None and cut.value > sweep.high and moves(cut)],
+        ),
+    )
+    for side, past in sides:
+        if not past:
+            continue
+        nearest = past[-1] if side == "below_range_low" else past[0]
+        beyond = _piece_past(pieces, nearest.value, side)
+        found.append(
+            Unswept(
+                side=side,
+                loosens=_loosens(parameter, sweep, side),
+                nearest=Flip(
+                    arm=_arm(nearest.arm),
+                    where=nearest.where,
+                    at=nearest.at,
+                    call_changes=_changes(pieces, nearest.value, lambda piece: piece.call),
+                    picks_change=_changes(pieces, nearest.value, lambda piece: piece.read.picks),
+                ),
+                changes=len(past),
+                call_past=_call(beyond.call),
+            )
+        )
+    return found
+
+
+def _unread_arms(report_input: ReportInput, parameter: str) -> list[str]:
+    """On a margin sweep, the candidates the aspect holds no reading of, where the snapshot has a control; else none."""
+    kind, _colon, name = parameter.partition(":")
+    control = control_arm(report_input)
+    aspect = next((aspect for aspect in report_input.aspects if aspect.id == name), None)
+    if kind != "margin" or control is None or aspect is None:
+        return []
+    read = {reading.arm for reading in aspect.readings}
+    return [arm.id for arm in report_input.arms if arm.id != control and arm.id not in read]
+
+
+def _barred(report_input: ReportInput) -> list[Barred]:
+    """Each arm a cross-cutting task's gate keeps out of every routable task's pick, at the criteria as declared, with
+    the gates it fails there and the routable tasks whose own gates it passes."""
+    routable = [task.id for task in report_input.tasks if task.routable]
+    cross = [task.id for task in report_input.tasks if task.cross_cutting]
+    if not routable or not cross:
+        return []
+    barred: list[Barred] = []
+    for arm in report_input.arms:
+        for task in cross:
+            if gate_check(report_input, arm.id, task=task).status != "fail":
+                continue
+            reads = [
+                _gate_read(report_input, arm.id, finding)
+                for finding in gate_findings(report_input, arm.id, task=task)
+                if finding.status == "fail"
+            ]
+            passes = [held for held in routable if gate_check(report_input, arm.id, task=held).status != "fail"]
+            barred.append(Barred(arm=_arm(arm.id), task=task, gates=reads, passes_tasks=passes))
+            break
+    return barred
+
+
 def sensitivity(
     report_input: ReportInput,
     parameter: str,
@@ -1475,6 +1659,15 @@ def sensitivity(
     notes = [*([_BARS_AS_GATES_NOTE] if bars_as == "gates" else []), *sweep.notes]
     if len(inside) < len(sweep.cuts):
         notes.append("flips outside the range swept are not listed")
+    unswept = _unswept(report_input, parameter, sweep, (range_low, range_high))
+    if unswept:
+        notes.append(_UNSWEPT_NOTE.format(sides=" and ".join(side.side.replace("_", " ") for side in unswept)))
+    unread = _unread_arms(report_input, parameter)
+    if unread:
+        notes.append(_NO_READING_NOTE.format(aspect=parameter.partition(":")[2], arms=_named_arms(unread)))
+    barred = _barred(report_input)
+    if barred:
+        notes.append(_BARRED_NOTE.format(arms=_named_arms([row.arm.removeprefix("arm:") for row in barred])))
     undecided = undecided_arms(report_input)
     if undecided:
         notes.append(_SWEEP_UNDECIDED_NOTE.format(arms=_named_arms(undecided)))
@@ -1505,6 +1698,8 @@ def sensitivity(
         next_offset=end if end < len(inside) else None,
         notes=notes,
         bars_as=bars_as,
+        unswept=unswept,
+        barred=barred,
     )
 
 
