@@ -10,6 +10,7 @@ heads and status words. Held here so a translation replaces them in one place.
 from __future__ import annotations
 
 __all__ = [
+    "CASES_WORD",
     "COMPUTED_REPEATS_NOTE",
     "PAIRED_BASIS_TEMPLATE",
     "SETTLE_FLOOR_TEMPLATE",
@@ -354,6 +355,9 @@ PAIRED_BASIS_TEMPLATE = (
     "paired: the contrast of {arm} against the control on {measure}, its own interval, corrected within its family"
 )
 
+#: What a settle table's sizes count on a repeated design: the distinct cases.
+CASES_WORD = "cases"
+
 #: What a compare row overall is called, beside the slices' names.
 OVERALL_WORD = "Overall"
 
@@ -559,11 +563,13 @@ TABLE_HEADERS = {
     "line": "Line",
     "distance": "Distance toward passing",
     "settles": "Settles",
-    "cases_needed": "Cases needed, one-sided",
-    "cases_needed_two_sided": "Cases needed, two-sided",
+    "counted": "Sizes count",
+    "cases_needed": "Needed, one-sided",
+    "cases_needed_two_sided": "Needed, two-sided",
+    "today": "Today",
     "trials_needed": "Trials needed, one-sided",
+    "trials_needed_two_sided": "Trials needed, two-sided",
     "repeats": "Repeats of a case",
-    "today_cases": "Cases today",
     "today_trials": "Trials today",
     "wrong_side": "A fresh run reads the other side",
     "setting": "Setting",

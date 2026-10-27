@@ -25,9 +25,10 @@ prices          the step along the price frontier (from one option to the next),
 bar_reads       the aspect, the measure, the arm, its value with the interval its bar was read on, the bar, the status
 compare         the place, each arm's mean, the first less the second, its interval, level and basis (in reader
                 names: a paired one names the candidate and the measure, never their ids)
-settle          the arm, the line (and place), today's estimate, the line, the distance, which way it settles, the
-                cases a one-sided and a two-sided design need, the trials that takes and the repeats of a case,
-                today's cases and today's trials (each where its count states it), how often a fresh run reads the
+settle          the arm, the line (and place), today's estimate, the line, the distance, which way it settles, what
+                the sizes count (cases, else the trials or observations a figure's count is), the size a one-sided
+                and a two-sided design need, today's count in that unit; on a repeated design the trials those
+                sizes take (both sides), the repeats of a case and today's trials; how often a fresh run reads the
                 other side, the level
 levers          the setting (or the two an interaction crosses), the move, the effect (or difference), its interval,
                 level, and an interaction's verdict
@@ -98,6 +99,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     PRICE_STEP_TEMPLATE,
     CELL_TEMPLATE,
     INTERVAL_HEADER,
+    CASES_WORD,
     OVERALL_WORD,
     TABLE_HEADERS,
     TABLE_ORDER,
@@ -407,24 +409,33 @@ def _settle(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
             "line": _read(item.line),
             "distance": _read(item.distance),
             "settles": _words(item.settles),
-            "cases_needed": _read(item.cases_needed),
-            "cases_needed_two_sided": _read(item.cases_needed_two_sided),
-            "trials_needed": _read(item.trials_needed),
-            "repeats": _read(item.repeats[0] if item.repeats else None),
-            **_today(context, row.arm, row.key, item),
+            **_sizes(item),
             "wrong_side": _read(item.wrong_side),
             "level": _read(item.level),
         }
 
 
-def _today(context: ChartContext, arm: str, key: str, row: SettleRow) -> _Row:
-    """Today's count beside a settle row's sizes, in both units the sizes are: its distinct cases (the row's ``cases``
-    where its count is trials over fewer cases, else the count itself where it counts cases) and its trials (the count
-    where it counts trials), each as its key reads it, so a size in cases never sits against a count of trials."""
+def _sizes(row: SettleRow) -> _Row:
+    """A settle row's sizes, each beside today's count in the unit it counts, every figure as its key reads it.
+
+    The sizes count what the row's count counts, which a column says: distinct cases, or, where a figure states no
+    cases, the trials or observations its count is. Where its count is trials over fewer stated cases (a repeated
+    design), the sizes count the cases, today's count beside them is today's cases, and the trials those sizes take,
+    both sides, sit beside today's trials and the repeats of a case. A size never sits beside a count in another unit.
+    """
     count = row.counts[0] if row.counts else None
-    counted = str(row.count_of[0].value) if row.count_of else ""
-    cases = row.cases[0] if row.cases else count if counted == "cases" else None
-    return {"today_cases": _read(cases), "today_trials": _read(count if counted == "trials" else None)}
+    counted = str(row.count_of[0].value) if row.count_of else None
+    cases = row.cases[0] if row.cases else None
+    return {
+        "counted": _words(CASES_WORD if cases is not None else counted),
+        "cases_needed": _read(row.cases_needed),
+        "cases_needed_two_sided": _read(row.cases_needed_two_sided),
+        "today": _read(cases if cases is not None else count),
+        "trials_needed": _read(row.trials_needed),
+        "trials_needed_two_sided": _read(row.trials_needed_two_sided),
+        "repeats": _read(row.repeats[0] if row.repeats else None),
+        "today_trials": _read(count if cases is not None else None),
+    }
 
 
 def _levers(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
@@ -515,11 +526,13 @@ _SOURCES: dict[str, tuple[Callable[[ChartContext, _Laid], Iterator[_Row]], tuple
             "line",
             "distance",
             "settles",
+            "counted",
             "cases_needed",
             "cases_needed_two_sided",
+            "today",
             "trials_needed",
+            "trials_needed_two_sided",
             "repeats",
-            "today_cases",
             "today_trials",
             "wrong_side",
             "level",

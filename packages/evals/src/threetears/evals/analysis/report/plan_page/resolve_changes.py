@@ -81,7 +81,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     change_words,
 )
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, Stat, Stratum, Task
-from threetears.evals.analysis.report_rows import lever_arms, place_of
+from threetears.evals.analysis.report_rows import lever_arms
 from threetears.evals.analysis.style import humanize
 
 __all__ = ["RESOLVERS"]
@@ -506,7 +506,7 @@ def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tu
             bases.append(compare_basis(context, item, key))
         changes.append(
             _analysed_change(
-                row_id=place_of(item.where, context.report_input),
+                row_id=row.label,
                 label=place,
                 short=place,
                 value=value,
@@ -526,9 +526,9 @@ def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tu
 
 
 def compare_basis(context: ChartContext, row: ComparisonRow, key: str) -> str:
-    """How a compare row's interval was read, in reader words: the paired estimate names the candidate a contrast
-    reads against the control and the measure by their reader names, never by id or key; the independent reading is
-    the analysis's own words, which name neither.
+    """How a compare row's interval was read, in reader words: the paired estimate (``paired_with``) names the
+    candidate a contrast reads against the control and the measure by their reader names, never by id or key; the
+    independent reading is the analysis's own words, which name neither.
 
     :param context: The chart being resolved, over the compare source.
     :ptype context: ChartContext
@@ -541,19 +541,12 @@ def compare_basis(context: ChartContext, row: ComparisonRow, key: str) -> str:
     """
     if row.basis is None:
         return ""
-    said = str(row.basis.value)
-    if not said.startswith(_PAIRED):
-        return said
-    control = context.look.control
-    first, second = context.query.arms
-    candidate = second if control is not None and first == control.id else first
+    if row.paired_with is None:
+        return str(row.basis.value)
+    candidate = row.paired_with.removeprefix("arm:")
     return PAIRED_BASIS_TEMPLATE.format(
         arm=_arm_name(context, candidate), measure=measure_words(context.report_input, key)
     )
-
-
-#: How a compare row's basis opens where it is the paired estimate a contrast states.
-_PAIRED = "paired"
 
 
 def _lever_label(context: ChartContext, row: EffectRow | InteractionRow) -> tuple[str, str, str]:

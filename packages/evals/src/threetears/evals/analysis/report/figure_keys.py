@@ -3303,6 +3303,36 @@ def _paired(report_input: ReportInput, arm_id: str, other: str, key: str) -> Con
     return held[0] if len(held) == 1 else None
 
 
+def _both_bases(
+    report_input: ReportInput, arm_id: str, other: str, key: str, where: str, first: Spread, second: Spread
+) -> str:
+    """What two arms' spreads were read from, in words: once where both read alike, else each, the first's first."""
+    one = _basis_words(report_input, arm_id, key, where, first)
+    two = _basis_words(report_input, other, key, where, second)
+    return one if one == two else f"{one}; {two}"
+
+
+def pairing_contrast(report_input: ReportInput, arm_id: str, other: str, key: str, where: str) -> Contrast | None:
+    """The contrast a ``compare.<arm>.<other>.<key>.<where>`` key reads as its paired estimate: overall, the one
+    contrast stating one of the two arms against the other (the control) on the lead aspect, with its difference and
+    interval; None where the compare family reads the two arms' own spreads as independent.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param arm_id: The first arm.
+    :ptype arm_id: str
+    :param other: The second.
+    :ptype other: str
+    :param key: The measure or judged dimension.
+    :ptype key: str
+    :param where: The place, as a separation key spells it.
+    :ptype where: str
+    :return: The contrast; None for none.
+    :rtype: Contrast | None
+    """
+    return _paired(report_input, arm_id, other, key) if where == _OVERALL else None
+
+
 @dataclass(frozen=True)
 class _Difference:
     """One arm minus another on a figure at one place, with its interval: the compare family's reading, which the lever
@@ -3338,7 +3368,7 @@ def _read_difference(report_input: ReportInput, arm_id: str, other: str, key: st
 
     :raises NoSpread: Neither a pairing contrast nor both arms' spreads give an interval; its words say why.
     """
-    contrast = _paired(report_input, arm_id, other, key) if where == _OVERALL else None
+    contrast = pairing_contrast(report_input, arm_id, other, key, where)
     if contrast is not None and contrast.delta is not None and contrast.interval is not None:
         sign = 1.0 if contrast.arm == arm_id else -1.0
         low, high = sorted((sign * float(contrast.interval[0]), sign * float(contrast.interval[1])))
@@ -3361,8 +3391,7 @@ def _read_difference(report_input: ReportInput, arm_id: str, other: str, key: st
         high=difference + half,
         level=first.level,
         basis=(
-            f"independent: each arm's own spread ({_basis_words(report_input, arm_id, key, where, first)}; "
-            f"{_basis_words(report_input, other, key, where, second)}), "
+            f"independent: each arm's own spread ({_both_bases(report_input, arm_id, other, key, where, first, second)}), "
             "combined as if the arms ran different cases, which reads wider than a paired interval where they ran the "
             "same"
         ),
@@ -3373,7 +3402,7 @@ def _compare_figure(report_input: ReportInput, values: tuple[str, ...], path: st
     arm_id, other, key, where, field = values
     if arm_id == other:
         raise _refuse(path, "compares an arm with itself; name two arms")
-    contrast = _paired(report_input, arm_id, other, key) if where == _OVERALL else None
+    contrast = pairing_contrast(report_input, arm_id, other, key, where)
     if field == "difference" and contrast is None:
         difference = _mean_difference(report_input, arm_id, other, key, where)
         if difference is None:
@@ -6197,4 +6226,5 @@ __all__ = [
     "resolve",
     "separation_wheres",
     "on_lead_aspect",
+    "pairing_contrast",
 ]

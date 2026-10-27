@@ -45,7 +45,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite
 from threetears.evals.analysis.errors import UnstatedFigure
-from threetears.evals.analysis.report.figure_keys import ASSUMED_SHARE, assumable, separation_wheres
+from threetears.evals.analysis.report.figure_keys import ASSUMED_SHARE, assumable, pairing_contrast, separation_wheres
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput
 
@@ -193,6 +193,11 @@ class ComparisonRow(BaseModel):
     interval: CitedFigure | None = Field(description="The interval on the difference; None where none is read.")
     level: CitedFigure | None = Field(description="The interval's level; None where the input states none.")
     basis: CitedFigure | None = Field(description="Paired (a contrast's own interval) or independent, and from what.")
+    paired_with: str | None = Field(
+        default=None,
+        description="Where the interval is the paired estimate a contrast states, the candidate that contrast reads "
+        "against the control, as arm:<id>; None where the two arms' own spreads are read as independent.",
+    )
     excludes_zero: bool | None = Field(description="Whether the interval excludes zero; None with no interval.")
     ahead: str | None = Field(
         description="The arm ahead, as arm:<id>, where the interval excludes zero and the measure states which way "
@@ -231,6 +236,7 @@ def _row(
     prefix = f"{head}compare.{first}.{second}.{key}.{where}"
     interval, why = cite_or_why(f"{prefix}.interval", report_input)
     level, _level_why = cite_or_why(f"{prefix}.level", report_input) if interval is not None else (None, "")
+    paired = pairing_contrast(report_input, first, second, key, where)
     excludes: bool | None = None
     ahead: str | None = None
     if interval is not None and isinstance(interval.value, tuple):
@@ -249,6 +255,7 @@ def _row(
         interval=interval,
         level=level,
         basis=cite(f"{prefix}.basis", report_input) if interval is not None else None,
+        paired_with=_arm(paired.arm) if interval is not None and paired is not None else None,
         excludes_zero=excludes,
         ahead=ahead,
         unread=why,
