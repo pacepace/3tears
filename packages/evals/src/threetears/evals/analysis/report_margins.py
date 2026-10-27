@@ -10,6 +10,13 @@ and the planner cites it by figure key (``weakest.*``,
 - *A declared criterion* (a gate, floor, bar or guardrail): the arm's figure at the criterion's statistic, where its
   scope reads it (overall, in its one task, in every task, in every cell), against the threshold. One margin per
   figure, so a criterion read in every task gives one per task.
+
+  **Which aspect's figure** (:func:`criterion_aspect`): a criterion naming an aspect reads that aspect's figures, one
+  naming none the lead aspect's (the first asked, else the first), as every by-arm map holds them. Overall, the lead
+  aspect's figure is the measure's or judged dimension's ``per_arm`` and any other's its ``by_aspect``. A task's and a
+  cell's figures name no aspect, so a criterion on an aspect other than the lead reads none there: that place is
+  unknown, never read off the lead's figure. Every reader of a criterion's figures reads them here
+  (:func:`criterion_figures`), so the gate check, the margins, the keys and the analyst's analyses cannot disagree.
 - *An aspect's margin*: the worst end of a reading's interval (``lo``) against ``-margin``. A reading is within the
   margin when its worst drop is under it (GENERATOR §3), so this is the distance at which it flips.
 - *A floor the pipeline read*: the worst end of its interval against ``-margin``, the floor's own margin.
@@ -19,6 +26,12 @@ the line's units. **The weakest margin** is the one whose gap is smallest relati
 since a gap in milliseconds and one in points compare only as shares of their lines; a line at zero compares at its
 gap's size. Ties go to the first in the order above: criteria in the input's order, then readings, then floors, each
 arm in the input's order.
+
+**Unknown is not a miss.** A place a criterion reads with no figure for an arm (none stated, or not a finite number)
+is *unknown*: :func:`criterion_misses` counts only figures on the wrong side of the line, :func:`criterion_unknowns`
+the places with none, and :func:`criterion_passes` needs every place read and none missed. An option no gate or
+guardrail figure fails, and no breached guardrail removes, but with a gate it has no figure for somewhere is
+*undecided* (:func:`undecided_arms`): neither shown to pass, so it does not survive, nor removed by a figure.
 
 **Only a margin that could change the call alone counts.** An option survives when it clears every gate and guardrail
 figure, has a figure for each at every place its scope reads (:func:`criterion_places`), and breaches no guardrail the pipeline read (GENERATOR §3, as
@@ -42,14 +55,18 @@ __all__ = [
     "CriterionFigure",
     "CriterionPlace",
     "Margin",
+    "criterion_aspect",
     "criterion_figures",
     "criterion_misses",
     "criterion_passes",
     "criterion_places",
     "criterion_place",
+    "criterion_unknowns",
     "flip_margin",
+    "lead_aspect",
     "margins",
     "surviving_arms",
+    "undecided_arms",
     "weakest_margin",
 ]
 
@@ -165,10 +182,48 @@ def criterion_places(report_input: ReportInput, criterion: Criterion) -> list[tu
     return [(None, None)]
 
 
+def lead_aspect(report_input: ReportInput) -> str | None:
+    """The lead aspect, whose figures the input's by-arm maps hold: the first asked, else the first.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: Its id; None where the input holds no aspect.
+    :rtype: str | None
+    """
+    asked = [aspect.id for aspect in report_input.aspects if aspect.asked]
+    return asked[0] if asked else next((aspect.id for aspect in report_input.aspects), None)
+
+
+def criterion_aspect(report_input: ReportInput, criterion: Criterion) -> str | None:
+    """The aspect whose figures a criterion reads (this module's Which aspect's figure): the one it names, else the
+    lead aspect (the first asked, else the first).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param criterion: The declared criterion.
+    :ptype criterion: Criterion
+    :return: The aspect's id; None where the criterion names none and the input holds no aspect.
+    :rtype: str | None
+    """
+    return criterion.aspect if criterion.aspect is not None else lead_aspect(report_input)
+
+
+def _other_aspect(report_input: ReportInput, criterion: Criterion) -> str | None:
+    """The aspect a criterion reads where it is not the lead one, whose figures sit in ``by_aspect``; None for the
+    lead's."""
+    if criterion.aspect is None or criterion.aspect == lead_aspect(report_input):
+        return None
+    return criterion.aspect
+
+
 def _stat_at(
     report_input: ReportInput, criterion: Criterion, arm: str, task: str | None, cell: str | None
 ) -> Stat | None:
-    """The arm's stat on the criterion's measure at one of its places; None where the input states none."""
+    """The arm's stat on the criterion's measure at one of its places, on the criterion's aspect; None where the input
+    states none (a task's or cell's figure for an aspect other than the lead, which the input never holds)."""
+    other = _other_aspect(report_input, criterion)
+    if (cell is not None or task is not None) and other is not None:
+        return None
     if cell is not None:
         return report_input.cells[cell].per_arm.get(arm, {}).get(criterion.measure)
     if task is not None:
@@ -177,8 +232,11 @@ def _stat_at(
     holders: tuple[Mapping[str, Measure | Judged], ...] = (report_input.measures, report_input.judged)
     for table in holders:
         figures = table.get(criterion.measure)
-        if figures is not None and arm in figures.per_arm:
-            return figures.per_arm[arm]
+        if figures is None:
+            continue
+        per_arm = figures.per_arm if other is None else figures.by_aspect.get(other, {})
+        if arm in per_arm:
+            return per_arm[arm]
     return None
 
 
@@ -233,7 +291,7 @@ def _missed_gates(report_input: ReportInput, arm: str) -> int | None:
 
 def criterion_misses(report_input: ReportInput, criterion: Criterion, arm: str) -> int:
     """How many of the places a criterion reads an arm's figure at it misses: each figure on the wrong side of the
-    threshold, and each place with no figure (GENERATOR §1.1: a figure the input does not hold is not shown passed).
+    threshold. A place with no figure is unknown, not missed (:func:`criterion_unknowns`).
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -241,16 +299,31 @@ def criterion_misses(report_input: ReportInput, criterion: Criterion, arm: str) 
     :ptype criterion: Criterion
     :param arm: The arm's id.
     :ptype arm: str
-    :return: The places missed, 0 where it clears every one (a borderline figure clears its line).
+    :return: The places missed on a figure, 0 where none is (a borderline figure clears its line).
     :rtype: int
     """
-    figures = criterion_figures(report_input, criterion, arm)
-    unread = len(criterion_places(report_input, criterion)) - len(figures)
-    return unread + sum(_gap(criterion, figure.value) < 0 for figure in figures)
+    return sum(_gap(criterion, figure.value) < 0 for figure in criterion_figures(report_input, criterion, arm))
+
+
+def criterion_unknowns(report_input: ReportInput, criterion: Criterion, arm: str) -> int:
+    """How many of the places a criterion reads an arm at hold no figure for it (GENERATOR §1.1: a figure the input
+    does not hold is not shown passed, and is not shown missed either).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param criterion: The declared criterion.
+    :ptype criterion: Criterion
+    :param arm: The arm's id.
+    :ptype arm: str
+    :return: The places with no finite figure for the arm.
+    :rtype: int
+    """
+    return len(criterion_places(report_input, criterion)) - len(criterion_figures(report_input, criterion, arm))
 
 
 def criterion_passes(report_input: ReportInput, criterion: Criterion, arm: str) -> bool:
-    """Whether an arm clears a criterion everywhere it reads: it reads somewhere, and no place is missed.
+    """Whether an arm clears a criterion everywhere it reads: it reads somewhere, every place holds a figure, and no
+    figure misses.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -261,7 +334,11 @@ def criterion_passes(report_input: ReportInput, criterion: Criterion, arm: str) 
     :return: True where every place the criterion reads holds a figure clearing it.
     :rtype: bool
     """
-    return bool(criterion_places(report_input, criterion)) and criterion_misses(report_input, criterion, arm) == 0
+    return (
+        bool(criterion_places(report_input, criterion))
+        and criterion_unknowns(report_input, criterion, arm) == 0
+        and criterion_misses(report_input, criterion, arm) == 0
+    )
 
 
 def surviving_arms(report_input: ReportInput) -> list[str]:
@@ -274,6 +351,30 @@ def surviving_arms(report_input: ReportInput) -> list[str]:
     :rtype: list[str]
     """
     return [arm.id for arm in report_input.arms if _missed_gates(report_input, arm.id) == 0]
+
+
+def undecided_arms(report_input: ReportInput) -> list[str]:
+    """The options neither shown to pass nor removed (this module's Unknown is not a miss): no gate or guardrail figure
+    misses, no guardrail the pipeline read is breached, and some gate or guardrail has no figure for the arm at a
+    place it reads (or reads at no place the input holds).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: Their ids, in the input's arm order.
+    :rtype: list[str]
+    """
+    breached = {str(read.get("arm")) for read in report_input.guardrails if read.get("decision") == "breached"}
+    gating = [criterion for criterion in report_input.criteria if criterion.kind in _GATING]
+    return [
+        arm.id
+        for arm in report_input.arms
+        if arm.id not in breached
+        and not any(criterion_misses(report_input, criterion, arm.id) for criterion in gating)
+        and any(
+            criterion_unknowns(report_input, criterion, arm.id) or not criterion_places(report_input, criterion)
+            for criterion in gating
+        )
+    ]
 
 
 def _criterion_margins(report_input: ReportInput, surviving: set[str]) -> Iterator[Margin]:

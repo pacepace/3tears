@@ -20,12 +20,41 @@ Freezing unchanged evidence writes a new snapshot id.
 
 **Changed:** `settle_cases` sizes cases on a repeated design, each case run as often as today (one case's spread is its
 mean's over its repeats), and gives the trials that takes beside each size (`trials_needed` and its siblings;
-`spread.*.cases`, `spread.*.repeats`). Before, a size on a repeated design counted trials read as independent. With one
+`spread.*.cases`, `spread.*.repeats`, and `repeats` on `settle.criteria.` keys, on the criterion's aspect). Before, a size on a repeated design counted trials read as independent. With one
 arm and nothing named it reads every margin a reading of the arm is read against and every floor read on it, beside
 its criteria; `against` (`margin:<aspect>`, `floor:<aspect>/<floor>`) names one, keyed `settle.margin.*` and
 `settle.floor.*`. `settle_cases` and `arms_compare` take `assumed_cases`, a what-if count for a slice whose figure states
 none (a number, or `share` for the arm's own count times the slice's traffic share), keyed `assumed.<cases>.*`. A
 binomial spread's basis names where its count was read (its own, the slice's stated cases, or the arm's scoreboard).
+### evals: a criterion reads its own aspect's figures; a gate with no figure is unknown, not a fail; the analyst chooses how bars read
+
+**Fixed:** a bar declared on one aspect read the lead aspect's figure in every reader of criteria. On a campaign with a
+bar per aspect on one measure, the second aspect's bar read the first's figure (95% where the aspect held 60%), so the
+gate check, the margins, `criteria.<criterion>.<arm>.*`, `count.failing`, `settle_cases` and a block's criterion line
+all read the wrong side of the line. `Criterion.aspect` (optional) names the aspect a criterion reads, the report input
+built from a bundle sets it on every bar, and each reader takes that aspect's figures: the lead's from the by-arm maps,
+another's from `by_aspect`, none in a task or cell. A chart narrowed to one aspect (`query.aspect`) draws that aspect's
+criterion line. The options table prints no column for a criterion on another aspect, since its columns print the lead
+aspect's figures. `criteria.<criterion>.aspect` names the aspect read, and `settle.criteria.` keys gain `n`, `counts`
+and `basis` on the criterion's aspect. An input whose criteria name no aspect dumps as before (the field is left out),
+so its digest and snapshot id do not move. A campaign input built from a bundle with bars changes, and so does its
+snapshot id on a re-freeze.
+
+**Changed:** a gate with no figure for an option at a place it reads is unknown there, not a fail. A gate finding says
+`unknown` (`GateFinding.status`, the analyst's `GateRead.status`, which said `no_figure`); the gate check still does
+not pass the option, so pages and the planner's survivors read as before. `options_dominance` lists an option no gate
+figure fails, with a gate it has no figure for, as `undecided` (its unknown places, and any fact its figures over every
+case imply, labelled inferred and never a verdict), apart from the removed. A removed option lists its unknown places
+apart from the figures it fails on. `count.failing` counts figures that miss only; `count.unknown.<criterion>.<arm>`
+counts places with no figure, `count.failed.<arm>` gates missed on a figure, and `count.undecided` the undecided
+options. A sweep names the options with no figure where its criterion reads, settle refuses a criterion with no figure
+for the arm as unknown there, and the weakest-margin refusal names the undecided options.
+
+**Added:** `bars_as` (`warnings`, the default, or `gates`) on `options_dominance`, `decision_sensitivity` and
+`settle_cases`: the analyst's choice of reading the declared bars as gates, never code's. Read as gates, a bar removes an
+option that misses it and its threshold moves the call in a sweep; read as warnings, each survivor lists the bars and
+floor criteria it misses or borders (`warnings`), and a bar's sweep lists where each arm's figure crosses it. Each
+result says which reading it took; each settle row says whether its criterion gates.
 
 ### evals: a block over several aspects shows each one, or is refused naming a block per aspect
 

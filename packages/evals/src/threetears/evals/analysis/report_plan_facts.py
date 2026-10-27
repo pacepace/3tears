@@ -73,7 +73,7 @@ from threetears.evals.analysis.report.plan_page.drawable import undrawn_charts
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_decision import allowed_modes, caveat_materiality, report_caveats
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_margins import weakest_margin
+from threetears.evals.analysis.report_margins import criterion_aspect, lead_aspect, weakest_margin
 from threetears.evals.analysis.report_rows import query_aspect
 from threetears.evals.analysis.report_plan_checks import (
     Spine,
@@ -349,8 +349,10 @@ def _columns(report_input: ReportInput) -> Iterator[str]:
         columns[f"judged:{report_input.primary_judged}"] = None
     if any(criterion.kind == "gate" for criterion in report_input.criteria):
         columns["gate"] = None
+    lead = lead_aspect(report_input)
     for criterion in report_input.criteria:
-        if criterion.kind in ("bar", "guardrail"):
+        # A column prints the lead aspect's figures, so a criterion on another aspect has none of its own to print.
+        if criterion.kind in ("bar", "guardrail") and criterion_aspect(report_input, criterion) == lead:
             family = "judged" if criterion.measure in report_input.judged else "measure"
             columns[f"{family}:{criterion.measure}"] = None
     yield from columns

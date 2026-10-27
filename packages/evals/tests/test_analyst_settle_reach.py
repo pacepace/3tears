@@ -86,20 +86,31 @@ def test_a_rate_with_no_count_reads_its_tasks_stated_cases_and_its_basis_says_so
 # --- a repeated design ----------------------------------------------------------------------------------------------
 
 
-def test_s3s_bar_rows_size_cases_and_the_trials_they_take() -> None:
+def test_s3s_bar_rows_read_their_own_aspect_and_size_cases_and_the_trials_they_take() -> None:
+    """Each bar reads its own aspect's figure (the lead's from the by-arm maps, another's from by_aspect), and sizes
+    cases on that figure's spread over its repeats, with the trials beside."""
     held = budget_inputs()["s3"]
     arm = held.arms[0].id
-    checked = 0
+    lead = held.aspects[0].id
+    checked: set[str] = set()
     for row in settle_cases(held, [arm], limit=WHOLE).rows:
         if row.cases_needed is None or not row.against.startswith("criterion "):
             continue
         criterion = next(c for c in held.criteria if f"criterion {c.id}" == row.against)
-        stat = (held.judged.get(criterion.measure) or held.measures[criterion.measure]).per_arm[arm]
+        table = held.judged.get(criterion.measure) or held.measures[criterion.measure]
+        aspect = criterion.aspect or lead
+        stat = (table.per_arm if aspect == lead else table.by_aspect[aspect])[arm]
+        assert stat.mean is not None and [figure.value for figure in row.estimate] == [stat.mean]
         assert stat.n is not None and stat.n_cases is not None and stat.n_cases < stat.n, "s3 repeats its cases"
+        assert stat.sem is not None
+        per_case = float(stat.sem) * math.sqrt(stat.n_cases)
+        distance = float(stat.mean) - float(criterion.threshold)
+        assert row.cases_needed.value == _least(per_case, distance, _NORMAL.inv_cdf(0.95))
         assert row.trials_needed is not None
         assert row.trials_needed.value == math.ceil(_number(row.cases_needed.value) * stat.n / stat.n_cases - 1e-9)
-        checked += 1
-    assert checked
+        assert [figure.value for figure in row.repeats] == [pytest.approx(stat.n / stat.n_cases)]
+        checked.add(aspect)
+    assert checked == {aspect.id for aspect in held.aspects}, "each aspect's bar is settled on its own figure"
 
 
 def test_a_design_that_repeats_no_case_states_no_trials() -> None:

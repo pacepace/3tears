@@ -8,7 +8,9 @@ arithmetic and its design note are :mod:`~threetears.evals.analysis.separation`.
 **What it settles.**
 
 - *One arm against a line*: each declared criterion (gate, guardrail, floor or bar) reading the arm, at each place it
-  reads it, or the one criterion named (``criterion_id``), or a **hypothetical line** the caller gives on one measure
+  reads it and on the aspect it reads (a criterion declared on an aspect other than the lead reads that aspect's
+  figure, its count and its spread basis, by the criterion's own ``settle.criteria.`` keys), or the one criterion
+  named (``criterion_id``), or a **hypothetical line** the caller gives on one measure
   (``hypothetical_line`` with ``measure_key``), which the snapshot does not declare. The question is one-sided (which
   side of the line is the figure on?), at the snapshot's stated level, else 95%. Every figure read against a
   hypothetical line is keyed ``settle.hypothetical.<line>.``, so it reads as hypothetical wherever it is cited, and
@@ -50,6 +52,10 @@ count, else the arm's own stated spread times the root of its count.
   where a case's repeats agree the cases needed are more, at most the trials figure. Where a figure states no
   distinct cases its size counts what its count counts.
 
+- *Whether the line gates* (``gates``): each criterion row says whether its criterion removes an option that misses
+  it, as the caller reads the bars (``bars_as``: ``warnings`` as the snapshot declares them, or ``gates``). Code never
+  chooses the reading; the sizes are the same either way.
+
 **What it refuses**, teaching: the wrong number of arms; a criterion the snapshot does not declare, or one reading no
 figure for the arm; a hypothetical line with no measure, or a measure that states no direction; a line written only
 in exponent notation; and a call where no row can be read (every figure a p50 or p95, no spread, no count, or each
@@ -68,6 +74,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from threetears.evals.analysis.analyst.analyses import BarsAs
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite
 from threetears.evals.analysis.analyst.compare import (
     assumed_words,
@@ -83,6 +90,10 @@ from threetears.evals.analysis.report.figure_keys import (
     separation_wheres,
 )
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_margins import criterion_aspect, lead_aspect
+
+#: The criterion kinds that remove an option that misses them, as declared.
+_GATING = frozenset({"gate", "guardrail"})
 from threetears.evals.kernel.errors import RefusedInput
 
 __all__ = ["SETTLE_PAGE", "Assumed", "Settle", "settle_cases"]
@@ -230,6 +241,12 @@ class SettleRow(BaseModel):
     )
     basis: list[CitedFigure] = Field(description="What each arm's spread was read from.")
     unsettled: str = Field(description="Why no design size is read here; empty where one is.")
+    gates: bool | None = Field(
+        default=None,
+        description="Against a declared criterion, whether it removes an option that misses it as the caller reads "
+        "the bars (bars_as): a gate or guardrail does, a floor never, a bar where bars_as is gates; None against a "
+        "hypothetical line or another arm.",
+    )
 
 
 class Settle(BaseModel):
@@ -255,6 +272,11 @@ class Settle(BaseModel):
     offset: int = Field(description="The first reading this page holds.")
     next_offset: int | None = Field(description="The offset of the next page; None when this is the last.")
     notes: list[str] = Field(description="What could not be read, and why.")
+    bars_as: BarsAs = Field(
+        default="warnings",
+        description="How the declared bars were read, as the caller chose: warnings or gates (each row's gates says "
+        "which way its criterion reads).",
+    )
 
 
 def _spread_figures(
@@ -352,8 +374,22 @@ def _head(report_input: ReportInput, assumed: Assumed | None, arms: Sequence[str
     return f"assumed.{assumed}." if assumed is not None and assumable(report_input, arms, key, where) else ""
 
 
+def _on_own_aspect(report_input: ReportInput, row: SettleRow, prefix: str) -> SettleRow:
+    """A criterion row on an aspect other than the lead, its count, what it counts, its repeats and its spread basis
+    read on that aspect by the criterion's own settle keys, where a ``spread.`` key reads the lead aspect's."""
+    found: dict[str, list[CitedFigure]] = {}
+    for field, named in (("n", "counts"), ("counts", "count_of"), ("repeats", "repeats"), ("basis", "basis")):
+        figure, _why = cite_or_why(f"{prefix}.{field}", report_input)
+        found[named] = [figure] if figure is not None else []
+    return row.model_copy(update=found)
+
+
 def _criteria_rows(
-    report_input: ReportInput, arm: str, criteria: Sequence[str], assumed: Assumed | None = None
+    report_input: ReportInput,
+    arm: str,
+    criteria: Sequence[str],
+    bars_as: BarsAs = "warnings",
+    assumed: Assumed | None = None,
 ) -> list[SettleRow]:
     rows: list[SettleRow] = []
     for criterion_id in criteria:
@@ -363,20 +399,24 @@ def _criteria_rows(
         for where in wheres:
             place = "" if len(wheres) == 1 else "." + where.removeprefix("task.").removeprefix("cells.")
             value = cite(f"criteria.{criterion_id}.{arm}{place}.value", report_input)
-            rows.append(
-                _row(
-                    report_input,
-                    f"settle.criteria.{criterion_id}.{arm}.{where}",
-                    where=where,
-                    against=f"criterion {criterion_id}",
-                    arms=(arm,),
-                    key=criterion.measure,
-                    estimate=[value],
-                    line=line,
-                    fields=_LINE_FIELDS,
-                    head=_head(report_input, assumed, (arm,), criterion.measure, where),
-                )
+            head = _head(report_input, assumed, (arm,), criterion.measure, where)
+            prefix = f"{head}settle.criteria.{criterion_id}.{arm}.{where}"
+            row = _row(
+                report_input,
+                f"settle.criteria.{criterion_id}.{arm}.{where}",
+                where=where,
+                against=f"criterion {criterion_id}",
+                arms=(arm,),
+                key=criterion.measure,
+                estimate=[value],
+                line=line,
+                fields=_LINE_FIELDS,
+                head=head,
             )
+            on_lead = criterion_aspect(report_input, criterion) == lead_aspect(report_input)
+            row = row if on_lead else _on_own_aspect(report_input, row, prefix)
+            gates = criterion.kind in _GATING or (criterion.kind == "bar" and bars_as == "gates")
+            rows.append(row.model_copy(update={"gates": gates}))
     return rows
 
 
@@ -444,6 +484,7 @@ def _rows(
     line: float | None,
     against: str | None = None,
     assumed: Assumed | None = None,
+    bars_as: BarsAs = "warnings",
 ) -> tuple[list[SettleRow], str, bool]:
     """Every row the call names, how they are read (one- or two-sided), and whether the line is hypothetical."""
     if len(arms) == 2:
@@ -519,7 +560,11 @@ def _rows(
     reading = [held.id for held in report_input.criteria if criterion_wheres(report_input, held.id, arm)]
     if criterion is not None and criterion not in reading:
         declared = criterion in {held.id for held in report_input.criteria}
-        fault = "reads no figure for the arm" if declared else "names no criterion the snapshot declares"
+        fault = (
+            "reads no figure for the arm: the snapshot states none where it reads (unknown there, not a miss)"
+            if declared
+            else "names no criterion the snapshot declares"
+        )
         raise RefusedInput(
             f"criterion_id {criterion!r} {fault}",
             remedy=f"name a criterion reading {_arm(arm)}: {_listed(reading)}; or a margin or floor (against: "
@@ -528,7 +573,7 @@ def _rows(
             valid_values=reading,
         )
     if criterion is not None:
-        return _criteria_rows(report_input, arm, [criterion], assumed), _ONE_SIDED, False
+        return _criteria_rows(report_input, arm, [criterion], bars_as, assumed), _ONE_SIDED, False
     if not reading and not margins:
         raise RefusedInput(
             f"no declared criterion reads a figure for {_arm(arm)}, and no margin or floor is read on it, so there is "
@@ -537,7 +582,7 @@ def _rows(
             "second arm to settle the two apart",
             parameters=("hypothetical_line", "measure_key"),
         )
-    rows = _criteria_rows(report_input, arm, reading, assumed) + _margin_rows(report_input, arm, margins)
+    rows = _criteria_rows(report_input, arm, reading, bars_as, assumed) + _margin_rows(report_input, arm, margins)
     sided = " ".join(text for text, held in ((_ONE_SIDED, reading), (_AGAINST_MARGIN, margins)) if held)
     return rows, sided, False
 
@@ -553,6 +598,7 @@ def settle_cases(
     assumed: Assumed | None = None,
     limit: int = SETTLE_PAGE,
     offset: int = 0,
+    bars_as: BarsAs = "warnings",
 ) -> Settle:
     """The cases that would settle each named reading: one arm against every line it is judged by (its criteria, the
     margins its readings are read against, the floors read on it), one criterion, margin or floor, or a hypothetical
@@ -578,12 +624,17 @@ def settle_cases(
     :ptype limit: int
     :param offset: The first row the page holds.
     :ptype offset: int
+    :param bars_as: How the caller reads the declared bars, which each criterion row's ``gates`` says: ``warnings``
+        as declared, or ``gates``. The sizes are the same either way.
+    :ptype bars_as: BarsAs
     :return: A page of rows.
     :rtype: Settle
     :raises RefusedInput: The arms, criterion, line or measure name nothing that can be settled, or no row reads.
     """
     refuse_arms(report_input, arms, (1, 2), "settle_cases")
-    rows, sided, hypothetical = _rows(report_input, arms, measure, criterion, line, against, assumed)
+    rows, sided, hypothetical = _rows(
+        report_input, arms, measure, criterion, line, against=against, assumed=assumed, bars_as=bars_as
+    )
     if assumed is not None and not any(row.basis and row.basis[0].key.startswith("assumed.") for row in rows):
         raise RefusedInput(
             f"assumed is {assumed!r}, and every row named reads a count its figures state, or is read against a "
@@ -612,4 +663,5 @@ def settle_cases(
         offset=offset,
         next_offset=end if end < len(rows) else None,
         notes=unkeyed_strata(report_input) if measure is not None else [],
+        bars_as=bars_as,
     )

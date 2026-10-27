@@ -17,6 +17,7 @@ from threetears.evals.analysis.analyst.analyses import (
     BREAKDOWN_PAGE,
     DOMINANCE_PAGE,
     SENSITIVITY_PAGE,
+    BarsAs,
     Breakdown,
     Dominance,
     Sensitivity,
@@ -51,6 +52,7 @@ async def options_dominance(
     *,
     snapshot_id: str,
     axes: Sequence[str],
+    bars_as: BarsAs = "warnings",
     limit: int = DOMINANCE_PAGE,
     offset: int = 0,
     fits: Callable[[Dominance], bool] | None = None,
@@ -65,6 +67,8 @@ async def options_dominance(
     :ptype snapshot_id: str
     :param axes: Extra measures or judged dimensions to compare the survivors on, descriptively.
     :ptype axes: Sequence[str]
+    :param bars_as: How to read the declared bars: ``warnings`` as declared, or ``gates``, as the caller chose.
+    :ptype bars_as: BarsAs
     :param limit: The most options one page holds.
     :ptype limit: int
     :param offset: The first option the page holds, in the input's arm order.
@@ -81,7 +85,9 @@ async def options_dominance(
         host,
         scope_id,
         snapshot_id,
-        lambda held: sized_page(lambda rows: dominance(held, axes, limit=rows, offset=offset), limit, fits),
+        lambda held: sized_page(
+            lambda rows: dominance(held, axes, limit=rows, offset=offset, bars_as=bars_as), limit, fits
+        ),
     )
 
 
@@ -93,6 +99,7 @@ async def decision_sensitivity(
     parameter: str,
     range_low: float | None = None,
     range_high: float | None = None,
+    bars_as: BarsAs = "warnings",
     limit: int = SENSITIVITY_PAGE,
     offset: int = 0,
     fits: Callable[[Sensitivity], bool] | None = None,
@@ -111,6 +118,8 @@ async def decision_sensitivity(
     :ptype range_low: float | None
     :param range_high: Where it ends; omitted, no upper end.
     :ptype range_high: float | None
+    :param bars_as: How to read the declared bars: ``warnings`` as declared, or ``gates``, as the caller chose.
+    :ptype bars_as: BarsAs
     :param limit: The most flips one page lists.
     :ptype limit: int
     :param offset: The first flip the page lists.
@@ -130,7 +139,13 @@ async def decision_sensitivity(
         snapshot_id,
         lambda held: sized_page(
             lambda rows: sensitivity(
-                held, parameter, range_low=range_low, range_high=range_high, limit=rows, offset=offset
+                held,
+                parameter,
+                range_low=range_low,
+                range_high=range_high,
+                limit=rows,
+                offset=offset,
+                bars_as=bars_as,
             ),
             limit,
             fits,
@@ -256,6 +271,7 @@ async def settle_cases(
     hypothetical_line: float | None = None,
     against: str | None = None,
     assumed_cases: Assumed | None = None,
+    bars_as: BarsAs = "warnings",
     limit: int = SETTLE_PAGE,
     offset: int = 0,
     fits: Callable[[Settle], bool] | None = None,
@@ -282,6 +298,8 @@ async def settle_cases(
     :ptype against: str | None
     :param assumed_cases: A what-if: the cases each slice stating no count is read as holding, or ``share``.
     :ptype assumed_cases: Assumed | None
+    :param bars_as: How the caller reads the declared bars, which each criterion row says: ``warnings`` or ``gates``.
+    :ptype bars_as: BarsAs
     :param limit: The most rows one page holds.
     :ptype limit: int
     :param offset: The first row the page holds.
@@ -309,6 +327,7 @@ async def settle_cases(
                 assumed=assumed_cases,
                 limit=rows,
                 offset=offset,
+                bars_as=bars_as,
             ),
             limit,
             fits,
@@ -323,6 +342,7 @@ __all__ = [
     "SENSITIVITY_PAGE",
     "SETTLE_PAGE",
     "ArmsComparison",
+    "BarsAs",
     "Breakdown",
     "Dominance",
     "Sensitivity",

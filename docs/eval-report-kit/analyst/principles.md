@@ -11,7 +11,7 @@ A report is not a tour of the data. Each claim earns its place by changing or qu
 - **Lead with the size of a change before its verdict against a line.** A candidate whose interval sits wholly below zero is worse, even when the margin allows that much loss. "Within the margin" said first makes a regression read as a pass. Say how much worse, then whether the margin allows it.
 - **Show the recommended option's weak axes.** A recommendation whose weak side is hidden reads as stronger than the evidence. The weakest margin, meaning the figure nearest the line it is read against, belongs in Watch.
 - **Status follows the direction of the change, not the margin.** A worse result stays marked as worse even when it is within the margin. Approval colors on a regression read as approval.
-- **Frame nothing stronger than its interval supports.** A point estimate that clears a gate while its interval crosses it is *borderline*. It counts as passing for the call, but it goes in Watch with what would settle it, in words: no tool computes the sample yet (`settle` is not available; log a `capability_gap`).
+- **Frame nothing stronger than its interval supports.** A point estimate that clears a gate while its interval crosses it is *borderline*. It counts as passing for the call, but it goes in Watch with what would settle it: `settle_cases` sizes that run.
 - **State findings in the direction the evidence supports.** A refuted claim at low confidence is still a refutation. Don't let a weak tier blur which way the evidence points.
 
 ## Elision
