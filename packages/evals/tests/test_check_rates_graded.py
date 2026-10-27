@@ -66,9 +66,7 @@ def _hosted() -> CampaignBundle:
     profile = toyhost_profile()
     profile = replace(
         profile,
-        measures=MeasureRegistry(
-            (*TOYHOST_MEASURES, _ON_TARGET, _FIELDS_MATCH), families=(TOYHOST_EXTRACTION_FAMILY,)
-        ),
+        measures=MeasureRegistry((*TOYHOST_MEASURES, _ON_TARGET, _FIELDS_MATCH), families=(TOYHOST_EXTRACTION_FAMILY,)),
     )
     results = {
         run_id: [
