@@ -1,0 +1,234 @@
+### c1 / 1
+rendered block
+block_kind: bars
+query:
+  source: measures
+  aspect: 
+  measures: [cost_per_1k]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: f64
+title: 
+level: 
+unit: usd_per_1k
+domain: 
+reference: none
+columns: [Row, Value, Note]
+rows (4):
+  - cells: [Production, $2.10, $2.10]
+  - cells: [f64, $1.47, $1.47]
+  - cells: [f16, $1.21, $1.21]
+  - cells: [cor, $1.62, $1.62]
+total: 4
+offset: 0
+truncated: False
+notes: []
+
+### c1 / 2
+rendered block
+block_kind: forest
+query:
+  source: contrasts
+  aspect: 
+  measures: [persona]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: f64
+title: 
+level: 95%
+unit: points
+domain: 
+reference: none
+columns: [Row, Change, 95% interval, Note]
+rows (3):
+  - cells: [A · f64, -6.1, -7.3 to -4.9, -6.1 pts worse]
+  - cells: [B · f16, -7.4, -8.6 to -6.2, -7.4 pts worse]
+  - cells: [C · cor, -2.2, -3.4 to -1.0, -2.2 pts worse]
+total: 3
+offset: 0
+truncated: False
+notes: []
+
+### c2 / 1
+rendered block
+block_kind: bars
+query:
+  source: prices
+  aspect: 
+  measures: [persona]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 95%
+unit: dollars
+domain: 
+reference: none
+columns: [Row, Value, 95% interval, Note]
+rows (1):
+  - cells: [f64 → Production, $1,239, $1,036 to $1,543, $1,239]
+total: 1
+offset: 0
+truncated: False
+notes: [Each step's price per point a month at the declared volume: where the best option moves as a point's price rises.]
+
+### c3 / 1
+rendered block
+block_kind: diverging_bars
+query:
+  source: compare
+  aspect: 
+  measures: [persona]
+  arms: [f64, prod]
+  strata: [depth:1-2, depth:3-5, depth:6-10, depth:11+]
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 95% unpaired
+unit: points
+domain: 
+reference: none
+columns: [Row, Value, 95% unpaired interval, Note]
+rows (4):
+  - cells: [1–2, -2.0, -4.416 to +0.4158, -2.0 pts]
+  - cells: [3–5, -4.5, -7.525 to -1.475, -4.5 pts]
+  - cells: [6–10, -11.0, -15.53 to -6.475, -11.0 pts]
+  - cells: [11+, -17.5, -24.65 to -10.35, -17.5 pts]
+total: 4
+offset: 0
+truncated: False
+notes: [Each row is f64 less Production on Stays in character, overall and in each place both hold it., The interval is independent: each arm's own spread (a pass/fail rate's binomial spread, from its own count), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.]
+
+### c4 / 1
+rendered block
+block_kind: dot_interval
+query:
+  source: judged
+  aspect: 
+  measures: [facts]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: floor
+emphasis: 
+title: 
+level: 95% computed
+unit: percent
+domain: 
+criteria.facts.threshold = 90%
+columns: [Row, Value, 95% computed interval]
+rows (5):
+  - cells: [P · Production, 93.0%, 90.1% to 95.9%]
+  - cells: [A · f64, 92.1%, 89.0% to 95.2%]
+  - cells: [B · f16, 89.4%, 85.9% to 92.9%]
+  - cells: [C · cor, 94.0%, 91.3% to 96.7%]
+  - cells: [floor 90%, 90.0%, ]
+total: 5
+offset: 0
+truncated: False
+notes: [Each interval is computed here from the rate's binomial spread, by the normal approximation, held to 0 to 100%. A rate of none or all has none.]
+
+### c4 / 2
+rendered block
+block_kind: dot_interval
+query:
+  source: measures
+  aspect: 
+  measures: [specul]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: floor
+emphasis: 
+title: 
+level: 95% computed
+unit: pct
+domain: 
+criteria.specul.threshold = 95%
+columns: [Row, Value, 95% computed interval]
+rows (5):
+  - cells: [P · Production, 97.3%, 95.5% to 99.1%]
+  - cells: [A · f64, 96.4%, 94.3% to 98.5%]
+  - cells: [B · f16, 96.0%, 93.8% to 98.2%]
+  - cells: [C · cor, 92.0%, 88.9% to 95.1%]
+  - cells: [floor 95%, 95.0%, ]
+total: 5
+offset: 0
+truncated: False
+notes: [Each interval is computed here from the rate's binomial spread, by the normal approximation, held to 0 to 100%. A rate of none or all has none.]
+
+### c5 / 1
+rendered block
+block_kind: table
+query:
+  source: settle
+  aspect: 
+  measures: [facts, specul]
+  arms: [f64]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: percent
+domain: 
+reference: none
+columns: [Arm, Against, Today's figure, Line, Distance toward passing, Settles, Sizes count, Needed, one-sided, Needed, two-sided, Today, Trials needed, one-sided, Trials needed, two-sided, Repeats of a case, Trials today, A fresh run reads the other side, Level]
+rows (2):
+  - cells: [A · f64, Music facts correct, 92.1%, 90.0%, +2.1, clears, cases, 447.0, 634.0, 300.0, —, —, —, —, 8.9%, 95% one-sided]
+  - cells: [A · f64, Declines to speculate, 96.4%, 95.0%, +1.4, clears, cases, 480.0, 681.0, 300.0, —, —, —, —, 9.7%, 95% one-sided]
+total: 2
+offset: 0
+truncated: False
+notes: [Each bar is how often a fresh run of today's size would read the figure on the other side of its line, if the truth is today's estimate (95% one-sided); it plans a run and tests nothing.]
+
+### c6 / 1
+rendered block
+block_kind: range_bars
+query:
+  source: measures
+  aspect: 
+  measures: [latency_s]
+  arms: [prod, f64]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: s
+domain: 
+reference: none
+columns: [Group, Row, From, To]
+rows (2):
+  - cells: [Latency, P · Production, 1.1 s, 2.4 s]
+  - cells: [Latency, A · f64, 0.7 s, 1.6 s]
+total: 2
+offset: 0
+truncated: False
+notes: []
+

@@ -1,0 +1,50 @@
+measure figures
+measure: overall
+by: task
+level: 95%
+held: [mean, half_width]
+not_shown: []
+slices (5):
+  - slice: billing; aspect: none
+    task.billing.name = Billing & account Q&A
+    task.billing.n_cases = 400
+  - slice: trouble; aspect: none
+    task.trouble.name = Troubleshooting (multi-turn)
+    task.trouble.n_cases = 180
+  - slice: persona; aspect: none
+    task.persona.name = Persona small talk
+    task.persona.n_cases = 220
+  - slice: research; aspect: none
+    task.research.name = Research-needed questions
+    task.research.n_cases = 240
+  - slice: specul; aspect: none
+    task.specul.name = Speculation bait
+    task.specul.n_cases = 150
+rows (5):
+  - aspect: none; slice: billing
+    arm:atlas-m = Atlas-M (B)
+    figures (2):
+      task.billing.atlas-m.overall.mean = 92
+      task.billing.atlas-m.overall.half_width = 1.1
+  - aspect: none; slice: trouble
+    arm:atlas-m = Atlas-M (B)
+    figures (2):
+      task.trouble.atlas-m.overall.mean = 88
+      task.trouble.atlas-m.overall.half_width = 1.6
+  - aspect: none; slice: persona
+    arm:atlas-m = Atlas-M (B)
+    figures (2):
+      task.persona.atlas-m.overall.mean = 88
+      task.persona.atlas-m.overall.half_width = 1.5
+  - aspect: none; slice: research
+    arm:atlas-m = Atlas-M (B)
+    figures (2):
+      task.research.atlas-m.overall.mean = 89
+      task.research.atlas-m.overall.half_width = 1.4
+  - aspect: none; slice: specul
+    arm:atlas-m = Atlas-M (B)
+    figures (2):
+      task.specul.atlas-m.overall.mean = 89
+      task.specul.atlas-m.overall.half_width = 1.8
+total: 5
+offset: 0

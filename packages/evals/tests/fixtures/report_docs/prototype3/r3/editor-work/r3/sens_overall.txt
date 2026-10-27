@@ -1,0 +1,43 @@
+sensitivity
+parameter: threshold:overall
+hypothetical: False
+swept: every threshold from no lower end up, without end, on criterion overall
+criteria.overall.threshold = 90%
+boundary_belongs_to: below
+declared_call:
+  modes: [decide]
+  dominant: [arm:brisk-s.few]
+reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+declared_picks: []
+segments (2):
+  - low: none; modes: [decide]; dominant: [arm:brisk-s.few]; picks: []
+    high:
+      criteria.overall.brisk-s.few.value = 90.7%
+  - high: none; modes: [no_call]; dominant: []; picks: []
+    low:
+      criteria.overall.brisk-s.few.value = 90.7%
+holds: False
+picks_hold: True
+flips (9):
+  - arm: arm:nano-xs.zero; where: none; call_changes: False; picks_change: False
+    criteria.overall.nano-xs.zero.value = 78.2%
+  - arm: arm:nano-xs.rubric; where: none; call_changes: False; picks_change: False
+    criteria.overall.nano-xs.rubric.value = 83.9%
+  - arm: arm:brisk-s.zero; where: none; call_changes: False; picks_change: False
+    criteria.overall.brisk-s.zero.value = 86%
+  - arm: arm:atlas-m.zero; where: none; call_changes: False; picks_change: False
+    criteria.overall.atlas-m.zero.value = 89.8%
+  - arm: arm:nano-xs.few; where: none; call_changes: False; picks_change: False
+    criteria.overall.nano-xs.few.value = 90.1%
+  - arm: arm:brisk-s.few; where: none; call_changes: True; picks_change: False
+    criteria.overall.brisk-s.few.value = 90.7%
+  - arm: arm:brisk-s.rubric; where: none; call_changes: False; picks_change: False
+    criteria.overall.brisk-s.rubric.value = 91.5%
+  - arm: arm:atlas-m.few; where: none; call_changes: False; picks_change: False
+    criteria.overall.atlas-m.few.value = 92.1%
+  - arm: arm:atlas-m.rubric; where: none; call_changes: False; picks_change: False
+    criteria.overall.atlas-m.rubric.value = 93.2%
+total: 9
+offset: 0
+notes: []
+bars_as: warnings

@@ -1,0 +1,12 @@
+refused: price_tradeoff was called with values it cannot take:
+- gain_key: Field required
+price_tradeoff accepts:
+- snapshot_id (string, required): The snapshot every figure is read from, by the id its freeze returned.
+- gain_key (string, required): The axis the trade's gain is read on: a measure with a direction, or a judged dimension, by the key campaign_overview lists.
+- arm_filter (optional string, default null): Read only this arm, by its id in the snapshot; omitted reads every arm.
+- slice_filter (optional string, default null): Price within this one task, stratum or cell only, by its id (a cell as <row>.<column>), on the slice's own figures; omitted prices overall.
+- what_if (optional string, default null): Also price this option the gates remove or leave undecided, as if it passed: a labelled what-if, never a recommendation; omitted for none.
+- limit (optional integer, default null): The most rows to return, up to 200.
+- offset (integer, default 0): Skip this many rows; the previous page's next_offset.
+Example: {"action": "price_tradeoff", "snapshot_id": "report-snapshot:0193a1b2c3d4e5f60718293a4b5c6d7e", "gain_key": "facts"}
+recovery: {"parameters":["gain_key"],"accepted":["snapshot_id","gain_key","arm_filter","slice_filter","what_if","limit","offset"],"example":{"action":"price_tradeoff","snapshot_id":"report-snapshot:0193a1b2c3d4e5f60718293a4b5c6d7e","gain_key":"facts"},"see":{"action":"help","topic":"price_tradeoff"}}

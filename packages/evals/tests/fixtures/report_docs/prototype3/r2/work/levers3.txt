@@ -1,0 +1,26 @@
+rendered block
+block_kind: diverging_bars
+query:
+  source: levers
+  aspect: 
+  measures: [pass_rate]
+  arms: [brisk-s.low.r0, brisk-s.low.r1, brisk-s.high.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: brisk-s.low.r1
+title: 
+level: 95% unpaired
+unit: points
+domain: 
+reference: none
+columns: [Group, Row, Value, 95% unpaired interval, Note]
+rows (2):
+  - cells: [reasoning, Brisk-S · reasoning low · 1 retry → high, +0.83, -0.4053 to +2.065, +0.8 pts]
+  - cells: [retry, Brisk-S · reasoning low · no retry → 1.0, +1.87, +0.3429 to +3.397, +1.9 pts]
+total: 2
+offset: 0
+truncated: False
+notes: [Each effect is one setting moved between two arms that differ in it alone, on Pass rate; each interaction is how that effect changes across another setting. Descriptive: read as two arms' own spreads, never a test.]

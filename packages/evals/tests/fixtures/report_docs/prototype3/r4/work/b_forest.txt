@@ -1,0 +1,27 @@
+rendered block
+block_kind: forest
+query:
+  source: contrasts
+  aspect: 
+  measures: [persona]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 95%
+unit: points
+domain: 
+reference: none
+columns: [Row, Change, 95% interval, Note]
+rows (3):
+  - cells: [A · f64, -6.1, -7.3 to -4.9, -6.1 pts worse]
+  - cells: [B · f16, -7.4, -8.6 to -6.2, -7.4 pts worse]
+  - cells: [C · cor, -2.2, -3.4 to -1.0, -2.2 pts worse]
+total: 3
+offset: 0
+truncated: False
+notes: []

@@ -1,0 +1,18 @@
+caveat listing
+caveats (4):
+  - id: no_control; kind: no_control; reach: report; source: implied; matters_if: it matters for any claim that one arm beats another: with no control nothing is read paired, so two arms compare only by their own figures and intervals; immaterial: False; checked: none; touches_arms: []; touches_aspects: []; touches_measures: []; says: none
+    figures (1):
+      n_candidates = 9
+  - id: point_estimate:overall; kind: point_estimate; reach: report; source: implied; matters_if: it matters where a surviving option clears the line by little: no interval says whether the clearance is more than noise, so a clearance inside its noise reads as a pass; immaterial: False; checked: none; touches_arms: [brisk-s.few]; touches_aspects: []; touches_measures: [balanced_accuracy]; says: none
+    figures (2):
+      criteria.overall.threshold = 90%
+      criteria.overall.brisk-s.few.gap = 0.7
+  - id: point_estimate:p95; kind: point_estimate; reach: report; source: implied; matters_if: it matters where a surviving option clears the line by little: no interval says whether the clearance is more than noise, so a clearance inside its noise reads as a pass; immaterial: False; checked: none; touches_arms: [brisk-s.few]; touches_aspects: []; touches_measures: [latency_ms]; says: none
+    figures (2):
+      criteria.p95.threshold = 250 ms
+      criteria.p95.brisk-s.few.gap = 66 ms
+  - id: best_of_n; kind: best_of_n; reach: report; source: implied; matters_if: it matters where the pick leads the next option, or clears a line, by little: the best of many candidates reads high by chance, the more so the more there are, so a re-run on fresh cases tends to read it lower; immaterial: False; checked: none; touches_arms: [atlas-m.zero, atlas-m.few, atlas-m.rubric, brisk-s.zero, brisk-s.few, brisk-s.rubric, nano-xs.zero, nano-xs.few, nano-xs.rubric]; touches_aspects: []; touches_measures: []; says: none
+    figures (1):
+      n_candidates = 9
+total: 4
+offset: 0

@@ -1,0 +1,90 @@
+{
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "Headline, flag and decision block alone say what to do (ship Brisk-S low reasoning with one retry, J), why (the only one of eighteen inside both gates; five reach 97%, ten stay under 600 ms, checked against options_dominance), and the main risk (clears 97% by 0.1 points, interval 96.2% to 98.1%, a run of today's size reads it below the line 38.6% of the time). c1's gate scatter shows the single survivor at a glance."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "c1 (only survivor) -> c2 (its clearance is noise) -> c3 (every safer option misses latency) -> c4 (one retry is what lifts it) -> c5 (where headroom might come from) feeds the next slot and next steps directly. Headline, lede, watch and explore 3 agree. The c2 caption's 'only the pick's interval crosses the line' contradicts its own block (row E), but that is a wording error, not a break in the argument."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 2,
+      "reason": "The pick's weak axis is stated on the first screen and repeated in c2, watch and the confidence caveats; c4 says the reasoning gain (+0.8, -0.4 to +2.1) is not separated, and next step 3 says L's case is margin, not a measured lead. Slight overreach: the confidence form 'high_if_immaterial' sits on a lead caveat that is close to a coin flip (38.6% wrong side, and best_of_n pushes it higher), and the lede states 38.6% without the 'if its true rate is today's' condition."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 1,
+      "reason": "Most of the omissions check out: cost ranks one survivor; p95 budget sweep never changes the pick above 513 ms; off-reasoning and calls-per-task do not move the call. But the Nano-XS omission ('none is near the call') is not borne out by the pass-rate sweep: Nano-XS high reasoning with one retry (94.8%, 450 ms, $444 a month against the pick's $1,208) becomes the pick for any line from 92.7% to 94.8%, and is next in line after Brisk-S low no-retry. A reader weighing a relaxed pass line, which explore and next step 1 both invite, would want that option named."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "All four snapshot caveats (no_control, point_estimate:pass_rate, point_estimate:p95, best_of_n) are shown with material_if clauses. No control and unpaired effects are carried into c4 and Method; best_of_n is carried into watch and next step 2; missing task counts are carried into c5 and the omissions; p95 with no spread is stated. The unstated pass definition is in Method."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "Three steps, each a declaration or an experiment with what it settles: declare point vs whole-interval reading (settles whether J passes today); re-run Brisk-S low with a second retry or a multi-hop fix on fresh cases watching the tail (settles whether a cheap option clears with its whole interval, and the best-of-eighteen luck); latency owner on 870 ms (settles whether L becomes the safer pick at $2,532 a month)."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "c1 gate_scatter, c4 diverging_bars and c5 bars plus examples fit their claims and the counterfactual holds. But c2's dot_interval caption says 'only the pick's interval crosses the line', and its own row E (Atlas-M high, no retry) reads 96.9% to 98.6%, which also crosses 97% (confirmed by spread.atlas-m.high.r0.pass_rate.overall.interval). c3's claim is about configurations whose interval clears the line (L, D, F), yet its range_bars include E, whose interval does not; the block shows latency but not which arms belong to the claimed set. The c2 settle table (16 columns, several dashes) carries one cited figure; its caption describes the one-sided need (38,350) while the watch slot cites the two-sided one (54,451)."
+    }
+  ],
+  "total": 12,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "c2",
+      "severity": "must_fix",
+      "finding": "Caption 'only the pick's interval crosses the line' is false on its own block: Atlas-M high reasoning, no retry (E) has an interval of 96.9% to 98.6%, which crosses 97%. Say 'the pick's interval crosses the line, and so does E's, which misses the latency budget', or drop E from the block."
+    },
+    {
+      "claim": "report",
+      "severity": "must_fix",
+      "finding": "Explore 'Pass-rate line': 'Lowered to 95.3% or below, Brisk-S low no-retry becomes the pick' is only true from 94.8% to 95.3%. The sweep (threshold:pass_rate) hands the pick to Nano-XS high reasoning with one retry from 92.7% to 94.8% ($444 a month), then to other Nano-XS settings lower down. State the band, and name the Nano-XS step, since it is a third of the pick's cost."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Omitted 'The Nano-XS configurations ... none is near the call' overstates. Nano-XS high with one retry is the next cheaper candidate once the pass line moves 2.2 points, and the omitted retry-by-model interaction (retry helps weaker models more) is the lever a 'buy headroom' experiment would pull. Either reword the reason or add Nano-XS high, one retry, to next step 2 as a cheaper headroom candidate."
+    },
+    {
+      "claim": "c3",
+      "severity": "should_fix",
+      "finding": "The claim names configurations whose pass-rate interval clears the line (L, D, F), but the range_bars show J, L, D, E, F. Either restrict the block to L, D, F plus the pick or reword the claim to 'every configuration at or above the line'. Both are true, but the block and the claim should name the same set."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The lede and c2 state 'a fresh run of today's size would read the pick below the line 38.6% of the time' without the condition that the true rate equals today's. Under best_of_n the true rate likely reads lower, so 38.6% is the favourable case. Add the condition once on the first screen."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The watch slot cites the two-sided need (54,451 cases), while c2's settle table caption describes the one-sided need for the interval to sit wholly above the line (38,350). Cite the one the caption describes, or say why two-sided is the relevant reading. Both are impractical against 1,200 today, so the conclusion stands."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The confidence form 'high_if_immaterial' is generous when the lead caveat (point_estimate:pass_rate) has roughly a 39% chance of being material even before the best-of-eighteen correction. The material_if text is honest, but the form label reads stronger than the evidence."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 1 (minor): the c1 caption types a quantity, 'more than tenfold', with no figure key. It matches the block's own log-scale note, but it is a number in prose that does not resolve through a key.",
+    "Rendering text, not the report: the c2 settle table's note says 'Each bar is how often...' on a block that renders as a table, not bars."
+  ],
+  "calls": 15
+}

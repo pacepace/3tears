@@ -1,0 +1,61 @@
+sensitivity
+parameter: threshold:p95
+hypothetical: False
+swept: every threshold from range_low to range_high, on criterion p95
+criteria.p95.threshold = 600 ms
+boundary_belongs_to: above
+declared_call:
+  modes: [decide]
+  dominant: [arm:brisk-s.low.r1]
+reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+declared_picks: []
+segments (2):
+  - low: none; modes: [no_call]; dominant: []; picks: []
+    high:
+      criteria.p95.brisk-s.low.r1.value = 513 ms
+  - high: none; modes: [decide]; dominant: [arm:brisk-s.low.r1]; picks: []
+    low:
+      criteria.p95.brisk-s.low.r1.value = 513 ms
+holds: False
+picks_hold: True
+flips (18):
+  - arm: arm:nano-xs.off.r0; where: none; call_changes: False; picks_change: False
+    criteria.p95.nano-xs.off.r0.value = 140 ms
+  - arm: arm:nano-xs.off.r1; where: none; call_changes: False; picks_change: False
+    criteria.p95.nano-xs.off.r1.value = 198 ms
+  - arm: arm:nano-xs.low.r0; where: none; call_changes: False; picks_change: False
+    criteria.p95.nano-xs.low.r0.value = 217 ms
+  - arm: arm:nano-xs.low.r1; where: none; call_changes: False; picks_change: False
+    criteria.p95.nano-xs.low.r1.value = 275 ms
+  - arm: arm:brisk-s.off.r0; where: none; call_changes: False; picks_change: False
+    criteria.p95.brisk-s.off.r0.value = 300 ms
+  - arm: arm:brisk-s.off.r1; where: none; call_changes: False; picks_change: False
+    criteria.p95.brisk-s.off.r1.value = 359 ms
+  - arm: arm:nano-xs.high.r0; where: none; call_changes: False; picks_change: False
+    criteria.p95.nano-xs.high.r0.value = 378 ms
+  - arm: arm:nano-xs.high.r1; where: none; call_changes: False; picks_change: False
+    criteria.p95.nano-xs.high.r1.value = 450 ms
+  - arm: arm:brisk-s.low.r0; where: none; call_changes: False; picks_change: False
+    criteria.p95.brisk-s.low.r0.value = 465 ms
+  - arm: arm:brisk-s.low.r1; where: none; call_changes: True; picks_change: False
+    criteria.p95.brisk-s.low.r1.value = 513 ms
+  - arm: arm:brisk-s.high.r0; where: none; call_changes: False; picks_change: False
+    criteria.p95.brisk-s.high.r0.value = 810 ms
+  - arm: arm:brisk-s.high.r1; where: none; call_changes: False; picks_change: False
+    criteria.p95.brisk-s.high.r1.value = 870 ms
+  - arm: arm:atlas-m.off.r0; where: none; call_changes: False; picks_change: False
+    criteria.p95.atlas-m.off.r0.value = 900 ms
+  - arm: arm:atlas-m.off.r1; where: none; call_changes: False; picks_change: False
+    criteria.p95.atlas-m.off.r1.value = 1019 ms
+  - arm: arm:atlas-m.low.r0; where: none; call_changes: False; picks_change: False
+    criteria.p95.atlas-m.low.r0.value = 1395 ms
+  - arm: arm:atlas-m.low.r1; where: none; call_changes: False; picks_change: False
+    criteria.p95.atlas-m.low.r1.value = 1500 ms
+  - arm: arm:atlas-m.high.r0; where: none; call_changes: False; picks_change: False
+    criteria.p95.atlas-m.high.r0.value = 2430 ms
+  - arm: arm:atlas-m.high.r1; where: none; call_changes: False; picks_change: False
+    criteria.p95.atlas-m.high.r1.value = 2551 ms
+total: 18
+offset: 0
+notes: []
+bars_as: warnings

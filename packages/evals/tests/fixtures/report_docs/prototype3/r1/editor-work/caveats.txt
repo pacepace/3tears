@@ -1,0 +1,19 @@
+caveat listing
+caveats (4):
+  - id: judge_unstated; kind: judge_unstated; reach: report; source: implied; matters_if: it matters where a call rests on a judged figure: nothing says whose scores they are or how far they can be trusted, so a judge that is lenient or harsh on one arm moves the call; immaterial: False; checked: none; touches_arms: []; touches_aspects: []; touches_measures: [resolves, steps, confirms, escalates, character, toolcall, cites, unsupported, declines]; says: none; figures: []
+  - id: no_control; kind: no_control; reach: report; source: implied; matters_if: it matters for any claim that one arm beats another: with no control nothing is read paired, so two arms compare only by their own figures and intervals; immaterial: False; checked: none; touches_arms: []; touches_aspects: []; touches_measures: []; says: none
+    figures (1):
+      n_candidates = 4
+  - id: point_estimate:p95; kind: point_estimate; reach: report; source: implied; matters_if: it matters where a surviving option clears the line by little: no interval says whether the clearance is more than noise, so a clearance inside its noise reads as a pass; immaterial: False; checked: none; touches_arms: [atlas-m]; touches_aspects: []; touches_measures: [latency_s]; says: none
+    figures (6):
+      criteria.p95.threshold = 3 s
+      criteria.p95.atlas-m.billing.gap = 0.9 s
+      criteria.p95.atlas-m.trouble.gap = 0.27 s
+      criteria.p95.atlas-m.persona.gap = 1.32 s
+      criteria.p95.atlas-m.research.gap = 0.16 s
+      criteria.p95.atlas-m.specul.gap = 1.11 s
+  - id: best_of_n; kind: best_of_n; reach: report; source: implied; matters_if: it matters where the pick leads the next option, or clears a line, by little: the best of many candidates reads high by chance, the more so the more there are, so a re-run on fresh cases tends to read it lower; immaterial: False; checked: none; touches_arms: [atlas-l, atlas-m, brisk-s, open-70b]; touches_aspects: []; touches_measures: []; says: none
+    figures (1):
+      n_candidates = 4
+total: 4
+offset: 0
