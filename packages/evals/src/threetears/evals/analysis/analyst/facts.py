@@ -74,6 +74,7 @@ from threetears.evals.analysis.report_input import (
     Stat,
 )
 from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS
+from threetears.evals.analysis.report_margins import criterion_aspect
 from threetears.evals.kernel.errors import RefusedInput
 
 __all__ = [
@@ -317,6 +318,11 @@ class CriterionRow(_Fact):
     scope: str = Field(description="overall, each_task or each_cell.")
     task: str | None = Field(description="The one task it applies within, where it names one.")
     threshold: CitedFigure = Field(description="Its threshold, in its measure's units.")
+    aspect: str | None = Field(
+        default=None,
+        description="The aspect whose figures it reads: the one it is declared on, else the lead aspect; None where "
+        "the snapshot holds no aspect.",
+    )
 
 
 class LateRow(_Fact):
@@ -556,6 +562,7 @@ def campaign_overview(
             scope=criterion.scope,
             task=criterion.task,
             threshold=cite(f"criteria.{criterion.id}.threshold", report_input),
+            aspect=criterion_aspect(report_input, criterion),
         )
         for criterion in report_input.criteria
     ]
