@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an arm whose every past result cost the same launches, priced from that history, under an enforced cap
+
+**Fixed:** a launch priced by `history_launch_pricer` raised `ValueError: a range runs low <= central <= predicted`
+building the arm's `ArmPrice` when every priced past result of the arm cost the same (Discodon's second launch of one
+arm, three results at $0.0015 each). The cost band (`compute_estimate_cost`) read that history on the log scale,
+whose ends are `exp` of a mean of logs and round away from the arithmetic mean the central estimate is drawn from:
+both ends landed an ulp off the centre, here below it. A history whose costs are all equal now has a band of no width
+at exactly the estimate (each cell's and the total's), and any other band is widened to reach its estimate where an
+end falls short of it, which moves an end only by rounding wherever the two disagree by rounding. The normal-theory
+band (a history holding a zero cost) is centred on the same estimate. `lognormal_sum_prediction_band` gives
+observations all equal a band of no width at exactly `n_future` times their value; read through their logs, eleven or
+more of them had a spread a few ulps above zero.
+
 ### evals: a page and the writer's view say once that a cost is its runs' provider routing's
 
 **Changed:** an eval's cost belongs to its provider routing, not its model (owner, 2026-10-25): one model routed
