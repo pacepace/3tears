@@ -59,7 +59,7 @@ from threetears.evals.analysis.bundle.schema import (
     FamilyComparison,
     FloorContrast,
 )
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
     PROJECTION_CASE_CAP,

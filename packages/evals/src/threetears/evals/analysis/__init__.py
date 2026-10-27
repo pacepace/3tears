@@ -147,7 +147,7 @@ from threetears.evals.analysis.generator import (
     generate_analysis,
     prompt_content_version,
 )
-from threetears.evals.analysis.numbers import ABSENT, format_number, format_signed
+from threetears.evals.kernel.numbers import ABSENT, format_number, format_signed
 from threetears.evals.analysis.reads import (
     EXPORT_PAGE_RESULTS,
     READ_TIER_ROW_BUDGET,

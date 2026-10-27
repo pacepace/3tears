@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel import (
     JUDGE_KIND,
     JUDGE_KIND_CONTRACT,

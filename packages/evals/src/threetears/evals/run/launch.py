@@ -46,6 +46,7 @@ from threetears.evals.kernel.arguments import normalize_blank
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.sweepables import CORE_SWEEPABLES
 from threetears.evals.kernel.metrics import RUN_MARGIN_MEASURES, declaration_of, run_margin_refusal
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.identity import derive_context_identity, variant_levers_of_run
 from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
@@ -456,8 +457,7 @@ class LaunchPricer(Protocol):
     launch generates alike (:attr:`ArmQuote.case_source`) — so one launch never prices two arms by two rules.
 
     A port on :class:`LaunchHost` because the prediction is a read over history — an analysis — and the
-    run package imports no analysis (bar the number rule, a leaf, loaded when a refusal is written): the host
-    composes one. ``threetears.evals.ops.history_launch_pricer`` is the engine's own, over the scope's
+    run package imports no analysis: the host composes one. ``threetears.evals.ops.history_launch_pricer`` is the engine's own, over the scope's
     per-observation usage history; a host with a rate card of its own prices from that instead. Called off the
     event loop, through the host's blocking executor.
     """
@@ -2933,24 +2933,6 @@ def _cents_up(usd: float) -> float:
     return math.ceil(usd * 100 - 1e-9) / 100
 
 
-def _usd_text(usd: float) -> str:
-    """``usd`` as a reader is shown it: in dollars, by the package's one number rule, so a cap figure a hair above a
-    cap never prints equal to it, as it did in cents.
-
-    The rule (:func:`~threetears.evals.analysis.numbers.format_number`) is a leaf that imports nothing of the
-    engine's, but its package is the analysis the run package does not load, so it is imported here, when a
-    refusal is written, rather than with this module.
-
-    :param usd: The amount.
-    :ptype usd: float
-    :return: Its text, ``$`` on the number.
-    :rtype: str
-    """
-    from threetears.evals.analysis.numbers import format_number
-
-    return format_number(usd, prefix="$")
-
-
 def _largest_call_over_cap(
     request: LaunchRequest, ceiling: CallCeiling, cap: float, price: ArmPrice, *, what: str, refused: str
 ) -> tuple[str, str]:
@@ -3003,7 +2985,7 @@ def _largest_call_over_cap(
     )
     room = (
         f" (${_cents_up(ceiling.usd + price.predicted_usd):.2f} also leaves room for the arm's "
-        f"{_usd_text(price.predicted_usd)} cap figure around it)"
+        f"{format_number(price.predicted_usd, prefix='$')} cap figure around it)"
         if price.predicted_usd is not None
         else ""
     )
@@ -3095,8 +3077,8 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
         )
         return verdict(
             "refused",
-            f"{what} has a cap figure of {_usd_text(price.predicted_usd)}, the spend its cap is checked against "
-            f"({price.basis}), above its {_usd_text(cap)} cap. "
+            f"{what} has a cap figure of {format_number(price.predicted_usd, prefix='$')}, the spend its cap is "
+            f"checked against ({price.basis}), above its {format_number(cap, prefix='$')} cap. "
             f"{refused}",
             f"fewer cases, a smaller k_runs or a cheaper model brings it under; {raise_it}",
         )

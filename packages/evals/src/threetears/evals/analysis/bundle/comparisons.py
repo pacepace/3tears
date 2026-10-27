@@ -12,7 +12,7 @@ from collections.abc import Collection, Mapping
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from threetears.evals.analysis.contention import withhold_contended_latency
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.reporting import (
     METRIC_SCORE,
     ScoreRecord,

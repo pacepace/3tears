@@ -30,7 +30,7 @@ import pytest
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import COST_ESTIMATE_MIN_BASIS
 from threetears.evals.analysis.lenses.cost_estimate import COST_BAND_SAFETY_MARGIN
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.stats import lognormal_sum_prediction_band
 from threetears.evals.schema import EvalRun
 from threetears.evals.kernel import (

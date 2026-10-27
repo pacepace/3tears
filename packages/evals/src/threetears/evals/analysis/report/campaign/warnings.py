@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.campaign_readings import BarStatus, CampaignReadings, FloorStatus
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.campaign.common import as_written, named_arms
 from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.model import DisclosureBlock, Fact, Report, ReportBlock, TextBlock

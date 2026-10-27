@@ -1073,7 +1073,7 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
     that way, a finding's trials by their ids. The memo has no headline or chart: the report's warnings and readings
     are code's, so the judge scores what the writer wrote, its summary among it. Arms are named by
     :func:`~threetears.evals.analysis.arms.arm_label`, numbers by
-    :func:`~threetears.evals.analysis.numbers.format_number`.
+    :func:`~threetears.evals.kernel.numbers.format_number`.
 
     The numbers code resolved from the model's own readings are printed beside them, because they are what the
     model's claims are about. Deterministic: one analysis renders to one string.

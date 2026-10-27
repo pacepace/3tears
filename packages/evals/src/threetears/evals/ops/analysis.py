@@ -30,7 +30,7 @@ from threetears.evals.analysis.campaigns import (
     remove_runs_from_campaign,
     update_campaign,
 )
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report import ReportBasis, TrialDetail, analysis_verdict
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.service import (

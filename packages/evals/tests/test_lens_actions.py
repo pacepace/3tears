@@ -46,7 +46,7 @@ from threetears.evals.analysis import (
     campaign_report,
 )
 from threetears.evals.analysis.lenses.cost_estimate import COST_BAND_SAFETY_MARGIN
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.reporting import ScoreProjection
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.ops import (

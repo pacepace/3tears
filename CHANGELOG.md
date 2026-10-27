@@ -25,15 +25,18 @@ the 3% safety margin above the estimate, wider than the band by $g", the gap say
 band's end where four figures would spell the two alike. Where it does not, the basis names the band's upper end
 alone. An arm refused over its cap is said to have a "cap figure" above it, never to be "predicted to cost" it, and
 the cap figure and the cap are spelled by the number rule, not in cents, so a cap figure a hair above its cap never
-prints equal to it; the launch estimate's text labels each arm's figure and the total as cap figures. A log-scale end
-that misses the estimate by rounding alone (within a billionth of it) is set to it. A log-scale band that misses it by
-more, where the lognormal fit contradicts the history's mean (one outlier among near-equal costs), becomes the outer
-envelope of that band and the normal-theory band around the mean; its `band_basis` calls it an at-least-95% band,
-wider than either fit's because neither can be trusted alone, names the end the fit put where, and says why a lower
-end of $0 is $0. The upper end a launch is capped at is never the bare mean of a history that varied. Every figure in
-a basis is spelled by the package's one rule (`format_number`), never as an exponent, and so is every figure in the
-`ArmPrice.basis` the history pricer writes: in cents, a sub-cent arm's band read "$0.00-$0.00 around $0.00", three
-figures with one spelling. The normal-theory band (a history holding a zero cost) is centred on the same estimate.
+prints equal to it; the launch estimate's text labels each arm's figure and the total as cap figures. So that a launch
+may spell by it, the number rule's module moved from `analysis` to `kernel` (`threetears.evals.kernel.numbers`), the
+package both may import: `threetears.evals.kernel` now exports `format_number`, `format_signed` and `ABSENT`, and
+`threetears.evals.analysis` (and `ops`, for `format_number`) still export them. A log-scale end that misses the
+estimate by rounding alone (within a billionth of it) is set to it. A log-scale band that misses it by more, where the
+lognormal fit contradicts the history's mean (one outlier among near-equal costs), becomes the outer envelope of that
+band and the normal-theory band around the mean; its `band_basis` calls it an at-least-95% band, wider than either
+fit's because neither can be trusted alone, names the end the fit put where, and says why a lower end of $0 is $0. The
+upper end a launch is capped at is never the bare mean of a history that varied. Every figure in a basis is spelled by
+the package's one rule (`format_number`), never as an exponent, and so is every figure in the `ArmPrice.basis` the
+history pricer writes: in cents, a sub-cent arm's band read "$0.00-$0.00 around $0.00", three figures with one
+spelling. The normal-theory band (a history holding a zero cost) is centred on the same estimate.
 `lognormal_sum_prediction_band` gives observations all equal a band of no width at exactly `n_future` times their
 value; read through their logs, eleven or more of them had a spread a few ulps above zero.
 

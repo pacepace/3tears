@@ -15,8 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from threetears.evals.analysis import latency_partition, numbers, references, significance
-from threetears.evals.analysis.numbers import ABSENT, WHOLE_FROM, WRITTEN_FROM, format_number, format_signed
+from threetears.evals.analysis import latency_partition, references, significance
+from threetears.evals.kernel import numbers
+from threetears.evals.kernel.numbers import ABSENT, WHOLE_FROM, WRITTEN_FROM, format_number, format_signed
 from threetears.evals.analysis.report import build as report_build
 from threetears.evals.analysis import quantities
 from threetears.evals.schema.models import LatencyMetrics
@@ -213,25 +214,24 @@ class TestThereIsOneImplementation:
             tree = ast.parse(path.read_text(encoding="utf-8"))
             if any(isinstance(node, ast.FunctionDef) and node.name == "format_number" for node in ast.walk(tree)):
                 defining.append(path.relative_to(_SOURCE_ROOT).as_posix())
-        assert defining == ["threetears/evals/analysis/numbers.py"]
+        assert defining == ["threetears/evals/kernel/numbers.py"]
 
 
 #: The trees and modules whose every number is shown to a reader: the analysis package -- what the
 #: generator writes from, and the significance and latency-partition modules, whose significance cells and
 #: partition refusals are printed verbatim. A host's own renders (an operator console, a tool surface) are the host's
 #: to walk on the same terms. A spelling of a number anywhere in them either goes through
-#: :func:`~threetears.evals.analysis.numbers.format_number` / :func:`~threetears.evals.analysis.numbers.format_signed` or is
+#: :func:`~threetears.evals.kernel.numbers.format_number` / :func:`~threetears.evals.kernel.numbers.format_signed` or is
 #: named below as a deliberate fixed spelling. A module sits here by itself, rather than its whole
 #: directory, where the rest of that directory is not read as a report.
 _SPELLING_TREES = ("threetears/evals/analysis", "threetears/evals/ops")
 
-#: What sits inside :data:`_SPELLING_TREES` and is not read as a report, so is not walked:
-#: ``numbers.py`` is the rule itself, and ``report/svg.py`` spells only a chart's drawing coordinates (to a tenth
-#: of a unit), every value it shows a reader going through the rule.
+#: What sits inside :data:`_SPELLING_TREES` and is not read as a report, so is not walked: ``report/svg.py`` spells
+#: only a chart's drawing coordinates (to a tenth of a unit), every value it shows a reader going through the rule.
+#: The rule itself (``kernel/numbers.py``) sits outside the trees.
 #: ``out_of_run_spend.py`` is the spend ledger, which spells only dollars, at the four decimals a
 #: per-call price needs.
 _NOT_READ_AS_REPORTS = (
-    "threetears/evals/analysis/numbers.py",
     "threetears/evals/analysis/report/svg.py",
     "threetears/evals/analysis/out_of_run_spend.py",
 )
@@ -394,9 +394,7 @@ class TestNoSurfaceSpellsANumberItsOwnWay:
         assert single in walked
         # And what _NOT_READ_AS_REPORTS names is inside a walked tree yet not walked.
         assert not {
-            m
-            for m in walked
-            if m in ("threetears/evals/analysis/numbers.py", "threetears/evals/analysis/report/svg.py")
+            m for m in walked if m in ("threetears/evals/kernel/numbers.py", "threetears/evals/analysis/report/svg.py")
         }
 
     def test_every_spelling_goes_through_the_one_rule_or_is_named_as_fixed(self):

@@ -14,12 +14,32 @@ also = ["threetears.evals.ops"]
 names = [
     "AnalysisGenerationEstimate", "EXPORT_PAGE_RESULTS", "EvalSummary", "FrontierResult", "FrozenReporterCase",
     "HistoryResult", "JudgeTemperatureComparison", "OutOfRunSpendReport", "PivotTable", "ScoreExport", "dollars_text",
-    "format_number", "frontier_text", "out_of_run_spend_text", "scope_out_of_run_spend",
+    "frontier_text", "out_of_run_spend_text", "scope_out_of_run_spend",
 ]
 why = """
 `actions` may reach `analysis` only through `ops` (tests/test_package_matrix.py), and the action catalogue names
 each of these: the result an operation hands back and the text it is shown as. Dropped from `ops`, the catalogue
 could not import them at all. `EXPORT_PAGE_RESULTS` is the ceiling `scope_export`'s description states.
+"""
+
+[[reexport]]
+home = "threetears.evals.kernel"
+also = ["threetears.evals.analysis", "threetears.evals.ops"]
+names = ["format_number"]
+why = """
+The number rule lives in `kernel`, the one package both `run` (a launch's refusal) and `analysis` (every report)
+may import (tests/test_package_matrix.py). `analysis` exports it as the rule its surfaces spell by, where a host
+rendering an analysis reads it; `ops` exports it because `actions` may reach `analysis` only through `ops`, and the
+action catalogue spells its texts by it.
+"""
+
+[[reexport]]
+home = "threetears.evals.kernel"
+also = ["threetears.evals.analysis"]
+names = ["ABSENT", "format_signed"]
+why = """
+The number rule lives in `kernel` so `run` may spell by it too (tests/test_package_matrix.py); `analysis` exports
+these as the rule its surfaces spell by, where a host rendering an analysis reads them.
 """
 
 [[reexport]]

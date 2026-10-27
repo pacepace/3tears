@@ -160,7 +160,7 @@ from threetears.evals.analysis.out_of_run_spend import (
     out_of_run_spend_text,
     scope_out_of_run_spend,
 )
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.reporter_bank import FrozenReporterCase
 from threetears.evals.ops.judge_cases import (
     JudgeCaseAuthor,

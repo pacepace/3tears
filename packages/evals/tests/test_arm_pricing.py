@@ -31,7 +31,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.schema import EvalRun, JudgeDeclaration, JudgedArtifact, RubricDim
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.schema.judge_attribution import judges_sharing_a_candidate_model

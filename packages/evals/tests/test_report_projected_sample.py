@@ -49,7 +49,7 @@ from threetears.evals.analysis.report.decision import (
     read_floor,
 )
 from threetears.evals.analysis import stats
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
     PROJECTION_ORDERS,

@@ -1261,6 +1261,11 @@
       "signature": "WorldSeed(namespaces: dict[str, Any] = dict(), ambient_perturbation_turns: list[Annotated[int, Field(ge=1)]] = list())",
       "tier": "host-contract"
     },
+    "threetears.evals.kernel.ABSENT": {
+      "kind": "constant (str)",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.ACCURACY_MEASURE": {
       "kind": "constant (str)",
       "signature": "",
@@ -2025,6 +2030,16 @@
       "kind": "function",
       "signature": "fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]",
       "tier": "stable"
+    },
+    "threetears.evals.kernel.format_number": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.format_signed": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.kernel.FRONTIER_RANKING_MEASURE": {
       "kind": "constant (str)",

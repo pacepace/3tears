@@ -40,7 +40,7 @@ from threetears.evals.analysis.reads import (
     pivot,
 )
 
-from threetears.evals.analysis.numbers import format_number, format_signed
+from threetears.evals.kernel.numbers import format_number, format_signed
 
 from threetears.evals.analysis.bundle.comparisons import PlanningReading, planning_readings
 

@@ -16,7 +16,7 @@ from pydantic import Field
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.models import utc_now_iso
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.reporting import _subject_id_of, pooled_cost_compositions
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
