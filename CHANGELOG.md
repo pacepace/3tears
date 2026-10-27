@@ -8,9 +8,9 @@ packages (bumped in lock-step).
 
 ### all packages: the report-kit analyst line's pins carry a local version label
 
-**Changed:** every 3tears package on the report-kit analyst line declares `0.80.0+analyst.1`, a PEP 440 local
+**Changed:** every 3tears package on the report-kit analyst line declares `0.80.0+analyst.2`, a PEP 440 local
 label (owner ruling, 2026-10-27), so uv and Discodon tell a build of this line from released 0.80.0, which holds no
-report kit. The label marks the line's Discodon pins: each new pin bumps its `.N` (`+analyst.2`, ...), and the
+report kit. The label marks the line's Discodon pins: each new pin bumps its `.N` (`.1` was b24fa18e7, the develop merge; `.2` adds the readings-level fix), and the
 version resets to the plain release when the line folds into develop. Intra-family bounds stay `>=0.80.0,<0.81.0`,
 which a local version satisfies. The API-growth gate and 3tears-evals' release-tag reader read a labelled version
 as its public part; `threetears-release` still refuses to bump, sync or verify one, and its `verify` names a
