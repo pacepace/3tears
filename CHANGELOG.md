@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### object-store: a presign no longer holds the event loop
+
+**Fixed:** `S3ObjectStore.presigned_get_url` opened an aiobotocore client for every URL, building a whole botocore
+client class on the loop each time: ~100 ms a URL on cobalt dev's shared CPU, so a load presigning a file per
+partition stalled its loop over and over. A store that opened its own session now signs on a worker thread with one
+synchronous botocore client, built on first use and kept; its URLs are the ones the aiobotocore client signs. A store
+given a session (a test's fake, a caller's aioboto3) presigns through it as before.
+
 ## v0.80.0 -- 2026-10-26
 
 ### backup: a drill compares a naive-timestamp table against the backup's moment

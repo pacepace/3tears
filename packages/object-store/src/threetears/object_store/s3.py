@@ -6,13 +6,22 @@ object: uploads stream through one part-size buffer at a time via S3
 multipart (or a single PUT when the whole object fits one part); downloads
 yield the response body in chunks. Lifted from metallm's ``S3Service`` and
 made streaming.
+
+A presign is signing alone, no request, but opening an aiobotocore client to sign builds a whole botocore client
+class first: on a shared CPU that held an event loop ~100 ms a URL, and a load that presigns a file per partition
+stalled its loop again and again (cobalt dev, 2026-10-27). So a store that opened its own session presigns on a
+worker thread, with one synchronous botocore client built once and kept: botocore signs from it safely across
+threads, and its credentials refresh themselves (an IRSA role's included).
 """
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from collections.abc import AsyncIterator
 from typing import Any
 
+import botocore.session  # type: ignore[import-untyped]
 from aiobotocore.session import get_session  # type: ignore[import-untyped]
 from botocore.config import Config as BotoConfig  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
@@ -98,7 +107,19 @@ class S3ObjectStore:
         self._bucket = bucket
         self._region = region
         self._part_size = part_size_bytes
+        # an injected session (a test's fake, a caller's aioboto3) presigns through it, on the loop, as before
+        self._presigns_off_loop = session is None
         self._session = session if session is not None else get_session()
+        self._presigner: Any = None
+        self._presigner_lock = threading.Lock()
+
+    def _config(self) -> BotoConfig:
+        """the client configuration every client of this store is opened with.
+
+        :return: the configuration
+        :rtype: BotoConfig
+        """
+        return BotoConfig(signature_version="s3v4", read_timeout=self._read_timeout_seconds)
 
     def _client(self) -> Any:
         """Return an async-context-manager S3 client.
@@ -115,11 +136,35 @@ class S3ObjectStore:
             aws_access_key_id=self._access_key,
             aws_secret_access_key=self._secret_key,
             region_name=self._region,
-            config=BotoConfig(
-                signature_version="s3v4",
-                read_timeout=self._read_timeout_seconds,
-            ),
+            config=self._config(),
         )
+
+    def _presign(self, key: str, expires_in: int) -> str:
+        """presign a GET of one key with the store's synchronous client, built on first use and kept; run on a
+        worker thread.
+
+        :param key: object key
+        :ptype key: str
+        :param expires_in: URL validity in seconds
+        :ptype expires_in: int
+        :return: presigned URL
+        :rtype: str
+        """
+        with self._presigner_lock:
+            if self._presigner is None:
+                self._presigner = botocore.session.get_session().create_client(
+                    "s3",
+                    endpoint_url=self._endpoint_url,
+                    aws_access_key_id=self._access_key,
+                    aws_secret_access_key=self._secret_key,
+                    region_name=self._region,
+                    config=self._config(),
+                )
+            presigner = self._presigner
+        url: str = presigner.generate_presigned_url(
+            "get_object", Params={"Bucket": self._bucket, "Key": key}, ExpiresIn=expires_in
+        )
+        return url
 
     async def ensure_bucket(self) -> None:
         """Create the configured bucket if it does not already exist.
@@ -404,6 +449,9 @@ class S3ObjectStore:
     async def presigned_get_url(self, key: str, *, expires_in: int = 300) -> str:
         """Presigned GET URL for delivery -- bytes never cross the agent.
 
+        Signed on a worker thread with the store's kept synchronous client when the store opened its own session
+        (see the module's docstring); through the injected session otherwise.
+
         :param key: object key
         :ptype key: str
         :param expires_in: URL validity in seconds
@@ -411,6 +459,8 @@ class S3ObjectStore:
         :return: presigned URL
         :rtype: str
         """
+        if self._presigns_off_loop:
+            return await asyncio.to_thread(self._presign, key, expires_in)
         async with self._client() as client:
             url: str = await client.generate_presigned_url(
                 "get_object",
