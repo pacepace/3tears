@@ -505,7 +505,8 @@ def _reconciled_lines(readings: CampaignReadings, reports: Mapping[str, Report],
     line naming both and the interval each was read on, so the disagreement is explained where it is seen.
 
     A row's gain is read on a bounded interval corrected across its arm's aspects; a contrast on a t interval (or a
-    bounded one where its values have no spread) corrected within its aspect's family. A contrast reading a drop past
+    bounded one where its values have no spread) corrected as its aspect's family says: a bundle's family is always
+    Holm-corrected (``ComparisonFamily.correction``), so the page line says corrected. A contrast reading a drop past
     zero where the row reads none past the margin is said too, with the margin. An untested contrast reads nothing."""
     control = readings.control
     if control is None:
