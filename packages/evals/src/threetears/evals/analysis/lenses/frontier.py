@@ -20,7 +20,7 @@ from threetears.evals.analysis.contention import (
     withheld_latency,
     withhold_contended_latency,
 )
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     case_rate_interval,

@@ -1,9 +1,8 @@
 """The report as Markdown — the form an agent reads and a pull request quotes, with the page's values and order.
 
-Every block the page draws is printed here, in the page's order: the title on line 1 (below any broken floor), then the declared question quoted
-whole where there is one and under it the subhead (the arms), else the arms on line 2; a broken floor's warning
-opens the page above the title, in bold; the
-verdict, the scoreboard; a chart is its title and the table of the values
+Every block the page draws is printed here, in the page's order: the title on line 1, then the declared question
+quoted whole where there is one and under it the subhead (the arms), else the arms on line 2; the verdict; what
+warns (a broken floor's line, in bold) and each report-wide caveat once; the scoreboard; a chart is its title and the table of the values
 it draws, so a reader of Markdown can check every
 number a picture would have shown, and a chart the page leaves out is left out here too, by the same block list. An
 outcome bar whose every column is one of the scoreboard's prints nothing here: its table would repeat the scoreboard. What
@@ -60,15 +59,9 @@ def report_markdown(report: Report) -> str:
     :return: The Markdown text, ending in a newline.
     :rtype: str
     """
-    # A broken floor's warning is the page's first line, above the title: the first thing a reader sees.
-    warnings = [block for block in report.blocks if _warns(block)]
-    lines = [line for block in warnings for line in (*_block(block), "")]
-    lines.append(f"# {_one_line(report.title)}")
-    head = [
-        block
-        for block in report.blocks
-        if block.section in FIRST_SCREEN and not _repeats_scoreboard(block) and not _warns(block)
-    ]
+    # The title first, then the first screen in order: what warns is under the verdict, never above the title.
+    lines = [f"# {_one_line(report.title)}"]
+    head = [block for block in report.blocks if block.section in FIRST_SCREEN and not _repeats_scoreboard(block)]
     for index, block in enumerate(head):
         # Line 2 (the arms, or a declared question) is directly under the title: every other block is set off by a
         # blank line.
@@ -79,30 +72,28 @@ def report_markdown(report: Report) -> str:
 
 
 def campaign_report_markdown(report: CampaignReport) -> str:
-    """Render a campaign's page as Markdown, in the page's order: every broken floor, the title, the first screen, the
-    memo's findings, then each aspect under its own heading with what code read there, its writer's summary and its
-    own page in one ``<details>`` (its title, question, broken floors and verdict line left out, its headings a level down, its
-    trials' ids prefixed with the aspect's), then the one glossary.
+    """Render a campaign's page as Markdown, in the page's order: the title, then the first screen (the question, the
+    answer, what warns and each report-wide caveat), the sections the page reads before its folds (the findings, the
+    next steps, Design & provenance), then each aspect under its own heading with what code read there, its writer's
+    summary and its own page in one ``<details>`` (its title, question, broken floors and verdict line left out, and
+    any disclosure the campaign states once for every aspect; its headings a level down, its trials' ids prefixed with
+    the aspect's), then how the page was made, then the one glossary.
 
     :param report: The campaign's page.
     :ptype report: CampaignReport
     :return: The Markdown text, ending in a newline.
     :rtype: str
     """
-    warnings = [block for block in report.blocks if _warns(block)]
-    lines = [line for block in warnings for line in (*_block(block), "")]
-    lines.append(f"# {_one_line(report.title)}")
-    head = [block for block in report.blocks if block.section in FIRST_SCREEN and not _warns(block)]
+    # The title first, then the decision: the question, the answer, then what warns, as consequences.
+    lines = [f"# {_one_line(report.title)}"]
+    head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     for index, block in enumerate(head):
         lines += [*([] if index == 0 else [""]), *_block(block)]
-    present = [
-        section
-        for section in SECTION_TITLES
-        if section not in FIRST_SCREEN and section != "glossary" and any(b.section == section for b in report.blocks)
-    ]
-    # What the memo says reads before the folds; how the page was made (the methods) after them.
-    for section in [section for section in present if section == "memo"]:
-        lines += ["", f"## {SECTION_TITLES[section]}", *_folded([b for b in report.blocks if b.section == section])]
+    # What the page reads and the writer says sit before the folds; how the page was made (the methods) after them.
+    before, after = report.headed_sections
+    titles = report.section_titles
+    for section in before:
+        lines += ["", f"## {titles[section]}", *_folded([b for b in report.blocks if b.section == section])]
     for fold, slug in zip(report.aspects, report.fold_ids, strict=True):
         prefix = f"a-{slug}-"
         lines += ["", f"## {_inert(_one_line(fold.aspect))}", "", f"{_inert(_one_line(fold.shows))}.", ""]
@@ -114,8 +105,8 @@ def campaign_report_markdown(report: CampaignReport) -> str:
             lines += ["", *_block(block, prefix=prefix)]
         lines += _section_lines(aspect, depth=3, prefix=prefix)
         lines += ["", "</details>"]
-    for section in [section for section in present if section != "memo"]:
-        lines += ["", f"## {SECTION_TITLES[section]}", *_folded([b for b in report.blocks if b.section == section])]
+    for section in after:
+        lines += ["", f"## {titles[section]}", *_folded([b for b in report.blocks if b.section == section])]
     lines += _glossary_lines(report.terms)
     return "\n".join(lines) + "\n"
 
@@ -124,7 +115,7 @@ def _section_lines(report: Report, *, depth: int, prefix: str = "") -> list[str]
     """Each section after the first screen under a heading of ``depth``, its trials' ids prefixed with ``prefix``."""
     titles = report.section_titles
     lines: list[str] = []
-    for section in SECTION_TITLES:
+    for section in titles:
         if section in FIRST_SCREEN or section == "glossary":
             continue
         blocks = [block for block in report.blocks if block.section == section and not _repeats_scoreboard(block)]
@@ -142,19 +133,9 @@ def _glossary_lines(terms: Sequence[str]) -> list[str]:
     return ["", f"## {SECTION_TITLES['glossary']}", "", *(f"- **{term}**: {GLOSSARY[term]}" for term in terms)]
 
 
-#: The sources of the loud lines that open a page above its title: a missed bar, a broken floor, a guardrail an arm
-#: is not shown safe on.
+#: The sources of what warns, set apart under the title: a missed bar, a broken floor, a guardrail an arm is not
+#: shown safe on.
 _WARNING_SOURCES = frozenset({"bar", "floor", "guardrails"})
-
-
-def _warns(block: ReportBlock) -> bool:
-    """Whether ``block`` opens the page above its title: a missed bar's, a broken floor's or a guardrail's warning, or
-    the writer's why for a floor its recommendation is made over, which sits beside the warning it answers."""
-    if block.section != "header":
-        return False
-    if isinstance(block, TextBlock):
-        return block.role == "override"
-    return isinstance(block, DisclosureBlock) and block.source in _WARNING_SOURCES
 
 
 #: The failure causes the scoreboard gives a column of their own, as an outcome bar labels them.
@@ -246,8 +227,8 @@ def _text(block: TextBlock) -> list[str]:
 
 
 def _disclosure(block: DisclosureBlock) -> list[str]:
-    """Something code had to say: the verdict and a broken floor's warning in bold, every other line plain."""
-    if block.source == "verdict" or (block.section == "header" and block.source in _WARNING_SOURCES):
+    """Something code had to say: the verdict and what warns in bold, every other line plain."""
+    if block.source == "verdict" or (block.section in ("header", "warnings") and block.source in _WARNING_SOURCES):
         return [f"**{_one_line(block.text)}**"]
     return [_inert(_one_line(block.text))]
 

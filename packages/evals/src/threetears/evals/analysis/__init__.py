@@ -107,13 +107,18 @@ from threetears.evals.analysis.campaign_bundle import (
     build_campaign_user_message,
 )
 from threetears.evals.analysis.campaign_readings import (
+    AggregateFigure,
+    AggregateWeighting,
+    ArmAggregate,
     AspectReading,
     BarState,
     BarStatus,
+    CampaignAggregate,
     CampaignKind,
     CampaignReadings,
     MeasureReading,
     PairReading,
+    campaign_aggregate,
     campaign_kind,
     FloorState,
     FloorStatus,
@@ -142,8 +147,9 @@ from threetears.evals.analysis.generator import (
     generate_analysis,
     prompt_content_version,
 )
-from threetears.evals.analysis.numbers import ABSENT, format_number, format_signed
+from threetears.evals.kernel.numbers import ABSENT, format_number, format_signed
 from threetears.evals.analysis.reads import (
+    EXPORT_PAGE_RESULTS,
     READ_TIER_ROW_BUDGET,
     compare_two_runs,
     comparison_sets,
@@ -209,6 +215,7 @@ from threetears.evals.analysis.report import (
     CellValue,
     ChartBlock,
     ChartKind,
+    CostQualityPoint,
     DisclosureBlock,
     DisclosureSource,
     Fact,
@@ -226,6 +233,7 @@ from threetears.evals.analysis.report import (
     TextBlock,
     TextRole,
     TrialBlock,
+    TrialDetail,
     BarOutcome,
     ContrastOutcome,
     GuardrailOutcome,
@@ -387,7 +395,7 @@ from threetears.evals.analysis.lenses.frontier import (
 )
 from threetears.evals.kernel.scoring import UnpooledReason
 from threetears.evals.analysis.lenses.history import HistoryResult, MeasureSeries, RegressionFlag, SeriesPoint
-from threetears.evals.analysis.lenses.export import ExportFormat, ScoreExport
+from threetears.evals.analysis.lenses.export import ExportFormat, ExportPage, ScoreExport
 from threetears.evals.analysis.service import AnalysisStore
 
 
@@ -420,15 +428,20 @@ from threetears.evals.analysis.summary import (
 
 __all__ = [
     # A campaign read one aspect at a time, and the shapes of what code reads off it across aspects.
+    "AggregateFigure",
+    "AggregateWeighting",
+    "ArmAggregate",
     "AspectDeclaration",
     "AspectReading",
     "AspectView",
     "BarState",
     "BarStatus",
+    "CampaignAggregate",
     "CampaignKind",
     "CampaignReadings",
     "MeasureReading",
     "PairReading",
+    "campaign_aggregate",
     "campaign_kind",
     "FloorState",
     "FloorStatus",
@@ -489,6 +502,7 @@ __all__ = [
     "OutcomeSegment",
     "ReportFile",
     "TrialBlock",
+    "TrialDetail",
     "analysis_bundle",
     "analysis_verdict",
     "DisclosureBlock",
@@ -505,6 +519,7 @@ __all__ = [
     "TableColumn",
     "BarOutcome",
     "ContrastOutcome",
+    "CostQualityPoint",
     "GuardrailOutcome",
     "Verdict",
     "VerdictKind",
@@ -542,6 +557,7 @@ __all__ = [
     "PAIRED_TEST_NAME",
     "PROJECTED_METRICS",
     "READ_TIER_ROW_BUDGET",
+    "EXPORT_PAGE_RESULTS",
     "REPORTER_KIND",
     "REPORTER_KIND_CONTRACT",
     "SCOPED_METRICS_HELP",  # debt: retires when the English moves to one renderer
@@ -653,6 +669,7 @@ __all__ = [
     "CostEstimate",
     "CostEstimateCell",
     "ExportFormat",
+    "ExportPage",
     "HistoryResult",
     "LatencyPartition",
     "MeasureSeries",

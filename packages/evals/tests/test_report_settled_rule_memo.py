@@ -132,7 +132,7 @@ def _answers(report: Report) -> list[TextBlock]:
 
 
 # =============================================================================
-# 1. The answer line: the memo's own, under the warning a broken floor opens the page with
+# 1. The answer line: the memo's own, beside the warning a broken floor gives on the first screen
 # =============================================================================
 
 
@@ -158,8 +158,8 @@ async def test_a_broken_floor_never_replaces_the_memo_s_answer() -> None:
     assert "Keep production." in markdown
     assert "See the decision rule above." not in markdown and "Still open" not in markdown
     (warning,) = _warnings(report)
-    assert warning.startswith(f"Floor broken on {bundle.aspect}: ")
-    assert markdown.startswith(f"**{warning}**\n\n# ")
+    assert warning == f"Adopting cheaper candidate overrides the 10-point floor it breaks on {bundle.aspect}."
+    assert markdown.startswith("# ") and f"\n**{warning}**\n" in markdown
     assert lint_page(markdown, question=G2_QUESTION) == []
 
 
@@ -180,10 +180,7 @@ async def test_the_broken_rate_floor_is_one_warning_and_the_verdict_names_no_kee
     _, bundle = await _compare(0.003301, shown=True)
     report = build_code_only_report(bundle, assembled_at="2026-10-14T19:23:41+00:00", campaign_name=TITLE)
     (rate,) = _warnings(report)
-    assert rate.startswith(
-        f"Floor broken on {bundle.aspect}: cheaper candidate's pass rate falls past the 10-point margin on its whole "
-        "interval, a drop of "
-    ), rate
+    assert rate == f"Adopting cheaper candidate overrides the 10-point floor it breaks on {bundle.aspect}."
     assert lint_prose(rate) == []
     (verdict,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
     assert not verdict.startswith("Keep")

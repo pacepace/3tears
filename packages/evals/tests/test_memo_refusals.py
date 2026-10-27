@@ -37,7 +37,7 @@ from threetears.evals.analysis import AnalysisContextBundle, CampaignBundle, ass
 from threetears.evals.analysis.campaign_readings import AspectReading
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.schema.models import utc_now_iso

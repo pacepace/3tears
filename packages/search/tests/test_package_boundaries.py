@@ -7,6 +7,10 @@ pins rather than review attention:
   ``threetears.core``, not ``threetears.agent.*``, not langchain, not NATS.
   The whole reason a consumer can take this leaf on a Pi is that the leaf's
   dependency floor is the floor D24 declares.
+- **one module owns the sockets** (check 10, AR-F3): ``standalone.py`` is
+  the only module importing an HTTP client -- httpx or the httpcore beneath
+  it -- at *any* depth, so the streaming path (and the SSE reading an adapter
+  does over it) cannot open a connection of its own by importing one lazily;
 - **``standalone`` is imported by nothing in the package at module level**
   (§3.8). httpx rides the ``[standalone]`` extra, so a module-level import
   anywhere else would make an extra mandatory -- and it would do so silently,
@@ -94,6 +98,55 @@ def test_only_the_standalone_module_imports_httpx() -> None:
     assert importers == ["standalone.py"]
 
 
+def _imports_at_any_depth(source: Path) -> set[str]:
+    """Dotted names ``source`` imports anywhere, inside functions included.
+
+    :param source: the module to read
+    :ptype source: Path
+    :return: the imported dotted names
+    :rtype: set[str]
+    """
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            names.add(node.module)
+    return names
+
+
+def test_only_the_standalone_module_reaches_an_http_client_at_any_depth() -> None:
+    """Check 10 / AR-F3: the streaming seam adds no socket-owning code outside ``standalone.py``.
+
+    The module-level pin above keeps the extra optional; this one keeps the
+    sockets in one place. A lazily-imported client inside an adapter's SSE
+    reader would pass the first and fail here.
+    """
+    clients = ("httpx", "httpcore")
+    importers = sorted(
+        source.relative_to(_PACKAGE_ROOT).as_posix()
+        for source in _modules()
+        if any(
+            name == root or name.startswith(f"{root}.") for name in _imports_at_any_depth(source) for root in clients
+        )
+    )
+
+    assert importers == ["standalone.py"]
+
+
+def test_the_streaming_contracts_and_their_pins_pull_no_http_library() -> None:
+    """A host implementing ``StreamingTransport`` itself installs no httpx to get the seam's types."""
+    probe = (
+        "import sys; "
+        "from threetears.search.contracts import StreamingTransport, StreamedResponse, GroundedAnswer; "
+        "banned = [m for m in sys.modules if m.startswith(('httpx', 'httpcore'))]; "
+        "sys.exit(repr(banned) if banned else 0)"
+    )
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, f"the streaming contracts pulled an HTTP library: {result.stderr}"
+
+
 def test_nothing_imports_standalone_at_module_level() -> None:
     """A host chooses the bare transport; the package never chooses it for it."""
     importers = sorted(
@@ -109,13 +162,15 @@ def test_nothing_imports_standalone_at_module_level() -> None:
 def test_importing_the_working_layers_pulls_no_http_library() -> None:
     """The proof the source check cannot give: nothing transitively drags httpx.
 
-    Adapters, Call and Bind are the whole embedded path, and a host injecting
-    its own transport must be able to import all three without httpx or
-    trafilatura installed at all.
+    Adapters, Call and Bind are the whole embedded path -- for answers as for
+    searches, the SSE reader included, which is the adapter's and not the
+    transport's (AR-F2, AR-H1) -- and a host injecting its own transport must
+    be able to import them without httpx or trafilatura installed at all.
     """
     probe = (
         "import sys; "
         "import threetears.search.adapters.searxng, threetears.search.call, threetears.search.bind; "
+        "import threetears.search.adapters.brave_answers, threetears.search.answer, threetears.search.bind_answer; "
         "banned = [m for m in sys.modules if m.startswith(('httpx', 'trafilatura', 'threetears.core', "
         "'threetears.agent', 'langchain', 'nats'))]; "
         "sys.exit(repr(banned) if banned else 0)"

@@ -16,6 +16,7 @@ from pydantic import Field
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.models import utc_now_iso
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.reporting import _subject_id_of, pooled_cost_compositions
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
@@ -103,44 +104,145 @@ _COST_BAND_INDEPENDENCE = (
 )
 
 
-def _cost_band(history: Sequence[float], n_observations: int) -> tuple[float, float, str]:
-    """The ~95% prediction band for the total of a sweep of ``n_observations``, and what it assumes.
+#: How far apart, relatively, two figures may be and still differ by rounding alone: a log-scale band's end and the
+#: estimate it fell short of, or a history's cheapest and dearest observations. The band's ends are found by a solver
+#: that stops within 1e-12 on the log scale, times the log of the total (under 25 for any total from a billionth of a
+#: dollar to a billion dollars), so rounding moves an end by at most a few parts in 1e11 of it; a billionth is above
+#: that and far below a cent. A gap wider than this is a real disagreement or a real spread, never rounding.
+_BAND_ROUNDING_REL_TOL = 1e-9
 
-    Log-scale (:func:`~threetears.evals.analysis.stats.lognormal_sum_prediction_band`) wherever every
-    past cost is positive. A history with a zero or negative cost cannot be read on the log scale, and
-    takes the normal-theory band ``t(0.95, n-1) * s * sqrt(m + m^2/n)`` around ``m`` times its mean, floored
-    at zero — which assumes symmetric costs and says so.
+#: The least headroom, as a share of the estimate, that a cap is judged with: the figure a launch holds to an arm's cap
+#: is never below the estimate times one plus this (:func:`~threetears.evals.ops.history_launch_pricer`), however
+#: narrow the band. A history with no spread or almost none gives a band of no width or almost none, and an arm held
+#: to it is capped at its estimate, so a sweep costing a hair more meets its cap partway. The floor is a safety margin,
+#: not a measurement: a spread of zero over any number of observations bounds nothing (it says how often past costs
+#: differed, never how far a sweep's could), and nothing else the estimate reads gives a margin, since it reads each
+#: result's total alone. So it applies only where a cap is judged, and the band itself stays what the history computes
+#: wherever it is shown: a reader may judge one or two percent significant (owner ruling, 2026-10-27). Three percent
+#: is the owner's figure.
+COST_BAND_SAFETY_MARGIN = 0.03
 
-    :param history: The past per-observation costs, at least :data:`COST_ESTIMATE_MIN_BASIS` of them.
+
+def _normal_theory_band(history: Sequence[float], n_observations: int, estimate: float) -> tuple[float, float]:
+    """``t(0.95, n-1) * s * sqrt(m + m^2/n)`` either side of ``estimate``, floored at zero.
+
+    :param history: The past per-observation costs, at least two of them.
     :ptype history: Sequence[float]
     :param n_observations: How many observations the proposed sweep would run.
     :ptype n_observations: int
-    :return: ``(low, high, basis)``: the band in dollars and the sentence stating its method and assumptions.
-    :rtype: tuple[float, float, str]
+    :param estimate: The sweep's point estimate, the band's centre.
+    :ptype estimate: float
+    :return: ``(low, high)`` in dollars.
+    :rtype: tuple[float, float]
     """
     n = len(history)
-    log_band = lognormal_sum_prediction_band(history, n_observations)
-    if log_band is not None:
-        return (
-            log_band[0],
-            log_band[1],
-            f"{INTERVAL_LEVEL:.0%} prediction band for the sweep's total from a lognormal fit to {n} past "
-            f"observations, the fit's own uncertainty included. {_COST_BAND_INDEPENDENCE}",
-        )
     sem = standard_error_of_mean(list(history)) or 0.0
-    centre = n_observations * math.fsum(history) / n
     half = (
         t_critical_two_sided(INTERVAL_LEVEL, n - 1)
         * sem
         * math.sqrt(n)
         * math.sqrt(n_observations + n_observations**2 / n)
     )
+    return max(0.0, estimate - half), estimate + half
+
+
+def _cost_band(history: Sequence[float], n_observations: int, estimate: float) -> tuple[float, float, str]:
+    """The ~95% prediction band for the total of a sweep of ``n_observations``, and what it assumes.
+
+    Log-scale (:func:`~threetears.evals.analysis.stats.lognormal_sum_prediction_band`) wherever every
+    past cost is positive. A history with a zero or negative cost cannot be read on the log scale, and
+    takes the normal-theory band ``t(0.95, n-1) * s * sqrt(m + m^2/n)`` around ``estimate``, floored
+    at zero — which assumes symmetric costs and says so.
+
+    **The band brackets ``estimate``, always**, and never by moving an end onto it further than rounding. A launch
+    holds the band's upper end to its cap and refuses a range whose ends do not run ``low <= central <= high``; an
+    upper end moved down to the centre would admit an arm at its mean, which is the cap the launch exists not to hold.
+    Three cases:
+
+    - **The history never varied** (its cheapest and dearest observations within :data:`_BAND_ROUNDING_REL_TOL` of
+      each other, so a history one float step apart is one that never varied). Every past cost equal is a spread
+      measured at zero, and the band is what every band here makes of a zero spread: no width, exactly at
+      ``estimate``. Computed through the log scale it was not: ``exp`` of a mean of logs rounds away from the
+      arithmetic mean, and three results at $0.0015 each put both ends an ulp below the centre. A zero width is a
+      claim the history makes, not one it proves, so the basis says in words that no spread was seen. It is kept
+      rather than refused: no history short of tens of times the sweep's size bounds the chance a draw differs, so a
+      size floor would refuse every arm whose cost is a flat per-call rate. The band is not widened to a margin
+      here: a cap is judged with one (:data:`COST_BAND_SAFETY_MARGIN`), and the band stays what the history shows.
+    - **The log-scale band misses ``estimate`` by rounding alone** (within :data:`_BAND_ROUNDING_REL_TOL` of it): its
+      ends and the arithmetic mean are different sums, so a history that varies only by rounding leaves them an ulp
+      apart either way. The end that fell short is set to ``estimate``, which moves it by rounding.
+    - **The log-scale band misses ``estimate`` by more**: the lognormal fit contradicts the history's own mean, as
+      one outlier among near-equal costs makes it (19 results at $0.001 and one at $0.1 put a 100-observation sweep's
+      upper end 15% under the mean's prediction; one near-free result among 99 at $1 puts the lower end above it).
+      Neither model is then the one to trust alone, so the band is the outer envelope of the log-scale band and the
+      normal-theory band centred on ``estimate``, and the basis says which end the fit put where. It brackets by
+      construction, and errs wide, the direction a budgeting figure may err: if either fit holds, it covers the sweep
+      at least :data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL` of the time, so its basis says "at least".
+
+    :param history: The past per-observation costs, at least :data:`COST_ESTIMATE_MIN_BASIS` of them.
+    :ptype history: Sequence[float]
+    :param n_observations: How many observations the proposed sweep would run.
+    :ptype n_observations: int
+    :param estimate: The sweep's point estimate, ``n_observations`` times the history's mean: the centre the band
+        brackets.
+    :ptype estimate: float
+    :return: ``(low, high, basis)``: the band in dollars and the sentence stating its method and assumptions.
+    :rtype: tuple[float, float, str]
+    """
+    n = len(history)
+    if math.isclose(min(history), max(history), rel_tol=_BAND_ROUNDING_REL_TOL):
+        return (
+            estimate,
+            estimate,
+            f"No spread in {n} past observations: each cost {format_number(history[0], prefix='$')}, so the band has "
+            f"no width and is the estimate itself; a sweep whose total differs from it at all falls outside it. "
+            f"{_COST_BAND_INDEPENDENCE}",
+        )
+    log_band = lognormal_sum_prediction_band(history, n_observations)
+    if log_band is None:
+        low, high = _normal_theory_band(history, n_observations, estimate)
+        return (
+            low,
+            high,
+            f"{INTERVAL_LEVEL:.0%} normal-theory prediction band for the sweep's total from {n} past observations — "
+            "some cost nothing, which the log scale cannot read, so this band assumes symmetric costs and is narrow "
+            f"on the high side when a few cost far more than the rest. {_COST_BAND_INDEPENDENCE}",
+        )
+    low, high = log_band
+    if low > estimate and math.isclose(low, estimate, rel_tol=_BAND_ROUNDING_REL_TOL):
+        low = estimate
+    if high < estimate and math.isclose(high, estimate, rel_tol=_BAND_ROUNDING_REL_TOL):
+        high = estimate
+    if low <= estimate <= high:
+        return (
+            low,
+            high,
+            f"{INTERVAL_LEVEL:.0%} prediction band for the sweep's total from a lognormal fit to {n} past "
+            f"observations, the fit's own uncertainty included. {_COST_BAND_INDEPENDENCE}",
+        )
+    end, share, side = (
+        ("upper", 1.0 - high / estimate, "below") if high < estimate else ("lower", low / estimate - 1.0, "above")
+    )
+    missed = (
+        f"{end} end {format_number(high if end == 'upper' else low, prefix='$')}, "
+        f"{f'{share:.0%}' if share >= 0.01 else 'less than 1%'} {side}"
+    )
+    normal_low, normal_high = _normal_theory_band(history, n_observations, estimate)
+    low, high = min(low, normal_low), max(high, normal_high)
+    floored = (
+        " Its lower end is $0: the normal-theory band reaches below zero there, and no sweep costs less than nothing."
+        if low == 0.0
+        else ""
+    )
     return (
-        max(0.0, centre - half),
-        centre + half,
-        f"{INTERVAL_LEVEL:.0%} normal-theory prediction band for the sweep's total from {n} past observations — "
-        "some cost nothing, which the log scale cannot read, so this band assumes symmetric costs and is narrow "
-        f"on the high side when a few cost far more than the rest. {_COST_BAND_INDEPENDENCE}",
+        low,
+        high,
+        f"At least {INTERVAL_LEVEL:.0%} prediction band for the sweep's total from {n} past observations, spanning two "
+        f"fits that disagree: a lognormal fit put its {missed} the {format_number(estimate, prefix='$')} the "
+        f"observations' mean predicts, so the band runs from the lower of that fit's and a normal-theory band's lower "
+        f"ends around the mean to the higher of their upper ends, and covers the sweep at least {INTERVAL_LEVEL:.0%} "
+        f"of the time if either fit holds: wider than one fit's band, because neither can be trusted alone."
+        f"{floored} {_COST_BAND_INDEPENDENCE}",
     )
 
 
@@ -501,7 +603,7 @@ def compute_estimate_cost(
             low = high = band_basis = None
             total_bandable = False
         else:
-            low, high, band_basis = _cost_band(history, n_observations)
+            low, high, band_basis = _cost_band(history, n_observations, estimate)
             total_low += low
             total_high += high
 

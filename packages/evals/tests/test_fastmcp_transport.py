@@ -11,6 +11,7 @@ own prefix), and the caller resolved per call — sync or async.
 from __future__ import annotations
 
 import asyncio
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -19,7 +20,12 @@ from typing import Any
 import pytest
 from fastmcp import Client, FastMCP
 
-from threetears.evals.actions import Caller, eval_catalogue, read_only_tools, standard_tools
+from pydantic import Field
+
+from threetears.evals.actions import Action, Caller, eval_catalogue, read_only_tools, standard_tools
+from threetears.evals.ops import OpsHost
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.ops import report_read
 from threetears.evals.transports.fastmcp import CallTimedOut, mount_fastmcp
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import CALLER, RUN_MODELS, TOYHOST_SUBJECT, OpsFixture, ops_fixture
@@ -85,12 +91,86 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
         )
         assert not is_error and document is not None and document["format"] == "markdown"
         assert (document["basis"], document["analysis_id"]) == ("analysis", analysis_status["analysis_id"])
-        # The title opens the page, below only its loud lines: each broken floor and missed bar, and the memo's why
-        # beside one.
-        title = report.index("\n# ")
-        loud = [line for line in report[:title].splitlines() if line]
-        assert loud and all(line.startswith(("**Floor broken on ", "**Bar missed on ", "**The memo ")) for line in loud)
+        # The title opens the page; what warns (each broken floor and missed bar, and the memo's why beside one)
+        # follows the question and the answer, never above the title.
+        assert report.startswith("# ")
+        assert "**Adopting " in report[: report.index("\n## ")]
         assert "| Analysis | " in report and "none written" not in report
+
+
+async def test_a_report_s_body_is_sent_once_as_the_text_and_every_other_field_as_data() -> None:
+    fixture = off_loop(ops_fixture)
+    async with Client(_served(fixture)) as client:
+        for form in ("markdown", "html", "json"):
+            result = await client.call_tool(
+                "evals", {"action": "report_read", "campaign_id": fixture.campaign.id, "format": form}
+            )
+            (block,) = result.content
+            expected = off_loop(
+                report_read, fixture.host.eval_host, fixture.campaign.id, fixture.campaign.scope_id, format=form
+            )
+            assert _undated(block.text) == _undated(expected.body)
+            assert result.structured_content == {
+                "campaign_id": fixture.campaign.id,
+                "basis": expected.basis,
+                "analysis_id": expected.analysis_id,
+                "format": form,
+            }
+        # A result whose text is composed from its fields keeps every field.
+        _, listed, _ = await _text(client, "evals", {"action": "templates_list"})
+    assert listed is not None and [template["id"] for template in listed["templates"]] == [toyhost_template().id]
+
+
+class _Note(EvalBaseModel):
+    """A host action's parameters."""
+
+    echoed: str = Field(description="The words to echo.")
+
+
+class _Noted(EvalBaseModel):
+    """A host action's result, whose text is its note verbatim."""
+
+    note: str
+    scope_id: str
+
+
+async def _echo(host: OpsHost, caller: Caller, params: _Note) -> _Noted:
+    return _Noted(note=params.echoed, scope_id=caller.scope_id)
+
+
+def _echo_action(**declared: Any) -> Action:
+    return Action(
+        name="note_echo",
+        summary="Echo a note back.",
+        workflow="Host",
+        permission="read",
+        params=_Note,
+        result=_Noted,
+        handler=_echo,
+        render=lambda result: result.note,
+        example={"echoed": "hello"},
+        **declared,
+    )
+
+
+async def test_a_field_the_text_repeats_is_left_out_only_where_its_action_declares_it() -> None:
+    fixture = off_loop(ops_fixture)
+    for declared, sent in (
+        ({}, {"note": "hi", "scope_id": CALLER.scope_id}),
+        ({"text_field": "note"}, {"scope_id": CALLER.scope_id}),
+    ):
+        server = FastMCP("toyhost")
+        mount_fastmcp(server, eval_catalogue((_echo_action(**declared),)), host=fixture.host, caller=lambda: CALLER)
+        async with Client(server) as client:
+            text, structured, is_error = await _text(client, "evals", {"action": "note_echo", "echoed": "hi"})
+        assert (text, structured, is_error) == ("hi", sent, False)
+    with pytest.raises(ValueError, match="text_field 'body' is no field of _Noted"):
+        _echo_action(text_field="body")
+
+
+def _undated(text: str) -> str:
+    """A code-only page states when it was assembled; two reads a moment apart differ there and only there."""
+    return re.sub(r"\d{4}-\d{2}-\d{2}T[0-9:.+]+(Z|[+-]\d{2}:\d{2})?", "<at>", text)
 
 
 async def test_an_undeclared_parameter_is_refused_with_the_valid_set() -> None:

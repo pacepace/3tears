@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal
 
 from pydantic import Field, TypeAdapter, computed_field, field_validator, model_validator
 
@@ -60,11 +60,13 @@ from threetears.evals.kernel.metrics import (
     rule_rates,
 )
 from threetears.evals.schema.models import (
+    DECLARED_NAME_CHARS,
     RESERVED_DIM_IDS,
     SCALES,
     ApparatusProvenance,
     EvalTemplate,
     RubricScale,
+    declared_name,
     utc_now_iso,
 )
 
@@ -867,6 +869,28 @@ def resolve_control_arm(arm: CampaignArm | None) -> ResolvedControl:
     return _resolve_control_key(arm.variant_key, arm.levers, arm.identity_version)
 
 
+#: The fields of an aspect that say only how a page prints it: the one list every reader that must not see them reads.
+#: A bundle carries them under the same names and leaves them out of its fingerprint, and a campaign bundle's
+#: fingerprint leaves them out of its declaration's aspects.
+ASPECT_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"short_name"})
+
+
+def printed_aspect_name(label: str, short_name: str | None) -> str:
+    """What a page prints for an aspect: its declared short name, else its whole label, never a shortening of it.
+
+    The one statement of the rule: the campaign's uniqueness check and every page part
+    (:func:`~threetears.evals.analysis.report.campaign.names.aspect_name`) read it.
+
+    :param label: The aspect's label.
+    :ptype label: str
+    :param short_name: Its declared short name, or None.
+    :ptype short_name: str | None
+    :return: The name a page prints.
+    :rtype: str
+    """
+    return short_name if short_name is not None else label
+
+
 class Aspect(EvalDocumentModel, CoreShapeModel):
     """One part of what a campaign asks, read on its own runs: its template, its margin, its design and its runs.
 
@@ -881,6 +905,17 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
         description=(
             "What a reader calls this aspect: unique within its campaign, and never holding a `/`, which separates a "
             "floor key's parts. A campaign stored before aspects existed reads as one aspect labelled with its behavior."
+        ),
+    )
+    short_name: str | None = Field(
+        default=None,
+        # Presentation only: written only when declared, so an aspect naming none is stored as it was before the field.
+        exclude_if=lambda name: name is None,
+        description=(
+            f"What a page prints for this aspect in table cells and sentences, at most {DECLARED_NAME_CHARS} "
+            "characters; the label is printed once beside it. It is no other aspect's label or short name. None = the "
+            "label is printed whole. No part of any identity, key or fingerprint, so naming an aspect changes no "
+            "reading."
         ),
     )
     template_id: str | None = Field(
@@ -950,6 +985,18 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
                 "without one"
             )
         return label
+
+    @model_validator(mode="after")
+    def _a_short_name_is_short(self) -> Aspect:
+        """Refuse a short name that is blank or longer than :data:`~threetears.evals.schema.models.DECLARED_NAME_CHARS`.
+
+        :return: The validated aspect.
+        :rtype: Aspect
+        :raises ValueError: The short name is blank or too long.
+        """
+        if self.short_name is not None:
+            declared_name(self.short_name, what=f"aspect {self.label!r}")
+        return self
 
 
 class Floor(EvalDocumentModel, CoreShapeModel):

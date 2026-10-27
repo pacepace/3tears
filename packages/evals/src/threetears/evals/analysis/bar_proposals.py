@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, bar_seed
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.bars import BarProposal, no_better_end
