@@ -14,8 +14,17 @@ identified from the numbers alone, never from a measure's name, its definition's
 - one measure or judged dimension, of the same kind and unit as the overall's, is held in every cell for each arm
   checked, and its cells' plain mean equals the overall figure within the rounding both are stated to, for every arm
   that holds the overall figure and that measure in every cell (at least one). Two such measures are refused as
-  ambiguous. A mean weighted by the cells' cases or traffic is not the plain mean, unless the cells weigh alike, and
-  is refused; so is a figure the cells do not average to (a macro F1).
+  ambiguous, and so is a figure the cells do not average to (a macro F1), or one where a cell's figure is not a
+  finite number.
+
+  *A weighted mean.* Where the cells state differing cases, their case-weighted mean is read beside the plain one: a
+  figure the plain mean fits but the case-weighted one does not (r3's balanced accuracy) qualifies; one the
+  case-weighted mean fits and the plain one does not (r3's traffic accuracy) does not; one both fit, because the cells'
+  figures sit within rounding of one another, is refused as ambiguous, since the basis would call a weighted mean
+  plain. Cells of one count weigh alike, so there the two means are one. Weights the input does not state cannot be
+  told apart this way: an overall weighted by traffic shares other than the cells' cases, whose figures happen to
+  average to it plainly within rounding, reads as the plain mean. Nothing in the input can catch it; only a figure
+  whose cells' figures are spread apart tells a weighted mean from the plain one.
 
 **The formula.** For ``k`` cells whose standard errors are ``se_i``, the overall's standard error is
 ``sqrt(sum(se_i ** 2)) / k``: the variance of a plain mean of independent figures. The cells are independent because
@@ -32,7 +41,7 @@ interval read one number. Like a pooled figure's, its ends are not held to a rat
 
 **What it refuses** (:class:`NoCellMean`, its message saying why): an overall that states a spread of its own (there
 is nothing to derive); an input with no target matrix, or cells that do not cover it once each; an overall that is no
-plain mean of any measure's cells, or of two; any cell, for the arm, that states no spread of its own: then nothing is
+plain mean of any measure's cells, or of two, or that a case-weighted mean of the cells fits as well; any cell, for the arm, that states no spread of its own: then nothing is
 derived for that arm, and the overall stays a point estimate with its ``point_estimate`` caveat; cells whose level is
 unstated; and cells at a level other than the one the overall states for its own intervals, since the overall would
 then read at two levels. The input states one level per measure, so the cells of one measure share theirs.
@@ -151,33 +160,59 @@ def _same_kind(report_input: ReportInput, key: str, other: str) -> bool:
     return other in report_input.judged and report_input.judged[other].scale == report_input.judged[key].scale
 
 
+def _agrees(overall: float, mean: float, means: list[float]) -> bool:
+    """Whether a mean of the cells' figures is the overall figure within the rounding both are stated to."""
+    return abs(mean - overall) <= _rounding([overall]) + _rounding(means) + _FLOAT_NOISE
+
+
+def _case_weights(report_input: ReportInput, cells: tuple[str, ...]) -> list[float] | None:
+    """The cells' stated cases, as weights, where every cell states a count above none and the counts differ (cells
+    of one count weigh alike, so their case-weighted mean is their plain mean); None otherwise."""
+    counts = [report_input.cells[cell].n_cases for cell in cells]
+    if any(count is None or count <= 0 for count in counts) or len(set(counts)) < 2:
+        return None
+    return [float(count or 0) for count in counts]
+
+
 def _averaged(report_input: ReportInput, key: str, per_arm: Mapping[str, Stat], cells: tuple[str, ...]) -> str:
     """The one measure whose cells' plain mean is the overall figure for every arm checked (this module's Which
     overalls qualify).
 
-    :raises NoCellMean: None is, or two are.
+    :raises NoCellMean: None is, or two are, or one is and its cells' case-weighted mean fits the figure as well.
     """
     held = dict.fromkeys(
         name for cell in cells for figures in report_input.cells[cell].per_arm.values() for name in figures
     )
+    weights = _case_weights(report_input, cells)
     found: list[str] = []
+    both: list[str] = []
     for other in held:
         if not _same_kind(report_input, key, other):
             continue
         checked = 0
-        agrees = True
+        plain = weighted = True
         for arm, stat in per_arm.items():
             overall = _overall_mean(stat)
             means = _cell_means(report_input, cells, arm, other)
             if overall is None or means is None:
                 continue
             checked += 1
-            mean = sum(means) / len(means)
-            if abs(mean - overall) > _rounding([overall]) + _rounding(means) + _FLOAT_NOISE:
-                agrees = False
+            if not all(math.isfinite(mean) for mean in means):
+                plain = weighted = False
                 break
-        if checked and agrees:
-            found.append(other)
+            plain = plain and _agrees(overall, sum(means) / len(means), means)
+            if weights is not None:
+                mean = sum(weight * value for weight, value in zip(weights, means, strict=True)) / sum(weights)
+                weighted = weighted and _agrees(overall, mean, means)
+            if not plain:
+                break
+        if checked and plain:
+            (both if weights is not None and weighted else found).append(other)
+    if both:
+        raise NoCellMean(
+            f"{key!r} fits both a plain and a case-weighted mean of the cells' figures on {', '.join(both)}, which "
+            "sit too close together to tell the two apart, so which it is is unsaid"
+        )
     if not found:
         raise NoCellMean(f"{key!r} is not the plain mean of any measure's cells, as the figures the input states read")
     if len(found) > 1:

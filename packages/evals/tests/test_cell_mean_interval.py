@@ -170,6 +170,45 @@ def test_one_cell_stating_no_spread_for_one_arm_derives_nothing_for_that_arm_alo
     assert cite_if(_key("nano-xs.few", "interval"), held) is not None
 
 
+def test_an_overall_a_case_weighted_mean_fits_as_well_as_the_plain_one_is_refused() -> None:
+    """Cells whose figures sit within rounding of one another (90.1 and 90.2, alternately) and an overall that is
+    their case-weighted mean, rounded: the plain mean fits it within rounding too, so which it is is unsaid, and the
+    basis would call a weighted mean plain. Nothing is derived and the caveat stays."""
+    means: dict[str, float] = {}
+
+    def close(data: dict[str, Any]) -> None:
+        cases = [float(cell["n_cases"]) for cell in data["cells"].values()]
+        assert len(set(cases)) > 1, "the control: the cells' cases differ"
+        for arm in data["measures"]["balanced_accuracy"]["per_arm"]:
+            figures = [90.1 if at % 2 == 0 else 90.2 for at in range(len(cases))]
+            for cell, figure in zip(data["cells"].values(), figures, strict=True):
+                cell["per_arm"][arm]["accuracy"]["mean"] = figure
+            weighted = sum(c * f for c, f in zip(cases, figures, strict=True)) / sum(cases)
+            means[arm] = sum(figures) / len(figures)
+            data["measures"]["balanced_accuracy"]["per_arm"][arm]["mean"] = round(weighted, 1)
+
+    held = _changed(close)
+    arm = "brisk-s.few"
+    overall = held.measures["balanced_accuracy"].per_arm[arm].mean
+    assert overall is not None and abs(means[arm] - overall) <= 0.1, "the control: the plain mean fits it too"
+    with pytest.raises(UnstatedFigure, match="fits both a plain and a case-weighted mean"):
+        resolve(_key(arm, "interval"), held)
+    gate = next(criterion for criterion in held.criteria if criterion.id == "overall")
+    (figure,) = criterion_figures(held, gate, arm)
+    assert (figure.ci, figure.derived) == (None, False)
+    assert any(caveat.id == "point_estimate:overall" for caveat in implied_caveats(held))
+
+
+def test_a_cell_figure_that_is_no_number_is_no_agreement() -> None:
+    def not_a_number(data: dict[str, Any]) -> None:
+        for figures in data["cells"]["simple|conv"]["per_arm"].values():
+            figures["accuracy"]["mean"] = float("nan")
+
+    held = _changed(not_a_number)
+    with pytest.raises(UnstatedFigure, match="is not the plain mean of any measure's cells"):
+        resolve(_key("brisk-s.few", "interval"), held)
+
+
 def test_cells_at_a_level_other_than_the_overall_s_are_refused() -> None:
     def overall_at_90(data: dict[str, Any]) -> None:
         data["measures"]["balanced_accuracy"]["level"] = "90%"
