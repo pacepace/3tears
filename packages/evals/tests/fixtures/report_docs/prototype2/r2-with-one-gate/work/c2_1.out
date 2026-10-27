@@ -1,0 +1,32 @@
+rendered block
+block_kind: dot_interval
+query:
+  source: measures
+  aspect: 
+  measures: [pass_rate]
+  arms: [brisk-s.low.r1, brisk-s.high.r1, atlas-m.low.r1, atlas-m.high.r0, atlas-m.high.r1, brisk-s.high.r0, atlas-m.low.r0]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: floor
+emphasis: brisk-s.low.r1
+title: 
+level: 
+unit: pct
+domain: 
+criteria.pass_rate.threshold = 97%
+columns: [Row, Value]
+rows (8):
+  - cells: [J · Brisk-S · reasoning low · 1 retry, 97.1%]
+  - cells: [L · Brisk-S · reasoning high · 1 retry, 98.0%]
+  - cells: [D · Atlas-M · reasoning low · 1 retry, 97.9%]
+  - cells: [E · Atlas-M · reasoning high · no retry, 97.7%]
+  - cells: [F · Atlas-M · reasoning high · 1 retry, 98.6%]
+  - cells: [K · Brisk-S · reasoning high · no retry, 96.6%]
+  - cells: [C · Atlas-M · reasoning low · no retry, 96.6%]
+  - cells: [floor 97%, 97.0%]
+total: 8
+offset: 0
+truncated: False
+notes: []

@@ -1,0 +1,27 @@
+sensitivity
+parameter: floor:billing/billing/rate_drop/*
+hypothetical: False
+swept: every floor from zero up, without end, on floor billing/rate_drop/*
+aspects.billing.floor.billing/rate_drop/*.v2.margin = 10
+boundary_belongs_to: below
+declared_call:
+  modes: [tradeoff]
+  dominant: []
+reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+declared_picks: []
+segments (1):
+  - low: none; high: none; modes: [tradeoff]; dominant: []; picks: []
+holds: True
+picks_hold: True
+flips (4):
+  - arm: arm:v4; where: held_above; call_changes: False; picks_change: False
+    aspects.billing.floor.billing/rate_drop/*.v4.held_above = 15.9
+  - arm: arm:v3; where: held_above; call_changes: False; picks_change: False
+    aspects.billing.floor.billing/rate_drop/*.v3.held_above = 20.9
+  - arm: arm:v2; where: broken_at; call_changes: False; picks_change: False
+    aspects.billing.floor.billing/rate_drop/*.v2.broken_at = 23.9
+  - arm: arm:v2; where: held_above; call_changes: False; picks_change: False
+    aspects.billing.floor.billing/rate_drop/*.v2.held_above = 83.2
+total: 4
+offset: 0
+notes: [flips outside the range swept are not listed]

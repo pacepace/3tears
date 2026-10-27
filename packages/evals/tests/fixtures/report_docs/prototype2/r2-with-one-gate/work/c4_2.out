@@ -1,0 +1,25 @@
+rendered block
+block_kind: examples
+query:
+  source: examples
+  aspect: 
+  measures: []
+  arms: [brisk-s.low.r1]
+  strata: [multihop]
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Example, Details, Reason, Excerpt]
+rows (1):
+  - cells: [TQ-0418 · Multi-hop (2 to 3 calls) · Brisk-S · reasoning low · 1 retry · missing call, Input: Who chaired the committee that approved the 2019 grid budget?; Expected: search(committee, grid budget 2019) → lookup(chair), Collapsed two hops into one query; returned the budget author, not the chair., search(grid budget 2019 chair)]
+total: 1
+offset: 0
+truncated: False
+notes: []

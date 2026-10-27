@@ -1,0 +1,177 @@
+contrast listing
+contrasts (17):
+  - measure: goal_state:reply.total == case.total; aspect: billing; confounds: []
+    arm:v2 = v2 (A)
+    figures (6):
+      aspects.billing.contrast.v2.goal_state:reply.total == case.total.delta = -0.6
+      aspects.billing.contrast.v2.goal_state:reply.total == case.total.interval = -0.9615 to -0.2385
+      aspects.billing.contrast.v2.goal_state:reply.total == case.total.verdict = regressed
+      aspects.billing.contrast.v2.goal_state:reply.total == case.total.p_adjusted = 0.0004129
+      aspects.billing.contrast.v2.goal_state:reply.total == case.total.level = 99.55%
+      aspects.billing.contrast.v2.goal_state:reply.total == case.total.materiality = material
+  - measure: passed; aspect: billing; confounds: []
+    arm:v2 = v2 (A)
+    figures (6):
+      aspects.billing.contrast.v2.passed.delta = -60
+      aspects.billing.contrast.v2.passed.interval = -96.1 to -23.9
+      aspects.billing.contrast.v2.passed.verdict = regressed
+      aspects.billing.contrast.v2.passed.p_adjusted = 0.0004129
+      aspects.billing.contrast.v2.passed.level = 99.55%
+      aspects.billing.contrast.v2.passed.materiality = material
+  - measure: goal_state:reply.cites_policy; aspect: billing; confounds: []
+    arm:v2 = v2 (A)
+    figures (6):
+      aspects.billing.contrast.v2.goal_state:reply.cites_policy.delta = 0
+      aspects.billing.contrast.v2.goal_state:reply.cites_policy.interval = -0.2888 to +0.2888
+      aspects.billing.contrast.v2.goal_state:reply.cites_policy.verdict = not_separated
+      aspects.billing.contrast.v2.goal_state:reply.cites_policy.p_adjusted = 1
+      aspects.billing.contrast.v2.goal_state:reply.cites_policy.level = 99.55%
+      aspects.billing.contrast.v2.goal_state:reply.cites_policy.materiality = material
+  - measure: goal_state:reply.cites_policy; aspect: billing; confounds: []
+    arm:v3 = v3 (B)
+    figures (6):
+      aspects.billing.contrast.v3.goal_state:reply.cites_policy.delta = 0
+      aspects.billing.contrast.v3.goal_state:reply.cites_policy.interval = -0.2888 to +0.2888
+      aspects.billing.contrast.v3.goal_state:reply.cites_policy.verdict = not_separated
+      aspects.billing.contrast.v3.goal_state:reply.cites_policy.p_adjusted = 1
+      aspects.billing.contrast.v3.goal_state:reply.cites_policy.level = 99.55%
+      aspects.billing.contrast.v3.goal_state:reply.cites_policy.materiality = material
+  - measure: goal_state:reply.cites_policy; aspect: billing; confounds: []
+    arm:v4 = v4 (C)
+    figures (6):
+      aspects.billing.contrast.v4.goal_state:reply.cites_policy.delta = 0
+      aspects.billing.contrast.v4.goal_state:reply.cites_policy.interval = -0.2888 to +0.2888
+      aspects.billing.contrast.v4.goal_state:reply.cites_policy.verdict = not_separated
+      aspects.billing.contrast.v4.goal_state:reply.cites_policy.p_adjusted = 1
+      aspects.billing.contrast.v4.goal_state:reply.cites_policy.level = 99.55%
+      aspects.billing.contrast.v4.goal_state:reply.cites_policy.materiality = material
+  - measure: goal_state:reply.total == case.total; aspect: billing; confounds: []
+    arm:v3 = v3 (B)
+    figures (6):
+      aspects.billing.contrast.v3.goal_state:reply.total == case.total.delta = -0.05
+      aspects.billing.contrast.v3.goal_state:reply.total == case.total.interval = -0.2108 to +0.1108
+      aspects.billing.contrast.v3.goal_state:reply.total == case.total.verdict = not_separated
+      aspects.billing.contrast.v3.goal_state:reply.total == case.total.p_adjusted = 1
+      aspects.billing.contrast.v3.goal_state:reply.total == case.total.level = 99.55%
+      aspects.billing.contrast.v3.goal_state:reply.total == case.total.materiality = material
+  - measure: goal_state:reply.total == case.total; aspect: billing; confounds: []
+    arm:v4 = v4 (C)
+    figures (6):
+      aspects.billing.contrast.v4.goal_state:reply.total == case.total.delta = +0.05
+      aspects.billing.contrast.v4.goal_state:reply.total == case.total.interval = -0.1108 to +0.2108
+      aspects.billing.contrast.v4.goal_state:reply.total == case.total.verdict = not_separated
+      aspects.billing.contrast.v4.goal_state:reply.total == case.total.p_adjusted = 1
+      aspects.billing.contrast.v4.goal_state:reply.total == case.total.level = 99.55%
+      aspects.billing.contrast.v4.goal_state:reply.total == case.total.materiality = material
+  - measure: production_replicating_cost; aspect: billing; confounds: []
+    arm:v2 = v2 (A)
+    figures (5):
+      aspects.billing.contrast.v2.production_replicating_cost.delta = $0
+      aspects.billing.contrast.v2.production_replicating_cost.verdict = not_separated
+      aspects.billing.contrast.v2.production_replicating_cost.p_adjusted = 1
+      aspects.billing.contrast.v2.production_replicating_cost.level = 99.55%
+      aspects.billing.contrast.v2.production_replicating_cost.materiality = material
+  - measure: production_replicating_cost; aspect: billing; confounds: []
+    arm:v3 = v3 (B)
+    figures (5):
+      aspects.billing.contrast.v3.production_replicating_cost.delta = $0
+      aspects.billing.contrast.v3.production_replicating_cost.verdict = not_separated
+      aspects.billing.contrast.v3.production_replicating_cost.p_adjusted = 1
+      aspects.billing.contrast.v3.production_replicating_cost.level = 99.55%
+      aspects.billing.contrast.v3.production_replicating_cost.materiality = material
+  - measure: production_replicating_cost; aspect: billing; confounds: []
+    arm:v4 = v4 (C)
+    figures (5):
+      aspects.billing.contrast.v4.production_replicating_cost.delta = -$0.00100
+      aspects.billing.contrast.v4.production_replicating_cost.verdict = not_separated
+      aspects.billing.contrast.v4.production_replicating_cost.level = 99.55%
+      aspects.billing.contrast.v4.production_replicating_cost.materiality = material
+      aspects.billing.contrast.v4.production_replicating_cost.reason = declare value_range on this measure for a uniform move to be tested: every case moved by the same amount, and with no declared range no test of a mean can call that separated (the exact sign-flip test asks whether the move is symmetric about zero, not whether the mean moved, and an unbounded value can hide a rare large move the other way), so it is not separated and nothing here says the two are alike
+  - measure: passed; aspect: billing; confounds: []
+    arm:v3 = v3 (B)
+    figures (6):
+      aspects.billing.contrast.v3.passed.delta = -5
+      aspects.billing.contrast.v3.passed.interval = -21.1 to +11.1
+      aspects.billing.contrast.v3.passed.verdict = not_separated
+      aspects.billing.contrast.v3.passed.p_adjusted = 1
+      aspects.billing.contrast.v3.passed.level = 99.55%
+      aspects.billing.contrast.v3.passed.materiality = material
+  - measure: passed; aspect: billing; confounds: []
+    arm:v4 = v4 (C)
+    figures (6):
+      aspects.billing.contrast.v4.passed.delta = +5
+      aspects.billing.contrast.v4.passed.interval = -11.1 to +21.1
+      aspects.billing.contrast.v4.passed.verdict = not_separated
+      aspects.billing.contrast.v4.passed.p_adjusted = 1
+      aspects.billing.contrast.v4.passed.level = 99.55%
+      aspects.billing.contrast.v4.passed.materiality = material
+  - measure: goal_state:reply.cites_policy; aspect: tone; confounds: []
+    arm:v4 = v4 (C)
+    figures (6):
+      aspects.tone.contrast.v4.goal_state:reply.cites_policy.delta = -0.6
+      aspects.tone.contrast.v4.goal_state:reply.cites_policy.interval = -0.9615 to -0.2385
+      aspects.tone.contrast.v4.goal_state:reply.cites_policy.verdict = regressed
+      aspects.tone.contrast.v4.goal_state:reply.cites_policy.p_adjusted = 0.0004129
+      aspects.tone.contrast.v4.goal_state:reply.cites_policy.level = 99.55%
+      aspects.tone.contrast.v4.goal_state:reply.cites_policy.materiality = material
+  - measure: goal_state:reply.total == case.total; aspect: tone; confounds: []
+    arm:v2 = v2 (A)
+    figures (6):
+      aspects.tone.contrast.v2.goal_state:reply.total == case.total.delta = +0.4
+      aspects.tone.contrast.v2.goal_state:reply.total == case.total.interval = +0.03852 to +0.7615
+      aspects.tone.contrast.v2.goal_state:reply.total == case.total.verdict = improved
+      aspects.tone.contrast.v2.goal_state:reply.total == case.total.p_adjusted = 0.02095
+      aspects.tone.contrast.v2.goal_state:reply.total == case.total.level = 99.55%
+      aspects.tone.contrast.v2.goal_state:reply.total == case.total.materiality = material
+  - measure: passed; aspect: tone; confounds: []
+    arm:v2 = v2 (A)
+    figures (6):
+      aspects.tone.contrast.v2.passed.delta = +40
+      aspects.tone.contrast.v2.passed.interval = +3.9 to +76.1
+      aspects.tone.contrast.v2.passed.verdict = improved
+      aspects.tone.contrast.v2.passed.p_adjusted = 0.02095
+      aspects.tone.contrast.v2.passed.level = 99.55%
+      aspects.tone.contrast.v2.passed.materiality = material
+  - measure: goal_state:reply.cites_policy; aspect: tone; confounds: []
+    arm:v2 = v2 (A)
+    figures (6):
+      aspects.tone.contrast.v2.goal_state:reply.cites_policy.delta = 0
+      aspects.tone.contrast.v2.goal_state:reply.cites_policy.interval = -0.2888 to +0.2888
+      aspects.tone.contrast.v2.goal_state:reply.cites_policy.verdict = not_separated
+      aspects.tone.contrast.v2.goal_state:reply.cites_policy.p_adjusted = 1
+      aspects.tone.contrast.v2.goal_state:reply.cites_policy.level = 99.55%
+      aspects.tone.contrast.v2.goal_state:reply.cites_policy.materiality = material
+  - measure: goal_state:reply.cites_policy; aspect: tone; confounds: []
+    arm:v3 = v3 (B)
+    figures (6):
+      aspects.tone.contrast.v3.goal_state:reply.cites_policy.delta = 0
+      aspects.tone.contrast.v3.goal_state:reply.cites_policy.interval = -0.2888 to +0.2888
+      aspects.tone.contrast.v3.goal_state:reply.cites_policy.verdict = not_separated
+      aspects.tone.contrast.v3.goal_state:reply.cites_policy.p_adjusted = 1
+      aspects.tone.contrast.v3.goal_state:reply.cites_policy.level = 99.55%
+      aspects.tone.contrast.v3.goal_state:reply.cites_policy.materiality = material
+families (3):
+  - aspect: billing; merit_axes: []
+    figures (5):
+      aspects.billing.family.disclosure = 11 comparisons this question asks about carried a p and were corrected together by Holm's method at α=0.05; a separation stands only where the adjusted p is below it and the interval excludes zero. Each interval is at 99.55%, so the family's intervals hold together at 95%.
+      aspects.billing.family.correction = holm
+      aspects.billing.family.alpha = 0.05
+      aspects.billing.family.family_size = 11
+      aspects.billing.family.level = 99.55%
+  - aspect: tone; merit_axes: []
+    figures (5):
+      aspects.tone.family.disclosure = 11 comparisons this question asks about carried a p and were corrected together by Holm's method at α=0.05; a separation stands only where the adjusted p is below it and the interval excludes zero. Each interval is at 99.55%, so the family's intervals hold together at 95%.
+      aspects.tone.family.correction = holm
+      aspects.tone.family.alpha = 0.05
+      aspects.tone.family.family_size = 11
+      aspects.tone.family.level = 99.55%
+  - aspect: refunds; merit_axes: []
+    figures (5):
+      aspects.refunds.family.disclosure = 11 comparisons this question asks about carried a p and were corrected together by Holm's method at α=0.05; a separation stands only where the adjusted p is below it and the interval excludes zero. Each interval is at 99.55%, so the family's intervals hold together at 95%.
+      aspects.refunds.family.correction = holm
+      aspects.refunds.family.alpha = 0.05
+      aspects.refunds.family.family_size = 11
+      aspects.refunds.family.level = 99.55%
+total: 36
+offset: 0
+next: action='contrasts_list', snapshot_id='report-snapshot:cbe4fd230e040e604b34df5704aa5b38', offset=17

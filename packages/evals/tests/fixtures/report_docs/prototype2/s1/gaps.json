@@ -1,0 +1,52 @@
+[
+  {
+    "need": "settle_cases against a declared rate-drop floor or an aspect margin (non-inferiority against the control)",
+    "why": "To say how many cases would settle v4 within the billing and tone margins for the next step; settle_cases refused: no declared criterion reads a figure for arm:v4, and floors and margins are not criteria to it",
+    "workaround": "Name the flip margin against the margin in Watch and say 'more cases' in the next step without a count"
+  },
+  {
+    "need": "A block over contrasts or readings across every aspect at once (small multiples by aspect, or an aspect column in a table)",
+    "why": "diverging_bars over contrasts with small_multiples_by=aspect returned only the last aspect's rows (refunds) with no panel label, and a table over contrasts without an aspect did the same; readings refuse without an aspect. A one-chart overview of all three sets would carry the lead",
+    "workaround": "One forest per aspect (billing, tone, refunds), each its own claim"
+  },
+  {
+    "need": "forest over readings when the readings carry their own per-arm levels",
+    "why": "forest over readings on billing was refused: rows on 97.5% and 98.33%, although readings_list prints level 98% for every reading; the margin verdicts and flip margins I cite come from that layer",
+    "workaround": "Draw the corrected contrasts instead (one level, 99.55%) and state in Method that margin verdicts come from the reading layer"
+  },
+  {
+    "need": "Check rates (goal_state measures) printable as percents, in prose keys and in dot_interval values",
+    "why": "aspects.tone.measure.goal_state:reply.cites_policy.v4.mean|pct is refused (plain scale), and dot_interval prints 0.4 with no unit, so the claim cannot state v4's citation rate",
+    "workaround": "Cite the floor's broken_at margin in prose and caption the dot chart 'as a fraction of one'"
+  },
+  {
+    "need": "A floor line on a dot_interval or forest for a rate-drop floor that speaks for a different measure than the aspect's reading",
+    "why": "dot_interval over floors with reference=floor was refused: no criterion reads the tone citation floor as a floor does",
+    "workaround": "A floors table beside the citation-rate dots"
+  },
+  {
+    "need": "options_dominance that honours declared floors (and a question's stated rule) as gates",
+    "why": "With criteria empty every arm reads gate_status pass and v2 is read as dominating production although v2's billing floor is broken on its whole interval and the question says 'without losing any aspect'",
+    "workaround": "Disagree with code's reading in Watch and say why"
+  },
+  {
+    "need": "confound_check, or any record of whether the apparatus (grader, simulator, seeded world) varied between arms",
+    "why": "Thirteen apparatus caveats are unrecorded; nothing can show they don't matter",
+    "workaround": "Carry each as an open caveat with a material_if clause, and a next step to record them"
+  },
+  {
+    "need": "Failure examples with reply excerpt, input and expected value",
+    "why": "examples_list returns only the failing check's name (excerpt, input, expected all none), so nothing shows what a wrong refund total or a missing citation looks like",
+    "workaround": "Omit an examples block; the rates carry the finding"
+  },
+  {
+    "need": "render_report, a whole-page render",
+    "why": "To reread the first screen as a reader would and check the page order",
+    "workaround": "Read each block's values table from block_render and reread the draft as text"
+  },
+  {
+    "need": "Readings that print their true interval level, or one level across a reading set",
+    "why": "readings_list and the reading .level keys print 98% for every reading, but v2 reads at 97.5% and v3 and v4 at 98.33%, which only a refused forest revealed; a forest or table over all three billing readings is refused for mixing levels",
+    "workaround": "A forest over the readings of v3 and v4 only (one level), beside the corrected contrasts of all three"
+  }
+]

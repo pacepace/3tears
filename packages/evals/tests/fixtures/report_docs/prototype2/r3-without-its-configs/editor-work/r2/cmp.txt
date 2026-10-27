@@ -1,0 +1,82 @@
+arms comparison
+reads_as: code's arithmetic on the frozen input: the first arm minus the second, with an interval read off what the snapshot states (a paired contrast where one holds, else each arm's own spread combined as independent); a normal approximation, never a test the pipeline ran
+first: arm:nano-xs.few
+second: arm:brisk-s.few
+measure: accuracy
+better: higher_is_better
+rows (9):
+  - where: cells.simple.science; excludes_zero: True; ahead: arm:nano-xs.few; unread:
+    cells.simple.science.name = Simple × Science
+    cells.simple.science.nano-xs.few.accuracy.mean = 96.2%
+    cells.simple.science.brisk-s.few.accuracy.mean = 95.1%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.simple.science.difference = +1.1
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.simple.science.interval = +0.03699 to +2.2
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.simple.science.level = 95%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.simple.science.basis = independent: each arm's own spread (its stated half-width; its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - where: cells.simple.conv; excludes_zero: True; ahead: arm:nano-xs.few; unread:
+    cells.simple.conv.name = Simple × Conversational
+    cells.simple.conv.nano-xs.few.accuracy.mean = 98.2%
+    cells.simple.conv.brisk-s.few.accuracy.mean = 97.1%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.simple.conv.difference = +1.1
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.simple.conv.interval = +0.7 to +1.5
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.simple.conv.level = 95%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.simple.conv.basis = independent: each arm's own spread (its stated half-width; its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - where: cells.simple.news; excludes_zero: False; ahead: none; unread:
+    cells.simple.news.name = Simple × News
+    cells.simple.news.nano-xs.few.accuracy.mean = 94.5%
+    cells.simple.news.brisk-s.few.accuracy.mean = 94%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.simple.news.difference = +0.5
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.simple.news.interval = -0.5 to +1.5
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.simple.news.level = 95%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.simple.news.basis = independent: each arm's own spread (its stated half-width; its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - where: cells.medium.science; excludes_zero: False; ahead: none; unread:
+    cells.medium.science.name = Medium × Science
+    cells.medium.science.nano-xs.few.accuracy.mean = 89.4%
+    cells.medium.science.brisk-s.few.accuracy.mean = 89.9%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.medium.science.difference = -0.5
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.medium.science.interval = -1.8 to +0.8
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.medium.science.level = 95%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.medium.science.basis = independent: each arm's own spread (its stated half-width; its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - where: cells.medium.conv; excludes_zero: False; ahead: none; unread:
+    cells.medium.conv.name = Medium × Conversational
+    cells.medium.conv.nano-xs.few.accuracy.mean = 91.9%
+    cells.medium.conv.brisk-s.few.accuracy.mean = 91.6%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.medium.conv.difference = +0.3
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.medium.conv.interval = -0.5 to +1.1
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.medium.conv.level = 95%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.medium.conv.basis = independent: each arm's own spread (its stated half-width; its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - where: cells.medium.news; excludes_zero: True; ahead: arm:brisk-s.few; unread:
+    cells.medium.news.name = Medium × News
+    cells.medium.news.nano-xs.few.accuracy.mean = 86%
+    cells.medium.news.brisk-s.few.accuracy.mean = 87.5%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.medium.news.difference = -1.5
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.medium.news.interval = -2.8 to -0.2
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.medium.news.level = 95%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.medium.news.basis = independent: each arm's own spread (its stated half-width; its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - where: cells.complex.science; excludes_zero: False; ahead: none; unread:
+    cells.complex.science.name = Complex × Science
+    cells.complex.science.nano-xs.few.accuracy.mean = 88.2%
+    cells.complex.science.brisk-s.few.accuracy.mean = 88.5%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.complex.science.difference = -0.3
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.complex.science.interval = -1.9 to +1.3
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.complex.science.level = 95%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.complex.science.basis = independent: each arm's own spread (its stated half-width; its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - where: cells.complex.conv; excludes_zero: False; ahead: none; unread:
+    cells.complex.conv.name = Complex × Conversational
+    cells.complex.conv.nano-xs.few.accuracy.mean = 89.8%
+    cells.complex.conv.brisk-s.few.accuracy.mean = 89.4%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.complex.conv.difference = +0.4
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.complex.conv.interval = -1.5 to +2.3
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.complex.conv.level = 95%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.complex.conv.basis = independent: each arm's own spread (its stated half-width; its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+  - where: cells.complex.news; excludes_zero: True; ahead: arm:brisk-s.few; unread:
+    cells.complex.news.name = Complex × News
+    cells.complex.news.nano-xs.few.accuracy.mean = 76.7%
+    cells.complex.news.brisk-s.few.accuracy.mean = 82.9%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.complex.news.difference = -6.2
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.complex.news.interval = -8 to -4.4
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.complex.news.level = 95%
+    compare.nano-xs.few.brisk-s.few.accuracy.cells.complex.news.basis = independent: each arm's own spread (its stated half-width; its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same
+total: 9
+offset: 0
+notes: []

@@ -1,0 +1,171 @@
+settle
+reads_as: code's arithmetic on the frozen input: the cases a design needs, sized on today's estimate and its spread (a normal approximation), and how often today's design would read the other way if the truth equals today's estimate; it plans a run, it tests nothing
+sided: one-sided at the snapshot's level: a bound centred on today's figure sits wholly on today's side of the line, which clears the line where today's figure passes (settles: clears) and confirms the miss where it misses (settles: misses); cases_needed is the size at which half such designs do if the truth equals today's figure, cases_needed_80 the size at which four in five do. A page prints two-sided intervals, which need more: cases_needed_two_sided and cases_needed_two_sided_80 are the same sizes for the two-sided interval at the level. Each size counts what count_of says the count counts: trials, not cases, on a repeated design
+hypothetical: False
+arms: [arm:brisk-s.few]
+rows (9):
+  - where: overall; name: none; against: criterion overall; settles: clears; unsettled:
+    estimate (1):
+      criteria.overall.brisk-s.few.value = 90.7%
+    criteria.overall.threshold = 90%
+    settle.criteria.overall.brisk-s.few.overall.distance = +0.7
+    settle.criteria.overall.brisk-s.few.overall.cases_needed = 4658
+    settle.criteria.overall.brisk-s.few.overall.cases_needed_80 = 10643
+    settle.criteria.overall.brisk-s.few.overall.cases_needed_two_sided = 6613
+    settle.criteria.overall.brisk-s.few.overall.cases_needed_two_sided_80 = 13512
+    settle.criteria.overall.brisk-s.few.overall.wrong_side = 0.000006049%
+    settle.criteria.overall.brisk-s.few.overall.level = 95% one-sided
+    counts (1):
+      spread.brisk-s.few.balanced_accuracy.overall.n = 48210
+    count_of (1):
+      spread.brisk-s.few.balanced_accuracy.overall.counts = cases
+    basis (1):
+      spread.brisk-s.few.balanced_accuracy.overall.basis = a pass/fail rate's binomial spread, from its count
+  - where: cells.simple.science; against: criterion cell_floor; settles: clears; unsettled:
+    cells.simple.science.name = Simple × Science
+    estimate (1):
+      criteria.cell_floor.brisk-s.few.simple.science.value = 95.1%
+    criteria.cell_floor.threshold = 80%
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.science.distance = +15.1
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.science.cases_needed = 7
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.science.cases_needed_80 = 15
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.science.cases_needed_two_sided = 9
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.science.cases_needed_two_sided_80 = 18
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.science.wrong_side = < 0.000001%
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.science.level = 95% one-sided
+    counts (1):
+      spread.brisk-s.few.accuracy.cells.simple.science.n = 3120
+    count_of (1):
+      spread.brisk-s.few.accuracy.cells.simple.science.counts = cases
+    basis (1):
+      spread.brisk-s.few.accuracy.cells.simple.science.basis = its stated half-width
+  - where: cells.simple.conv; against: criterion cell_floor; settles: clears; unsettled:
+    cells.simple.conv.name = Simple × Conversational
+    estimate (1):
+      criteria.cell_floor.brisk-s.few.simple.conv.value = 97.1%
+    criteria.cell_floor.threshold = 80%
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.conv.distance = +17.1
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.conv.cases_needed = 4
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.conv.cases_needed_80 = 8
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.conv.cases_needed_two_sided = 5
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.conv.cases_needed_two_sided_80 = 10
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.conv.wrong_side = 0%
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.conv.level = 95% one-sided
+    counts (1):
+      spread.brisk-s.few.accuracy.cells.simple.conv.n = 14880
+    count_of (1):
+      spread.brisk-s.few.accuracy.cells.simple.conv.counts = cases
+    basis (1):
+      spread.brisk-s.few.accuracy.cells.simple.conv.basis = its stated half-width
+  - where: cells.simple.news; against: criterion cell_floor; settles: clears; unsettled:
+    cells.simple.news.name = Simple × News
+    estimate (1):
+      criteria.cell_floor.brisk-s.few.simple.news.value = 94%
+    criteria.cell_floor.threshold = 80%
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.news.distance = +14
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.news.cases_needed = 8
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.news.cases_needed_80 = 18
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.news.cases_needed_two_sided = 12
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.news.cases_needed_two_sided_80 = 23
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.news.wrong_side = 0%
+    settle.criteria.cell_floor.brisk-s.few.cells.simple.news.level = 95% one-sided
+    counts (1):
+      spread.brisk-s.few.accuracy.cells.simple.news.n = 4410
+    count_of (1):
+      spread.brisk-s.few.accuracy.cells.simple.news.counts = cases
+    basis (1):
+      spread.brisk-s.few.accuracy.cells.simple.news.basis = its stated half-width
+  - where: cells.medium.science; against: criterion cell_floor; settles: clears; unsettled:
+    cells.medium.science.name = Medium × Science
+    estimate (1):
+      criteria.cell_floor.brisk-s.few.medium.science.value = 89.9%
+    criteria.cell_floor.threshold = 80%
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.science.distance = +9.9
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.science.cases_needed = 25
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.science.cases_needed_80 = 57
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.science.cases_needed_two_sided = 36
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.science.cases_needed_two_sided_80 = 72
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.science.wrong_side = < 0.000001%
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.science.level = 95% one-sided
+    counts (1):
+      spread.brisk-s.few.accuracy.cells.medium.science.n = 4260
+    count_of (1):
+      spread.brisk-s.few.accuracy.cells.medium.science.counts = cases
+    basis (1):
+      spread.brisk-s.few.accuracy.cells.medium.science.basis = its stated half-width
+  - where: cells.medium.conv; against: criterion cell_floor; settles: clears; unsettled:
+    cells.medium.conv.name = Medium × Conversational
+    estimate (1):
+      criteria.cell_floor.brisk-s.few.medium.conv.value = 91.6%
+    criteria.cell_floor.threshold = 80%
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.conv.distance = +11.6
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.conv.cases_needed = 14
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.conv.cases_needed_80 = 32
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.conv.cases_needed_two_sided = 20
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.conv.cases_needed_two_sided_80 = 41
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.conv.wrong_side = < 0.000001%
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.conv.level = 95% one-sided
+    counts (1):
+      spread.brisk-s.few.accuracy.cells.medium.conv.n = 7350
+    count_of (1):
+      spread.brisk-s.few.accuracy.cells.medium.conv.counts = cases
+    basis (1):
+      spread.brisk-s.few.accuracy.cells.medium.conv.basis = its stated half-width
+  - where: cells.medium.news; against: criterion cell_floor; settles: clears; unsettled:
+    cells.medium.news.name = Medium × News
+    estimate (1):
+      criteria.cell_floor.brisk-s.few.medium.news.value = 87.5%
+    criteria.cell_floor.threshold = 80%
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.news.distance = +7.5
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.news.cases_needed = 53
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.news.cases_needed_80 = 121
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.news.cases_needed_two_sided = 75
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.news.cases_needed_two_sided_80 = 153
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.news.wrong_side = < 0.000001%
+    settle.criteria.cell_floor.brisk-s.few.cells.medium.news.level = 95% one-sided
+    counts (1):
+      spread.brisk-s.few.accuracy.cells.medium.news.n = 5190
+    count_of (1):
+      spread.brisk-s.few.accuracy.cells.medium.news.counts = cases
+    basis (1):
+      spread.brisk-s.few.accuracy.cells.medium.news.basis = its stated half-width
+  - where: cells.complex.science; against: criterion cell_floor; settles: clears; unsettled:
+    cells.complex.science.name = Complex × Science
+    estimate (1):
+      criteria.cell_floor.brisk-s.few.complex.science.value = 88.5%
+    criteria.cell_floor.threshold = 80%
+    settle.criteria.cell_floor.brisk-s.few.cells.complex.science.distance = +8.5
+    settle.criteria.cell_floor.brisk-s.few.cells.complex.science.cases_needed = 41
+    settle.criteria.cell_floor.brisk-s.few.cells.complex.science.cases_needed_80 = 93
+    settle.criteria.cell_floor.brisk-s.few.cells.complex.science.cases_needed_two_sided = 58
+    settle.criteria.cell_floor.brisk-s.few.cells.complex.science.cases_needed_two_sided_80 = 118
+    settle.criteria.cell_floor.brisk-s.few.cells.complex.science.wrong_side = < 0.000001%
+    settle.criteria.cell_floor.brisk-s.few.cells.complex.science.level = 95% one-sided
+    counts (1):
+      spread.brisk-s.few.accuracy.cells.complex.science.n = 3440
+    count_of (1):
+      spread.brisk-s.few.accuracy.cells.complex.science.counts = cases
+    basis (1):
+      spread.brisk-s.few.accuracy.cells.complex.science.basis = its stated half-width
+  - where: cells.complex.conv; against: criterion cell_floor; settles: clears; unsettled:
+    cells.complex.conv.name = Complex × Conversational
+    estimate (1):
+      criteria.cell_floor.brisk-s.few.complex.conv.value = 89.4%
+    criteria.cell_floor.threshold = 80%
+    settle.criteria.cell_floor.brisk-s.few.cells.complex.conv.distance = +9.4
+    settle.criteria.cell_floor.brisk-s.few.cells.complex.conv.cases_needed = 31
+    settle.criteria.cell_floor.brisk-s.few.cells.complex.conv.cases_needed_80 = 70
+    settle.criteria.cell_floor.brisk-s.few.cells.complex.conv.cases_needed_two_sided = 44
+    settle.criteria.cell_floor.brisk-s.few.cells.complex.conv.cases_needed_two_sided_80 = 89
+    settle.criteria.cell_floor.brisk-s.few.cells.complex.conv.wrong_side = < 0.000001%
+    settle.criteria.cell_floor.brisk-s.few.cells.complex.conv.level = 95% one-sided
+    counts (1):
+      spread.brisk-s.few.accuracy.cells.complex.conv.n = 1960
+    count_of (1):
+      spread.brisk-s.few.accuracy.cells.complex.conv.counts = cases
+    basis (1):
+      spread.brisk-s.few.accuracy.cells.complex.conv.basis = its stated half-width
+total: 11
+offset: 0
+notes: []
+next: action='settle_cases', snapshot_id='report-snapshot:f415cf1cf53877f61c6710e31d14e4c9', arm_ids=["brisk-s.few"], offset=9

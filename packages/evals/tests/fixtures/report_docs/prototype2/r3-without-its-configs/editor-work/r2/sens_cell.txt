@@ -1,0 +1,130 @@
+sensitivity
+parameter: threshold:cell_floor
+hypothetical: False
+swept: every threshold from no lower end up, without end, on criterion cell_floor
+criteria.cell_floor.threshold = 80%
+boundary_belongs_to: below
+declared_call:
+  modes: [decide]
+  dominant: [arm:brisk-s.few]
+reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+declared_picks: []
+segments (3):
+  - low: none; modes: [decide]; dominant: [arm:nano-xs.few]; picks: []
+    high:
+      criteria.cell_floor.nano-xs.few.complex.news.value = 76.7%
+  - modes: [decide]; dominant: [arm:brisk-s.few]; picks: []
+    low:
+      criteria.cell_floor.nano-xs.few.complex.news.value = 76.7%
+    high:
+      criteria.cell_floor.atlas-m.zero.complex.news.value = 82.9%
+  - high: none; modes: [no_call]; dominant: []; picks: []
+    low:
+      criteria.cell_floor.atlas-m.zero.complex.news.value = 82.9%
+holds: False
+picks_hold: True
+flips (50):
+  - arm: arm:nano-xs.zero; where: complex.news; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.zero.complex.news.value = 65.1%
+  - arm: arm:nano-xs.rubric; where: complex.news; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.rubric.complex.news.value = 70.9%
+  - arm: arm:nano-xs.zero; where: medium.news; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.zero.medium.news.value = 73.5%
+  - arm: arm:nano-xs.zero; where: complex.science; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.zero.complex.science.value = 76.1%
+  - arm: arm:nano-xs.few; where: complex.news; call_changes: True; picks_change: False
+    criteria.cell_floor.nano-xs.few.complex.news.value = 76.7%
+  - arm: arm:nano-xs.zero; where: complex.conv; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.zero.complex.conv.value = 77.6%
+  - arm: arm:nano-xs.zero; where: medium.science; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.zero.medium.science.value = 77.8%
+  - arm: arm:brisk-s.zero; where: complex.news; call_changes: False; picks_change: False
+    criteria.cell_floor.brisk-s.zero.complex.news.value = 77.9%
+  - arm: arm:nano-xs.rubric; where: medium.news; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.rubric.medium.news.value = 79.5%
+  - arm: arm:nano-xs.zero; where: medium.conv; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.zero.medium.conv.value = 80.5%
+  - arm: arm:nano-xs.rubric; where: complex.science; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.rubric.complex.science.value = 82%
+  - arm: arm:nano-xs.zero; where: simple.news; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.zero.simple.news.value = 82.4%
+  - arm: arm:atlas-m.zero; where: complex.news; call_changes: True; picks_change: False
+    criteria.cell_floor.atlas-m.zero.complex.news.value = 82.9%
+  - arm: arm:brisk-s.few; where: complex.news; call_changes: True; picks_change: False
+    criteria.cell_floor.brisk-s.few.complex.news.value = 82.9%
+  - arm: arm:brisk-s.zero; where: medium.news; call_changes: False; picks_change: False
+    criteria.cell_floor.brisk-s.zero.medium.news.value = 83.1%
+  - arm: arm:nano-xs.rubric; where: complex.conv; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.rubric.complex.conv.value = 83.3%
+  - arm: arm:brisk-s.rubric; where: complex.news; call_changes: False; picks_change: False
+    criteria.cell_floor.brisk-s.rubric.complex.news.value = 83.6%
+  - arm: arm:nano-xs.rubric; where: medium.science; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.rubric.medium.science.value = 83.6%
+  - arm: arm:brisk-s.zero; where: complex.science; call_changes: False; picks_change: False
+    criteria.cell_floor.brisk-s.zero.complex.science.value = 84.2%
+  - arm: arm:nano-xs.zero; where: simple.science; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.zero.simple.science.value = 84.4%
+  - arm: arm:brisk-s.zero; where: medium.science; call_changes: False; picks_change: False
+    criteria.cell_floor.brisk-s.zero.medium.science.value = 85.1%
+  - arm: arm:brisk-s.zero; where: complex.conv; call_changes: False; picks_change: False
+    criteria.cell_floor.brisk-s.zero.complex.conv.value = 85.1%
+  - arm: arm:atlas-m.few; where: complex.news; call_changes: False; picks_change: False
+    criteria.cell_floor.atlas-m.few.complex.news.value = 85.5%
+  - arm: arm:nano-xs.rubric; where: medium.conv; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.rubric.medium.conv.value = 85.7%
+  - arm: arm:atlas-m.rubric; where: complex.news; call_changes: False; picks_change: False
+    criteria.cell_floor.atlas-m.rubric.complex.news.value = 86%
+  - arm: arm:nano-xs.few; where: medium.news; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.few.medium.news.value = 86%
+  - arm: arm:nano-xs.zero; where: simple.conv; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.zero.simple.conv.value = 86.4%
+  - arm: arm:atlas-m.zero; where: medium.news; call_changes: False; picks_change: False
+    criteria.cell_floor.atlas-m.zero.medium.news.value = 86.9%
+  - arm: arm:brisk-s.zero; where: medium.conv; call_changes: False; picks_change: False
+    criteria.cell_floor.brisk-s.zero.medium.conv.value = 87.2%
+  - arm: arm:atlas-m.zero; where: complex.science; call_changes: False; picks_change: False
+    criteria.cell_floor.atlas-m.zero.complex.science.value = 87.5%
+  - arm: arm:brisk-s.few; where: medium.news; call_changes: False; picks_change: False
+    criteria.cell_floor.brisk-s.few.medium.news.value = 87.5%
+  - arm: arm:brisk-s.rubric; where: medium.news; call_changes: False; picks_change: False
+    criteria.cell_floor.brisk-s.rubric.medium.news.value = 88.2%
+  - arm: arm:nano-xs.few; where: complex.science; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.few.complex.science.value = 88.2%
+  - arm: arm:nano-xs.rubric; where: simple.news; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.rubric.simple.news.value = 88.2%
+  - arm: arm:brisk-s.few; where: complex.science; call_changes: False; picks_change: False
+    criteria.cell_floor.brisk-s.few.complex.science.value = 88.5%
+  - arm: arm:atlas-m.zero; where: medium.science; call_changes: False; picks_change: False
+    criteria.cell_floor.atlas-m.zero.medium.science.value = 88.8%
+  - arm: arm:atlas-m.zero; where: complex.conv; call_changes: False; picks_change: False
+    criteria.cell_floor.atlas-m.zero.complex.conv.value = 88.8%
+  - arm: arm:atlas-m.few; where: medium.news; call_changes: False; picks_change: False
+    criteria.cell_floor.atlas-m.few.medium.news.value = 89.3%
+  - arm: arm:brisk-s.zero; where: simple.news; call_changes: False; picks_change: False
+    criteria.cell_floor.brisk-s.zero.simple.news.value = 89.4%
+  - arm: arm:brisk-s.few; where: complex.conv; call_changes: False; picks_change: False
+    criteria.cell_floor.brisk-s.few.complex.conv.value = 89.4%
+  - arm: arm:brisk-s.rubric; where: complex.science; call_changes: False; picks_change: False
+    criteria.cell_floor.brisk-s.rubric.complex.science.value = 89.4%
+  - arm: arm:nano-xs.few; where: medium.science; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.few.medium.science.value = 89.4%
+  - arm: arm:nano-xs.rubric; where: simple.science; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.rubric.simple.science.value = 89.5%
+  - arm: arm:atlas-m.few; where: complex.science; call_changes: False; picks_change: False
+    criteria.cell_floor.atlas-m.few.complex.science.value = 89.7%
+  - arm: arm:nano-xs.few; where: complex.conv; call_changes: False; picks_change: False
+    criteria.cell_floor.nano-xs.few.complex.conv.value = 89.8%
+  - arm: arm:brisk-s.few; where: medium.science; call_changes: False; picks_change: False
+    criteria.cell_floor.brisk-s.few.medium.science.value = 89.9%
+  - arm: arm:atlas-m.rubric; where: medium.news; call_changes: False; picks_change: False
+    criteria.cell_floor.atlas-m.rubric.medium.news.value = 90%
+  - arm: arm:brisk-s.zero; where: simple.science; call_changes: False; picks_change: False
+    criteria.cell_floor.brisk-s.zero.simple.science.value = 90.1%
+  - arm: arm:atlas-m.zero; where: medium.conv; call_changes: False; picks_change: False
+    criteria.cell_floor.atlas-m.zero.medium.conv.value = 90.8%
+  - arm: arm:atlas-m.few; where: medium.science; call_changes: False; picks_change: False
+    criteria.cell_floor.atlas-m.few.medium.science.value = 90.8%
+total: 81
+offset: 0
+notes: []
+next: action='decision_sensitivity', snapshot_id='report-snapshot:f415cf1cf53877f61c6710e31d14e4c9', parameter='threshold:cell_floor', offset=50

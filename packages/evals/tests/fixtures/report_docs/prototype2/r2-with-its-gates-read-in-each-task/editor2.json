@@ -1,0 +1,108 @@
+{
+  "resolutions": [
+    {
+      "finding": "best_of_n material_if said a re-run reading Brisk-S under the line leaves no configuration clearing pass rate everywhere (false: F clears all four tasks).",
+      "status": "resolved",
+      "evidence": "material_if now says a re-run 'leaves only F clearing pass rate in every task, and it is the slowest configuration at 2551 ms p95, so the call holds', and adds 'as do F's own clearances'. Checked on the snapshot: F's per-task pass rates are 99.2/97.9/98.6/98.3 and measure.latency_ms.atlas-m.high.r1.p95 reads 2551 ms."
+    },
+    {
+      "finding": "c3 said 'only high reasoning reaches the pass line in every task' (K misses three tasks), and c3's pooled table couldn't carry a per-task claim.",
+      "status": "resolved",
+      "evidence": "c3 now reads 'only high reasoning with a retry reaches the pass line in every task', and a per-task dot_interval of all six Brisk-S arms against the 97% line is c3's first block (block c3/1: K at 95.5/96.6/96.1 below the line in three tasks, L above in all four). The pooled table stays as the second block, with the caption saying the line is read in each task, not there."
+    },
+    {
+      "finding": "Omitted Atlas-M entry claimed none was nearer either line than the configurations shown (false: E misses multi-hop by 0.4, D by 0.6, both nearer than J's 1.4).",
+      "status": "resolved",
+      "evidence": "The entry now says two sit nearer the pass line than J (E by 0.4, D by 0.6, both read by key) and are far over budget at 2430 and 1500 ms p95, further than L's 870 ms. Checked with options_dominance: E's and D's only pass-rate miss is multi-hop, and A, B and C miss by 2.9 to 6.8 points in multi-hop and are over budget at 900 to 1395 ms, so nothing in that group is a nearer way out."
+    },
+    {
+      "finding": "Traffic shares were omitted, which dropped routing by task (J clears single lookup and date math, L clears multi-hop and ambiguous entity).",
+      "status": "resolved",
+      "evidence": "where_it_flips now names routing ('if the task is known before planning'), next item 1's settles includes whether a J/L split holds the budget in each task, next item 3 runs the routed mix as one configuration, and Method lists the shares (40/25/20/15%) by key."
+    },
+    {
+      "finding": "c2's pass-rate separation was in prose only, the cost bars carried two arms the claim doesn't mention, and the claim didn't say why the cost comparison matters while both arms are over budget.",
+      "status": "resolved",
+      "evidence": "The cost bars now hold only L ($0.633) and F ($3.477). A per-task dot plot of L and F has been added, and its caption points to the sentence for the overall difference interval (-0.4 to +1.7, independent basis). The claim now opens 'If the budget gives', which says why cost decides between them. The interval is still prose-only, which the caption makes explicit; that's acceptable."
+    },
+    {
+      "finding": "The watch slot should say how fragile L's 0.3-point multi-hop clearance is, as a labelled inference from the pooled rates matching the traffic-weighted task rates.",
+      "status": "resolved",
+      "evidence": "The watch slot now states the inference and labels it ('This is an inference, not a measured interval'). Checked: the weighted task means reproduce the pooled rates (L 97.9 vs 98.0, K 96.65 vs 96.6, J 97.1 vs 97.1). At about 300 multi-hop cases the SE is about 0.94 points, so 0.3 points is about 0.3 SE, and the chance of a re-run reading under the line is about 37-41%. 'Close to even odds' is slightly generous but within the stated hedge."
+    }
+  ],
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline, flag and decision slots say what to do (ship none of eighteen; record per-task p95 first), why (L and F clear 97% in all four tasks but run 870 ms and 2551 ms p95 against 600 ms; J, at 513 ms the best inside the budget, misses multi-hop by 1.4 and ambiguous entity by 0.6) and the main risk (no per-task latency; L's 0.3-point multi-hop clearance has no interval and is best of eighteen). The pooled-to-per-task inference ('at least one task runs that slow or slower') is sound: if every task's p95 were below 870 ms, the mixture's would be too. One slip: the headline's 'inside the budget' is only true over all tasks, but the flag directly beneath it says so."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "c1 (nothing clears both lines) leads. c2 (L over F if the budget gives: same pass rate, -0.4 to +1.7, at $2,532 vs $13,908 a month) feeds the lean. c3 (the lines cross inside Brisk-S between low and high reasoning; retry lifts J by +1.9, +0.3 to +3.4) motivates next item 2. c4 shows where J fails. The round-1 c3 contradiction is fixed. where_it_flips, explore and next all agree: the budget flip is at 870 ms or above, the pass-line flip is at 95.6% or below, and routing turns on per-task latency."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 1,
+      "reason": "Nothing is recommended, and L's weak axes are visible where it is leaned on: 870 ms pooled p95, a 0.3-point multi-hop clearance on a point estimate, best of eighteen. But our_lean picks the latency budget as 'the line to put to the planner's owner, since L misses only that one'. That reason applies equally to J, which misses only the pass line as far as the snapshot shows. The report's own figures cut the other way. L is at least 270 ms (45%) over the budget in some task, and that miss is certain. J's misses are 1.4 and 0.6 points, and on the watch slot's own inference those are about 1.2 and 0.4 SE (about 300 and 180 cases), so J's ambiguous-entity miss is as fragile as L's clearance. J costs $1,208 a month against L's $2,532. L and J aren't separated on pass rate over all tasks (compare L minus J reads -0.4 to +2.1). The direction of the lean is framed stronger than anything on the page supports."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "Every omission checks out on the snapshot. The best Nano-XS configuration (S) reads 95.8/93.5/94.7/94.2, below J's 98.4/95.6/97.0/96.4 in every task, and all Nano-XS configurations are inside the budget (max 450 ms). The Atlas-M entry now gives the true reason (E and D are nearer the pass line but at 2430 and 1500 ms). Retry lifts pass rate in every pairing on point estimates (+0.9 to +3.5; F's own is -0.2 to +2). Outcome and extra calls hold no figures. Routing is no longer elided. The one gap feeds item 3 rather than changing the decision: the L-vs-J pass-rate difference falls under the omitted 'model and reasoning lever effects' and isn't stated, yet it is the comparison next item 5 asks the owner to make."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "Both snapshot caveats are shown with a correct material_if. no_control touches only the comparisons between configurations. best_of_n touches only the lean, and if L falls the call still holds because F is at 2551 ms. The confounds the snapshot doesn't name are carried into the flag, watch, next and method: latency recorded only pooled (confirmed: measure_read refuses latency by task), per-task pass rates with no interval (confirmed: n_cases none for every task), timing machines unstated, and J's date math exactly on the line (gap reads 0)."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "All five next items name a measurement, a run or a declaration, and each says what it settles: per-task p95 from stored timings (which line J and L really miss, and whether routing holds the budget); Brisk-S between low and high reasoning, and low with a second retry, on multi-hop and ambiguous cases (whether one configuration clears both lines); routing run as one configuration (what the split costs, measured together); per-task case counts (whether L's 0.3-point clearance is real); and the owner naming which line gives or a price per point (turns no_call into a call)."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 2,
+      "reason": "c1: a per-task dot plot against 97% and range bars against 600 ms are the right blocks, and flipping any value in L's, F's or J's rows would change c1. c2: cost bars now hold only L and F, and the per-task plot shows both above the line; the overall difference interval is in the prose and the caption says so. c3: a per-task plot of the six Brisk-S arms carries 'only high with a retry reaches the line in every task' (K at 95.5/96.6/96.1). c4: one frozen failure per task, first frozen and not chosen, which the caption states; the claim describes those two cases rather than a measured rate."
+    }
+  ],
+  "total": 13,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "must_fix",
+      "finding": "our_lean's reason doesn't discriminate. 'The latency budget is the line to put to the owner, since L misses only that one' holds just as well for J and the pass line. The page's figures point at least as much toward J. L misses the budget by at least 270 ms (870 vs 600, pooled, certain to be over in some task). J misses multi-hop by 1.4 and ambiguous entity by 0.6 points, and by the watch slot's own inference those are about 1.2 and 0.4 SE. J costs $1,208 a month against L's $2,532. L and J aren't separated on pass rate over all tasks (compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.interval reads -0.4 to +2.1). Either give a reason that favours the budget (for example, an owner statement that latency is the softer line), or state the lean as 'which line gives is the owner's call' and put the L-vs-J cost, latency and pass-rate figures side by side for it."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The routing option in where_it_flips says 'J clears single lookup and date math'. J's date-math rate is exactly on the line (criteria.pass_rate.brisk-s.low.r1.datemath.gap reads 0), so the routed mix's date-math clearance is borderline. The watch slot says so for J alone, but the routing sentence doesn't. Qualify it where routing is offered."
+    },
+    {
+      "claim": "c4",
+      "severity": "should_fix",
+      "finding": "The claim describes J's misses ('it collapses a two-hop question into one query, and answers an ambiguous name without asking') from one frozen failure per task. examples_list holds exactly one J failure each in multi-hop and ambiguous entity. Make it explicit in the claim, not only the caption, that these are single examples, not the measured share of J's misses."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Prose outside the {arm:} keys names arms in a different form ('Brisk-S low retry', 'Brisk-S high retry', 'Atlas-M high without a retry', 'Atlas-M low retry') from the page's printed names ('Brisk-S · reasoning low · 1 retry (J)'). Use the arm keys, or at least the letter tags, in omitted and next so a reader can match them to the charts."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 1: typed counts in prose with no figure key: omitted Atlas-M 'Two sit nearer the pass line'; omitted 'Pass rate over all tasks' 'while missing two tasks'; c3 'the two lines cross'. 'A two-hop question' (c4) and 'a second retry' (next) are descriptive. All 34 distinct braced keys read on the snapshot via figure_keys_check, none unstated or refused.",
+    "Invariant 6: the report-doc carries Method but no explicit full-results appendix section; confirm the renderer supplies it.",
+    "Invariant 5: Method 'Source' prints meta.provenance, a repository file path (docs/eval-report-kit/references/r2-config-sweep.json). That's fine only if Method renders at or below the appendix."
+  ],
+  "calls": 16
+}
