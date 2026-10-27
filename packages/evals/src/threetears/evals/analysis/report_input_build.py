@@ -63,7 +63,7 @@ from threetears.evals.analysis.campaign_readings import AspectReading, PairReadi
 from threetears.evals.analysis.depth import REPEATS_FLOOR
 from threetears.evals.analysis.depth import Precision as BundlePrecision
 from threetears.evals.analysis.depth_reading import aspect_depth
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report_input import (
     ApparatusConfound,
     Arm,

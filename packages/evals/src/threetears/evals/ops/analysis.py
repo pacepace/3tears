@@ -30,7 +30,7 @@ from threetears.evals.analysis.campaigns import (
     remove_runs_from_campaign,
     update_campaign,
 )
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.planned_analysis import report_plan_of
 from threetears.evals.analysis.report import ReportBasis, TrialDetail, analysis_verdict
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
@@ -1037,7 +1037,7 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
             await end_unrun("cancelled before any call, while the generation was being prepared", outcome="cancelled")
             raise
         except EvalJobTimeout as timed_out:
-            await end_unrun(f"preparation did not finish in {timed_out.budget_s:g} s")
+            await end_unrun(f"preparation did not finish in {format_number(timed_out.budget_s)} s")
             return None
         except EvalServiceError as refused:
             await end_unrun(str(refused), refused_by=refused)

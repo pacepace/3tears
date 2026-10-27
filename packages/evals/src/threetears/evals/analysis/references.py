@@ -48,7 +48,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis import stats
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.schema.base import EvalBaseModel

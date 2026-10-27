@@ -551,16 +551,40 @@ class DataSourceTableCollection(DeclaredTableCollection[DataSourceTableEntity]):
         return DataSourceTableEntity
 
     async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
-        """fetch data source table record from L3 by primary key.
+        """fetch the row from L3 by primary key, on the collection's pool.
 
+        :param entity_id: the primary key
+        :ptype entity_id: Any
+        :return: row dict on hit, ``None`` on miss or with no L3 pool
+        :rtype: dict[str, Any] | None
+        """
+        if self.l3_pool is None:
+            return None
+        return await self._select_row(self.l3_pool, entity_id)
+
+    async def fetch_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> dict[str, Any] | None:
+        """fetch the row by primary key on a caller's open transaction, with :meth:`fetch_from_store`'s SELECT.
+
+        :param entity_id: the primary key
+        :ptype entity_id: Any
+        :param conn: the caller's connection, with its transaction open
+        :ptype conn: Any
+        :return: row dict on hit, ``None`` on miss
+        :rtype: dict[str, Any] | None
+        """
+        return await self._select_row(conn, entity_id)
+
+    async def _select_row(self, target: Any, entity_id: Any) -> dict[str, Any] | None:
+        """the row by primary key, read on ``target``: the collection's pool, or a caller's connection.
+
+        :param target: the pool or connection the SELECT runs on
+        :ptype target: Any
         :param entity_id: data source table UUID
         :ptype entity_id: Any
         :return: table data dictionary or None if not found
         :rtype: dict[str, Any] | None
         """
-        if self.l3_pool is None:
-            return None
-        row = await self.l3_pool.fetchrow(
+        row = await target.fetchrow(
             "SELECT * FROM datasource_tables WHERE id = $1",
             entity_id,
         )
@@ -681,16 +705,40 @@ class DataSourceColumnCollection(DeclaredTableCollection[DataSourceColumnEntity]
         return DataSourceColumnEntity
 
     async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
-        """fetch data source column record from L3 by primary key.
+        """fetch the row from L3 by primary key, on the collection's pool.
 
+        :param entity_id: the primary key
+        :ptype entity_id: Any
+        :return: row dict on hit, ``None`` on miss or with no L3 pool
+        :rtype: dict[str, Any] | None
+        """
+        if self.l3_pool is None:
+            return None
+        return await self._select_row(self.l3_pool, entity_id)
+
+    async def fetch_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> dict[str, Any] | None:
+        """fetch the row by primary key on a caller's open transaction, with :meth:`fetch_from_store`'s SELECT.
+
+        :param entity_id: the primary key
+        :ptype entity_id: Any
+        :param conn: the caller's connection, with its transaction open
+        :ptype conn: Any
+        :return: row dict on hit, ``None`` on miss
+        :rtype: dict[str, Any] | None
+        """
+        return await self._select_row(conn, entity_id)
+
+    async def _select_row(self, target: Any, entity_id: Any) -> dict[str, Any] | None:
+        """the row by primary key, read on ``target``: the collection's pool, or a caller's connection.
+
+        :param target: the pool or connection the SELECT runs on
+        :ptype target: Any
         :param entity_id: data source column UUID
         :ptype entity_id: Any
         :return: column data dictionary or None if not found
         :rtype: dict[str, Any] | None
         """
-        if self.l3_pool is None:
-            return None
-        row = await self.l3_pool.fetchrow(
+        row = await target.fetchrow(
             "SELECT * FROM datasource_columns WHERE id = $1",
             entity_id,
         )
@@ -825,16 +873,40 @@ class DataSourceSchemaDigestCollection(
         return DataSourceSchemaDigestEntity
 
     async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
-        """fetch the digest row from L3 by primary key (``datasource_id``).
+        """fetch the row from L3 by primary key, on the collection's pool.
 
+        :param entity_id: the primary key
+        :ptype entity_id: Any
+        :return: row dict on hit, ``None`` on miss or with no L3 pool
+        :rtype: dict[str, Any] | None
+        """
+        if self.l3_pool is None:
+            return None
+        return await self._select_row(self.l3_pool, entity_id)
+
+    async def fetch_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> dict[str, Any] | None:
+        """fetch the row by primary key on a caller's open transaction, with :meth:`fetch_from_store`'s SELECT.
+
+        :param entity_id: the primary key
+        :ptype entity_id: Any
+        :param conn: the caller's connection, with its transaction open
+        :ptype conn: Any
+        :return: row dict on hit, ``None`` on miss
+        :rtype: dict[str, Any] | None
+        """
+        return await self._select_row(conn, entity_id)
+
+    async def _select_row(self, target: Any, entity_id: Any) -> dict[str, Any] | None:
+        """the row by primary key, read on ``target``: the collection's pool, or a caller's connection.
+
+        :param target: the pool or connection the SELECT runs on
+        :ptype target: Any
         :param entity_id: datasource UUID (the digest primary key)
         :ptype entity_id: Any
         :return: digest data dictionary or None if not found
         :rtype: dict[str, Any] | None
         """
-        if self.l3_pool is None:
-            return None
-        row = await self.l3_pool.fetchrow(
+        row = await target.fetchrow(
             "SELECT * FROM datasource_schema_digests WHERE datasource_id = $1",
             entity_id,
         )
@@ -909,16 +981,40 @@ class DataSourceRelationCollection(DeclaredTableCollection[DataSourceRelationEnt
         return DataSourceRelationEntity
 
     async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
-        """fetch data source relation record from L3 by primary key.
+        """fetch the row from L3 by primary key, on the collection's pool.
 
+        :param entity_id: the primary key
+        :ptype entity_id: Any
+        :return: row dict on hit, ``None`` on miss or with no L3 pool
+        :rtype: dict[str, Any] | None
+        """
+        if self.l3_pool is None:
+            return None
+        return await self._select_row(self.l3_pool, entity_id)
+
+    async def fetch_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> dict[str, Any] | None:
+        """fetch the row by primary key on a caller's open transaction, with :meth:`fetch_from_store`'s SELECT.
+
+        :param entity_id: the primary key
+        :ptype entity_id: Any
+        :param conn: the caller's connection, with its transaction open
+        :ptype conn: Any
+        :return: row dict on hit, ``None`` on miss
+        :rtype: dict[str, Any] | None
+        """
+        return await self._select_row(conn, entity_id)
+
+    async def _select_row(self, target: Any, entity_id: Any) -> dict[str, Any] | None:
+        """the row by primary key, read on ``target``: the collection's pool, or a caller's connection.
+
+        :param target: the pool or connection the SELECT runs on
+        :ptype target: Any
         :param entity_id: data source relation UUID
         :ptype entity_id: Any
         :return: relation data dictionary or None if not found
         :rtype: dict[str, Any] | None
         """
-        if self.l3_pool is None:
-            return None
-        row = await self.l3_pool.fetchrow(
+        row = await target.fetchrow(
             "SELECT * FROM datasource_relations WHERE id = $1",
             entity_id,
         )
@@ -1018,16 +1114,40 @@ class TableTemplateCollection(DeclaredTableCollection[TableTemplateEntity]):
         return TableTemplateEntity
 
     async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
-        """fetch table-template row from L3 by primary key.
+        """fetch the row from L3 by primary key, on the collection's pool.
 
+        :param entity_id: the primary key
+        :ptype entity_id: Any
+        :return: row dict on hit, ``None`` on miss or with no L3 pool
+        :rtype: dict[str, Any] | None
+        """
+        if self.l3_pool is None:
+            return None
+        return await self._select_row(self.l3_pool, entity_id)
+
+    async def fetch_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> dict[str, Any] | None:
+        """fetch the row by primary key on a caller's open transaction, with :meth:`fetch_from_store`'s SELECT.
+
+        :param entity_id: the primary key
+        :ptype entity_id: Any
+        :param conn: the caller's connection, with its transaction open
+        :ptype conn: Any
+        :return: row dict on hit, ``None`` on miss
+        :rtype: dict[str, Any] | None
+        """
+        return await self._select_row(conn, entity_id)
+
+    async def _select_row(self, target: Any, entity_id: Any) -> dict[str, Any] | None:
+        """the row by primary key, read on ``target``: the collection's pool, or a caller's connection.
+
+        :param target: the pool or connection the SELECT runs on
+        :ptype target: Any
         :param entity_id: template UUID
         :ptype entity_id: Any
         :return: template data dictionary or None if not found
         :rtype: dict[str, Any] | None
         """
-        if self.l3_pool is None:
-            return None
-        row = await self.l3_pool.fetchrow(
+        row = await target.fetchrow(
             "SELECT * FROM table_templates WHERE id = $1",
             entity_id,
         )

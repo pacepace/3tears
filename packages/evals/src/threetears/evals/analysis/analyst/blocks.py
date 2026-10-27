@@ -45,7 +45,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.block_spec import (
     BLOCK_SOURCES,
     INTERVAL_KINDS,

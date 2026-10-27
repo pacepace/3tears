@@ -104,7 +104,7 @@ from threetears.evals.analysis.generation_round import (
     reject_incomplete_generation,
     repair_user_message,
 )
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.prose_refs import reference_grammar, render_prose_figures
 from threetears.evals.analysis.references import (
     CellAddress,

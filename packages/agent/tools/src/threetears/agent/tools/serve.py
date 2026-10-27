@@ -18,6 +18,7 @@ from threetears.agent.tools.builtin.dictionary import DictionaryTool
 from threetears.agent.tools.builtin.image_prep import ImagePrepTool
 from threetears.agent.tools.builtin.timezone_converter import TimezoneConverterTool
 from threetears.agent.tools.builtin.unit_converter import UnitConverterTool
+from threetears.agent.tools.builtin.web_answer import WebAnswerTool
 from threetears.agent.tools.builtin.web_fetch import WebFetchTool
 from threetears.agent.tools.builtin.web_search import WebSearchTool
 from threetears.agent.tools.document import ParseDocumentTool
@@ -122,6 +123,29 @@ def _register_builtin_tools(server: ToolServer) -> None:
                         "set THREETEARS_SEARXNG_URL to a reachable SearXNG base url "
                         "(e.g. http://searxng:8080) to serve web_search from this pod"
                     ),
+                }
+            },
+        )
+
+    brave_answers_key = os.environ.get("THREETEARS_BRAVE_ANSWERS_API_KEY")
+    if brave_answers_key:
+        # The tool reads through the search leaf's standalone streaming transport:
+        # an answer is a stream, and the traced client buffers (AD11). The key is
+        # this pod's deployment config, resolved by the host that runs it; the leaf
+        # itself reads no environment (D21, SR-K1). Served here, granted only by the
+        # ``answers`` alias -- never by ``web`` -- because every call costs money (AD13).
+        server.register(WebAnswerTool(api_key=brave_answers_key))
+        registered_count += 1
+    else:
+        # accounted for, as web_search's absence is: a tool this pod does not serve says so.
+        skipped_count += 1
+        skipped_reasons.append("web_answer: THREETEARS_BRAVE_ANSWERS_API_KEY not set (no Brave key)")
+        _logger.warning(
+            "skipping web_answer (THREETEARS_BRAVE_ANSWERS_API_KEY not set)",
+            extra={
+                "extra_data": {
+                    "tool": "threetears.web_answer",
+                    "hint": "set THREETEARS_BRAVE_ANSWERS_API_KEY to a Brave Answers key to serve web_answer from this pod",
                 }
             },
         )

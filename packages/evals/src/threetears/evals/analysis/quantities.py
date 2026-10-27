@@ -13,7 +13,7 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-from threetears.evals.analysis.numbers import format_number, format_signed
+from threetears.evals.kernel.numbers import format_number, format_signed
 
 #: Restatement ladder for durations, largest unit first: ``(unit, in terms of, factor)``.
 #:
@@ -131,8 +131,8 @@ def with_unit(value: float | None, unit: str) -> str:
 def signed_with_unit(value: float | None, unit: str) -> str:
     """A delta in its own unit, carrying its sign — the direction is half the fact.
 
-    Signed by :func:`~threetears.evals.analysis.numbers.format_signed`, the one signed spelling, so a change below
-    :data:`~threetears.evals.analysis.numbers.WRITTEN_FROM` reads as its bound (``< 0.000001 ms``), which carries its
+    Signed by :func:`~threetears.evals.kernel.numbers.format_signed`, the one signed spelling, so a change below
+    :data:`~threetears.evals.kernel.numbers.WRITTEN_FROM` reads as its bound (``< 0.000001 ms``), which carries its
     direction already, and never as a signed bound (``+< 0.000001 ms``).
     """
     return _joined(format_signed(_at_precision(value, unit)), value, unit)

@@ -26,6 +26,7 @@ from threetears.core.collections.schema_backed import BIGINT_TYPE, BYTES_TYPE, I
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.coordination.flusher import PeriodicFlusher
 from threetears.core.coordination.migrations import PACKAGE_NAME, register
+from threetears.core.coordination.revocation import RedemptionLedger
 from threetears.core.coordination.migrations.v001_create_coordination_tables import create_coordination_tables
 from threetears.core.coordination.migrations.v002_add_l2_order_columns import add_l2_order_columns
 from threetears.core.coordination.migrations.v003_create_collection_write_marks import (
@@ -320,8 +321,9 @@ class TestTheTiersAreOptional:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "with_l2, with_l3",
-        [(False, False), (False, True), (True, False), (True, True)],
-        ids=["l1-only", "l1-and-l3", "l1-and-l2", "all-three"],
+        [(False, True), (True, False), (True, True)],
+        # no "l1-only": redemptions keep no L1 copy, and a ledger refuses a registry without an L2 fence
+        ids=["l1-and-l3", "l1-and-l2", "all-three"],
     )
     async def test_a_row_round_trips_on_every_tier_combination(self, with_l2: bool, with_l3: bool) -> None:
         nats = _Nats() if with_l2 else None
@@ -678,3 +680,37 @@ class TestRowExpiryShape:
         window = timedelta(seconds=60)
         started = datetime(2026, 1, 1, tzinfo=UTC)
         assert started + window == datetime(2026, 1, 1, 0, 1, tzinfo=UTC)
+
+
+class TestRedemptionsHoldNoMemory:
+    """every redemption was cached in the writer's L1 until its expiry: identity-core grew by one row per refresh."""
+
+    @pytest.mark.asyncio
+    async def test_a_redeemed_key_leaves_no_row_in_l1_and_a_second_redemption_is_reuse(self) -> None:
+        registry = _registry(l2=_Nats(), l3=_RowStore())
+        ledger = RedemptionLedger(registry, purpose="jti", ttl_seconds=3600, config=_config())
+
+        first = [await ledger.record_unique(f"token-{n}") for n in range(5)]
+        again = await ledger.record_unique("token-0")
+
+        l1 = registry.get_l1_backend("coordination_redemptions")
+        held = (
+            l1.execute_query("SELECT count(*) AS n FROM coordination_redemptions")[0]["n"]
+            if l1.has_table("coordination_redemptions")
+            else 0
+        )
+        assert held == 0
+        assert first == [True] * 5
+        assert again is False
+        assert await ledger.was_redeemed("token-3") is True
+
+
+class TestARecordedRevocationAbsenceStandsForARefresh:
+    """the 60 s window sent nearly every 15-minute refresh's revocation check to L3; the generation decides."""
+
+    def test_the_window_is_a_refresh_and_a_subclass_can_shorten_it(self) -> None:
+        class _Short(CoordinationRevocationsCollection):
+            negative_cache_max_age = timedelta(seconds=30)
+
+        assert CoordinationRevocationsCollection.negative_cache_max_age == timedelta(minutes=15)
+        assert _Short.negative_cache_max_age == timedelta(seconds=30)

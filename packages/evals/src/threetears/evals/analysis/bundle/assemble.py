@@ -64,7 +64,7 @@ from threetears.evals.analysis.cells import (
     pool_observations,
     subject_key_instabilities,
 )
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.reporting import (
     model_identity_disclosure,
     project_score_records,

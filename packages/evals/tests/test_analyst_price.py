@@ -52,7 +52,7 @@ from threetears.evals.analysis.report_gates import gate_findings
 from threetears.evals.analysis.summary import dollars_text
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.analysis.numbers import WHOLE_FROM, format_number
+from threetears.evals.kernel.numbers import WHOLE_FROM, format_number
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_count, per_noun
 from threetears.evals.analysis.report.figure_keys import (
     cost_basis,

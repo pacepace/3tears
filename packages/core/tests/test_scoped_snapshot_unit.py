@@ -248,10 +248,18 @@ def _snapshot(**options: Any) -> tuple[ScopedSnapshot, _Pointers, _Store, _L3]:
 
 
 async def _until(check: Any, *, what: str, timeout: float = 5.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
+    """wait for ``check()``, looking every 10 ms, for ``timeout`` seconds of the loop's own running.
+
+    A poll counts at most 0.1 s however long it took, so a pause of the whole process is not a wait
+    that ran out: a full garbage collection on a loaded runner stops every thread for seconds, past
+    this budget, while the snapshot's tasks make no progress either.
+    """
+    spent, last = 0.0, time.monotonic()
     while not check():
-        assert asyncio.get_running_loop().time() < deadline, f"timed out waiting for {what}"
+        assert spent < timeout, f"timed out waiting for {what}"
         await asyncio.sleep(0.01)
+        now = time.monotonic()
+        spent, last = spent + min(now - last, 0.1), now
 
 
 class _NoQueries(DuckDBBackend):
@@ -594,10 +602,10 @@ async def _versioned_in_time(snapshot: ScopedSnapshot, seconds: float = 3.0) -> 
 
     thread = threading.Thread(target=read, daemon=True)
     thread.start()
-    deadline = time.monotonic() + seconds
-    while thread.is_alive() and time.monotonic() < deadline:
-        await asyncio.sleep(0.02)
-    assert out, f"a versioned read did not finish in {seconds} s: the swap lock was left held"
+    await _until(
+        lambda: not thread.is_alive(), what="a versioned read to finish; the swap lock was left held", timeout=seconds
+    )
+    assert out, "the versioned read failed on its thread"
     return out[0]
 
 
@@ -816,13 +824,35 @@ async def test_a_stuck_scope_whose_later_pointer_carries_other_columns_stays_beh
     await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
     l3.epochs["TX"] = 2
     takes = [0]
-    real_create = pointers.create
+    current: list[Any] = []  # the looks that found TX not behind; the others are not kept
+    looking = False
+    real_create, real_delete = pointers.create, pointers.delete
 
+    def look() -> None:
+        status = snapshot.status()
+        if "TX" not in status.behind:
+            current.append(status)
+
+    # a look on each side of every take and every release of the claim, inside the loop's turn that runs them
     async def counting(*, key: str, value: bytes, ttl: timedelta | None = None) -> int | None:
         takes[0] += key == "enr.rebuild"
-        return await real_create(key=key, value=value, ttl=ttl)
+        if looking and key == "enr.rebuild":
+            look()
+        taken = await real_create(key=key, value=value, ttl=ttl)
+        if looking and key == "enr.rebuild":
+            look()
+        return taken
+
+    async def releasing(*, key: str, revision: int | None = None, marker_ttl: timedelta | None = None) -> bool:
+        if looking and key == "enr.rebuild":
+            look()
+        released = await real_delete(key=key, revision=revision, marker_ttl=marker_ttl)
+        if looking and key == "enr.rebuild":
+            look()
+        return released
 
     pointers.create = counting  # type: ignore[method-assign]
+    pointers.delete = releasing  # type: ignore[method-assign]
     tx = json.loads(pointers.entries["enr.s.TX"][0])
     store.objects["enr/TX/3/results.other"] = encode_chunk(_tx_arrow(7).drop_columns(["votes"]))
     foreign = {
@@ -834,20 +864,52 @@ async def test_a_stuck_scope_whose_later_pointer_carries_other_columns_stays_beh
     pointers.put_now("enr.s.TX", json.dumps(foreign).encode())
     await _until(lambda: "TX" in snapshot.status().behind, what="TX shown behind")
 
-    looks = []
-    first = takes[0]
-    deadline = asyncio.get_running_loop().time() + 5
-    while takes[0] < first + 3 and asyncio.get_running_loop().time() < deadline:
-        # rebuilds of TX ran, each taking and letting go of the claim; looked at between every step
-        looks.append(snapshot.status())
-        await asyncio.sleep(0)
-    assert takes[0] >= first + 3, "TX was not rebuilt again and again"
+    # and a look at every poll in between. Never a spin on asyncio.sleep(0): a loop that never waits
+    # keeps the GIL from the rebuild's export, whose DuckDB threads need it to read the rows from Arrow
+    # (with 32 DuckDB threads one export took 4.96 s under the spin, and 4 ms without it)
+    first, looking = takes[0], True
 
-    assert all("TX" in look.behind for look in looks), [
-        (look.phase, sorted(look.behind)) for look in looks if "TX" not in look.behind
-    ][:3]
+    def rebuilt_three_more_times() -> bool:
+        look()
+        return takes[0] >= first + 3
+
+    try:
+        await _until(rebuilt_three_more_times, what="TX rebuilt again and again")
+    finally:
+        looking = False
+
+    assert current == [], [(look.phase, sorted(look.behind)) for look in current][:3]
     assert snapshot.applied_epoch("TX") == 1
     await snapshot.stop()
+
+
+async def test_a_rebuild_repoints_a_same_epoch_scope_of_other_columns_so_the_next_start_loads_from_l2() -> None:
+    """after a column change, a scope no write has touched since keeps the old version's pointer at its
+    epoch; left in place, it made every replica rebuild the whole snapshot from L3 at every start."""
+    first, pointers, store, l3 = _snapshot()
+    await first.start()
+    await first.wait_ready(timeout=5)
+    await first.stop()
+    tx = json.loads(pointers.entries["enr.s.TX"][0])
+    store.objects["enr/TX/1/results.other"] = encode_chunk(_tx_arrow(1).drop_columns(["votes"]))
+    old = {**tx, "tables": {"results": {"object": "enr/TX/1/results.other", "rows": 1}}, "schema": {"results": "old"}}
+    pointers.put_now("enr.s.TX", json.dumps(old).encode())  # the old version's, at the epoch L3 still records
+
+    rebuilder, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    await rebuilder.start()
+    await rebuilder.wait_ready(timeout=5)
+    await rebuilder.stop()
+
+    held = json.loads(pointers.entries["enr.s.TX"][0])
+    assert held["epoch"] == 1
+    assert held["schema"] == tx["schema"], "the rebuild left the scope on the other version's columns"
+    statements = l3.statements
+    later, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    await later.start()
+    await later.wait_ready(timeout=5)
+    assert later.status().source is SnapshotSource.L2, "a start after the rebuild rebuilt from L3 again"
+    assert l3.statements == statements
+    await later.stop()
 
 
 async def test_a_scope_removed_before_it_was_ever_applied_leaves_nothing_behind() -> None:
@@ -2815,6 +2877,73 @@ async def test_a_write_committed_during_a_rebuild_rereads_only_the_scopes_not_ye
     await snapshot.stop()
 
 
+async def test_a_rebuild_that_waits_on_a_write_keeps_what_it_published_and_reads_only_the_rest_after() -> None:
+    # a loader whose writes leave only short gaps: a rebuild that began again from the first scope after each
+    # wait never got past the scopes one gap holds, and the copy was never ready
+    snapshot, pointers, _, l3, _ = _paged(_SIZES, l3_concurrency=1)
+    began = asyncio.Event()
+
+    def a_write_begins(state: str) -> None:
+        if state == "NV" and l3.reads["NV"] == 1:
+            l3.writing = True
+            began.set()
+
+    l3.on_read = a_write_begins
+
+    await snapshot.start()
+    await asyncio.wait_for(began.wait(), timeout=5)
+    await _until(lambda: snapshot.status().phase is SnapshotPhase.WAITING, what="the rebuild waiting on the write")
+    await asyncio.sleep(0.2)  # several rechecks, each finding the write still in progress
+    l3.epochs["TX"] = 2
+    l3.writing = False  # the write commits, having moved TX alone
+    await snapshot.wait_ready(timeout=10)
+
+    assert l3.reads == {"DE": 1, "NV": 2, "TX": 1}, "the rebuild read again a scope it had published at its epoch"
+    assert json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 2
+    assert _indexed(pointers) == set(_SIZES)
+    await snapshot.stop()
+
+
+@pytest.mark.parametrize("source", ["l3", "l2"])
+async def test_a_listener_that_skips_changes_before_ready_is_told_when_the_copy_becomes_ready(source: str) -> None:
+    # a consumer that builds only from a ready copy skipped each commit of the rebuild; the last landed before
+    # ready, and with no later write it never built (reports' "Preparing reports" on dev, 2026-10-26)
+    if source == "l3":
+        snapshot, _, _, _ = _snapshot()
+    else:
+        built, pointers, store, l3 = _snapshot()
+        await built.start()
+        await built.wait_ready(timeout=5)
+        await built.stop()
+        snapshot, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    seen: list[bool] = []
+    snapshot.on_change(lambda: seen.append(snapshot.is_ready))
+
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+
+    assert snapshot.status().source is (SnapshotSource.L3 if source == "l3" else SnapshotSource.L2)
+    assert seen and seen[-1] is True, f"no listener call saw the copy ready: {seen}"
+    await snapshot.stop()
+
+
+async def test_a_rebuild_after_the_snapshot_was_lost_reads_every_scope_again() -> None:
+    # what an earlier rebuild published is kept only while its chunks and pointers are: NATS losing them loses it
+    snapshot, pointers, _, l3, _ = _paged(_SIZES, l3_concurrency=1)
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=10)
+    assert l3.reads == dict.fromkeys(_SIZES, 1)
+
+    for key in list(pointers.entries):
+        await pointers.delete(key=key)
+
+    await _until(lambda: l3.reads == dict.fromkeys(_SIZES, 2), what="every scope read again")
+    await _until(
+        lambda: "enr.index" in pointers.entries and _indexed(pointers) == set(_SIZES), what="the snapshot written again"
+    )
+    await snapshot.stop()
+
+
 async def test_a_cold_load_commits_each_scope_before_it_fetches_past_the_scopes_it_holds() -> None:
     builder, pointers, store, l3, _ = _paged(_SIZES)
     await builder.start()
@@ -3154,3 +3283,143 @@ async def test_every_staged_scope_that_fails_is_raised_or_recorded(caplog: pytes
     )
     await writer.stop()
     await replica.stop()
+
+
+# --- a stage given Arrow ---------------------------------------------------------------------------
+
+import uuid as _uuid  # noqa: E402
+from decimal import Decimal as _Decimal  # noqa: E402
+
+import pyarrow as _pa  # noqa: E402
+
+from threetears.core.collections.schema_backed import (  # noqa: E402
+    BOOL_TYPE,
+    BYTES_TYPE,
+    DATETIMETZ_TYPE,
+    INT_TYPE,
+    JSONB_TYPE,
+    NUMERIC_TYPE,
+    UUID_TYPE,
+)
+
+#: every kind of column a stage types: those kept as Arrow, and those stored value by value
+_WIDE = TableSchema(
+    name="wide",
+    primary_key=("id",),
+    columns=[
+        Column("id", STRING_TYPE),
+        Column("scope", STRING_TYPE),
+        Column("n", INT_TYPE, nullable=True),
+        Column("big", BIGINT_TYPE, nullable=True),
+        Column("share", NUMERIC_TYPE, nullable=True, precision=38, scale=4),
+        Column("won", BOOL_TYPE, nullable=True),
+        Column("at", DATETIMETZ_TYPE, nullable=True),
+        Column("doc", JSONB_TYPE, nullable=True),
+        Column("uid", UUID_TYPE, nullable=True),
+        Column("blob", BYTES_TYPE, nullable=True),
+    ],
+    on_conflict="update",
+)
+
+
+def _wide_backend() -> DuckDBBackend:
+    metadata = MetaData()
+    _WIDE.to_sqlalchemy_table(metadata)
+    backend = DuckDBBackend()
+    backend.initialize(metadata)
+    return backend
+
+
+def _wide_rows() -> list[dict[str, Any]]:
+    """rows of every kind, a key given twice (the last stays), a null in each nullable column, and a key no column holds."""
+    at = datetime(2026, 10, 26, 12, 30, 15, 123456, tzinfo=UTC)
+    rows = [
+        {
+            "id": f"r{i}",
+            "scope": "S",
+            "n": i,
+            "big": 2**40 + i,
+            "share": _Decimal(f"{i}.2500"),
+            "won": i % 2 == 0,
+            "at": at + timedelta(minutes=i),
+            "doc": {"name": f"n{i}", "tags": [i, i + 1]},
+            "uid": str(_uuid.UUID(int=i)),
+            "blob": bytes([i, 255 - i]),
+            "unknown": "a column the table does not hold",
+        }
+        for i in range(5)
+    ]
+    rows.append({**rows[1], "n": 99, "won": None})  # r1 again: the last row of a key stays
+    rows.append({key: (None if key not in ("id", "scope", "unknown") else value) for key, value in rows[3].items()})
+    rows[-1]["id"] = "r_nulls"
+    return rows
+
+
+class TestAStageGivenArrow:
+    """an Arrow table is typed, refused and staged exactly as the same rows given as dicts."""
+
+    def test_the_backend_exports_an_arrow_table_as_it_exports_the_same_rows_as_dicts(self) -> None:
+        backend = _wide_backend()
+        rows = _wide_rows()
+        exports = [
+            backend.export_rows("wide", "scope", "S", given, primary_key=("id",), order_by=("id",))
+            for given in (rows, _pa.Table.from_pylist(rows))
+        ]
+        assert exports[0].num_rows == 6
+        assert exports[1].equals(exports[0])
+        assert encode_chunk(exports[1]) == encode_chunk(exports[0])
+        assert exports[1].column("n").to_pylist()[1] == 99, "the last row of a key stays"
+
+    def test_an_arrow_table_of_no_rows_exports_the_table_s_own_empty_shape(self) -> None:
+        backend = _wide_backend()
+        empty = backend.export_rows("wide", "scope", "S", _pa.table({}), primary_key=("id",), order_by=("id",))
+        assert empty.equals(backend.export_rows("wide", "scope", "S", [], primary_key=("id",), order_by=("id",)))
+
+    @pytest.mark.parametrize(
+        ("broken", "refusal"),
+        [
+            ([{"id": None, "scope": "S"}], duckdb.ConstraintException),
+            ([{"scope": "S", "n": 1}], KeyError),
+        ],
+        ids=["a null key", "no key column"],
+    )
+    def test_arrow_rows_are_refused_as_the_same_dict_rows_are(
+        self, broken: list[dict[str, Any]], refusal: type
+    ) -> None:
+        backend = _wide_backend()
+        for given in (broken, _pa.Table.from_pylist(broken)):
+            with pytest.raises(refusal):
+                backend.export_rows("wide", "scope", "S", given, primary_key=("id",), order_by=("id",))
+
+    async def test_a_staged_arrow_table_is_the_same_chunk_bytes_as_its_rows_staged_as_dicts(self) -> None:
+        snapshot, pointers, store, _ = _snapshot()
+        await _started(snapshot, pointers)
+        rows = [
+            {"county": "c2", "state": "TX", "votes": 7},
+            {"county": "c1", "state": "TX", "votes": None},
+            {"county": "c2", "state": "TX", "votes": 8},
+        ]
+        as_dicts = await snapshot.stage("TX", 3, {"results": rows})
+        as_arrow = await snapshot.stage("TX", 4, {"results": _pa.Table.from_pylist(rows)})
+        assert as_arrow.rows == as_dicts.rows == {"results": 2}
+        assert store.objects[as_arrow.objects["results"]] == store.objects[as_dicts.objects["results"]]
+        await snapshot.discard_staged([as_dicts, as_arrow])
+        await snapshot.stop()
+
+    async def test_a_stage_given_arrow_for_a_table_it_does_not_hold_is_refused_as_dicts_are(self) -> None:
+        snapshot, pointers, _, _ = _snapshot()
+        await _started(snapshot, pointers)
+        for given in ([{"county": "c1"}], _pa.Table.from_pylist([{"county": "c1"}])):
+            with pytest.raises(ValueError, match="names tables the snapshot does not hold"):
+                await snapshot.stage("TX", 3, {"nowhere": given})
+        await snapshot.stop()
+
+    def test_naive_timestamps_type_as_their_dict_rows_do(self) -> None:
+        backend = _wide_backend()
+        # every column named: a column no row names is typed as all-null, whose bytes no export fixes
+        rows = [{**row, "at": None if row["at"] is None else row["at"].replace(tzinfo=None)} for row in _wide_rows()]
+        exports = [
+            backend.export_rows("wide", "scope", "S", given, primary_key=("id",), order_by=("id",))
+            for given in (rows, _pa.Table.from_pylist(rows))
+        ]
+        assert encode_chunk(exports[1]) == encode_chunk(exports[0])

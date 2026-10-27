@@ -52,10 +52,13 @@ import io
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from threetears.core.backends.protocol import LOAD_FILES_MAX_WAIT_SECONDS, LoadFile
 from threetears.observe import get_logger
+
+if TYPE_CHECKING:
+    import pyarrow as pa
 
 try:
     import pyarrow.parquet as pq
@@ -286,6 +289,20 @@ def _parquet_rows(data: bytes) -> list[dict[str, Any]]:
         raise ImportError("reading an export's parquet files needs pyarrow: install 3tears-datasources[export]")
     rows: list[dict[str, Any]] = pq.read_table(io.BytesIO(data)).to_pylist()
     return rows
+
+
+def _parquet_table(data: bytes) -> pa.Table:
+    """one parquet file as an Arrow table, its rows never made Python objects.
+
+    :param data: the file
+    :ptype data: bytes
+    :return: its rows
+    :rtype: pyarrow.Table
+    """
+    if not _PARQUET:
+        raise ImportError("reading an export's parquet files needs pyarrow: install 3tears-datasources[export]")
+    table: pa.Table = pq.read_table(io.BytesIO(data))
+    return table
 
 
 async def read_export(store: ExportStore, result: DatasourceExportResult, *, bucket: str) -> list[dict[str, Any]]:

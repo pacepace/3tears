@@ -27,7 +27,7 @@ from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
 
-from threetears.evals.analysis.numbers import WHOLE_FROM, format_number, group_thousands
+from threetears.evals.kernel.numbers import WHOLE_FROM, format_number, group_thousands
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
 from threetears.evals.schema.base import EvalDocumentModel
 
@@ -269,7 +269,7 @@ _CELL_NUMBER = re.compile(r"(?<![\w.,])([+\-−]?)(\d[\d,]*)(?:\.(\d+))?(?![\w])
 _MOST_PADDED = 3
 
 #: The significant figures format_number rounds a number to: as many as reach the units digit at
-#: :data:`~threetears.evals.analysis.numbers.WHOLE_FROM`, where it starts writing numbers whole.
+#: :data:`~threetears.evals.kernel.numbers.WHOLE_FROM`, where it starts writing numbers whole.
 _SIGNIFICANT = len(str(int(WHOLE_FROM)))
 
 #: A dollar amount's whole dollars in a table cell, written without their thousands grouped: ``$1239``.
@@ -285,9 +285,9 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
 
     Padding never rounds: a cell keeps every digit it had, so a table still never rounds away what a value holds,
     and two figures a reader compares read at one precision. Nor does it state a digit the number was never rounded
-    to: a number reaches a table as :func:`~threetears.evals.analysis.numbers.format_number` spells it, to
+    to: a number reaches a table as :func:`~threetears.evals.kernel.numbers.format_number` spells it, to
     :data:`_SIGNIFICANT` figures with its trailing zeros dropped (whole from
-    :data:`~threetears.evals.analysis.numbers.WHOLE_FROM` up), so its zeros are padded back only up to its own
+    :data:`~threetears.evals.kernel.numbers.WHOLE_FROM` up), so its zeros are padded back only up to its own
     figures: ``94`` beside ``96.4`` reads ``94.0``, but ``1240`` beside ``1.655`` stays ``1,240`` and ``12.35`` beside
     ``1.235`` stays ``12.35``. A cell no other reads like (a label, words) is left as it is.
 
@@ -315,7 +315,7 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
 
 def _own_decimals(whole: str) -> int:
     """The most decimals a number with these whole digits holds at :data:`_SIGNIFICANT` figures: none past them, so
-    none at all from :data:`~threetears.evals.analysis.numbers.WHOLE_FROM` up; below one, its figures start after the
+    none at all from :data:`~threetears.evals.kernel.numbers.WHOLE_FROM` up; below one, its figures start after the
     point, which holds at least as many decimals as :data:`_MOST_PADDED`."""
     digits = whole.replace(",", "").lstrip("0")
     return max(0, _SIGNIFICANT - len(digits)) if digits else _MOST_PADDED

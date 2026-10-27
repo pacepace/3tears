@@ -80,7 +80,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, get_args
 
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.charts import KIT_CHARTS
 from threetears.evals.analysis.report.figure_keys import (
     DIRECTION_WORDS,

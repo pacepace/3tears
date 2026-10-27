@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.stats import PAIRED_TEST_NAME, UNPAIRED_TEST_NAME
 
 if TYPE_CHECKING:

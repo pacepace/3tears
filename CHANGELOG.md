@@ -638,6 +638,42 @@ arm declaring none takes the computed one. `campaign_create` takes `short_name` 
 `campaign_update` takes `arm_short_names`, which stays editable once runs have joined. No identity, digest or
 fingerprint moves. See `packages/evals/MIGRATIONS.toml`.
 
+## v0.80.0 -- 2026-10-27
+
+### backup: a drill compares a naive-timestamp table against the backup's moment
+
+**Fixed:** a drill failed on the first database holding a table whose cutoff column (`date_created` and
+the like) is `timestamp without time zone`. The comparator bound the backup's aware moment to that column,
+and asyncpg refused it ("can't subtract offset-naive and offset-aware datetimes"). Seen on a hub's
+scheduled drill when it reached a newly backed-up database. A naive column is now bound the moment as its
+naive UTC wall clock, and a zoned column the instant as before.
+
+### agent-tools, core: an edge-cacheable read may narrow its scopes by a second namespace node
+
+**New:** `RestAffordance.scope_qualifier_node`, beside `scope_node`. A reader who sees every child tool node beneath
+it keeps the scopes `scope_node` names (`va`); any other reader's scopes are qualified by the children it sees,
+`<scope>.<fingerprint>` (`threetears.core.http_cache.scope_qualifier`, `qualified_scope`,
+`SCOPE_QUALIFIER_SEPARATOR`). The hub qualifies the scopes it puts in a reader's edge token the same way, so two
+readers of the same states and different reports never share a cached answer, and a reader of every report keeps
+today's scope names and cache. Refused without a `scope_node`, or when it is not a dotted namespace name.
+
+### search, agent-tools: grounded answers (Brooks, #930)
+
+**Added:** an agent can ask a provider for a cited answer to a question, beside searching and fetching.
+- `threetears.search` has grounded-answer contract types (`AnswerRequest` and its result, `ANSWER_METADATA_KEY`),
+  a third transport protocol for a streamed response that the standalone transport streams, with a per-upstream
+  circuit breaker and a span per request, fetch and stream, and `bind_answer`, which asks through the call's own
+  budget, pacing and disposition machinery and renders the answer with its provider named in its first line.
+- `BraveAnswersAdapter` reads Brave's streamed, cited answer into its text, its sources, code-point anchors into the
+  stripped text, and the provider's own bill; an anchor past the text is refused, and every answers adapter has a
+  conformance suite run against recorded live streams (shipped as package data).
+- `threetears.web_answer` (agent-tools) answers a question with Brave's cited answer. It is granted only by the
+  `answers` alias, never by `web`, because every call costs money; its config carries the account's Brave rates,
+  so a money cap refuses before the call. A tool pod serves it when `THREETEARS_BRAVE_ANSWERS_API_KEY` is set and
+  says it skipped it when not.
+- A search's or an answer's note of what it could not do comes before its results, right after the first line,
+  so a reader keeping only the head of the prose keeps it.
+
 ### evals: a page and the writer's view say once that a cost is its runs' provider routing's
 
 **Changed:** an eval's cost belongs to its provider routing, not its model (owner, 2026-10-25): one model routed
@@ -840,7 +876,281 @@ host's own actions included, is unchanged.
 **Docs:** the host-adoption guide says a CPU-bound read shares the interpreter lock with the eval runs in its process
 whatever executor runs it, beside the guidance on offloading store calls.
 
+### evals: an arm whose every past result cost the same launches, priced from that history, under an enforced cap
+
+**Fixed:** a launch priced by `history_launch_pricer` raised `ValueError: a range runs low <= central <= predicted`
+building the arm's `ArmPrice` when every priced past result of the arm cost the same (Discodon's second launch of one
+arm, three results at $0.0015 each). The cost band (`compute_estimate_cost`) read that history on the log scale, whose
+ends are `exp` of a mean of logs and round away from the arithmetic mean the central estimate is drawn from: both ends
+landed an ulp off the centre, here below it. The band now brackets its estimate, and never moves an end onto it by
+more than rounding. A history whose costs are all equal, or apart by rounding alone (within a billionth), has a band
+of no width at exactly the estimate (each cell's and the total's), and its `band_basis` says no spread was seen in its
+N past observations. The band stays what the history computes wherever it is shown, however narrow: a reader may judge
+one or two percent significant. Where a cap is judged, the history pricer holds every arm to at least a 3% safety
+margin above its estimate: `ArmPrice.predicted_usd`, the figure a launch holds to the arm's cap, is the greater of the
+band's upper end and the estimate plus 3%, while `low_usd` and `central_usd` stay as computed and the band's own upper
+end rides along as `ArmPrice.band_high_usd` (new; also on `ArmEstimate`, and the end a cost pivot's plan reads). Where
+the margin binds, the basis states both: "the band from history is $a-$b (x% below to y% above $c); the cap reads $d,
+the 3% safety margin above the estimate, wider than the band by $g", the gap saying how far the cap stands above the
+band's end where four figures would spell the two alike. Where it does not, the basis names the band's upper end
+alone. An arm refused over its cap is said to have a "cap figure" above it, never to be "predicted to cost" it, and
+the cap figure and the cap are spelled by the number rule, not in cents, so a cap figure a hair above its cap never
+prints equal to it; the launch estimate's text labels each arm's figure and the total as cap figures. So that a launch
+may spell by it, the number rule's module moved from `analysis` to `kernel` (`threetears.evals.kernel.numbers`), the
+package both may import: `threetears.evals.kernel` now exports `format_number`, `format_signed` and `ABSENT`, and
+`threetears.evals.analysis` (and `ops`, for `format_number`) still export them. A log-scale end that misses the
+estimate by rounding alone (within a billionth of it) is set to it. A log-scale band that misses it by more, where the
+lognormal fit contradicts the history's mean (one outlier among near-equal costs), becomes the outer envelope of that
+band and the normal-theory band around the mean; its `band_basis` calls it an at-least-95% band, wider than either
+fit's because neither can be trusted alone, names the end the fit put where, and says why a lower end of $0 is $0. The
+upper end a launch is capped at is never the bare mean of a history that varied. Every figure in a basis is spelled by
+the package's one rule (`format_number`), never as an exponent, and so is every figure in the `ArmPrice.basis` the
+history pricer writes: in cents, a sub-cent arm's band read "$0.00-$0.00 around $0.00", three figures with one
+spelling. The normal-theory band (a history holding a zero cost) is centred on the same estimate.
+`lognormal_sum_prediction_band` gives observations all equal a band of no width at exactly `n_future` times their
+value; read through their logs, eleven or more of them had a spread a few ulps above zero.
+
+### evals: `scope_export` pages a large scope instead of reading it whole
+
+**Fixed:** an unnamed `scope_export` read every result in its scope into memory and serialized them into one
+response, so a large scope could exhaust its host (Discodon, 2026-10-27: a 502, then a restart). `export_results`
+now estimates from the run listing, before reading anything, how many results each run holds (its matrix, cases
+times k, or the cells it recorded persisting when those are more), against `EXPORT_PAGE_RESULTS` (1,000 results, new
+in `threetears.evals.analysis`; also re-exported from `threetears.evals.ops`). A scope that fits is exported as
+before, byte for byte, with `page: null`. A larger scope is exported in pages of whole runs, oldest first (by
+`created_at`, then id), each page reading its runs' results run by run: `ScoreExport.page` (new, an `ExportPage`)
+names the page's runs, how many come before and after it, the archived runs and runs of another status left out
+unread, and `next_after_run_id`. A paged export's exclusion counts cover only that page's reads: results whose run
+was deleted are not reached. A whole-scope read that returns more results than its listing promised is not
+serialized; the export pages instead. One run larger than the ceiling is a page of its own.
+
+**Changed (MCP):** `scope_export` takes `export_after_run_id`, the previous page's `page.next_after_run_id`, and the
+text of a page with a next names the call, repeating a non-default `export_format` and `run_status`:
+`More: action='scope_export', export_after_run_id='<id>'`. `export_run_ids` is never paged: two or more named runs
+whose estimated results pass the ceiling are refused (`VALIDATION_FAILED`, naming the ceiling and the results they
+would read, with `details` `runs_named`, `results_estimated` and `result_ceiling`); one named run is exported whole.
+`export_after_run_id` with `export_run_ids`, or naming a run no longer in the scope, is refused. An unknown format
+is now refused before anything is read. An agent that exported a scope in one call must follow the pages.
+
+### object-store: a presign no longer holds the event loop
+
+**Fixed:** `S3ObjectStore.presigned_get_url` opened an aiobotocore client for every URL, building a whole botocore
+client class on the loop each time: ~100 ms a URL on cobalt dev's shared CPU, so a load presigning a file per
+partition stalled its loop over and over. A store that opened its own session now signs on a worker thread with one
+synchronous botocore client, built on first use and kept; its URLs are the ones the aiobotocore client signs. A store
+given a session (a test's fake, a caller's aioboto3) presigns through it as before.
+
+## v0.79.0 -- 2026-10-26
+
+### search: a placeholder frame is not named as the article
+
+A thin page whose only frame was `about:blank` (an ad or an embed filled in later) was answered "only the
+page's menu was readable; the article is at about:blank", with "fetch about:blank directly" as the next step;
+an agent fetched one site six times in an hour for that (metallm, 2026-10-26). A frame whose address is not
+http or https is now neither the pointer nor counted among the frames, so such a page is answered as it is, and
+a placeholder beside the article's own frame no longer stops that frame being followed. A `citation_pdf_url`
+that is not a web address is passed over for the frames in the same way, and a frame address that will not
+split is dropped rather than hiding a readable frame beside it; only a page none of whose frame addresses split
+still reads as "its frames could not be looked for".
+
+### datasources, core: an export part read as Arrow, and staged as Arrow
+
+**Added:** a counted export's part can travel from the export's parquet files into a scoped
+snapshot's chunks without any row becoming a Python object.
+- `threetears.datasources.partitioned_export.read_counted_partition_arrow(store, export, part, *,
+  file_concurrency=8) -> pyarrow.Table`, beside `read_counted_partition`.
+  - It reads each file straight into Arrow, several at once and off the event loop, then
+    concatenates them.
+  - It holds the part to its count exactly as the row read does: a mismatch raises
+    `IncompleteExportError`, naming both counts.
+  - A part with no files is an empty table. Needs the `export` extra.
+- `ScopedSnapshot.stage` accepts one `pyarrow.Table` per table, in `rows` and in `added`, as
+  well as dict rows.
+  - The table is typed by the same L1 SQL and refused the same way: an unknown table, a null
+    key, a missing key column. A key given twice keeps its last row.
+  - It stages chunk bytes identical to the same rows given as dicts.
+- `DuckDBBackend.storage_arrow(table, rows, primary_key) -> (columns, pyarrow.Table)` puts an
+  Arrow table into a table's storage forms, as `export_rows` does with dict rows.
+  - `export_rows` now takes either form.
+  - A subclass that types rows itself (a retaining backend's `export_rows`) calls
+    `storage_arrow` to take Arrow too.
+  - Columns whose Arrow type an insert's cast stores exactly (integers, floats, booleans,
+    strings, dates, decimals at the column's scale, zoned timestamps into zoned columns) stay
+    Arrow. Any other column is stored value by value, as a dict row's is.
+
+### core: a compare-and-swap reads its bucket's creation time once, not twice
+
+**Changed:** every ordered `l2_cas_mutate` made two `STREAM.INFO` round trips for the bucket's
+creation time: one before the swap and one after it won.
+- The read before the swap is now remembered per collection and bucket handle. Every swap after
+  the first makes one round trip.
+- A remembered value can only be too low, since a recreated stream is younger. The fresh read
+  after the swap, which catches a stream recreated around it, also refreshes the remembered value.
+- The regressed-epoch refusal (`L2EpochRegressedError`) re-reads the creation time before it
+  raises. So a bucket recreated since the last swap is still detected, and is never mistaken for
+  a regression.
+- `NatsKvBucket.date_created()` itself is unchanged and still reads fresh.
+
+### registry: several replicas evict a dead pod as one registry does
+
+**Fixed:** with more than one registry replica, the heartbeat sweep went wrong in three ways.
+- A pod's missed sweeps were counted in its shared heartbeat row, so every replica's sweep added
+  one, and N replicas evicted a pod after 1/N of `THREETEARS_REGISTRY_HEARTBEAT_MAX_MISSES`.
+- A pod one replica evicted (its row deleted) left the other replicas' tracking but not their
+  catalogs, so they kept offering its copies, and could write them back to the bucket.
+- A replica swept only pods it had heard, so copies it loaded from the bucket for a pod that
+  died before it started stayed forever.
+
+Now:
+- Each replica counts missed sweeps itself, one per its own sweep; every replica hears every
+  heartbeat.
+- A pod whose row is gone is deregistered from the catalog, unless it registered or was heard
+  within the timeout.
+- Every sweep covers each pod the catalog holds a copy for.
+- A pod a replica quarantined is revived there when a peer records its heartbeat.
+
+### core: coordination redemptions keep no L1 copy
+
+**Fixed:** `coordination_redemptions` cached every row a `RedemptionLedger` or `CollectionReplayAnchor` wrote in
+the writer's L1, where nothing read it again or removed it before its expiry, so a process's memory grew by one
+row per redemption (identity-core: one per token refresh, held 400 days). `CoordinationRedemptionsCollection`
+now declares `caches_in_l1 = False`: L2's compare-and-swap decides a redemption and L3 records it, as before, and
+`was_redeemed` and the replay anchor's read go to L2.
+
+### core: a revocation's recorded absence stands for fifteen minutes
+
+**Behaviour change.** `CoordinationRevocationsCollection.negative_cache_max_age` is 15 minutes, not 60 seconds.
+An absence is correct only under the write generation it was recorded at, and every check reads the current one,
+so a revocation on any replica ends it at the next check; the age bounds only a revocation whose generation
+advance was lost, which the write-mark reconciler repairs within its pass. At 60 s, nearly every 15-minute
+refresh found its `sid` and `sub` absences gone and asked L3. A consumer that runs no reconciler shortens it on a
+subclass.
+
+### core: a scoped snapshot tells its listeners when it becomes ready
+
+**Fixed:** a listener (`on_change`) heard each commit, but not the copy becoming ready. A consumer that builds
+only from a ready copy skipped every commit of a rebuild; the last landed before ready, and with no later write
+it never built (the reports pod's "Preparing reports" on cobalt dev). Becoming ready, from L2 or L3, now calls
+every listener once.
+
+### core: a write that changes no row leaves no write mark
+
+**Fixed:** the write-mark trigger fired per statement, so a statement that changed no row marked too (the hub's
+idempotent `INSERT ... WHERE NOT EXISTS` of a namespace on every tool pod's handshake). Each mark is an advance
+of the table's generation that no follower heard, so every follower dropped the table: about twice a minute on
+cobalt dev, 1,017 times a day on prod's gateway. The trigger (same name, `threetears_collection_write_mark`) is
+now per row, and its function marks a table once per transaction, at the first changed row, behind a
+transaction-local setting; the rest of the rows pay one `current_setting` check. A statement that changes no row fires nothing.
+YugabyteDB has no transition tables, which a statement trigger would need to see whether it changed a row.
+Measured on YugabyteDB 2026.1: a 100,000-row `INSERT ... SELECT` takes 342 ms with the trigger, 282 ms without.
+
+**A writer clears the marks its own advance covers** (`CollectionRegistry.set_write_marks_schema`, unset by
+default, which keeps today's behaviour). A collection write on a switched-on table advances the generation
+itself and broadcasts, and its mark then made the reconciler advance a second time, unheard, so every follower
+dropped the table after every write. With the queue's schema set, the writer reads the table's marks after its
+commit, advances, and deletes exactly the marks it read: each was committed before the advance, which covers
+it. A writer that dies, or fails, between the advance and the delete leaves them, and the reconciler advances
+once more, as before; a read or delete that fails never fails the write. A process sets it only where its L3
+holds the queue (the hub, over its own database).
+
+**Upgrade.** The install backstop and the migration runner count a table whose trigger of that name is not per
+row as missing: under the DDL lock they replace the function, drop the statement trigger and create the row
+trigger, so the two never both fire.
+
+### core: a collection whose L1 holds no table of it reads through rather than raise
+
+**Fixed:** a registry hands its L1 to every collection it builds, but only a collection that creates its table
+there, or whose table its owner declared, has one. A collection built later under a name of its own (the hub's
+tile source, `geo_tiles_<scope>`, and its feature cache) read and wrote a table its L1 never had, and every tile
+answered 500 with `sqlite3.OperationalError: no such table`. Every row of a collection's table enters, leaves
+and is read from L1 through one place, which now uses L1 only while it holds the table: until then the
+collection reads and writes through to L2 and L3, as one built with no L1, and says so once.
+
+### core: a scoped snapshot's rebuild from L3 keeps its progress across waits
+
+**Fixed:** a rebuild from L3 publishes a scope only while no write is in progress or has committed since it
+read the epochs, and on each wait it dropped what it had published, so the next attempt read every scope again
+from the first. Under a loader whose writes leave only short gaps (an LSF pull holding a write open for twenty
+minutes, every five minutes), each gap got two or three scopes in before the next write stopped it, and the copy
+was never ready: readers were refused for hours after a column change. A replica now keeps, across its waits,
+the scopes any rebuild here (a full one or a catch-up) published, and the epoch it published each at; a later
+attempt reads only the scopes whose epoch moved since, or that this L1 or the scope's pointer no longer holds at
+it. What it kept is dropped when NATS lost the snapshot, or when a cold load finds a pointer's chunks gone. The
+index is still written whole, and the copy declared ready, only by an attempt no write outran.
+
+### core: a rebuild repoints a same-epoch pointer of other columns
+
+**Behaviour change.** A rebuild from L3 left a scope's pointer in place when another code version had written
+it at the same epoch under other columns, until a write moved the scope. After a column change, a scope no
+write touched since kept the old version's pointer, so every replica found the snapshot "written for other
+table columns" and rebuilt every scope from L3 at every start. A rebuild now moves such a pointer to its own
+columns, so the next start loads from L2. While two versions run together, a replica that starts repoints the
+other's same-epoch scopes; a ready replica never takes a same-epoch pointer of other columns, so it keeps
+serving its own L1 and is not made to rebuild.
+
 ## v0.78.0 -- 2026-10-24
+
+### core: a partial update keeps the columns it does not name
+
+**Behaviour change.** An update through `SchemaBackedCollection`'s generated SQL now rewrites only the columns
+the row names. A column the row leaves out keeps its stored value; before, the `DO UPDATE SET` of the upsert and
+the fenced `UPDATE` wrote `NULL` to every nullable column without a server default that the row left out, so a
+partial save wiped values it never meant to touch (the hub hit it on `platform.datasources` and carried the
+stored values itself in `HubCapabilitySourceCollection.save_entity`, which can now go). A column named as `None`
+is still written `NULL`, and an insert still takes `NULL`, or the server default, for a column it leaves out.
+The ordered upsert and the NULL-safe CAS upsert follow the same rule; the latter now refuses a row that leaves
+out its `cas_column`, since an update would not advance the fence. A row naming no mutable column updates the
+row to itself, so the save still counts one row.
+
+The caches stay exact: a synchronous save is no longer completed with guessed `NULL`s, so a row leaving out a
+declared column is read back from L3 (`columns_decided_by_store`, as `DeclaredTableCollection` does) and L1, L2
+and the saving handle hold the stored value. That costs one read per save of such a row. Unchanged: a write
+that reaches L1 and L2 before L3 (write-behind, `l2_cas_mutate`) has no row to read back, so it still sends
+each nullable column it leaves out as `None` (`complete_written_row`), and writes `NULL`, exactly the row it
+caches; `l2_cas_mutate`'s fallback with no L2 now completes its row the same way, rather than keeping the stored
+value. A bulk `save_rows` still replaces every mutable column its rows share.
+
+### core: a save inside a caller transaction hands back the stored row
+
+**Fixed:** a save joining a caller's transaction (`save_entity(entity, conn=conn)`) left its handle holding the
+row as sent, so after a partial update a column the row did not name raised `AttributeError` on the handle, or
+answered a stale value, though L3 kept it (the hub hit it re-saving `platform.datasources` rows). Such a save
+now reads its row back over the caller's connection, so the read sees the transaction's own uncommitted writes,
+and the handle holds the stored row, as a save outside a transaction does. The caches are unchanged: nothing
+takes the row while the transaction is open, and when it ends every key it wrote is evicted, so the next read
+takes the committed row. The eviction's broadcast now takes its invalidation columns from the row as stored.
+A read back that raises is raised from the save, and the handle keeps its unsaved edits.
+
+**Added:** `BaseCollection.fetch_from_store_in_transaction(entity_id, *, conn)`, the extension point for that
+read. The default reads nothing and the handle keeps the row as sent, so a collection overriding
+`fetch_from_store` is unaffected. `SchemaBackedCollection` reads through its durable store's `fetch_one(conn=)`,
+unless a subclass overrides `fetch_from_store`, which must then override this too. The datasources and
+scheduled-jobs `DeclaredTableCollection`s implement it with their own `fetch_from_store` SELECT, run on the
+caller's `conn`. `CallerTransaction.restate` replaces the row an enrolled write carries.
+
+**Added (enforcement):** the collection census records `transaction_read_gap`, and
+`find_transaction_read_gaps(census)` lists every class that overrides `fetch_from_store`, may leave columns
+to the database (inherits a `columns_decided_by_store` other than `BaseCollection`'s, which answers none),
+and has no `fetch_from_store_in_transaction` at or below it. 3tears gates its own packages on it; a product
+runs it over its census as it does `find_census_problems`.
+
+### core: exact NUMERIC operands, immutable read-back, NaN-safe reads and answers, Decimal from L2 numbers
+
+**Fixed:** a `DeclaredTableCollection` write that named an `immutable` column cached the value it sent, while
+the update kept the stored one: after a second save of a hub `gateway_credit_rates` row, L3 held the first
+`date_created` and L1 and L2 the second. `columns_decided_by_store` now counts an `immutable` column the row
+carries, so the write reads it back from L3.
+
+**Fixed:** a row whose `NUMERIC` column holds Postgres `'NaN'` (or an infinity) made `get()` raise, since an
+exact L1 cannot hold it as a scaled integer. Such a row is served from L3 with no L1 copy (one held under its
+key is dropped), and the first is logged. `stored_decimal` raises `NonFiniteNumericError` (a `ValueError`,
+new in `threetears.core.cache.base`) for it.
+
+**Fixed:** an L2 `NUMERIC` field held as a JSON number (a writer that passed a float, or a pod whose L1 held
+`REAL`) decoded as a `float` through `deserialize_from_json`, the `DeclaredTableCollection` default codec, and
+`Decimal * float` raised. A `Decimal` field is now a `Decimal` whether the JSON holds a string or a number, so
+values older pods wrote decode too. `tier_parity_findings` also sends each `NUMERIC` through the L2 codec as a
+`float` and expects its `Decimal` back.
 
 ### models: the bare registry entry is readable without lifting the layers above it
 
@@ -861,7 +1171,8 @@ column's Python type), `datetime_columns`, `insert_columns` (every written colum
 format of `serialize_to_json`, unchanged). `write_row(data, *, conn=None)` writes the upsert built from those
 lists: only the columns the row carries, `ON CONFLICT` on `conflict_columns` (the primary key unless the class
 names a natural key, when it returns the stored key and calls `settle_stored_key`), a plain `UPDATE` for a row
-short of a `NOT NULL` column, raising `RowCannotBeInsertedError` (a `RuntimeError`) when that finds no row.
+short of a `NOT NULL` column, raising `RowCannotBeInsertedError` (a `RuntimeError`, exported from
+`threetears.core.collections`) when that finds no row.
 `write_statement(data)` returns the statement and parameters without running it.
 
 **Changed:** a class that still states `datetime_columns`, `field_types`, `insert_columns` or `update_columns`
@@ -892,8 +1203,14 @@ read through L1 was a float and `Decimal * float` raised. An exact `NUMERIC(p, s
 holding the value times `10**s` (`9.50` in `NUMERIC(12, 2)` is `950`), read back as the `Decimal` at scale `s`
 L3 answers, rounded as Postgres rounds. It is exact, and SQL run against L1 directly compares, sorts, takes
 `MIN`/`MAX` and sums it by value (a `SUM` is the scaled total; `deserialize_field` turns it back into the
-`Decimal`); an operand compared with it is scaled through `serialize_value` first. A `Float` column stays a
-float. The DuckDB L1 keeps `NUMERIC(p, s)` as a native `DECIMAL(p, s)`.
+`Decimal`). A `SUM` holds only while the scaled total fits a 64-bit integer (`2**63 - 1`, so
+`92233720368547.75807` at scale 5; ten of `NUMERIC(18, 2)`'s largest values pass it): past it `execute_query`
+raises `OverflowError` naming the column, not SQLite's bare "integer overflow"; sum such columns in L3. Compare
+the column with an operand through `SQLiteBackend.numeric_comparison(column_sql, operator, value, col_type)`,
+which returns the condition and its parameters: it bounds the scaled column by the operand exactly (`> v` is
+`> floor(v * 10**s)`, `>= v` is `>= ceil(...)`, and so on), never rounded to the column's scale, so
+`price > 9.995` against `10.00` is true, as in L3. `serialize_value` rounds to the scale, as a stored value
+is, and is not for operands. A `Float` column stays a float. The DuckDB L1 keeps `NUMERIC(p, s)` as a native `DECIMAL(p, s)`.
 
 **Changed:** an L1 refuses, when its table is created, a `NUMERIC` it cannot hold exactly: one with no declared
 precision and scale, or wider than 18 digits in SQLite (a 64-bit integer) or 38 in DuckDB. It raises
@@ -902,7 +1219,8 @@ creates the table. Nothing is kept as a binary float any more. A dynamic collect
 (`create_dynamic_collection`) with a `decimal` column, which declares no scale, is refused on a registry with an
 L1. A DuckDB L1 whose `NUMERIC(p, s)` columns were `DOUBLE` now answers `Decimal` for them. `answer_json`
 writes a `Decimal` as the JSON number its `float` writes, so an answer built from those columns reads on the
-wire as it did when they were floats, not as a quoted string. `tier_parity_findings` checks a collection with
+wire as it did when they were floats, not as a quoted string. A `NaN` or infinite `Decimal` or `float` it writes
+as `null`, since JSON has no number for it (it wrote `NaN` and `Infinity`, which no JSON parser reads). `tier_parity_findings` checks a collection with
 `caches_in_l1 = False` on its L2 codec alone.
 
 **Fixed:** `ScheduledJobCollection` and `JobFireCollection` wrote past `save_entity` and evicted nothing:
@@ -928,8 +1246,9 @@ table's columns, nullability and defaults.
 own SQL over a table it declares as `schema: ClassVar[TableSchema]`. From the schema it takes its key
 (`primary_key_column`, refused at class definition if declared otherwise), its instants (`datetime_columns`)
 and its `table_name`; it creates its L1 table on the registry's L1 at construction; it answers
-`columns_decided_by_store` (a declared column the write leaves out, or a `NOT NULL` default sent as `None`, is
-read back from L3 after the write); and `settle_stored_key(sent, stored, *, conn=None)`, called from a
+`columns_decided_by_store` (a declared column the write leaves out, a `NOT NULL` default sent as `None`, or an
+`immutable` or `insert_only_columns` column the write names, whose stored value an update keeps, is read back
+from L3 after the write); and `settle_stored_key(sent, stored, *, conn=None)`, called from a
 natural-key upsert's `save_to_store` with the key its `RETURNING` gave, evicts a row stored under another key
 and caches nothing under the key sent. `threetears.core.cache.base` adds `exact_decimal_type`,
 `stored_decimal` and `UnsupportedL1ColumnError`, which both L1 backends type and refuse `NUMERIC` columns by.

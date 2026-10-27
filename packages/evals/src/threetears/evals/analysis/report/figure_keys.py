@@ -3,7 +3,7 @@
 The planner never types a figure into a sentence (GENERATOR.md §6.2). It writes a **figure key** —
 ``{<path>|<filter>|<filter>}`` — and :func:`render` replaces each with the value read from the
 :class:`~threetears.evals.analysis.report_input.ReportInput`, spelled by the package's number rule
-(:mod:`threetears.evals.analysis.numbers`, :mod:`threetears.evals.analysis.quantities`). ``{arm:<id>}`` prints an
+(:mod:`threetears.evals.kernel.numbers`, :mod:`threetears.evals.analysis.quantities`). ``{arm:<id>}`` prints an
 arm's short name with its letter tag.
 
 **Separate from the memo's figure references.** The memo writes ``{{<cell>|<measure>|<reading>|<stat>}}`` against a
@@ -96,7 +96,7 @@ from typing import Literal, get_args
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.cell_mean import CellMeanInterval, NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.analysis.numbers import format_number, group_thousands, spell_multiple, spell_price
+from threetears.evals.kernel.numbers import format_number, group_thousands, spell_multiple, spell_price
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
 from threetears.evals.analysis.report.cost_unit import REPLIES, CostBasis, per_count, per_noun
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
@@ -2674,7 +2674,7 @@ MULTIPLE_UNIT = "times"
 
 #: The units a figure keeps under every filter, rounding included: a multiple's ``times`` is what makes it one, and
 #: ``21`` alone reads as a count. A multiple's own spelling rounds to the figures a ratio supports
-#: (:func:`~threetears.evals.analysis.numbers.spell_multiple`: ``21 times``, ``2.4 times``); ``int`` writes it whole.
+#: (:func:`~threetears.evals.kernel.numbers.spell_multiple`: ``21 times``, ``2.4 times``); ``int`` writes it whole.
 #: Every other unit is left off under ``int``, which prose writes after the key (``{…p95|int} ms``).
 _KEPT_UNITS = frozenset({MULTIPLE_UNIT})
 
@@ -6027,7 +6027,7 @@ class _Spelled:
 
 
 def _plus(text: str, value: float) -> str:
-    """``text`` with the ``+`` a positive change carries, as :func:`~threetears.evals.analysis.numbers.format_signed`
+    """``text`` with the ``+`` a positive change carries, as :func:`~threetears.evals.kernel.numbers.format_signed`
     places it: never on a bound, never on a zero."""
     return f"+{text}" if value > 0 and not text.startswith(("<", "+")) and text != "0" else text
 

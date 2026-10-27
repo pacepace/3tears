@@ -92,7 +92,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     UNCORRECTED_NOTE,
     change_words,
 )
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.quantities import PERCENT, POINTS
 from threetears.evals.analysis.report.figure_keys import arm_settings, correction_words, pairing_contrast
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, ReportInput, Stat, Stratum, Task

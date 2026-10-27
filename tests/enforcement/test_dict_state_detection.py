@@ -53,6 +53,16 @@ _SRC_ROOTS = (
 #: Genuinely ephemeral, non-serializable, or the infrastructure itself -- never migrating.
 _ALLOWLIST = (
     DictStateAllowlistEntry(
+        file="packages/search/src/threetears/search/standalone.py",
+        class_name="_Breakers",
+        attr_name="_circuits",
+        rationale=(
+            "one live circuit-breaker state machine per failing upstream of this transport, guarded "
+            "by a lock and read off a monotonic clock; a breaker protects this process's own calls, "
+            "so state shared across pods or kept across a restart would trip one replica for another"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/versioned_answers.py",
         class_name="VersionedAnswers",
         attr_name="_retirements",
@@ -506,6 +516,16 @@ _ALLOWLIST = (
         rationale=(
             "whether the run of each of this process's control flows now in progress has waited, "
             "flow -> bool; it lives for one run and is meaningless outside the process running it"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
+        attr_name="_rebuilt",
+        rationale=(
+            "the scopes this replica's own rebuilds published from its own L1, scope -> epoch, kept across "
+            "the rebuild's waits; it names what this process's DuckDB L1 holds, which no other replica holds "
+            "and a restart loses with it, so it is checked against that L1 and the pointer at each use"
         ),
     ),
     DictStateAllowlistEntry(

@@ -163,17 +163,41 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
     # --- BaseCollection contract ---
 
     async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
-        """Fetch a row by composite pk.
+        """fetch the row from L3 by primary key, on the collection's pool.
 
+        :param entity_id: the primary key
+        :ptype entity_id: Any
+        :return: row dict on hit, ``None`` on miss or with no L3 pool
+        :rtype: dict[str, Any] | None
+        """
+        if self.l3_pool is None:
+            return None
+        return await self._select_row(self.l3_pool, entity_id)
+
+    async def fetch_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> dict[str, Any] | None:
+        """fetch the row by primary key on a caller's open transaction, with :meth:`fetch_from_store`'s SELECT.
+
+        :param entity_id: the primary key
+        :ptype entity_id: Any
+        :param conn: the caller's connection, with its transaction open
+        :ptype conn: Any
+        :return: row dict on hit, ``None`` on miss
+        :rtype: dict[str, Any] | None
+        """
+        return await self._select_row(conn, entity_id)
+
+    async def _select_row(self, target: Any, entity_id: Any) -> dict[str, Any] | None:
+        """the row by primary key, read on ``target``: the collection's pool, or a caller's connection.
+
+        :param target: the pool or connection the SELECT runs on
+        :ptype target: Any
         :param entity_id: tuple ``(partition_key, job_id)``
         :ptype entity_id: Any
         :return: row dict on hit, ``None`` on miss
         :rtype: dict[str, Any] | None
         """
-        if self.l3_pool is None:
-            return None
         partition_key, job_id = self.normalize_pk(entity_id)
-        row = await self.l3_pool.fetchrow(_SCHEDULED_JOBS_FETCH_SQL, partition_key, job_id)
+        row = await target.fetchrow(_SCHEDULED_JOBS_FETCH_SQL, partition_key, job_id)
         if row is None:
             return None
         return dict(row)
@@ -697,11 +721,41 @@ class JobFireCollection(DeclaredTableCollection[JobFireEntity]):
     # --- BaseCollection contract ---
 
     async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
-        """Fetch a row by composite pk."""
+        """fetch the row from L3 by primary key, on the collection's pool.
+
+        :param entity_id: the primary key
+        :ptype entity_id: Any
+        :return: row dict on hit, ``None`` on miss or with no L3 pool
+        :rtype: dict[str, Any] | None
+        """
         if self.l3_pool is None:
             return None
+        return await self._select_row(self.l3_pool, entity_id)
+
+    async def fetch_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> dict[str, Any] | None:
+        """fetch the row by primary key on a caller's open transaction, with :meth:`fetch_from_store`'s SELECT.
+
+        :param entity_id: the primary key
+        :ptype entity_id: Any
+        :param conn: the caller's connection, with its transaction open
+        :ptype conn: Any
+        :return: row dict on hit, ``None`` on miss
+        :rtype: dict[str, Any] | None
+        """
+        return await self._select_row(conn, entity_id)
+
+    async def _select_row(self, target: Any, entity_id: Any) -> dict[str, Any] | None:
+        """the row by primary key, read on ``target``: the collection's pool, or a caller's connection.
+
+        :param target: the pool or connection the SELECT runs on
+        :ptype target: Any
+        :param entity_id: tuple ``(partition_key, fire_id)``
+        :ptype entity_id: Any
+        :return: row dict on hit, ``None`` on miss
+        :rtype: dict[str, Any] | None
+        """
         partition_key, fire_id = self.normalize_pk(entity_id)
-        row = await self.l3_pool.fetchrow(_JOB_FIRES_FETCH_SQL, partition_key, fire_id)
+        row = await target.fetchrow(_JOB_FIRES_FETCH_SQL, partition_key, fire_id)
         if row is None:
             return None
         return dict(row)

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, ClassVar
 
@@ -199,5 +199,32 @@ async def test_every_type_is_written_and_read_back_from_l3_l1_and_l2_and_the_tab
         assert stored is not None and stored["date_created"] == inserted["date_created"]
         async with pool.acquire() as conn:
             assert await live_tier_parity_findings(conn, [_Every]) == []
+    finally:
+        l1.reset()
+
+
+async def test_a_second_save_caches_the_immutable_stamp_l3_kept_not_the_one_it_sent(pool: asyncpg.Pool) -> None:
+    """the hub's ``gateway_credit_rates`` defect: L3 kept the first ``date_created``, L1 and L2 the second."""
+    coll, l1 = _collection(pool)
+    try:
+        sent = _row()
+        await coll.save_entity(coll.create(dict(sent)))
+        first = await coll.fetch_from_store(sent["id"])
+        assert first is not None
+        stamp = first["date_created"]
+        # a second save of the whole row, stamped anew, as a host that rebuilds its entity sends it
+        restamped = coll.create({**sent, "price": Decimal("1.0000")})
+        restamped.date_created = stamp + timedelta(hours=1)
+        await coll.save_entity(restamped)
+
+        stored = await coll.fetch_from_store(sent["id"])
+        assert stored is not None and stored["date_created"] == stamp
+        assert stored["price"] == Decimal("1.0000")
+        cached = coll.get_row_sync(sent["id"])
+        assert cached is not None
+        assert cached["date_created"] == stamp, "L1 holds the stamp the update did not store"
+        assert coll.decode_row(coll.serialize(cached))["date_created"] == stamp
+        entity = await coll.get(sent["id"])
+        assert entity is not None and entity.date_created == stamp
     finally:
         l1.reset()

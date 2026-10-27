@@ -1450,6 +1450,9 @@ class TestFindAndOffsetInADocument:
         assert not result.startswith("[analyze_media/")
         assert "no match" in result
         assert text.answer_calls == []
+        first, rest = result.split("\n", 1)
+        assert first == "[find 'penalty': no match.]", "the find note leads, where a head of the reply keeps it"
+        assert rest.startswith("Looked through ") and rest.endswith("no match, so no part was read.")
 
     @pytest.mark.asyncio
     async def test_an_offset_reads_on_from_there_and_a_later_part_is_not_kept(self):

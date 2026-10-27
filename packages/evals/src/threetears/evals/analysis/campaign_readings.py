@@ -62,7 +62,7 @@ from pydantic import Field, ValidationInfo, field_validator, model_validator
 from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, AnalysisContextBundle, ArmScoreboard
 from threetears.evals.analysis.depth import Depth, Precision, precision
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.decision import (
     FloorOutcome,
     FloorState,

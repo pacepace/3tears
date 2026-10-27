@@ -73,7 +73,7 @@ from threetears.evals.analysis.generator import (
     refuse_an_unlisted_writer,
     user_message_digest,
 )
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.plan_assembly import check_structure, planned_report, prose_slots, read_prose
 from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT, refuse_a_memo_prompt
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar

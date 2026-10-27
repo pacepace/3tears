@@ -15,6 +15,11 @@ For each class:
   ``write_generation`` as the class resolves it; ``reason`` is an opt-out's reason.
 - ``ancestors``: every other census class it subclasses, by qualified name.
 - ``framework``: whether the class is the 3tears framework's rather than the trees' own.
+- ``transaction_read_gap``: whether the class reads its store its own way (overrides
+  ``fetch_from_store``) where the database may decide columns of a write (it inherits a
+  ``columns_decided_by_store`` other than ``BaseCollection``'s, which answers none), yet reads
+  nothing on a caller's transaction: no ``fetch_from_store_in_transaction`` at or below its
+  ``fetch_from_store``. A save joining a caller's transaction would then hand back the row as sent.
 
 **Across repositories.** With ``--framework``, every module of the installed ``threetears``
 packages is imported too, and their collection classes join the census marked ``framework``. A
@@ -134,6 +139,38 @@ def _declaration(cls: type) -> tuple[str, str | None]:
     return "invalid", None
 
 
+def _defined_by(cls: type, name: str) -> type:
+    """the class in ``cls``'s MRO whose body defines ``name``.
+
+    :param cls: a collection class
+    :ptype cls: type
+    :param name: an attribute every collection has
+    :ptype name: str
+    :return: the defining class
+    :rtype: type
+    """
+    return next(klass for klass in cls.__mro__ if name in vars(klass))
+
+
+def _transaction_read_gap(cls: type) -> bool:
+    """whether a save of ``cls`` joining a caller's transaction would hand back the row as sent.
+
+    :param cls: a collection class
+    :ptype cls: type
+    :return: ``True`` when the class reads its store its own way, the database may decide columns
+        of its writes, and it reads nothing on a caller's transaction
+    :rtype: bool
+    """
+    from threetears.core.collections.base import BaseCollection
+
+    gap = False
+    if _defined_by(cls, "columns_decided_by_store") is not BaseCollection:
+        reads = _defined_by(cls, "fetch_from_store")
+        reads_in_transaction = _defined_by(cls, "fetch_from_store_in_transaction")
+        gap = not issubclass(reads_in_transaction, reads)
+    return gap
+
+
 def _import_all(names: list[str], failures: list[str]) -> set[str]:
     """import each module, recording why any did not.
 
@@ -204,6 +241,7 @@ def census(roots: list[Path], *, framework: bool = False) -> dict[str, Any]:
                     _qualified(other) for other in members if other is not cls and issubclass(cls, other)
                 ),
                 "framework": cls.__module__ not in modules,
+                "transaction_read_gap": _transaction_read_gap(cls),
             }
         )
     return {

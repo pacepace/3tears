@@ -41,7 +41,7 @@ from threetears.evals.analysis.cells import (
 )
 from threetears.evals.analysis.aspects import AspectDeclaration
 from threetears.evals.analysis.depth import Depth
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.style import declared_check_name
 from threetears.evals.analysis.remainder import RemainderState, remainder_state
 from threetears.evals.analysis.reporting import served_model_state

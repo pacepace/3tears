@@ -66,7 +66,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue, computed_field, model_val
 
 from threetears.evals.analysis.agreement import InterJudgeDimension, inter_judge_agreement
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
-from threetears.evals.analysis.numbers import format_number, spell_dollars
+from threetears.evals.kernel.numbers import format_number, spell_dollars
 from threetears.evals.analysis.reporting import (
     RequestSettingsReading,
     UnconfirmedModelIdentity,
@@ -140,7 +140,7 @@ def dollars_text(amount: float | None) -> str:
     possibly-unpriced amount says it in one word.
 
     From a thousand dollars up the whole dollars are grouped (``$7,560.00``), with
-    :func:`~threetears.evals.analysis.numbers.group_thousands`: the package's one spelling of a grouped
+    :func:`~threetears.evals.kernel.numbers.group_thousands`: the package's one spelling of a grouped
     amount, not a locale setting. A negative amount carries its sign before the dollar sign (``-$1,234.50``).
 
     :param amount: Dollars, as stored; ``None`` when the amount went unpriced.
@@ -164,7 +164,7 @@ def budget_stop_line(stops: Sequence[BudgetStop]) -> str:
 
     Every figure is read off the records, which were taken from the counters, so no number on the line is
     parsed from or rounded through prose. Money reads as ``$`` (:func:`dollars_text`) and the metered calls as
-    counts, through the one number rule (:func:`~threetears.evals.analysis.numbers.format_number`). A run both ceilings stopped at one boundary reads both, in the order given, and says the
+    counts, through the one number rule (:func:`~threetears.evals.kernel.numbers.format_number`). A run both ceilings stopped at one boundary reads both, in the order given, and says the
     cells that never started once, since a boundary has one. For example::
 
         stopped by its metered-call ceiling: 40 of 40 at the stop, 47 once 3 running cells finished (+7); 12 cells not started

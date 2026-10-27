@@ -48,8 +48,10 @@ from threetears.evals.ops import (
     ResultDetail,
     ResultLine,
     ResultListing,
+    ScoreExport,
     SecondJudgeRead,
     dollars_text,
+    export_text,
     format_number,
 )
 from threetears.evals.ops.analyst import CitedFigure
@@ -691,6 +693,28 @@ def render_results(listing: ResultListing, *, default_limit: int | None = None) 
     return "\n".join(lines)
 
 
+def render_export(export: ScoreExport) -> str:
+    """An export as its text, and on a page that has a next, the call that reads it.
+
+    The next call repeats the page's format and status wherever they are not the action's defaults, so following
+    it reads the next page of the same export.
+
+    :param export: The export, or one page of it.
+    :ptype export: ScoreExport
+    :return: The text.
+    :rtype: str
+    """
+    page = export.page
+    if page is None or page.next_after_run_id is None:
+        return export_text(export)
+    hint = f"More: action='scope_export', export_after_run_id='{page.next_after_run_id}'"
+    if export.format != "csv":
+        hint += f", export_format='{export.format}'"
+    if page.run_status != "completed":
+        hint += f", run_status='{page.run_status or 'all'}'"
+    return export_text(export, next_call=hint + ".")
+
+
 def _goal_check_line(outcome: GoalStateOutcome, counted: bool | None, condition: ResultOutcome) -> str:
     """One goal check as evaluated, and as every rate counts it when the two differ.
 
@@ -889,6 +913,7 @@ __all__ = [
     "render_help_page",
     "render_job_status",
     "render_jobs_started",
+    "render_export",
     "render_model",
     "page_fits",
     "page_unit",

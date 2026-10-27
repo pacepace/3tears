@@ -730,6 +730,11 @@ at WARNING and ends `over READ_TIER_ROW_BUDGET=50000`, so you can alert on the l
 the scope has outgrown the in-Python projection, the signal to push it down into your store; it fires
 before a page is slow, and you can alert on `elapsed_ms` instead.
 
+**An export is bounded; the aggregating lenses are not yet.** `export_results` estimates from the run listing how
+many results a scope holds before it reads any, and past `EXPORT_PAGE_RESULTS` (1,000) it exports in pages of whole
+runs (`ScoreExport.page`), each read run by run, so one call never holds the scope. `pivot`, `frontier`, `history`
+and the budget lenses still read every result in the scope: their answer is an aggregate, which a page cannot give.
+
 ## Stored data: what is kept
 
 **Every stored type has facts.** `DOC_TYPE_FACTS` (in `threetears.evals.schema`) is the one list of the

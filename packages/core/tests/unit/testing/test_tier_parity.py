@@ -89,6 +89,19 @@ class _UntypedCodec(_Exact):
         return decoded
 
 
+class _FloatBlindCodec(_Exact):
+    """an L2 codec that makes a Decimal only of a JSON string, as 0.78.0's did: a JSON number stays a float."""
+
+    schema: ClassVar[TableSchema] = _schema("tier_float_blind", 12)
+
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        decoded: dict[str, Any] = super().deserialize(data)
+        raw = json.loads(data)
+        if isinstance(raw.get("amount"), float):
+            decoded["amount"] = raw["amount"]
+        return decoded
+
+
 def test_a_collection_whose_every_tier_is_exact_passes() -> None:
     assert tier_parity_findings([_Exact]) == []
 
@@ -112,5 +125,14 @@ def test_a_collection_that_keeps_no_l1_copy_is_checked_on_its_l2_alone() -> None
 
 def test_an_l2_codec_that_changes_a_type_is_named_per_column() -> None:
     findings = tier_parity_findings([_UntypedCodec])
-    tiers = {finding.split(": ")[0]: finding.split(": ")[1] for finding in findings}
-    assert tiers == {"_UntypedCodec.id": "L2", "_UntypedCodec.amount": "L2", "_UntypedCodec.blob": "L2"}, findings
+    named = {(finding.split(": ")[0], finding.split(": ")[1]) for finding in findings}
+    columns = ("_UntypedCodec.id", "_UntypedCodec.amount", "_UntypedCodec.blob")
+    tiers = ("L2", "L2 (a NUMERIC sent as a float)")
+    assert named == {(column, tier) for column in columns for tier in tiers}, findings
+
+
+def test_an_l2_codec_that_leaves_a_numeric_sent_as_a_float_a_float_is_named() -> None:
+    """a JSON number in a NUMERIC field decoded as a float serves ``Decimal * float``, which raises."""
+    findings = tier_parity_findings([_FloatBlindCodec])
+    assert len(findings) == 1, findings
+    assert findings[0].startswith("_FloatBlindCodec.amount: L2 (a NUMERIC sent as a float): read back -0.5 (float)")

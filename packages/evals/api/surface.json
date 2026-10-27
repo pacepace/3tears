@@ -1261,6 +1261,11 @@
       "signature": "WorldSeed(namespaces: dict[str, Any] = dict(), ambient_perturbation_turns: list[Annotated[int, Field(ge=1)]] = list())",
       "tier": "host-contract"
     },
+    "threetears.evals.kernel.ABSENT": {
+      "kind": "constant (str)",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.ACCURACY_MEASURE": {
       "kind": "constant (str)",
       "signature": "",
@@ -2035,6 +2040,16 @@
       "kind": "function",
       "signature": "fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]",
       "tier": "stable"
+    },
+    "threetears.evals.kernel.format_number": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.format_signed": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.kernel.FRONTIER_RANKING_MEASURE": {
       "kind": "constant (str)",
@@ -3523,7 +3538,7 @@
     },
     "threetears.evals.run.ArmPrice": {
       "kind": "dataclass",
-      "signature": "ArmPrice(predicted_usd: float | None, basis: str, central_usd: float | None = None, low_usd: float | None = None, method_id: str | None = None)",
+      "signature": "ArmPrice(predicted_usd: float | None, basis: str, central_usd: float | None = None, low_usd: float | None = None, band_high_usd: float | None = None, method_id: str | None = None)",
       "tier": "stable"
     },
     "threetears.evals.run.ArmQuote": {
@@ -5286,6 +5301,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.EXPORT_PAGE_RESULTS": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.export_results": {
       "kind": "function",
       "signature": "",
@@ -5293,6 +5313,11 @@
     },
     "threetears.evals.analysis.ExportFormat": {
       "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.ExportPage": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -7395,6 +7420,11 @@
       "kind": "model",
       "signature": "EvalSummary(run_id: str, scope_id: str, template_id: str | None, candidate_model: str, arm: str | None = None, status: str, k_runs: int, n_cases: int, n_results: int, n_scored: int, n_candidate_failed: int, n_excluded: int, measures: list[RunMeasureSummary], confusion: list[ConfusionCount], labels: list[LabelStatistics], judged: list[DimensionSummary] = [], strata: list[StratumSummary] = [], spend: list[RoleSpend] = [], total_cost_usd: float | None = None, second_judge_calls: int = 0, second_judge_cost_usd: float | None = None, goal_checks: list[GoalCheckSummary] = [], intent: str | None = None, intent_source: str | None = None, errors: list[str], stopped_because: str | None = None, arm_schedule: ArmSchedule | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: CostCapOrigin | None = None, judge_shares_candidate_model: list[str] = [], unconfirmed_models: list[UnconfirmedModelIdentity] = [], request_settings: list[RequestSettingsReading] = [], case_results: list[CaseResult] | None = None)",
       "tier": "stable"
+    },
+    "threetears.evals.ops.EXPORT_PAGE_RESULTS": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.ops.export_text": {
       "kind": "function",

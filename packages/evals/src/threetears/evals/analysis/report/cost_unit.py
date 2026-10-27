@@ -32,7 +32,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from threetears.evals.analysis.numbers import format_number, group_thousands
+from threetears.evals.kernel.numbers import format_number, group_thousands
 from threetears.evals.analysis.report_input import Measure
 
 __all__ = [

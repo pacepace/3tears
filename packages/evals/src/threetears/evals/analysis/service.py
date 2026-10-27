@@ -52,7 +52,7 @@ from threetears.evals.analysis.planned_analysis import generate_planned_analysis
 from threetears.evals.analysis.planner import first_plan_request, plan_user_message
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input as build_report_input
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.reporter_bank import case_limits, decidable_reporter_case_bank, read_calibration
 from threetears.evals.analysis.reporter_kind import (
     MEMO_CASE_VERSION,

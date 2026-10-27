@@ -28,7 +28,7 @@ from packages.evals.tests.analyst_support import fixture_inputs, shape_snapshots
 from threetears.evals.analysis.analyst.blocks import block_render
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import DotIntervalChart
 from threetears.evals.analysis.report.figure_keys import resolve

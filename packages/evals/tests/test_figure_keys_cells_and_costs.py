@@ -30,7 +30,7 @@ from packages.evals.tests.analyst_support import KAIRO, budget_inputs, fixture_i
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.cost_unit import per_count
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.analysis.numbers import spell_dollars, spell_multiple, spell_price
+from threetears.evals.kernel.numbers import spell_dollars, spell_multiple, spell_price
 from threetears.evals.analysis.report.figure_keys import (
     MULTIPLE_UNIT,
     cost_basis,

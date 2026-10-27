@@ -42,7 +42,7 @@ from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, 
 from threetears.evals.analysis.analyst.blocks import RenderedBlock, block_catalog, block_render
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import PlanRefusal
-from threetears.evals.analysis.numbers import WHOLE_FROM, format_number
+from threetears.evals.kernel.numbers import WHOLE_FROM, format_number
 from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
