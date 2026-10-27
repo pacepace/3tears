@@ -65,19 +65,32 @@ exported a scope in one call must follow the pages.
 
 ### evals: a run's stored results are read a page at a time, never whole
 
-**Fixed:** three readers still loaded every stored result of a run at once, and a result carries its judge's
+**Fixed:** five readers still loaded every stored result of a run at once, and a result carries its judge's
 reasoning, its kind's payload, its world events, its deliveries and its rescores, so their memory grew with the run:
-a run's summary (`summarize_run`, so `run_get`, `quick`'s summaries and the CLI's), a take-up of a run (`job_resume`,
-`resume_run`, `resume_launch`) together with the offer of one (`resumable_jobs`, which read every resumable run of a
-scope in one call), and an export of one run past `EXPORT_PAGE_RESULTS`. Each now reads its run a page of whole
-cases at a time (`threetears.evals.kernel.run_pages`, new: `RUN_RESULTS_PAGE`, 200 results at the run's `k`;
-`iter_run_results`, `run_case_pages`, `read_case_page`), each page one store read of the run's results whose case is
-one of the page's (`EvalStorage.query_eval_results_of_cases`, new, one `by_doc_type` with a `field_in` on
-`test_case_id`, which every `DocumentStore` already serves: a host adds nothing). A page holds whole cases, in the
-run's case order; one case holding more rows than a page is a page of its own. A page's results are ordered by case,
-`k`, model, when stored and id, so a reader gives one answer at any page size. A page reaches only results whose case
-is one of their run's cases, which every result the engine writes is (the runner runs the run's cases, and a
-witnessed cell names one of them).
+a run's summary (`summarize_run`, so `run_get`, `quick`'s summaries and the CLI's); a take-up of a run (`job_resume`,
+`resume_run`, `resume_launch`) and the offer of one (`resumable_jobs`, which read every resumable run of a scope in
+one call); the launch pricer `history_launch_pricer`, which read every run of the template whole on every launch and
+on every take-up's replay of one; `job_poll` of a finished second judge pass, on every poll; and an export of one
+run past `EXPORT_PAGE_RESULTS`.
+
+**How each reads now: one pass over the run, then reads by id** (`threetears.evals.kernel.run_pages`, new). The run's
+results are found by one read of the run that ships each result's key alone (`ResultKey`, also exported from
+`threetears.evals.kernel`: id, case, `k`, model, when stored), `EvalStorage.query_eval_result_keys_by_run` (new: the same `by_doc_type` a whole read of the run is,
+every other field left out with `exclude`). The keys are ordered by the case's place in the run, then `k`, model,
+when stored and id, and the results are read by id a page at a time, `RUN_RESULTS_PAGE` (200) a page,
+`EvalStorage.load_eval_results` (new: one `get_many`). So a walk of a run of `n` results costs one pass over the run
+plus `n / 200` reads by id, which every store answers from its key; it holds one page of results and `n` keys of a
+few scalars. Every `DocumentStore` already serves both reads: a host adds nothing. Per store: the in-memory store
+passes over its documents once and looks each page up by key; the SQLite store reads the scope's results by its
+`(scope_id, doc_type)` index once, filtering the run as a whole read of it always did, and each page by its
+`(scope_id, id)` key (a projected read now projects each row as it is read, where it held every row's text first); a
+routed store passes both to the store results are kept in; over Discodon's YSQL table the key read is the run's
+containment predicate, which its GIN index serves, projected in the database, and each page is a primary-key read.
+Neither a keyset read (ordered after a cursor, with a limit) nor one streaming read is possible over the port as it
+stands: the port has no range predicate and returns a list, and Discodon's sync engine fetches every row of a
+statement and answers with one JSON reply, so either would be a port method and a host change. A result whose case is none of its run's cases is read too, after every case of
+the run. `iter_run_results`, `run_result_keys`, `run_case_pages` and `read_results` are the walk's parts, and
+`RunResultsStore` the two reads.
 
 - **`summarize_run`** folds each result into its tallies as it is read. Counts, minimums and maximums stream; every
   sum (a measure's or a dimension's mean, a role's dollars, the run's total) is kept exactly and rounded once, as
@@ -88,21 +101,34 @@ witnessed cell names one of them).
   the label statistics (each classification and its case, for an interval clustered by case), the second judges'
   agreement (each pair of scores, for kappa and its interval) and the errors listed. The errors are now in the
   run's case order, then `k`, where they were in the store's order. To stream them, `inter_judge_agreement`,
-  `self_judging_models`, `unconfirmed_model_identities` and `request_settings_readings` each read through a tally
-  (`InterJudgeTally` in `threetears.evals.analysis.agreement`; `SelfJudgingTally`, `ModelIdentityTally` and
-  `RequestSettingsTally` in `threetears.evals.analysis.reporting`, new), with the same answers.
+  `judge_drift`, `self_judging_models`, `unconfirmed_model_identities` and `request_settings_readings` each read
+  through a tally (`InterJudgeTally` in `threetears.evals.analysis.agreement`, `JudgeDriftTally` in
+  `threetears.evals.analysis.judge_drift`; `SelfJudgingTally`, `ModelIdentityTally` and `RequestSettingsTally` in
+  `threetears.evals.analysis.reporting`, new), with the same answers. `job_poll` of a second judge pass reads its
+  agreement and drift through the same two tallies.
 - **A take-up** keeps each stored row as a `StoredCell` (new in `threetears.evals.run`: the row's `CellSummary`, its
   harness fault, its exclusion cause, its superseded spend and its metered calls landed and refused), read page by
   page. **Changed:** `StoredCells.done` is a tuple of `StoredCell`, `StoredCells.replaced` maps a cell to its
   `StoredCell`, and `RunResumption.rows` is a tuple of `StoredCell`, where each held the stored `EvalResult`s.
-  `resumable_jobs` reads each resumable run's rows a page at a time, one run after another, where it read every
-  run's in one call: more store calls, none of them a run's whole volume.
+  `resumable_jobs` walks each resumable run in turn, where it read every run's rows in one call: a pass over each run
+  and a read by id a page, none of them a run's whole volume.
+- **The history pricer** walks each run of the template a page at a time and keeps, of each of the arm's model's
+  results, what the cost estimate reads (`CostObservation`, new in `threetears.evals.analysis.lenses.cost_estimate`:
+  its run, model, cost and cost roles): O(n) small records over the template's history, never its results.
+  `compute_estimate_cost` takes those as well as results. Naming the closest priced run reads each run only until a
+  priced result is met. A take-up's replay of its launch therefore reads no run whole either.
 - **An export of one run past the ceiling**, in a scope's pages or named alone in `export_run_ids`, is paged by its
-  cases, each page whole cases of the run up to the ceiling. The cursor is the same one, carrying the case:
-  `ExportPage` gains `case_ids`, `cases_before`, `cases_after`, `next_after_case_id` (the case the next page starts
-  after, inside `next_after_run_id`) and `named_run_ids` (the run the next call names again). A CSV page's columns
-  are its own, so pages join by column name. **Changed:** the lenses' store protocol (`LensStore`) gains
-  `query_eval_results_of_cases`, which `EvalStorage` has; a host that hands the lenses a store of its own adds it.
+  cases, each page whole cases of the run up to the ceiling (one case alone when it holds more), read by id after one
+  pass over the run's keys. The cursor is the same one, carrying the case: `ExportPage` gains `case_ids`,
+  `cases_before`, `cases_after`, `next_after_case_id` (the case the next page starts after, inside
+  `next_after_run_id`) and `named_run_ids` (the run the next call names again). A CSV page's columns are its own, so
+  pages join by column name. **Changed:** the lenses' store protocol (`LensStore`) gains
+  `query_eval_result_keys_by_run` and `load_eval_results`, which `EvalStorage` has; a host that hands the lenses a
+  store of its own adds them.
+- **Still read whole**, each its own follow-up: comparing two runs (`runs_compare`, `compare_two_runs`,
+  `bisect_runs`, and the pair disclosures' measurement windows), settling a lapsed run that recorded no
+  completeness, the witnessed cells' judge-ceiling check, `results_list` and `list_results`, `delete_run`'s cascade,
+  the campaign and analysis readers, `run_summary` (the lens) and the scope aggregates.
 
 **Changed (MCP):** `scope_export` takes `export_after_case_id`, the previous page's `page.next_after_case_id`, beside
 `export_after_run_id`, and the text of a page inside a run names it (and `export_run_ids` for a named run):

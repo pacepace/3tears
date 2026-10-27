@@ -280,7 +280,8 @@ ExportRunIds = Annotated[
     list[str] | None,
     Field(
         description="Export only these runs, archived ones included since they are named; omitted exports all. "
-        "Never paged: two or more whose results would pass one page's ceiling are refused."
+        "One named run past one page's ceiling is paged by its cases (follow page.next_after_run_id and "
+        "page.next_after_case_id, naming the run again); two or more named runs past it are refused."
     ),
 ]
 ExportAfterRunId = Annotated[

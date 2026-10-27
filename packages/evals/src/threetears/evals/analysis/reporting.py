@@ -39,7 +39,7 @@ same-named subjects into one.
 from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Sequence
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 from pydantic import Field, model_validator
 
@@ -1886,7 +1886,14 @@ def pooled_composite_basis(results: Sequence[EvalResult] | Sequence[ScoreRecord]
     )
 
 
-def pooled_cost_compositions(results: Sequence[EvalResult] | Sequence[ScoreRecord]) -> list[list[str]]:
+class _CostComposed(Protocol):
+    """Anything that names the roles its cost sums: a result, a cost row, a cost observation."""
+
+    @property
+    def cost_roles(self) -> Sequence[str] | None: ...
+
+
+def pooled_cost_compositions(results: Iterable[_CostComposed]) -> list[list[str]]:
     """Say what a pooled cost total is made of.
 
     Every surface that adds ``cost_usd`` across results is adding numbers whose composition
@@ -1898,8 +1905,9 @@ def pooled_cost_compositions(results: Sequence[EvalResult] | Sequence[ScoreRecor
 
     :param results: The results whose ``cost_usd`` the caller pooled, or the cost rows a pivot cell
         pooled (:attr:`ScoreRecord.cost_roles`, which carries the result's composition
-        verbatim). A row carrying no composition — any row but a cost row — contributes none.
-    :ptype results: Sequence[EvalResult] | Sequence[ScoreRecord]
+        verbatim), or the cost observations a pricer kept of them. A row carrying no composition — any row but a
+        cost row — contributes none.
+    :ptype results: Iterable[_CostComposed]
     :return: The distinct compositions, sorted.
     :rtype: list[list[str]]
     """

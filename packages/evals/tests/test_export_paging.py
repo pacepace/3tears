@@ -15,7 +15,7 @@ action:
 - **Two or more named runs past the ceiling are refused**, naming the ceiling, the results they would read and the
   remedy.
 - **A run past the ceiling is paged by its cases**, never read whole, in a scope's pages and named alone: each page
-  reads whole cases of it in one read of those cases, none past the ceiling; the cursor carries the case
+  reads whole cases of it by id after one pass over its keys, none past the ceiling; the cursor carries the case
   (``next_after_case_id``), following it covers every row once, a CSV page's rows join the whole export's by column
   name, and a case cursor without its run, or naming no case of it, is refused.
 - **The action teaches the next call**: its text names ``export_after_run_id`` (and ``export_after_case_id`` and
@@ -52,6 +52,7 @@ from threetears.evals.analysis.reporting import ScoreProjection, project_score_r
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
+from threetears.evals.kernel.run_pages import ResultKey
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.run.reads import list_runs
 from threetears.evals.schema.models import CalibrationRating, EvalResult, EvalRun, EvalTemplate, RunCompleteness
@@ -79,8 +80,10 @@ class FakeCountingStore:
         self.scope_reads: list[int] = []
         #: The rows each by-run read returned, in call order.
         self.run_reads: list[tuple[str, int]] = []
-        #: The rows each read of a run's cases returned, in call order.
-        self.case_reads: list[tuple[str, int]] = []
+        #: The keys each read of a run's result keys returned, in call order: a few scalars a result, never a row.
+        self.key_reads: list[tuple[str, int]] = []
+        #: The rows each read of results by id returned, in call order.
+        self.id_reads: list[int] = []
 
     def query_eval_results(self, scope_id: str, /) -> list[EvalResult]:
         rows = self._inner.query_eval_results(scope_id)
@@ -92,11 +95,14 @@ class FakeCountingStore:
         self.run_reads.append((run_id, len(rows)))
         return rows
 
-    def query_eval_results_of_cases(
-        self, run_id: str, test_case_ids: Sequence[str], scope_id: str, /
-    ) -> list[EvalResult]:
-        rows = self._inner.query_eval_results_of_cases(run_id, test_case_ids, scope_id)
-        self.case_reads.append((run_id, len(rows)))
+    def query_eval_result_keys_by_run(self, run_id: str, scope_id: str, /) -> list[ResultKey]:
+        keys = self._inner.query_eval_result_keys_by_run(run_id, scope_id)
+        self.key_reads.append((run_id, len(keys)))
+        return keys
+
+    def load_eval_results(self, result_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
+        rows = self._inner.load_eval_results(result_ids, scope_id)
+        self.id_reads.append(len(rows))
         return rows
 
     def list_campaigns(self, scope_id: str, /) -> list[EvalCampaign]:
@@ -121,13 +127,11 @@ class FakeCountingStore:
 
     def rows_read(self) -> int:
         """Every result row any read returned."""
-        return (
-            sum(self.scope_reads) + sum(rows for _, rows in self.run_reads) + sum(rows for _, rows in self.case_reads)
-        )
+        return sum(self.scope_reads) + sum(rows for _, rows in self.run_reads) + sum(self.id_reads)
 
     def largest_read(self) -> int:
         """The most result rows one read returned."""
-        return max([0, *self.scope_reads, *(rows for _, rows in [*self.run_reads, *self.case_reads])])
+        return max([0, *self.scope_reads, *(rows for _, rows in self.run_reads), *self.id_reads])
 
 
 def _seed_run(
@@ -347,7 +351,8 @@ class TestPagesCoverEveryRowExactlyOnce:
         ]
         assert [(page.runs_before, page.runs_after) for page in held] == [(0, 2), (1, 1), (1, 1), (2, 0)]
         assert store.run_reads == [(small.id, CASES), (last.id, CASES)], "the big run is never read by run"
-        assert store.case_reads == [(big.id, ceiling), (big.id, 5)]
+        assert store.id_reads == [ceiling, 5], "the big run read by id, a page of its cases at a time"
+        assert store.key_reads == [(big.id, ceiling + 5)] * 2, "after one pass over its keys a page"
         assert store.largest_read() <= ceiling
         rows = Counter(key for page in pages for key in _record_keys(page))
         assert rows == Counter(
@@ -544,13 +549,13 @@ class TestTheCursorInsideARun:
     def test_a_case_with_more_rows_than_a_page_is_a_page_of_its_own(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(reads, "EXPORT_PAGE_RESULTS", 5)
         storage, _ = memory_storage()
-        big = _seed_run(storage, 0, cases=3, k_runs=6)
+        _seed_run(storage, 0, cases=3, k_runs=6)
         store = FakeCountingStore(storage)
 
         pages = _pages(store, storage)
 
         assert [page.page.case_ids for page in pages if page.page] == [["tc-0"], ["tc-1"], ["tc-2"]]
-        assert store.case_reads == [(big.id, 6)] * 3, "a page splits no case"
+        assert store.id_reads == [6] * 3, "a page splits no case"
 
     def test_csv_pages_join_the_whole_exports_rows_by_column_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         storage, _ = memory_storage()

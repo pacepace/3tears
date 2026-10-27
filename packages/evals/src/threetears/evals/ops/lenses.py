@@ -58,6 +58,7 @@ from threetears.evals.analysis.cassette_mode import cassette_mode_disclosure
 from threetears.evals.analysis.lenses.cost_estimate import (
     COST_BAND_SAFETY_MARGIN,
     COST_ESTIMATE_MIN_BASIS,
+    CostObservation,
     compute_estimate_cost,
 )
 from threetears.evals.analysis.significance import format_significance
@@ -94,6 +95,7 @@ from threetears.evals.run.reads import list_runs
 
 from threetears.evals.analysis.lens_text import exclusion_lines
 from threetears.evals.kernel.remedies import FIND_RUN, FIND_TEMPLATE
+from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
 
 
 def _lister(host: EvalHost) -> RunLister:
@@ -1035,10 +1037,17 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
             for run in list_runs(host, quote.scope_id, include_archived=True)
             if run.template_id == template_id and not _launch_differences(run, quote)
         ]
-        results = [result for run in runs for result in host.storage.query_eval_results_by_run(run.id, quote.scope_id)]
+        # Each run read a page at a time, and of each of the arm's model's results only what the estimate reads: a
+        # template's history is every result of every run of it, which no launch, nor a take-up's replay, holds whole.
+        observations = [
+            CostObservation.of(result)
+            for run in runs
+            for result in iter_run_results(host.storage, run, page_results=RUN_RESULTS_PAGE)
+            if result.model == quote.candidate_model
+        ]
         estimate = compute_estimate_cost(
             runs,
-            results,
+            observations,
             models=[quote.candidate_model],
             k_runs=quote.k_runs,
             n_test_cases=quote.case_count,
@@ -1207,7 +1216,9 @@ def _closest_priced_differences(host: EvalHost, quote: ArmQuote, template: EvalT
     for run in list_runs(host, quote.scope_id, include_archived=True):
         if run.template_id != template.id:
             continue
-        if not any(r.cost_usd is not None for r in host.storage.query_eval_results_by_run(run.id, quote.scope_id)):
+        # Read a page at a time, and only until a priced result is met.
+        pages = iter_run_results(host.storage, run, page_results=RUN_RESULTS_PAGE)
+        if not any(result.cost_usd is not None for result in pages):
             continue
         differences = _launch_differences(run, quote)
         if closest is None or len(differences) < len(closest):

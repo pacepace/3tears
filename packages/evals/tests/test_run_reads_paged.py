@@ -1,31 +1,37 @@
 """A run's stored results are never read whole: its summary, a take-up of it and an offer of one read it a page at a time.
 
 A stored result carries its judge's reasoning, its kind's payload and its world events, so a read of every result of
-a large run held the run's whole volume at once. Pinned here through a store that records how many results each read
-of a run hands out:
+a large run held the run's whole volume at once. Each reader now passes over the run once, reading its results' keys
+alone, then reads its results by id a page at a time. Pinned here through a store that records every read of results
+it serves:
 
-- **summarize_run** reads its run a page of whole cases at a time, never more than a page (or one case) in one read,
-  and its summary is byte for byte the one a whole read of the run in one call gives, at one case a page, a few, or
-  more cases than a page holds: on a run much larger than a page, and on the toy host's stored corpus. At the real
-  page size, unpatched, no read passes it.
+- **summarize_run** makes one read of the run's keys and reads its results by id, none past a page, each once, with
+  no read that hands out the run's rows; its summary is byte for byte the one a single page holding the whole run
+  gives, at one result a page, a few, or more: on a run much larger than a page, and on the toy host's stored corpus.
+  At the real page size, unpatched, no read passes it.
 - **A take-up** plans from pages: what it holds of each stored row (done or run again) and every row its cap counts
-  are the same at any page size, no read of the run hands out more than a page, and a take-up paged one case at a time
-  ends with every cell stored once, completed.
-- **resumable_jobs** offers a large run read a page at a time, as the whole read offers it.
+  are the same at any page size. Every read it makes, its replayed launch's history pricer included, is a read of
+  keys or of results by id, a page at a time; none hands out a run's rows, nor the scope's. A take-up paged one
+  result at a time ends with every cell stored once, completed.
+- **resumable_jobs** offers a large run read a page at a time, as a single page holding it offers it.
+- **Both stores the engine ships** (in memory, SQLite) serve the two reads: the keys alone, the results by id.
 
 Mutations that turn this file red (each run against a saved copy and restored from it):
 
 - ``summary.summarize_run``: the run read whole (``query_eval_results_by_run``); the page size ignored.
 - ``summary._ExactSum``: a plain running ``+=`` (the summary moves with the page size).
 - ``resume._stored_rows``: the run read whole; a row run again kept as done.
-- ``run_pages.run_case_pages``: one page of every case; ``per_page`` left at the page size whatever ``k``.
-- ``run_pages.read_case_page``: the page left in the store's order.
+- ``lenses.history_launch_pricer``: a run of the template's history read whole.
+- ``run_pages.iter_run_results``: a page past ``page_results``; the keys left in the store's order.
+- ``storage.query_eval_result_keys_by_run``: a field kept past the key.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import random
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -34,13 +40,14 @@ from threetears.evals.analysis import summary
 from threetears.evals.analysis.summary import summarize_run
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE
-from threetears.evals.ops import OpsHost, run_job_id
+from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, ResultKey
+from threetears.evals.ops import OpsHost, history_launch_pricer, lenses, run_job_id
 from threetears.evals.run import resumable_jobs, resume_run
 from threetears.evals.run import resume
 from threetears.evals.run.resume import take_up_arms
 from threetears.evals.schema import EvalResult, EvalRun
 from threetears.evals.schema.models import RubricScore
+from threetears.evals.storage import InMemoryDocumentStore, SqliteDocumentStore
 from packages.evals.tests.factories import make_eval_result, make_eval_run, make_test_case
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.lease_support import ClockedStore, held_extraction, launched_arm, until
@@ -57,13 +64,15 @@ DONE_BEFORE = 3
 
 
 class BatchRecordingStore(ClockedStore):
-    """The engine's in-memory store, recording how many results each read naming a run hands out."""
+    """The engine's in-memory store, recording every read of results it serves and how many it hands out."""
 
     def __init__(self) -> None:
         super().__init__()
-        #: ``(run ids the read named, whether it named cases too, results it handed out)``, one per read of results that
-        #: names a run.
-        self.run_reads: list[tuple[tuple[str, ...], bool, int]] = []
+        #: ``(run ids the read named, whether every field but a key was left out, results handed out)``, one per
+        #: typed read of results.
+        self.typed_reads: list[tuple[tuple[str, ...], bool, int]] = []
+        #: How many results each read by id handed out, in call order.
+        self.id_reads: list[int] = []
 
     def by_doc_type(
         self,
@@ -87,21 +96,40 @@ class BatchRecordingStore(ClockedStore):
             field_in=field_in,
             **field_eq,
         )
-        named = (
-            *([field_eq["eval_run_id"]] if "eval_run_id" in field_eq else []),
-            *(field_in or {}).get("eval_run_id", ()),
-        )
-        if doc_type == "eval_result" and named:
-            self.run_reads.append((tuple(named), "test_case_id" in (field_in or {}), len(rows)))
+        if doc_type == "eval_result":
+            named = (
+                *([field_eq["eval_run_id"]] if "eval_run_id" in field_eq else []),
+                *(field_in or {}).get("eval_run_id", ()),
+            )
+            keys_only = bool(rows) and all(set(row) <= set(ResultKey._fields) for row in rows)
+            self.typed_reads.append((tuple(named), keys_only, len(rows)))
         return rows
 
-    def batches_of(self, run_id: str) -> list[int]:
-        """How many results each read naming ``run_id`` handed out, in call order."""
-        return [rows for named, _, rows in self.run_reads if run_id in named]
+    def get_many(
+        self,
+        doc_type: str,
+        doc_ids: Sequence[str],
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        keep: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        rows = super().get_many(doc_type, doc_ids, scope_id, exclude=exclude, keep=keep)
+        if doc_type == "eval_result":
+            self.id_reads.append(len(rows))
+        return rows
 
-    def page_batches_of(self, run_id: str) -> list[int]:
-        """How many results each read of some of ``run_id``'s cases handed out, in call order."""
-        return [rows for named, by_case, rows in self.run_reads if run_id in named and by_case]
+    def clear(self) -> None:
+        self.typed_reads.clear()
+        self.id_reads.clear()
+
+    def key_reads_of(self, run_id: str) -> list[int]:
+        """How many keys each read of ``run_id``'s result keys handed out."""
+        return [rows for named, keys_only, rows in self.typed_reads if run_id in named and keys_only]
+
+    def row_reads(self) -> list[int]:
+        """How many whole results each typed read handed out: every one but a read of keys alone."""
+        return [rows for _, keys_only, rows in self.typed_reads if not keys_only and rows]
 
 
 def _results(run: EvalRun, *, cases: int, k: int) -> list[EvalResult]:
@@ -167,31 +195,35 @@ class TestASummaryReadsItsRunAPageAtATime:
         store, host = _host()
         run = _large_run(host.storage)
         monkeypatch.setattr(summary, "RUN_RESULTS_PAGE", CASES * K)
+        store.clear()
         whole = summarize_run(host, run.id, SCOPE)
-        assert store.batches_of(run.id) == [CASES * K], "one read of the whole run"
+        assert store.id_reads == [CASES * K], "the whole run in one read"
         assert whole.n_results == CASES * K and whole.errors and whole.strata, "the fixture exercises the summary"
 
         for page in (1, K, 4 * K, 7):
             monkeypatch.setattr(summary, "RUN_RESULTS_PAGE", page)
-            store.run_reads.clear()
+            store.clear()
 
             paged = summarize_run(host, run.id, SCOPE)
 
             assert paged.model_dump_json() == whole.model_dump_json(), f"at {page} a page"
-            assert max(store.batches_of(run.id)) <= max(page, K), "no read past a page, or one case"
-            assert sum(store.batches_of(run.id)) == CASES * K, "each result read once"
-            assert len(store.batches_of(run.id)) == -(-CASES // max(1, page // K)), "a read per page of cases"
+            assert store.key_reads_of(run.id) == [CASES * K], "one pass over the run, its keys alone"
+            assert store.row_reads() == [], "no read of the run hands out its rows"
+            assert max(store.id_reads) <= page and sum(store.id_reads) == CASES * K, "a page at a time, each once"
+            assert len(store.id_reads) == -(-CASES * K // page)
 
     def test_at_the_real_page_no_read_hands_out_more(self) -> None:
         store, host = _host()
         cases = RUN_RESULTS_PAGE + RUN_RESULTS_PAGE // 2
         run = _large_run(host.storage, cases=cases, k=2)
 
+        store.clear()
+
         summarized = summarize_run(host, run.id, SCOPE)
 
         assert summarized.n_results == cases * 2
-        assert max(store.batches_of(run.id)) <= RUN_RESULTS_PAGE
-        assert len(store.batches_of(run.id)) == 3
+        assert store.row_reads() == [] and store.key_reads_of(run.id) == [cases * 2]
+        assert store.id_reads == [RUN_RESULTS_PAGE] * 3
 
     def test_the_toy_hosts_stored_runs_summarise_alike_at_one_case_a_page(
         self, monkeypatch: pytest.MonkeyPatch
@@ -204,13 +236,13 @@ class TestASummaryReadsItsRunAPageAtATime:
             monkeypatch.setattr(summary, "RUN_RESULTS_PAGE", 10_000)
             whole = summarize_run(host, run.id, TOYHOST_SCOPE).model_dump_json()
             monkeypatch.setattr(summary, "RUN_RESULTS_PAGE", 1)
-            store.run_reads.clear()
+            store.clear()
 
             paged = summarize_run(host, run.id, TOYHOST_SCOPE).model_dump_json()
 
             assert paged == whole
-            assert len(store.batches_of(run.id)) == len(dict.fromkeys(run.test_case_ids)), "one read per case"
-            assert max(store.batches_of(run.id)) <= run.k_runs
+            assert store.row_reads() == [] and len(store.key_reads_of(run.id)) == 1
+            assert set(store.id_reads) == {1}, "one result a read"
 
 
 async def _cancelled(monkeypatch: pytest.MonkeyPatch, store: BatchRecordingStore) -> tuple[OpsHost, str]:
@@ -235,24 +267,29 @@ class TestATakeUpPlansFromPages:
     ) -> None:
         store = BatchRecordingStore()
         holder, run_id = await _cancelled(monkeypatch, store)
+        # Priced from the template's history, as Discodon's launches are: the replayed launch reads it, this run among it.
+        launch = dataclasses.replace(holder.launch, launch_pricer=history_launch_pricer(holder.eval_host))
         monkeypatch.setattr(resume, "RUN_RESULTS_PAGE", 10_000)
-        whole, refused = await take_up_arms(holder.launch, [("arm", run_id)], TOYHOST_SCOPE)
+        whole, refused = await take_up_arms(launch, [("arm", run_id)], TOYHOST_SCOPE)
         assert not refused
 
+        # Every walk the take-up makes one result a page: its own read of the run, and the replayed launch's pricer
+        # reading the template's history, this run among it.
         monkeypatch.setattr(resume, "RUN_RESULTS_PAGE", 1)
-        store.run_reads.clear()
-        paged, refused = await take_up_arms(holder.launch, [("arm", run_id)], TOYHOST_SCOPE)
+        monkeypatch.setattr(lenses, "RUN_RESULTS_PAGE", 1)
+        stored = off_loop(holder.eval_host.storage.query_eval_results_by_run, run_id, TOYHOST_SCOPE)
+        store.clear()
+        paged, refused = await take_up_arms(launch, [("arm", run_id)], TOYHOST_SCOPE)
 
         assert not refused
         assert paged["arm"].stored == whole["arm"].stored
         assert paged["arm"].rows == whole["arm"].rows
         assert paged["arm"].stored.done and paged["arm"].stored.replaced, "done cells and cells run again alike"
-        stored = off_loop(holder.eval_host.storage.query_eval_results_by_run, run_id, TOYHOST_SCOPE)
         assert len(paged["arm"].rows) == len(stored)
-        # The replayed launch's history pricer reads each earlier run of the template by run, this one too: the take-up's
-        # own read of the run is its pages.
-        pages = store.page_batches_of(run_id)
-        assert len(pages) == 3 and max(pages) <= TAKE_UP_K and sum(pages) == len(stored), "a case a page"
+        assert store.row_reads() == [], "no read the take-up makes hands out a run's rows by type, nor the scope's"
+        assert len(store.key_reads_of(run_id)) == 2, "its keys read once by the take-up, once by the pricer"
+        assert store.id_reads and set(store.id_reads) == {1}, "every result it reads, one at a time"
+        assert store.id_reads.count(1) >= 2 * len(stored)
 
     async def test_a_take_up_paged_one_case_at_a_time_ends_with_every_cell_once(
         self, monkeypatch: pytest.MonkeyPatch
@@ -291,10 +328,32 @@ class TestAnOfferReadsItsRunAPageAtATime:
         (whole,) = resumable_jobs(storage, [SCOPE]).jobs
 
         monkeypatch.setattr(resume, "RUN_RESULTS_PAGE", 2 * K)
-        store.run_reads.clear()
+        store.clear()
         (paged,) = resumable_jobs(storage, [SCOPE]).jobs
 
         assert paged == whole
         assert paged.cells_done == CASES * K - len(range(0, CASES * K, 4))
-        assert max(store.batches_of(run.id)) <= 2 * K
-        assert sum(store.batches_of(run.id)) == CASES * K
+        assert store.row_reads() == [] and store.key_reads_of(run.id) == [CASES * K]
+        assert max(store.id_reads) <= 2 * K and sum(store.id_reads) == CASES * K
+
+
+class TestEveryShippedStoreServesTheTwoReads:
+    @pytest.mark.parametrize("kind", ["memory", "sqlite"])
+    def test_the_keys_alone_then_the_results_by_id_summarise_as_one_read(
+        self, kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = InMemoryDocumentStore() if kind == "memory" else SqliteDocumentStore(tmp_path / "evals.sqlite")
+        host = toyhost_host(storage=EvalStorage(store))
+        run = _large_run(host.storage, cases=12)
+
+        keys = host.storage.query_eval_result_keys_by_run(run.id, SCOPE)
+
+        assert sorted(key.id for key in keys) == sorted(
+            f"{run.id}-{case}-{k}" for case in range(12) for k in range(1, K + 1)
+        )
+        assert {key.k_iteration for key in keys} == set(range(1, K + 1)) and all(key.scored_at for key in keys)
+        assert len(host.storage.load_eval_results([key.id for key in keys[:5]], SCOPE)) == 5
+        monkeypatch.setattr(summary, "RUN_RESULTS_PAGE", 12 * K)
+        whole = summarize_run(host, run.id, SCOPE).model_dump_json()
+        monkeypatch.setattr(summary, "RUN_RESULTS_PAGE", 5)
+        assert summarize_run(host, run.id, SCOPE).model_dump_json() == whole

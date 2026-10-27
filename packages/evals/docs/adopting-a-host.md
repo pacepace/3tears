@@ -737,11 +737,14 @@ scope's pages or named alone, is exported in pages of whole cases of it, the cur
 (`page.next_after_case_id`). `pivot`, `frontier`, `history` and the budget lenses still read every result in the
 scope: their answer is an aggregate, which a page cannot give.
 
-**A run is read a page at a time.** A run's summary (`summarize_run`, `run_get`), a take-up of it (`job_resume`) and
-the offer of one (`resumable_jobs`) read its results a page of whole cases at a time, `RUN_RESULTS_PAGE` (200) at
-the run's `k`, so none holds a large run's results whole. Each page is one `by_doc_type` read of the run's results
-whose `test_case_id` is one of the page's (`field_in`), which your store already serves: nothing to add. A page read
-reaches only results whose case is one of their run's cases, which every result the engine writes is.
+**A run is read a page at a time.** A run's summary (`summarize_run`, `run_get`), a take-up of it (`job_resume`, the
+history pricer its replayed launch prices with included), the offer of one (`resumable_jobs`) and a second judge
+pass's poll read a run in one pass and then by id: one `by_doc_type` of the run's results with every field but each
+result's key left out (`exclude`), then one `get_many` per `RUN_RESULTS_PAGE` (200) results. Your store already serves
+both: nothing to add. What it costs your database is the pass a whole read of the run always made, now projected, plus
+`n / 200` reads by key; serve `exclude` in the database, as Discodon's store does, and the pass ships a few scalars a
+result. A store that applies `exclude` after fetching should project each row as it reads it, or the pass holds every
+row's text at once. A few readers still read a run whole; the CHANGELOG lists them.
 
 ## Stored data: what is kept
 

@@ -537,6 +537,7 @@
 "threetears.evals.kernel.ResolvedControl": "provisional",
 "threetears.evals.kernel.ResolvedUsage": "provisional",
 "threetears.evals.kernel.ResultCondition": "provisional",
+"threetears.evals.kernel.ResultKey": "provisional",
 "threetears.evals.kernel.ResultOutcome": "provisional",
 "threetears.evals.kernel.ResultStore": "host-contract",
 "threetears.evals.kernel.RoleUsageLedger": "stable",

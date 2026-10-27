@@ -90,7 +90,7 @@ from threetears.evals.kernel.scoring import (
 from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN
-from threetears.evals.kernel.run_pages import CaseResultsStore, read_case_page, run_case_pages
+from threetears.evals.kernel.run_pages import RunResultsStore, read_results, run_case_pages, run_result_keys
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -195,8 +195,9 @@ def _observe_read(
     )
 
 
-class LensStore(CaseResultsStore, Protocol):
-    """The storage reads the lenses make — results by scope, by run and by a run's cases, campaigns, and one whole run.
+class LensStore(RunResultsStore, Protocol):
+    """The storage reads the lenses make — results by scope, by run and a run's a page at a time, campaigns, and one
+    whole run.
 
     A scope's runs are not listed through it: they arrive through ``list_runs`` and the caller's
     listed-run loader, which carry the run package's listing rules. Structural, so a host's own storage satisfies it by
@@ -865,8 +866,8 @@ def export_results(
     of every run in the scope, not a count. Its exclusions count only what its reads returned.
 
     **A run larger than the ceiling is paged by its cases**, never read whole: its pages hold whole cases of it, in the
-    run's order, as many as the ceiling holds at the rows a case is estimated to hold (its ``k``), each read as one
-    read of those cases' results (:func:`~threetears.evals.kernel.run_pages.run_case_pages`). The cursor is the same
+    run's order, as many as the ceiling holds (one alone when it holds more), each read by id after one read of the
+    run's result keys (:mod:`~threetears.evals.kernel.run_pages`). The cursor is the same
     one, carrying the case: ``page.next_after_case_id`` beside ``page.next_after_run_id`` while the run has cases left,
     and the call names both (``after_case_id``). So is one named run larger than the ceiling, its pages naming it
     again (``page.named_run_ids``). A CSV page's columns are its own, so pages join by column name.
@@ -1144,7 +1145,7 @@ def _export_run_page(
     named: bool,
 ) -> ScoreExport:
     """One page of an export inside one run: whole cases of it after ``after_case_id``, in the run's order, up to the
-    ceiling (one case alone when it holds more), read as one read of those cases' results.
+    ceiling (one case alone when it holds more), read by id after one read of the run's result keys.
 
     :param runs_before: Runs of the narrowed scope the pages before this run held; 0 for a named run.
     :ptype runs_before: int
@@ -1155,8 +1156,9 @@ def _export_run_page(
     :ptype named: bool
     :raises ValidationFailedError: ``after_case_id`` is no case of the run.
     """
+    keys = run_result_keys(storage, run)
     try:
-        pages = run_case_pages(run, page_results=EXPORT_PAGE_RESULTS, after_case_id=after_case_id)
+        pages = run_case_pages(keys, page_results=EXPORT_PAGE_RESULTS, after_case_id=after_case_id)
     except ValueError:
         raise ValidationFailedError(
             f"case {after_case_id!r} is not one of run {run.id!r}'s cases, so no export page starts after it",
@@ -1164,8 +1166,9 @@ def _export_run_page(
             remedy="read scope_export again from the run's first page, naming the run alone to start after the run "
             "before it, or no run at all",
         ) from None
-    case_ids = list(pages[0]) if pages else []
-    results = read_case_page(storage, run, case_ids)
+    held = pages[0] if pages else []
+    case_ids = list(dict.fromkeys(key.test_case_id for key in held))
+    results = read_results(storage, scope_id, held)
     archived_run_ids = {each.id for each in all_runs if each.archived}
     projection = project_score_records(
         [run],
@@ -1175,7 +1178,7 @@ def _export_run_page(
         profile=profile,
     )
     _observe_read("export_results", scope_id, started, len(all_runs), len(results), len(projection.records))
-    cases = list(dict.fromkeys(run.test_case_ids))
+    cases = list(dict.fromkeys(key.test_case_id for key in keys))
     cases_before = cases.index(case_ids[0]) if case_ids else len(cases)
     more_in_run = len(pages) > 1
     return export_projection(
