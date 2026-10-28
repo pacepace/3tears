@@ -446,3 +446,13 @@ class TestAResizeKeepsTheIndexOptions:
         store = _FakeCatalogueStore(_YB_INDEXDEF + " WHERE (body IS NOT NULL)", ["m=16"])
         await resize_embedding_columns(store, embedding_columns(_SCHEMA), 6)
         assert _created(store)[0].endswith("(embedding vector_cosine_ops) WITH (m=16) WHERE (body IS NOT NULL)")
+
+
+def test_a_declared_desc_column_is_recreated_descending() -> None:
+    """an index rebuilt from its declaration keeps a ``desc`` column descending."""
+    from threetears.core.data.embedding_width import _declared_index_sql
+
+    index = Index("ix_t_recent", "agent_id", "date_created", desc="date_created")
+    assert _declared_index_sql("public.t", index) == (
+        'CREATE INDEX IF NOT EXISTS "ix_t_recent" ON public.t ("agent_id", "date_created" DESC)'
+    )

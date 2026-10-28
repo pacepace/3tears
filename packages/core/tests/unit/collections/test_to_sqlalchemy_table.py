@@ -38,10 +38,12 @@ import sys
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
     BOOL_TYPE,
     BYTES_TYPE,
+    DATETIMETZ_TYPE,
     ENUM_TYPE,
     INT_TYPE,
     NUMERIC_TYPE,
@@ -786,3 +788,95 @@ def test_unique_constraint_def_rejects_name_collision_with_index() -> None:
             indexes=(Index("dup_name", "b"),),
             unique_constraints=(UniqueConstraint("dup_name", "b"),),
         )
+
+
+# ---------------------------------------------------------------------------
+# descending index columns: the declaration says what the migration's
+# ``<column> DESC`` says, so Alembic auto-gen sees no index diff
+# ---------------------------------------------------------------------------
+
+
+def _desc_schema(desc: tuple[str, ...] | str = ("date_created",), *columns: str) -> TableSchema:
+    """a table whose history index covers ``columns`` (default agent_id, date_created)."""
+    return TableSchema(
+        name="t",
+        primary_key="a",
+        columns=[
+            Column("a", UUID_TYPE),
+            Column("agent_id", UUID_TYPE),
+            Column("date_created", DATETIMETZ_TYPE),
+        ],
+        indexes=(Index("ix_t_history", *(columns or ("agent_id", "date_created")), desc=desc),),
+    )
+
+
+def test_to_sqla_desc_column_emits_descending_index() -> None:
+    """a ``desc`` column is emitted as ``column.desc()``: the compiled
+    ``CREATE INDEX`` equals the migration's ``(agent_id, date_created DESC)``.
+    """
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    t = _desc_schema().to_sqlalchemy_table(sa.MetaData())
+    (idx,) = t.indexes
+    compiled = str(CreateIndex(idx).compile(dialect=postgresql.dialect()))
+    assert compiled == "CREATE INDEX ix_t_history ON t (agent_id, date_created DESC)"
+
+
+def test_to_sqla_index_without_desc_stays_ascending() -> None:
+    """an index that names no ``desc`` column compiles with no ``DESC``."""
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    t = _desc_schema(()).to_sqlalchemy_table(sa.MetaData())
+    (idx,) = t.indexes
+    compiled = str(CreateIndex(idx).compile(dialect=postgresql.dialect()))
+    assert compiled == "CREATE INDEX ix_t_history ON t (agent_id, date_created)"
+
+
+def test_index_desc_accepts_a_bare_string_and_a_sequence() -> None:
+    """``desc="x"`` and ``desc=("x",)`` store the same tuple."""
+    assert Index("i", "a", "b", desc="b").desc == ("b",)
+    assert Index("i", "a", "b", desc=["a", "b"]).desc == ("a", "b")
+
+
+def test_index_def_rejects_desc_column_not_covered() -> None:
+    """a ``desc`` name the index does not cover is refused at declaration."""
+    with pytest.raises(ValueError, match="desc names"):
+        Index("i", "a", desc="b")
+
+
+def test_parity_helper_catches_index_direction_regression() -> None:
+    """two tables that differ only in a column's sort direction are not
+    equivalent -- the drift metallm's schema guard caught on
+    ``idx_identity_variant_history``.
+    """
+    with pytest.raises(AssertionError, match="index-signature"):
+        assert_tables_equivalent(
+            _desc_schema().to_sqlalchemy_table(sa.MetaData()),
+            _desc_schema(()).to_sqlalchemy_table(sa.MetaData()),
+        )
+
+
+def test_parity_helper_catches_index_column_order_regression() -> None:
+    """``(agent_id, date_created)`` is not ``(date_created, agent_id)``."""
+    with pytest.raises(AssertionError, match="index-signature"):
+        assert_tables_equivalent(
+            _desc_schema((), "agent_id", "date_created").to_sqlalchemy_table(sa.MetaData()),
+            _desc_schema((), "date_created", "agent_id").to_sqlalchemy_table(sa.MetaData()),
+        )
+
+
+def test_parity_helper_reads_a_textual_desc_reference_as_descending() -> None:
+    """a hand-written reference that mirrors the DDL text,
+    ``text("date_created DESC")``, equals the emitted ``column.desc()``.
+    """
+    reference = sa.Table(
+        "t",
+        sa.MetaData(),
+        sa.Column("a", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        sa.Column("agent_id", PgUUID(as_uuid=True), nullable=False),
+        sa.Column("date_created", sa.DateTime(timezone=True), nullable=False),
+        sa.Index("ix_t_history", "agent_id", sa.text("date_created DESC")),
+    )
+    assert_tables_equivalent(reference, _desc_schema().to_sqlalchemy_table(sa.MetaData()))

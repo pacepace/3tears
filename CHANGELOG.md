@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: an index declaration can say a column sorts descending
+
+**Added:** `Index(..., desc="date_created")` (a name or a sequence; stored as `IndexDef.desc`, each name
+one of the index's columns). `TableSchema.to_sqlalchemy_table` emits it as `column.desc()`, so the
+declared index equals a migration's `(..., date_created DESC)` and Alembic auto-gen reports no
+remove/add pair for it; `embedding_width`'s rebuild from a declaration keeps the `DESC` too.
+**Fixed:** `idx_identity_variant_history` (agent-identity) and `idx_intentions_open_ranked`
+(agent-intention) now declare the `DESC` their migrations create; metallm's schema drift guard caught the
+identity one. **Changed:** `threetears.core.testing.sqla_parity.index_signature` compares an index's
+columns in order and with direction (it compared an unordered set of names, so neither drift could fail
+parity); a textual reference element such as `text("date_created DESC")` reads as that column descending.
+
 ### scheduled-jobs: the undo of a fire cut off on close is a public function
 
 **Added:** `threetears.scheduled_jobs.bring_back_cut_off_fire(schedule_store, trigger, fire_id)`, the
