@@ -154,24 +154,7 @@ def campaign_report_writer(caller: Caller, *, prefix: str = DEFAULT_PREFIX) -> R
     :rtype: ReportWriter
     """
 
-    async def write(
-        host: OpsHost,
-        *,
-        model: TurnModel,
-        budget: ReportBudget,
-        campaign_id: str,
-        limits: WriterLimits,
-        tally: Tally,
-    ) -> ReportWritten:
-        return await write_report(
-            host,
-            caller,
-            model=model,
-            budget=budget,
-            campaign_id=campaign_id,
-            limits=limits,
-            prefix=prefix,
-            tally=tally,
-        )
+    async def write(host: OpsHost, **arguments: Any) -> ReportWritten:  # Any: the job's keywords (ReportWriter)
+        return await write_report(host, caller, prefix=prefix, **arguments)
 
     return write

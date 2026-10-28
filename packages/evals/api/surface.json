@@ -7396,6 +7396,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.ops.AnalystLimits": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.ops.ArmEstimate": {
       "kind": "model",
       "signature": "",
@@ -7528,6 +7533,11 @@
     },
     "threetears.evals.ops.dollars_text": {
       "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.ops.EditorLimits": {
+      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },
@@ -7956,6 +7966,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.ops.ReportWriter": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.ops.result_get": {
       "kind": "function",
       "signature": "",
@@ -8133,6 +8148,11 @@
     },
     "threetears.evals.ops.SecondJudgeRead": {
       "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.ops.SessionLimits": {
+      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },

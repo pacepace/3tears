@@ -408,8 +408,10 @@ def _served(tool: MountedTool) -> list[str]:
 #: What the ``evals`` tool and the editor's cut of the analyst tool served before ``report_check``, as digested by
 #: :func:`_digest` over :func:`_served`. The ``evals`` digest moved once since, at the develop merge that brought in the
 #: read bounds (#1000: narrowed-read disclosures in pivot, history and frontier, and an export paged inside a run), and
-#: again when a run's summary gained ``cap_checked_on_estimates`` (W4 PRICE), the one field its help page now lists.
-_EVALS_BYTES = "7dcd182b6b97e0353850d4aa5eb64a4665fc4deb9d2c7352965a2e1114a162ae"
+#: again when a run's summary gained ``cap_checked_on_estimates`` (W4 PRICE), the one field its help page now lists,
+#: and again when ``analysis_generate`` moved to the report writer (W4 GEN): its summary and detail, and
+#: ``analysis_estimate``'s, describe the report budget, and the estimate gains ``bound`` and ``unchecked``.
+_EVALS_BYTES = "926f69e0608b7b0a533a2ad4476a5ec99906b5c20ab7888d4d5f56d9be75e91d"
 _EDITOR_BYTES = "2a1e4201091bdd3a95e99774a668fa5c60cb22ca6674a73d1a1bc62d71351c27"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's

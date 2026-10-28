@@ -675,6 +675,8 @@ class EvalReportSession(EvalDocumentModel):
 #: the invariants and the editor's facts read its prose through report_doc_prose. The store reads and writes the stored
 #: report and its sessions, and the writing loop mints the report's id before its sessions are named by it.
 __all__ = [
+    "Claim",
+    "ConfidenceForm",
     "DecisionSlotWord",
     "DocCaveat",
     "EvalReportDoc",

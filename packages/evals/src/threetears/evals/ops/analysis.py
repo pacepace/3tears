@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import math
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Final, Literal, NamedTuple, Protocol, cast
 
@@ -889,8 +889,23 @@ class ReportWriter(Protocol):
 
     :func:`~threetears.evals.actions.report_writing.campaign_report_writer` is the one a host's actions hand it:
     ``write_report`` on the campaign, which it freezes first, every tool call of both sessions run as the caller who
-    started the generation, and the stored document naming them.
+    started the generation, and the stored document naming them. The job calls it with the host and these keywords:
+    ``model`` (the ``analyst`` client, as a turn model), ``budget`` (the report's budget), ``campaign_id``, ``limits``
+    (the host's ``AnalysisGeneration.limits``, unchanged) and ``tally`` (which the job reads however the writing
+    ends); it returns what ``write_report`` returns, and raises what it raises (``ReportNotStored`` when the store
+    refused the document).
+
+    Its call is declared opaque on purpose: a host never builds one or reads what it returns (the action hands the
+    job its own), so none of the report writer's types is part of the surface ``analysis_generate`` names.
     """
+
+    def __call__(self, host: OpsHost, **arguments: Any) -> Awaitable[Any]:  # Any: the writer's keywords and result
+        """Write the campaign's report (the class docstring says with what)."""
+        ...
+
+
+class _Writer(Protocol):
+    """:class:`ReportWriter`'s call, as the job makes it."""
 
     async def __call__(
         self,
@@ -901,26 +916,7 @@ class ReportWriter(Protocol):
         campaign_id: str,
         limits: WriterLimits,
         tally: Tally,
-    ) -> ReportWritten:
-        """Freeze the campaign's evidence and write its report, storing what the loop's ending stores.
-
-        :param host: The host the generation runs on.
-        :ptype host: OpsHost
-        :param model: The ``analyst`` client, as a turn model.
-        :ptype model: TurnModel
-        :param budget: The report's budget, which admits every turn.
-        :ptype budget: ReportBudget
-        :param campaign_id: The campaign.
-        :ptype campaign_id: str
-        :param limits: What the writing loop is held to: the host's ``AnalysisGeneration.limits``, unchanged.
-        :ptype limits: WriterLimits
-        :param tally: The tally every turn is counted in, which the job reads however the writing ends.
-        :ptype tally: Tally
-        :return: How it ended, and the stored document when its ending stores one.
-        :rtype: ReportWritten
-        :raises ReportNotStored: The loop ended with a document to store and the store refused it.
-        """
-        ...
+    ) -> ReportWritten: ...
 
 
 def _report_budget_of(generation: AnalysisGeneration) -> Callable[[], ReportBudget]:
@@ -942,8 +938,8 @@ def _turn_model(client: BoundCompletionClient) -> TurnModel:
             f"turn model: it has no {' and no '.join(missing)}, so the report writer cannot run on it; nothing was "
             "frozen, sent or spent",
             remedy=(
-                "return a turn model for the analyst role (threetears.evals.providers.Model is one); a wrapper around "
-                "one forwards turn_session and turn_pricing_refusal, and wraps the ToolTurnClient turn_session returns"
+                "return a turn model for the analyst role (providers.Model is one); a wrapper around one forwards its "
+                "'turn_session' and 'turn_pricing_refusal' methods, and wraps the session client 'turn_session' returns"
             ),
         )
     return cast("TurnModel", client)
@@ -1435,7 +1431,8 @@ async def _write_doc_analysis(
     try:
         async with prepared.client, deadline:
             try:
-                written = await writer(
+                # The public protocol is opaque (its docstring says why); the job calls it as :class:`_Writer`.
+                written = await cast("_Writer", writer)(
                     host,
                     model=prepared.model,
                     budget=prepared.budget,

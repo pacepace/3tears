@@ -121,13 +121,17 @@ class OpsFixture:
     """The operations host, the corpus campaign it can analyse, and the writers it built."""
 
     def __init__(
-        self, host: OpsHost, campaign: EvalCampaign, writers: list[MemoWriter], analysts: list[FakeAnalystClient]
+        self,
+        host: OpsHost,
+        campaign: EvalCampaign,
+        writers: list[MemoWriter],
+        analysts: list[FakeAnalystClient] | None = None,
     ) -> None:
-        """Hold the pieces a test reads."""
+        """Hold the pieces a test reads: a fixture another file builds over its own host has no analyst clients."""
         self.host = host
         self.campaign = campaign
         self.writers = writers
-        self.analysts = analysts
+        self.analysts = analysts if analysts is not None else []
 
 
 def ops_fixture(

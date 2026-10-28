@@ -8,11 +8,53 @@ or ``analysis``; ``gen`` and ``analysis`` export them from their roots as before
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from threetears.evals.ops.report_writer.loop import WriterLimits
     from threetears.evals.schema.completion import RequestCeiling
+
+
+# The writing loop's limits as the writer's ceiling reads them: ``ops.WriterLimits`` (``ops/report_writer/loop.py``)
+# has this shape. Declared here by shape, never imported, because ``kernel`` sits below ``ops`` and may not name it.
+
+
+class _SessionCaps(Protocol):
+    @property
+    def max_tokens(self) -> int: ...
+
+
+class _AnalystCaps(Protocol):
+    @property
+    def draft_calls(self) -> int: ...
+
+    @property
+    def revision_calls(self) -> int: ...
+
+    @property
+    def bounces(self) -> int: ...
+
+    @property
+    def session(self) -> _SessionCaps: ...
+
+
+class _EditorCaps(Protocol):
+    @property
+    def calls(self) -> int: ...
+
+    @property
+    def session(self) -> _SessionCaps: ...
+
+
+class _WriterCaps(Protocol):
+    @property
+    def analyst(self) -> _AnalystCaps: ...
+
+    @property
+    def editor(self) -> _EditorCaps: ...
+
+    @property
+    def revisions(self) -> int: ...
+
 
 #: Output-token ceiling for the capability/boundary proposer. It drafts a full
 #: rubric (template + several dims + variation axes + new-dim suggestions) in one
@@ -58,7 +100,7 @@ def generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int
 EDITOR_ANSWERS = 2
 
 
-def writer_turns(limits: WriterLimits) -> int:
+def writer_turns(limits: _WriterCaps) -> int:
     """The most turns one report can send under ``limits``, counted from how the writing loop sends them.
 
     A round's tool calls are its call budget: each turn that calls the tool spends at least one, and a turn after the
@@ -80,16 +122,16 @@ def writer_turns(limits: WriterLimits) -> int:
     return _analyst_turns(limits) + _editor_turns(limits)
 
 
-def _analyst_turns(limits: WriterLimits) -> int:
+def _analyst_turns(limits: _WriterCaps) -> int:
     analyst, closing = limits.analyst, 1 + limits.analyst.bounces
     return analyst.draft_calls + closing + limits.revisions * (analyst.revision_calls + closing)
 
 
-def _editor_turns(limits: WriterLimits) -> int:
+def _editor_turns(limits: _WriterCaps) -> int:
     return (1 + limits.revisions) * (limits.editor.calls + EDITOR_ANSWERS)
 
 
-def writer_ceiling_s(limits: WriterLimits, *, request_s: RequestCeiling) -> float:
+def writer_ceiling_s(limits: _WriterCaps, *, request_s: RequestCeiling) -> float:
     """The wall-clock ceiling of one report the writer writes (``analysis_generate``'s job), from the ceilings it wraps.
 
     Every turn the loop can send (:func:`writer_turns`) runs back to back, each bounded by the host's own answer for
