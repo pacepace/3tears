@@ -793,3 +793,167 @@ class TestNumericReadsBackAsDecimal:
             assert not b.has_table("wide")
         finally:
             b.reset()
+
+
+def _keyless_backend() -> DuckDBBackend:
+    metadata = MetaData()
+    Table(
+        "results",
+        metadata,
+        Column("race", String(64), primary_key=True),
+        Column("county", String(64), primary_key=True),
+        Column("state", String(8)),
+        Column("votes", Integer),
+        Column("counted_at", DateTime(timezone=True)),
+    )
+    backend = DuckDBBackend(keyless=["results"])
+    backend.initialize(metadata)
+    return backend
+
+
+_KEY = ("race", "county")
+
+
+class TestKeylessTables:
+    """a table named ``keyless`` has no primary-key index, and this backend keeps its key: every write
+    behaves as the keyed table's would."""
+
+    def test_a_keyless_table_has_no_index_and_its_key_columns_stay_not_null(self) -> None:
+        backend = _keyless_backend()
+        constraints = backend.execute_query(
+            "SELECT constraint_type, constraint_column_names FROM duckdb_constraints() WHERE table_name = 'results'"
+        )
+        assert {c["constraint_type"] for c in constraints} == {"NOT NULL"}
+        assert sorted(c["constraint_column_names"][0] for c in constraints) == ["county", "race"]
+        assert backend.execute_query("SELECT count(*) AS n FROM duckdb_indexes() WHERE table_name = 'results'") == [
+            {"n": 0}
+        ]
+        keyed = _partitioned_backend()
+        assert "PRIMARY KEY" in {
+            c["constraint_type"]
+            for c in keyed.execute_query(
+                "SELECT constraint_type FROM duckdb_constraints() WHERE table_name = 'results'"
+            )
+        }
+
+    def test_an_upsert_replaces_the_rows_of_the_keys_it_names_as_the_key_would(self) -> None:
+        backend = _keyless_backend()
+        keyed = _partitioned_backend()
+        for b in (backend, keyed):
+            b.upsert_many("results", [_result("r1", "c1", "TX", 1), _result("r1", "c2", "TX", 2)], _KEY)
+            b.upsert_many("results", [_result("r1", "c1", "TX", 10), _result("r1", "c1", "TX", 11)], _KEY)
+            b.upsert("results", _result("r2", "c1", "CA", 3), _KEY)
+        sql = "SELECT race, county, votes FROM results ORDER BY race, county"
+        assert (
+            backend.execute_query(sql)
+            == keyed.execute_query(sql)
+            == [
+                {"race": "r1", "county": "c1", "votes": 11},
+                {"race": "r1", "county": "c2", "votes": 2},
+                {"race": "r2", "county": "c1", "votes": 3},
+            ]
+        )
+        assert backend.select_by_id("results", ("r1", "c1"), _KEY)["votes"] == 11
+
+    def test_values_arrow_cannot_type_as_one_column_still_replace_by_key(self) -> None:
+        backend = _keyless_backend()
+        backend.upsert_many("results", [_result("r1", "c1", "TX", 1)], _KEY)
+        # a column of mixed kinds is bound list by list, not as one Arrow table
+        mixed = [{**_result("r1", "c1", "TX", 5), "state": 7}, _result("r1", "c2", "TX", 6)]
+        backend.upsert_many("results", mixed, _KEY)
+        assert backend.execute_query("SELECT county, state, votes FROM results ORDER BY county") == [
+            {"county": "c1", "state": "7", "votes": 5},
+            {"county": "c2", "state": "TX", "votes": 6},
+        ]
+
+    def test_replace_all_and_a_replacement_of_rows_hold_exactly_what_they_give(self) -> None:
+        from threetears.core.cache.duckdb import PartitionReplacement
+
+        backend = _keyless_backend()
+        backend.replace_all("results", [_result("r1", "c1", "TX", 1), _result("r1", "c1", "TX", 2)], _KEY)
+        assert backend.execute_query("SELECT votes FROM results") == [{"votes": 2}]
+        backend.replace_partitions(
+            [
+                PartitionReplacement(
+                    table="results", column="state", value="TX", rows=[_result("r1", "c1", "TX", 3)], primary_key=_KEY
+                ),
+                PartitionReplacement(
+                    table="results",
+                    column="state",
+                    value="DE",
+                    rows=[_result("r1", "c1", "DE", 4), _result("r3", "c3", "DE", 5)],
+                    primary_key=_KEY,
+                    append=True,
+                ),
+            ]
+        )
+        # the appended row of a key the table holds replaces it, as an upsert on the keyed table would
+        assert backend.execute_query("SELECT race, state, votes FROM results ORDER BY race") == [
+            {"race": "r1", "state": "DE", "votes": 4},
+            {"race": "r3", "state": "DE", "votes": 5},
+        ]
+
+    def test_an_arrow_chunk_replaces_its_scope_and_an_append_adds_to_it(self) -> None:
+        pytest.importorskip("pyarrow")
+        from threetears.core.cache.duckdb import PartitionReplacement
+
+        source = _partitioned_backend()
+        source.upsert_many("results", [_result("r1", "c1", "TX", 10), _result("r2", "c1", "TX", 20)], _KEY)
+        chunk = source.export_partition("results", "state", "TX", order_by=_KEY)
+        source.replace_all("results", [_result("r3", "c3", "TX", 30)], _KEY)
+        piece = source.export_partition("results", "state", "TX", order_by=_KEY)
+
+        backend = _keyless_backend()
+        backend.upsert_many("results", [_result("r1", "c1", "TX", 1), _result("r9", "c9", "CA", 9)], _KEY)
+        backend.replace_partitions([PartitionReplacement(table="results", column="state", value="TX", arrow=chunk)])
+        backend.replace_partitions(
+            [PartitionReplacement(table="results", column="state", value="TX", arrow=piece, append=True)]
+        )
+        assert backend.execute_query("SELECT race, votes FROM results ORDER BY race") == [
+            {"race": "r1", "votes": 10},
+            {"race": "r2", "votes": 20},
+            {"race": "r3", "votes": 30},
+            {"race": "r9", "votes": 9},
+        ]
+
+    def test_an_arrow_append_naming_a_held_or_repeated_key_is_refused_and_changes_nothing(self) -> None:
+        pa = pytest.importorskip("pyarrow")
+        from threetears.core.cache.duckdb import PartitionReplacement
+
+        backend = _keyless_backend()
+        backend.upsert_many("results", [_result("r1", "c1", "TX", 1)], _KEY)
+        again = backend.export_partition("results", "state", "TX", order_by=_KEY)
+        new = _keyless_backend()
+        new.upsert_many("results", [_result("r2", "c2", "TX", 2)], _KEY)
+        twice = pa.concat_tables([new.export_partition("results", "state", "TX", order_by=_KEY)] * 2)
+        for arrow in (again, twice):
+            with pytest.raises(duckdb.ConstraintException, match="key-less table 'results'"):
+                backend.replace_partitions(
+                    [
+                        PartitionReplacement(table="results", column="state", value="CA", rows=[]),
+                        PartitionReplacement(table="results", column="state", value="TX", arrow=arrow, append=True),
+                    ]
+                )
+            assert backend.execute_query("SELECT race, votes FROM results") == [{"race": "r1", "votes": 1}]
+
+    def test_an_export_of_rows_equals_the_keyed_tables(self) -> None:
+        pytest.importorskip("pyarrow")
+        rows = [_result("r2", "c1", "TX", 2), _result("r1", "c1", "TX", 1)]
+        exports = [
+            b.export_rows("results", "state", "TX", rows, primary_key=_KEY, order_by=_KEY)
+            for b in (_keyless_backend(), _partitioned_backend())
+        ]
+        assert exports[0].equals(exports[1])
+
+    def test_a_keyless_table_with_no_key_is_refused_before_anything_is_created(self) -> None:
+        metadata = MetaData()
+        Table("loose", metadata, Column("a", Integer), Column("b", Integer))
+        backend = DuckDBBackend(keyless=["loose"])
+        with pytest.raises(ValueError, match="declares no primary key"):
+            backend.initialize(metadata)
+        assert not backend.has_table("loose")
+
+    def test_load_parquet_refuses_a_keyless_table(self, tmp_path: Any) -> None:
+        backend = _keyless_backend()
+        with pytest.raises(ValueError, match="key-less table 'results'"):
+            backend.load_parquet("results", tmp_path / "none.parquet")

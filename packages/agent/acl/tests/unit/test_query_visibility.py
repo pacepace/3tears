@@ -16,6 +16,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from threetears.agent.acl import (
+    MAX_GROUP_MEMBERSHIP_DEPTH,
     caller_visible_customer_clause,
     caller_visible_customers_query,
     customer_scope_visibility_clause,
@@ -339,3 +340,15 @@ def test_customers_query_reaches_through_one_nesting_level() -> None:
     assert "gm.member_type = 'group'" in sql
     assert "gm2.group_id = gm.member_id" in sql
     assert "gm2.member_type = 'user'" in sql
+
+
+def test_the_clause_nests_one_hop_per_edge_up_to_the_cap() -> None:
+    """``MAX_GROUP_MEMBERSHIP_DEPTH - 1`` nested hops, each keyed on the next alias, and none past it."""
+    fragment, _ = caller_visible_customer_clause(
+        user_id=uuid4(),
+        customer_id_column="t.customer_id",
+        scope_namespace_type="thing",
+    )
+    for level in range(2, MAX_GROUP_MEMBERSHIP_DEPTH + 1):
+        assert f"gm{level}.group_id = gm{level - 1 if level > 2 else ''}.member_id" in fragment
+    assert f"gm{MAX_GROUP_MEMBERSHIP_DEPTH + 1}" not in fragment

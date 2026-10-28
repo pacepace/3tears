@@ -645,6 +645,9 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         {
             "load_for_user",
             "load_for_agent",
+            # rationale: the evaluator's parent walk reads every row naming a level of child
+            # groups as a MEMBER; the parents those rows name are the answer, not a key
+            "load_for_groups",
             "delete_from_store",
             "save_entity",
         }
@@ -808,6 +811,43 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
             ]
         return result
 
+    async def load_for_groups(
+        self,
+        group_ids: Sequence[UUID],
+    ) -> list[GroupMembership]:
+        """resolve every one of ``group_ids`` to the memberships naming it as a GROUP member.
+
+        :meth:`load_for_group` over a whole level of the evaluator's walk in one read, so a
+        level of fifty groups costs one round trip rather than fifty. empty input
+        short-circuits without a SQL round trip.
+
+        :param group_ids: child group UUIDs to resolve
+        :ptype group_ids: Sequence[UUID]
+        :return: memberships naming any of ``group_ids`` as a group member
+        :rtype: list[GroupMembership]
+        """
+        result: list[GroupMembership] = []
+        if self.l3_pool is not None and len(group_ids) > 0:
+            rows = await self.l3_pool.fetch(
+                """
+                SELECT group_id, member_type, member_id, customer_id
+                  FROM group_members
+                 WHERE member_type = 'group'
+                   AND member_id = ANY($1::uuid[])
+                """,
+                list(group_ids),
+            )
+            result = [
+                GroupMembership(
+                    group_id=_coerce_uuid(row["group_id"]),  # type: ignore[arg-type]
+                    member_type=MemberType(row["member_type"]),
+                    member_id=_coerce_uuid(row["member_id"]),  # type: ignore[arg-type]
+                    customer_id=_coerce_uuid(row["customer_id"]),
+                )
+                for row in rows
+            ]
+        return result
+
     async def membership_would_cycle(
         self,
         *,
@@ -819,7 +859,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         a group inside itself is refused outright; beyond that, the
         check asks whether ``group_id`` is already reachable from
         ``member_group_id`` by walking group edges DOWNWARD (children of
-        children), out to :data:`MAX_GROUP_MEMBERSHIP_DEPTH` levels.
+        children), out to :data:`MAX_GROUP_MEMBERSHIP_DEPTH` hops.
         cheap by construction: the cap bounds the walk, and writers are
         expected to call this BEFORE inserting a ``member_type='group'``
         row -- an admin surface that skips it can still write a cycle,

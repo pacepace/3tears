@@ -50,6 +50,203 @@ makes `DreamService.run_consolidation` answer an empty `ConsolidationResult` wit
 candidate. Each logs the reason once per call at INFO. The explicit memory tools do not read the
 switches: an agent with all three off still saves, searches, recalls and retires memories through them.
 
+## v0.81.0 -- 2026-10-28
+
+### core: a DuckDB L1 table can be key-less, its key kept by the backend
+
+**Added:** `DuckDBBackend(keyless=[...])` names tables to create with no primary key, their key columns still
+`NOT NULL`. DuckDB never reclaims a deleted row of a table with an index (its row ids are the index's), and never
+compresses or frees the index, so a keyed table whose rows are let go as fast as they come grows by every row it
+ever held. The backend keeps a key-less table's key itself: `upsert`, `upsert_many`, `replace_all` and a
+replacement's `rows` replace the rows of the keys they name (a delete and an insert, in one transaction); Arrow rows
+added by `replace_partitions` are refused (`duckdb.ConstraintException`, nothing changed) when they name a key the
+table holds or one key twice, as the key would refuse them; `load_parquet` refuses a key-less table. A table with no
+primary key to keep is refused by `initialize`. The ENR pod's copy holds its run-retaining LSF tables this way, and no
+longer overrides the backend's private table creation and insert.
+
+### object-store: an S3 store keeps one client a loop
+
+**Fixed:** `S3ObjectStore` opened an aiobotocore client for every request: a botocore client built on the event loop
+each time, and about a thousand objects left in reference cycles, ~0.2 MiB a request. A process that holds its cycle
+collector off while it works (the ENR pod's refresh, sweeping only the young generation) kept every request's until
+the hold ended: a full LSF pull's tens of thousands of export reads on prod. A store that opened its own session now
+opens one client per event loop on first use and keeps it (its connection pool sized for 64 reads at once) until
+`aclose()` (new); a store given a session opens one per request, as before. 400 reads with the collector held left
+447,600 objects in cycles and grew the process 114 MiB before, none and 14 MiB after.
+
+### core: L3 rail reads and DuckDB answers as Arrow, never one Python object a row
+
+**Added:** `NatsProxyL3Backend.fetch_arrow(query, *params, types=...)` answers a SELECT's rows as one Arrow table: the
+reply's bytes (`nats_request_bytes`, new: `nats_request` before its parse) are parsed by Arrow's JSON reader on a
+thread, which lets go of the interpreter lock, so neither the event loop nor any thread makes a Python object of a
+row. `types` is each column's Arrow type as the rail's JSON carries it; `rail_arrow_types(columns)` (new, in
+`complete_copy`) names them for schema columns: text, UUID, enum, `NUMERIC` and timestamps as text, integers as
+`int64`, booleans as `bool`, a `date_*` timestamp as an instant in UTC, so `fetch_arrow(...).to_pylist()` equals
+`fetch(...)`. A column the rail answers otherwise (`jsonb`, bytes, a vector, a `date_*` column that is not a
+timestamp) has no such type, and a reply whose values are not of their types (or text carrying the rail's bytes mark)
+is refused (`ReplyNotArrowError`), never answered otherwise than `fetch` would. `read_l3_arrow`
+(new) pages a whole table as `read_l3_rows` does, with the same statements (`keyset_arrow_pages`, new,
+shares `keyset_pages`' statement builder). Needs pyarrow (`3tears[snapshot]`).
+
+**Added:** `read_l3_rows`, `read_l3_arrow` and the keyset pagers take `where_any`, set filters beside `where`: column ->
+(its array type, its values), each `"column" = ANY($n::type[])` with every value bound as one array, so a page is one
+statement however many values. An L3 other than the rail is read as Arrow too (`l3_fetch_arrow`:
+its dict rows made the table the rail's reply of them reads as), and `ArrowL3Reader` (new, `backends.protocol`) names
+an L3 that answers Arrow itself.
+
+**Added:** `DuckDBBackend.execute_arrow(sql, params)` answers a query as one Arrow table, which DuckDB writes without
+the interpreter lock (300k rows: a tenth of the calling thread's CPU that `execute_query` takes). Each column names its
+DuckDB type in its field metadata (`duckdb_type`), and a 128-bit integer (a `SUM` of integers) is an `int64` where
+every value fits; `query_arrow(connection, sql, params)` (new) does the same on any connection or cursor (a read
+transaction's). `arrow_rows(table)` (new) makes the rows `execute_query` answers from it a few hundred at a time, each
+value as `fetchall` answers it (an `int`, a `uuid.UUID`, a `timedelta`, a `dict`), so no call holds the lock long.
+`execute_query` is unchanged.
+
+**Changed:** a scoped snapshot's rebuild of a scope from L3 reads the rail's pages straight into Arrow when its L3 has
+`fetch_arrow` and every column has a rail type, and holds what the same pages read as dict rows hold; otherwise (and for
+a page `fetch_arrow` refuses) it reads dict rows, as before. `DuckDBBackend.storage_arrow` types a `NUMERIC`'s text (the
+rail's form) in Arrow where the cast is exact, and value by value as before where it is not.
+
+### agent-acl: the visibility SQL's group nesting follows MAX_GROUP_MEMBERSHIP_DEPTH, and each level of the walk is one read
+
+**Changed:** `caller_visible_customer_clause` and `caller_visible_customers_query` generate their
+group nesting from `MAX_GROUP_MEMBERSHIP_DEPTH` (one nested `EXISTS` per group edge) instead of a
+hand-written single hop, so the SQL and the evaluator cannot disagree about depth. At depth 2 the
+generated SQL is the same predicate as before, with the same plan.
+
+**Added:** the nesting is configuration, counted in levels the way a reader counts the chain on
+screen: the person plus each group, so `person -> customer-users:14th -> reports-report:all` is 3
+levels. `THREETEARS_ACL_MAX_GROUP_NESTING_LEVELS` (default 3, allowed 2 to 5) is read once at import;
+`MAX_GROUP_MEMBERSHIP_DEPTH` (the hops the platform walks) is that value minus 1, so the default is
+the same depth 2 as before, and the evaluator's walk, the cycle check and the generated SQL all read
+it. An invalid value raises at import rather than falling back. The resolver and its constants stay
+internal to `threetears.agent.acl.types`; only `MAX_GROUP_MEMBERSHIP_DEPTH` is exported. Every process
+that evaluates must be given the same value. Raising it costs real time on YugabyteDB: at 4 levels the
+hub's namespace discovery went from ~260 ms to ~820 ms p50 on a 10x dataset.
+
+**Upgrade:** `THREETEARS_ACL_MAX_GROUP_MEMBERSHIP_DEPTH`, the hop-counted name this setting had on
+develop before this release, is refused at import if set at all, with a message naming the new
+variable and its value (levels = old value + 1). Unset it and set
+`THREETEARS_ACL_MAX_GROUP_NESTING_LEVELS`.
+
+**Added:** `threetears.agent.acl.ParentGroupsLoader`, an optional protocol beside `MembershipLoader`
+(the `HeldAssignmentsLoader` shape): `load_for_groups(group_ids)` returns every membership naming any
+of them as a group member. The evaluator reads each level of the parent walk's uncached groups in one
+call when the membership loader has it, so the reads a cold walk costs grow with its depth, not with
+how many groups a level reaches. `CollectionMembershipLoader` has it, over the new
+`GroupMemberCollection.load_for_groups`; a loader without it is still asked per group, with the same
+answers.
+
+### evals: an aggregate refuses a scope past the read budget instead of reading it whole
+
+**Changed:** the aggregating lenses read their scope's results into Python, and an aggregate cannot be paged as `scope_export` is since v0.80.0
+(part of a pivot reads as the whole of it), so past a budget they refuse instead (owner, 2026-10-27; the SQL pushdown
+is #996). `comparison_sets`, `pivot`, `frontier`, `history`, `program_budget` and `orphaned_runs` (and
+`scope_pivot`, `scope_frontier` and `scope_history`, operations and actions) make `scope_export`'s estimate, before
+reading anything, and hold it to `READ_TIER_ROW_BUDGET` (50,000, until now only the level of the read-tier log
+line). A scope within it is read whole, as before. A scope past it is refused (`VALIDATION_FAILED`, with `details`
+`runs`, `results_estimated` and `result_budget`; one WARNING line `eval.read_tier lens=... refused`), naming the
+estimate, the budget and the filters that narrow that call, unless the call narrows to runs that fit, which it
+then reads run by run: a pivot, frontier or history of one subject (`subject_filter`, `subject_id` in Python) reads
+every run of that subject, any status and archived ones too, so its status and archival counts stay exact, and
+counts no other subject's results; `comparison_sets` reads only the runs it groups (a campaign, named runs, a run
+status). `program_budget` and `orphaned_runs` take no filter, so past the budget they are refused. A read that
+returns more than the budget (a deleted run's results are in no listing) is not aggregated: a call for one subject
+reads that subject's runs instead, and any other call is refused, its `details` adding `results_returned`. Campaign
+reports read their runs by id and are unaffected. A narrowed pivot, frontier or history says what it did not count
+in `narrowed_read_disclosure` (new on `PivotTable`, `HistoryResult` and `FrontierResult`, printed in each one's text,
+and left out of a dump while unset, so no stored bundle's fingerprint moves); a narrowed frontier's judge tiers are
+read on that subject's results alone, and it says that too. `RegressionWatch` now reads the history of the completed
+run's own subject, so a scope past the budget is still checked wherever that subject fits; a judged alert read that
+way carries `RegressionAlert.narrowed_read_disclosure` (new). When the subject alone is past the budget, the watch
+logs at ERROR that it checked nothing and that nothing narrower exists (`eval.regression watch checked nothing on
+run=...`), and `RegressionWatch.check` raises the refusal. The `frontier` command's refusal names `--subject`.
+
+### evals: a run's stored results are read a page at a time, never whole
+
+**Fixed:** five readers still loaded every stored result of a run at once, and a result carries its judge's
+reasoning, its kind's payload, its world events, its deliveries and its rescores, so their memory grew with the run:
+a run's summary (`summarize_run`, so `run_get`, `quick`'s summaries and the CLI's); a take-up of a run (`job_resume`,
+`resume_run`, `resume_launch`) and the offer of one (`resumable_jobs`, which read every resumable run of a scope in
+one call); the launch pricer `history_launch_pricer`, which read every run of the template whole on every launch and
+on every take-up's replay of one; `job_poll` of a finished second judge pass, on every poll; and an export of one
+run past `EXPORT_PAGE_RESULTS`.
+
+**How each reads now: one pass over the run, then reads by id** (`threetears.evals.kernel.run_pages`, new). The run's
+results are found by one read of the run that reads each result's key (`ResultKey`, also exported from
+`threetears.evals.kernel`: id, case, `k`, model, when stored), `EvalStorage.query_eval_result_keys_by_run` (new: the
+same `by_doc_type` a whole read of the run is, with the thirteen fields that grow with what a cell did left out,
+heaviest first: `world_events`, `kind_payload`, `judge_reasoning`, the judge's rescores, repeats and second judgings,
+`async_deliveries`, `usage`, `rubric_scores`, the outcome lists and the judge's "cannot tell" prose; the scalars
+ship, a few hundred bytes a result, and are ignored). The keys are ordered by the case's place in the run, then `k`, model,
+when stored and id, and the results are read by id a page at a time, `RUN_RESULTS_PAGE` (200) a page,
+`EvalStorage.load_eval_results` (new: one `get_many`). So a walk of a run of `n` results costs one pass over the run
+plus `n / 200` reads by id, which every store answers from its key; it holds one page of results and `n` keys of a
+few scalars. Every `DocumentStore` already serves both reads: a host adds nothing. Per store: the in-memory store
+passes over its documents once and looks each page up by key; the SQLite store reads the scope's results by its
+`(scope_id, doc_type)` index once, filtering the run as a whole read of it always did, and each page by its
+`(scope_id, id)` key (a projected read now projects each row as it is read, where it held every row's text first); a
+routed store passes both to the store results are kept in; over Discodon's YSQL table the key read is the scope's
+key index with the run's containment as a filter (as its store's docstring says of every equality read), each left-out
+field one `#-` in the database, and each page is a primary-key read. In every store the pass is over the scope's result
+rows the store filters by run, as a whole read of the run always was; what changed is that it is made once a walk,
+not once a page, and ships no heavy field.
+Neither a keyset read (ordered after a cursor, with a limit) nor one streaming read is possible over the port as it
+stands: the port has no range predicate and returns a list, and Discodon's sync engine fetches every row of a
+statement and answers with one JSON reply, so either would be a port method and a host change. A result whose case is none of its run's cases is read too, after every case of
+the run. `iter_run_results`, `run_result_keys`, `run_case_pages` and `read_results` are the walk's parts, and
+`RunResultsStore` the two reads.
+
+- **`summarize_run`** folds each result into its tallies as it is read. Counts, minimums and maximums stream; every
+  sum (a measure's or a dimension's mean, a role's dollars, the run's total) is kept exactly and rounded once, as
+  `math.fsum` rounds, so the summary does not move with the page size or the store's order. A mean was `sum(values) /
+  len(values)` and is now the correctly rounded sum over the count: the same figure wherever Python's compensated
+  `sum` already rounds correctly, which was every case in 20,000 random trials, and on the toy host's stored runs
+  byte for byte. Three readings need every value at once and keep one small record per value, never the result:
+  the label statistics (each classification and its case, for an interval clustered by case), the second judges'
+  agreement (each pair of scores, for kappa and its interval) and the errors listed. The errors are now in the
+  run's case order, then `k`, where they were in the store's order. To stream them, `inter_judge_agreement`,
+  `judge_drift`, `self_judging_models`, `unconfirmed_model_identities` and `request_settings_readings` each read
+  through a tally (`InterJudgeTally` in `threetears.evals.analysis.agreement`, `JudgeDriftTally` in
+  `threetears.evals.analysis.judge_drift`; `SelfJudgingTally`, `ModelIdentityTally` and `RequestSettingsTally` in
+  `threetears.evals.analysis.reporting`, new), with the same answers. `job_poll` of a second judge pass reads its
+  agreement and drift through the same two tallies.
+- **A take-up** keeps each stored row as a `StoredCell` (new in `threetears.evals.run`: the row's `CellSummary`, its
+  harness fault, its exclusion cause, its superseded spend and its metered calls landed and refused), read page by
+  page. **Changed:** `StoredCells.done` is a tuple of `StoredCell`, `StoredCells.replaced` maps a cell to its
+  `StoredCell`, and `RunResumption.rows` is a tuple of `StoredCell`, where each held the stored `EvalResult`s.
+  `resumable_jobs` walks each resumable run in turn, where it read every run's rows in one call: a pass over each run
+  and a read by id a page, none of them a run's whole volume.
+- **The history pricer** walks each run of the template a page at a time and keeps, of each of the arm's model's
+  results, what the cost estimate reads (`CostObservation`, new in `threetears.evals.analysis.lenses.cost_estimate`:
+  its run, model, cost and cost roles): O(n) small records over the template's history, never its results.
+  `compute_estimate_cost` takes those as well as results. Naming the closest priced run reads each run only until a
+  priced result is met. A take-up's replay of its launch therefore reads no run whole either.
+- **An export of one run past the ceiling**, in a scope's pages or named alone in `export_run_ids`, is paged by its
+  cases, each page whole cases of the run up to the ceiling (one case alone when it holds more), read by id after one
+  pass over the run's keys. The cursor is the same one, carrying the case: `ExportPage` gains `case_ids`,
+  `cases_before`, `cases_after`, `next_after_case_id` (the case the next page starts after, inside
+  `next_after_run_id`) and `named_run_ids` (the run the next call names again). A CSV page's columns are its own, so
+  pages join by column name. **Changed:** the lenses' store protocol (`LensStore`) gains
+  `query_eval_result_keys_by_run` and `load_eval_results`, which `EvalStorage` has; a host that hands the lenses a
+  store of its own adds them.
+- **Known limits.** A walk reads its run's keys once, when it starts: a result written after is not read, and one
+  removed before its page is read is absent. `job_poll` of a second judge pass is exercised by its tests but its read
+  bound is not pinned by one, and it now loads the run, so a run this build cannot read refuses the poll, and a run
+  whose lease lapsed is settled by it. The SQLite store parses each row's JSON while it holds its connection's lock,
+  so other threads wait on that one connection for longer.
+- **Still read whole**, each its own follow-up: comparing two runs (`runs_compare`, `compare_two_runs`,
+  `bisect_runs`, and the pair disclosures' measurement windows), settling a lapsed run that recorded no
+  completeness, the witnessed cells' judge-ceiling check, `results_list` and `list_results`, `delete_run`'s cascade,
+  the campaign and analysis readers, `run_summary` (the lens) and the scope aggregates.
+
+**Changed (MCP):** `scope_export` takes `export_after_case_id`, the previous page's `page.next_after_case_id`, beside
+`export_after_run_id`, and the text of a page inside a run names it (and `export_run_ids` for a named run):
+`More: action='scope_export', export_after_run_id='<run>', export_after_case_id='<case>'`, with the page line
+`page: run 2 of 7, its cases 1-1000 of 2400`. `export_after_case_id` without `export_after_run_id`, or naming no case
+of that run, is refused (`VALIDATION_FAILED`, `details` `after_run_id` and `after_case_id`). A run archived or
+moved to another status between its pages is left, and the next page starts at the run after it.
+
 ### langgraph: a checkpoint L2 entry that cannot be refreshed is deleted, not left holding an older checkpoint
 
 **Fixed:** `ThreeTierCheckpointSaver`'s L2 key is per thread and namespace, not per checkpoint, so a

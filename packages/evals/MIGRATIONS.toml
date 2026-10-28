@@ -58,7 +58,7 @@
 # callers.
 
 [[release]]
-version = "unreleased"
+version = "0.81.0"
 since = "v0.80.0"
 summary = """
 Checkpoint L2 caches and identity block variants: no 3tears-evals name has moved or been removed since 0.80.0, and

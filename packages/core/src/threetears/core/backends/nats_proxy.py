@@ -21,6 +21,7 @@ none changes nothing.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -31,6 +32,7 @@ from uuid import UUID, uuid7
 
 import asyncpg
 
+from threetears.core.backends.arrow_reply import reply_rows
 from threetears.core.backends.broker_generation import (
     GENERATION_UNAVAILABLE_ERROR_CODE,
     GENERATIONS_FAILED_REPLY_FIELD,
@@ -776,6 +778,52 @@ class NatsProxyL3Backend:
         result = [_deserialize_row(row) for row in rows]
         return result
 
+    async def fetch_arrow(
+        self,
+        query: str,
+        *params: Any,
+        types: Mapping[str, Any],
+        namespace: str | None = None,
+    ) -> Any:
+        """execute a SELECT and answer its rows as one Arrow table: the rows :meth:`fetch` answers, never made
+        Python objects.
+
+        The reply's bytes are parsed by Arrow's JSON reader on a thread, which lets go of the interpreter lock
+        while it parses (:func:`~threetears.core.backends.arrow_reply.reply_rows`), so neither the event loop nor
+        any other thread waits on a reply's rows. ``types`` names each column the statement selects and its Arrow
+        type, in order, as the reply's JSON carries it
+        (:func:`~threetears.core.collections.complete_copy.rail_arrow_types`); ``table.to_pylist()`` equals what
+        :meth:`fetch` answers for the same reply. A read only: the rail's cap and paging are the caller's, as
+        with :meth:`fetch` (:func:`~threetears.core.keyset.keyset_arrow_pages`). Needs ``pyarrow``.
+
+        :param query: parameterized SQL query, a SELECT
+        :ptype query: str
+        :param params: query parameter values
+        :ptype params: Any
+        :param types: column name -> its Arrow type, every column selected, in order
+        :ptype types: Mapping[str, pyarrow.DataType]
+        :param namespace: target namespace (default: this principal's own)
+        :ptype namespace: str | None
+        :return: the rows
+        :rtype: pyarrow.Table
+        :raises ValueError: when the statement is not a SELECT
+        :raises ReplyNotArrowError: when a value is not of its column's type
+        :raises DataLayerUnavailableError: if the broker returns an error
+        """
+        if _detect_operation(query) != "select":
+            raise ValueError("fetch_arrow reads: its statement is a SELECT")
+        payload = self._query_payload(query, list(params), "select", namespace)
+        reply = await self.nats_request_bytes(Subjects.l3_query(namespace=self.ns).path, payload)
+        parsed = await asyncio.to_thread(reply_rows, reply, types)
+        if not parsed.success:
+            # a refusal is a short reply: decoded as every other is, and raised as fetch raises it
+            try:
+                response: dict[str, Any] = json.loads(reply)
+            except ValueError as exc:
+                raise DataLayerUnavailableError(f"L3 query: an unreadable reply: {exc}") from exc
+            self.raise_for_failed_reply(response, "L3 query")
+        return parsed.rows
+
     async def fetchrow(
         self,
         query: str,
@@ -1326,20 +1374,48 @@ class NatsProxyL3Backend:
         :raises DataLayerUnavailableError: if NATS request times out,
             the broker returns malformed JSON, or the client is closed
         """
+        reply = await self.nats_request_bytes(subject, payload, timeout_s=timeout_s)
+        try:
+            result: dict[str, Any] = json.loads(reply)
+        except ValueError as exc:
+            raise DataLayerUnavailableError(f"NATS request failed: subject={subject}: {exc}") from exc
+
+        return result
+
+    async def nats_request_bytes(
+        self,
+        subject: str,
+        payload: dict[str, Any],
+        *,
+        timeout_s: float | None = None,
+    ) -> bytes:
+        """send a raw NATS request and answer the reply's bytes, undecoded: :meth:`nats_request` before its parse.
+
+        For a reader that parses the reply some other way than ``json`` (:meth:`fetch_arrow`).
+
+        :param subject: NATS subject on which to publish the request
+        :ptype subject: str
+        :param payload: request payload dict, encoded as :meth:`nats_request` encodes it
+        :ptype payload: dict[str, Any]
+        :param timeout_s: how long to wait for the reply, in seconds; as :meth:`nats_request`'s
+        :ptype timeout_s: float | None
+        :return: the reply's body
+        :rtype: bytes
+        :raises DataLayerUnavailableError: if the NATS request times out or the client is closed
+        """
         payload_bytes = self.encode_request(subject, payload)
         nats_timeout = timeout_s if timeout_s is not None else (self.timeout_ms / 1000) + 2
 
         try:
-            reply = await self._nc.request_raw(
+            reply: bytes = await self._nc.request_raw(
                 subject=Subject.raw(subject),
                 payload=payload_bytes,
                 timeout=timedelta(seconds=nats_timeout),
             )
-            result: dict[str, Any] = json.loads(reply)
-        except (RequestError, ValueError) as exc:
+        except RequestError as exc:
             raise DataLayerUnavailableError(f"NATS request failed: subject={subject}: {exc}") from exc
 
-        return result
+        return reply
 
     def current_pop_key(self) -> PopKey | None:
         """the key this backend's requests are proven with, read through its provider now.
