@@ -68,6 +68,7 @@ from threetears.evals.analysis.report_input import (
     Aspect,
     BarRead,
     Contrast,
+    Disclosure,
     Example,
     FloorRead,
     Judged,
@@ -403,14 +404,23 @@ class RigRow(_Fact):
     execution_modes: dict[str, int] = Field(
         description="The runs' results by the execution mode each recorded, summed."
     )
+    # Left out when empty, so a rig whose runs' hosts disclosed nothing reads as it did before the field existed.
+    disclosed: dict[str, Disclosure] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description="What the launching host disclosed about each of the runs (its machine, load, how it measures), "
+        "by run id, for each run it disclosed something for. A disclosure, never part of the rig: runs that disclose "
+        "different values share one row.",
+    )
 
 
 def _rigs(report_input: ReportInput) -> list[RigRow]:
     """The input's run rigs, one row per rig in first-seen order: runs alike in every field but their execution modes
-    share one row, which names each with the arm it ran and sums those."""
+    and their hosts' disclosures share one row, which names each with the arm it ran, sums the modes and keeps each
+    run's disclosure by its id: a disclosure is no coordinate of the rig, so it splits no row."""
     grouped: dict[str, tuple[RunRig, list[RunRig]]] = {}
     for rig in report_input.apparatus or ():
-        shape = rig.model_dump_json(exclude={"run", "arm", "aspect", "execution_modes"})
+        shape = rig.model_dump_json(exclude={"run", "arm", "aspect", "execution_modes", "disclosure"})
         grouped.setdefault(shape, (rig, []))[1].append(rig)
     rows: list[RigRow] = []
     for first, members in grouped.values():
@@ -431,6 +441,7 @@ def _rigs(report_input: ReportInput) -> list[RigRow]:
                 cell_concurrency=first.cell_concurrency,
                 rubric_scales=dict(first.rubric_scales),
                 execution_modes=dict(sorted(modes.items())),
+                disclosed={member.run: member.disclosure for member in members if member.disclosure is not None},
             )
         )
     return rows

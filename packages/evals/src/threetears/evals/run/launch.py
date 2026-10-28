@@ -38,9 +38,10 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple, Protocol,
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 from threetears.evals.kernel import JobTimeoutFactory
+from threetears.evals.kernel.build_stamp import package_rev, package_version
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.host.kinds import freeze
-from threetears.evals.schema.models import ArmSchedule, EvalTemplate, WorldPlacement
+from threetears.evals.schema.models import ArmSchedule, EvalTemplate, RunDisclosure, WorldPlacement
 
 from threetears.evals.kernel.arguments import normalize_blank
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
@@ -102,7 +103,7 @@ from threetears.evals.run.runner import (
     execute_run,
     template_as_graded,
 )
-from threetears.evals.run.simulator import SIMULATOR_REQUEST_SETTINGS
+from threetears.evals.run.simulator import SIMULATOR_REQUEST_SETTINGS, simulator_prompt_digest
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RUN, FIND_TEMPLATE
 
@@ -545,6 +546,12 @@ class LaunchHost:
         (:class:`~threetears.evals.run.jobs.RunEndHook`) — a
         :class:`~threetears.evals.ops.RegressionWatch` to check a completed run against its contestant's
         history — or ``None`` for nobody.
+    :ivar run_disclosure: What the host discloses about each launch (:class:`~threetears.evals.schema.RunDisclosure`):
+        the machine it runs on, that machine's load as the launch begins, how it measures latency. Called once per run
+        as the launch tail assembles it, for every kind the host launches (the engine's judge kind among them), and
+        stamped on the run as ``EvalRun.run_disclosure``, which the analysis bundle and ``campaign_overview`` carry to
+        the analyst. A disclosure, never a coordinate: it splits no cell and names no confound. ``None`` for a host
+        that discloses nothing, whose runs then carry none.
     :ivar job_lease_s: How long a job's lease lasts unless renewed, in seconds
         (:data:`~threetears.evals.schema.DEFAULT_JOB_LEASE_S` by default); renewed every
         :data:`~threetears.evals.schema.JOB_LEASE_RENEWAL_FRACTION` of it (a third). A job whose process stops
@@ -568,6 +575,7 @@ class LaunchHost:
     cell_executor: CellExecutor | None = None
     on_job_progress: Callable[[str, dict[str, Any]], None] | None = None
     on_run_end: RunEndHook | None = None
+    run_disclosure: Callable[[], RunDisclosure] | None = None
     job_lease_s: float = DEFAULT_JOB_LEASE_S
     job_leases: JobLeases = field(init=False, repr=False, compare=False)
     job_manager: EvalJobManager = field(init=False, repr=False, compare=False)
@@ -4046,6 +4054,18 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 # stamp and the requests cannot disagree. Part of the measurement context (#633).
                 judge_temperature=DEFAULT_JUDGE_TEMPERATURE if judge is not None else None,
                 simulator_asked_settings=SIMULATOR_REQUEST_SETTINGS if wiring.simulator_model is not None else None,
+                # What the simulated user is told, content-addressed beside how it is asked, for a run that pins one
+                # over a conversation the template states.
+                simulator_prompt_digest=(
+                    simulator_prompt_digest(template.conversation)
+                    if wiring.simulator_model is not None and template.conversation is not None
+                    else None
+                ),
+                # Which build launched the run, read off the installed distribution; None where it records none.
+                package_version=package_version(),
+                package_rev=package_rev(),
+                # What the host discloses about this launch, for every kind alike; none from a host that discloses none.
+                run_disclosure=host.run_disclosure() if host.run_disclosure is not None else None,
                 max_cost_usd=EvalRunCostCap.resolve_effective_ceiling(
                     max_cost_usd,
                     configured_max_cost_usd=configured_max_cost_usd,

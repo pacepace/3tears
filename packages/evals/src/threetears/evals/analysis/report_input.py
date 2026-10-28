@@ -190,8 +190,11 @@ class Pricing(_Part):
 
     As its producer states it for the calls the arm's cost counts, so a reader sees where each cost comes from beside
     it: a cost is the provider routing's, never the model's alone. A partly priced arm (``priced_calls`` under
-    ``calls``) has a cost over part of its calls, which no page states as if it were whole. No assembly fills it from
-    a campaign's stored usage yet (#1011); an input that carries it is read.
+    ``calls``) has a cost over part of its calls, which no page states as if it were whole. Copied from the bundle's
+    census (``ArmScoreboard.pricing``), which reads it off the arm's production usage rows.
+
+    It is part of a report input's content address (``report_input_digest``, a snapshot's id), so two inputs priced
+    differently are two snapshots; it is no part of any fingerprint (owner ruling, 2026-10-28).
     """
 
     sources: list[str] = Field(
@@ -542,6 +545,16 @@ class RequestSettings(_Part):
     strict_output: bool = Field(default=False, description="Whether the request enforced every parameter it carried.")
 
 
+class Disclosure(_Part):
+    """What the launching host disclosed about one run's launch, as it stated it: values by its own names, and its
+    statements of how the run was measured. Shown, never compared: it splits no rig and names no confound."""
+
+    values: dict[str, str | int | float | bool] = Field(
+        default_factory=dict, description="Each disclosed value by the host's name for it."
+    )
+    statements: list[str] = Field(default_factory=list, description="What the host states, in its own words.")
+
+
 class RunRig(_Part):
     """The rig one run of one arm was measured with, as the run recorded it at launch."""
 
@@ -572,6 +585,12 @@ class RunRig(_Part):
     )
     rubric_scales: dict[str, Literal["ordinal", "pass_fail"]] = Field(
         default_factory=dict, description="The scale each rubric dimension was answered on."
+    )
+    # Left out of the document when unset, so an input whose runs' hosts disclosed nothing digests as it did.
+    disclosure: Disclosure | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="What the launching host disclosed about the launch; none where it disclosed nothing.",
     )
 
 

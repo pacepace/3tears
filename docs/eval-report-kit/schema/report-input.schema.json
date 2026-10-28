@@ -976,10 +976,31 @@
      "type": "object",
      "additionalProperties": {"enum": ["ordinal", "pass_fail"]},
      "description": "The scale each rubric dimension was answered on."
+    },
+    "disclosure": {
+     "anyOf": [{"$ref": "#/$defs/Disclosure"}, {"type": "null"}],
+     "description": "What the launching host disclosed about the launch; none where it disclosed nothing."
     }
    },
    "additionalProperties": false,
    "description": "The rig one run of one arm was measured with, as the run recorded it at launch."
+  },
+  "Disclosure": {
+   "type": "object",
+   "properties": {
+    "values": {
+     "type": "object",
+     "additionalProperties": {"type": ["string", "integer", "number", "boolean"]},
+     "description": "Each disclosed value by the host's name for it."
+    },
+    "statements": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "What the host states, in its own words."
+    }
+   },
+   "additionalProperties": false,
+   "description": "What the launching host disclosed about one run's launch, as it stated it: values by its own names, and its statements of how the run was measured. Shown, never compared: it splits no rig and names no confound."
   },
   "ScoreboardRow": {
    "type": "object",

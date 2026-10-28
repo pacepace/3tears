@@ -209,6 +209,7 @@ def _run_apparatus(run: EvalRun, run_results: list[EvalResult]) -> RunApparatus 
         cell_concurrency=run.cell_concurrency,
         rubric_scales=dict(run.rubric_scales),
         execution_modes=dict(sorted(modes.items())),
+        run_disclosure=run.run_disclosure,
     )
     return apparatus if apparatus.recorded else None
 

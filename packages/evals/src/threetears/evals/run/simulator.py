@@ -102,6 +102,7 @@ from pydantic import ValidationError
 
 from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import (
     CANDIDATE_SPEAKER,
     ROUND_DONE,
@@ -757,6 +758,30 @@ def smallest_utterance_prompts(actor: ActorPolicy) -> tuple[str, str]:
     return _actor_system_prompt(actor.policy, ""), _actor_user_prompt(actor.intent, "")
 
 
+def simulator_prompt_digest(conversation: ConversationSpec) -> str:
+    """The content address of what a conversation's simulated user is told, as a run of it sends it.
+
+    The pre-image is every prompt the run's simulator calls are built on, with the parts each cell fills left empty:
+    each actor's utterance call (:func:`smallest_utterance_prompts`: the engine's framing around the actor's policy and
+    intent), and, under the ``llm_decided`` scheduler, the scheduler's system prompt over every actor. What a cell
+    fills in (the case's scenario parameters, the transcript so far) is the frozen case's and the conversation's own,
+    which the run addresses by its cases. So the digest is stable for one conversation on one build, and moves with an
+    actor's policy or intent, the actors' order, the scheduler, or the engine's own words around them.
+
+    :param conversation: The template's conversation, as the run launched it.
+    :ptype conversation: ConversationSpec
+    :return: A sha256 hex digest.
+    :rtype: str
+    """
+    calls: list[dict[str, str]] = []
+    for actor in conversation.actors:
+        system, user = smallest_utterance_prompts(actor)
+        calls.append({"actor": actor.id, "system": system, "user": user})
+    if conversation.turn_scheduler == "llm_decided":
+        calls.append({"scheduler": _build_scheduler_system_prompt(list(conversation.actors), {})})
+    return canonical_digest({"simulator_prompts": calls})
+
+
 def _render_transcript(transcript: list[tuple[str, str]], *, current_actor_id: str | None) -> str:
     """Render transcript with stable role labels that name no kind of candidate.
 
@@ -855,5 +880,6 @@ __all__ = [
     "SimulatorTurn",
     "TurnDriver",
     "next_speaker_response_format",
+    "simulator_prompt_digest",
     "smallest_utterance_prompts",
 ]
