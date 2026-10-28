@@ -104,9 +104,17 @@ from typing import Literal, get_args
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.cell_mean import CellMeanInterval, NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.kernel.numbers import MoneyForm, format_number, group_thousands, money_form, spell_multiple
+from threetears.evals.kernel.numbers import format_number, group_thousands, spell_multiple
 from threetears.evals.analysis.quantities import PERCENT, POINTS, number_in
-from threetears.evals.analysis.report.cost_unit import REPLIES, CostBasis, per_count, per_noun, priced_in_part
+from threetears.evals.analysis.report.cost_unit import (
+    REPLIES,
+    CostBasis,
+    MoneyRuler,
+    money_ruler,
+    per_count,
+    per_noun,
+    priced_in_part,
+)
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import (
@@ -937,6 +945,19 @@ def cost_basis(report_input: ReportInput) -> CostBasis:
         return CostBasis(noun=REPLIES, source=source)
     measure = report_input.measures.get(source)
     return CostBasis(noun=per_noun(measure) if measure is not None else "", source=source)
+
+
+def cost_ruler(report_input: ReportInput) -> MoneyRuler:
+    """How a column of the page's cost (``cost_per_1k.<arm>`` for every arm) is stated, by the one owner of money's
+    scale: per 1,000 of what the cost counts, or per 1,000,000 where an arm's cost is under a cent per 1,000, a table's
+    head naming the count (:meth:`~threetears.evals.analysis.report.cost_unit.MoneyRuler.words`).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The ruler.
+    :rtype: MoneyRuler
+    """
+    return money_ruler(_costs_per_thousand(report_input).values(), per=1000, start=1000)
 
 
 def _money_per(report_input: ReportInput, values: tuple[str, ...]) -> str:
@@ -6488,26 +6509,27 @@ def _plus(text: str, value: float) -> str:
     return f"+{text}" if value > 0 and not text.startswith(("<", "+")) and text != "0" else text
 
 
-def _money_form(figure: Figure, factor: float) -> MoneyForm:
-    """The one form a money figure's family is spelled in (#993), at ``factor`` times its scale: chosen from the
-    family's whole set (:class:`Figure`'s ``amounts``), never from the figure alone, and for a change capped at the
-    decimals its interval's width supports. A figure made without its set is a set of its own numbers."""
+#: How many of what it counts a figure on each dollar scale is per, as the one owner of money's scale reads it.
+_SCALE_COUNTS: dict[str, int] = {"usd": 1, "usd_per_1k": 1000, "usd_per_1m": 1_000_000}
+
+
+def _ruler(figure: Figure, *, per: int, start: int = 0) -> MoneyRuler:
+    """How a money figure's family is stated (#993), by the one owner of money's scale
+    (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`): over the family's whole set (:class:`Figure`'s
+    ``amounts``), never the figure alone, its count moved per 1,000 more where the set is under a cent; a change in the
+    changes' form on the amounts' ruler, capped by its interval's width. A figure made without its set is a set of
+    its own numbers. ``per`` 0 is a bare amount, which states no count and reads per 1,000 with its mark."""
     own = (
         figure.value if isinstance(figure.value, tuple) else (figure.value,) if isinstance(figure.value, float) else ()
     )
-    form = money_form(amount * factor for amount in figure.amounts or own)
-    return form.for_change(figure.spread * factor) if figure.change and figure.spread is not None else form
+    ruler = money_ruler(figure.amounts or own, per=per, start=start)
+    if not figure.change:
+        return ruler
+    changes = (
+        figure.value if isinstance(figure.value, tuple) else (figure.value,) if isinstance(figure.value, float) else ()
+    )
+    return ruler.for_changes(changes, (figure.spread,) if figure.spread is not None else ())
 
-
-def _money(value: float, signed: bool, form: MoneyForm) -> str:
-    """Dollars as a key writes them: in its family's one form (:func:`_money_form`), ``$8/1000`` for a set too small
-    for cents, signed where the figure is a change."""
-    return form.spell(value, signed=signed)
-
-
-#: The most of what a cost counts a ``usd_per_1k`` key moves its ruler to, a family under a cent per 1,000 reading
-#: per 1,000,000 (as the options table and a chart do).
-_MOST_COUNTED = 1_000_000
 
 #: The spelling a figure on the ``usd_per_1m`` scale reads in without a filter: dollars with the words of what it
 #: counts, ``$180 per 1,000,000 turns``. No filter names it: a key's own spelling, never chosen.
@@ -6554,22 +6576,18 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
         if figure.scale not in _PER_THOUSAND_FACTORS:
             raise _refuse(figure.path, f"cannot read as dollars: it is on the {figure.scale} scale")
         if spelling == "usd":
-            return _Spelled(_money(value, signed, _money_form(figure, 1.0)))
-        # Per 1,000 of what the cost counts, or, where the family's least amount is under a cent even so, per
-        # 1,000,000: the ruler moves, never a per-1,000 mark stacked on a per-1,000 ruler (#993).
-        count, factor = 1_000, _PER_THOUSAND_FACTORS[figure.scale]
-        form = _money_form(figure, factor)
-        while form.per_thousand and count < _MOST_COUNTED:
-            count, factor = count * 1000, factor * 1000
-            form = _money_form(figure, factor)
-        return _Spelled(f"{_money(value * factor, signed, form)} {per_count(figure.per, count)}")
+            return _Spelled(_ruler(figure, per=0).spell(value, signed=signed))
+        # Per 1,000 of what the cost counts, or per 1,000,000 where the family is under a cent even so: the ruler
+        # moves (the one owner's rule), never a per-1,000 mark stacked on a per-1,000 ruler (#993).
+        ruler = _ruler(figure, per=_SCALE_COUNTS[figure.scale], start=1_000)
+        return _Spelled(f"{ruler.spell(value, signed=signed)} {ruler.words(figure.per)}")
     if spelling == "usd_whole":
         if figure.scale not in _PER_THOUSAND_FACTORS:
             raise _refuse(figure.path, f"cannot read as dollars: it is on the {figure.scale} scale")
         if abs(value) < _WHOLE_DOLLARS_FROM:
             raise _refuse(
                 figure.path,
-                f"is {_money(value, signed, _money_form(figure, 1.0))}, under ${format_number(_WHOLE_DOLLARS_FROM)}, "
+                f"is {_ruler(figure, per=0).spell(value, signed=signed)}, under ${format_number(_WHOLE_DOLLARS_FROM)}, "
                 "which whole dollars would "
                 "round away: write it with `usd`",
             )
@@ -6578,7 +6596,8 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
     if spelling == _PER_MILLION:
         # In its family's one form, as every other money key: a price per million of anything is whole dollars or near
         # it, so the form's cents are its precision.
-        return _Spelled(f"{_money(value, signed, _money_form(figure, 1.0))} {per_count(figure.per, 1_000_000)}")
+        ruler = _ruler(figure, per=1_000_000)
+        return _Spelled(f"{ruler.spell(value, signed=signed)} {ruler.words(figure.per)}")
     if spelling == "words":
         whole = round(value)
         if figure.scale != "count" or whole != value or whole < 0:
@@ -7225,6 +7244,7 @@ def figure_key_pages() -> dict[str, str]:
 
 
 __all__ = [
+    "cost_ruler",
     "FILTER_SPELLINGS",
     "PERCENTILE_NAMES",
     "WEAKEST_PREFIX",

@@ -68,7 +68,9 @@ from typing import Literal
 from threetears.evals.analysis.cell_mean import NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
+from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.charts import ChartReference, KitChart, LegendItem
+from threetears.evals.analysis.report.cost_unit import REPLIES, per_noun
 from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, format_figure, resolve
 from threetears.evals.analysis.report.plan_page.look import PageLook, Quantity, figure_text, quantity, series_token
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
@@ -81,6 +83,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     LINE_TEMPLATES,
     MISSING_TEMPLATE,
     REFERENCE_TEMPLATE,
+    MONEY_DRAWN_NOTE,
 )
 from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import criterion_aspect, criterion_place, lead_aspect
@@ -219,7 +222,9 @@ class Drawn:
 KindResolver = Callable[[ChartContext], Drawn]
 
 
-def chart_block(context: ChartContext, data: KitChart, *, read_at: str = "") -> ChartBlock:
+def chart_block(
+    context: ChartContext, data: KitChart, *, read_at: str = "", money: Iterable[tuple[str, Quantity]] = ()
+) -> ChartBlock:
     """The chart's block: its kind, its title and the kit's data, on the planned page's fixed section.
 
     :param context: The chart being resolved.
@@ -230,17 +235,36 @@ def chart_block(context: ChartContext, data: KitChart, *, read_at: str = "") -> 
         analysis computes (two arms' difference, a lever's effect) reads them at its quantity's unit, so a point
         prints to one decimal as its key and note do, never at the float's four figures; empty for the format's.
     :ptype read_at: str
+    :param money: Each money figure it draws, by key, with its quantity, so the block says what each is drawn per
+        (:func:`money_notes`, printed among code's lines under it).
+    :ptype money: Iterable[tuple[str, Quantity]]
     :return: The block.
     :rtype: ChartBlock
     """
     kind = context.spec.kind
     if kind == "table":
         raise context.refuse("a table is laid out as a table block, not drawn as a chart")
-    return ChartBlock(section=PLANNED_SECTION, chart=kind, title=context.title, data=data, unit=read_at)
+    return ChartBlock(
+        section=PLANNED_SECTION,
+        chart=kind,
+        title=context.title,
+        data=data,
+        unit=read_at,
+        drawn_per=money_notes(context.report_input, money),
+    )
 
 
-def _held_means(report_input: ReportInput, key: str) -> list[float]:
-    """Every mean the input holds for a measure or judged dimension: overall, per aspect, per task, stratum and cell."""
+def held_means(report_input: ReportInput, key: str) -> list[float]:
+    """Every mean the input holds for a measure or judged dimension: overall, per aspect, per task, stratum and cell;
+    the set a chart of its changes reads its money's ruler from (the amounts the changes compare).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param key: The measure or judged dimension.
+    :ptype key: str
+    :return: The means, as stored.
+    :rtype: list[float]
+    """
     stats: list[Stat] = []
     for table in (report_input.measures, report_input.judged):
         if key in table:
@@ -288,11 +312,11 @@ def figure_unit(report_input: ReportInput, key: str, *, kind: str | None = None,
         if unit == "pct":
             return "percent"
         if not unit and measure.grade in ("pass_fail", "class_label"):
-            return _rate_unit(_held_means(report_input, key))
+            return _rate_unit(held_means(report_input, key))
         return unit
     judged = report_input.judged.get(key)
     if judged is not None:
-        return _rate_unit(_held_means(report_input, key)) if judged.scale == "pass_fail" else "score"
+        return _rate_unit(held_means(report_input, key)) if judged.scale == "pass_fail" else "score"
     return ""
 
 
@@ -319,6 +343,69 @@ def measure_words(report_input: ReportInput, key: str, *, kind: str | None = Non
     if key in report_input.judged:
         return report_input.judged[key].label or measure_name(key)
     return measure_name(key)
+
+
+#: The scoreboard's money per reply, which counts replies; its other money (what the trials cost) is a total.
+_SCOREBOARD_PER_REPLY = "reply_cost_usd"
+
+
+def money_noun(report_input: ReportInput, key: str) -> str:
+    """What a money figure counts, as a plural noun: a measure's (:func:`~threetears.evals.analysis.report.cost_unit.
+    per_noun`), the scoreboard's cost per reply's replies; empty for a total and for no money."""
+    measure = report_input.measures.get(key)
+    if measure is not None:
+        return per_noun(measure)
+    return REPLIES if key == _SCOREBOARD_PER_REPLY else ""
+
+
+def money_words(
+    report_input: ReportInput, key: str, drawn: Quantity, *, kind: str | None = None, name: str = ""
+) -> str:
+    """What a reader calls a measure (:func:`measure_words`, or ``name`` where the chart names it otherwise) with the
+    count its money is drawn per in it, as the one owner of money's words writes it
+    (:meth:`~threetears.evals.analysis.report.plan_page.look.Quantity.label`): ``Cost per 1k calls`` drawn per
+    1,000,000 reads ``Cost per 1,000,000 calls``, never both counts; any other figure's words as they are.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param key: The measure, judged dimension or scoreboard figure.
+    :ptype key: str
+    :param drawn: How its figures are drawn.
+    :ptype drawn: Quantity
+    :param kind: A contrast's kind, where the key is a contrast's.
+    :ptype kind: str | None
+    :param name: The words the chart names it by, where not its measure's.
+    :ptype name: str
+    :return: The words.
+    :rtype: str
+    """
+    return drawn.label(name or measure_words(report_input, key, kind=kind), money_noun(report_input, key))
+
+
+def money_notes(report_input: ReportInput, drawn: Iterable[tuple[str, Quantity]]) -> list[str]:
+    """Code's line under a chart saying what its money is drawn per, where its figures do not say it themselves: money
+    drawn per more of what it counts than its own unit's figure states (money per reply per 1,000 replies, a price per
+    1,000 per 1,000,000), one line a figure, from the one owner of money's words; none for a total, or money drawn at
+    its own count.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param drawn: Each money figure the chart draws, by key, with its quantity.
+    :ptype drawn: Iterable[tuple[str, Quantity]]
+    :return: The lines.
+    :rtype: list[str]
+    """
+    lines: list[str] = []
+    for key, quantity_drawn in drawn:
+        if quantity_drawn.unit != MONEY or quantity_drawn.money is None or not quantity_drawn.counted:
+            continue
+        if quantity_drawn.counted == quantity_drawn.own:
+            continue
+        # The measure's words with the drawn count in them (its own count replaced, never a second beside it).
+        line = MONEY_DRAWN_NOTE.format(name=money_words(report_input, key, quantity_drawn))
+        if line not in lines:
+            lines.append(line)
+    return lines
 
 
 @dataclass(frozen=True)

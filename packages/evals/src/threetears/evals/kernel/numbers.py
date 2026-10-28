@@ -209,26 +209,33 @@ class MoneyForm:
         sign = "-" if amount < 0 and not zero else "+" if signed and amount > 0 and not zero else ""
         return f"{sign}${group_thousands(digits)}{PER_THOUSAND_MARK if self.per_thousand else ''}"
 
-    def for_change(self, width: float | None) -> MoneyForm:
-        """The form a change between members of the set reads in: the set's own (per 1,000 where the set is), to no
-        more decimals than the width of the change's interval supports.
+    def for_changes(self, changes: Iterable[float | None], widths: Iterable[float | None] = ()) -> MoneyForm:
+        """The form changes between members of the set read in: the set's own scale (per 1,000 where the set is), so
+        a change reads in the form of the amounts it compares, to the precision of the changes themselves and of the
+        intervals they are read with, never the amounts' own.
 
-        A change is a difference of two amounts, so it reads in their form; its interval says how much of it is known.
-        Two significant figures of the interval's width are what it supports: a change of $0.4924 on an interval
-        $0.64 wide reads ``+$0.49``, never ``+$0.492``. Money keeps cents or whole dollars, never one decimal.
+        Its decimals are the fewer of two: those that give the least non-zero change two significant figures (cents
+        at least, or whole dollars where every change is $10 or more), so a $0.40 change between monthly totals of
+        $1,208 does not read ``$0``; and those that two significant figures of the widest interval support, so a
+        change of $0.4924 on an interval $0.64 wide reads ``+$0.49``, never ``+$0.492``. Money keeps cents or whole
+        dollars, never one decimal.
 
-        :param width: The width of the change's interval, in dollars as stored; ``None`` where none is stated, which
-            leaves the set's own decimals.
-        :ptype width: float | None
-        :return: The change's form.
+        :param changes: The changes, in dollars as stored; ``None`` and non-finite ones are passed over.
+        :ptype changes: Iterable[float | None]
+        :param widths: The widths of the intervals they are read with, in dollars as stored; none for no interval,
+            which leaves the changes' own precision.
+        :ptype widths: Iterable[float | None]
+        :return: The changes' form.
         :rtype: MoneyForm
         """
-        if width is None or not math.isfinite(width) or width <= 0:
-            return self
-        scaled = width * (PER_THOUSAND if self.per_thousand else 1)
-        supported = max(0, 1 - math.floor(math.log10(scaled)))
+        factor = PER_THOUSAND if self.per_thousand else 1
+        own = _decimals(abs(change) * factor for change in changes if change is not None and math.isfinite(change))
+        stated = [width for width in widths if width is not None and math.isfinite(width) and width > 0]
+        if not stated:
+            return MoneyForm(per_thousand=self.per_thousand, decimals=own)
+        supported = max(0, 1 - math.floor(math.log10(max(stated) * factor)))
         supported = 2 if supported == 1 else supported
-        return MoneyForm(per_thousand=self.per_thousand, decimals=min(self.decimals, supported))
+        return MoneyForm(per_thousand=self.per_thousand, decimals=min(own, supported))
 
 
 def per_thousand_digits(digits: str) -> str:
@@ -244,7 +251,7 @@ def per_thousand_digits(digits: str) -> str:
     return f"{(Decimal(digits) * PER_THOUSAND).normalize():f}"
 
 
-def money_form(amounts: Iterable[float | None]) -> MoneyForm:
+def money_form(amounts: Iterable[float | None], *, marked: bool = True) -> MoneyForm:
     """The one form a set of amounts is spelled in (:class:`MoneyForm`), chosen from the whole set.
 
     Per 1,000 where any non-zero member is under a cent (:data:`CENT`) in magnitude; then whole dollars where the
@@ -255,20 +262,35 @@ def money_form(amounts: Iterable[float | None]) -> MoneyForm:
 
     :param amounts: Every amount the set holds, in dollars as stored.
     :ptype amounts: Iterable[float | None]
+    :param marked: Whether the surface can write the per-1,000 mark; False for one that cannot (a chart's ticks), whose
+        set under a cent reads in dollars to the decimals its least amount needs instead.
+    :ptype marked: bool
     :return: The set's form.
     :rtype: MoneyForm
     """
     stated = [abs(amount) for amount in amounts if amount is not None and math.isfinite(amount) and amount != 0]
     if not stated:
         return MoneyForm()
-    per_thousand = min(stated) < CENT
-    smallest = min(stated) * (PER_THOUSAND if per_thousand else 1)
+    per_thousand = marked and min(stated) < CENT
+    return MoneyForm(
+        per_thousand=per_thousand,
+        decimals=_decimals(amount * (PER_THOUSAND if per_thousand else 1) for amount in stated),
+    )
+
+
+def _decimals(magnitudes: Iterable[float]) -> int:
+    """The decimals a set of magnitudes, as a form writes them, is spelled to: none where the least non-zero one is
+    :data:`WHOLE_DOLLARS_FROM` or more, else those that give it two significant figures, and never fewer than cents."""
+    stated = [magnitude for magnitude in magnitudes if magnitude != 0]
+    if not stated:
+        return 2
+    smallest = min(stated)
     if smallest >= WHOLE_DOLLARS_FROM:
-        return MoneyForm(per_thousand=per_thousand, decimals=0)
+        return 0
     # Placed by the smallest member as rounded to two figures, so one that rounds across a power of ten (0.0996 to
     # 0.10) is written to the decimals of what it became.
     exponent = int(f"{smallest:.1e}".split("e")[1])
-    return MoneyForm(per_thousand=per_thousand, decimals=max(2, 1 - exponent))
+    return max(2, 1 - exponent)
 
 
 #: The multiple from which a multiple is written whole: ``21 times``, never ``21.05 times``.

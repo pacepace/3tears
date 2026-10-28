@@ -56,8 +56,14 @@ from collections.abc import Callable, Collection
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
 from threetears.evals.analysis.report.charts import ChartStatus
-from threetears.evals.analysis.report.cost_unit import PRICED_SHARE_TEMPLATE, per_count, per_one, priced_in_part
-from threetears.evals.analysis.report.figure_keys import Figure, cost_basis, format_figure, resolve
+from threetears.evals.analysis.report.cost_unit import (
+    PRICED_SHARE_TEMPLATE,
+    MoneyRuler,
+    money_ruler,
+    per_one,
+    priced_in_part,
+)
+from threetears.evals.analysis.report.figure_keys import Figure, cost_basis, cost_ruler, format_figure, resolve
 from threetears.evals.analysis.report.plan_page.charting import figure_stat, measure_words, stat_value
 from threetears.evals.analysis.report.plan_page.look import GATE_STATUS, ArmLook, PageLook
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION, PageArmsKey, PageOptions
@@ -84,7 +90,7 @@ from threetears.evals.analysis.report_gates import gate_check
 from threetears.evals.analysis.report_input import Pricing, ReportInput
 from threetears.evals.analysis.report_plan_checks import OPTION_COLUMN_FAMILIES
 from threetears.evals.analysis.report_rows import query_aspect
-from threetears.evals.kernel.numbers import UNPRICED, MoneyForm, money_form
+from threetears.evals.kernel.numbers import UNPRICED
 from threetears.evals.kernel.report_plan import ReportPlan
 
 __all__ = ["arms_key", "arms_table", "options_table"]
@@ -183,8 +189,15 @@ def _cost(column: str, arm: str, report_input: ReportInput, look: PageLook) -> T
     # Beside the cost, never in it: the cost counts the answered calls, so an arm whose calls went unanswered says how
     # many, where any did.
     if figure is not None:
+        # A cost over part of the arm's calls is a smaller total, never stated bare.
+        share = priced_in_part(report_input, arm)
+        marks += [share] if share is not None else []
         marks += _unanswered_marks(arm, report_input)
-    return TableCell(value=_said(figure, ("usd",)), flag="; ".join(marks) or None)
+    # Per the count the column's head names, by the one owner of money's scale (figure_keys.cost_ruler).
+    said = (
+        cost_ruler(report_input).spell(figure.value) if figure is not None and isinstance(figure.value, float) else None
+    )
+    return TableCell(value=said, flag="; ".join(marks) or None)
 
 
 def _unanswered_marks(arm: str, report_input: ReportInput) -> list[str]:
@@ -237,7 +250,7 @@ def _header(column: str, report_input: ReportInput) -> str:
     if family == "measure:<key>":
         return measure_words(report_input, column.removeprefix("measure:"))
     if family == "cost_per_1k":
-        return COST_HEADER.format(per=per_count(cost_basis(report_input).noun))
+        return COST_HEADER.format(per=cost_ruler(report_input).words(cost_basis(report_input).noun))
     return OPTION_HEADERS[family]
 
 
@@ -413,22 +426,16 @@ def _arm_costs(report_input: ReportInput, look: PageLook) -> tuple[str, dict[str
         for arm, figure in figures.items()
         if figure is not None and isinstance(figure.value, float) and not _part_priced(_pricing(report_input, arm))
     }
-    count, form = 1, money_form(per_run.values())
-    while form.per_thousand and count < _MOST_COUNTED:
-        count *= 1000
-        form = money_form(cost * count for cost in per_run.values())
-    header = COST_HEADER.format(per=per_one(noun) if count == 1 else per_count(noun, count))
-    cells = {arm.id: _arm_cost(arm.id, report_input, look, per_run, form, float(count)) for arm in report_input.arms}
+    # The one owner of money's scale states the column: per run, or per 1,000 (1,000,000) runs where a cost is under a
+    # cent per run (per 1,000).
+    ruler = money_ruler(per_run.values(), per=1, start=1)
+    header = COST_HEADER.format(per=per_one(noun) if ruler.counted == 1 else ruler.words(noun))
+    cells = {arm.id: _arm_cost(arm.id, report_input, look, per_run, ruler) for arm in report_input.arms}
     return header, cells
 
 
-#: The most runs the arms table's cost is stated per: a cost under a cent per 1,000 runs reads per 1,000,000, as a
-#: cost measure per 1,000,000 of what it counts states it.
-_MOST_COUNTED = 1_000_000
-
-
 def _arm_cost(
-    arm: str, report_input: ReportInput, look: PageLook, per_run: dict[str, float], form: MoneyForm, factor: float
+    arm: str, report_input: ReportInput, look: PageLook, per_run: dict[str, float], ruler: MoneyRuler
 ) -> TableCell:
     """One arm's cost cell in the column's form: its cost, then the uplift, the priced share and the unanswered calls."""
     pricing = _pricing(report_input, arm)
@@ -454,7 +461,7 @@ def _arm_cost(
     if share is not None:
         marks.append(share)
     marks += _unanswered_marks(arm, report_input)
-    return TableCell(value=form.spell(per_run[arm] * factor), flag="; ".join(marks) or None)
+    return TableCell(value=ruler.spell(per_run[arm]), flag="; ".join(marks) or None)
 
 
 def _priced_share(pricing: Pricing | None) -> str | None:

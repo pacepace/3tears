@@ -956,10 +956,9 @@ def _monthly_steps(held: ReportInput) -> Iterator[tuple[str, list[Price]]]:
 
 def test_a_prices_tables_money_reads_with_its_thousands_grouped_and_a_months_to_the_whole_dollar() -> None:
     """A step's price a month reads as its key reads under ``usd_whole`` (``$1,239``, never ``$1239``) where every step
-    on the axis is $10 or more, which whole dollars do not round away; under that, no price is rounded to the whole
-    dollar: each keeps every digit the number rule spells its value with, so its cents wherever it holds any (a price
-    of $1,000 or more the rule writes whole, and padding states no cent it was never rounded to). Either way no dollar
-    amount prints four digits ungrouped, in the table or in the bars' values."""
+    on the axis is $10 or more, which whole dollars do not round away; under that, the column reads in its prices' one
+    form (#993): cents at least, and as many more decimals as its least price needs. Either way no dollar amount prints
+    four digits ungrouped, in the table or in the bars' values."""
     whole_seen = cents_seen = False
     for name, held in fixture_inputs().items():
         for key, steps in _monthly_steps(held):
@@ -977,11 +976,13 @@ def test_a_prices_tables_money_reads_with_its_thousands_grouped_and_a_months_to_
                 assert cells == whole, (name, key)
                 whole_seen |= any(abs(value) >= 1000 for value in values)
             else:
-                # One form for the column (#993): every cell to the same decimals, each its own value at them, so no
-                # cell states a digit its value does not hold, and a price under $10 keeps its cents.
+                # One form for the column (#993): every cell to the decimals money_form gives the prices (cents at
+                # least, more where the least price needs them), each its own value at them, so no cell states a
+                # digit its value does not hold.
                 decimals = {len(cell.partition(".")[2]) for cell in cells}
-                assert len(decimals) == 1 and decimals != {0}, (name, key, cells)
+                assert decimals == {money_form(values).decimals}, (name, key, cells)
                 (places,) = decimals
+                assert places >= 2, (name, key, cells)
                 for cell, value in zip(cells, values, strict=True):
                     number = float(cell.lstrip("+-").removeprefix("$").replace(",", ""))
                     assert abs(number - abs(value)) <= 10.0**-places / 2 + 1e-12, (name, key, cell)

@@ -77,6 +77,7 @@ __all__ = [
     "ROLE_WORDS",
     "SERVED_BY_TEMPLATE",
     "UPLIFT_NOT_COMPARABLE",
+    "MONEY_DRAWN_NOTE",
     "RUN_TEMPLATE",
     "SYNTHETIC",
     "STATISTIC_NOTE",
@@ -209,6 +210,10 @@ SERVED_BY_TEMPLATE = "served by {providers}"
 #: An arm's priced share of the calls its cost counts, beside its cost: all of them, or how many of how many. A partly
 #: priced arm says the second in place of its cost, which would be a smaller total read as whole.
 ALL_PRICED_TEMPLATE = "all {calls} calls priced"
+
+#: Code's line under a chart whose money is drawn per more of what it counts than its figures state: money per reply
+#: drawn per 1,000 replies, a price per 1,000 drawn per 1,000,000 where one is under a cent (#993).
+MONEY_DRAWN_NOTE = "{name}, in dollars."
 
 #: The uplift beside an arm's cost where the control's cost counts only part of its calls: no ratio to a smaller total.
 UPLIFT_NOT_COMPARABLE = "no uplift: the control has {share}"

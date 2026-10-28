@@ -879,6 +879,14 @@ class ChartBlock(_Block):
         "its values at where its format names none (a point to one decimal); empty for none.",
     )
     zero_line: bool = Field(default=False, description="Whether the chart draws a line at zero (a difference's).")
+    drawn_per: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "Code's lines saying what the chart's money is drawn per, where its figures do not say it (#993): money per "
+            "reply drawn per 1,000 replies, a price per 1,000 drawn per 1,000,000; printed among the lines under it."
+        ),
+    )
     margin: float | None = Field(
         default=None, description="A margin band either side of zero, on the chart's ruler; None when none declared."
     )

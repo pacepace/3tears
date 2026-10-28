@@ -26,7 +26,8 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from typing import Any, get_args
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,7 @@ from threetears.evals.analysis.report.charts import even_precision
 from threetears.evals.analysis.report.figure_keys import Figure, format_figure, render, resolve
 from threetears.evals.analysis.report.plan_page.full_results import every_table
 from threetears.evals.analysis.report.plan_page.look import figure_text, quantity
+from threetears.evals.analysis.report.plan_page.model import PageChart
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report.plan_page.tables import arms_table
 from threetears.evals.kernel.report_plan import ChartQuery, PlanChartKind, PlannedChart
@@ -380,7 +382,7 @@ def test_a_money_change_reads_in_its_amounts_form_to_its_intervals_precision(nam
             continue
         means = [float(stat.mean) for stat in measure.per_arm.values() if stat.mean is not None]
         low, high = (float(end) for end in contrast.interval)
-        form = money_form(means).for_change(high - low)
+        form = money_form(means).for_changes([float(contrast.delta)], [high - low])
         text = format_figure(resolve(f"contrast.{contrast.arm}.{contrast.measure}.delta", held))
         assert text == form.spell(float(contrast.delta), signed=True)
         assert form.decimals <= max(2, 1 - math.floor(math.log10((high - low) * (1000 if form.per_thousand else 1))))
@@ -404,7 +406,9 @@ def test_a_cost_gap_reads_in_the_form_of_the_costs_it_compares(name: str) -> Non
     form = money_form(costs.values())
     first, second = list(costs)[:2]
     text = format_figure(resolve(f"cost.gap.{first}.{second}.per_1k", held), ("usd",))
-    assert text == form.spell(costs[first] - costs[second], signed=True)
+    # A gap takes its precision from its own size, in the form (the scale) of the costs it compares (#993).
+    gap = costs[first] - costs[second]
+    assert text == form.for_changes([gap]).spell(gap, signed=True)
 
 
 # --- the monthly figure reconciles -------------------------------------------------------------------------------
@@ -686,3 +690,228 @@ def test_a_row_that_did_not_count_its_calls_leaves_the_priced_share_uncounted() 
     _, bundle, _ = aspect_bundle(trials)
     priced = [row.pricing for row in bundle.scoreboard if row.pricing is not None and row.pricing.calls is None]
     assert priced and priced[0].priced_calls is None and priced[0].sources == ["openrouter:reported"]
+
+
+# --- every chart and table kind that draws money, on sets under a cent -------------------------------------------------
+
+#: The stat fields a planted set under a cent scales, as stored.
+_STAT_NUMBERS = ("mean", "half_width", "sem", "p50", "p95", "change")
+
+
+def _shrunk(node: Any, keys: frozenset[str], by: float) -> Any:
+    """A report input's document with every figure of the money measures ``keys`` (each arm's stats wherever they sit,
+    and each contrast on them) divided by ``by``."""
+    if isinstance(node, list):
+        return [_shrunk(item, keys, by) for item in node]
+    if not isinstance(node, dict):
+        return node
+    shrunk = {}
+    for name, value in node.items():
+        if name in keys and isinstance(value, dict) and "per_arm" not in value and "mean" in value:
+            shrunk[name] = _stat_shrunk(value, by)
+        else:
+            shrunk[name] = _shrunk(value, keys, by)
+    if shrunk.get("measure") in keys:
+        for field in ("delta", "threshold"):
+            if isinstance(shrunk.get(field), int | float):
+                shrunk[field] = shrunk[field] / by
+        if isinstance(shrunk.get("interval"), list):
+            shrunk["interval"] = [end / by for end in shrunk["interval"]]
+    return shrunk
+
+
+def _stat_shrunk(stat: dict[str, Any], by: float) -> dict[str, Any]:
+    out = dict(stat)
+    for field in _STAT_NUMBERS:
+        if isinstance(out.get(field), int | float):
+            out[field] = out[field] / by
+    if isinstance(out.get("ci"), list):
+        out["ci"] = [end / by for end in out["ci"]]
+    return out
+
+
+def _measures_shrunk(held: ReportInput, keys: frozenset[str], by: float) -> ReportInput:
+    data = held.model_dump(mode="json", by_alias=True)
+    for key in keys:
+        measure = data["measures"][key]
+        measure["per_arm"] = {arm: _stat_shrunk(stat, by) for arm, stat in measure["per_arm"].items()}
+        measure["by_aspect"] = {
+            aspect: {arm: _stat_shrunk(stat, by) for arm, stat in figures.items()}
+            for aspect, figures in measure.get("by_aspect", {}).items()
+        }
+    return ReportInput.model_validate(_shrunk(data, keys, by))
+
+
+def _under_a_cent() -> dict[str, tuple[ReportInput, str, str, str]]:
+    """Each planted input whose money is under a cent where its unit states it, with the money measure, what it counts,
+    the words its own unit's ruler reads (which no scaled chart may print) and the words it must read instead."""
+    r2 = _measures_shrunk(INPUTS["r2"], frozenset({"cost_per_1k"}), 1000.0)
+    r5 = _measures_shrunk(INPUTS["r5"], frozenset({"production_replicating_cost", "cost_usd"}), 1000.0)
+    rows = {
+        arm: row.model_copy(
+            update={
+                "reply_cost_usd": row.reply_cost_usd / 1000 if row.reply_cost_usd is not None else None,
+                "test_cost_usd": row.test_cost_usd / 10_000 if row.test_cost_usd is not None else None,
+            }
+        )
+        for arm, row in r5.scoreboard.items()
+    }
+    r5 = r5.model_copy(update={"scoreboard": rows})
+    return {
+        "r2 under a cent per 1,000 calls": (r2, "cost_per_1k", "per 1k calls", "per 1,000,000 calls"),
+        "r5 under a cent per 1,000 replies": (
+            r5,
+            "production_replicating_cost",
+            "per 1,000 replies",
+            "per 1,000,000 replies",
+        ),
+    }
+
+
+UNDER_A_CENT = _under_a_cent()
+
+
+def _queries(held: ReportInput, key: str) -> list[ChartQuery]:
+    """Every query a money chart can be asked on an input: each source, over every measure and over the money one,
+    and two arms compared."""
+    sources = get_args(ChartQuery.model_fields["source"].annotation)
+    arms = [arm.id for arm in held.arms]
+    queries = []
+    for source in sources:
+        # The scoreboard's own money: its cost per reply and its trials' total, which counts nothing.
+        named = [["reply_cost_usd"], ["test_cost_usd"]] if source == "scoreboard" else [[key]]
+        for measures in ([], *named):
+            queries.append(_query(source, measures))
+            queries.append(ChartQuery.model_validate({**_query(source, measures).model_dump(), "arms": arms[:2]}))
+    return queries
+
+
+def _drawn_money(held: ReportInput, key: str) -> list[tuple[str, PageChart]]:
+    """Every chart and table of every kind the page draws money on, on the input, as the page draws it."""
+    look = block_look(held, fact_arms(held))
+    drawn = []
+    for kind in get_args(PlanChartKind):
+        for query in _queries(held, key):
+            spec, faults = complete_chart(_planned(kind, query), held, "block")
+            if faults:
+                continue
+            try:
+                page = resolve_chart(spec, held, look, title="", fallback_title="t")
+            except UnresolvableReference:
+                # NOSILENT: a kind the input cannot draw over this query is no chart of money; the sweep reads on.
+                continue
+            if _draws_money(page):
+                drawn.append((f"{kind}/{query.source}/{','.join(query.measures) or 'all'}", page))
+    return drawn
+
+
+def _draws_money(page: PageChart) -> bool:
+    """Whether a drawn chart or table states some amount of money among the values it draws."""
+    if isinstance(page.chart, TableBlock):
+        return any("$" in cell.text for row in page.chart.rows for cell in row.values())
+    _, rows = page.chart.values_table()
+    return any("$" in cell for row in rows for cell in row)
+
+
+def _texts(node: Any) -> Iterator[str]:
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _texts(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _texts(value)
+
+
+def _page_texts(page: PageChart) -> list[str]:
+    if isinstance(page.chart, TableBlock):
+        headers = [column.header for column in page.chart.columns]
+        return [*headers, *(cell.text for row in page.chart.rows for cell in row.values()), *page.notes]
+    data = page.chart.data.model_dump(mode="json") if page.chart.data is not None else {}
+    _, rows = page.chart.values_table()
+    return [*_texts(data), *(cell for row in rows for cell in row), *page.notes]
+
+
+@pytest.mark.parametrize("name", sorted(UNDER_A_CENT))
+def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(name: str) -> None:
+    """Every chart and table kind that draws a set under a cent: it moves the ruler (no per-1,000 mark on a chart,
+    whose ticks cannot write one), never prints its own unit's ruler beside the moved one, and states the drawn count;
+    its ticks and its notes read in one form."""
+    held, key, stale, moved = UNDER_A_CENT[name]
+    drawn = _drawn_money(held, key)
+    kinds = {label.split("/")[0] for label, _ in drawn}
+    assert {"bars", "table", "dot_interval", "diverging_bars"} <= kinds or name.startswith("r2"), kinds
+    assert len(kinds) >= 3, kinds
+    for label, page in drawn:
+        texts = _page_texts(page)
+        joined = " | ".join(texts)
+        if isinstance(page.chart, ChartBlock):
+            assert "/1000" not in joined, (label, joined[:400])
+        assert stale not in joined, (label, joined[:600])
+        if key in label or label.endswith("/all"):
+            # A chart states the count it moved its ruler to; a table either does, or writes each amount with the
+            # per-1,000 mark (a figure key's own spelling, which a computed table prints as prose citing it does).
+            amounts = [text for text in texts if "$" in text]
+            stated = [
+                text
+                for text in amounts
+                if any(float(f"{found.group(2).replace(',', '')}.{found.group(3) or 0}") for found in _AMOUNT.finditer(text))
+            ]
+            marked = bool(stated) and all("/1000" in text for text in stated)
+            assert moved in joined or (isinstance(page.chart, TableBlock) and marked), (label, joined[:600])
+        if isinstance(page.chart, ChartBlock) and page.chart.data is not None:
+            dump = page.chart.data.model_dump(mode="json")
+            digits = {int(fmt.rsplit(":", 1)[1]) for fmt in _texts(dump) if re.fullmatch(r"\\+?usd:\\d", fmt)}
+            notes = [text for text in _texts({k: v for k, v in dump.items()}) if "$" in text]
+            if len(digits) == 1 and notes:
+                (places,) = digits
+                spelled = {decimals for per_thousand, decimals in _forms(notes) if not per_thousand}
+                assert spelled <= {places} | ({0} if places == 0 else set()), (label, places, notes[:6])
+
+
+def test_a_total_under_a_cent_is_never_scaled() -> None:
+    """A run's trials' cost counts nothing per anything: drawn as stored, never a thousand times over."""
+    held, *_ = UNDER_A_CENT["r5 under a cent per 1,000 replies"]
+    spec, faults = complete_chart(_planned("bars", _query("scoreboard", ["test_cost_usd"])), held, "block")
+    assert not faults, faults
+    page = resolve_chart(spec, held, block_look(held, fact_arms(held)), title="", fallback_title="t")
+    assert isinstance(page.chart, ChartBlock) and isinstance(page.chart.data, BarsChart)
+    rows = page.chart.data.rows or []
+    stored = {arm: row.test_cost_usd for arm, row in held.scoreboard.items()}
+    assert rows and all(row.value == pytest.approx(stored[row.id]) for row in rows)
+    assert not any("per 1,000" in note for note in page.notes)
+
+
+def test_a_change_chart_scales_by_its_amounts_never_by_an_interval_end_near_zero() -> None:
+    """r5's cost contrasts with one interval end planted within a cent of zero: the chart is drawn on the measure's
+    own ruler (per 1,000 replies), as its amounts are, never per 1,000,000 because of the end."""
+    held = INPUTS["r5"]
+    contrasts = [
+        c.model_copy(update={"interval": (0.0000001, c.interval[1])})
+        if c.measure == "production_replicating_cost" and c.interval
+        else c
+        for c in held.contrasts
+    ]
+    planted = held.model_copy(update={"contrasts": contrasts})
+    spec, faults = complete_chart(
+        _planned("diverging_bars", _query("contrasts", ["production_replicating_cost"])), planted, "block"
+    )
+    assert not faults, faults
+    page = resolve_chart(spec, planted, block_look(planted, fact_arms(planted)), title="", fallback_title="t")
+    joined = " | ".join(_page_texts(page))
+    assert "per 1,000,000" not in joined
+    assert "per 1,000 replies" in joined
+
+
+def test_a_change_under_50_cents_between_whole_dollar_amounts_never_reads_zero() -> None:
+    form = money_form([1208.0, 1208.4])
+    assert form.decimals == 0
+    assert form.for_changes([0.4]).spell(0.4, signed=True) == "+$0.40"
+    assert form.for_changes([0.4], [30.0]).decimals == 0, "an interval $30 wide supports no cents"
+
+
+def test_a_change_columns_precision_is_capped_by_its_widest_interval() -> None:
+    assert money_form([1.892, 2.427]).for_changes([0.4924, 0.616], [0.636, 0.474]).decimals == 2
+    assert money_form([1.892, 2.427]).for_changes([0.4924], [6.36]).decimals == 2
+    assert money_form([0.0012, 0.0015]).for_changes([0.000004], [0.002]).decimals == 2

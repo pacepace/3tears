@@ -32,7 +32,6 @@ axis's level names where the input's factors name them.
 
 from __future__ import annotations
 
-import dataclasses
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -62,6 +61,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     drawn_keys,
     figure_unit,
     measure_words,
+    money_words,
     missing_note,
     reference_line,
     slice_name,
@@ -71,7 +71,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     unit_refusal,
 )
 from threetears.evals.analysis.report.figure_keys import INTERVAL_TEMPLATE
-from threetears.evals.analysis.report.plan_page.look import Quantity, band_domain, figure_text, quantity
+from threetears.evals.analysis.report.plan_page.look import Quantity, band_domain, figure_text, in_change_form, quantity
 from threetears.evals.analysis.report.plan_page.words import (
     BELOW_TEMPLATE,
     CASES_TEMPLATE,
@@ -117,6 +117,7 @@ class _Matrix:
     rows: list[tuple[str, list[_Spot]]]
     reference: ChartReference | None
     drawn: Quantity
+    key: str = ""
 
 
 def _matrix_axes(context: ChartContext, cells: Sequence[Cell]) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
@@ -207,11 +208,12 @@ def _cell_matrices(context: ChartContext) -> tuple[list[_Matrix], list[str], lis
                 _Matrix(
                     title=_arm_name(context, arm),
                     arm=arm,
-                    subtitle=measure_words(context.report_input, key) if len(keys) > 1 else None,
+                    subtitle=money_words(context.report_input, key, drawn) if len(keys) > 1 else None,
                     columns=[name for _, name in column_levels],
                     rows=rows,
                     reference=line,
                     drawn=drawn,
+                    key=key,
                 )
             )
     return matrices, missing, counts
@@ -270,13 +272,14 @@ def _slice_matrices(context: ChartContext) -> tuple[list[_Matrix], list[str], li
             rows.append((name, row))
         matrices.append(
             _Matrix(
-                title=measure_words(context.report_input, key),
+                title=money_words(context.report_input, key, drawn),
                 arm="",
                 subtitle=None,
                 columns=[_arm_name(context, arm) for arm in whole],
                 rows=rows,
                 reference=line,
                 drawn=drawn,
+                key=key,
             )
         )
     return matrices, missing, counts
@@ -383,7 +386,8 @@ def _heatmap(context: ChartContext) -> Drawn:
             n_fmt=n_fmt,
             reference=first.reference,
         )
-    return Drawn(chart_block(context, data), missing_note(missing))
+    money = list(dict.fromkeys((matrix.key, matrix.drawn) for matrix in matrices if matrix.key))
+    return Drawn(chart_block(context, data, money=money), missing_note(missing))
 
 
 # --- diff_heatmap -------------------------------------------------------------------------------------------------
@@ -464,20 +468,28 @@ def _diff_heatmap(context: ChartContext) -> Drawn:
             figures[key] += [value for stat in (theirs, ours) if (value := _value(context, key, stat)) is not None]
     levels = unit_quantities(report_input, figures)
     level = levels[keys[0]]
-    change = quantity(figure_unit(report_input, keys[0]), change=True)
-    if level.money is not None:
-        # A difference reads in the form of the amounts it compares (#993), drawn at their factor.
-        change = dataclasses.replace(change, money=level.money, fmt=f"+{level.fmt}", factor=level.factor)
+    if columns == [measure_words(report_input, key) for key in keys]:
+        # Columns that name the measures say what their money is drawn per (the one owner of money's words).
+        columns = [money_words(report_input, key, levels[key]) for key in keys]
     base_name, compared_name = _arm_name(context, base), _arm_name(context, compared)
-    rows: list[DiffHeatmapRow] = []
+    pairs: dict[tuple[str, str], tuple[float, float]] = {}
     for row_name, line in places:
-        drawn_cells = []
         for key, theirs, ours, column in line:
             pair = _difference(context, key, theirs, ours)
             if pair is None:
                 raise context.refuse(f"{base_name} or {compared_name} holds no figure at {row_name} · {column}")
             factor = levels[key].factor
-            mine, other = pair[0] * factor, pair[1] * factor
+            pairs[row_name, column] = (pair[0] * factor, pair[1] * factor)
+    # The differences on the amounts' own ruler, in the changes' form (#993): never the amounts' decimals alone, which
+    # would read a $0.004 difference between $0.30 and $0.304 as $0.00.
+    change = in_change_form(level, [mine - other for mine, other in pairs.values()])
+    if level.money is None:
+        change = quantity(figure_unit(report_input, keys[0]), change=True)
+    rows: list[DiffHeatmapRow] = []
+    for row_name, line in places:
+        drawn_cells = []
+        for _, _, _, column in line:
+            mine, other = pairs[row_name, column]
             drawn_cells.append(
                 DiffHeatmapCell(
                     value=mine - other,
@@ -502,7 +514,7 @@ def _diff_heatmap(context: ChartContext) -> Drawn:
         saturate=None if rate or not largest else largest,
     )
     note = DIFFERENCE_NOTE.format(compared=compared_name, base=base_name, unit=POINTS_WORDS if rate else UNIT_WORDS)
-    return Drawn(chart_block(context, data), (note,))
+    return Drawn(chart_block(context, data, money=[(key, levels[key]) for key in keys]), (note,))
 
 
 # --- confusion ----------------------------------------------------------------------------------------------------

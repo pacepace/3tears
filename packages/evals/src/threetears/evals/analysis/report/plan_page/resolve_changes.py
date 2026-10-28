@@ -59,8 +59,10 @@ from threetears.evals.analysis.report.plan_page.charting import (
     contrast_words,
     figure_stat,
     figure_unit,
+    held_means,
     interval_words,
     measure_words,
+    money_words,
     missing_note,
     reference_line,
     separated,
@@ -74,8 +76,9 @@ from threetears.evals.analysis.report.plan_page.look import (
     Quantity,
     centred_domain,
     figure_text,
-    in_one_form,
+    in_change_form,
     quantity,
+    quantity_of,
 )
 from threetears.evals.analysis.report.plan_page.words import (
     BASIS_NOTE,
@@ -134,20 +137,51 @@ class _Change:
     short_label: str | None = None
 
 
-def _in_one_form(changes: list[_Change], drawn: Quantity) -> tuple[list[_Change], Quantity]:
-    """A chart's money changes in one form (#993), chosen from every change it draws and each interval's ends, where
-    they were drawn one at a time (a quantity made before its changes were read): the quantity in that form
-    (:func:`~threetears.evals.analysis.report.plan_page.look.in_one_form`), each change redrawn at its factor and its
-    note and tip respelled in it. Changes of any other unit, or already in one form, are returned as they are."""
-    if drawn.unit != MONEY or drawn.money is not None or not changes:
+def _in_one_form(
+    context: ChartContext, keys: Sequence[str], changes: list[_Change], drawn: Quantity
+) -> tuple[list[_Change], Quantity]:
+    """A chart's money changes on one ruler (#993): the ruler of the amounts they compare (every mean the input holds
+    of the chart's measures, by the one owner of money's scale), so a change chart scales as its source set does and
+    never because an interval end sits near zero; in the changes' own form, capped by their widest interval. Each
+    change is redrawn at that ruler's factor, its note and tip respelled in it, and its measure's words name what its
+    money is drawn per. Changes of any other unit are returned as they are.
+
+    :param context: The chart being resolved.
+    :ptype context: ChartContext
+    :param keys: The measures the changes are on.
+    :ptype keys: Sequence[str]
+    :param changes: The changes, drawn at ``drawn``.
+    :ptype changes: list[_Change]
+    :param drawn: Their unit's change quantity, as :func:`quantity` makes it.
+    :ptype drawn: Quantity
+    :return: The changes and their quantity.
+    :rtype: tuple[list[_Change], Quantity]
+    """
+    report_input = context.report_input
+    money = [key for key in keys if quantity(figure_unit(report_input, key)).unit == MONEY]
+    if drawn.unit != MONEY or not money or not changes:
         return changes, drawn
-    settled = in_one_form(drawn, [number for change in changes for number in (change.value, *(change.interval or ()))])
-    scale = settled.factor / drawn.factor
+    amounts = quantity_of(
+        figure_unit(report_input, money[0]), [mean for key in money for mean in held_means(report_input, key)]
+    )
+    scale = amounts.factor / drawn.factor
+    settled = in_change_form(
+        amounts,
+        [change.value * scale for change in changes],
+        [abs(change.interval[1] - change.interval[0]) * scale for change in changes if change.interval is not None],
+    )
+    names = {measure_words(report_input, key): money_words(report_input, key, settled) for key in money}
 
     def respelled(text: str, numbers: Sequence[float]) -> str:
         for number in numbers:
             text = text.replace(figure_text(number, drawn), figure_text(number * scale, settled))
-        return text
+        return relabelled(text)
+
+    def relabelled(text: str | None) -> str:
+        for old, new in names.items():
+            if text and old != new:
+                text = text.replace(old, new)
+        return text or ""
 
     redrawn = []
     for change in changes:
@@ -159,9 +193,17 @@ def _in_one_form(changes: list[_Change], drawn: Quantity) -> tuple[list[_Change]
                 interval=(change.interval[0] * scale, change.interval[1] * scale) if change.interval else None,
                 note=respelled(change.note, numbers),
                 tip=[respelled(line, numbers) for line in change.tip],
+                label=relabelled(change.label),
+                group=relabelled(change.group) if change.group is not None else None,
             )
         )
     return redrawn, settled
+
+
+def _drawn_money(context: ChartContext, drawn: Quantity) -> list[tuple[str, Quantity]]:
+    """Each measure a change chart reads, with the one quantity its changes are drawn as (the one-unit rule)."""
+    keys = dict.fromkeys([*context.query.measures, *(row.key for row in context.rows() if row.key)])
+    return [(key, drawn) for key in keys]
 
 
 @dataclass(frozen=True)
@@ -266,7 +308,8 @@ def _contrast_changes(
                     panel=named if panelled else None,
                 )
             )
-    return (*_in_one_form(changes, drawn or quantity("points")), _missing_contrasts(context, contrasts))
+    keys = [group.key for group in groups]
+    return (*_in_one_form(context, keys, changes, drawn or quantity("points")), _missing_contrasts(context, contrasts))
 
 
 def _missing_contrasts(context: ChartContext, contrasts: Sequence[Contrast]) -> tuple[str, ...]:
@@ -368,7 +411,8 @@ def _figure_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tup
             if change is not None:
                 group = measure_words(report_input, key) if grouped else None
                 changes.append(_with_group(change, group))
-    return (*_in_one_form(changes, drawn), (UNCORRECTED_NOTE,) if any(c.strong is not None for c in changes) else ())
+    notes = (UNCORRECTED_NOTE,) if any(c.strong is not None for c in changes) else ()
+    return (*_in_one_form(context, keys, changes, drawn), notes)
 
 
 def _with_group(change: _Change, group: str | None, label: str | None = None) -> _Change:
@@ -403,7 +447,7 @@ def _slice_changes(context: ChartContext) -> tuple[dict[str, list[_Change]], Qua
                     by_arm.setdefault(arm, []).append(_with_group(change, None, label=where))
     notes = (UNCORRECTED_NOTE,) if any(c.strong is not None for rows in by_arm.values() for c in rows) else ()
     # One form across every arm's changes (#993), each arm's rows kept in order.
-    flat, settled = _in_one_form([change for rows in by_arm.values() for change in rows], drawn)
+    flat, settled = _in_one_form(context, keys, [change for rows in by_arm.values() for change in rows], drawn)
     redrawn = iter(flat)
     return {arm: [next(redrawn) for _ in rows] for arm, rows in by_arm.items()}, settled, notes
 
@@ -482,7 +526,7 @@ def _lever_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tupl
                     group=factor.name or factor.id,
                 )
             )
-    return (*_in_one_form(changes, drawn), (LEVER_NOTE,))
+    return (*_in_one_form(context, [key], changes, drawn), (LEVER_NOTE,))
 
 
 # --- rows an analysis computes: two arms' difference, and the lever effects ----------------------------------------
@@ -589,13 +633,14 @@ def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tu
                 strong=item.excludes_zero,
             )
         )
+    changes, drawn = _in_one_form(context, [key], changes, drawn)
     named = COMPARE_NOTE.format(
         first=_arm_name(context, first),
         second=_arm_name(context, second),
-        measure=measure_words(context.report_input, key),
+        measure=money_words(context.report_input, key, drawn),
     )
     basis = tuple(dict.fromkeys(BASIS_NOTE.format(basis=basis) for basis in bases))
-    return (*_in_one_form(changes, drawn), (named, *basis, *narrow_notes(context)))
+    return changes, drawn, (named, *basis, *narrow_notes(context))
 
 
 def narrow_notes(context: ChartContext) -> tuple[str, ...]:
@@ -767,8 +812,9 @@ def _lever_rows(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[s
     if len({change.group for change in changes}) == 1:
         changes = [_with_group(change, None) for change in changes]
     crossed = LEVERS_INTERACTION_NOTE if any(isinstance(row.item, InteractionRow) for row in rows) else ""
-    note = LEVERS_NOTE.format(measure=measure_words(context.report_input, key), interactions=crossed)
-    return (*_in_one_form(changes, drawn), (f"{note} {LEVERS_READ_NOTE}",))
+    changes, drawn = _in_one_form(context, [key], changes, drawn)
+    note = LEVERS_NOTE.format(measure=money_words(context.report_input, key, drawn), interactions=crossed)
+    return changes, drawn, (f"{note} {LEVERS_READ_NOTE}",)
 
 
 # --- the charts ----------------------------------------------------------------------------------------------------
@@ -825,7 +871,7 @@ def _forest(context: ChartContext) -> Drawn:
         reference=reference,
         emphasis=context.emphasis,
     )
-    return Drawn(chart_block(context, data), notes)
+    return Drawn(chart_block(context, data, money=_drawn_money(context, drawn)), notes)
 
 
 def _bar_row(change: _Change, level: str) -> BarRow:
@@ -935,7 +981,7 @@ def _diverging(context: ChartContext) -> Drawn:
             reference=reference,
             emphasis=context.emphasis,
         )
-    return Drawn(chart_block(context, data, read_at=read_at), notes)
+    return Drawn(chart_block(context, data, read_at=read_at, money=_drawn_money(context, drawn)), notes)
 
 
 #: The kinds this module resolves.
