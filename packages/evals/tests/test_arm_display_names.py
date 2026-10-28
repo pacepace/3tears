@@ -22,7 +22,7 @@ declared name for it (a factor's), else the package's reader name (``chunk token
 from __future__ import annotations
 
 import html
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from functools import cache
 from typing import Any
 
@@ -37,6 +37,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
 )
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.toyhost_plan import prose_reply
 from threetears.evals.analysis import build_code_only_report, report_html, report_markdown
 from threetears.evals.analysis.analyst.snapshot import analyst_input
 from threetears.evals.analysis.arms import arm_names
@@ -48,14 +49,24 @@ from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.doc_page.text import above_appendix_text
-from threetears.evals.analysis.report.figure_keys import printed_arm_name
+from threetears.evals.analysis.plan_assembly import check_structure, planned_report, prose_slots, read_prose
+from threetears.evals.analysis.report.build import contrast_rows
+from threetears.evals.analysis.report.figure_keys import printed_arm_name, render
+from threetears.evals.analysis.report.plan_page.build import plan_page
+from threetears.evals.analysis.report.plan_page.markdown import planned_page_markdown
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.words import printed_arm_labels
 from threetears.evals.analysis.report.model import Report
 from threetears.evals.analysis.report_decision import every_caveat
 from threetears.evals.analysis.report_doc_checks import check_report_doc
 from threetears.evals.analysis.report_input import Factor, Level, ReportInput
-from threetears.evals.analysis.service import assemble_campaign_bundle
+from threetears.evals.analysis.report_plan_facts import complete_plan, plan_facts
+from threetears.evals.analysis.service import assemble_campaign_bundle, campaign_report
 from threetears.evals.analysis.style import arm_display_name, arm_name
+from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.report_doc import ReportDoc
+from threetears.evals.kernel.report_plan import PlanProse, PlanStructure, ReportPlan
 
 #: Each run's chunk size and retriever depth: the control first, then a candidate moving the chunk size, then one
 #: moving both.
@@ -79,9 +90,11 @@ _WHOLE: dict[str, Any] = {
 }
 
 
-def _bundle(*, control_label: str | None = None, control_short_name: str | None = None) -> CampaignBundle:
-    """The toy campaign over :data:`_RUNS`, its control named from the first run (relabelled and short-named where
-    given): its other two arms are derived."""
+def _campaign(
+    *, control_label: str | None = None, control_short_name: str | None = None
+) -> tuple[EvalHost, EvalCampaign]:
+    """The toy host holding the campaign over :data:`_RUNS`, its control named from the first run (relabelled and
+    short-named where given): its other two arms are derived."""
     profile = toyhost_profile()
     host = toyhost_host(profile=profile)
     batches = [
@@ -126,6 +139,12 @@ def _bundle(*, control_label: str | None = None, control_short_name: str | None 
         ]
         campaign = campaign.model_copy(update={"arms": arms})
         host.storage.save_campaign(campaign)
+    return host, campaign
+
+
+def _bundle(*, control_label: str | None = None, control_short_name: str | None = None) -> CampaignBundle:
+    """The campaign's bundle (:func:`_campaign`)."""
+    host, campaign = _campaign(control_label=control_label, control_short_name=control_short_name)
     return assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
 
 
@@ -355,16 +374,25 @@ def test_every_surface_of_the_documents_page_prints_the_one_name() -> None:
         assert "Run " + _PRINTED[1] in written
 
 
+def _capitalised_as_rendered(text: str, report_input: ReportInput, arm_names: Mapping[str, str]) -> str:
+    """The mutation's prose renderer: every arm's name capitalised as the prose is rendered, not where it is made."""
+    return render(text, report_input, {arm: name[:1].upper() + name[1:] for arm, name in arm_names.items()})
+
+
 def test_a_name_capitalised_in_prose_rendering_instead_fails_the_surfaces_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The mutation: the input's name left as the levers spell it (the rule not called where the name is made) and
-    the page's prose capitalising it as it renders. The tables and the chart then print the other name, so the check
-    above fails: the name is made in one place, never in prose rendering."""
-    monkeypatch.setattr("threetears.evals.analysis.report_input_build.arm_display_name", lambda name, levers: name)
+    the page's prose capitalising it as it renders. The prose then prints the capitalised name while the tables and
+    the chart print the other, so the check above fails: the name is made in one place, never in prose rendering."""
+    monkeypatch.setattr("threetears.evals.analysis.report.words.arm_display_name", lambda name, levers: name)
+    monkeypatch.setattr("threetears.evals.analysis.report.doc_page.build.render", _capitalised_as_rendered)
     unmade = analyst_input(_bundle())
     assert {arm.id: arm.name for arm in unmade.arms}[_candidate(1)] == _COMPUTED[1]
     page = build(_draft(unmade), unmade, strict=True)
+    surfaces = _doc_page_surfaces(page)
+    assert _PRINTED[1] in surfaces["prose"][0], "the control: the mutation capitalises the prose"
+    assert _COMPUTED[1] in " | ".join(surfaces["options"]), "the control: the tables print the name as made"
     with pytest.raises(AssertionError):
         _assert_printed_everywhere(page)
 
@@ -407,20 +435,108 @@ def test_the_code_only_page_prints_a_computed_name_by_the_same_rule() -> None:
 
 
 def test_the_configuration_column_names_each_setting_by_its_reader_name_and_keeps_values_as_written() -> None:
-    """A setting with no declared name reads by the package's reader name (``chunk tokens``, never ``chunk_tokens``),
-    the model and every value as written."""
+    """A setting reads by the package's reader name (``chunk tokens``, never ``chunk_tokens``), the model and every
+    value as written."""
     settings = dict(zip(_cells(_page().arms_key.table, "arm"), _cells(_page().arms_key.table, "settings"), strict=True))
     assert settings["control"] == "extractor-v2 · chunk tokens 256tok · retriever top k 3"
     assert settings[_PRINTED[2]] == "extractor-v2 · chunk tokens 1024tok · retriever top k 5"
     assert not any("_" in cell for cell in settings.values())
 
 
-def test_a_setting_the_input_names_reads_by_that_name() -> None:
-    """A factor the input declares for a setting names it: ``Chunk size 256tok``; the others fall back."""
+def test_the_arm_column_and_the_configuration_column_name_a_lever_alike() -> None:
+    """One reader-name source names a lever in both columns of a row (``humanize``): the computed arm name's
+    ``Chunk tokens`` is the Configuration column's ``chunk tokens``, never a factor's other name for it, even where the
+    input declares one."""
     held = _input()
     named = held.model_copy(
         update={"factors": [Factor(id="chunk_tokens", name="Chunk size", levels=[Level(id="256tok")])]}
     )
     page = build(_draft(named), named, strict=True)
-    (control,) = [row for row in page.arms_key.table.rows if row["arm"].value == "control"]
-    assert control["settings"].value == "extractor-v2 · Chunk size 256tok · retriever top k 3"
+    rows = {row["arm"].value: row["settings"].value for row in page.arms_key.table.rows}
+    assert rows[_PRINTED[2]] == "extractor-v2 · chunk tokens 1024tok · retriever top k 5"
+    assert str(rows[_PRINTED[2]]).split(" · ")[1].removesuffix(" 1024tok") == _PRINTED[2].split(" 1024tok")[0].lower()
+    assert not any("Chunk size" in str(value) for value in rows.values())
+
+
+# --- one campaign, every surface -------------------------------------------------------------------------------------
+
+
+def _plan(report_input: ReportInput) -> ReportPlan:
+    """A decide-mode plan over the input, drawing code's spine (a forest of contrasts) on one measure, with prose for
+    every key it creates: what a planned campaign page lays out."""
+    facts = plan_facts(report_input)
+    # The control is the one option code finds at least as good as every other, so the plan recommends it.
+    recommended = next(arm.id for arm in report_input.arms if arm.role == "control")
+    rows = [{"option": recommended, "role": "recommended"}] + [
+        {"option": arm.id, "role": "control" if arm.role == "control" else "alternative"}
+        for arm in report_input.arms
+        if arm.id != recommended
+    ]
+    landings = [
+        {
+            "caveat": caveat.id,
+            "at": "confidence"
+            if caveat.reach == "report"
+            else ("method.0" if caveat.reach == "method" else "decision.watch"),
+        }
+        for caveat in facts.caveats
+        if not caveat.checked
+    ]
+    chart = {
+        "kind": facts.spine.kind,
+        "query": {**_WHOLE, "source": facts.spine.source or "contrasts", "measures": ["field_accuracy"]},
+        "reference": [],
+        "emphasis": "",
+    }
+    structure = {
+        "mode": "decide",
+        "headline_kind": "decision",
+        "confidence": "low",
+        "caveat_landings": landings,
+        "options": {"rows": rows},
+        "summary": [],
+        "sections": [{"id": "outcomes", "chart": chart}],
+        "explore": [],
+        "method_items": 3,
+        "durable_claims": [{"confidence": "low", "keys": [f"pass_rate.{recommended}"]}],
+    }
+    chosen = PlanStructure.model_validate(structure)
+    check_structure(chosen, report_input, facts, facts.allowed_modes)
+    prose = read_prose(PlanProse.model_validate(prose_reply(report_input, structure)), prose_slots(chosen, facts))
+    return complete_plan(planned_report(chosen, prose, facts), report_input, facts)
+
+
+def test_one_campaign_prints_each_derived_arm_one_way_on_every_surface() -> None:
+    """The campaign's page (its readings and every aspect's fold), the plan page, the document's page, the code-only
+    page and quick's contrast rows: each prints both candidates capitalised, none the name as the levers spell it, so a
+    planned campaign page, which lays a plan page over the folds, reads one name throughout."""
+    host, campaign = _campaign()
+    bundle = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
+    held = analyst_input(bundle)
+    page = campaign_report(host, campaign.id, campaign.scope_id)
+    surfaces = {
+        "campaign page": campaign_report_markdown(page),
+        "campaign folds": " | ".join(report_markdown(fold.report) for fold in page.aspects),
+        "plan page": planned_page_markdown(plan_page(_plan(held), held)),
+        "document page": doc_page_markdown(build(_draft(held), held, strict=True)),
+        "code-only page": report_markdown(_code_only()),
+        "quick's contrasts": " | ".join(
+            f"{row['contrast']} / {row['control']}" for row in contrast_rows(bundle.aspects[0])
+        ),
+    }
+    for where, text in surfaces.items():
+        assert all(printed in text for printed in _PRINTED.values()), (where, text[:400])
+        assert not any(computed in text for computed in _COMPUTED.values()), where
+
+
+def test_the_campaign_pages_readings_print_the_name_and_the_bundle_keeps_the_label_it_read() -> None:
+    """The campaign page relabels its readings for print, in every label and every reason naming the arm; the readings
+    the bundle froze, which its fingerprint reads, keep the label they were read under."""
+    host, campaign = _campaign()
+    bundle = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
+    labels = bundle.readings.arm_labels()
+    printed = bundle.readings.relabelled(printed_arm_labels(bundle)).arm_labels()
+    keys = {arm.variant_key: arm.label for arm in bundle.arms if arm.label in _COMPUTED.values()}
+    assert {labels[key] for key in keys} == set(_COMPUTED.values())
+    assert {printed[key] for key in keys} == set(_PRINTED.values())
+    assert bundle.readings.relabelled({}) is bundle.readings

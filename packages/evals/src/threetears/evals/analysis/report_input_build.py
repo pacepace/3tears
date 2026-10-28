@@ -98,9 +98,9 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Unanswered,
 )
-from threetears.evals.analysis.report.words import declared_arm_names
+from threetears.evals.analysis.report.words import declared_arm_names, printed_arm_labels
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.analysis.style import arm_display_name, measure_name
+from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
@@ -294,16 +294,15 @@ class _Builder:
         seen: set[str] = set()
         roles = {key: arm.role for arm in bundle.arms for key in bundle.arm_keys(arm)}
         declared = declared_arm_names(bundle.arms)
-        # The arms a person named: every other arm's label is computed from its levers (a derived campaign arm, or a
-        # variant no arm names), so it is printed by the one display-name rule.
-        given = {named for arm in bundle.declaration.arms for named in bundle.arm_keys(arm)}
+        # The name each arm is printed by: a label a person gave as written, one code computed by the display rule.
+        printed = printed_arm_labels(bundle)
         for key in [*(arm.variant_key for arm in bundle.arms), *entries]:
             label = self.arm(key)
             if label in seen:
                 continue
             seen.add(label)
             levers = self.levers(key, entries)
-            name = label if key in given else arm_display_name(label, levers)
+            name = printed.get(key, label)
             model = served.get(label) or levers.pop(CANDIDATE_MODEL_LEVER, (None, None))[1]
             levers.pop(CANDIDATE_MODEL_LEVER, None)
             if roles.get(key) != "control" and control is not None:

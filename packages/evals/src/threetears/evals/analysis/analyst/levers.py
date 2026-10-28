@@ -33,8 +33,10 @@ the interval's level. Nothing here is a significance test.
 differ in exactly one other setting: the second move's effect minus the first's (``difference``). Two moves between
 the same two values are the same move whichever way each was listed; the second is read in the first's direction
 (from the first's starting value), so an interaction is found however the arms are ordered. Four arms crossing two
-settings are one interaction, listed once: one setting's move across the other, never that and the other's move across
-the first too, which is the same difference of differences. Its interval is recovered
+settings are read twice, each setting's move across the other: one difference of differences, but two pairs of effects
+and two verdicts. Where the verdicts agree, one reading is listed, the first setting's by id, whatever the arms' order;
+where they differ (one setting's effect reverses across the other while the other's does not), both are, so no
+reversal is hidden. Its interval is recovered
 from the two effects' intervals by the method of variance estimates recovery (MOVER; Zou and Donner, 2008), four
 distinct arms read as independent: for effects ``a`` (interval ``l_a`` to ``u_a``) and ``b`` (``l_b`` to ``u_b``),
 the difference ``d = b - a`` runs from ``d - sqrt((b - l_b)^2 + (u_a - a)^2)`` to ``d + sqrt((u_b - b)^2 +
@@ -339,13 +341,8 @@ def _crossed(
 ) -> list[tuple[_Move, _Move, str]]:
     """Every two moves of one setting between the same two values whose contexts differ in exactly one other setting,
     with that setting: in the moves' order, the second read in the first's direction (flipped where it was listed the
-    other way round), so the arms' order never hides one.
-
-    One interaction per four arms: the same four, read as the other setting's move across this one (``retry`` across
-    ``reasoning`` beside ``reasoning`` across ``retry``), are one difference of differences, so the first found stands
-    for them and the other is not listed again."""
+    other way round), so the arms' order never hides one."""
     found: list[tuple[_Move, _Move, str]] = []
-    squares: set[frozenset[str]] = set()
     for index, one in enumerate(moves):
         setting, first, second = one
         for two in moves[index + 1 :]:
@@ -361,12 +358,39 @@ def _crossed(
                 settings[second][setting] == settings[end][setting]
             )
             across = lever_of(settings, first, start)
-            square = frozenset({first, second, start, end})
             if same and across not in (None, setting) and lever_of(settings, second, end) == across:
-                if square not in squares:
-                    squares.add(square)
-                    found.append((one, (setting, start, end), str(across)))
+                found.append((one, (setting, start, end), str(across)))
     return found
+
+
+def _one_reading_per_square(
+    crossed: Sequence[tuple[_Move, _Move, str]], verdicts: Sequence[LeverVerdict]
+) -> list[tuple[_Move, _Move, str]]:
+    """The crossings listed: one per four arms where its readings agree, both where they do not.
+
+    The four arms two settings cross are read twice, each setting's move across the other (``retry`` across
+    ``reasoning``, ``reasoning`` across ``retry``): one difference of differences, but two pairs of effects, two
+    intervals and two verdicts. Where the verdicts agree, the reading of the first setting by id stands for both,
+    whatever order the arms are listed in. Where they differ (one setting's effect reverses across the other while
+    the other's does not), both are listed, so no reversal is hidden.
+
+    :param crossed: Every crossing, in listing order (:func:`_crossed`).
+    :ptype crossed: Sequence[tuple[_Move, _Move, str]]
+    :param verdicts: Each crossing's verdict, in the same order.
+    :ptype verdicts: Sequence[LeverVerdict]
+    :return: The crossings kept, in listing order.
+    :rtype: list[tuple[_Move, _Move, str]]
+    """
+    squares: dict[frozenset[str], list[int]] = {}
+    for at, (one, two, _across) in enumerate(crossed):
+        squares.setdefault(frozenset({one[1], one[2], two[1], two[2]}), []).append(at)
+    kept: set[int] = set()
+    for readings in squares.values():
+        if len({verdicts[at] for at in readings}) > 1:
+            kept.update(readings)
+        else:
+            kept.add(min(readings, key=lambda at: (crossed[at][0][0], crossed[at][2])))
+    return [pair for at, pair in enumerate(crossed) if at in kept]
 
 
 def _interaction_row(
@@ -471,6 +495,8 @@ def lever_effects(
             parameters=("place_filter",) if place_filter is not None else ("measure_key",),
         )
     crossed = _crossed(settings, moves)
+    read = [_interaction_row(report_input, settings, pair, measure_key, place_filter).verdict for pair in crossed]
+    crossed = _one_reading_per_square(crossed, read)
     moves.sort(key=lambda move: not _has_interval(report_input, _move_stem(move, measure_key, place_filter)))
     crossed.sort(key=lambda pair: not _has_interval(report_input, _crossing_stem(pair, measure_key, place_filter)))
     total = len(moves) + len(crossed)

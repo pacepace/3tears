@@ -97,7 +97,7 @@
       "id": "R12",
       "verdict": "fail",
       "reason": "The 1190 figure counts every case across all five suites, but the sentence calls them all multi-turn, and only the Troubleshooting suite (180 cases) is the multi-turn one.",
-      "quote": "1,190 distinct multi-turn evaluation cases distributed across five designated task suites.",
+      "quote": "1190 distinct multi-turn evaluation cases distributed across five designated task suites.",
       "labeled_by": "model"
     }
   ],

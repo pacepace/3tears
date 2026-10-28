@@ -91,18 +91,24 @@ the `report_read` lines (:441 and the transcripts paragraph) say a `plan` analys
 
 ### evals: a computed lever arm name reads one way on every surface; the arms key names settings in words; the kit writes a per-1,000 tick
 
-**Changed:** an arm name the engine computes from an arm's levers is capitalised where it is made, so prose, the arms
-key, the options table, a chart's labels and the code-only page all print `Fanout 2` (owner, 2026-10-28: "people might
-think Fanout 1 is different from fanout 1"). It applies to a derived campaign arm (one no person named) and to a name a
-code-only page spells from the levers, when it opens on a lever's name; a level value (`careful`), a model's name, a
-label a person gave and a declared short name print as written. The arm's id (the campaign's derived label), its
-variant key and the `axis=level` names are unchanged, so figure keys and stored documents still name arms by id, and
-prose typing the id stands, since it differs from the printed name only in case. A campaign with derived lever arms
-gets a new report input digest and snapshot id; one whose arms are named or named by model does not.
+**Changed:** an arm name the engine computes from an arm's levers is capitalised where it is made, so every surface
+prints `Fanout 2` (owner, 2026-10-28: "people might think Fanout 1 is different from fanout 1"): the document's page
+(prose, the arms key, the options table, a chart's labels), the plan page, the campaign page (its own readings and
+every aspect's fold), a code-only page, and quick's contrast rows. It applies to a derived campaign arm (one no arm of
+the campaign's declaration names) and to a name a code-only page spells from the levers, when it opens on a lever's
+name; a level value (`careful`), a model's name, a label a person gave and a declared short name print as written.
+The arm's id (the campaign's derived label), its variant key and the `axis=level` names are unchanged, so figure keys
+and stored documents still name arms by id, and prose typing the id stands, since it differs from the printed name
+only in case. **For a host:** a served campaign page's `readings` print the name too (`arm_label`, `control_label`,
+`first_label`, `second_label`, `ahead_label` and each `reason`, by the arm's variant key); the readings a bundle
+freezes, and its fingerprint, keep the label they were read under. quick's `contrasts()` rows key `contrast` and
+`control` by the printed name (`Callable prompt v2, model a`, where it read `callable prompt v2, model a`). A campaign
+with derived lever arms gets a new report input digest and snapshot id; one whose arms are named or named by model
+does not.
 
-**Changed:** the arms key's Configuration column names each setting in words: the name the report input declares
-for it (a factor's), else the package's reader name (`fanout 1 · research timeout 30s · reply limit 45s`, where it
-read `research_timeout 30s · reply_limit 45s`). The model and every value read as written.
+**Changed:** the arms key's Configuration column names each setting in words, by the reader name a computed arm name
+spells it with, so the two columns of a row name a lever alike (`fanout 1 · research timeout 30s · reply limit 45s`,
+where it read `research_timeout 30s · reply_limit 45s`). The model and every value read as written.
 
 **Changed:** a chart of totals under a cent (a run's trials' cost) reads per 1,000 with the mark, `$8.00/1000`, on its
 ticks, its labels and its values table, as a key and a table write it; it read in dollars to its least total's
@@ -115,8 +121,9 @@ carries no script, needs nothing.
 **Fixed:** what the misfit reviews of the W3 acceptance runs found on the page. A values table no longer prints a Note
 that only restates its row's value (`+2` beside `+2`, `+0.8 pts` beside `+0.8`); a note that says more (`worse`) stays.
 A count key groups its thousands (`4,000,000 a month`, where it read `4000000`). The levers block
-lists each interaction of four arms once, where it listed it once per setting (`reasoning effect, across retry` and
-`retry effect, across reasoning`, one difference of differences). The full gate grid reads a cell the input holds no
+lists the four arms two settings cross once where its two readings agree (`reasoning effect, across retry` beside
+`retry effect, across reasoning`, one difference of differences, both within), by the first setting's reading, and
+both where their verdicts differ, so a reversal one reading shows is never hidden. The full gate grid reads a cell the input holds no
 figure for as `Unknown (no figure)`, where it read `Fails (no figure)`, as the page reads it everywhere else.
 
 ### evals: the analyst's capability gaps are stored durably, and `analyst_gaps_list` digests them as issue text

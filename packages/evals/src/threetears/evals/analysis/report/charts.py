@@ -426,15 +426,15 @@ def _interval(spec: str, low: float | None, high: float | None, read_at: str = "
 
 def _restates(note: str | None, value: float | None, said: str, spec: str, read_at: str) -> bool:
     """Whether a row's note only restates its value, the label a chart draws at the bar's end: the value as the table
-    writes it (``said``), or that value with a unit beside it, as a rate or a change in points spells it (``+0.8 pts``
-    beside ``+0.8``), so a values table never prints one figure twice, in two columns. A note that says more
-    (``worse``, ``-7.6 pts worse``) is kept. Only the code's own spellings of the row's own number are compared: no
-    word of the note is read."""
+    writes it (``said``), or that value with the unit the row is read in beside it (the block's ``read_at`` or its
+    format's own: ``+0.8 pts`` beside ``+0.8`` read in points), so a values table never prints one figure twice, in two
+    columns. A note that says more (``worse``, ``-7.6 pts worse``), or names another unit, is kept. Only the code's own
+    spellings of the row's own number are compared: no word of the note is read."""
     match = _FORMAT_SPEC.fullmatch(spec)
     if note is None or value is None or not math.isfinite(value) or match is None:
         return False
     spellings = {said}
-    for unit in {read_at, _FORMAT_UNITS.get(match[2], ""), PERCENT, POINTS} - {"", MONEY}:
+    for unit in {read_at, _FORMAT_UNITS.get(match[2], "")} - {"", MONEY}:
         spellings.add(signed_with_unit(value, unit) if match[1] else with_unit(value, unit))
         spellings.add(f"{said}{unit}" if unit in UNSPACED_UNITS else f"{said} {unit}")
     return note in spellings

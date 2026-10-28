@@ -73,7 +73,7 @@ from threetears.evals.analysis.report.model import TrialDetail
 from threetears.evals.analysis.report.plan_page.build import plan_page
 from threetears.evals.analysis.report.plan_page.words import MADE_TEMPLATE
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
-from threetears.evals.analysis.report.words import campaign_arm_tags, declared_arm_names
+from threetears.evals.analysis.report.words import campaign_arm_tags, declared_arm_names, printed_arm_labels
 from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
 from threetears.evals.analysis.report_doc_store import StoredReportPage, read_report_doc
 from threetears.evals.schema.base import EvalBaseModel
@@ -1823,8 +1823,12 @@ def _campaign_page(
     :return: The page.
     :rtype: CampaignReport
     """
-    labels = bundle.readings.arm_labels()
-    tags = campaign_arm_tags(bundle.aspects, bundle.readings.control)
+    # Every arm by the name every page prints it by (a computed lever name capitalised, a given label as written):
+    # the folds and the campaign's own readings alike, the readings the bundle froze left as read.
+    printed = printed_arm_labels(bundle)
+    readings = bundle.readings.relabelled(printed)
+    labels = readings.arm_labels()
+    tags = campaign_arm_tags(bundle.aspects, readings.control)
     declared = declared_arm_names(bundle.arms)
     writer = analysis_writer(analysis) if analysis is not None else None
     checked = fingerprints or {}
@@ -1845,7 +1849,7 @@ def _campaign_page(
     memo = analysis.document if analysis is not None else None
     page = build_campaign_report(
         campaign,
-        bundle.readings,
+        readings,
         reports,
         memo,
         call=campaign.call,

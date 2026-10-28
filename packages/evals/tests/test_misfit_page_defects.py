@@ -11,7 +11,8 @@ are fixed and pinned here:
   interval's ends by the number rule one by one; one precision for the three is a figure-key rule, filed apart.)*
 - **An ungrouped volume** (``the declared volume of 4000000 a month``): a count key groups its thousands.
 - **One interaction printed twice** (``reasoning effect, across retry`` and ``retry effect, across reasoning``, both
-  -0.5): four arms crossing two settings are one interaction, listed once.
+  -0.5): four arms crossing two settings are listed once where the two readings' verdicts agree, both where they
+  differ, so no reversal is hidden.
 - **"Fails (no figure)" in the gate grid** for a cell the page reads as unknown: the full gate grid says ``Unknown``
   where the input holds no figure, never a fail.
 """
@@ -122,20 +123,22 @@ def test_a_count_key_groups_its_thousands() -> None:
     assert "the declared volume of 4,000,000 a month" in _page_markdown("r2-with-one-gate")
 
 
-def test_four_arms_crossing_two_settings_are_one_interaction() -> None:
-    """r2's arms cross three settings (3 models, 3 reasoning levels, 2 retries): 36 squares of four arms, each one
-    interaction, never one per setting moved across the other."""
+def test_four_arms_whose_two_readings_agree_are_one_interaction() -> None:
+    """r2's arms cross three settings (3 models, 3 reasoning levels, 2 retries): 36 squares of four arms, each read
+    twice. A square is listed twice only where its two readings' verdicts differ (test_analyst_levers holds which);
+    the one the review saw, both readings within, is listed once."""
     effects = lever_effects(fixture_inputs()["r2"], "pass_rate", limit=1000)
-    squares = [
-        frozenset(
+    squares: dict[frozenset[str], list[str]] = {}
+    for row in effects.interactions:
+        # Each arm id holds dots, so a square is read as the set of the parts its two effects' keys name.
+        parts = frozenset(
             part
             for figure in (row.first, row.second)
             for part in figure.key.removeprefix(f"lever.{row.setting}.").removesuffix(".pass_rate.effect").split(".")
         )
-        for row in effects.interactions
-    ]
-    assert len(effects.interactions) == 36
-    assert len(set(squares)) == len(squares)
+        squares.setdefault(parts, []).append(row.verdict)
+    assert len(squares) == 36
+    assert all(len(verdicts) == 1 or len(set(verdicts)) == len(verdicts) for verdicts in squares.values())
     page = _page_markdown("r2-with-its-gates-read-in-each-task")
     assert "reasoning effect, across retry" in page and "retry effect, across reasoning" not in page
 
