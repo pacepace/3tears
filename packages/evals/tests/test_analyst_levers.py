@@ -14,8 +14,9 @@ Contracts held here (``threetears.evals.analysis.report.figure_keys``'s lever fa
 - **the interactions**: each pairs two effects of one move whose starting and ending arms differ in exactly one other
   setting (``across``); its difference is the second effect minus the first, its interval recovered from theirs; its
   verdict follows from the intervals (reverses, differs, within) or is ``no_interval``; a fixture holds a reversal;
-  every such pair of moves is listed once, however the arms are ordered (a move listed the other way round is read in
-  the first's direction);
+  every four arms such a pair spans are listed once, by one of their readings, however the arms are ordered (a move
+  listed the other way round is read in the first's direction), since the other setting's moves across the first are
+  the same difference of differences;
 - **the order**: effects, then interactions; within each, the rows with an interval first;
 - **the refusals**: arms varying no setting, arms none of which differ in one setting alone (naming what a pair also
   differs in), a setting, place or measure the snapshot does not hold, and a measure no lever pair holds overall, each
@@ -388,17 +389,22 @@ def _reordered(held: ReportInput) -> ReportInput:
 
 
 @pytest.mark.parametrize("name", ["r2", "r2 reordered"])
-def test_every_two_moves_of_one_setting_one_context_apart_are_listed_once_however_the_arms_are_ordered(
+def test_every_four_arms_crossing_two_settings_are_one_interaction_listed_once_however_the_arms_are_ordered(
     name: str,
 ) -> None:
+    """Every two moves of one setting one context apart are an interaction, and the four arms they span are one: the
+    same four read as the other setting's moves are the same difference of differences, so each four arms are listed
+    once, by one of their readings (the misfit review of r2, which printed one interaction twice)."""
     held = _reordered(INPUTS["r2"]) if name == "r2 reordered" else INPUTS[name]
     key = "pass_rate"
     read = lever_effects(held, key, limit=10_000)
     listed = _listed_crossings(read, key, None)
     expected = _expected_crossings(held, key, None)
     assert expected, "the control: the input holds moves one context apart"
-    assert len(listed) == len(set(listed)), "each once"
-    assert set(listed) == expected
+    squares = [frozenset(arm for move in crossing for arm in move) for crossing in listed]
+    assert set(listed) <= expected
+    assert len(squares) == len(set(squares)), "each four arms once"
+    assert set(squares) == {frozenset(arm for move in crossing for arm in move) for crossing in expected}
 
 
 def _one_arm_uncounted(held: ReportInput) -> ReportInput:

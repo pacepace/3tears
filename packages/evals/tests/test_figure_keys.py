@@ -354,7 +354,12 @@ class TestFilters:
     def test_int_separates_thousands(self):
         assert _figure("meta.volume_per_month", "int", name="r4") == "12,000,000"
         assert _figure("measure.latency_ms.atlas-m.high.r1.p95", "int", name="r2") == "2,551"
-        assert _figure("meta.volume_per_month", name="r4") == "12000000"
+
+    def test_a_bare_count_separates_thousands_too(self):
+        """A count read in a sentence groups its thousands with no filter (the misfit review's ``the declared volume of
+        4000000 a month``); a number on another scale keeps the number rule's ungrouped digits."""
+        assert _figure("meta.volume_per_month", name="r4") == "12,000,000"
+        assert _figure("measure.latency_ms.atlas-m.high.r1.p95", name="r2") == "2551 ms"
 
     def test_pct10_rounds_to_the_nearest_ten(self):
         assert _figure("strata.off_lane.loss_share", "pct10") == "50%"

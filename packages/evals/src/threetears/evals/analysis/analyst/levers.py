@@ -32,7 +32,9 @@ the interval's level. Nothing here is a significance test.
 **An interaction** compares the same move (the same setting, between the same two values) made in two contexts that
 differ in exactly one other setting: the second move's effect minus the first's (``difference``). Two moves between
 the same two values are the same move whichever way each was listed; the second is read in the first's direction
-(from the first's starting value), so an interaction is found however the arms are ordered. Its interval is recovered
+(from the first's starting value), so an interaction is found however the arms are ordered. Four arms crossing two
+settings are one interaction, listed once: one setting's move across the other, never that and the other's move across
+the first too, which is the same difference of differences. Its interval is recovered
 from the two effects' intervals by the method of variance estimates recovery (MOVER; Zou and Donner, 2008), four
 distinct arms read as independent: for effects ``a`` (interval ``l_a`` to ``u_a``) and ``b`` (``l_b`` to ``u_b``),
 the difference ``d = b - a`` runs from ``d - sqrt((b - l_b)^2 + (u_a - a)^2)`` to ``d + sqrt((u_b - b)^2 +
@@ -337,8 +339,13 @@ def _crossed(
 ) -> list[tuple[_Move, _Move, str]]:
     """Every two moves of one setting between the same two values whose contexts differ in exactly one other setting,
     with that setting: in the moves' order, the second read in the first's direction (flipped where it was listed the
-    other way round), so the arms' order never hides one."""
+    other way round), so the arms' order never hides one.
+
+    One interaction per four arms: the same four, read as the other setting's move across this one (``retry`` across
+    ``reasoning`` beside ``reasoning`` across ``retry``), are one difference of differences, so the first found stands
+    for them and the other is not listed again."""
     found: list[tuple[_Move, _Move, str]] = []
+    squares: set[frozenset[str]] = set()
     for index, one in enumerate(moves):
         setting, first, second = one
         for two in moves[index + 1 :]:
@@ -354,8 +361,11 @@ def _crossed(
                 settings[second][setting] == settings[end][setting]
             )
             across = lever_of(settings, first, start)
+            square = frozenset({first, second, start, end})
             if same and across not in (None, setting) and lever_of(settings, second, end) == across:
-                found.append((one, (setting, start, end), str(across)))
+                if square not in squares:
+                    squares.add(square)
+                    found.append((one, (setting, start, end), str(across)))
     return found
 
 

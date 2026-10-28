@@ -6629,6 +6629,8 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
     if figure.unit in _KEPT_UNITS:
         return _Spelled(f"{spell_multiple(value)} {figure.unit}")
     text = format_number(value)
+    # A count in a sentence groups its thousands (4,000,000 a month), as ``words`` and ``int`` spell it.
+    text = group_thousands(text) if figure.scale == "count" else text
     text = _plus(text, value) if signed else text
     if not figure.unit:
         return _Spelled(text)
