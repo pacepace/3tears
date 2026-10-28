@@ -41,8 +41,6 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from dataclasses import replace
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as distribution_version
 from typing import TYPE_CHECKING, Protocol
 
 from threetears.evals.analysis.aspects import aspect_view
@@ -80,6 +78,7 @@ from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.reads import hold_to_read_budget
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.campaign import EvalInsight, derive_window
+from threetears.evals.kernel.build_stamp import package_version
 from threetears.evals.kernel.judge_cases import JUDGE_KIND
 from threetears.evals.kernel.declaration import aware_instant, resolve_control_arm
 from threetears.evals.kernel.host.profile import HostProfile
@@ -874,7 +873,7 @@ def assemble_context_bundle(
     bundle.case_sets = sorted(
         {run.case_set for run in runs if run.case_set is not None}, key=lambda ref: (ref.name, ref.version)
     )
-    bundle.package_version = _package_version()
+    bundle.package_version = package_version()
     # Divergences pair measures by unit, which only the catalog knows, so they are derived
     # after it — and from the same descriptors the generator will read, never a second lookup
     # that could disagree with what the bundle says a measure is.
@@ -975,19 +974,6 @@ def _stratum_names(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate
             ", ".join(sorted(map(repr, clashing))),
         )
     return {stratum: name for stratum, name in names.items() if name not in clashing}
-
-
-def _package_version() -> str | None:
-    """The installed 3tears-evals version, or None when this build carries no distribution metadata.
-
-    A source tree on the path (the installability check, a vendored checkout) has none; the bundle then says it
-    cannot name its build rather than naming a wrong one.
-    """
-    try:
-        return distribution_version("3tears-evals")
-    except PackageNotFoundError:
-        # NOSILENT: no metadata is a build fact the bundle states as None, and the report prints it as unrecorded
-        return None
 
 
 def _declared_words(declaration: MeasureDeclaration) -> str:

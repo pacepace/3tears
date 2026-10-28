@@ -370,7 +370,17 @@ CORE_SCHEMA_VERSION: int = 15
 #:   writer wrote is one such row, every turn it sent counted. Each is left out of the document when unset, so a row
 #:   of one call is stored byte for byte as before; the ledger's readers read a row without them as one call.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 10
+#: - **v15.11** — a run says which build launched it, what its simulated user was told, and what its host disclosed:
+#:   ``EvalRun.package_version`` and ``EvalRun.package_rev`` (the installed 3tears-evals version, and the git commit its
+#:   installer recorded; each default None: no metadata, no recorded commit, or stored before the field existed),
+#:   ``EvalRun.simulator_prompt_digest`` (the content address of the simulated user's prompts, beside
+#:   ``simulator_asked_settings``; default None: no simulated user, or stored before the field existed) and
+#:   ``EvalRun.run_disclosure`` (a ``RunDisclosure``: the host's disclosed values and statements about the launch;
+#:   default None: none disclosed, or stored before the field existed). Each is left out of the document when unset,
+#:   so a run setting none is stored byte for byte as before. None is in any identity, context or variant key, cell or
+#:   confound; the disclosure is carried into the bundle, so a run setting one moves its bundle's fingerprint.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 11
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

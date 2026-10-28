@@ -297,6 +297,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "kernel/judge_profiles.py": {},
     "kernel/judge_temperature.py": {},
     "kernel/usage_capture.py": {},
+    "kernel/build_stamp.py": {},
     "schema/world_events.py": {},
     "kernel/world_session.py": {},
     "gen/__init__.py": {},

@@ -327,9 +327,12 @@ PINNED: dict[str, str] = {
 #: What the writer is sent over the fixture, naming nothing and naming everything. No run, cell, pool, pairing or
 #: fingerprint keys on it, so it is pinned apart from :data:`PINNED`: it moves whenever the writer's view does, and
 #: the names reach it, since the writer names an aspect by its short name and a check by its display name.
+#: Re-pinned in W4 (ENGINE) when the bundle's census began reading each arm's pricing off its production usage rows
+#: (``ArmScoreboard.pricing``): the fixture's runs carry such rows, so the writer is sent each arm's price sources,
+#: providers and priced calls. Nothing a name moves; no fingerprint moves (the owner's ruling keeps pricing out of them).
 PINNED_WRITER_MESSAGES: dict[bool, str] = {
-    False: "a1f054d06768eafd96a8a121486511ebc60742bd3a1522bbc9ec81eb9a46b05e",
-    True: "637d16a2d12009bf465a6ce55d034c9db7b3d2c96d3ef25f001fab19234f8937",
+    False: "6a1bbe9f0579ecd673aa57c18e69df4199ea0d66c1f7a1091cfe5ec935db859d",
+    True: "7bf7a21b2370ef488d1bfb06d7dd173188a2214be2008394cb68c0cd553b79cf",
 }
 
 #: The fixture's stored documents naming nothing, as the tree at ``00107a5b7`` wrote them (:func:`documents`).
@@ -339,9 +342,11 @@ PINNED_WRITER_MESSAGES: dict[bool, str] = {
 #: differently, so its raw bytes differ between hosts while its identity does not. Its two values were computed by
 #: building this fixture on a checkout of ``00107a5b7``. The template and the campaign hold no computed figure and
 #: are pinned byte for byte.
+#: The two bundles were re-pinned in W4 (ENGINE) for the census's pricing alone: less ``scoreboard[].pricing`` each
+#: digests to the value ``00107a5b7`` wrote, so the names still move nothing.
 PINNED_DOCUMENTS: dict[str, str] = {
-    "Queue discipline under a full queue bundle": "288ea2bcd8e5712056b228e0b9d9f2ec7a06142980e05bbe7c3031ba3dbabe8e",
-    "Queue discipline under an empty queue bundle": "afacd41e1d17fed851434d220fede231de4dd800d96556371bf427585a490f20",
+    "Queue discipline under a full queue bundle": "2ab949ec0dd4ee2c362000ca8b90ccd5da0a2197874c1660452488a289aab561",
+    "Queue discipline under an empty queue bundle": "f645d767ce42d6cd087f2b9cf75761ce08095a766756ea4990987351c92ee0a7",
     "campaign": "6c2b383b36fc2664a2457021aac7d61d330ed17119760d15694105bb2a99c215",
     "template": "ebdd07699d7ce094a952d8f66505439368260a790589e08f69ae10ad3c10c755",
 }

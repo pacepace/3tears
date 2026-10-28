@@ -139,10 +139,40 @@ has 850 of 897 calls priced`). Everywhere else such an amount is stated, its fig
 uplift or gap), a chart's bars, dots, points and lattice tiles, and a task matrix's costs say the priced share beside
 it. The new "Priced by" column names each arm's price sources and the providers that served its calls. They come from
 a new optional `ScoreboardRow.pricing` on the report input (price sources, serving providers, calls and priced
-calls), left out of the document while unset so every stored input digests as it did. Nothing fills it from a
-campaign's stored usage yet: reading it into the bundle's census moves the pinned campaign fingerprints, which waits
-on its own decision (#1011). Token-metered calls record no upstream serving provider yet (#1010). Monthly figures
+calls), left out of the document while unset so every stored input digests as it did. The bundle's census fills it
+from each arm's stored production usage rows (see the next entry). Token-metered calls record no upstream serving provider yet (#1010). Monthly figures
 still appear only where the campaign declares a volume.
+
+### evals: each arm's pricing is read off its usage rows and moves no fingerprint; a run says which build launched it and what its host disclosed
+
+**Added:** the bundle's census reads how each arm's production cost was priced (`ArmScoreboard.pricing`, an
+`ArmPricing`: the price sources its priced rows name, the providers its rows name, the calls counted and priced) off
+the usage rows of the roles a production deployment pays for, never the judge's. The report input copies it into
+`ScoreboardRow.pricing`, so the options table's "Priced by" column and priced share are filled on a real campaign
+(#1011). **The price source is no part of any fingerprint** (owner ruling, 2026-10-28): `AnalysisContextBundle.
+fingerprint`, `evidence_digest`, `CampaignBundle.fingerprint` and `campaign_evidence_digest` leave each arm's pricing
+out, so every stored analysis and reporter case fingerprints as it did, and two bundles over the same runs priced by
+different sources share a fingerprint. A report snapshot's content address (`report_input_digest`) does include it, so
+two inputs priced differently are two snapshots. The document of a bundle over runs with production usage rows, and
+the memo writer's message over it, now carry the pricing.
+
+**Added:** a run records which build launched it: `EvalRun.package_version` (the installed 3tears-evals version) and
+`EvalRun.package_rev` (the git commit its installer recorded in the distribution's `direct_url.json`, written for an
+install from a git URL; `None` for a wheel from an index, an editable or local-directory install, or no metadata, never
+a guess). A run that pins a simulated user records `EvalRun.simulator_prompt_digest`, the content address of what the
+simulated user is told, beside `simulator_asked_settings`: it moves with an actor's policy or intent, the scheduler, the
+round's cap or any of the engine's own words its calls carry (prompts, reply formats, the scheduler's repair).
+
+**Added:** a host may disclose what it knows about each launch (its machine, that machine's load, how it measures
+latency) by setting `LaunchHost.run_disclosure`, a callable returning a `RunDisclosure` (`values`, each by the host's
+own name, and `statements`, in its own words). The launch stamps it on every run of every kind, the engine's judge kind
+included, as `EvalRun.run_disclosure`; the bundle carries it on each run summary's `RunApparatus.run_disclosure`, the
+report input on its rig (`RunRig.disclosure`), and `campaign_overview` on the rig row, by run (`RigRow.disclosed`). It
+is a disclosure, never a coordinate: it is in no identity, context key, cell, confound or apparatus class, and runs
+that disclose different machines share one rig row. It is evidence the bundle carries, so a run carrying one moves
+its bundle's fingerprint and a snapshot's id. A disclosure callable that fails, or returns no `RunDisclosure`, refuses
+the launch naming `LaunchHost.run_disclosure`. Every new field is left out of its document when unset, so a run,
+bundle or input with none stores and digests as before. Core schema v15.11.
 
 ### evals: `analysis_generate` writes the report with the analyst and the report editor, on the host's model and budget
 

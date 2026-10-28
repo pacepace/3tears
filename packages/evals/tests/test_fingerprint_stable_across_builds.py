@@ -74,8 +74,14 @@ _NOT_EVIDENCE = ("package_version", "first_result_at")
 
 
 def _v1_aspect(document: dict[str, Any]) -> str:
-    """An aspect bundle's fingerprint as version 1 took it: every float in full, no prefix."""
-    return canonical_digest({key: value for key, value in document.items() if key not in _NOT_EVIDENCE})
+    """An aspect bundle's fingerprint as version 1 took it: every float in full, no prefix, over the document as a build
+    of that version wrote it, so with no census pricing (``scoreboard[].pricing``), which no such build read."""
+    held = {key: value for key, value in document.items() if key not in _NOT_EVIDENCE}
+    if "scoreboard" in held:
+        held["scoreboard"] = [
+            {key: value for key, value in row.items() if key != "pricing"} for row in held["scoreboard"]
+        ]
+    return canonical_digest(held)
 
 
 def _v1_campaign(document: dict[str, Any]) -> str:

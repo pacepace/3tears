@@ -79,6 +79,7 @@ from threetears.evals.schema.models import (
     GoalCheckProof,
     RubricAxis,
     RubricScale,
+    RunDisclosure,
 )
 from threetears.evals.kernel.surface import (
     CellFacts,
@@ -1085,8 +1086,9 @@ class RunApparatus(EvalDocumentModel):
     Copied off the run (:class:`~threetears.evals.schema.models.EvalRun`), never derived: which model each judged
     dimension was asked of, what every judge call was asked for and at what temperature, the simulated user's model,
     whether latency was under test, how the run's arm shared time with the others, how many cells ran at once, the
-    scale each rubric dimension was answered on, and the execution mode each result recorded. A field the run left
-    unset is None (or empty) here too: not recorded, never a default standing in for it.
+    scale each rubric dimension was answered on, the execution mode each result recorded, and what the launching host
+    disclosed about the launch. A field the run left unset is None (or empty) here too: not recorded, never a default
+    standing in for it.
 
     Provisional: shaped by the first host that read a report's apparatus, and kept or removed by whether a second
     host's adoption uses it (``docs/adopting-a-host.md``, "Provisional mechanisms").
@@ -1137,6 +1139,17 @@ class RunApparatus(EvalDocumentModel):
         description=(
             "The run's results by the execution mode each recorded (`serial`, `concurrent`); a result that recorded "
             "none is counted under no mode. Empty = no result recorded one."
+        ),
+    )
+    # Left out of the document while unset, so a run whose host disclosed nothing summarises, and is fingerprinted, as
+    # one did before the field existed.
+    run_disclosure: RunDisclosure | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What the launching host disclosed about the launch (`EvalRun.run_disclosure`): its machine, load and how "
+            "it measures. A disclosure, never a coordinate: no cell, confound or apparatus class reads it. None = the "
+            "host disclosed nothing."
         ),
     )
 
@@ -2544,6 +2557,29 @@ class RoleUnanswered(EvalDocumentModel):
         return None if reasons is None else dict(sorted(reasons.items(), key=lambda item: (-item[1], item[0])))
 
 
+class ArmPricing(EvalDocumentModel):
+    """How one arm's cost was priced, read off the usage rows of the roles its production cost counts.
+
+    Beside the arm's cost, so a page says where the cost comes from (the price source, the provider that served the
+    calls) and how much of it was priced: ``priced_calls`` under ``calls`` is a cost over part of the arm's calls, never
+    the whole.
+    """
+
+    sources: list[str] = Field(default_factory=list, description="Each price source a priced row names, sorted.")
+    providers: list[str] = Field(
+        default_factory=list,
+        description="Each provider a row names as serving its calls, sorted; empty where none does.",
+    )
+    calls: int | None = Field(
+        default=None, ge=0, description="The calls the rows counted; None = some row did not count its calls."
+    )
+    priced_calls: int | None = Field(
+        default=None,
+        ge=0,
+        description="Those of them on a row that observed a price; None = some row did not count its calls.",
+    )
+
+
 class ArmScoreboard(EvalDocumentModel):
     """One arm's census: how many trials it ran, lost, could use, passed and failed, and what it cost."""
 
@@ -2583,6 +2619,17 @@ class ArmScoreboard(EvalDocumentModel):
         description=(
             "Each role's unanswered calls over the arm's trials, in the order the roles are known, for every role a "
             "usage row counted them in. Empty = no row counted any: not counted, never none."
+        ),
+    )
+    # Left out of the document while unset, so an arm assembled before the field existed reads as it did; and left out
+    # of the fingerprint whether set or not (_NOT_ARM_EVIDENCE, owner ruling 2026-10-28), so two bundles over the same
+    # runs priced differently share one.
+    pricing: ArmPricing | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "How the arm's production cost was priced: its price sources, serving providers and priced calls. None = "
+            "no row of a production role was recorded."
         ),
     )
 
@@ -2710,7 +2757,11 @@ class AnalysisContextBundle(EvalDocumentModel):
     # Unmoved by the run apparatus and the unanswered calls: each run summary's `apparatus` and each arm's
     # `scoreboard[].unanswered` are written only when the run recorded one or a usage row counted them, so a bundle over
     # runs that recorded neither is this shape byte for byte and its fingerprint stays put. A run recording either moves
-    # its bundle's fingerprint, as any evidence the bundle reads does.
+    # its bundle's fingerprint, as any evidence the bundle reads does. So does a run's host disclosure
+    # (`apparatus.run_disclosure`), written only when its host disclosed one.
+    # Unmoved by pricing: each arm's `scoreboard[].pricing` (its price sources, providers and priced calls) is written
+    # only when a production usage row was recorded, and is no part of the fingerprint whether written or not (owner
+    # ruling, 2026-10-28), so a bundle over unchanged runs fingerprints as it did.
     schema_version: int = Field(
         default=64, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
@@ -3610,6 +3661,12 @@ _NOT_EVIDENCE: frozenset[str] = (
     frozenset({"package_version", "first_result_at"}) | ASPECT_PRESENTATION_FIELDS | TEMPLATE_PRESENTATION_FIELDS
 )
 
+#: The fields of each arm's census (``scoreboard[]``) :meth:`AnalysisContextBundle.fingerprint` leaves out: how the
+#: arm's cost was priced (:class:`ArmPricing`), which says where a cost comes from, not what the arm did. Owner ruling,
+#: 2026-10-28: the price source is no part of a fingerprint, so a bundle assembled before the census read pricing and
+#: one assembled after fingerprint alike over the same runs, and so do two bundles whose runs were priced differently.
+_NOT_ARM_EVIDENCE: frozenset[str] = frozenset({"pricing"})
+
 #: What a fingerprint of the current version starts with. Version 1 had no prefix: the bare sha256 of the canonical
 #: JSON, floats at full precision. Version 2 rounds every float to twelve significant figures first, so one
 #: evidence fingerprints alike across Python builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary. A
@@ -3641,9 +3698,15 @@ def fingerprint_digest(payload: Any, *, like: str | None = None) -> str:
 
 
 def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> str:
-    """A bundle document's fingerprint: the digest of every field but what built it (``package_version``) and how a page
+    """A bundle document's fingerprint: the digest of every field but what built it (``package_version``), how a page
     prints it (:data:`_NOT_EVIDENCE`, and the declared control's
-    :data:`~threetears.evals.kernel.declaration.ARM_PRESENTATION_FIELDS`).
+    :data:`~threetears.evals.kernel.declaration.ARM_PRESENTATION_FIELDS`), and how each arm's cost was priced
+    (:data:`_NOT_ARM_EVIDENCE`).
+
+    **Two bundles may share a fingerprint with different pricing** (owner ruling, 2026-10-28: "I recognize the
+    implications, but it's ok"). The same runs priced by another source, or served by another provider, fingerprint
+    alike; a page built from either still prints its own pricing, and a report snapshot's content address
+    (``report_input_digest``) still tells the two inputs apart.
 
     The one derivation :meth:`AnalysisContextBundle.fingerprint` uses, for a reader that holds the stored document
     rather than the model — a frozen reporter case checks the bundle it holds against the fingerprint it recorded.
@@ -3657,6 +3720,14 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
     :rtype: str
     """
     evidence = {key: value for key, value in document.items() if key not in _NOT_EVIDENCE}
+    if isinstance(scoreboard := evidence.get("scoreboard"), list):
+        # How an arm's cost was priced (_NOT_ARM_EVIDENCE) is no part of what the bundle read.
+        evidence["scoreboard"] = [
+            {key: value for key, value in row.items() if key not in _NOT_ARM_EVIDENCE}
+            if isinstance(row, Mapping)
+            else row
+            for row in scoreboard
+        ]
     declared = evidence.get("declared")
     if isinstance(declared, Mapping) and isinstance(control := declared.get("control"), Mapping):
         # How a page prints the control (ARM_PRESENTATION_FIELDS) is no part of what the bundle read; a control naming
@@ -3911,6 +3982,7 @@ __all__ = [
     "AliasedFactors",
     "AnalysisContextBundle",
     "ArmMechanismReading",
+    "ArmPricing",
     "ArmServedModel",
     "BundleInspection",
     "CANDIDATE_SERVED_MODEL_CONFOUND",
