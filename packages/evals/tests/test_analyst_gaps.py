@@ -384,7 +384,7 @@ def test_two_needs_differing_only_in_an_id_the_engine_mints_group() -> None:
     ("one", "other"),
     [
         ("`pivot` has no per-stratum split", "`frontier` has no per-stratum split"),
-        ("qwen3.8-flash costs more per reply", "claude-4.5 costs more per reply"),
+        ("nano-3.8-flash costs more per reply", "brisk-4.5 costs more per reply"),
         ("v0.81 drops the interval", "v0.82 drops the interval"),
         ("a 2:1 ratio of trials", "a 3:1 ratio of trials"),
         ("the run at 10:30 has no cost", "the run at 11:30 has no cost"),
