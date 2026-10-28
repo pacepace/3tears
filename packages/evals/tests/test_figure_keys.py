@@ -179,6 +179,7 @@ class TestTheKairoPlanResolves:
         counts = _rendered(_plan()["masthead"]["counts"])
         assert counts == "September vs 2 candidates · character adherence (v2) · 299 cases × 3 repeats"
 
+    @pytest.mark.integration
     def test_the_figures_match_what_the_reference_page_prints(self):
         """The kit page computes its prose in its script; the figures the keys render appear in what it draws."""
         reason = chromium_unavailable()
