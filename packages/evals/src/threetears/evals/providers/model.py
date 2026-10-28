@@ -11,7 +11,6 @@ per session through :class:`~threetears.evals.testing.RecordedTurns` given ``tur
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import string
 import time
@@ -375,8 +374,8 @@ class _Live:
         disclosed as an estimate when the pricer does not guarantee them; else the catalogue row's. ``None`` (logged
         once per reason) when neither bounds it."""
         if (rated := self.rated()) is not None:
-            usd = rated.rates.ceiling(prompt_tokens=prompt_tokens, output_tokens=output_tokens)
-            return TurnCeiling(usd=float(usd), estimate=not rated.guaranteed)
+            dollars = rated.rates.ceiling(prompt_tokens=prompt_tokens, output_tokens=output_tokens)
+            return TurnCeiling(usd=float(dollars), estimate=not rated.guaranteed)
         usd, why = self._fallback.ceiling(prompt_tokens=prompt_tokens, output_tokens=output_tokens)
         if usd is None:
             self._unbounded_because(why or "the catalogue gave no reason")

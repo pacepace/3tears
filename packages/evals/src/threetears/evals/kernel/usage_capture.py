@@ -588,9 +588,7 @@ class RoleUsageLedger:
                         else [totals.sent[form] for form in sorted(totals.sent)]
                     ),
                     unpriced_reasons=(
-                        list(totals.unpriced_reasons)
-                        if totals.cost_unpriced and totals.unpriced_reasons
-                        else None
+                        list(totals.unpriced_reasons) if totals.cost_unpriced and totals.unpriced_reasons else None
                     ),
                 )
             )

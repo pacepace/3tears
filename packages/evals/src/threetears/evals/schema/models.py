@@ -5260,7 +5260,9 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
         if self.cost_usd is not None:
             raise ValueError("unpriced_reasons says why a row's cost is unknown, and this row's cost_usd is known")
         if not self.unpriced_reasons or not all(self.unpriced_reasons):
-            raise ValueError("unpriced_reasons holds at least one reason, none empty; leave it None when none was given")
+            raise ValueError(
+                "unpriced_reasons holds at least one reason, none empty; leave it None when none was given"
+            )
         return self
 
     @model_validator(mode="after")

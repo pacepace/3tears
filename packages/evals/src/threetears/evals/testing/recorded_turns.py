@@ -400,7 +400,9 @@ def _read_recording(path: Path) -> dict[str, _SessionLines]:
             if (
                 not isinstance(kind, str)
                 or kind not in _LINE_MEMBERS
-                or not _LINE_MEMBERS[kind] <= set(line) <= _LINE_MEMBERS[kind] | _OPTIONAL_MEMBERS.get(kind, frozenset())
+                or not _LINE_MEMBERS[kind]
+                <= set(line)
+                <= _LINE_MEMBERS[kind] | _OPTIONAL_MEMBERS.get(kind, frozenset())
             ):
                 raise _unreadable(path, f"line {number} is not a line this recorder writes")
             version = line["recorder_version"]

@@ -192,7 +192,9 @@ def test_a_ceiling_bounds_every_prompt_token_at_the_five_minute_write_and_reache
     haiku = default.rates_for("claude-haiku-5-5", provider="anthropic")
     assert opus is not None and haiku is not None
     assert opus.rates.ceiling(prompt_tokens=10_000, output_tokens=1_000) == Decimal("0.07")  # 10,000 x $5 + 1,000 x $20
-    assert haiku.rates.ceiling(prompt_tokens=200_000, output_tokens=0) == Decimal("0.125")  # the long tier's $0.625 write
+    assert haiku.rates.ceiling(prompt_tokens=200_000, output_tokens=0) == Decimal(
+        "0.125"
+    )  # the long tier's $0.625 write
 
 
 def test_counts_that_contradict_each_other_are_unpriced_never_guessed() -> None:
