@@ -39,6 +39,7 @@ __all__ = [
     "PROMPT_FRAMING_TOKENS",
     "CappedCompletion",
     "call_ceiling",
+    "ceiling_is_estimate",
     "prompt_token_bound",
     "refresh_prices",
     "turn_prompt_token_bound",
@@ -115,6 +116,30 @@ class _PricesItsCalls(Protocol):
     def price_ceiling(
         self, *, system: str, user: str, response_format: dict[str, Any] | None = None
     ) -> float | None: ...  # pragma: no cover — protocol
+
+
+@runtime_checkable
+class _SaysWhetherItEstimates(Protocol):
+    """A client that says whether its ``price_ceiling`` is an estimate (the shipped ``Model``'s
+    ``ceiling_is_estimate``)."""
+
+    def ceiling_is_estimate(self) -> bool: ...  # pragma: no cover — protocol
+
+
+def ceiling_is_estimate(client: object) -> bool:
+    """Whether ``client``'s price ceilings are estimates: bounds on rates its host's pricer does not guarantee.
+
+    Read beside :func:`call_ceiling`, which answers the dollars, by whoever builds a
+    :class:`~threetears.evals.run.CallCeiling` from them, so a run's cap says when it was checked against estimates.
+    A client with no ``ceiling_is_estimate()`` (a host's own client, which prices its own calls) is read as a true
+    bound, as its ``price_ceiling`` says it is; a wrapper forwards the shipped client's.
+
+    :param client: The client a call will be made on.
+    :ptype client: object
+    :return: Whether its ceilings are estimates.
+    :rtype: bool
+    """
+    return isinstance(client, _SaysWhetherItEstimates) and client.ceiling_is_estimate() is True
 
 
 async def refresh_prices(client: object) -> None:

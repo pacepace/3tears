@@ -28,10 +28,18 @@ import pytest
 from packages.evals.tests.ops_support import CALLER
 from packages.evals.tests.report_doc_support import snapshot_of
 from packages.evals.tests.report_writer_support import DOC
+from packages.evals.tests.stored_models import stored_sample
 from threetears.evals.analysis.analyst.skill import SkillText
 from threetears.evals.analysis.report_doc_store import generation_record, made_line
+from threetears.evals.analysis.summary import EvalSummary, RoleSpend, dollars_text
 from threetears.evals.kernel import OutOfRunBudget, PlannedCall, RoleUsageLedger, ValidationFailedError
-from threetears.evals.kernel.capped_completion import prompt_token_bound, turn_prompt_token_bound
+from threetears.evals.kernel.capped_completion import (
+    call_ceiling,
+    ceiling_is_estimate,
+    prompt_token_bound,
+    turn_prompt_token_bound,
+)
+from threetears.evals.ops.lenses import ArmEstimate, LaunchEstimate, estimate_text
 from threetears.evals.kernel.report_doc import EvalReportDoc
 from threetears.evals.ops.report_writer.session import ToolSession
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally, TurnCost
@@ -39,6 +47,7 @@ from threetears.evals.providers import (
     AnthropicPublishedRates,
     CallPrice,
     Catalogue,
+    Clients,
     HostRates,
     Model,
     ModelRates,
@@ -47,7 +56,8 @@ from threetears.evals.providers import (
 )
 from threetears.evals.providers.model import DEFAULT_MAX_TOKENS
 from threetears.evals.providers.wire import usage_counts
-from threetears.evals.schema import OutOfRunSpend, RoleUsage, TurnCeiling, TurnMessage, TurnToolSpec
+from threetears.evals.run import CallCeiling
+from threetears.evals.schema import EvalRun, OutOfRunSpend, RoleUsage, TurnCeiling, TurnMessage, TurnToolSpec
 
 FIXTURES: Final = Path(__file__).parent / "fixtures" / "providers"
 
@@ -679,3 +689,176 @@ def record(generated: dict[str, Any]) -> EvalReportDoc:
         created_by=CALLER.identity,
         created_at="2026-10-28T09:30:00+00:00",
     )
+
+
+# --- a host client that is not a Model prices its own calls -------------------------------------------------------
+
+
+@dataclass
+class Reported:
+    """A completion as a host's own client reports it."""
+
+    cost_usd: float | None
+    price_source: str | None
+    content: str = "{}"
+    model: str = "host-model"
+    served_model: str | None = None
+    stop_reason: str = "end_turn"
+    temperature: float | None = None
+    input_tokens: int | None = 10
+    output_tokens: int | None = 5
+    reasoning_tokens: int | None = None
+
+
+# parity-with: threetears.evals.schema.completion.BoundCompletionClient
+class FakeBoundCompletionClient:
+    """A host's own client: it bounds its calls itself and reports what each cost, or nothing."""
+
+    model_name = "host-model"
+
+    def __init__(self, *, ceiling: float | None, reported: Reported) -> None:
+        self.ceiling = ceiling
+        self.reported = reported
+        self.calls = 0
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        return self.ceiling
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Reported:
+        self.calls += 1
+        return self.reported
+
+    async def aclose(self) -> None:
+        return None
+
+    async def __aenter__(self) -> FakeBoundCompletionClient:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+
+async def test_a_host_client_s_ceiling_is_its_bound_and_its_cost_is_recorded_as_reported() -> None:
+    client = FakeBoundCompletionClient(ceiling=0.02, reported=Reported(cost_usd=0.0013, price_source="host:rate-card"))
+    ledger = RecordingLedger()
+    budget = OutOfRunBudget(ledger, scope_id="s", cap_usd=1.0, blocking_executor=None)
+
+    assert call_ceiling(client, system="s", user="u") == 0.02, "its own bound, no pricer asked"
+    assert not ceiling_is_estimate(client), "a client that says nothing of estimates bounds on its own word"
+    [admitted] = budget.admit(client, "variation", [PlannedCall(system="s", user="u")])
+    made = await budget.generate(client, admitted)
+
+    assert (made.spend.priced_ceiling_usd, made.spend.cost_usd, made.spend.price_source) == (
+        0.02,
+        0.0013,
+        "host:rate-card",
+    )
+
+
+async def test_a_host_client_that_reports_no_cost_is_unpriced_never_zero() -> None:
+    client = FakeBoundCompletionClient(ceiling=0.02, reported=Reported(cost_usd=None, price_source=None))
+    budget = OutOfRunBudget(RecordingLedger(), scope_id="s", cap_usd=1.0, blocking_executor=None)
+    [admitted] = budget.admit(client, "variation", [PlannedCall(system="s", user="u")])
+
+    made = await budget.generate(client, admitted)
+    ledger = RoleUsageLedger(role="judge")
+    ledger.add_llm_result(await client.generate(system="s", user="u"))
+    (row,) = ledger.rows()
+
+    assert made.spend.cost_usd is None and row.cost_usd is None and row.price_source is None
+    assert row.unpriced_reasons is None, "it gave no reason, and none is invented"
+    assert dollars_text(row.cost_usd) == "unpriced"
+
+
+# --- a run's cap checked against estimates ------------------------------------------------------------------------
+
+
+async def test_a_model_says_its_bound_is_an_estimate_through_a_factory_s_lease_and_the_kernel_reader() -> None:
+    estimated = hosted(FakeHostPricer({MODEL: DEAL}, guaranteed=False), TURNS["opening"]["reply"])
+    guaranteed = hosted(FakeHostPricer({MODEL: DEAL}), TURNS["opening"]["reply"])
+
+    assert estimated.ceiling_is_estimate() and not guaranteed.ceiling_is_estimate()
+    assert ceiling_is_estimate(estimated) and not ceiling_is_estimate(guaranteed)
+    leased = Clients(default=estimated, catalogue=never_read())("judge", None)
+    assert ceiling_is_estimate(leased), "the lease a Clients role hands out forwards it"
+    assert not opus("published", TURNS["opening"]["reply"]).ceiling_is_estimate(), "the default's rates are Anthropic's"
+
+
+def test_a_call_ceiling_is_exact_unless_said_to_be_an_estimate() -> None:
+    assert not CallCeiling(usd=0.1, call="the judge call", lowered_by="a cheaper judge").estimate
+    assert CallCeiling(usd=0.1, call="the judge call", lowered_by="a cheaper judge", estimate=True).estimate
+
+
+def test_a_run_records_a_cap_checked_against_estimates_and_leaves_it_out_when_unset() -> None:
+    sample = stored_sample(EvalRun)
+    assert "cap_checked_on_estimates" not in sample
+    unset = EvalRun.model_validate(sample)
+    checked = EvalRun.model_validate({**sample, "cap_checked_on_estimates": True})
+
+    assert "cap_checked_on_estimates" not in unset.to_dict(), "unset, the stored run is as before"
+    assert EvalRun.model_validate(checked.to_dict()).cap_checked_on_estimates is True
+
+
+def test_the_spend_cap_line_says_it_was_checked_against_estimated_rates() -> None:
+    fields: dict[str, Any] = {
+        "run_id": "r",
+        "scope_id": "s",
+        "template_id": None,
+        "candidate_model": "m",
+        "status": "completed",
+        "k_runs": 2,
+        "n_cases": 3,
+        "n_results": 6,
+        "n_scored": 6,
+        "n_candidate_failed": 0,
+        "n_excluded": 0,
+        "measures": [],
+        "confusion": [],
+        "labels": [],
+        "errors": [],
+        "max_cost_usd": 2.5,
+        "spend": [RoleSpend(role="candidate", calls=3, cost_usd=0.01)],
+    }
+
+    assert EvalSummary(**fields).spend_cap_text == "spend cap: $2.50 for this run"
+    assert "cap_checked_on_estimates" not in EvalSummary(**fields).model_dump()
+    assert EvalSummary(**fields, cap_checked_on_estimates=True).spend_cap_text == (
+        "spend cap: $2.50 for this run, checked against estimated rates"
+    )
+
+
+def test_the_launch_estimate_says_an_arm_s_cap_is_checked_against_estimated_rates() -> None:
+    arm: dict[str, Any] = {
+        "described": "arm 'm' on template 't'",
+        "candidate_model": "m",
+        "case_count": 3,
+        "case_source": "stored",
+        "n_observations": 6,
+        "predicted_usd": 0.5,
+        "central_usd": None,
+        "low_usd": None,
+        "method_id": None,
+        "basis": "the largest call's ceiling",
+        "outcome": "admitted",
+        "refusal": None,
+        "call_ceiling_usd": 0.1,
+    }
+    estimate: dict[str, Any] = {
+        "template_id": "t",
+        "subject_id": "s",
+        "cassette_mode": "live",
+        "k_runs": 2,
+        "n_variations": 0,
+        "hypothetical_case_count": None,
+        "cap_usd": 1.0,
+        "cap_origin": "chosen",
+        "total_predicted_usd": 0.5,
+        "would_launch": True,
+        "computed_at": "2026-10-28T09:30:00+00:00",
+    }
+    said = "its cap is checked against estimated rates"
+
+    assert said not in estimate_text(LaunchEstimate(**estimate, arms=[ArmEstimate(**arm)]))
+    assert "call_ceiling_estimate" not in ArmEstimate(**arm).model_dump()
+    flagged = estimate_text(LaunchEstimate(**estimate, arms=[ArmEstimate(**arm, call_ceiling_estimate=True)]))
+    assert f"  {said}: its largest call is bounded on rates the host's pricer does not guarantee" in flagged

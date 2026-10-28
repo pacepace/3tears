@@ -280,12 +280,18 @@ class CallCeiling:
         first and its parse retry) on 'google/gemini-3.8-flash'").
     :ivar lowered_by: What lowers the ceiling, in words a remedy quotes — the levers besides a larger cap.
     :ivar lower_bound: Whether ``usd`` is a floor under the call's reservation rather than its exact figure.
+    :ivar estimate: Whether ``usd`` is built on rates the host's pricer does not guarantee (an OpenRouter route whose
+        upstream may bill otherwise): the client's own ``ceiling_is_estimate``
+        (:func:`~threetears.evals.kernel.ceiling_is_estimate`). The arm is admitted on it all the same; its
+        estimate says so, and its run records that its cap was checked against estimates
+        (``EvalRun.cap_checked_on_estimates``).
     """
 
     usd: float
     call: str
     lowered_by: str
     lower_bound: bool = False
+    estimate: bool = False
 
     def __post_init__(self) -> None:
         """Refuse an amount no reservation could hold, and blank words.
@@ -3839,6 +3845,22 @@ def _refuse_wiring_the_request_contradicts(request: LaunchRequest, wiring: KindW
     return candidate_model
 
 
+def _cap_checked_on_estimates(request: LaunchRequest, cap_usd: float | None) -> Literal[True] | None:
+    """``True`` when the run's cap is in force and its arm's largest call was bounded on an estimate; else ``None``.
+
+    :param request: The arm, as planned (its :attr:`ArmPlan.call_ceiling`).
+    :ptype request: LaunchRequest
+    :param cap_usd: The run's effective cap, as it records it.
+    :ptype cap_usd: float | None
+    :return: ``True``, or ``None`` (not recorded).
+    :rtype: Literal[True] | None
+    """
+    plan = request.arm_plan
+    if cap_usd is None or plan is None or plan.call_ceiling is None or not plan.call_ceiling.estimate:
+        return None
+    return True
+
+
 async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWiring) -> EvalRun:
     """Assemble, stamp, bound and hand over a run — the launch tail every candidate kind shares.
 
@@ -4036,6 +4058,16 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 # never disagree about whether a cap was in force at all.
                 max_cost_usd_origin=EvalRunCostCap.resolve_ceiling_origin(
                     max_cost_usd, enforcement_enabled=eval_enforcement_enabled
+                ),
+                # The cap is checked against the bound the arm's largest call was priced on; when that bound is an
+                # estimate (rates the host's pricer does not guarantee), the run says so. Left unset otherwise.
+                cap_checked_on_estimates=_cap_checked_on_estimates(
+                    request,
+                    EvalRunCostCap.resolve_effective_ceiling(
+                        max_cost_usd,
+                        configured_max_cost_usd=configured_max_cost_usd,
+                        enforcement_enabled=eval_enforcement_enabled,
+                    ),
                 ),
                 # The other currency, resolved through its own helper for the same
                 # reason: the number the run records must be the number that bounds it.

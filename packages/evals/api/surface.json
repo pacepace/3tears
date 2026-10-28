@@ -473,12 +473,12 @@
     },
     "threetears.evals.schema.EvalResult": {
       "kind": "model",
-      "signature": "EvalResult(schema_minor: CoreSchemaMinor = 8, id: str = <lambda>(), doc_type: Literal['eval_result'] = 'eval_result', schema_version: CoreSchemaVersion = 15, scope_id: str, eval_run_id: str, test_case_id: str, model: str, k_iteration: int, lease_epoch: int = 0, superseded_spend_usd: float | None = 0.0, metered_calls: int | None = None, account_refused: bool = False, candidate_kind: str | None = None, candidate_instance_id: str | None = None, subject_id: str | None = None, has_trace: bool = False, precondition_outcomes: list[PreconditionOutcome] = list(), goal_state_outcomes: list[GoalStateOutcome] = list(), rubric_scores: list[RubricScore] = list(), judge_reasoning: ModelProse = '', judge_model: str | None = None, transcript_score: RubricScore | None = None, outcome_score: RubricScore | None = None, judge_config_ids: Annotated[dict[DimName, str], AfterValidator(_recorded_judge_identities)] = dict(), judge_rescores: list[JudgeRescore] = list(), judge_repeats: list[JudgeRepeat] = list(), judge_seconds: list[SecondJudging] = list(), cost_usd: float | None, cost_roles: list[StoredUsageRole], usage: list[RoleUsage], metered_calls_refused: int | None = None, latency: LatencyMetrics | None = None, async_deliveries: list[AsyncDelivery] | None = None, kind_payload: VerbatimJsonObject | None = None, world_events: list[WorldEvent] | None = None, covariates: dict[str, str | float], phase_timings: dict[str, float], host_measures: dict[str, bool | float | str], variant_key: str, identity_version: int, termination: CellTermination, stop_cause: ConversationStopCause | None = None, turns_delivered: int | None = None, runner_error: str | None = None, judge_error: str | None = None, judge_cannot_tell: dict[DimName, ModelProse] = dict(), judge_cannot_tell_boundary: list[DimName] = list(), judge_cut_short: dict[DimName, JudgeCutShort] = dict(), candidate_error: str | None = None, infra_error: str | None = None, scored_at: str = utc_now_iso())",
+      "signature": "EvalResult(schema_minor: CoreSchemaMinor = 9, id: str = <lambda>(), doc_type: Literal['eval_result'] = 'eval_result', schema_version: CoreSchemaVersion = 15, scope_id: str, eval_run_id: str, test_case_id: str, model: str, k_iteration: int, lease_epoch: int = 0, superseded_spend_usd: float | None = 0.0, metered_calls: int | None = None, account_refused: bool = False, candidate_kind: str | None = None, candidate_instance_id: str | None = None, subject_id: str | None = None, has_trace: bool = False, precondition_outcomes: list[PreconditionOutcome] = list(), goal_state_outcomes: list[GoalStateOutcome] = list(), rubric_scores: list[RubricScore] = list(), judge_reasoning: ModelProse = '', judge_model: str | None = None, transcript_score: RubricScore | None = None, outcome_score: RubricScore | None = None, judge_config_ids: Annotated[dict[DimName, str], AfterValidator(_recorded_judge_identities)] = dict(), judge_rescores: list[JudgeRescore] = list(), judge_repeats: list[JudgeRepeat] = list(), judge_seconds: list[SecondJudging] = list(), cost_usd: float | None, cost_roles: list[StoredUsageRole], usage: list[RoleUsage], metered_calls_refused: int | None = None, latency: LatencyMetrics | None = None, async_deliveries: list[AsyncDelivery] | None = None, kind_payload: VerbatimJsonObject | None = None, world_events: list[WorldEvent] | None = None, covariates: dict[str, str | float], phase_timings: dict[str, float], host_measures: dict[str, bool | float | str], variant_key: str, identity_version: int, termination: CellTermination, stop_cause: ConversationStopCause | None = None, turns_delivered: int | None = None, runner_error: str | None = None, judge_error: str | None = None, judge_cannot_tell: dict[DimName, ModelProse] = dict(), judge_cannot_tell_boundary: list[DimName] = list(), judge_cut_short: dict[DimName, JudgeCutShort] = dict(), candidate_error: str | None = None, infra_error: str | None = None, scored_at: str = utc_now_iso())",
       "tier": "host-contract"
     },
     "threetears.evals.schema.EvalRun": {
       "kind": "model",
-      "signature": "EvalRun(schema_minor: CoreSchemaMinor = 8, id: str = <lambda>(), doc_type: Literal['eval_run'] = 'eval_run', schema_version: CoreSchemaVersion = 15, scope_id: str, template_id: str | None = None, subject_snapshot: SubjectSnapshot, host_payload: VerbatimObject = dict(), candidate_model: str, k_runs: int, test_case_ids: list[str], apparatus_provenance: ApparatusProvenance, variation_counts: VariationCounts | None = None, candidate_kind: str, judge_model: str | None = None, model_role_provenance: dict[str, StoredRoleModelOrigin] | None = None, effective_judges: dict[DimName, str] | None = None, rubric_scales: dict[DimName, RubricScale], effective_judges_source: JudgeAttributionSource | None = None, judge_config_ids: dict[DimName, str] | None = None, judge_config_provenance: dict[DimName, StoredModelRoleOrigin] | None = None, overlays: dict[str, Any] = dict(), apparatus_settings: dict[str, ApparatusSettingValue] = dict(), declared_margins: dict[str, float] = dict(), declared_measures: dict[str, MeasureDeclaration] = dict(), resolved_world_seed: dict[str, Any] = dict(), resolved_ambient_perturbation_turns: list[int] = list(), kind_spec: dict[str, Any] = dict(), world_placements: dict[str, WorldPlacement] | None = None, goal_check_proofs: dict[str, GoalCheckProof] | None = None, goal_check_proof_rules: int | None = None, refused_goal_checks: dict[str, str] | None = None, resolved_tools_allowed: list[str] | None = None, template_digest: str | None = None, cassette_mode: Literal['capture', 'replay', 'off'] = 'off', cassette_corpus_id: str | None = None, measure_latency: bool | None = None, cell_concurrency: int = 1, arm_schedule: ArmSchedule | None = None, simulator_model: str | None = None, judge_asked_settings: ClientRequestSettings | None = None, judge_temperature: float | None = None, simulator_asked_settings: ClientRequestSettings | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: StoredCostCapOrigin | None = None, max_metered_calls: int | None = None, max_metered_calls_origin: StoredMeteredCallOrigin | None = None, metered_calls_refused: int | None = None, case_set: CaseSetRef | None = None, cell_timeout_s: float | None = None, cell_timeout_s_origin: StoredCellTimeoutOrigin | None = None, turn_budget_s: float | None = None, context_key: str | None = None, context_components: ContextComponents | None = None, identity_version: int | None = None, variant_levers: dict[str, SweepableValue] | None = None, launch_group_id: str | None = None, status: EvalRunStatus = 'pending', completeness: RunCompleteness | None = None, progress: dict[str, Any] = dict(), cancellation_reason: str | None = None, budget_stop_reason: str | None = None, budget_stops: list[BudgetStop] | None = None, failed_because: StoredFailedBecause | None = None, error_details: list[str] = list(), created_at: str = utc_now_iso(), completed_at: str | None = None, archived: bool = False, labels: list[str] = list(), lease: LeaseField = None, cancel_requested_at: CancelRequestedAtField = None, cancel_request_reason: CancelRequestReasonField = None, lost: LostField = None, faults: FaultsField = list(), lifetimes: list[RunLifetime] = list())",
+      "signature": "EvalRun(schema_minor: CoreSchemaMinor = 9, id: str = <lambda>(), doc_type: Literal['eval_run'] = 'eval_run', schema_version: CoreSchemaVersion = 15, scope_id: str, template_id: str | None = None, subject_snapshot: SubjectSnapshot, host_payload: VerbatimObject = dict(), candidate_model: str, k_runs: int, test_case_ids: list[str], apparatus_provenance: ApparatusProvenance, variation_counts: VariationCounts | None = None, candidate_kind: str, judge_model: str | None = None, model_role_provenance: dict[str, StoredRoleModelOrigin] | None = None, effective_judges: dict[DimName, str] | None = None, rubric_scales: dict[DimName, RubricScale], effective_judges_source: JudgeAttributionSource | None = None, judge_config_ids: dict[DimName, str] | None = None, judge_config_provenance: dict[DimName, StoredModelRoleOrigin] | None = None, overlays: dict[str, Any] = dict(), apparatus_settings: dict[str, ApparatusSettingValue] = dict(), declared_margins: dict[str, float] = dict(), declared_measures: dict[str, MeasureDeclaration] = dict(), resolved_world_seed: dict[str, Any] = dict(), resolved_ambient_perturbation_turns: list[int] = list(), kind_spec: dict[str, Any] = dict(), world_placements: dict[str, WorldPlacement] | None = None, goal_check_proofs: dict[str, GoalCheckProof] | None = None, goal_check_proof_rules: int | None = None, refused_goal_checks: dict[str, str] | None = None, resolved_tools_allowed: list[str] | None = None, template_digest: str | None = None, cassette_mode: Literal['capture', 'replay', 'off'] = 'off', cassette_corpus_id: str | None = None, measure_latency: bool | None = None, cell_concurrency: int = 1, arm_schedule: ArmSchedule | None = None, simulator_model: str | None = None, judge_asked_settings: ClientRequestSettings | None = None, judge_temperature: float | None = None, simulator_asked_settings: ClientRequestSettings | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: StoredCostCapOrigin | None = None, cap_checked_on_estimates: bool | None = None, max_metered_calls: int | None = None, max_metered_calls_origin: StoredMeteredCallOrigin | None = None, metered_calls_refused: int | None = None, case_set: CaseSetRef | None = None, cell_timeout_s: float | None = None, cell_timeout_s_origin: StoredCellTimeoutOrigin | None = None, turn_budget_s: float | None = None, context_key: str | None = None, context_components: ContextComponents | None = None, identity_version: int | None = None, variant_levers: dict[str, SweepableValue] | None = None, launch_group_id: str | None = None, status: EvalRunStatus = 'pending', completeness: RunCompleteness | None = None, progress: dict[str, Any] = dict(), cancellation_reason: str | None = None, budget_stop_reason: str | None = None, budget_stops: list[BudgetStop] | None = None, failed_because: StoredFailedBecause | None = None, error_details: list[str] = list(), created_at: str = utc_now_iso(), completed_at: str | None = None, archived: bool = False, labels: list[str] = list(), lease: LeaseField = None, cancel_requested_at: CancelRequestedAtField = None, cancel_request_reason: CancelRequestReasonField = None, lost: LostField = None, faults: FaultsField = list(), lifetimes: list[RunLifetime] = list())",
       "tier": "host-contract"
     },
     "threetears.evals.schema.EvalRunStamp": {
@@ -503,7 +503,7 @@
     },
     "threetears.evals.schema.EvalTrace": {
       "kind": "model",
-      "signature": "EvalTrace(schema_minor: CoreSchemaMinor = 8, id: str, doc_type: Literal['eval_trace'] = 'eval_trace', schema_version: CoreSchemaVersion = 15, scope_id: str, result_id: str, eval_run_id: str, trace: list[dict[str, Any]] = list(), otel_trace: list[dict[str, Any]] = list(), judge_evidence: JudgeEvidence | None = None, judged_artifact: JudgedArtifact | None = None, call_ledger: CallLedger | None = None, end_state: VerbatimJsonObject | None = None)",
+      "signature": "EvalTrace(schema_minor: CoreSchemaMinor = 9, id: str, doc_type: Literal['eval_trace'] = 'eval_trace', schema_version: CoreSchemaVersion = 15, scope_id: str, result_id: str, eval_run_id: str, trace: list[dict[str, Any]] = list(), otel_trace: list[dict[str, Any]] = list(), judge_evidence: JudgeEvidence | None = None, judged_artifact: JudgedArtifact | None = None, call_ledger: CallLedger | None = None, end_state: VerbatimJsonObject | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.schema.ExternalSpend": {
@@ -893,7 +893,7 @@
     },
     "threetears.evals.schema.OutOfRunSpend": {
       "kind": "model",
-      "signature": "OutOfRunSpend(schema_minor: CoreSchemaMinor = 8, doc_type: Literal['eval_out_of_run_spend'] = 'eval_out_of_run_spend', schema_version: CoreSchemaVersion = 15, id: str = <lambda>(), scope_id: str, purpose: StoredOutOfRunPurpose, model: str, served_model: str | None = None, outcome: OutOfRunOutcome, failure: str | None = None, stop_reason: StopReason | None = None, prompt_tokens: int | None = None, completion_tokens: int | None = None, reasoning_tokens: int | None = None, cost_usd: float | None = None, price_source: str | None = None, sent_settings: ClientRequestSettings | None = None, unreadable: list[str] = list(), priced_ceiling_usd: float | None = None, cap_usd: float | None = None, template_id: str | None = None, subject_id: str | None = None, launch_group_id: str | None = None, campaign_id: str | None = None, run_id: str | None = None, created_at: str = utc_now_iso())",
+      "signature": "OutOfRunSpend(schema_minor: CoreSchemaMinor = 9, doc_type: Literal['eval_out_of_run_spend'] = 'eval_out_of_run_spend', schema_version: CoreSchemaVersion = 15, id: str = <lambda>(), scope_id: str, purpose: StoredOutOfRunPurpose, model: str, served_model: str | None = None, outcome: OutOfRunOutcome, failure: str | None = None, stop_reason: StopReason | None = None, prompt_tokens: int | None = None, completion_tokens: int | None = None, reasoning_tokens: int | None = None, cost_usd: float | None = None, price_source: str | None = None, sent_settings: ClientRequestSettings | None = None, unreadable: list[str] = list(), priced_ceiling_usd: float | None = None, cap_usd: float | None = None, template_id: str | None = None, subject_id: str | None = None, launch_group_id: str | None = None, campaign_id: str | None = None, run_id: str | None = None, created_at: str = utc_now_iso())",
       "tier": "stable"
     },
     "threetears.evals.schema.OutOfRunSpendStore": {
@@ -1053,7 +1053,7 @@
     },
     "threetears.evals.schema.RoleUsage": {
       "kind": "model",
-      "signature": "RoleUsage(role: StoredUsageRole, model: str | None = None, served_model: str | None = None, prompt_tokens: int | None = None, completion_tokens: int | None = None, reasoning_tokens: int | None = None, cost_usd: float | None = None, price_source: str | None = None, call_count: int | None = None, provider: str | None = None, provider_unit: str | None = None, provider_units: int | None = None, actor_id: str | None = None, purpose: StoredSimulatorPurpose | None = None, sent_settings: list[ClientRequestSettings] | None = None, unanswered_retried: int | None = None, unanswered_lost: int | None = None, unanswered_reasons: dict[str, int] | None = None)",
+      "signature": "RoleUsage(role: StoredUsageRole, model: str | None = None, served_model: str | None = None, prompt_tokens: int | None = None, completion_tokens: int | None = None, reasoning_tokens: int | None = None, cost_usd: float | None = None, price_source: str | None = None, call_count: int | None = None, provider: str | None = None, provider_unit: str | None = None, provider_units: int | None = None, actor_id: str | None = None, purpose: StoredSimulatorPurpose | None = None, sent_settings: list[ClientRequestSettings] | None = None, unanswered_retried: int | None = None, unanswered_lost: int | None = None, unanswered_reasons: dict[str, int] | None = None, unpriced_reasons: list[str] | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.schema.ROUND_DONE": {
@@ -1208,6 +1208,11 @@
     },
     "threetears.evals.schema.TurnBlock": {
       "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.TurnCeiling": {
+      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },
@@ -1623,6 +1628,11 @@
     },
     "threetears.evals.kernel.Caveat": {
       "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.ceiling_is_estimate": {
+      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -3658,7 +3668,7 @@
     },
     "threetears.evals.run.CallCeiling": {
       "kind": "dataclass",
-      "signature": "CallCeiling(usd: float, call: str, lowered_by: str, lower_bound: bool = False)",
+      "signature": "CallCeiling(usd: float, call: str, lowered_by: str, lower_bound: bool = False, estimate: bool = False)",
       "tier": "stable"
     },
     "threetears.evals.run.callers_missing_the_constructor": {
@@ -5353,7 +5363,7 @@
     },
     "threetears.evals.analysis.EvalSummary": {
       "kind": "model",
-      "signature": "EvalSummary(run_id: str, scope_id: str, template_id: str | None, candidate_model: str, arm: str | None = None, status: str, k_runs: int, n_cases: int, n_results: int, n_scored: int, n_candidate_failed: int, n_excluded: int, measures: list[RunMeasureSummary], confusion: list[ConfusionCount], labels: list[LabelStatistics], judged: list[DimensionSummary] = [], strata: list[StratumSummary] = [], spend: list[RoleSpend] = [], total_cost_usd: float | None = None, second_judge_calls: int = 0, second_judge_cost_usd: float | None = None, goal_checks: list[GoalCheckSummary] = [], intent: str | None = None, intent_source: str | None = None, errors: list[str], stopped_because: str | None = None, arm_schedule: ArmSchedule | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: CostCapOrigin | None = None, judge_shares_candidate_model: list[str] = [], unconfirmed_models: list[UnconfirmedModelIdentity] = [], request_settings: list[RequestSettingsReading] = [], case_results: list[CaseResult] | None = None)",
+      "signature": "EvalSummary(run_id: str, scope_id: str, template_id: str | None, candidate_model: str, arm: str | None = None, status: str, k_runs: int, n_cases: int, n_results: int, n_scored: int, n_candidate_failed: int, n_excluded: int, measures: list[RunMeasureSummary], confusion: list[ConfusionCount], labels: list[LabelStatistics], judged: list[DimensionSummary] = [], strata: list[StratumSummary] = [], spend: list[RoleSpend] = [], total_cost_usd: float | None = None, second_judge_calls: int = 0, second_judge_cost_usd: float | None = None, goal_checks: list[GoalCheckSummary] = [], intent: str | None = None, intent_source: str | None = None, errors: list[str], stopped_because: str | None = None, arm_schedule: ArmSchedule | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: CostCapOrigin | None = None, cap_checked_on_estimates: bool | None = None, judge_shares_candidate_model: list[str] = [], unconfirmed_models: list[UnconfirmedModelIdentity] = [], request_settings: list[RequestSettingsReading] = [], case_results: list[CaseResult] | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.analysis.ExampleCard": {
@@ -7518,7 +7528,7 @@
     },
     "threetears.evals.ops.EvalSummary": {
       "kind": "model",
-      "signature": "EvalSummary(run_id: str, scope_id: str, template_id: str | None, candidate_model: str, arm: str | None = None, status: str, k_runs: int, n_cases: int, n_results: int, n_scored: int, n_candidate_failed: int, n_excluded: int, measures: list[RunMeasureSummary], confusion: list[ConfusionCount], labels: list[LabelStatistics], judged: list[DimensionSummary] = [], strata: list[StratumSummary] = [], spend: list[RoleSpend] = [], total_cost_usd: float | None = None, second_judge_calls: int = 0, second_judge_cost_usd: float | None = None, goal_checks: list[GoalCheckSummary] = [], intent: str | None = None, intent_source: str | None = None, errors: list[str], stopped_because: str | None = None, arm_schedule: ArmSchedule | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: CostCapOrigin | None = None, judge_shares_candidate_model: list[str] = [], unconfirmed_models: list[UnconfirmedModelIdentity] = [], request_settings: list[RequestSettingsReading] = [], case_results: list[CaseResult] | None = None)",
+      "signature": "EvalSummary(run_id: str, scope_id: str, template_id: str | None, candidate_model: str, arm: str | None = None, status: str, k_runs: int, n_cases: int, n_results: int, n_scored: int, n_candidate_failed: int, n_excluded: int, measures: list[RunMeasureSummary], confusion: list[ConfusionCount], labels: list[LabelStatistics], judged: list[DimensionSummary] = [], strata: list[StratumSummary] = [], spend: list[RoleSpend] = [], total_cost_usd: float | None = None, second_judge_calls: int = 0, second_judge_cost_usd: float | None = None, goal_checks: list[GoalCheckSummary] = [], intent: str | None = None, intent_source: str | None = None, errors: list[str], stopped_because: str | None = None, arm_schedule: ArmSchedule | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: CostCapOrigin | None = None, cap_checked_on_estimates: bool | None = None, judge_shares_candidate_model: list[str] = [], unconfirmed_models: list[UnconfirmedModelIdentity] = [], request_settings: list[RequestSettingsReading] = [], case_results: list[CaseResult] | None = None)",
       "tier": "stable"
     },
     "threetears.evals.ops.EXPORT_PAGE_RESULTS": {
@@ -8541,6 +8551,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.providers.CallPrice": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.providers.Catalogue": {
       "kind": "class",
       "signature": "Catalogue(*, url: str = 'https://openrouter.ai/api/v1/models', http: httpx.AsyncClient | None = None, refresh_after: timedelta = datetime.timedelta(seconds=21600), ceiling_stale_after: timedelta | None = None) -> None",
@@ -8570,6 +8585,11 @@
       "kind": "function",
       "signature": "describe_failure(exc: BaseException) -> ProviderFailure",
       "tier": "host-contract"
+    },
+    "threetears.evals.providers.HostRates": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.providers.Model": {
       "kind": "class",

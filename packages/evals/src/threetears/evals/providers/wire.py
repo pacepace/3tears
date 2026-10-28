@@ -54,7 +54,6 @@ __all__ = [
     "Directive",
     "Reply",
     "TurnRead",
-    "UsageCounts",
     "declared_facts",
     "directive_of",
     "in_body_error",

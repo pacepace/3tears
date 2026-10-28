@@ -227,6 +227,11 @@ class Pricer(Protocol):
     Both halves are asked for every call, a completion and a tool turn alike: :meth:`rates_for` before it is sent and
     bounded, :meth:`price` after it returns, when :meth:`rates_for` answered rates. Neither reads anything over a
     network: a host's prices are in hand.
+
+    The port covers every :class:`~threetears.evals.providers.Model` call, which is every client the engine ships.
+    A host client that is not a ``Model`` prices its own calls and needs no pricer: its ``price_ceiling`` is its
+    bound, and its completions' ``cost_usd`` and ``price_source`` are recorded as reported, a missing cost read as
+    unpriced, never ``$0`` (:class:`~threetears.evals.schema.CompletionClient`).
     """
 
     def rates_for(self, model: str, *, provider: Provider) -> HostRates | None:

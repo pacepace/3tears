@@ -4176,6 +4176,17 @@ class EvalRun(CoreDocumentModel):
             "no ceiling (a run assembled without its launch, which is where the cascade resolves)."
         ),
     )
+    cap_checked_on_estimates: bool | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "True when max_cost_usd was checked against estimates: the arm's largest call was bounded on rates the "
+            "host's pricer does not guarantee (an OpenRouter route whose upstream may bill otherwise), so the run "
+            "was admitted on an estimate and its cap reads against one. None = not recorded: no cap, a bound on "
+            "guaranteed rates, or a run stored before the field existed. Left out of the document when unset, and "
+            "in no identity, key or digest."
+        ),
+    )
 
     max_metered_calls: int | None = Field(
         default=None,

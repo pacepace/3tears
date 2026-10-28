@@ -365,6 +365,11 @@ class _Live:
         default's catalogue route. Asked before every call is bounded, and again before it is priced."""
         return self._pricer.rates_for(self.model_name, provider=self.provider) if self._pricer is not None else None
 
+    def ceiling_is_estimate(self) -> bool:
+        """Whether a bound on the model's calls is built on rates its pricer does not guarantee."""
+        rated = self.rated()
+        return rated is not None and not rated.guaranteed
+
     def bound(self, *, prompt_tokens: int, output_tokens: int) -> TurnCeiling | None:
         """The one bound on a call, completion or turn: the engine's arithmetic on the rates the pricer answered,
         disclosed as an estimate when the pricer does not guarantee them; else the catalogue row's. ``None`` (logged
@@ -1265,6 +1270,20 @@ class Model:
         """
         return self._client.price_ceiling(system=system, user=user, response_format=response_format)
 
+    def ceiling_is_estimate(self) -> bool:
+        """Whether this model's price ceilings are estimates: bounds on rates its pricer does not guarantee.
+
+        :meth:`price_ceiling` answers dollars alone, as the completion port has it, so this says what kind of bound
+        they are. A run's cap is then checked against estimates
+        (:attr:`CallCeiling.estimate <threetears.evals.run.CallCeiling.estimate>`), which its summary says. A host
+        wrapping a model forwards it beside ``price_ceiling``, or its runs read as checked against guaranteed rates.
+        ``False`` for a replay, which costs nothing, and for rates the pricer guarantees or the catalogue's row.
+
+        :return: Whether the bound is an estimate.
+        :rtype: bool
+        """
+        return self._live.ceiling_is_estimate() if self._live is not None else False
+
     @property
     def last_price_refresh(self) -> PriceRefresh | None:
         """What the last :meth:`refresh_prices` found, or ``None`` before the first; a call's own read leaves it."""
@@ -1336,6 +1355,9 @@ class _Lease:
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         return self._model.price_ceiling(system=system, user=user, response_format=response_format)
+
+    def ceiling_is_estimate(self) -> bool:
+        return self._model.ceiling_is_estimate()
 
     async def refresh_prices(self) -> PriceRefresh:
         return await self._model.refresh_prices()

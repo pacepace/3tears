@@ -289,6 +289,13 @@ class CompletionClient(Protocol):
     provider that enforces it, or translates to the nearest mode its provider has (JSON mode, a tool's input
     schema); the engine validates the reply on return either way. ``None`` lets the provider default apply.
 
+    **A client that is not the shipped ``Model`` prices its own calls.** The pricing port
+    (``threetears.evals.providers.Pricer``) covers every ``Model`` call, which is every client the engine
+    ships. A host's own client is its own pricer: its ``price_ceiling``, where it has one, is the bound the engine
+    holds each call to (``None``, or no such member, is a call it cannot bound), and its completion's ``cost_usd``
+    and ``price_source`` are recorded exactly as reported. A missing cost is recorded and read as unpriced, never as
+    ``$0``.
+
     **``generate`` must be safe to call concurrently on one instance.** The judge
     caches one client per ``(model, temperature)`` and scores a result's dimensions
     at once on it (``eval.judge_concurrency``), so an implementation that binds a

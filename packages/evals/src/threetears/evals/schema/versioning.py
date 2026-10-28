@@ -350,8 +350,11 @@ CORE_SCHEMA_VERSION: int = 15
 #: - **v15.9** — a usage row says why its dollars are unknown: ``RoleUsage.unpriced_reasons`` (default None: no reason
 #:   given, the row priced, or stored before the field existed) holds each distinct reason the pricer gave for a call
 #:   it could not price, set only beside a ``cost_usd`` of None, which stays unknown and never reads as ``$0``. Left
-#:   out of the document when unset, so a row setting none is stored byte for byte as before. It is in no identity,
-#:   key or digest, and no cost reading reads it.
+#:   out of the document when unset, so a row setting none is stored byte for byte as before. A run records when its
+#:   cap was checked against estimates: ``EvalRun.cap_checked_on_estimates`` (default None: not recorded, no cap, a
+#:   bound on guaranteed rates, or stored before the field existed), True when the arm's largest call was bounded on
+#:   rates the host's pricer does not guarantee, left out of the document when unset. Neither is in any identity, key
+#:   or digest, and no cost reading reads either.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 CORE_SCHEMA_MINOR: int = 9
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""

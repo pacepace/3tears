@@ -92,7 +92,7 @@ CORE_SHAPE_DIGESTS: dict[str, str] = {
     "eval_launch": "4d5110dd2bdd4198ef6f07866baf2bff2d2ecbd88dae2b3c491bdae5cfe18142",
     "eval_out_of_run_spend": "6ed7628ffe2ec1daa5ac9fb4358c7bf6b24a25392cb1feb95e677da6c785c43f",
     "eval_result": "e0429089b19f6218f502edda7478f06a2d136cff69b9a96746cc3688d1eec4d7",
-    "eval_run": "1aecdfc97f8852cc811f5dfdae4390bb15486a6d035028e0c64fa61a833c957d",
+    "eval_run": "bfda163192fa0d41a077be2e50157e6b5ee73df8286c723a2b518cf997245e9a",
     "eval_second_judge_pass": "074601c1c7ed1259e11cbe09626d97d2a67d806b303f746614fdb25f54db8a1e",
     "eval_sweep": "a927bf79fbc7782e2547780aa3e7faf68ca6501631303924ccc97c9b0d49c7df",
     "eval_trace": "a3d2964f0b1d03076548ed0acaf5c56e15bf2fc0ecef195002e69c14168b9482",
