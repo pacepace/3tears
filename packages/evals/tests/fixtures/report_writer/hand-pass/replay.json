@@ -1,0 +1,15 @@
+{
+  "snapshot_of": "kairo",
+  "model": "report-writer-model",
+  "budget_usd": 5.0,
+  "withhold": [],
+  "ending": "stored",
+  "analyst_rounds": 1,
+  "editor_rounds": 1,
+  "tally": {
+    "turns": 4,
+    "tool_calls": 2,
+    "bounces": 0,
+    "cost_usd": 0.04
+  }
+}

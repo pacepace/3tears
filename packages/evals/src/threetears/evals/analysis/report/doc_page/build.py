@@ -100,10 +100,9 @@ from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.report_doc import DocCaveat, Evidence, ReportDoc, ReportFinding, is_analyst_caveat
 from threetears.evals.kernel.report_plan import ChartSpec, PlannedChart
 
-#: Empty until a production caller imports this module's entry point (``build``): its callers are the writing loop's
-#: editor and ``report_check`` (the page text), and the report read (the page); ``tests/test_doc_page_exports.py`` lists
-#: the name as awaiting one, and goes red when it has one, so it joins this list then.
-__all__: list[str] = []
+#: The entry point, with its callers: the writing loop's editor (the page text), the store gate and the report writer
+#: (the page it stores).
+__all__ = ["build"]
 
 #: A figure key in the document's prose, as the figure keys' grammar spells one: ``{path|filter}``.
 _KEY = re.compile(r"\{[^{}]*\}")

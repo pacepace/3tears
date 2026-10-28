@@ -68,9 +68,9 @@ from threetears.evals.schema.turns import (
     block_from_json,
 )
 
-#: The names the analyst's session calls. ``ToolOutcome``, what a mount's call answers, joins them with the mount the
-#: report writer's entry point builds (``tests/test_report_writer_exports.py`` holds the list).
-__all__ = ["SessionLimits", "SessionStop", "ToolMount", "ToolSession"]
+#: The names the analyst's and the editor's sessions call, and ``ToolOutcome``, what the mount the report writer's
+#: entry point builds answers.
+__all__ = ["SessionLimits", "SessionStop", "ToolMount", "ToolOutcome", "ToolSession"]
 
 #: The storage format :meth:`ToolSession.to_json` writes and :meth:`ToolSession.from_json` reads.
 _FORMAT: Final = 2

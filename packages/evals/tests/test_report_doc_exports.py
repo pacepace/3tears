@@ -4,8 +4,8 @@
 is the store, and the names its production callers read: the invariants (``analysis/report_doc_checks.py``), the
 editor's facts (``analysis/report_doc_facts.py``), the claims renderer (``analysis/report/doc_page/build.py``) and the
 analyst's session (``ops/report_writer``). Its other public names are this build's first ``report-doc/1`` surface,
-waiting for their production callers. ``analysis/report_doc_checks.py`` exports nothing yet: its ``check_report_doc``
-and ``DocVerdict`` wait for the store, the ``report_check`` action and the writing loop. ``CLAUDE.md`` holds that no
+waiting for their production callers. ``analysis/report_doc_checks.py`` exports its names since the store gate
+(``analysis/report_doc_store.py``) calls them, so it has no row here. ``CLAUDE.md`` holds that no
 public API exists only for a test, and the caller gate (``tests/enforcement/test_public_api_has_a_caller.py``) reads a
 module's surface from its ``__all__``, so it cannot see the names left out. This test keeps the promise checkable:
 :data:`_AWAITING_A_CALLER` lists every public name left out, per module, and goes red the moment a ``src`` module
@@ -21,7 +21,6 @@ from types import ModuleType
 
 import pytest
 
-import threetears.evals.analysis.report_doc_checks as report_doc_checks
 import threetears.evals.kernel.report_doc as report_doc
 
 #: Every workspace member's ``src`` tree.
@@ -47,7 +46,6 @@ _AWAITING_A_CALLER: dict[ModuleType, frozenset[str]] = {
             "Story",
         }
     ),
-    report_doc_checks: frozenset({"DocVerdict", "InvariantNumber", "check_report_doc"}),
 }
 
 
