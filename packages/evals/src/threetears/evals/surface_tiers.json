@@ -620,6 +620,7 @@
 "threetears.evals.kernel.trial_exclusion": "provisional",
 "threetears.evals.kernel.TRUNCATED_ROUNDS_KEY": "provisional",
 "threetears.evals.kernel.TURN_BUDGET_ENDED_KEY": "stable",
+"threetears.evals.kernel.turn_prompt_token_bound": "provisional",
 "threetears.evals.kernel.UndeclarableAxisError": "provisional",
 "threetears.evals.kernel.UnknownCandidateKind": "provisional",
 "threetears.evals.kernel.UnportableSchema": "host-contract",

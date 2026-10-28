@@ -3096,6 +3096,11 @@
       "signature": "",
       "tier": "stable"
     },
+    "threetears.evals.kernel.turn_prompt_token_bound": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.UndeclarableAxisError": {
       "kind": "exception",
       "signature": "",
