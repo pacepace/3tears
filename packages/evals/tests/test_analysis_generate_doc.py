@@ -27,8 +27,9 @@ import copy
 import dataclasses
 import math
 import random
-from collections.abc import Mapping, Sequence
-from typing import Any
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
+from typing import Any, Literal
 
 import pytest
 
@@ -64,7 +65,7 @@ from threetears.evals.analysis.out_of_run_spend import (
 )
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
 from threetears.evals.analysis.doc_analysis import doc_analysis
-from threetears.evals.kernel import ValidationFailedError
+from threetears.evals.kernel import EvalJobTimeout, JobTimeoutFactory, ValidationFailedError
 from threetears.evals.kernel.campaign import EvalAnalysis, EvalAnalysisAttempt
 from threetears.evals.kernel.inner_ceilings import writer_ceiling_s, writer_turns
 from threetears.evals.kernel.report_doc import EvalReportDoc
@@ -537,10 +538,62 @@ async def test_a_failed_report_fails_the_job_with_its_ending_and_reason() -> Non
     assert row.prompt_tokens is None, "nothing reported the raised turn's tokens"
 
 
+class _TurnWaits(asyncio.Event):
+    """A gate never opened, which marks the moment a session's turn is in flight on it.
+
+    :ivar waited: Set once a turn waits on the gate: it has been sent, and has not come back.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.waited = asyncio.Event()
+
+    async def wait(self) -> Literal[True]:
+        self.waited.set()
+        return await super().wait()
+
+
+def _expires_once_a_turn_waits(gate: _TurnWaits) -> JobTimeoutFactory:
+    """A job deadline that runs out the moment a turn is in flight on ``gate``, and never before.
+
+    A wall-clock budget short enough to keep the test quick also covers the snapshot's freeze, which a loaded
+    worker can spend all of before the first turn is sent. This one fires on the event, so the cut always lands on a
+    turn in flight.
+    """
+
+    @asynccontextmanager
+    async def deadline(budget_s: float) -> AsyncIterator[float]:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        timeout = asyncio.timeout(None)
+        entered = True
+
+        def expire(watched: asyncio.Task[Literal[True]]) -> None:
+            if entered and not watched.cancelled():
+                timeout.reschedule(loop.time())
+
+        watch = loop.create_task(gate.waited.wait())
+        watch.add_done_callback(expire)
+        try:
+            async with timeout:
+                yield budget_s
+        except TimeoutError as exc:
+            if not timeout.expired():
+                raise
+            raise EvalJobTimeout(budget_s=budget_s, elapsed_s=loop.time() - started) from exc
+        finally:
+            entered = False
+            watch.cancel()
+
+    return deadline
+
+
 async def test_a_report_cut_off_by_its_time_limit_counts_the_turn_in_flight_as_sent_and_unpriced() -> None:
-    fixture = off_loop(ops_fixture, gate=asyncio.Event())  # never set: the first turn is in flight when time runs out
+    gate = _TurnWaits()  # never set: the first turn is in flight when time runs out
+    fixture = off_loop(ops_fixture, gate=gate)
     assert fixture.host.generation is not None
-    host = dataclasses.replace(fixture.host, generation=dataclasses.replace(fixture.host.generation, budget_s=0.5))
+    launch = dataclasses.replace(fixture.host.launch, job_timeout_factory=_expires_once_a_turn_waits(gate))
+    host = OpsHost(launch=launch, generation=fixture.host.generation)
     (job,) = (await generate(host, fixture.campaign.id)).jobs
     status = await settled(host, job.job_id)
     attempt = _attempt(fixture, status)
