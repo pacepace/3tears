@@ -49,8 +49,9 @@ from threetears.evals.analysis.report.plan_page.model import PageChart
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report.plan_page.tables import arms_table
 from threetears.evals.kernel.report_plan import ChartQuery, PlanChartKind, PlannedChart
-from threetears.evals.analysis.report_gates import gate_check
-from threetears.evals.analysis.report_input import Pricing, ReportInput, Unanswered
+from threetears.evals.analysis.report.cost_unit import MoneyRuler
+from threetears.evals.analysis.report_gates import criterion_ruler, gate_check
+from threetears.evals.analysis.report_input import Criterion, Pricing, ReportInput, Unanswered
 from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.kernel.numbers import MoneyForm, money_form, spell_dollars
 
@@ -703,7 +704,25 @@ def _under_a_cent() -> dict[str, tuple[ReportInput, str, str, str]]:
         for arm, row in r5.scoreboard.items()
     }
     r5 = r5.model_copy(update={"scoreboard": rows})
+    # Two money measures on different rulers: the cost per reply under a cent per 1,000, the blended cost not.
+    two_rulers = _measures_shrunk(
+        _sliced(INPUTS["r5"], "production_replicating_cost", gate=False),
+        frozenset({"production_replicating_cost"}),
+        1000.0,
+    )
+    per_reply = {
+        arm: row.model_copy(update={"reply_cost_usd": row.reply_cost_usd / 1000 if row.reply_cost_usd else None})
+        for arm, row in two_rulers.scoreboard.items()
+    }
+    two_rulers = two_rulers.model_copy(update={"scoreboard": per_reply})
     return {
+        # Its blended cost reads per 1,000 replies, rightly; only the cost per reply's own words would be stale.
+        "r5 with two money measures on different rulers": (
+            two_rulers,
+            "production_replicating_cost",
+            "production replicating cost, per 1,000 replies",
+            "per 1,000,000 replies",
+        ),
         "r2 under a cent per 1,000 calls": (r2, "cost_per_1k", "per 1k calls", "per 1,000,000 calls"),
         "r5 under a cent per 1,000 replies": (
             r5,
@@ -907,6 +926,36 @@ def _stored(held: ReportInput, keys: Iterable[str]) -> list[float]:
     return found
 
 
+def _reason_ruler(held: ReportInput, reason: str) -> tuple[Criterion, MoneyRuler] | None:
+    """The money criterion a gate's reason is about, by its reader name, and the ruler it states money on; None for a
+    reason on no money criterion."""
+    for criterion in held.criteria:
+        line = resolve(f"criteria.{criterion.id}.threshold", held)
+        if line.scale in ("usd", "usd_per_1k", "usd_per_1m") and (criterion.label or criterion.id) in reason:
+            return criterion, criterion_ruler(held, criterion, line)[0]
+    return None
+
+
+#: A tip's line comparing the control's level with an arm's: ``September $1.89 · qwen3.8-flash $2.43``.
+_LEVELS = re.compile(r"^.+? ([+\-]?\$[\d,.]+) · .+? ([+\-]?\$[\d,.]+)$")
+
+
+def _descriptive_rows(node: Any) -> Iterator[tuple[float, float, float]]:
+    """Each change row whose tip compares two levels: the control's level, the arm's, and the row's value."""
+    if isinstance(node, dict):
+        tip = node.get("tip")
+        value = node.get("value")
+        if isinstance(tip, list) and isinstance(value, int | float):
+            for line in tip:
+                if isinstance(line, str) and (found := _LEVELS.match(line)):
+                    yield _amount(found.group(1)), _amount(found.group(2)), float(value)
+        for child in node.values():
+            yield from _descriptive_rows(child)
+    elif isinstance(node, list):
+        for child in node:
+            yield from _descriptive_rows(child)
+
+
 def _reconciles(value: float, stored: list[float], scale: float) -> bool:
     return value == 0 or any(math.isclose(value / scale, one, rel_tol=1e-6, abs_tol=1e-12) for one in stored)
 
@@ -977,6 +1026,25 @@ def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(
             (places,) = digits
             amounts = [text for text in _texts(dump) if "$" in text and text not in reasons]
             assert {decimals for _, decimals in _forms(amounts)} <= {places}, (label, places, amounts[:6])
+            for text in (text for text in _texts(dump) if text in reasons):
+                # A gate's reason, which a tip quotes, on its criterion's own ruler: its form's decimals, and each
+                # amount the criterion's ruler times a figure stored or its line.
+                found = _reason_ruler(held, text)
+                if found is None:
+                    continue
+                criterion, ruler = found
+                assert {decimals for _, decimals in _forms([text])} <= {ruler.form.decimals}, (label, text)
+                line = [float(criterion.threshold)]
+                off = [
+                    one
+                    for one in _AMOUNT.finditer(text)
+                    if not _reconciles(_amount(one.group(0)), [*stored, *line], ruler.scale)
+                ]
+                assert not off, (label, text, ruler.scale)
+            for row in _descriptive_rows(dump):
+                # A tip comparing two levels states levels that differ by the bar, on the chart's one ruler.
+                low, high, value = row
+                assert math.isclose(high - low, value, abs_tol=10.0**-places), (label, row)
             checked += 1
         counts = {int(count.replace(",", "")) for text in texts for count in _COUNT.findall(text)}
         # A price per point is per 1,000 of what the cost counts, whatever the measure's own unit.
@@ -989,8 +1057,12 @@ def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(
             continue
         for field, _places in formats.items():
             values = list(_numbers(dump, _FORMATTED[field]))
-            off = [value for value in values if not _reconciles(value, stored, scale)]
-            assert not off, (label, field, scale, off[:4])
+            # An axis that names its own count (a scatter's two axes may sit on two rulers) is read at it.
+            axis = dump.get(f"{field[0]}_title") if field in ("x_fmt", "y_fmt") else None
+            named = _COUNT.findall(axis) if isinstance(axis, str) else []
+            here_scale = int(named[0].replace(",", "")) / here if named and not totals else scale
+            off = [value for value in values if not _reconciles(value, stored, here_scale)]
+            assert not off, (label, field, here_scale, off[:4])
     assert checked, "the control: the one-form check reads some chart"
 
 
@@ -1069,3 +1141,41 @@ def test_a_task_matrix_cell_says_a_partly_priced_cost_beside_it() -> None:
     assert costed and all("850 of 897 calls priced" in (cell.reasons or []) for cell in costed)
     others = [cell for row in page.chart.data.rows for at, cell in enumerate(row.cells) if at != column]
     assert all("850 of 897 calls priced" not in (cell.reasons or []) for cell in others)
+
+
+def test_r2s_cost_gate_under_a_cent_reads_its_reason_and_line_on_the_criterions_ruler() -> None:
+    """The gate's reason and its row's line: both figures on the criterion's ruler, moved per 1,000,000 calls, the
+    count named once."""
+    held, *_ = UNDER_A_CENT["r2 under a cent per 1,000 calls"]
+    assert "Cost budget, per 1,000,000 calls $1.000 > $0.302" in gate_check(held, "atlas-m.off.r0").fails
+    spec, faults = complete_chart(_planned("gate_matrix", _query("measures", [])), held, "block")
+    assert not faults, faults
+    page = resolve_chart(spec, held, block_look(held, fact_arms(held)), title="", fallback_title="t")
+    assert isinstance(page.chart, ChartBlock) and isinstance(page.chart.data, GateMatrixChart)
+    details = [row.detail or "" for row in page.chart.data.rows]
+    assert any(detail.endswith("$0.302 per 1,000,000 calls") for detail in details), details
+
+
+def test_a_partly_priced_arms_cost_in_the_full_results_says_so_beside_it() -> None:
+    moved, arm = _part_priced(INPUTS["r1"])
+    (table,) = [one for one in every_table(moved, block_look(moved, fact_arms(moved))) if one.name == "arms_by_measure"]
+    cost = next(
+        column.key for column in table.columns if column.key.startswith("measure:cost") or column.key == "cost_per_1k"
+    )
+    flags = {row["arm"].value: row[cost].flag for row in table.rows}
+    look = block_look(moved, fact_arms(moved))
+    assert flags[look.arm(arm).name] == "850 of 897 calls priced", flags
+    assert all(flag is None or "calls priced" not in flag for name, flag in flags.items() if name != look.arm(arm).name)
+
+
+def test_a_task_matrix_cell_without_a_gate_never_repeats_its_cost_among_its_reasons() -> None:
+    held = fixture_inputs()["r1 without its gates"]
+    spec, faults = complete_chart(_planned("gate_matrix", _query("tasks", ["cost_per_1k", "latency_s"])), held, "block")
+    assert not faults, faults
+    page = resolve_chart(spec, held, block_look(held, fact_arms(held)), title="", fallback_title="t")
+    assert isinstance(page.chart, ChartBlock) and isinstance(page.chart.data, GateMatrixChart)
+    ungated = [cell for row in page.chart.data.rows for cell in row.cells if cell.status == "neutral" and cell.cost]
+    assert ungated, "the control: r1's matrix has ungated cells with a cost"
+    for cell in ungated:
+        # Its other measure's words, but never the cost it prints in its cost slot.
+        assert cell.reasons and not any("$" in reason for reason in cell.reasons), cell.reasons

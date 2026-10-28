@@ -159,12 +159,12 @@ def _in_one_form(
     :rtype: tuple[list[_Change], Quantity]
     """
     report_input = context.report_input
-    money = [key for key in keys if quantity(figure_unit(report_input, key)).unit == MONEY]
+    money = _money_keys(context, keys)
     if drawn.unit != MONEY or not money or not changes:
         return changes, drawn
-    amounts = quantity_of(
-        figure_unit(report_input, money[0]), [mean for key in money for mean in held_means(report_input, key)]
-    )
+    amounts = _amounts_drawn(context, keys)
+    if amounts is None:
+        return changes, drawn
     scale = amounts.factor / drawn.factor
     settled = in_change_form(
         amounts,
@@ -346,11 +346,20 @@ def _control_or_refuse(context: ChartContext) -> str:
 
 
 def _descriptive(
-    context: ChartContext, key: str, arm: str, mine: Stat | None, theirs: Stat | None, drawn: Quantity, where: str = ""
+    context: ChartContext,
+    key: str,
+    arm: str,
+    mine: Stat | None,
+    theirs: Stat | None,
+    drawn: Quantity,
+    where: str = "",
+    *,
+    keys: Sequence[str] = (),
 ) -> _Change | None:
     """One arm less the control on one figure: the pipeline's own change where the arm's figure states only that,
     else the difference of the two values, bold or muted by the descriptive rule; None where neither is held. The two
-    levels its tip compares are spelled on their measure's own ruler (:func:`_levels_drawn`), as the chart's words
+    levels its tip compares are spelled on the ruler the chart settles every measure it draws (``keys``) on
+    (:func:`_levels_drawn`), as the chart's words
     state it, never at the change's factor before the chart settles its ruler."""
     if mine is None:
         return None
@@ -376,7 +385,7 @@ def _descriptive(
     spreads = [spread(mine), spread(theirs)]
     read = separated(change, [one * drawn.factor if one is not None else None for one in spreads])
     control = context.look.arm(_control_or_refuse(context))
-    level = quantity("percent") if drawn.unit == "pts" else _levels_drawn(context, key, drawn)
+    level = quantity("percent") if drawn.unit == "pts" else _levels_drawn(context, keys or [key], drawn)
     tip = [
         *head,
         f"{control.name} {_level_text(theirs_value[0] * level.factor, level)} · "
@@ -400,13 +409,31 @@ def _level_text(value: float, drawn: Quantity) -> str:
     return figure_text(value, dataclasses.replace(drawn, change=False))
 
 
-def _levels_drawn(context: ChartContext, key: str, drawn: Quantity) -> Quantity:
-    """How the levels a change compares are drawn: money on its measure's own ruler, by the one owner of money's scale
-    over every mean the input holds of it (the ruler :func:`_in_one_form` settles the chart's changes on); any other
-    unit as the change is drawn."""
+def _levels_drawn(context: ChartContext, keys: Sequence[str], drawn: Quantity) -> Quantity:
+    """How the levels a change compares are drawn: money on the one ruler the chart settles its changes on
+    (:func:`_amounts_drawn` over every money measure it draws), so a tip's two levels differ by its bar; any other unit
+    as the change is drawn."""
     if drawn.unit != MONEY:
         return drawn
-    return quantity_of(figure_unit(context.report_input, key), held_means(context.report_input, key))
+    amounts = _amounts_drawn(context, keys)
+    return amounts if amounts is not None else drawn
+
+
+def _money_keys(context: ChartContext, keys: Sequence[str]) -> list[str]:
+    """The measures among a chart's that are money."""
+    return [key for key in keys if quantity(figure_unit(context.report_input, key)).unit == MONEY]
+
+
+def _amounts_drawn(context: ChartContext, keys: Sequence[str]) -> Quantity | None:
+    """The one ruler a change chart's money is drawn on: the one owner of money's scale over every mean the input
+    holds of every money measure the chart draws; None where it draws no money."""
+    money = _money_keys(context, keys)
+    if not money:
+        return None
+    report_input = context.report_input
+    return quantity_of(
+        figure_unit(report_input, money[0]), [mean for key in money for mean in held_means(report_input, key)]
+    )
 
 
 def _figure_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[str, ...]]:
@@ -423,7 +450,7 @@ def _figure_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tup
         theirs = figure_stat(report_input, key, control, context.query.aspect)
         for arm in context.arm_order(arms):
             mine = figure_stat(report_input, key, arm, context.query.aspect)
-            change = _descriptive(context, key, arm, mine, theirs, drawn)
+            change = _descriptive(context, key, arm, mine, theirs, drawn, keys=keys)
             if change is not None:
                 group = measure_words(report_input, key) if grouped else None
                 changes.append(_with_group(change, group))
@@ -458,6 +485,7 @@ def _slice_changes(context: ChartContext) -> tuple[dict[str, list[_Change]], Qua
                     item.per_arm.get(control, {}).get(key),
                     drawn,
                     where=where,
+                    keys=keys,
                 )
                 if change is not None:
                     by_arm.setdefault(arm, []).append(_with_group(change, None, label=where))
