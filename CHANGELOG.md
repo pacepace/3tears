@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: reader prose may not type a lever arm's id the page prints by another name
+
+**Fixed:** a planner's plan and an analyst's report document could type an arm's internal id above Full results (or
+the appendix) and pass their checks: Discodon's production plans had readers see "fanout-1 answers" where the page
+names the arm "fanout 1", and only a judge caught it. Neither check held arms to the rule: `validate_plan` let every
+arm id through as a name the reader is shown, and the report document's invariant 5 read an arm id as an id only by
+an underscore, dot, colon, slash, equals sign, bracket or quote (never a hyphen), and let the arm's alias exempt it,
+though an input built from a run sets every arm's alias to its id. Both now share one rule (`internal_ids`): an arm's
+id is internal where it differs, case-folded, from the name the page prints for the arm (`{arm:<id>}`'s name: its
+short name, else its alias, else its id; `figure_keys.printed_arm_name`, new) and from its served model, and holds an
+id mark, a hyphen or a digit. A model arm whose id is its served model (`deepseek/deepseek-v4.1-flash`) still stands,
+as does an id its printed name differs from only in case (`open-70b`, "Open-70B"), a plain-word id, and an ordinary
+hyphenated word ("cost-per-reply"), which is no arm's id. A plan refusal names the printed name and the `{arm:<id>}`
+key; a document verdict names the printed name, as before.
+
 ### evals: an aggregate refuses a scope past the read budget instead of reading it whole
 
 **Changed:** the aggregating lenses read their scope's results into Python, and an aggregate cannot be paged as `scope_export` is since v0.80.0
