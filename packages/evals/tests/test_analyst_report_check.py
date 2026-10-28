@@ -244,6 +244,9 @@ async def test_each_invariants_planted_negative_comes_back_as_its_verdict(
     assert outcome.ending == "ok" and outcome.structured is not None, outcome.text
     verdicts = _flat(outcome.structured)
     assert invariant in {verdict[0] for verdict in verdicts}, outcome.text
+    assert invariant in {check[0] for check in checks}, (
+        "the plant is found by its own check, not only by the page build"
+    )
     assert outcome.structured["passes"] is False
     assert outcome.structured["verdicts_total"] == len(verdicts)
     assert outcome.structured["verdicts_unread_from"] is None
