@@ -38,7 +38,7 @@ from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileAgreement
 from threetears.evals.kernel.campaign import EvalReportPlan, ReportPlanProvenance, report_plan_id
-from threetears.evals.kernel.report_doc import EvalReportDoc
+from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession, report_session_id
 from packages.evals.tests.report_doc_support import converted_doc
 from packages.evals.tests.report_plan_support import r5_input, r5_plan
 from threetears.evals.analysis.analyst.snapshot import report_snapshot
@@ -309,6 +309,16 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
         findings=[{"claim": "c4", "severity": "should_fix", "finding": "The off-lane share is a lead."}],
         generation={"turns": [{"role": "analyst", "round": 1, "cost_usd": None}], "bounces": 0},
         created_by="agent:test",
+    ),
+    # The analyst's session of a report, as the store gate writes it beside its report document.
+    "EvalReportSession": lambda: EvalReportSession(
+        id=report_session_id("01a180c7-821a-73b1-88ea-98d87dc63523", "analyst"),
+        scope_id="uni-1",
+        report_doc_id="01a180c7-821a-73b1-88ea-98d87dc63523",
+        name="analyst",
+        digest="8" * 64,
+        turns=2,
+        session={"format": 2, "snapshot": "report-snapshot:0b5b9abb32a03ae7801253cf2df6cfeb", "session": {}},
     ),
     # The reference Kairo plan, as a planned generation stores it beside its analysis.
     "EvalReportPlan": lambda: EvalReportPlan(

@@ -45,13 +45,17 @@ by id. A caveat is open, with the condition that would make it material (``mater
 
 **Stored** as :class:`EvalReportDoc` (``doc_type`` ``eval_report_doc``): the document as JSON, checked against
 :class:`ReportDoc` on every construction and read, beside the snapshot it was written from, how the writing loop
-ended, the editor's unresolved findings and the loop's tally. Derived and regenerable like its snapshot: writing the
-report again makes a new one, ``EvalStorage.drop_derived`` sweeps it, and a regenerable schema bump refuses it on read.
+ended, the editor's unresolved findings and the loop's generation record. Each session of the loop that wrote it (the
+analyst's and each review round's) is stored beside it as an :class:`EvalReportSession` (``eval_report_session``),
+which the generation record names by ``ref`` (:func:`report_session_id`), so a listing of report documents loads no
+session. Both are derived and regenerable like the snapshot: writing the report again makes a new one,
+``EvalStorage.drop_derived`` sweeps them, and a bump of their own version
+(:data:`~threetears.evals.schema.versioning.REPORT_DOC_SCHEMA_VERSION`) refuses them on read.
 
-**Reads are strict, so every change to the document's shape ships with a regenerable bump.** A stored document is
-never half-read: one this build's :class:`ReportDoc` does not accept is refused whole. That is safe only because a
-change to :class:`ReportDoc` (or to anything it holds) always moves
-:data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`, so a stale document is refused by its version
+**Reads are strict, so every change to the stored report's shape ships with a bump of its version.** A stored document
+is never half-read: one this build's :class:`ReportDoc` does not accept is refused whole. That is safe only because a
+change to :class:`ReportDoc` (or to anything it holds), to the generation record or to a stored session always moves
+:data:`~threetears.evals.schema.versioning.REPORT_DOC_SCHEMA_VERSION`, so a stale document is refused by its version
 first, before its body is read, with the remedy to drop it and write the report again; and a document at the current
 version always reads. The degraded read of plan §2.3 ("a doc that no longer validates") therefore arises only as that
 version refusal.
@@ -68,9 +72,9 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 
 from threetears.evals.kernel.report_plan import ChartQuery, PlanChartKind, ReferenceKind
 from threetears.evals.schema.base import EvalDocumentModel, VerbatimJsonObject
-from threetears.evals.schema.models import SchemaVersion, utc_now_iso
+from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.schema.prose import ModelProse
-from threetears.evals.schema.versioning import REGENERABLE_SCHEMA_VERSION
+from threetears.evals.schema.versioning import REPORT_DOC_SCHEMA_VERSION
 
 #: The schema id every report document carries.
 REPORT_DOC_SCHEMA: Final = "report-doc/1"
@@ -457,6 +461,44 @@ class ReportFinding(_Doc):
     finding: ModelProse = Field(min_length=1, description="What the editor found.")
 
 
+def new_report_doc_id() -> str:
+    """A new report document's id: a UUIDv7, so ids minted later sort later.
+
+    The writing loop mints it before the store gate writes anything, so the generation record names each session by
+    the id it will be stored under (:func:`report_session_id`).
+
+    :return: The id.
+    :rtype: str
+    """
+    return str(uuid.uuid7())
+
+
+def report_session_id(report_doc_id: str, name: str) -> str:
+    """The id a report's session is stored under: its report's id and its name, so one report holds one of each name.
+
+    :param report_doc_id: The report document's id.
+    :ptype report_doc_id: str
+    :param name: The session's name (``analyst``, ``editor-<round>``).
+    :ptype name: str
+    :return: ``<report_doc_id>:session:<name>``.
+    :rtype: str
+    """
+    return f"{report_doc_id}:session:{name}"
+
+
+def _this_version_only(data: Any, what: str) -> Any:  # Any: the input under validation
+    """``data`` unchanged, or refused by its ``schema_version`` alone when it is not this build's report version."""
+    if isinstance(data, dict) and "schema_version" in data and data["schema_version"] != REPORT_DOC_SCHEMA_VERSION:
+        raise ValueError(
+            f"schema_version: this {what} was written under report document schema v{data['schema_version']} and this "
+            f"build reads report document schema v{REPORT_DOC_SCHEMA_VERSION} only; a report document and its "
+            "sessions are regenerated across a schema change, never migrated or half-read. An operator clears every "
+            "old one in a scope with EvalStorage.drop_derived(scopes), then writes each report again from a fresh "
+            "snapshot"
+        )
+    return data
+
+
 class EvalReportDoc(EvalDocumentModel):
     """One report document as stored: the document, the snapshot it reads, how its writing ended, and what it cost.
 
@@ -469,9 +511,9 @@ class EvalReportDoc(EvalDocumentModel):
     named here and not in the document.
     """
 
-    id: str = Field(default_factory=lambda: str(uuid.uuid7()))
+    id: str = Field(default_factory=new_report_doc_id)
     doc_type: Literal["eval_report_doc"] = "eval_report_doc"
-    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    schema_version: int = REPORT_DOC_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     snapshot_id: str = Field(
@@ -493,8 +535,9 @@ class EvalReportDoc(EvalDocumentModel):
         description="The editor's findings left unresolved, which Method prints, each `{claim, severity, finding}`.",
     )
     generation: VerbatimJsonObject = Field(
-        description="The writing loop's tally: per turn and rolled up by role and round, tokens, cost, tool calls, "
-        "bounces and wall time, as the loop records it."
+        description="The generation record: the model, the skill digests, the writing loop's tally (per turn and rolled "
+        "up by role and round, tokens, cost, tool calls, bounces and wall time), the reviews, and each session by "
+        "`{digest, turns, ref}`, `ref` naming its stored `eval_report_session`."
     )
     created_by: str = Field(min_length=1, description="Who asked for the report, as the host named the caller.")
     created_at: str = Field(default_factory=utc_now_iso)
@@ -502,7 +545,7 @@ class EvalReportDoc(EvalDocumentModel):
     @model_validator(mode="before")
     @classmethod
     def check_version_first(cls, data: Any) -> Any:
-        """Refuse a document written under another regenerable version by its version alone, before its body is read.
+        """Refuse a document written under another report version by its version alone, before its body is read.
 
         A document from before a shape change would otherwise be refused for its body too, field by field, which reads
         as a fault to fix rather than a document to make again (the module docstring's strict-read decision).
@@ -511,16 +554,10 @@ class EvalReportDoc(EvalDocumentModel):
         :ptype data: Any
         :return: The input, unchanged.
         :rtype: Any
-        :raises ValueError: Its ``schema_version`` is not this build's regenerable version.
+        :raises ValueError: Its ``schema_version`` is not this build's
+            :data:`~threetears.evals.schema.versioning.REPORT_DOC_SCHEMA_VERSION`.
         """
-        if isinstance(data, dict) and "schema_version" in data and data["schema_version"] != REGENERABLE_SCHEMA_VERSION:
-            raise ValueError(
-                f"schema_version: this report document was written under eval schema v{data['schema_version']} and "
-                f"this build reads v{REGENERABLE_SCHEMA_VERSION} only; a report document is regenerated across a schema "
-                "change, never migrated or half-read. An operator clears every old one in a scope with "
-                "EvalStorage.drop_derived(scopes), then writes each report again from a fresh snapshot"
-            )
-        return data
+        return _this_version_only(data, "report document")
 
     @field_validator("doc_type")
     @classmethod
@@ -569,20 +606,86 @@ class EvalReportDoc(EvalDocumentModel):
         return self
 
 
+class EvalReportSession(EvalDocumentModel):
+    """One session of the loop that wrote a report document, stored beside it (``eval_report_session``).
+
+    The analyst's session and each review round's is stored once, as its own document, under the id its report and its
+    name give (:func:`report_session_id`), and the report's generation record names it by that id. ``session`` is the
+    session's JSON exactly as its ``to_json()`` gave it (``AnalystSession.to_json()``, ``ToolSession.to_json()``), with
+    every re-derivable tool result body elided and recorded as elided, so resuming it re-derives each one. ``digest`` and
+    ``turns`` are the generation record's, repeated here so a session read on its own says what it is.
+    """
+
+    id: str = Field(description="The id its report and name give (report_session_id), and no other.")
+    doc_type: Literal["eval_report_session"] = "eval_report_session"
+    schema_version: int = REPORT_DOC_SCHEMA_VERSION
+    scope_id: str = Field(min_length=1)
+
+    report_doc_id: str = Field(min_length=1, description="Reference → EvalReportDoc.id: the report it wrote.")
+    name: str = Field(min_length=1, description="The session's name in its report: `analyst`, or `editor-<round>`.")
+    digest: str | None = Field(
+        description="The sha256 of the session's messages as they stood at its last reply (the tally's transcript "
+        "digest); None for a session that kept no reply."
+    )
+    turns: int = Field(ge=0, description="The turns the session sent, every one paid for.")
+    session: VerbatimJsonObject = Field(description="The session as its to_json() gave it, which resuming reads.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def check_version_first(cls, data: Any) -> Any:
+        """Refuse a session written under another report version by its version alone, before its body is read.
+
+        :param data: The input under validation; only a mapping is read.
+        :ptype data: Any
+        :return: The input, unchanged.
+        :rtype: Any
+        :raises ValueError: Its ``schema_version`` is not this build's
+            :data:`~threetears.evals.schema.versioning.REPORT_DOC_SCHEMA_VERSION`.
+        """
+        return _this_version_only(data, "report session")
+
+    @field_validator("doc_type")
+    @classmethod
+    def check_doc_type(cls, v: str) -> str:
+        """Reject documents loaded into the wrong model class."""
+        if v != "eval_report_session":
+            raise ValueError(f"doc_type must be 'eval_report_session', got '{v}'")
+        return v
+
+    @model_validator(mode="after")
+    def check_id(self) -> Self:
+        """Refuse an id other than the one its report and name give, so one report holds one session of each name.
+
+        :return: This session, unchanged.
+        :rtype: EvalReportSession
+        :raises ValueError: ``id`` is not ``report_session_id(report_doc_id, name)``.
+        """
+        expected = report_session_id(self.report_doc_id, self.name)
+        if self.id != expected:
+            raise ValueError(
+                f"a report session's id is {expected!r}, the one its report and name give, not {self.id!r}"
+            )
+        return self
+
+
 #: The names with a caller outside this module. The document's own models and functions are this build's first
 #: report-doc/1 surface; each joins this list with its first production caller (the invariants, the claims renderer,
 #: the writing loop), never for a test alone. The analyst's session reads a submission as a ReportDoc, checks its
 #: validity and briefs the analyst with its JSON schema; the claims renderer draws its evidence, caveats and findings;
-#: the invariants and the editor's facts read its prose through report_doc_prose.
+#: the invariants and the editor's facts read its prose through report_doc_prose. The store reads and writes the stored
+#: report and its sessions, and the writing loop mints the report's id before its sessions are named by it.
 __all__ = [
     "DecisionSlotWord",
     "DocCaveat",
     "EvalReportDoc",
+    "EvalReportSession",
     "Evidence",
     "ReportDoc",
     "ReportFinding",
     "is_analyst_caveat",
+    "new_report_doc_id",
     "report_doc_json_schema",
     "report_doc_prose",
     "report_doc_validity",
+    "report_session_id",
 ]

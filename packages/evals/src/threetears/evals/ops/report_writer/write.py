@@ -9,8 +9,11 @@ reads the snapshot's report input, loads the skill and runs the writing loop
 store gate (:func:`~threetears.evals.analysis.report_doc_store.store_report_doc`), which checks it again, and builds
 the stored page with its made line (:func:`~threetears.evals.analysis.report_doc_store.made_line`).
 
-**A paid run never loses its record.** The generation record (the tally, the reviews, every session) is on the result
-whatever the ending, and on :class:`ReportNotStored` when the store gate or the store refuses the document.
+**A paid run never loses its record.** The run's generation record in memory (the tally, the reviews, and every
+session held inline) is on the result whatever the ending, and on :class:`ReportNotStored` when the store gate or the
+store refuses the document. What is stored is the same record naming each session by ref: the report's id is minted
+before anything is written, each session is stored as its own document under the id that report and its name give,
+and the document's ``generation`` holds each session's digest, turns and ref, never a message.
 
 **Keys.** The caller passes the model (plan §4.6): a host builds ``Model(id, provider="anthropic", api_key=...)``
 from the key it holds. Nothing here reads an environment variable.
@@ -35,7 +38,7 @@ from threetears.evals.analysis.report_doc_store import doc_verdicts, generation_
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.numbers import spell_dollars
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.kernel.report_doc import EvalReportDoc, ReportDoc
+from threetears.evals.kernel.report_doc import EvalReportDoc, ReportDoc, new_report_doc_id
 from threetears.evals.ops.analyst import report_snapshot_freeze, snapshot_input
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.report_writer.analyst import InvariantCheck
@@ -55,7 +58,9 @@ class ReportWritten:
     :ivar snapshot_id: The snapshot it was written from.
     :ivar stored: The stored document; ``None`` for an ending that stores nothing.
     :ivar outcome: The loop's outcome: the reviews, the rounds, a refusal's faults, why it ended.
-    :ivar generation: The generation record (the tally, the reviews, every session), kept whatever the ending.
+    :ivar generation: The run's generation record in memory (the tally, the reviews, every session held inline under
+        its name's ``session``, with no ``ref``), kept whatever the ending. A stored document's own ``generation``
+        names each session by ref instead (``stored.generation``), and its sessions are stored beside it.
     :ivar page: The stored document's page as a reader reads it, built strict with its open findings in Method and
         its made line (:func:`~threetears.evals.analysis.report_doc_store.made_line`); ``None`` when nothing is stored.
     """
@@ -72,21 +77,28 @@ class ReportNotStored(Exception):
     """A report the writing loop ended with a document to store, and the store gate or the store refused.
 
     The run was paid for, so its record rides on the refusal: :attr:`written` is what :func:`report_write` would have
-    returned, with nothing stored. The cause is the exception this one was raised from.
+    returned, with nothing stored. The cause is the exception this one was raised from. A store that failed part way
+    may have written some of the report's sessions under :attr:`report_doc_id` before it failed; no stored document
+    names them, and ``EvalStorage.delete_report_doc(report_doc_id, scope_id)`` removes them without touching anything
+    else in the scope.
 
     :ivar written: The run's outcome and generation record, ``stored`` and ``page`` ``None``.
+    :ivar report_doc_id: The id minted for the report, which any session written before the failure is stored under.
     """
 
-    def __init__(self, message: str, *, written: ReportWritten) -> None:
-        """Say why the report was not stored, and carry the run's record.
+    def __init__(self, message: str, *, written: ReportWritten, report_doc_id: str) -> None:
+        """Say why the report was not stored, and carry the run's record and the id it would have been stored under.
 
         :param message: What failed.
         :ptype message: str
         :param written: The run's outcome and generation record.
         :ptype written: ReportWritten
+        :param report_doc_id: The id minted for the report.
+        :ptype report_doc_id: str
         """
         super().__init__(message)
         self.written = written
+        self.report_doc_id = report_doc_id
 
 
 def _checker(report_input: ReportInput) -> InvariantCheck:
@@ -199,24 +211,31 @@ async def report_write(
         budget=budget,
         limits=limits,
     )
-    generation = generation_record(
-        model=model.model_name,
-        tally=tally.to_json(),
-        skill={"analyst": analyst_skill.digest, "editor": editor_skill.digest, "package": skill.digest},
-        reviews=[review.to_json() for review in outcome.reviews],
-        sessions=outcome.sessions,
-    )
+    written: dict[str, Any] = {  # Any: the record's parts, as JSON
+        "model": model.model_name,
+        "tally": tally.to_json(),
+        "skill": {"analyst": analyst_skill.digest, "editor": editor_skill.digest, "package": skill.digest},
+        "reviews": [review.to_json() for review in outcome.reviews],
+        "sessions": outcome.sessions,
+    }
     unstored = ReportWritten(
-        ending=outcome.ending, snapshot_id=snapshot_id, stored=None, outcome=outcome, generation=generation, page=None
+        ending=outcome.ending,
+        snapshot_id=snapshot_id,
+        stored=None,
+        outcome=outcome,
+        generation=generation_record(report_doc_id=None, **written),
+        page=None,
     )
     ending = _stored_as(outcome.ending)
     if outcome.doc is None or ending is None:
         return unstored
+    report_doc_id = new_report_doc_id()
     try:
         stored = await run_blocking(
             eval_host.blocking_executor,
             store_report_doc,
             eval_host.storage,
+            report_doc_id=report_doc_id,
             scope_id=scope_id,
             snapshot_id=snapshot_id,
             campaign_id=snapshot.campaign_id if snapshot is not None else None,
@@ -224,7 +243,8 @@ async def report_write(
             report_input=report_input,
             ending=ending,
             findings=outcome.findings,
-            generation=generation,
+            generation=generation_record(report_doc_id=report_doc_id, **written),
+            sessions=outcome.sessions,
             created_by=created_by,
         )
     except Exception as exc:
@@ -232,8 +252,10 @@ async def report_write(
         # reach the caller beside the failure, never instead of it.
         raise ReportNotStored(
             f"the report ended {outcome.ending} and was not stored ({type(exc).__name__}: {exc}); its generation "
-            "record (tally, reviews, sessions) is this error's .written",
+            "record (tally, reviews, sessions) is this error's .written, and any session the store wrote before it "
+            f"failed is under report {report_doc_id}, which delete_report_doc removes",
             written=unstored,
+            report_doc_id=report_doc_id,
         ) from exc
     page = build(outcome.doc, report_input, strict=True, findings=outcome.findings, made=made_line(stored))
     return replace(unstored, stored=stored, page=page)
