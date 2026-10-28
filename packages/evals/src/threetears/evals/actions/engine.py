@@ -585,8 +585,9 @@ class ReportReadParams(EvalBaseModel):
         default=None,
         min_length=1,
         description=(
-            "One of the campaign's stored report documents, any version, to read in place of the campaign's report "
-            "(analyses_list names each analysis's report_doc_id); omitted, the campaign's report."
+            "A stored report document of the campaign, any version (analyses_list names each analysis's "
+            "report_doc_id): given, the report is that document's page in place of the campaign's report; omitted, "
+            "the campaign's report."
         ),
     )
     include_sessions: bool = Field(

@@ -320,9 +320,10 @@ async def test_a_report_doc_id_of_another_campaign_or_of_none_is_refused_as_not_
 
 
 async def test_the_action_takes_report_doc_id_and_include_sessions() -> None:
-    assert (ReportReadParams.model_validate({"campaign_id": "c"}).report_doc_id, ReportReadParams.model_validate(
-        {"campaign_id": "c"}
-    ).include_sessions) == (None, False)
+    assert (
+        ReportReadParams.model_validate({"campaign_id": "c"}).report_doc_id,
+        ReportReadParams.model_validate({"campaign_id": "c"}).include_sessions,
+    ) == (None, False)
     fixture = off_loop(ops_fixture)
     analysis = await _generated(fixture)
     evals = eval_catalogue().mount_all(standard_tools())[0]

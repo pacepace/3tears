@@ -765,7 +765,10 @@ def _doc_claims(host: EvalHost, report_doc_id: str, scope_id: str) -> tuple[int,
         stored = host.storage.load_report_doc(report_doc_id, scope_id)
     except ValidationError as unread:
         # NOSILENT: the line leads with the one regenerate line and counts no claims, so nothing reads it as whole.
-        return 0, f"its report document {report_doc_id!r} does not read under this build ({unread.error_count()} fault(s))"
+        return (
+            0,
+            f"its report document {report_doc_id!r} does not read under this build ({unread.error_count()} fault(s))",
+        )
     if stored is None:
         return 0, f"its report document {report_doc_id!r} was deleted apart from it"
     return len(ReportDoc.model_validate(stored.doc).claims), None
@@ -1781,7 +1784,7 @@ def report_read(
         basis=report.basis,
         analysis_id=analysis_id,
         analysis_basis=analysis.basis if analysis is not None else None,
-        doc=dict(report.report_doc["doc"]) if report.report_doc is not None else None,
+        doc=dict(cast("dict[str, Any]", report.report_doc["doc"])) if report.report_doc is not None else None,
         needs_regeneration=NO_LONGER_READS if unread else None,
         format=format,
         body=body,

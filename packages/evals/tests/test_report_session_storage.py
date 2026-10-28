@@ -767,4 +767,3 @@ def test_a_report_session_is_stored_under_the_id_its_report_and_name_give_and_no
 
     with pytest.raises(ValidationError, match="the one its report and name give"):
         EvalReportSession.model_validate({**session.to_dict(), "id": "report-1:session:analyst"})
-

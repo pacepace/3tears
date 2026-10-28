@@ -862,7 +862,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`price_largest_reporter_call`** · async function · A reporter arm's largest generator call, priced before launch, for its `LaunchableKind.price_largest_call`.
   <br>`price_largest_reporter_call(host: EvalHost, request: LaunchRequest, *, prompts: ReporterPrompts, resolve_model: ReporterModelResolver) -> CallCeiling | None`
 - **`report_read`** · function · The campaign's report, serialized in one form — the same report the command line's `report` prints.
-  <br>`report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat, trials: TrialDetail = 'table', static: bool = False) -> ReportDocument`
+  <br>`report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat, trials: TrialDetail = 'table', static: bool = False, report_doc_id: str | None = None, include_sessions: bool = False) -> ReportDocument`
 - **`reporter_case_archive`** · function · Retire a reporter case, or restore one: a retired case is never launched again and stays readable.
   <br>`reporter_case_archive(host: EvalHost, test_case_id: str, scope_id: str, *, archived: bool, reason: str | None = None) -> FrozenReporterCase`
 - **`run_get`** · function · One run, summarised from its stored results.
@@ -1587,7 +1587,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `insights_list` | `read` | `subject_filter?`, `campaign_filter?` | List the scope's insights — the durable claims analyses minted — newest first. |
 | `insight_get` | `read` | `insight_id` | Read one insight in full: its statement, evidence runs, provenance and standing. |
 | `analyses_undescribable` | `read` | — | List the scope's analyses holding an arm whose levels this build cannot describe. |
-| `report_read` | `read` | `campaign_id`, `format?`, `trials?`, `static?` | Read a campaign's report — its analysis, else its evidence alone — as Markdown, JSON or HTML. |
+| `report_read` | `read` | `campaign_id`, `format?`, `trials?`, `static?`, `report_doc_id?`, `include_sessions?` | Read a campaign's report — its analysis, else its evidence alone — as Markdown, JSON or HTML. |
 | `bars_propose` | `read` | `campaign_id` | Propose bars from a single-cell baseline campaign's measured incumbent; registers nothing. |
 | `reporter_case_freeze` | `write` | `template_id`, `campaign_id`, `recorded_analysis_id?`, `labels?`, `supersedes?` | Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template. |
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
@@ -1684,6 +1684,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `format` | `'markdown'` \| `'json'` \| `'html'` | The report's form: markdown (the memo), json (the schema's form), html (one page; its one script is the kit's, which draws its charts). |
 | `from_labels` | `boolean` | Freeze from the scope's person labels instead of from runs: one case per output and criterion, from the content each label carries, reading no run or result, so it works after the runs are gone. A label that carries no content is skipped by name. |
 | `include_archived` | `boolean` | List archived records too; they are left out by default. |
+| `include_sessions` | `boolean` | With json, add the full transcripts of the report document the page draws, as report_doc.sessions: every session that wrote it, by name. Refused with markdown or html, which never hold a transcript. |
 | `insight_id` | `string` | An insight's id, as insights_list names it. |
 | `intent` | `string` | What its judge campaign measures, in a sentence a reader of its report is told. |
 | `into_case_set` | `string` or `null` | A case set to mint the next version of, listing exactly the frozen cases — what a launch targets. |
@@ -1729,6 +1730,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `reason` | `string` or `null` | Why, recorded on a cancelled run. |
 | `recorded_analysis_id` | `string` or `null` | A stored analysis of the campaign whose memo the case pins as the one it got, as analyses_list names it; one the report planner wrote pins its plan, as a plan case; omitted freezes the bundle alone, which only a generating candidate can run. |
 | `repeats` | `integer` | How many times each dim is judged at each temperature. |
+| `report_doc_id` | `string` or `null` | A stored report document of the campaign, any version (analyses_list names each analysis's report_doc_id): given, the report is that document's page in place of the campaign's report; omitted, the campaign's report. |
 | `reporter_case_id` | `string` | A reporter case's id, as reporter_case_freeze or reporter_cases_list returns it. |
 | `result_id` | `string` | A result's id, as results_list names it. |
 | `result_ids` | array of `string` or `null` | A run's result ids, as results_list names them; omitted for every result of the run. |

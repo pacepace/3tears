@@ -139,7 +139,9 @@ def unread_analysis_blocks(analysis_id: str | None, report_doc_id: str | None = 
     return [DisclosureBlock(section="answer", source="memo", text=text)]
 
 
-def recommendation_blocks(memo: AuthoredCampaignAnalysis | None, kind: str, *, noted: bool = False) -> list[ReportBlock]:
+def recommendation_blocks(
+    memo: AuthoredCampaignAnalysis | None, kind: str, *, noted: bool = False
+) -> list[ReportBlock]:
     """The writer's recommendation, the arm and how sure, then each reason in its words, as written; one line with no
     memo, and one by the campaign's kind where the memo recommends nothing.
 

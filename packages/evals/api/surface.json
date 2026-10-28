@@ -5336,6 +5336,51 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.DocCaveatLine": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.DocClaim": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.DocConfidence": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.DocEvidence": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.DocFinding": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.DocNext": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.DocOmitted": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.DocPage": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.DocTerm": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.dollars_text": {
       "kind": "function",
       "signature": "dollars_text(amount: float | None) -> str",

@@ -147,7 +147,9 @@ def build_campaign_report(
     ]
     if kind != "measurement":
         blocks += recommendation_blocks(
-            memo, kind, noted=any(named is not None for named in (report_doc_id, unread_analysis_id, unread_report_doc_id))
+            memo,
+            kind,
+            noted=any(named is not None for named in (report_doc_id, unread_analysis_id, unread_report_doc_id)),
         )
     if kind == "choice":
         blocks += behind_on_blocks(memo, names=names)

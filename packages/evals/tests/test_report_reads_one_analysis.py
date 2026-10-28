@@ -116,7 +116,8 @@ async def test_the_report_reads_one_analysis_document_however_many_are_archived(
     store.analyses_read = 0
     page = off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE)
 
-    assert (page.basis, page.analysis_id) == ("analysis", analysis.id)
+    # A planned analysis reads as the code-only page standing in for it (test_report_read_doc.py).
+    assert (page.basis, page.unread_analysis_id) == ("code_only", analysis.id)
     assert store.analyses_read == 1
 
 
