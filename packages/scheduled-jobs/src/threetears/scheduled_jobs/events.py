@@ -19,6 +19,7 @@ __all__ = [
     "EVENT_FIRE_COMPLETED",
     "EVENT_FIRE_DISPATCHED",
     "EVENT_FIRE_DRIFT",
+    "EVENT_FIRE_DUE_AGAIN",
     "EVENT_FIRE_FAILED",
     "EVENT_FIRE_HANDED_OFF",
     "EVENT_FIRE_REAPED",
@@ -79,3 +80,7 @@ EVENT_FIRE_SKIPPED_IN_FLIGHT: str = "3tears.scheduled_jobs.fire.skipped_in_fligh
 # queued; it carries the group and the kind holding the turn (``None``
 # for the moment the turn is passing to the next fire in line).
 EVENT_FIRE_WAITING_EXCLUSION_GROUP: str = "3tears.scheduled_jobs.fire.waiting_exclusion_group"
+# ``EVENT_FIRE_DUE_AGAIN`` is a fire cancelled because its dispatcher was closing (a restart, a
+# deploy) whose job was made due again at the occurrence it was running, so the next tick on any
+# pod runs it rather than the job waiting a whole interval.
+EVENT_FIRE_DUE_AGAIN: str = "3tears.scheduled_jobs.fire.due_again"

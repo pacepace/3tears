@@ -41,11 +41,17 @@ outcome. Along the way it:
 If the process dies mid-fire the row stays ``'dispatching'`` and the tick's reaper records it as
 failed, exactly as for a pod that dies inside an inline fire. :meth:`BackgroundDispatch.aclose`
 cancels what is still running and records each such fire as failed, saying why; a fire whose
-body had already finished keeps its real result.
+body had already finished keeps its real result. Given a ``schedule_store``
+(:class:`~threetears.scheduled_jobs.protocols.ClaimUndoStore`), it also undoes each cancelled
+fire's claim, so the job is active and due again at the occurrence it was running: the claim had
+already advanced the job (or expired a one-shot), so the work would otherwise wait a whole interval
+or never run. The undo lands only while the row still holds what the claim wrote; a job claimed
+again, retuned, fired by hand or paused while the fire ran is left alone, at WARNING. A fire that
+failed, timed out or was cancelled for any other reason keeps its advanced schedule.
 
 Usage (pass the SAME config to both, so the reap thresholds agree)::
 
-    background = BackgroundDispatch(fire_store, config=config, nats_client=nats)
+    background = BackgroundDispatch(fire_store, config=config, nats_client=nats, schedule_store=schedules)
     routes = {kind: background.wrap(handler) for kind, handler in handlers.items()}
     await scheduled_tick_job(schedule_store, fire_store, routes, nats_client=nats, config=config)
     ...
@@ -74,12 +80,13 @@ from threetears.observe import contain, get_logger
 from threetears.scheduled_jobs.config import JobConfig, reap_after_seconds_for_kind
 from threetears.scheduled_jobs.events import (
     EVENT_FIRE_COMPLETED,
+    EVENT_FIRE_DUE_AGAIN,
     EVENT_FIRE_FAILED,
     EVENT_FIRE_SKIPPED_IN_FLIGHT,
     EVENT_FIRE_WAITING_EXCLUSION_GROUP,
 )
 from threetears.scheduled_jobs.metrics import ScheduledJobsMetricsEmitter, get_scheduled_jobs_emitter
-from threetears.scheduled_jobs.protocols import FireStore
+from threetears.scheduled_jobs.protocols import ClaimUndoStore, FireStore
 from threetears.scheduled_jobs.tick import DispatchCallback, _failed_output
 from threetears.scheduled_jobs.types import JobFireResult, JobTrigger
 
@@ -176,6 +183,8 @@ class _Outcome:
 
     result: JobFireResult
     failure_reason: str = _HANDLER_EXCEPTION
+    #: cancelled because the dispatcher was closing: the job is made due again
+    due_again: bool = False
 
 
 class BackgroundDispatch:
@@ -197,6 +206,7 @@ class BackgroundDispatch:
         emitter: ScheduledJobsMetricsEmitter | None = None,
         exclusion_groups: Mapping[str, str] | None = None,
         finalize_retry_seconds: float = DEFAULT_FINALIZE_RETRY_SECONDS,
+        schedule_store: ClaimUndoStore | None = None,
     ) -> None:
         """Build the dispatcher; validate its limits against the pump's reap thresholds.
 
@@ -223,6 +233,10 @@ class BackgroundDispatch:
         :param finalize_retry_seconds: the pause before the first retry of a fire row's finalize
             write; each later retry waits twice as long (:data:`FINALIZE_ATTEMPTS` tries in all)
         :ptype finalize_retry_seconds: float
+        :param schedule_store: the pump's schedule store; a fire cancelled by :meth:`aclose` has its
+            claim undone through it, so its job is due again at the occurrence the fire was running.
+            ``None`` leaves such a job as the claim left it, and says so at WARNING
+        :ptype schedule_store: ClaimUndoStore | None
         :raises ValueError: when a limit is not a positive number, ``finalize_retry_seconds`` is
             negative, a fire timeout does not fit
             below the reap threshold (less :data:`REAP_MARGIN_SECONDS`) of the kinds it applies to,
@@ -245,6 +259,7 @@ class BackgroundDispatch:
                 raise ValueError(f"exclusion_groups[{kind!r}] must be a non-empty group name, got {group!r}")
 
         self._fire_store = fire_store
+        self._schedule_store = schedule_store
         self._config = config
         self._nats_client = nats_client
         self._slots = asyncio.Semaphore(max_concurrent)
@@ -337,7 +352,8 @@ class BackgroundDispatch:
         """Stop: refuse new fires, cancel the running ones, and record each as failed.
 
         A fire whose body had already finished keeps its real result; a fire cancelled before its
-        task ever started is recorded here, since it never reached its own handler.
+        task ever started is recorded here, since it never reached its own handler. Each fire
+        cancelled here has its claim undone when a ``schedule_store`` was given.
 
         Never raises for a fire whose row could not be finalized: shutdown completes, and one ERROR
         line names what the reaper will record (each was logged and counted when its write failed).
@@ -349,7 +365,7 @@ class BackgroundDispatch:
         await asyncio.gather(*tasks, return_exceptions=True)
         for fire_id, (trigger, handed_off_at) in list(self._pending.items()):
             if fire_id not in self._started:
-                await self._finalize(trigger, fire_id, self._cancelled(trigger, handed_off_at))
+                await self._finalize(trigger, fire_id, self._cancelled(trigger, handed_off_at), due_again=True)
         try:
             await self.join()
         except FireNotRecordedError as exc:
@@ -449,7 +465,11 @@ class BackgroundDispatch:
                     await _release_in_flight_lock(lock, trigger, None, body_ran=True)
         except asyncio.CancelledError:
             if outcome is None:
-                outcome = _Outcome(self._cancelled(trigger, self._handed_off_at(fire_id)), _CANCELLED)
+                # Cancelled by aclose (the dispatcher is closing) is work cut off, not work that
+                # failed: its job is made due again. Any other cancel keeps today's record only.
+                outcome = _Outcome(
+                    self._cancelled(trigger, self._handed_off_at(fire_id)), _CANCELLED, due_again=self._closed
+                )
             raise
         except Exception as exc:  # noqa: BLE001 - boundary: re-raised; caught only to record the row and log the fault
             # Past every failure the lock and the body are expected to have: a fault of ours. The row
@@ -638,20 +658,93 @@ class BackgroundDispatch:
             # The body handed the fire on to yet another owner, which now holds the row.
             self._pending.pop(fire_id, None)
         else:
-            await self._finalize(trigger, fire_id, outcome.result, outcome.failure_reason)
+            await self._finalize(trigger, fire_id, outcome.result, outcome.failure_reason, due_again=outcome.due_again)
 
     async def _finalize(
-        self, trigger: JobTrigger, fire_id: UUID, result: JobFireResult, failure_reason: str = _CANCELLED
+        self,
+        trigger: JobTrigger,
+        fire_id: UUID,
+        result: JobFireResult,
+        failure_reason: str = _CANCELLED,
+        *,
+        due_again: bool = False,
     ) -> None:
         if self._pending.pop(fire_id, None) is None:
             return
         # Its own task, shielded: cancelling the fire (aclose) must not cut the record short.
         write = asyncio.get_running_loop().create_task(
-            self._write(trigger, fire_id, result, failure_reason), name=f"scheduled-jobs:finalize:{trigger.kind}"
+            self._write_and_bring_back(trigger, fire_id, result, failure_reason, due_again=due_again),
+            name=f"scheduled-jobs:finalize:{trigger.kind}",
         )
         self._writes.add(write)
         write.add_done_callback(self._writes.discard)
         await asyncio.shield(write)
+
+    async def _write_and_bring_back(
+        self, trigger: JobTrigger, fire_id: UUID, result: JobFireResult, failure_reason: str, *, due_again: bool
+    ) -> None:
+        # The record first, so the cancelled fire is in the history before its job can run again;
+        # the job comes back even when the record could not be written, since its work never ran.
+        await self._write(trigger, fire_id, result, failure_reason)
+        if due_again:
+            await self._bring_back(trigger, fire_id)
+
+    async def _bring_back(self, trigger: JobTrigger, fire_id: UUID) -> None:
+        """Undo a cancelled fire's claim: its job is active and due at the occurrence it was running.
+
+        Due at ``scheduled_fire_at``, not at the moment of shutdown: the next claim then computes
+        the job's following fire from the same occurrence the cancelled one did, so the schedule
+        keeps its grid and only the cut-off run is repeated. The undo is a compare-and-swap on what
+        the claim wrote, so a row that moved on since is left alone and said so at WARNING.
+        """
+        detail = {
+            "job_id": str(trigger.job_id),  # convert at border: log extra_data field
+            "fire_id": str(fire_id),  # convert at border: log extra_data field
+            "kind": trigger.kind,
+        }
+        if self._schedule_store is None:
+            log.warning(
+                "scheduled_jobs background: a fire cancelled on close is not run again; "
+                "no schedule_store was given to undo its claim",
+                extra={"extra_data": detail},
+            )
+            return
+        if trigger.claimed_status is None:
+            log.warning(
+                "scheduled_jobs background: a fire cancelled on close is not run again; "
+                "its trigger does not say what its claim wrote, so the claim cannot be undone",
+                extra={"extra_data": detail},
+            )
+            return
+        try:
+            undone = await self._schedule_store.undo_claim(
+                partition_key=trigger.partition_key,
+                job_id=trigger.job_id,
+                scheduled_fire_at=trigger.scheduled_fire_at,
+                claimed_at=trigger.fired_at,
+                claimed_next_fire_at=trigger.claimed_next_fire_at,
+                claimed_status=trigger.claimed_status,
+                now=datetime.now(UTC),
+            )
+        except Exception as exc:  # noqa: BLE001 - boundary: shutdown must complete; the job keeps its advanced schedule
+            contain(
+                exc,
+                log=log,
+                what="scheduled_jobs background: could not undo the claim of a fire cancelled on close",
+                extra=detail,
+                level="error",
+            )
+            return
+        if undone:
+            log.info(
+                EVENT_FIRE_DUE_AGAIN, extra={"extra_data": {**detail, "due_at": trigger.scheduled_fire_at.isoformat()}}
+            )
+        else:
+            log.warning(
+                "scheduled_jobs background: a fire cancelled on close is not run again; its job changed after "
+                "the claim (claimed again, retuned, fired by hand, paused or deleted), so it is left as it is",
+                extra={"extra_data": detail},
+            )
 
     async def _write(self, trigger: JobTrigger, fire_id: UUID, result: JobFireResult, failure_reason: str) -> None:
         failed = result.status == "failed"

@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, runtime_chec
 
 from nats.errors import ConnectionClosedError as _NatsConnectionClosedError
 from nats.errors import Error as NatsError
+from nats.errors import MaxPayloadError as _NatsMaxPayloadError
 from nats.errors import NotJSMessageError
 from nats.js.api import (
     AckPolicy,
@@ -1829,12 +1830,19 @@ class NatsKvBucket:
         ``passthrough`` exceptions (KeyNotFound / CAS-mismatch) are normal control flow and
         are re-raised immediately -- only an unexpected failure (a vanished stream, a
         transient transport error) triggers the single re-open + retry. A second failure
-        propagates to the caller's ``KvError`` wrap.
+        propagates to the caller's ``KvError`` wrap. A value over the server's ``max_payload`` is
+        not a transport failure and is never retried: nothing about the second attempt is smaller.
         """
         try:
             await self._follow_connection()
             return await self._bounded(op)
         except passthrough:
+            raise
+        except _NatsMaxPayloadError:
+            # An oversized value is refused client-side, before anything leaves the process, against
+            # the max_payload the server advertised. Re-opening the bucket changes neither number,
+            # so the retry could only fail the same way after a second round trip and a misleading
+            # "transport error" line. The caller's KvError wrap still names it.
             raise
         except PublishTimeoutError:
             # A wedged operation is not a vanished bucket. Re-opening runs another KV call

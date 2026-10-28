@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, NamedTuple
 
+from pydantic import Field
+
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host.profile import HostProfile
@@ -247,6 +249,12 @@ class PivotTable(EvalBaseModel):
     #: counting those that cannot say (:attr:`PivotCell.served_models`), or ``None`` when every cell names one
     #: model or the table is not grouped by contestant (#684).
     served_model_disclosure: str | None = None
+    #: Set when the scope was past :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and only one subject's runs
+    #: were read (:func:`~threetears.evals.analysis.reads.pivot`): the sentence naming the subject and what was
+    #: therefore not counted (other subjects' rows in ``n_filtered_out``, and results whose run is missing). ``None``
+    #: on a whole-scope read, and then left out of a dump, so an answer read whole serializes, and digests, as it did
+    #: before the field existed.
+    narrowed_read_disclosure: str | None = Field(default=None, exclude_if=lambda value: value is None)
     #: Plans the cost estimate made that no cell describes — a model no level of the model axis carries, or a
     #: template no cell at that model holds alone — each as ``model`` or ``model (template)``. Named rather than
     #: dropped, since a prediction with nowhere to sit is still a fact about the plan: an arm that was priced and

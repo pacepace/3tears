@@ -28,6 +28,11 @@ the completeness, clock and cassette disclosures every comparison carries.
 :func:`bisect_runs` (which versioned inputs differ between two runs) is internal: the bundle's confound
 scan and ``runs_compare``'s disclosures answer its question on the public surface, and nothing exposes it.
 
+**An aggregate reads at most :data:`READ_TIER_ROW_BUDGET` results.** Each one estimates its read from the run
+listing before reading anything, and a scope estimated past the budget is refused unless the call narrows to runs
+that fit, which it then reads alone; an export pages instead (:data:`EXPORT_PAGE_RESULTS`). The budget's comment is
+the design: the estimate, the refusal, the safety net, and why an aggregate is never paged.
+
 The scope a run lives in is ``scope_id`` here — the engine's word for a partition it never
 interprets. The host chooses what a scope is and passes it through.
 """
@@ -90,6 +95,7 @@ from threetears.evals.kernel.scoring import (
 from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN
+from threetears.evals.kernel.run_pages import RunResultsStore, read_results, run_case_pages, run_result_keys
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -117,17 +123,41 @@ RowColumns = Callable[["list[EvalResult]"], Mapping[tuple[str, str], Mapping[str
 #: absence: reading it as unrecorded would make a real difference undecidable.
 _NOT_CARRIED = "(not carried by this run)"
 
-#: How many projected score records one read-tier call may carry before its observer line is logged at
-#: WARNING instead of INFO (#652).
+#: How many results one aggregating read-tier call may read, as its runs' listing estimates them before any is read;
+#: also how many projected score records one call may carry before its observer line is logged at WARNING (#652).
 #:
 #: The read tier projects and aggregates in Python on every request, and that is calibrated to a corpus of
 #: dozens-to-hundreds of cells — one operator, one scope (see :mod:`threetears.evals.analysis.reporting`).
 #: A cell pools a few dozen observations and each observation projects one record per measure, so that
-#: premise is a few thousand records to tens of thousands at its upper end. This budget sits just past it: a
-#: call above it is reading a corpus the premise does not describe, which is the point to push
-#: :func:`~threetears.evals.analysis.reporting.project_score_records` down into SQL. It is a signal that the
-#: deferral is being crossed, set to fire before a page is slow, not a latency limit; ``elapsed_ms`` rides on
-#: the same line for a host that would rather alert on time. A host alerts on the level alone.
+#: premise is a few thousand records to tens of thousands at its upper end. This budget sits just past it. On the
+#: observer line it is a signal that the deferral to SQL is being crossed, set to fire before a page is slow, not a
+#: latency limit; ``elapsed_ms`` rides on the same line for a host that would rather alert on time.
+#:
+#: **The estimate.** Before an aggregate (:func:`comparison_sets`, :func:`pivot`, :func:`frontier`, :func:`history`,
+#: :func:`program_budget`, :func:`orphaned_runs`) reads a result, it sums what the run listing says each run holds:
+#: its matrix, cases × k, or the cells it recorded persisting when those are more — the estimate an export pages by
+#: (:data:`EXPORT_PAGE_RESULTS`), from the one estimator. A scope estimated at the budget or under is read whole, as
+#: every aggregate always read it, so its exclusion counts are the whole scope's.
+#:
+#: **The refusal.** A scope estimated past it is refused (``ValidationFailedError``) before anything is read, unless
+#: the call narrows to runs that fit: a call for one subject (``pivot``, ``frontier``, ``history``) reads that
+#: subject's runs alone, run by run, every status and archived ones included, so its status and archival counts are
+#: exact within the subject; a grouping narrowed to a campaign, named runs or one run status (``comparison_sets``)
+#: reads only the runs it groups. A narrowed read's exclusion counts cover what it read: other subjects' results, and
+#: results whose run was deleted, are not reached. ``program_budget`` and ``orphaned_runs`` take no filter, so past the
+#: budget they are refused. The refusal names the estimate, the budget and the filters that narrow that call; a
+#: refused call logs one WARNING line. Results are held to a budget written in records because a result projects at
+#: least one record, so a scope refused is past it in records too; one under it in results can still pass it in
+#: records, which the observer's WARNING line reports.
+#:
+#: **The safety net.** A read that returns more than the budget (results whose run was deleted are in no listing) is
+#: not aggregated: a whole-scope read falls back to the call's narrowed read, as an export falls back to pages, and is
+#: refused when the call does not narrow; a narrowed read is refused.
+#:
+#: **Why an aggregate is not paged, as an export is.** Each page of an export is a true part of the rows. A page of a
+#: pivot, a frontier or a history is not a part of the answer: its cells pool fewer observations, its cheapest variant
+#: is the cheapest of the runs read, its regression flags compare against the runs read, so a partial aggregate is a
+#: wrong answer that looks complete. Pushing the projection into SQL is what answers a scope past the budget (#996).
 READ_TIER_ROW_BUDGET = 50_000
 
 #: The most stored results one :func:`export_results` call reads, as each run's listing estimates them before any
@@ -138,8 +168,9 @@ READ_TIER_ROW_BUDGET = 50_000
 #: carries the body twice (its structured result and its text). At this ceiling a page projects 4,000 to 25,000
 #: records, inside :data:`READ_TIER_ROW_BUDGET` at up to 50 measures per result, and its CSV body is about 2 MB at four
 #: records per result. A scope estimated past it is exported in pages of whole runs
-#: (:class:`~threetears.evals.analysis.lenses.export.ExportPage`), and a named list of runs past it is refused. One
-#: run is never split: a run larger than the ceiling is a page of its own, or exported alone.
+#: (:class:`~threetears.evals.analysis.lenses.export.ExportPage`), and a named list of runs past it is refused. A run
+#: larger than the ceiling, in a scope's pages or named alone, is exported in pages of whole cases of it
+#: (:func:`~threetears.evals.kernel.run_pages.run_case_pages`), so no call reads past the ceiling but by one case.
 EXPORT_PAGE_RESULTS = 1_000
 
 
@@ -193,8 +224,9 @@ def _observe_read(
     )
 
 
-class LensStore(Protocol):
-    """The storage reads the lenses make — results by scope and by run, campaigns, and one whole run.
+class LensStore(RunResultsStore, Protocol):
+    """The storage reads the lenses make — results by scope, by run and a run's a page at a time, campaigns, and one
+    whole run.
 
     A scope's runs are not listed through it: they arrive through ``list_runs`` and the caller's
     listed-run loader, which carry the run package's listing rules. Structural, so a host's own storage satisfies it by
@@ -342,6 +374,151 @@ def _corpus_and_cohort(list_runs: RunLister, scope_id: str) -> tuple[list[EvalRu
     return corpus, [run for run in corpus if not run.archived], {run.id for run in corpus if run.archived}
 
 
+def _subject_runs(corpus: Sequence[EvalRun], subject_id: str | None) -> list[EvalRun] | None:
+    """The runs a call for one subject reads when its scope is past :data:`READ_TIER_ROW_BUDGET`: every run of the
+    subject (its snapshot's), whatever its status and archived or not, or ``None`` for a call for every subject.
+
+    Every status and archived run is kept so the projection still counts, exactly, what the call's status filter and
+    the archival left out of the subject's answer; only other subjects' runs go unread.
+    """
+    if subject_id is None:
+        return None
+    return [run for run in corpus if run.subject_snapshot.subject_id == subject_id]
+
+
+def _past_budget_remedy(how: str, estimate: int, returned: int | None) -> str:
+    """What a call refused past :data:`READ_TIER_ROW_BUDGET` does: ``how`` it narrows (or what it reads instead), then
+    the estimate, or what the read returned, and the budget a narrowed call is answered under."""
+    if returned is not None:
+        return (
+            f"{how}; the runs read now returned {returned} results where their matrices (cases × k) promise about "
+            f"{estimate}, and a call whose read returns {READ_TIER_ROW_BUDGET} or fewer is answered"
+        )
+    return (
+        f"{how}; the runs read now hold about {estimate} results by their matrices (cases × k), and a call whose runs "
+        f"hold {READ_TIER_ROW_BUDGET} or fewer is answered"
+    )
+
+
+def _refuse_past_budget(
+    lens: str, scope_id: str, *, estimate: int, runs: int, returned: int | None, how: str
+) -> ValidationFailedError:
+    """The refusal of an aggregate past :data:`READ_TIER_ROW_BUDGET`, logged at WARNING as the observer line is (#652).
+
+    :param returned: How many results a read returned past its estimate (the safety net), or ``None`` for a refusal
+        made before anything was read.
+    """
+    log.warning(
+        "eval.read_tier lens=%s scope_id=%s refused runs=%d results_estimated=%d%s over READ_TIER_ROW_BUDGET=%d",
+        lens,
+        scope_id,
+        runs,
+        estimate,
+        "" if returned is None else f" results_returned={returned}",
+        READ_TIER_ROW_BUDGET,
+    )
+    fault = (
+        f"{lens} would aggregate about {estimate} results, past the {READ_TIER_ROW_BUDGET} one read-tier call "
+        "aggregates"
+        if returned is None
+        else f"{lens}'s runs promised about {estimate} results by their matrices and the store returned {returned}, "
+        f"past the {READ_TIER_ROW_BUDGET} one read-tier call aggregates (results whose run was deleted are in no "
+        "listing)"
+    )
+    details: dict[str, Any] = {"runs": runs, "results_estimated": estimate, "result_budget": READ_TIER_ROW_BUDGET}
+    if returned is not None:
+        details["results_returned"] = returned
+    return ValidationFailedError(
+        f"{fault}; an aggregate is never answered in part, since part of one reads as the whole",
+        details=details,
+        remedy=_past_budget_remedy(how, estimate, returned),
+    )
+
+
+def narrowed_read_disclosure(subject_id: str, *, tiers: bool = False) -> str:
+    """What an answer read for one subject alone, past :data:`READ_TIER_ROW_BUDGET`, did not count.
+
+    The one wording, which the regression watch's judged alerts carry too.
+
+    :param subject_id: The subject read.
+    :ptype subject_id: str
+    :param tiers: Whether the answer names judges' evidence tiers, which it then read on this subject's results alone.
+    :ptype tiers: bool
+    :return: The sentence the answer carries as ``narrowed_read_disclosure``.
+    :rtype: str
+    """
+    tiered = (
+        "; each judge's evidence tier was read on this subject's results alone, where a whole-scope read pools every "
+        "subject's"
+        if tiers
+        else ""
+    )
+    return (
+        f"Read for subject {subject_id!r} alone: the scope is past the read tier's budget of {READ_TIER_ROW_BUDGET} "
+        "results, so only this subject's runs were read; other subjects' results, and results whose run is missing, "
+        f"are not counted{tiered}."
+    )
+
+
+def _aggregate_results(
+    storage: LensStore,
+    scope_id: str,
+    lens: str,
+    corpus: Sequence[EvalRun],
+    *,
+    narrowed: Sequence[EvalRun] | None,
+    remedy: str,
+) -> tuple[list[EvalResult], bool]:
+    """The results an aggregate reads, held to :data:`READ_TIER_ROW_BUDGET` by its runs' estimate before any is read.
+
+    A scope whose runs (``corpus``, every run a whole-scope read can return, archived ones included) are estimated at
+    the budget or under is read whole, as before. Past it, the call's ``narrowed`` runs are read run by run when they
+    fit, and the call is refused when they do not or when it does not narrow (``None``). A read that returns more than
+    the budget is not aggregated: a whole-scope read falls back to the narrowed read, and a narrowed read is refused.
+
+    :param lens: The operation, as the refusal and its log line name it.
+    :ptype lens: str
+    :param corpus: Every run the scope's listing holds, archived ones included.
+    :ptype corpus: Sequence[EvalRun]
+    :param narrowed: The runs this call needs read, when it narrows to fewer than the scope's; else ``None``.
+    :ptype narrowed: Sequence[EvalRun] | None
+    :param remedy: How this call narrows, by the filters it takes (or what to read instead, when it takes none).
+    :ptype remedy: str
+    :return: The results read, and whether they are the narrowed runs' alone rather than the whole scope's.
+    :rtype: tuple[list[EvalResult], bool]
+    :raises ValidationFailedError: The runs this call reads are estimated past the budget, or a read returned more.
+    """
+    whole = sum(_results_estimate(run) for run in corpus)
+    if whole <= READ_TIER_ROW_BUDGET:
+        results = storage.query_eval_results(scope_id)
+        if len(results) <= READ_TIER_ROW_BUDGET:
+            return results, False
+        returned = len(results)
+        del results
+        if narrowed is None:
+            raise _refuse_past_budget(lens, scope_id, estimate=whole, runs=len(corpus), returned=returned, how=remedy)
+        log.warning(
+            "eval.read_tier lens=%s scope_id=%s read %d results where its runs' matrices promised %d; read its %d "
+            "narrowed runs instead",
+            lens,
+            scope_id,
+            returned,
+            whole,
+            len(narrowed),
+        )
+    if narrowed is None:
+        raise _refuse_past_budget(lens, scope_id, estimate=whole, runs=len(corpus), returned=None, how=remedy)
+    estimate = sum(_results_estimate(run) for run in narrowed)
+    if estimate > READ_TIER_ROW_BUDGET:
+        raise _refuse_past_budget(lens, scope_id, estimate=estimate, runs=len(narrowed), returned=None, how=remedy)
+    results = [res for run in narrowed for res in storage.query_eval_results_by_run(run.id, scope_id)]
+    if len(results) > READ_TIER_ROW_BUDGET:
+        raise _refuse_past_budget(
+            lens, scope_id, estimate=estimate, runs=len(narrowed), returned=len(results), how=remedy
+        )
+    return results, True
+
+
 def comparison_sets(
     storage: LensStore,
     scope_id: str,
@@ -426,7 +603,8 @@ def comparison_sets(
     :rtype: dict[str, Any]
     :raises ValidationFailedError: ``status`` is neither ``"all"`` nor a status a
         run can carry, or both ``campaign_id`` and ``run_ids`` were supplied
-        — each is a question the caller can restate.
+        — each is a question the caller can restate; or the runs it groups are
+        past :data:`READ_TIER_ROW_BUDGET` (a scope past it is read for those runs alone).
     :raises NotFoundError: ``campaign_id`` names no campaign in the scope.
     """
     if campaign_id and run_ids:
@@ -443,7 +621,18 @@ def comparison_sets(
     scope_run_ids = _load_campaign(storage, campaign_id, scope_id).run_ids if campaign_id else run_ids
 
     runs = list_runs(scope_id, status=_status_filter(status))
-    results = storage.query_eval_results(scope_id)
+    # The grouping reads results only for the runs it groups, so a scope past the budget is read for those alone.
+    grouped = runs if scope_run_ids is None else [run for run in runs if run.id in set(scope_run_ids)]
+    # Exact when narrowed: the grouping reads no result of a run it does not group, so nothing needs disclosing.
+    results, _ = _aggregate_results(
+        storage,
+        scope_id,
+        "comparison_sets",
+        list_runs(scope_id, include_archived=True),
+        narrowed=grouped,
+        remedy="narrow it to a campaign (campaign_id), to named runs (run_ids) or to one run status (status): a "
+        "narrowed grouping reads only its runs' results",
+    )
     return compute_comparison_sets(
         runs, results=results, full_windows=full_windows, scope_run_ids=scope_run_ids, profile=profile
     ).model_dump(mode="json")
@@ -497,7 +686,9 @@ def pivot(
         disclosed default (equal per scenario).
     :ptype weighting: str | None
     :param subject_id: Optional single-subject filter. Required to pivot a
-        judge-mediated measure over a multi-subject scope.
+        judge-mediated measure over a multi-subject scope. Past
+        :data:`READ_TIER_ROW_BUDGET` only this subject's runs are read, and the
+        table's ``narrowed_read_disclosure`` names what that left uncounted.
     :ptype subject_id: str | None
     :param status: Raw run-status filter, defaulting to ``"completed"`` for the
         same reason as :func:`comparison_sets` — an in-flight run's cells
@@ -519,7 +710,9 @@ def pivot(
         unknown metric, weighting, run status, axis or filter coordinate,
         or a cross-subject pooling that would average measurements derived
         from different rubrics; or a ``predicted_cost`` that is not an estimate, or
-        that was handed to a pivot of another metric or with no model axis.
+        that was handed to a pivot of another metric or with no model axis; or a
+        scope past :data:`READ_TIER_ROW_BUDGET` not filtered to one subject whose
+        runs fit (refused before any result is read).
     """
     started = time.perf_counter()
     estimate: CostEstimate | list[PlannedCost] | None
@@ -552,10 +745,20 @@ def pivot(
     # status filter removes one — excluded on request, still placeable — but
     # they are counted apart from it, because the two narrowings have
     # different remedies and a disclosure that names the wrong one sends the
-    # reader after a fix that cannot work.
+    # reader after a fix that cannot work. A scope past READ_TIER_ROW_BUDGET
+    # is read for one subject's runs alone, every status and archived run kept,
+    # so those two counts stay exact within the subject.
     all_runs, cohort, archived_run_ids = _corpus_and_cohort(list_runs, scope_id)
     runs = [run for run in cohort if run.status == status] if status else cohort
-    results = storage.query_eval_results(scope_id)
+    results, narrowed = _aggregate_results(
+        storage,
+        scope_id,
+        "pivot",
+        all_runs,
+        narrowed=_subject_runs(all_runs, subject_id or None),
+        remedy="filter it to one subject (subject_filter on scope_pivot, subject_id in Python): a pivot of one "
+        "subject reads only that subject's runs",
+    )
     projection = project_score_records(
         runs, results, known_run_ids={run.id for run in all_runs}, archived_run_ids=archived_run_ids, profile=profile
     )
@@ -584,6 +787,8 @@ def pivot(
         _observe_read("pivot", scope_id, started, *observed, cells_out="refused")
         raise ValidationFailedError(e.fault, remedy=e.remedy) from e
     _observe_read("pivot", scope_id, started, *observed, cells_out=len(table.cells))
+    if narrowed and subject_id:
+        return table.model_copy(update={"narrowed_read_disclosure": narrowed_read_disclosure(subject_id)})
     return table
 
 
@@ -622,7 +827,10 @@ def frontier(
         refused.
     :ptype bar: float | str | None
     :param subject_id: Optional single-subject filter; other subjects' results
-        are counted as filtered-out rather than dropped silently.
+        are counted as filtered-out rather than dropped silently — except past
+        :data:`READ_TIER_ROW_BUDGET`, where only this subject's runs are read, so
+        other subjects' results (and results whose run is missing) are not counted,
+        and the answer's ``narrowed_read_disclosure`` says so.
     :ptype subject_id: str | None
     :param status: Raw run-status filter, defaulting to ``"completed"`` for the
         same reason as :func:`pivot`. ``"all"`` ranks over every run.
@@ -635,11 +843,14 @@ def frontier(
     :param control_variant_key: The variant each contestant's boundary (guardrail) dimensions are held against;
         ``None`` checks none, and the answer says so per subject.
     :ptype control_variant_key: str | None
-    :return: A JSON-safe :class:`~threetears.evals.analysis.lenses.frontier.FrontierResult` dict.
+    :return: A JSON-safe :class:`~threetears.evals.analysis.lenses.frontier.FrontierResult` dict. Read for one
+        subject alone (past :data:`READ_TIER_ROW_BUDGET`), each judge's evidence tier is read on that subject's
+        results alone, where a whole-scope read pools every subject's, and ``narrowed_read_disclosure`` says so.
     :rtype: dict[str, Any]
     :raises ValidationFailedError: The bar is not a number or is outside
         ``[0, 1]``, or ``status`` is neither ``"all"`` nor a status a run
-        can carry — each a question the caller can restate.
+        can carry — each a question the caller can restate; or a scope past
+        :data:`READ_TIER_ROW_BUDGET` not filtered to one subject whose runs fit.
     """
     try:
         parsed_bar = normalize_bar(bar)
@@ -651,12 +862,20 @@ def frontier(
     # Every run is read then narrowed here rather than in the query, for the
     # exclusion-accounting reason spelled out in :func:`pivot`.
     all_runs, cohort, archived_run_ids = _corpus_and_cohort(list_runs, scope_id)
+    results, narrowed = _aggregate_results(
+        storage,
+        scope_id,
+        "frontier",
+        all_runs,
+        narrowed=_subject_runs(all_runs, subject),
+        remedy="filter it to one subject (subject_filter on scope_frontier, subject_id in Python): a frontier of "
+        "one subject reads only that subject's runs",
+    )
     runs = [run for run in cohort if run.status == status] if status else cohort
     if profile is not None:
         # A listing elides host payload, and a payload-carried lever read off it would report as the subject's
         # own setting, so a run whose footing is read is read whole (`run_summary` does the same).
         runs = [(storage.load_eval_run(run.id, scope_id) or run) if run.elided_payload_paths else run for run in runs]
-    results = storage.query_eval_results(scope_id)
     # The judges behind every result's scores, tiered as a campaign over these runs would tier them: a verdict made on
     # a judged pass^k names the tier it stands on (#679), which a scope's frontier read nowhere before.
     ranked = {run.id for run in runs}
@@ -675,6 +894,10 @@ def frontier(
         )
     except FrontierError as e:
         raise ValidationFailedError(e.fault, remedy=e.remedy) from e
+    if narrowed and subject is not None:
+        # Kept, and said: a judge's agreement here pooled over this subject's results alone, where a whole-scope
+        # read pools every subject's, so its tier can differ from the whole read's for the same subject.
+        result.narrowed_read_disclosure = narrowed_read_disclosure(subject, tiers=bool(tiers))
     return result.model_dump(mode="json")
 
 
@@ -715,7 +938,10 @@ def history(
         counts, as a fraction; ``0.0`` lets significance alone flag.
     :ptype min_relative_change: float
     :param subject_id: Optional single-subject filter; other subjects' results
-        are counted as filtered-out rather than dropped silently.
+        are counted as filtered-out rather than dropped silently — except past
+        :data:`READ_TIER_ROW_BUDGET`, where only this subject's runs are read, so
+        other subjects' results (and results whose run is missing) are not counted,
+        and the answer's ``narrowed_read_disclosure`` says so.
     :ptype subject_id: str | None
     :param status: Raw run-status filter, defaulting to ``"completed"`` for the
         same reason as :func:`pivot`. ``"all"`` series over every run.
@@ -726,7 +952,8 @@ def history(
     :rtype: HistoryResult
     :raises ValidationFailedError: The metric is not one this surface can series,
         or ``status`` is neither ``"all"`` nor a status a run can carry —
-        each a question the caller can restate.
+        each a question the caller can restate; or a scope past
+        :data:`READ_TIER_ROW_BUDGET` not filtered to one subject whose runs fit.
     """
     metric = normalize_blank(metric, METRIC_COMPOSITE)
     subject = (subject_id or "").strip() or None
@@ -736,7 +963,15 @@ def history(
     # exclusion-accounting reason spelled out in :func:`pivot`.
     all_runs, cohort, archived_run_ids = _corpus_and_cohort(list_runs, scope_id)
     runs = [run for run in cohort if run.status == status] if status else cohort
-    results = storage.query_eval_results(scope_id)
+    results, narrowed = _aggregate_results(
+        storage,
+        scope_id,
+        "history",
+        all_runs,
+        narrowed=_subject_runs(all_runs, subject),
+        remedy="filter it to one subject (subject_filter on scope_history, subject_id in Python): a history of "
+        "one subject reads only that subject's runs",
+    )
     try:
         result = compute_history(
             runs,
@@ -751,6 +986,8 @@ def history(
         )
     except HistoryError as e:
         raise ValidationFailedError(e.fault, remedy=e.remedy) from e
+    if narrowed and subject is not None:
+        return result.model_copy(update={"narrowed_read_disclosure": narrowed_read_disclosure(subject)})
     return result
 
 
@@ -775,6 +1012,7 @@ def program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -
         per-run spend with a cumulative series, plus the incomplete-run
         accounting that names the spend a quality view would have dropped.
     :rtype: dict[str, Any]
+    :raises ValidationFailedError: The scope is past :data:`READ_TIER_ROW_BUDGET`, which nothing here narrows.
     """
     # Archived runs are INCLUDED here, unlike every quality surface. Archiving is
     # a measurement curation, not a financial one: a run retired because its
@@ -783,7 +1021,16 @@ def program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -
     # also push their cost into `unattributed_cost_usd`, which is documented as
     # nonzero only on an integrity gap.
     runs = list_runs(scope_id, include_archived=True)
-    results = storage.query_eval_results(scope_id)
+    results, _ = _aggregate_results(
+        storage,
+        scope_id,
+        "program_budget",
+        runs,
+        narrowed=None,
+        remedy="the program budget takes no filter and counts every run, archived ones too, so no narrower call "
+        "exists: read the spend a page at a time from scope_export's cost_usd rows with run_status 'all', and an "
+        "archived run's by naming it in export_run_ids",
+    )
     return compute_program_budget(runs, results).model_dump(mode="json")
 
 
@@ -807,9 +1054,18 @@ def orphaned_runs(storage: LensStore, scope_id: str, *, list_runs: RunLister) ->
     :ptype list_runs: RunLister
     :return: A JSON-safe :class:`~threetears.evals.analysis.lenses.orphaned_runs.OrphanedRunsResult`.
     :rtype: dict[str, Any]
+    :raises ValidationFailedError: The scope is past :data:`READ_TIER_ROW_BUDGET`, which nothing here narrows.
     """
     runs = list_runs(scope_id, include_archived=True)
-    results = storage.query_eval_results(scope_id)
+    results, _ = _aggregate_results(
+        storage,
+        scope_id,
+        "orphaned_runs",
+        runs,
+        narrowed=None,
+        remedy="the orphaned-runs scan takes no filter and reads every run, archived ones too, so no narrower call "
+        "exists: compare the runs runs_list names with the run_ids each campaign holds",
+    )
     # Every campaign in the scope is every campaign that can hold one of its runs:
     # membership outside a campaign's own scope is refused at attachment.
     campaigns = storage.list_campaigns(scope_id)
@@ -836,6 +1092,7 @@ def export_results(
     status: str | None = "completed",
     run_ids: list[str] | None = None,
     after_run_id: str | None = None,
+    after_case_id: str | None = None,
     profile: HostProfile,
 ) -> ScoreExport:
     """Serialize the projection's flat rows for a scope as CSV or JSON, a page at a time when the scope is large.
@@ -861,6 +1118,13 @@ def export_results(
     page, which stays right while runs are added, finish or are archived between calls: it names a place in the order
     of every run in the scope, not a count. Its exclusions count only what its reads returned.
 
+    **A run larger than the ceiling is paged by its cases**, never read whole: its pages hold whole cases of it, in the
+    run's order, as many as the ceiling holds (one alone when it holds more), each read by id after one read of the
+    run's result keys (:mod:`~threetears.evals.kernel.run_pages`). The cursor is the same
+    one, carrying the case: ``page.next_after_case_id`` beside ``page.next_after_run_id`` while the run has cases left,
+    and the call names both (``after_case_id``). So is one named run larger than the ceiling, its pages naming it
+    again (``page.named_run_ids``). A CSV page's columns are its own, so pages join by column name.
+
     :param storage: Where the scope's results are read (:class:`LensStore`).
     :ptype storage: LensStore
     :param scope_id: Partition key — the scope to export.
@@ -880,8 +1144,8 @@ def export_results(
         rows, not row width: the stored result carries no trace payload at
         all — that lives in a sibling :class:`~threetears.evals.schema.models.EvalTrace`
         document no export path reads. Unknown ids are silently absent (they
-        contribute no rows). ``None`` exports every run, as before. Never paged: two or more named runs whose
-        estimated results pass :data:`EXPORT_PAGE_RESULTS` are refused; one named run is exported whole.
+        contribute no rows). ``None`` exports every run, as before. Two or more named runs whose estimated results
+        pass :data:`EXPORT_PAGE_RESULTS` are refused; one named run past it is paged by its cases.
 
         **A named id is honoured even when the run is archived**, matching
         ``EvalService.get_run`` and every other by-id surface: archiving withholds a
@@ -889,9 +1153,13 @@ def export_results(
         name. Only the unnamed case — the one that expressed no preference —
         is narrowed to the cohort.
     :ptype run_ids: list[str] | None
-    :param after_run_id: The previous page's ``next_after_run_id``: read the page that starts after this run.
-        ``None`` or blank reads the first page, or the whole scope when it fits. Not taken with ``run_ids``.
+    :param after_run_id: The previous page's ``next_after_run_id``: read the page that starts after this run, or
+        inside it when ``after_case_id`` is given. ``None`` or blank reads the first page, or the whole scope when it
+        fits. Taken with ``run_ids`` only to go on inside the one run they name.
     :ptype after_run_id: str | None
+    :param after_case_id: The previous page's ``next_after_case_id``: read the page of ``after_run_id`` that starts
+        after this case of it. ``None`` or blank starts at the run after ``after_run_id``.
+    :ptype after_case_id: str | None
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: The :class:`~threetears.evals.analysis.lenses.export.ScoreExport`: its body is CSV text or a JSON
@@ -900,8 +1168,9 @@ def export_results(
     :rtype: ScoreExport
     :raises ValidationFailedError: The format is not one this surface can emit,
         ``status`` is neither ``"all"`` nor a status a run can carry, two or more named runs would read past
-        :data:`EXPORT_PAGE_RESULTS`, ``after_run_id`` is given with ``run_ids`` or names no run in the scope —
-        each a question the caller can restate.
+        :data:`EXPORT_PAGE_RESULTS`, ``after_run_id`` names no run in the scope or is given with ``run_ids`` other
+        than to go on inside the one run they name, or ``after_case_id`` is given without ``after_run_id`` or names
+        no case of that run — each a question the caller can restate.
     """
     started = time.perf_counter()
     try:
@@ -911,16 +1180,26 @@ def export_results(
     status = _status_filter(status)
     requested = {rid.strip() for rid in run_ids if rid and rid.strip()} if run_ids else None
     cursor = (after_run_id or "").strip() or None
-    if cursor is not None and requested is not None:
+    case_cursor = (after_case_id or "").strip() or None
+    if case_cursor is not None and cursor is None:
         raise ValidationFailedError(
-            "an export of named runs is not paged, so it starts after no run",
+            "an export starts after a case only inside the run it is one of, and no run was named to start inside",
+            details={"after_case_id": case_cursor},
+            remedy="name the run with the case (export_after_run_id with export_after_case_id), as the page said",
+        )
+    if cursor is not None and requested is not None and (requested != {cursor} or case_cursor is None):
+        raise ValidationFailedError(
+            "an export of named runs is paged only inside the one run it names, so it starts after no run",
             details={"after_run_id": cursor},
-            remedy="name the runs alone, or leave them out and page the whole scope",
+            remedy="name the runs alone, or name one run with the run and case its last page said to start after, or "
+            "leave them out and page the whole scope",
         )
 
     all_runs, cohort, archived_run_ids = _corpus_and_cohort(list_runs, scope_id)
     if requested is not None:
-        return _export_named(storage, scope_id, all_runs, requested, status, known_format, profile, started)
+        return _export_named(
+            storage, scope_id, all_runs, requested, status, known_format, profile, started, after_case_id=case_cursor
+        )
     if cursor is None and sum(_results_estimate(run) for run in all_runs) <= EXPORT_PAGE_RESULTS:
         results = storage.query_eval_results(scope_id)
         if len(results) <= EXPORT_PAGE_RESULTS:
@@ -943,7 +1222,9 @@ def export_results(
             EXPORT_PAGE_RESULTS,
         )
         del results
-    return _export_page(storage, scope_id, all_runs, cursor, status, known_format, profile, started)
+    return _export_page(
+        storage, scope_id, all_runs, cursor, status, known_format, profile, started, after_case_id=case_cursor
+    )
 
 
 def _export_named(
@@ -955,10 +1236,14 @@ def _export_named(
     fmt: str,
     profile: HostProfile,
     started: float,
+    *,
+    after_case_id: str | None = None,
 ) -> ScoreExport:
-    """An export of the runs a caller named, read run by run, refused when two or more would pass the ceiling.
+    """An export of the runs a caller named, read run by run, refused when two or more would pass the ceiling; one
+    named run past it is paged by its cases (:func:`_export_run_page`).
 
-    :raises ValidationFailedError: Two or more named runs' estimated results pass :data:`EXPORT_PAGE_RESULTS`.
+    :raises ValidationFailedError: Two or more named runs' estimated results pass :data:`EXPORT_PAGE_RESULTS`, or
+        ``after_case_id`` is no case of the one named run.
     """
     # An explicitly named id is selected from the CORPUS, not the cohort: naming a run
     # is deliberate, and every other by-id surface (get_run, run_summary, compare_two_runs,
@@ -976,8 +1261,25 @@ def _export_named(
             f"{EXPORT_PAGE_RESULTS} one export call reads",
             details={"runs_named": len(runs), "results_estimated": estimate, "result_ceiling": EXPORT_PAGE_RESULTS},
             remedy=(
-                "name fewer runs (one run is always exported whole), or name none and read scope_export page by page"
+                "name fewer runs (one run is always exported, page by page past the ceiling), or name none and read "
+                "scope_export page by page"
             ),
+        )
+    if len(runs) == 1 and (after_case_id is not None or estimate > EXPORT_PAGE_RESULTS):
+        (run,) = runs
+        return _export_run_page(
+            storage,
+            scope_id,
+            all_runs,
+            run,
+            after_case_id,
+            fmt,
+            profile,
+            started,
+            runs_before=0,
+            runs_after=0,
+            status=status,
+            named=True,
         )
     # Each named run's results are read by run — each query is run-id-indexed — instead of every result in the
     # scope. The projection places a subset natively: known_run_ids stays the whole corpus, so a result whose run
@@ -1001,13 +1303,18 @@ def _export_page(
     fmt: str,
     profile: HostProfile,
     started: float,
+    *,
+    after_case_id: str | None = None,
 ) -> ScoreExport:
-    """One page of a paged export: the narrowed runs after ``cursor``, oldest first, up to the ceiling.
+    """One page of a paged export: the narrowed runs after ``cursor``, oldest first, up to the ceiling — or, when the
+    first of them alone passes the ceiling or ``after_case_id`` names a case of ``cursor``, whole cases of that one run
+    (:func:`_export_run_page`).
 
-    :raises ValidationFailedError: ``cursor`` names no run in the scope.
+    :raises ValidationFailedError: ``cursor`` names no run in the scope, or ``after_case_id`` no case of it.
     """
     order = sorted(all_runs, key=lambda run: (run.created_at, run.id))
     start = 0
+    inside: str | None = None
     if cursor is not None:
         position = next((index for index, run in enumerate(order) if run.id == cursor), None)
         if position is None:
@@ -1021,8 +1328,28 @@ def _export_page(
     def narrowed(run: EvalRun) -> bool:
         return not run.archived and (status is None or run.status == status)
 
+    if cursor is not None and after_case_id is not None and narrowed(order[start - 1]):
+        # The page goes on inside the cursor's run. One archived, or moved to another status, since the last page is
+        # left as the narrowing leaves any run: the page starts at the run after it.
+        start -= 1
+        inside = after_case_id
     before = sum(1 for run in order[:start] if narrowed(run))
     remaining = [run for run in order[start:] if narrowed(run)]
+    if inside is not None or (remaining and _results_estimate(remaining[0]) > EXPORT_PAGE_RESULTS):
+        return _export_run_page(
+            storage,
+            scope_id,
+            all_runs,
+            remaining[0],
+            inside,
+            fmt,
+            profile,
+            started,
+            runs_before=before,
+            runs_after=len(remaining) - 1,
+            status=status,
+            named=False,
+        )
     page: list[EvalRun] = []
     estimate = 0
     for run in remaining:
@@ -1051,6 +1378,81 @@ def _export_page(
             run_status=status,
             archived_runs=len(archived_run_ids),
             runs_outside_status=sum(1 for run in all_runs if not run.archived and not narrowed(run)),
+        ),
+    )
+
+
+def _export_run_page(
+    storage: LensStore,
+    scope_id: str,
+    all_runs: list[EvalRun],
+    run: EvalRun,
+    after_case_id: str | None,
+    fmt: str,
+    profile: HostProfile,
+    started: float,
+    *,
+    runs_before: int,
+    runs_after: int,
+    status: str | None,
+    named: bool,
+) -> ScoreExport:
+    """One page of an export inside one run: whole cases of it after ``after_case_id``, in the run's order, up to the
+    ceiling (one case alone when it holds more), read by id after one read of the run's result keys.
+
+    :param runs_before: Runs of the narrowed scope the pages before this run held; 0 for a named run.
+    :ptype runs_before: int
+    :param runs_after: Runs of the narrowed scope after this run; 0 for a named run.
+    :ptype runs_after: int
+    :param named: Whether the caller named the run, so the next call names it again and the scope's archived runs
+        narrowed nothing.
+    :ptype named: bool
+    :raises ValidationFailedError: ``after_case_id`` is no case of the run.
+    """
+    keys = run_result_keys(storage, run)
+    try:
+        pages = run_case_pages(keys, page_results=EXPORT_PAGE_RESULTS, after_case_id=after_case_id)
+    except ValueError:
+        raise ValidationFailedError(
+            f"case {after_case_id!r} is not one of run {run.id!r}'s cases, so no export page starts after it",
+            details={"after_run_id": run.id, "after_case_id": after_case_id},
+            remedy="read scope_export again from the run's first page, naming the run alone to start after the run "
+            "before it, or no run at all",
+        ) from None
+    held = pages[0] if pages else []
+    case_ids = list(dict.fromkeys(key.test_case_id for key in held))
+    results = read_results(storage, scope_id, held)
+    archived_run_ids = {each.id for each in all_runs if each.archived}
+    projection = project_score_records(
+        [run],
+        results,
+        known_run_ids={each.id for each in all_runs},
+        archived_run_ids=None if named else archived_run_ids,
+        profile=profile,
+    )
+    _observe_read("export_results", scope_id, started, len(all_runs), len(results), len(projection.records))
+    cases = list(dict.fromkeys(key.test_case_id for key in keys))
+    cases_before = cases.index(case_ids[0]) if case_ids else len(cases)
+    more_in_run = len(pages) > 1
+    return export_projection(
+        projection,
+        fmt=fmt,
+        page=ExportPage(
+            result_ceiling=EXPORT_PAGE_RESULTS,
+            run_ids=[run.id],
+            runs_before=runs_before,
+            runs_after=runs_after,
+            case_ids=case_ids,
+            cases_before=cases_before,
+            cases_after=len(cases) - cases_before - len(case_ids),
+            next_after_run_id=run.id if more_in_run or runs_after else None,
+            next_after_case_id=case_ids[-1] if more_in_run else None,
+            named_run_ids=[run.id] if named else None,
+            run_status=status,
+            archived_runs=0 if named else len(archived_run_ids),
+            runs_outside_status=0
+            if named
+            else sum(1 for each in all_runs if not each.archived and status is not None and each.status != status),
         ),
     )
 

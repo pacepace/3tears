@@ -101,6 +101,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
 from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict, refuse_on_event_loop
 from threetears.evals.schema.logs import get_logger
+from threetears.evals.kernel.run_pages import ResultKey
 from threetears.evals.kernel.job_leases import RUN_LOST_STATUS, lease_lapsed, leased_kind_of, settle_tolerantly
 
 log = get_logger(__name__)
@@ -124,6 +125,31 @@ _JUDGE_EVIDENCE_FIELDS: Final = (
     "eval_run_id",
     "judge_evidence",
     "judged_artifact",
+)
+
+
+#: The fields of a result a read of its run's keys leaves out (:meth:`EvalStorage.query_eval_result_keys_by_run`):
+#: those that grow with what a cell did, heaviest first, so a store that drops them one at a time rebuilds a smaller
+#: document each time. ``world_events`` (a world's whole event log), ``kind_payload`` (a kind's verbatim payload) and
+#: ``judge_reasoning`` (the judge's prose) are unbounded; the judge's rescores, repeats and second judgings each carry
+#: scores and reasoning again; ``async_deliveries`` grows with the background work watched; and on the fixtures' stored
+#: results (2.2 KB each on the toy host's corpus) ``usage`` (330 B) and ``rubric_scores`` (250 B) are the largest
+#: fields, then the outcome lists and the judge's "cannot tell" prose. Every other field is a scalar or a short
+#: mapping, a few hundred bytes together, and ships: the key reader reads the key's five fields and nothing else.
+_RESULT_KEY_EXCLUDED: Final = (
+    "world_events",
+    "kind_payload",
+    "judge_reasoning",
+    "judge_rescores",
+    "judge_repeats",
+    "judge_seconds",
+    "async_deliveries",
+    "usage",
+    "rubric_scores",
+    "goal_state_outcomes",
+    "precondition_outcomes",
+    "judge_cannot_tell",
+    "judge_cut_short",
 )
 
 
@@ -2546,6 +2572,68 @@ class EvalStorage:
         if not run_ids:
             return []
         items = self._store.by_doc_type("eval_result", scope_id, field_in={"eval_run_id": list(dict.fromkeys(run_ids))})
+        return self._hydrate_all(EvalResult, items)
+
+    def query_eval_result_keys_by_run(self, run_id: str, scope_id: str, /) -> list[ResultKey]:
+        """The key of every result stored for one run (:class:`~threetears.evals.kernel.run_pages.ResultKey`), in one
+        read that ships no other field.
+
+        The one pass over a run a paged walk of it makes (:mod:`~threetears.evals.kernel.run_pages`): the same
+        ``by_doc_type`` a whole read of the run is, with the fields of a result that grow with what its cell did left
+        out (``exclude``, heaviest first), so the store filters the scope's results by the run once and ships each
+        result's scalars. The results are then read by id, a page at a time (:meth:`load_eval_results`). The keys are
+        read off the stored rows without reconstructing them; every field they name is one a result carries at every
+        schema version, and every other field shipped is ignored.
+
+        :param run_id: The run.
+        :ptype run_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :return: Each result row's key, in the store's order.
+        :rtype: list[ResultKey]
+        :raises StorageError: The store failed to answer, or a row matched carries no readable key.
+        """
+        store = self._store
+        try:
+            items = store.by_doc_type("eval_result", scope_id, exclude=_RESULT_KEY_EXCLUDED, eval_run_id=run_id)
+        # prawduct:ok-broad-except — DB read boundary; re-raised as a typed eval error
+        except Exception as e:
+            raise StorageError(f"failed to read the results of eval run {run_id!r}: {e}") from e
+        keys: list[ResultKey] = []
+        for item in items:
+            result_id, case_id, k, model = (item.get(name) for name in ("id", "test_case_id", "k_iteration", "model"))
+            scored_at = item.get("scored_at", "")
+            if not (
+                isinstance(result_id, str)
+                and isinstance(case_id, str)
+                and isinstance(k, int)
+                and not isinstance(k, bool)
+                and isinstance(model, str)
+                and isinstance(scored_at, str)
+            ):
+                raise StorageError(
+                    f"a stored result of eval run {run_id!r} ({result_id!r}) carries no readable id, case, k, model "
+                    "or stored time, so the run cannot be read a page at a time"
+                )
+            keys.append(ResultKey(result_id, case_id, k, model, scored_at))
+        return keys
+
+    def load_eval_results(self, result_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
+        """The named results, in one store read by id; an id naming no result there is skipped.
+
+        The page read of a run walked a page at a time (:mod:`~threetears.evals.kernel.run_pages`), after its keys
+        (:meth:`query_eval_result_keys_by_run`): one ``get_many``, which a store answers from its key.
+
+        :param result_ids: The results. Empty asks the store nothing; one named twice is read once.
+        :ptype result_ids: Sequence[str]
+        :param scope_id: The scope they live in.
+        :ptype scope_id: str
+        :return: The results, in the store's order.
+        :rtype: list[EvalResult]
+        """
+        if not result_ids:
+            return []
+        items = self._store.get_many("eval_result", list(dict.fromkeys(result_ids)), scope_id)
         return self._hydrate_all(EvalResult, items)
 
     def query_eval_result_ids_by_run(self, run_id: str, scope_id: str) -> list[str]:

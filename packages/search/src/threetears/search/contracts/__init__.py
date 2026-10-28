@@ -116,6 +116,7 @@ from threetears.search.contracts.transport import (
     StreamedResponse,
     StreamingTransport,
     TransportResponse,
+    media_type_accepted,
 )
 
 __all__ = [
@@ -199,5 +200,6 @@ __all__ = [
     "canonicalize",
     "get_capabilities",
     "list_capabilities",
+    "media_type_accepted",
     "register_capabilities",
 ]

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -184,6 +185,63 @@ class TestClusterByCosine:
         assert result.memories_considered == 0
         assert result.clusters_formed == 0
         memories.mark_superseded.assert_not_called()
+
+    async def test_the_pairwise_pass_runs_off_the_event_loop_thread(self) -> None:
+        import threading
+
+        read_on: set[int] = set()
+
+        class _ThreadNoting(list[float]):
+            """An embedding that notes which thread reads it."""
+
+            def __iter__(self) -> Iterator[float]:
+                read_on.add(threading.get_ident())
+                return super().__iter__()
+
+        candidates = [_candidate(content=f"m{i}", embedding=_ThreadNoting([1.0, 0.0])) for i in range(3)]
+        service, memories, _edges = _make_service(candidates=candidates)
+        await service.run_consolidation(_AID, customer_id=_CUID, user_id=_UID)
+        assert read_on, "the pass read the embeddings"
+        assert threading.get_ident() not in read_on
+        memories.mark_superseded.assert_awaited_once()
+
+    async def test_groups_match_the_old_pure_python_cosine_on_a_fixed_fixture(self) -> None:
+        import math
+        import random
+
+        rng = random.Random(20261027)
+        centers = [[rng.uniform(-1.0, 1.0) for _ in range(48)] for _ in range(6)]
+        embeddings = [[x + rng.gauss(0.0, 0.2) for x in centers[i % 6]] for i in range(60)]
+        embeddings.append([0.0] * 48)
+        embeddings.append([1.0] * 40)  # a narrower vector pairs over its width
+        threshold = 0.9
+
+        # the computation as it stood before the offload, frozen here as the reference.
+        def old_cosine(a: list[float], b: list[float]) -> float:
+            na = math.sqrt(sum(v * v for v in a))
+            nb = math.sqrt(sum(v * v for v in b))
+            if na * nb == 0.0:
+                return 0.0
+            return sum(x * y for x, y in zip(a, b, strict=False)) / (na * nb)
+
+        parent = list(range(len(embeddings)))
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                x = parent[x]
+            return x
+
+        for i in range(len(embeddings)):
+            for j in range(i + 1, len(embeddings)):
+                if old_cosine(embeddings[i], embeddings[j]) >= threshold:
+                    parent[find(j)] = find(i)
+        groups: dict[int, list[int]] = {}
+        for i in range(len(embeddings)):
+            groups.setdefault(find(i), []).append(i)
+        expected = sorted(sorted(g) for g in groups.values() if len(g) >= 2)
+
+        assert len(expected) >= 3  # the fixture really does form clusters
+        assert await _merged_groups(embeddings, threshold=threshold) == expected
 
 
 async def _gist_type(types: list[str]) -> str:
