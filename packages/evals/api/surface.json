@@ -1186,6 +1186,11 @@
       "signature": "SweepableValue(content_hash: str, display: str, scale: Scale, raw: Any | None = None)",
       "tier": "host-contract"
     },
+    "threetears.evals.schema.ToolResultClearing": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.ToolTurnClient": {
       "kind": "protocol",
       "signature": "",
@@ -1213,6 +1218,11 @@
     },
     "threetears.evals.schema.TurnReply": {
       "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.TurnReplyRefused": {
+      "kind": "exception",
       "signature": "",
       "tier": "provisional"
     },

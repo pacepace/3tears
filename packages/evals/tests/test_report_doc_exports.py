@@ -43,12 +43,9 @@ _AWAITING_A_CALLER = frozenset(
         "MethodItem",
         "NextStep",
         "Omitted",
-        "ReportDoc",
         "ReportFinding",
         "Story",
         "is_analyst_caveat",
-        "report_doc_json_schema",
-        "report_doc_validity",
     }
 )
 

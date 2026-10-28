@@ -60,6 +60,7 @@ from threetears.evals.schema import (
     ClientRequestSettings,
     CompletionResult,
     StopReason,
+    ToolResultClearing,
     TurnToolSpec,
     ToolTurnClient,
     TurnMessage,
@@ -310,8 +311,11 @@ class _Live:
                 "; ".join(notes),
             )
 
-    async def _post(self, body: Mapping[str, Any]) -> tuple[int, Mapping[str, Any]]:  # Any: JSON
-        """The provider's answer to ``body``, parsed, the call sent again while the provider declines it.
+    async def _post(
+        self, body: Mapping[str, Any], *, betas: Sequence[str] = ()
+    ) -> tuple[int, Mapping[str, Any]]:  # Any: JSON
+        """The provider's answer to ``body``, parsed, the call sent again while the provider declines it; ``betas``
+        go as Anthropic's ``anthropic-beta`` header.
 
         A declined answer (the ``provider`` owner: a 429 that is no spent quota, a 529, a 503, as a status or as the
         code a 200's body carries) is sent again up to the policy's attempts, after its wait (:class:`DeclinedRetry`),
@@ -320,6 +324,8 @@ class _Live:
         """
         if self.provider == "anthropic":
             path, headers = "/messages", {"x-api-key": self._key, "anthropic-version": "2023-06-01"}
+            if betas:
+                headers["anthropic-beta"] = ",".join(betas)
         else:
             path, headers = "/chat/completions", {"authorization": f"Bearer {self._key}"}
         client = self.http_client()
@@ -482,10 +488,17 @@ class _Live:
         )
 
     async def turn(
-        self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int
+        self,
+        *,
+        system: str,
+        messages: Sequence[TurnMessage],
+        tools: Sequence[TurnToolSpec],
+        max_tokens: int,
+        clearing: ToolResultClearing | None = None,
     ) -> TurnReply:
         """One tool turn over the Messages API, priced as a completion is; declined calls resent as :meth:`_post`
-        does, and nothing else (a tool turn negotiates no setting: the caller chose them)."""
+        does, and nothing else (a tool turn negotiates no setting: the caller chose them). A clearing goes as the
+        body's ``context_management`` under its beta header."""
         read = await self._read_for_call()
         body = turn_body(
             self.model_name,
@@ -495,8 +508,9 @@ class _Live:
             max_tokens=max_tokens,
             sent=self._asked,
             facts=self._declared(),
+            clearing=clearing,
         )
-        status, parsed = await self._post(body)
+        status, parsed = await self._post(body, betas=(ToolResultClearing.BETA,) if clearing is not None else ())
         reply = read_reply(self.provider, self.model_name, status, parsed)
         turned: TurnRead = read_turn(status, parsed)
         cost, source, unpriced, _ = self._price(reply, read.failure)
@@ -979,7 +993,13 @@ class Model:
         return run
 
     async def turn(
-        self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int
+        self,
+        *,
+        system: str,
+        messages: Sequence[TurnMessage],
+        tools: Sequence[TurnToolSpec],
+        max_tokens: int,
+        clearing: ToolResultClearing | None = None,
     ) -> TurnReply:
         """Send one turn of a tool-calling loop to Anthropic's Messages API, live.
 
@@ -997,6 +1017,9 @@ class Model:
         :ptype tools: Sequence[TurnToolSpec]
         :param max_tokens: The turn's output cap, thinking included.
         :ptype max_tokens: int
+        :param clearing: Old tool results the provider clears itself past its trigger (server-side context editing,
+            sent as ``context_management`` with the ``context-management-2025-06-27`` beta); ``None`` clears nothing.
+        :ptype clearing: ToolResultClearing | None
         :return: The model's reply.
         :rtype: TurnReply
         :raises ValueError: A route other than Anthropic's, naming the one that works; a model with a
@@ -1008,7 +1031,9 @@ class Model:
         :raises ProviderError: The provider refused or failed the turn.
         :raises httpx.HTTPError: The request could not be sent, or timed out.
         """
-        return await self._turn_client().turn(system=system, messages=messages, tools=tools, max_tokens=max_tokens)
+        return await self._turn_client().turn(
+            system=system, messages=messages, tools=tools, max_tokens=max_tokens, clearing=clearing
+        )
 
     def turn_price_ceiling(
         self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int

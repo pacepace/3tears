@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, Self, get_args
+from typing import Any, ClassVar, Literal, Protocol, Self, get_args
 
 __all__ = [
     "TurnText",
@@ -31,6 +31,8 @@ __all__ = [
     "TurnBlock",
     "TurnMessage",
     "TurnReply",
+    "TurnReplyRefused",
+    "ToolResultClearing",
     "TurnStopReason",
     "block_from_json",
 ]
@@ -399,6 +401,80 @@ def _optional_count(value: Mapping[str, Any], member: str) -> int | None:  # Any
     return found
 
 
+class TurnReplyRefused(Exception):
+    """A turn that was sent and answered, so paid for, whose reply the client then refuses to hand back.
+
+    The loop never reads the reply, but the turn was billed, so the reply rides on the refusal and the loop counts its
+    tokens and cost before the refusal goes on to its caller. A recording raises one (as its own
+    ``RecordingRefused`` too) for a reply holding the literal ``{snapshot}``, which a replay could not tell from the
+    placeholder.
+
+    :ivar reply: The reply refused, as the provider answered it.
+    """
+
+    def __init__(self, message: str, *, reply: TurnReply) -> None:
+        """Name why the reply is refused, and carry it.
+
+        :param message: Why the client refuses the reply.
+        :ptype message: str
+        :param reply: The reply, as the provider answered it.
+        :ptype reply: TurnReply
+        """
+        super().__init__(message)
+        self.reply = reply
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolResultClearing:
+    """The provider clearing old tool results from a long conversation itself: server-side context editing.
+
+    A loop's own messages stay exactly as they were sent, every turn: rewriting an earlier turn (eliding an old tool
+    result's body) invalidates every later thinking block on the models that bind a thinking block to the conversation
+    that produced it, and the provider refuses a request replaying one. So a loop that must keep its context in bounds
+    asks the provider to clear old tool results instead, which never invalidates a thinking block. Sent as the
+    Messages API's ``clear_tool_uses_20250919`` edit, under the ``context-management-2025-06-27`` beta.
+
+    :ivar trigger_input_tokens: The input a turn may reach before old tool results are cleared.
+    :ivar keep_tool_uses: How many of the latest tool calls, with their results, are always kept.
+    :ivar clear_at_least_input_tokens: The fewest input tokens a clearing must remove, or it is not applied: a
+        clearing rewrites the cached prompt from its first cleared result on, so it is worth that only in a batch.
+    """
+
+    trigger_input_tokens: int = 150_000
+    keep_tool_uses: int = 12
+    clear_at_least_input_tokens: int = 36_000
+
+    #: The beta that carries the edit.
+    BETA: ClassVar[str] = "context-management-2025-06-27"
+
+    def __post_init__(self) -> None:
+        """Refuse a limit that is not a whole number above 0.
+
+        :raises ValueError: The limit, named.
+        """
+        for name in ("trigger_input_tokens", "keep_tool_uses", "clear_at_least_input_tokens"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"a tool-result clearing's {name} is a whole number above 0, not {value!r}")
+
+    def to_json(self) -> dict[str, Any]:  # Any: a JSON object
+        """The request's ``context_management`` member.
+
+        :return: ``{"edits": [{"type": "clear_tool_uses_20250919", "trigger", "keep", "clear_at_least"}]}``.
+        :rtype: dict[str, Any]
+        """
+        return {
+            "edits": [
+                {
+                    "type": "clear_tool_uses_20250919",
+                    "trigger": {"type": "input_tokens", "value": self.trigger_input_tokens},
+                    "keep": {"type": "tool_uses", "value": self.keep_tool_uses},
+                    "clear_at_least": {"type": "input_tokens", "value": self.clear_at_least_input_tokens},
+                }
+            ]
+        }
+
+
 class ToolTurnClient(Protocol):
     """The client a tool-calling loop is handed: one turn at a time, priced before it is sent.
 
@@ -408,7 +484,13 @@ class ToolTurnClient(Protocol):
     """
 
     async def turn(
-        self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int
+        self,
+        *,
+        system: str,
+        messages: Sequence[TurnMessage],
+        tools: Sequence[TurnToolSpec],
+        max_tokens: int,
+        clearing: ToolResultClearing | None = None,
     ) -> TurnReply:
         """Send the conversation so far and answer the model's next message.
 
@@ -420,6 +502,9 @@ class ToolTurnClient(Protocol):
         :ptype tools: Sequence[TurnToolSpec]
         :param max_tokens: The turn's output cap, thinking included.
         :ptype max_tokens: int
+        :param clearing: Old tool results the provider clears itself once the input grows past its trigger; ``None``
+            clears nothing. A turn's price ceiling ignores it: clearing only ever sends less.
+        :ptype clearing: ToolResultClearing | None
         :return: The model's reply.
         :rtype: TurnReply
         """

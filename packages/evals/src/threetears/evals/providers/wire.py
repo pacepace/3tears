@@ -37,6 +37,7 @@ from threetears.evals.schema import (
     TurnText,
     TurnThinking,
     TurnToolResult,
+    ToolResultClearing,
     TurnToolSpec,
     TurnToolUse,
     TurnBlock,
@@ -600,6 +601,7 @@ def turn_body(
     max_tokens: int,
     sent: WireSettings,
     facts: SettingFacts,
+    clearing: ToolResultClearing | None = None,
 ) -> dict[str, Any]:  # Any: a JSON body
     """The Messages API body of one tool turn.
 
@@ -623,6 +625,9 @@ def turn_body(
     :ptype sent: WireSettings
     :param facts: What is known of the model.
     :ptype facts: SettingFacts
+    :param clearing: Old tool results the provider clears itself, sent as ``context_management`` (its beta header
+        is the sender's to add); ``None`` sends none.
+    :ptype clearing: ToolResultClearing | None
     :return: The JSON body.
     :rtype: dict[str, Any]
     :raises ValueError: No messages; a thinking block in a user message; a last message holding only thinking, where no
@@ -665,6 +670,8 @@ def turn_body(
         body["thinking"] = thinking
     if sent.reasoning_effort not in (None, "none"):
         body["output_config"] = {"effort": sent.reasoning_effort}
+    if clearing is not None:
+        body["context_management"] = clearing.to_json()
     return body
 
 

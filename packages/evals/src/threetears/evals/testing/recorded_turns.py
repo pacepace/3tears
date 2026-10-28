@@ -48,13 +48,26 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar, Self
 
-from threetears.evals.schema.turns import ToolTurnClient, TurnMessage, TurnReply, TurnToolSpec
+from threetears.evals.schema.turns import (
+    ToolResultClearing,
+    ToolTurnClient,
+    TurnMessage,
+    TurnReply,
+    TurnReplyRefused,
+    TurnToolSpec,
+)
 from threetears.evals.testing.recorded_completions import RecordingRefused
 
 __all__ = ["RecordedTurns"]
 
 #: What a recorded reply holds in place of the session's snapshot id.
 _SNAPSHOT_PLACEHOLDER = "{snapshot}"
+
+#: Why a reply already holding the placeholder's text is refused when it is recorded, and what to do about it.
+_PLACEHOLDER_PROBLEM = (
+    f"a reply holds the literal text {_SNAPSHOT_PLACEHOLDER}, which a replay would read as the snapshot id"
+)
+_PLACEHOLDER_REMEDY = "record the session with a prompt that does not lead the model to write it"
 
 #: The top-level members each kind of line carries, and nothing else at this format version.
 _LINE_MEMBERS: Mapping[str, frozenset[str]] = {
@@ -212,6 +225,7 @@ class _Book:
         messages: Sequence[TurnMessage],
         tools: Sequence[TurnToolSpec],
         max_tokens: int,
+        clearing: ToolResultClearing | None,
     ) -> TurnReply:
         """The session's next reply: the recorded one, or the live client's, recorded before it is handed back."""
         index = self.served.get(name, 0)
@@ -224,8 +238,14 @@ class _Book:
                 )
             self.served[name] = index + 1
             return TurnReply.from_json(_restored(replies[index], snapshot))
-        reply = await self.inner.turn(system=system, messages=messages, tools=tools, max_tokens=max_tokens)
-        kept = _held(reply.to_json(), snapshot, self.path)
+        reply = await self.inner.turn(
+            system=system, messages=messages, tools=tools, max_tokens=max_tokens, clearing=clearing
+        )
+        try:
+            kept = _held(reply.to_json(), snapshot, self.path)
+        except RecordingRefused as refused:
+            # The turn was sent and billed: the refusal carries its reply, so the loop still counts what it cost.
+            raise _PaidReplyRefused(self.path, reply) from refused
         self._append(name, index, "reply", kept)
         self.sessions.setdefault(name, _SessionLines()).replies.append(kept)
         self.served[name] = index + 1
@@ -273,6 +293,16 @@ class _Book:
                 file.write(written + "\n")
 
 
+class _PaidReplyRefused(RecordingRefused, TurnReplyRefused):
+    """A recording's refusal of a reply it was sent and paid for, carrying the reply (:class:`TurnReplyRefused`)."""
+
+    def __init__(self, path: Path, reply: TurnReply) -> None:
+        refused = RecordingRefused(path, _PLACEHOLDER_PROBLEM, _PLACEHOLDER_REMEDY)
+        TurnReplyRefused.__init__(self, str(refused), reply=reply)
+        self.path = refused.path
+        self.remedy = refused.remedy
+
+
 class _Session:
     """One named session of a recording: a :class:`~threetears.evals.schema.ToolTurnClient`."""
 
@@ -282,10 +312,22 @@ class _Session:
         self._snapshot = snapshot
 
     async def turn(
-        self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int
+        self,
+        *,
+        system: str,
+        messages: Sequence[TurnMessage],
+        tools: Sequence[TurnToolSpec],
+        max_tokens: int,
+        clearing: ToolResultClearing | None = None,
     ) -> TurnReply:
         return await self._book.turn(
-            self._name, self._snapshot, system=system, messages=messages, tools=tools, max_tokens=max_tokens
+            self._name,
+            self._snapshot,
+            system=system,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            clearing=clearing,
         )
 
     def turn_price_ceiling(
@@ -298,11 +340,7 @@ def _held(value: Any, snapshot: str, path: Path) -> Any:  # Any: a JSON value
     """``value`` with every occurrence of ``snapshot`` in its strings written as the placeholder."""
     if isinstance(value, str):
         if _SNAPSHOT_PLACEHOLDER in value:
-            raise RecordingRefused(
-                path,
-                f"a reply holds the literal text {_SNAPSHOT_PLACEHOLDER}, which a replay would read as the snapshot id",
-                "record the session with a prompt that does not lead the model to write it",
-            )
+            raise RecordingRefused(path, _PLACEHOLDER_PROBLEM, _PLACEHOLDER_REMEDY)
         return value.replace(snapshot, _SNAPSHOT_PLACEHOLDER)
     if isinstance(value, Mapping):
         return {key: _held(member, snapshot, path) for key, member in value.items()}
