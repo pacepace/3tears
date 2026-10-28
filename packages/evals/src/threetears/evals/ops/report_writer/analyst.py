@@ -22,7 +22,7 @@ the same for every report.
 **Rounds.** :meth:`AnalystSession.draft` is round 1, with :attr:`AnalystLimits.draft_calls` tool calls; each
 :meth:`AnalystSession.revise` (the editor's findings, sent back by the caller) is the next round, in the same
 conversation, with :attr:`AnalystLimits.revision_calls`. A round ends ``submitted`` (the document passed every
-check), ``refused``, ``over_budget`` (the report's dollar budget refused a turn, or the analyst called a tool after
+check), ``refused``, ``over_budget`` (the report's budget refused a turn, or the analyst called a tool after
 its calls ran out and it was told to submit) or ``failed`` (the model refused, or its reply stopped short).
 
 **Stored and resumed.** :meth:`AnalystSession.to_json` is the session as a value (the tool session's record, with
@@ -248,7 +248,7 @@ class AnalystSession:
         :ptype check: InvariantCheck
         :param tally: The report's tally.
         :ptype tally: Tally
-        :param budget: The report's dollar budget.
+        :param budget: The report's budget (dollars, or tokens and turns).
         :ptype budget: ReportBudget
         :param limits: What its rounds are held to; plan §4.3's defaults when ``None``.
         :ptype limits: AnalystLimits | None

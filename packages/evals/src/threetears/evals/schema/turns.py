@@ -28,6 +28,7 @@ __all__ = [
     "TurnToolResult",
     "TurnToolSpec",
     "ToolTurnClient",
+    "TurnCeiling",
     "TurnToolUse",
     "TurnBlock",
     "TurnMessage",
@@ -476,6 +477,19 @@ class ToolResultClearing:
         }
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TurnCeiling:
+    """The most one tool turn can cost, as its client bounds it before it is sent.
+
+    :ivar usd: The bound, in dollars: never below what the turn can be billed at the rates it is built from.
+    :ivar estimate: Whether those rates are an estimate the host does not guarantee (an OpenRouter route, say): the
+        turn is still admitted on it, and a dollar budget checked against it says so.
+    """
+
+    usd: float
+    estimate: bool = False
+
+
 class ToolTurnClient(Protocol):
     """The client a tool-calling loop is handed: one turn at a time, priced before it is sent.
 
@@ -526,8 +540,9 @@ class ToolTurnClient(Protocol):
 
     def turn_price_ceiling(
         self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int
-    ) -> float | None:
-        """The most this turn can cost, in dollars, or ``None`` when the client cannot say (never a lower figure).
+    ) -> TurnCeiling | None:
+        """The most this turn can cost, and whether that bound is an estimate, or ``None`` when the client cannot say
+        (never a lower figure).
 
         :param system: The system prompt the turn would send.
         :ptype system: str
@@ -538,6 +553,6 @@ class ToolTurnClient(Protocol):
         :param max_tokens: Its output cap.
         :ptype max_tokens: int
         :return: The ceiling, or ``None``.
-        :rtype: float | None
+        :rtype: TurnCeiling | None
         """
         ...

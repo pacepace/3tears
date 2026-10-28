@@ -49,6 +49,7 @@ from threetears.evals.analysis.reporter_kind import (
 from threetears.evals.analysis.service import freeze_reporter_case
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.capped_completion import ceiling_is_estimate
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT
 from threetears.evals.kernel.storage import EvalStorage
@@ -651,12 +652,14 @@ async def price_largest_reporter_call(
             host.blocking_executor,
             lambda: [(ceiling, case.id) for case in admitted.cases if (ceiling := kind.price_case(case)) is not None],
         )
+        estimate = ceiling_is_estimate(client)
     finally:
         await client.aclose()
     if not priced:
         return None
     usd, case_id = max(priced)
     return CallCeiling(
+        estimate=estimate,
         usd=usd,
         call=(
             f"the generator call on case {case_id!r} (the first of the memo writer's two requests: the memo, "

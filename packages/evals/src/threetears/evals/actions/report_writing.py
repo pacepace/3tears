@@ -97,7 +97,7 @@ async def write_report(
     :ptype caller: Caller
     :param model: The model every session runs on (``Model(id, provider="anthropic", api_key=...)``).
     :ptype model: TurnModel
-    :param budget: The report's dollar budget, which admits every turn.
+    :param budget: The report's budget (dollars, or tokens and turns), which admits every turn.
     :ptype budget: ReportBudget
     :param snapshot_id: A snapshot already frozen; exactly one of it, ``campaign_id`` and ``analysis_id``.
     :ptype snapshot_id: str | None
