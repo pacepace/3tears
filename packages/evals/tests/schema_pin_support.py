@@ -1,5 +1,9 @@
 """The checks the core and durable schema pins share: a minor ledger's additivity sentence, and a read that keeps values.
 
+It also records each kept type added after its space's baseline (:data:`ADDED_AT_MAJOR`): no document of an earlier
+major exists to freeze or to read, so the corpus and the read-every-version checks hold such a type from the major it
+was added in.
+
 Both version spaces in ``schema/versioning.py`` keep a ledger of minors and promise that an older minor's document
 reads back with every value it stored, so ``test_core_schema_pins.py`` and ``test_durable_schema_pins.py`` hold them
 to it with the same two helpers, kept here under public names rather than imported privately from one of them.
@@ -12,7 +16,11 @@ from typing import Any
 
 from threetears.evals.schema.versioning import MINOR_ADDITIVITY_SENTENCE
 
-__all__ = ["keeps", "minor_entries", "minors_missing_the_sentence"]
+__all__ = ["ADDED_AT_MAJOR", "keeps", "minor_entries", "minors_missing_the_sentence"]
+
+#: Each kept or durable type added after its space's baseline, by the major it was added in: the analyst's gap notes,
+#: added at durable v16.7, have no v15 document.
+ADDED_AT_MAJOR: dict[str, int] = {"eval_analyst_gap": 16}
 
 #: A minor's ledger entry, as the comment block above a ``*_SCHEMA_MINOR`` writes one: ``#: - **v14.1** — …``,
 #: through the end of its (possibly wrapped) comment lines.

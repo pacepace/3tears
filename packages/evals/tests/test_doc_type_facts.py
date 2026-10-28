@@ -40,8 +40,8 @@ _OWN_SPACES: dict[type[Any], tuple[str, Any]] = {
     EvalReportSession: ("REPORT_DOC_SCHEMA_VERSION", report_doc),
 }
 
-#: What people author: the eight types decided at ``.26``, and the campaign, at durable v16 — the types a core baseline
-#: reset never touches.
+#: What people author: the eight types decided at ``.26``, the campaign, at durable v16, and the analyst's gap notes, at
+#: durable v16.7, which nothing makes again — the types a core baseline reset never touches.
 DURABLE = frozenset(
     {
         "eval_template",
@@ -53,6 +53,7 @@ DURABLE = frozenset(
         "eval_test_case",
         "calibration_rating",
         "eval_campaign",
+        "eval_analyst_gap",
     }
 )
 
@@ -180,6 +181,7 @@ def test_the_placements_the_registry_records() -> None:
         "eval_second_judge_pass": ("record", "kept"),
         "eval_judge_temperature_check": ("record", "kept"),
         "eval_action_job": ("record", "kept"),
+        "eval_analyst_gap": ("record", "durable"),
         "eval_analysis": ("derived", "regenerable"),
         "eval_insight": ("derived", "regenerable"),
         "eval_report_plan": ("derived", "regenerable"),

@@ -38,6 +38,7 @@ from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileAgreement
 from threetears.evals.kernel.campaign import EvalReportPlan, ReportPlanProvenance, report_plan_id
+from threetears.evals.kernel.analyst_gap import EvalAnalystGap, GapToolCall
 from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession, report_session_id
 from packages.evals.tests.report_doc_support import converted_doc
 from packages.evals.tests.report_plan_support import r5_input, r5_plan
@@ -308,6 +309,25 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
         ending="stored_with_findings",
         findings=[{"claim": "c4", "severity": "should_fix", "finding": "The off-lane share is a lead."}],
         generation={"turns": [{"role": "analyst", "round": 1, "cost_usd": None}], "bounces": 0},
+        created_by="agent:test",
+    ),
+    # A suspect gap the analyst noted during a write, with what reproduces it and where it came from.
+    "EvalAnalystGap": lambda: EvalAnalystGap(
+        id="gap:0b5b9abb32a03ae7",
+        scope_id="uni-1",
+        kind="suspect",
+        need="the cost per reply of one arm reads lower than its trials' costs",
+        why="each of its trials costs more than the mean the key reads",
+        workaround="named the arms' order and no figure",
+        claim_ids=["c2"],
+        figure_keys=["{cost_per_1k.qwen3.8-flash}"],
+        calls=[GapToolCall(action="measure_read", arguments={"measure_key": "cost", "by": "arm"})],
+        snapshot_id="report-snapshot:0b5b9abb32a03ae7801253cf2df6cfeb",
+        report_doc_id="01a180c7-821a-73b1-88ea-98d87dc63523",
+        role="analyst",
+        session="analyst",
+        model="claude-opus-test",
+        transcript_digest="8" * 64,
         created_by="agent:test",
     ),
     # The analyst's session of a report, as the store gate writes it beside its report document.

@@ -707,7 +707,7 @@ def test_a_figure_the_input_leaves_unstated_is_absent_and_a_key_naming_nothing_i
 # =============================================================================
 
 
-async def test_a_gap_is_noted_alike_for_the_same_need_logged_once_and_stored_nowhere(
+async def test_a_gap_is_noted_alike_for_the_same_need_logged_and_stored_once_under_that_id(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     store = InMemoryDocumentStore()
@@ -724,12 +724,14 @@ async def test_a_gap_is_noted_alike_for_the_same_need_logged_once_and_stored_now
 
     assert one.structured is not None and two.structured is not None and other.structured is not None
     assert one.structured["gap_id"] == two.structured["gap_id"] != other.structured["gap_id"]
-    assert one.structured["recorded_in"] == "transcript"
+    assert one.structured["recorded_in"] == "store"
     assert "read the intervals" in one.text and "c2" in one.text
     records = [record for record in caplog.records if record.name == "threetears.evals.analyst"]
     assert len(records) == 1 and records[0].levelno == logging.INFO
     assert one.structured["gap_id"] in records[0].getMessage()
     assert off_loop(lambda: sorted(store.iter_by_doc_type("eval_report_snapshot", TOYHOST_SCOPE))) == stored
+    gaps = off_loop(lambda: sorted(store.iter_by_doc_type("eval_analyst_gap", TOYHOST_SCOPE)))
+    assert gaps == sorted([one.structured["gap_id"], other.structured["gap_id"]]), "the same gap is stored once"
 
 
 # =============================================================================

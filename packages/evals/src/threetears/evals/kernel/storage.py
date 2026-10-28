@@ -54,6 +54,7 @@ from threetears.evals.kernel.campaign import (
     EvalSweep,
     generation_slot_id,
 )
+from threetears.evals.kernel.analyst_gap import EvalAnalystGap
 from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession, report_session_id
 from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
@@ -1624,6 +1625,43 @@ class EvalStorage:
         ):
             self._store.delete(str(row["id"]), scope_id)
         return deleted
+
+    def save_analyst_gap(self, gap: EvalAnalystGap) -> bool:
+        """Persist one analyst gap or notice in the scope it names, only where none is stored under its id.
+
+        A gap's id is its call's (``analyst_gap_id``), so a replay, a retried write or a second call naming the same gap
+        finds the first one stored and leaves it as it is: one record per gap, the first one's provenance kept.
+
+        :param gap: The gap.
+        :ptype gap: EvalAnalystGap
+        :return: ``True`` when it was written; ``False`` when a document was already stored under its id.
+        :rtype: bool
+        :raises StorageError: Any other write failure.
+        """
+        try:
+            self._save(gap.to_dict(), create_only=True)
+        except ConflictError:
+            return False
+        return True
+
+    def list_analyst_gaps(self, scope_id: str, *, since: datetime | None = None) -> list[EvalAnalystGap]:
+        """Every analyst gap and notice in a scope, oldest first, or those stored at or after ``since``.
+
+        Oldest is by ``created_at``, then the id, so one listing reads in one order on every store. ``since`` is read
+        against each record's own time, in memory: the store keeps no range predicate.
+
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param since: An aware time; only the records stored at or after it. ``None`` for every one.
+        :ptype since: datetime | None
+        :return: The gaps.
+        :rtype: list[EvalAnalystGap]
+        :raises ValidationError: A stored gap does not read under this build's model.
+        """
+        gaps = self._hydrate_all(EvalAnalystGap, self._store.by_doc_type("eval_analyst_gap", scope_id))
+        if since is not None:
+            gaps = [gap for gap in gaps if datetime.fromisoformat(gap.created_at) >= since]
+        return sorted(gaps, key=lambda gap: (datetime.fromisoformat(gap.created_at), gap.id))
 
     def save_analysis_attempt(self, attempt: EvalAnalysisAttempt, *, if_match: str | None = None) -> None:
         """Persist one generation attempt's record in the scope it names; conditionally when ``if_match`` is given.

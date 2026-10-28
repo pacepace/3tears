@@ -5,10 +5,13 @@ Every analyst tool reads one frozen report input, by the id of the snapshot that
 campaign, assembling its evidence as it stands, or from a stored analysis, from the bundle frozen with it; it is the
 one write. :func:`snapshot_input` reads a snapshot's input back for a tool, refusing one whose input moved or no
 longer reads. :func:`report_check` reads a draft report document on its snapshot as the store and the editor would:
-every verdict code finds, and the page as text. :func:`capability_gap` stores nothing: it acknowledges a capability
-the analyst reasoned around, with a gap id derived from what it says, and writes one record on the
-``threetears.evals.analyst`` logger, so the call sits in the transcript beside the calls that led to it and in the
-server's log.
+every verdict code finds, and the page as text. :func:`capability_gap` notes a capability the analyst reasoned around
+(``missing``) or a result that looked wrong (``suspect``, with the figure keys and tool calls that reproduce it), under
+a gap id derived from what it says, and writes one record on the ``threetears.evals.analyst`` logger. Called on its
+own (a caller over MCP, the dev CLI), it stores the gap at once (``eval_analyst_gap``); inside a report write, whose
+mount says so, it stores nothing, and the write stores every gap its sessions noted when it ends, with their
+provenance. :func:`analyst_gaps_list` reads the scope's gaps back as a digest: grouped, ranked and written as issue
+text (:mod:`threetears.evals.analysis.analyst_gaps`).
 
 **A freeze runs in its call**, not as a job: it assembles one campaign's bundle, as ``analysis_estimate`` does in its
 call, and makes no model call. The assembly and the report input it builds run on the host's blocking executor.
@@ -23,13 +26,15 @@ same snapshot always returns the same result.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import ClassVar, Literal
+from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_input, report_snapshot
+from threetears.evals.analysis.analyst_gaps import GapDigest, gap_digest
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
@@ -37,6 +42,7 @@ from threetears.evals.analysis.report_doc_checks import DocVerdict, InvariantNum
 from threetears.evals.analysis.report_doc_store import doc_verdicts_and_page
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.service import assemble_campaign_bundle, get_analysis, require_evidence
+from threetears.evals.kernel.analyst_gap import CallGapKind, EvalAnalystGap, GapToolCall, call_gap_id
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, RefusedInput, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.report_doc import ReportDoc
@@ -49,7 +55,6 @@ from threetears.evals.kernel.report_snapshot import (
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.schema.hashing import bytes_digest
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import utc_now_iso
 
@@ -57,9 +62,6 @@ from threetears.evals.schema.models import utc_now_iso
 _ANALYST_LOGGER = "threetears.evals.analyst"
 
 log = get_logger(_ANALYST_LOGGER)
-
-#: The hex digits of the digest a gap id keeps.
-_GAP_DIGITS = 16
 
 #: What a reused snapshot's fields report: the first freeze's evidence, not this call's.
 _REUSED_NOTE = (
@@ -97,12 +99,17 @@ class SnapshotFrozen(EvalBaseModel):
 
 
 class GapNoted(EvalBaseModel):
-    """A capability the analyst reasoned around, acknowledged: nothing is stored, and the work goes on."""
+    """A capability the analyst reasoned around, or a result that looked wrong, acknowledged; the work goes on."""
 
-    gap_id: str = Field(description="The gap's id: the same snapshot, need and why always name the same gap.")
+    gap_id: str = Field(
+        description="The gap's id: the same snapshot, kind, need and why always name the same gap, stored once."
+    )
     snapshot_id: str = Field(description="The snapshot the analyst was reading.")
-    recorded_in: Literal["transcript"] = Field(
-        description="Where the gap is kept: the call itself, in the transcript, beside the calls that led to it."
+    recorded_in: Literal["store", "write"] = Field(
+        description=(
+            "Where the gap is kept: store, stored by this call; write, stored by the report write this call is part "
+            "of when it ends, with the session it came from."
+        )
     )
     text: str = Field(description="The acknowledgement, naming the gap and the workaround the analyst goes on with.")
 
@@ -576,21 +583,6 @@ async def report_check(
     )
 
 
-def _gap_id(snapshot_id: str, need: str, why: str) -> str:
-    """The id of one noted gap: the same snapshot, need and why always name the same gap.
-
-    :param snapshot_id: The snapshot the analyst was reading.
-    :ptype snapshot_id: str
-    :param need: What the analyst needed.
-    :ptype need: str
-    :param why: Why it needed it.
-    :ptype why: str
-    :return: ``gap:`` and 16 hex digits of the sha256 of the three.
-    :rtype: str
-    """
-    return "gap:" + bytes_digest(f"{snapshot_id}\n{need}\n{why}".encode())[:_GAP_DIGITS]
-
-
 async def capability_gap(
     host: OpsHost,
     scope_id: str,
@@ -599,13 +591,20 @@ async def capability_gap(
     need: str,
     why: str,
     workaround: str,
-    claim_ids: list[str],
+    claim_ids: Sequence[str],
+    created_by: str,
+    kind: CallGapKind = "missing",
+    figure_keys: Sequence[str] = (),
+    calls: Sequence[tuple[str, Mapping[str, Any]]] = (),
+    kept_by: Literal["call", "write"] = "call",
 ) -> GapNoted:
-    """Acknowledge a capability the analyst reasoned around; store nothing.
+    """Note a capability the analyst reasoned around, or a result that looked wrong; store it unless a write will.
 
-    The snapshot is read, so a gap is noted against evidence that exists. The record is the call itself, in the
-    transcript; this writes one INFO line on the ``threetears.evals.analyst`` logger as well, for the server's
-    operator.
+    The snapshot is read, so a gap is noted against evidence that exists. ``kept_by`` is the mount's, never the
+    model's: the report writer's own mount passes ``write``, since the write stores every gap its sessions noted when
+    it ends, with the session, model and transcript each came from, so the call stores nothing and each gap is stored
+    once. Any other caller's call stores the gap now, naming its snapshot and caller and no report, session or model.
+    Either way this writes one INFO line on the ``threetears.evals.analyst`` logger, for the server's operator.
 
     :param host: The host whose store holds the snapshot.
     :ptype host: OpsHost
@@ -613,37 +612,93 @@ async def capability_gap(
     :ptype scope_id: str
     :param snapshot_id: The snapshot the analyst was reading.
     :ptype snapshot_id: str
-    :param need: What the analyst needed and no tool gave.
+    :param need: What the analyst needed and no tool gave, or what looked wrong.
     :ptype need: str
-    :param why: What it needed it for.
+    :param why: What it needed it for, or why it looks wrong.
     :ptype why: str
     :param workaround: What it did instead.
     :ptype workaround: str
-    :param claim_ids: The claims of its report the workaround touches; empty for none yet.
-    :ptype claim_ids: list[str]
+    :param claim_ids: The claims of its report the gap touches; empty for none yet.
+    :ptype claim_ids: Sequence[str]
+    :param created_by: Who is calling, as the host names them.
+    :ptype created_by: str
+    :param kind: ``missing`` (no tool gave it) or ``suspect`` (a result looks wrong).
+    :ptype kind: CallGapKind
+    :param figure_keys: The figure keys that show a suspect result.
+    :ptype figure_keys: Sequence[str]
+    :param calls: The tool calls that reproduce a suspect result: each action and its other arguments.
+    :ptype calls: Sequence[tuple[str, Mapping[str, Any]]]
+    :param kept_by: ``call``, store the gap now; ``write``, the report write the call is part of stores it.
+    :ptype kept_by: Literal["call", "write"]
     :return: The acknowledgement.
     :rtype: GapNoted
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read; the remedy is to freeze again.
+    :raises StorageError: The store refused the gap.
     """
     await snapshot_input(host, scope_id, snapshot_id)
-    noted = _gap_id(snapshot_id, need, why)
+    noted = call_gap_id(snapshot_id, kind, need, why)
     log.info(
-        "capability gap %s on %s: need %r; why %r; workaround %r; claims %s",
+        "capability gap %s (%s) on %s: need %r; why %r; workaround %r; claims %s; keys %s; calls %s",
         noted,
+        kind,
         snapshot_id,
         need,
         why,
         workaround,
-        claim_ids,
+        list(claim_ids),
+        list(figure_keys),
+        [action for action, _ in calls],
     )
+    if kept_by == "call":
+        gap = EvalAnalystGap(
+            id=noted,
+            scope_id=scope_id,
+            kind=kind,
+            need=need,
+            why=why,
+            workaround=workaround,
+            claim_ids=list(claim_ids),
+            figure_keys=list(figure_keys),
+            calls=[GapToolCall(action=action, arguments=dict(arguments)) for action, arguments in calls],
+            snapshot_id=snapshot_id,
+            created_by=created_by,
+        )
+        eval_host = host.eval_host
+        await run_blocking(eval_host.blocking_executor, eval_host.storage.save_analyst_gap, gap)
     touches = f" It touches {', '.join(claim_ids)}." if claim_ids else ""
     return GapNoted(
         gap_id=noted,
         snapshot_id=snapshot_id,
-        recorded_in="transcript",
+        recorded_in="store" if kept_by == "call" else "write",
         text=f"Noted {noted}: {need}. Go on with the workaround: {workaround}.{touches}",
     )
+
+
+async def analyst_gaps_list(host: OpsHost, scope_id: str, *, since: datetime | None = None) -> GapDigest:
+    """The scope's analyst gaps and notices as a digest: grouped exactly, ranked, each group with its issue text.
+
+    Reads the store and nothing else; posts nothing. A host's scheduled job may post the digest and file each group's
+    issue with its own credentials (:mod:`threetears.evals.analysis.analyst_gaps` says how groups form and rank).
+
+    :param host: The host whose store holds the gaps.
+    :ptype host: OpsHost
+    :param scope_id: The scope to read.
+    :ptype scope_id: str
+    :param since: An aware time: only the records stored at or after it, each read by its own time; ``None`` for every
+        record. A group counts, dates and quotes only the records in that window.
+    :ptype since: datetime | None
+    :return: The digest.
+    :rtype: GapDigest
+    :raises ValueError: ``since`` names no zone, so no instant.
+    """
+    if since is not None and (since.tzinfo is None or since.utcoffset() is None):
+        raise ValueError(f"since {since.isoformat()} names no zone, so no instant: give it with its offset")
+    eval_host = host.eval_host
+    records = await run_blocking(
+        eval_host.blocking_executor, lambda: eval_host.storage.list_analyst_gaps(scope_id, since=since)
+    )
+    return gap_digest(records, since=since.isoformat() if since is not None else None)
 
 
 __all__ = [
@@ -652,6 +707,7 @@ __all__ = [
     "DraftChecked",
     "GapNoted",
     "SnapshotFrozen",
+    "analyst_gaps_list",
     "capability_gap",
     "report_check",
     "report_snapshot_freeze",
