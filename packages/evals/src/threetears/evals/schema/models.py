@@ -4203,11 +4203,12 @@ class EvalRun(CoreDocumentModel):
         exclude_if=lambda value: value is None,
         description=(
             "The content address of the simulated user's prompts as this run sends them, stamped at launch beside "
-            "simulator_asked_settings (``threetears.evals.run.simulator.simulator_prompt_digest``): the engine's "
-            "framing text around each actor's policy and intent, and the scheduler's under ``llm_decided``, with the "
-            "parts each cell fills (the case's scenario parameters, the transcript so far) left empty, since the frozen "
-            "cases address those. Moves with any change to what the simulator is told, the engine's own words "
-            "included. None = no simulated user was pinned, or the run was stored before the field existed. Left out "
+            "simulator_asked_settings (``threetears.evals.run.simulator.simulator_prompt_digest``): every engine-"
+            "authored word its calls carry around the conversation's actors (each utterance call's framing and reply "
+            "format; under ``llm_decided``, the scheduler's system and user prompts, its reply format, its repair and "
+            "its refusal reasons), with the parts each cell fills (the case's scenario parameters, the transcript so "
+            "far, the round's count, the reply a repair quotes) left empty, since the frozen cases address those. "
+            "Moves with any change to what the simulator is told, the engine's own words included. None = no simulated user was pinned, or the run was stored before the field existed. Left out "
             "of the document when unset, and in no identity, key or digest."
         ),
     )
@@ -4273,7 +4274,9 @@ class EvalRun(CoreDocumentModel):
         description=(
             "What the launching host disclosed about the launch (``RunDisclosure``, from ``LaunchHost.run_disclosure``)"
             ": its machine, load and how it measures, stamped on every run of every kind. A disclosure, never a "
-            "coordinate: in no identity, key, digest, cell or confound. None = the host disclosed nothing, or the run "
+            "coordinate: in no identity, context or variant key, cell or confound. It is evidence the bundle carries, so "
+            "it moves the bundle's fingerprint and a snapshot's id as any recorded fact does. None = the host disclosed "
+            "nothing, or the run "
             "was stored before the field existed. Left out of the document when unset."
         ),
     )

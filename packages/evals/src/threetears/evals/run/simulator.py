@@ -226,6 +226,16 @@ def next_speaker_response_format(choices: list[str]) -> dict[str, Any]:
     return directive
 
 
+#: What a scheduling call's repair is sent: the call's own user prompt, then why its reply was refused.
+_SCHEDULER_REPAIR = "{user}\n\nYour previous reply was refused: {refusal}. Reply again."
+
+#: Why a scheduling reply was refused: it was not the structured shape it was sent.
+_REFUSED_SHAPE = "it was not a JSON object holding exactly the field `next`"
+
+#: Why a scheduling reply was refused: it named an answer not legal at that pick.
+_REFUSED_CHOICE = "`next` was {got}, which is not one of {choices}"
+
+
 class SimulatorReplyInvalid(ValueError):
     """A simulator-role reply did not match the schema it was sent.
 
@@ -465,18 +475,18 @@ class TurnDriver:
         response_format = next_speaker_response_format(choices)
         refusal = ""
         for _attempt in range(SCHEDULER_CALL_ATTEMPTS):
-            prompt = user if not refusal else f"{user}\n\nYour previous reply was refused: {refusal}. Reply again."
+            prompt = user if not refusal else _SCHEDULER_REPAIR.format(user=user, refusal=refusal)
             response = await llm.generate(system=system, user=prompt, response_format=response_format)
             usage = self._usage_of(response, "schedule", None)
             content = getattr(response, "content", None)
             try:
                 reply = NextSpeakerReply.model_validate_json(content or "", strict=True)
             except ValidationError:
-                refusal = "it was not a JSON object holding exactly the field `next`"
+                refusal = _REFUSED_SHAPE
                 self.calls.append(SimulatorCall("schedule", None, self._round_index, usage))
                 continue
             if reply.next not in choices:
-                refusal = f"`next` was {json.dumps(reply.next)}, which is not one of {json.dumps(choices)}"
+                refusal = _REFUSED_CHOICE.format(got=json.dumps(reply.next), choices=json.dumps(choices))
                 self.calls.append(SimulatorCall("schedule", None, self._round_index, usage))
                 continue
             actor_id = None if reply.next == ROUND_DONE else reply.next
@@ -761,24 +771,50 @@ def smallest_utterance_prompts(actor: ActorPolicy) -> tuple[str, str]:
 def simulator_prompt_digest(conversation: ConversationSpec) -> str:
     """The content address of what a conversation's simulated user is told, as a run of it sends it.
 
-    The pre-image is every prompt the run's simulator calls are built on, with the parts each cell fills left empty:
-    each actor's utterance call (:func:`smallest_utterance_prompts`: the engine's framing around the actor's policy and
-    intent), and, under the ``llm_decided`` scheduler, the scheduler's system prompt over every actor. What a cell
-    fills in (the case's scenario parameters, the transcript so far) is the frozen case's and the conversation's own,
-    which the run addresses by its cases. So the digest is stable for one conversation on one build, and moves with an
-    actor's policy or intent, the actors' order, the scheduler, or the engine's own words around them.
+    The pre-image is every engine-authored word a run's simulator calls carry, around what the conversation fixes,
+    with the parts each cell fills left empty:
+
+    - each actor's utterance call (:func:`smallest_utterance_prompts`: the framing around the actor's policy and
+      intent) and the reply format it is sent (:data:`SIMULATED_USER_RESPONSE_FORMAT`);
+    - under the ``llm_decided`` scheduler, its system prompt over every actor; its user prompt at both kinds of pick
+      (the round still empty, and the round open to ``round_done``), over the conversation's actors and its
+      ``max_speakers_per_round``; the reply format each pick is sent; and the repair a refused reply gets, with both
+      reasons a reply is refused for, as their templates.
+
+    What a cell fills in is left at its empty value: the case's scenario parameters, the transcript so far, how many
+    lines the round already holds, and the reply a repair quotes. The frozen case and the conversation address those.
+    So the digest is stable for one conversation on one build, and moves with an actor's policy or intent, the actors'
+    order, the scheduler, the round's cap, or any of the engine's own words above.
 
     :param conversation: The template's conversation, as the run launched it.
     :ptype conversation: ConversationSpec
     :return: A sha256 hex digest.
     :rtype: str
     """
-    calls: list[dict[str, str]] = []
+    calls: list[dict[str, Any]] = []
     for actor in conversation.actors:
         system, user = smallest_utterance_prompts(actor)
-        calls.append({"actor": actor.id, "system": system, "user": user})
+        calls.append(
+            {"actor": actor.id, "system": system, "user": user, "response_format": SIMULATED_USER_RESPONSE_FORMAT}
+        )
     if conversation.turn_scheduler == "llm_decided":
-        calls.append({"scheduler": _build_scheduler_system_prompt(list(conversation.actors), {})})
+        actors = [actor.id for actor in conversation.actors]
+        cap = conversation.max_speakers_per_round
+        picks = [actors, [*actors, ROUND_DONE]]
+        calls.append(
+            {
+                "scheduler": _build_scheduler_system_prompt(list(conversation.actors), {}),
+                "picks": [
+                    {
+                        "user": _build_scheduler_user_prompt([], choices, delivered=0, cap=cap),
+                        "response_format": next_speaker_response_format(choices),
+                    }
+                    for choices in picks
+                ],
+                "repair": _SCHEDULER_REPAIR,
+                "refused": [_REFUSED_SHAPE, _REFUSED_CHOICE],
+            }
+        )
     return canonical_digest({"simulator_prompts": calls})
 
 
