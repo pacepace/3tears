@@ -916,7 +916,7 @@ def unit_quantities(report_input: ReportInput, values: Mapping[str, Sequence[flo
     lead: dict[Quantity, str] = {}
     for key, figures in values.items():
         lead.setdefault(alike[key], units[key])
-        shown.setdefault(alike[key], []).extend(figures)
+        shown.setdefault(alike[key], []).extend(figure * alike[key].factor for figure in figures)
     drawn = {each: quantity(lead[each], shown[each]) for each in shown}
     return {key: dataclasses.replace(drawn[alike[key]], factor=alike[key].factor) for key in values}
 

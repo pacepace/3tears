@@ -236,7 +236,7 @@ def _scoreboard_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[s
     # One unit: the one-unit rule (charting.unit_refusal, which the bars resolver reads first) has refused figures in
     # more than one.
     unit = figure_unit(context.report_input, keys[0], source="scoreboard")
-    drawn = quantity(unit, [value for _, _, value in picked])
+    drawn = quantity(unit, [value * quantity(unit).factor for _, _, value in picked])
     bars = [
         _arm_bar(
             context,
@@ -642,8 +642,9 @@ def _slice_lines(context: ChartContext) -> tuple[list[str], list[_Line], Quantit
                 bands=bands if len(bands) == len(stats) else None,
             )
         )
-    values = [value for line in lines for value in line.values]
-    return categories, lines, quantity(figure_unit(report_input, key), values), missing
+    unit = figure_unit(report_input, key)
+    values = [value * quantity(unit).factor for line in lines for value in line.values]
+    return categories, lines, quantity(unit, values), missing
 
 
 def _arm_name(context: ChartContext, arm: str) -> str:
@@ -688,8 +689,9 @@ def _figure_lines(context: ChartContext) -> tuple[list[str], list[_Line], Quanti
             missing.append(_arm_name(context, arm))
             continue
         lines.append(_Line(arm=arm, values=[read[0] for read in reads if read is not None], bands=None))
-    values = [value for line in lines for value in line.values]
-    return categories, lines, quantity(figure_unit(report_input, key), values), missing
+    unit = figure_unit(report_input, key)
+    values = [value * quantity(unit).factor for line in lines for value in line.values]
+    return categories, lines, quantity(unit, values), missing
 
 
 def _lines(context: ChartContext) -> Drawn:

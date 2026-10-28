@@ -158,7 +158,8 @@ def _figure_cell(context: ChartContext, key: str, stat: Stat | None, arm: str = 
     report_input = context.report_input
     name = measure_words(report_input, key)
     read = stat_value(report_input, key, stat) if stat is not None else None
-    drawn = quantity(figure_unit(report_input, key), [read[0]] if read is not None else [])
+    unit = figure_unit(report_input, key)
+    drawn = quantity(unit, [read[0] * quantity(unit).factor] if read is not None else [])
     measure = report_input.measures.get(key)
     if drawn.unit == MONEY and drawn.factor != 1 and measure is not None:
         name = TABLE_PER_THOUSAND.format(name=name, per=per_count(per_noun(measure)))

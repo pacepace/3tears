@@ -137,7 +137,8 @@ def _stated(report_input: ReportInput, key: str, stat: Stat | None, *, kind: str
     if read is None:
         return TableCell(value=None)
     value, statistic = read
-    drawn = quantity(figure_unit(report_input, key, kind=kind), [value])
+    unit = figure_unit(report_input, key, kind=kind)
+    drawn = quantity(unit, [value * quantity(unit).factor])
     return TableCell(value=figure_text(value * drawn.factor, drawn), flag=statistic if statistic != "mean" else None)
 
 

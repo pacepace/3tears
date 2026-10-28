@@ -719,7 +719,9 @@ def test_cells_that_read_alike_print_their_numbers_at_one_precision_and_lose_no_
         ["B", "96.4% · $1.655 per 1,000 calls", "-3.0 to +0.25"],
     ]
     assert even_precision([["p95 latency", "Few-shot (12 ex.)"]]) == [["p95 latency", "Few-shot (12 ex.)"]]
-    assert even_precision([["$0.000616"], ["$1"]]) == [["$0.000616"], ["$1"]], "past three decimals, nothing is padded"
+    # A column holding an amount under a cent reads per 1,000 throughout (#993), each amount moved by its digits.
+    assert even_precision([["$0.000616"], ["$1"]]) == [["$0.616/1000"], ["$1,000/1000"]]
+    assert even_precision([["0.000616"], ["1"]]) == [["0.000616"], ["1"]], "past three decimals, nothing is padded"
 
 
 #: Values across magnitudes, as a latency or cost column holds them: each reaches even_precision as format_number

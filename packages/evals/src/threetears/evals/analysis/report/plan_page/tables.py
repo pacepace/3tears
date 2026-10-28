@@ -433,11 +433,12 @@ def _arm_cost(
     """One arm's cost cell in the column's form: its cost, then the uplift, the priced share and the unanswered calls."""
     pricing = _pricing(report_input, arm)
     share = _priced_share(pricing)
+    if pricing is not None and pricing.priced_calls == 0 and pricing.calls:
+        return TableCell(value=UNPRICED, flag="; ".join([share or "", *_unanswered_marks(arm, report_input)]).strip("; ") or None)
     if _part_priced(pricing):
         return TableCell(value=share, flag="; ".join(_unanswered_marks(arm, report_input)) or None)
     if arm not in per_run:
-        unpriced = pricing is not None and pricing.priced_calls == 0 and bool(pricing.calls)
-        return TableCell(value=UNPRICED if unpriced else None)
+        return TableCell(value=None)
     marks: list[str] = []
     control = look.control
     if control is not None and arm != control.id:

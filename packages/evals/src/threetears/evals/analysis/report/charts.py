@@ -22,12 +22,20 @@ and what HTML keeps beside the chart for a screen reader and a page whose script
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from collections.abc import Callable, Iterator, Sequence
 from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
 
-from threetears.evals.kernel.numbers import PER_THOUSAND, WHOLE_FROM, format_number, money_form
+from threetears.evals.kernel.numbers import (
+    PER_THOUSAND,
+    PER_THOUSAND_MARK,
+    WHOLE_FROM,
+    format_number,
+    group_thousands,
+    money_form,
+)
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
 from threetears.evals.schema.base import EvalDocumentModel
 
@@ -281,10 +289,9 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
     """A values table's cells, every number at one precision among the cells that read alike: cells that read the
     same but for their numbers (``94% · 3 calls``, ``96.4% · 4 calls``), wherever they sit in the table, have each
     number in the same place padded with zeros to the most decimals that place holds among them (``94.0%``), up to
-    three. Money is then written in one form per column (#993): every amount a column holds, in whichever cells, is
-    spelled by the column's :func:`~threetears.evals.kernel.numbers.money_form` (cents, with more decimals where its
-    least amount needs them, thousands grouped, and per 1,000, ``$8/1000``, where any of them is under a cent), so a
-    column never reads ``$0.008`` beside ``$0.11`` and a table prints an amount as the figure keys citing it do.
+    three. Money is first put in one form per column (#993, :func:`money_by_column`): per 1,000 (``$8/1000``) throughout
+    a column where any amount it holds is under a cent, so a column never reads ``$0.008`` beside ``$0.11``, and its
+    whole dollars grouped by thousands (``$1,239``), as the figure keys write money.
 
     Padding never rounds: a cell keeps every digit it had, so a table still never rounds away what a value holds,
     and two figures a reader compares read at one precision. Nor does it state a digit the number was never rounded
@@ -299,7 +306,7 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
     :return: The rows, each number padded among the cells that read like its own.
     :rtype: list[list[str]]
     """
-    table = [list(row) for row in rows]
+    table = money_by_column([list(row) for row in rows])
     shaped: dict[str, list[tuple[int, int]]] = {}
     for at, row in enumerate(table):
         for column, cell in enumerate(row):
@@ -311,7 +318,7 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
         most = [max(len(numbers[place].group(3) or "") for numbers in found) for place in range(len(found[0]))]
         for at, column in places:
             table[at][column] = _padded_cell(table[at][column], most)
-    return money_by_column(table)
+    return table
 
 
 def _money_amount(found: re.Match[str]) -> float:
@@ -321,9 +328,11 @@ def _money_amount(found: re.Match[str]) -> float:
 
 
 def money_by_column(table: list[list[str]]) -> list[list[str]]:
-    """Every amount of money in each column of a table's text written in that column's one form (#993): chosen from
-    every amount the column holds (:func:`~threetears.evals.kernel.numbers.money_form`), never from one cell, and each
-    amount re-spelled in it, its sign kept; a bound (``< $0.000001``) is left as it is.
+    """Every amount of money in each column of a table's text in that column's one form (#993): per 1,000
+    (``$8/1000``) throughout where any amount the column holds is under a cent
+    (:func:`~threetears.evals.kernel.numbers.money_form`), else in dollars, and every amount's whole dollars grouped by
+    thousands (``$1,239``). An amount is moved per 1,000 by its digits exactly, so it keeps every digit it was written
+    with and gains none it was never rounded to; a bound (``< $0.000001``) is left as it is.
 
     :param table: The table's rows of cell texts; changed in place.
     :ptype table: list[list[str]]
@@ -333,15 +342,19 @@ def money_by_column(table: list[list[str]]) -> list[list[str]]:
     width = max((len(row) for row in table), default=0)
     for column in range(width):
         cells = [row[column] for row in table if column < len(row)]
-        form = money_form(_money_amount(found) for cell in cells for found in _CELL_MONEY.finditer(cell))
-
-        def spelled(found: re.Match[str]) -> str:
-            return form.spell(_money_amount(found), signed=found.group(1) == "+")
-
+        per_thousand = money_form(_money_amount(found) for cell in cells for found in _CELL_MONEY.finditer(cell))
         for row in table:
             if column < len(row):
-                row[column] = _CELL_MONEY.sub(spelled, row[column])
+                row[column] = _CELL_MONEY.sub(lambda found: _respelled(found, per_thousand.per_thousand), row[column])
     return table
+
+
+def _respelled(found: re.Match[str], per_thousand: bool) -> str:
+    """One amount in its column's form: moved per 1,000 by its digits where the column reads so, its thousands grouped."""
+    sign, digits, mark = found.group(1), found.group(2).replace(",", ""), found.group(3) or ""
+    if per_thousand and not mark:
+        digits, mark = format((Decimal(digits) * PER_THOUSAND).normalize(), "f"), PER_THOUSAND_MARK
+    return f"{sign}${group_thousands(digits)}{mark}"
 
 
 def _own_decimals(whole: str) -> int:

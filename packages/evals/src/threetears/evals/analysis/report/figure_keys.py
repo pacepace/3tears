@@ -280,8 +280,8 @@ class Figure:
     rule keeps (``97.5%``, ``98.33%``), never rounded to a whole percent or to a rate's one decimal: two levels that
     differ never print alike.
 
-    A money figure also carries the set it is spelled with (#993): ``amounts``, every amount of its family on its scale
-    (each arm's, each statistic's), or, for a change, the amounts it compares, from which
+    A money figure also carries the set it is spelled with (#993): ``amounts``, its statistic's amount for every arm of its
+    family, on its scale, or, for a change, the amounts it compares, from which
     :func:`~threetears.evals.kernel.numbers.money_form` chooses one form for the whole family, so ``cost_per_1k.*`` never
     reads ``$0.008`` beside ``$0.11``; and ``spread``, the width of the interval a change is read with, which caps its
     decimals. :func:`resolve` fills both; a figure made without them is spelled as a set of its own value. Neither takes
@@ -6164,28 +6164,27 @@ def _resolved(key: str, report_input: ReportInput) -> Figure:
     return replace(figure, derived=figure.derived or _is_derived(reading))
 
 
-def _sibling_values(reading: _Reading, report_input: ReportInput, *, arms: bool) -> list[tuple[str, ...]]:
-    """The readings of a reading's family that share its words and fixed ids: every statistic in its statistic slot,
-    and, with ``arms``, every arm its arm slots offer (each slot's ids as offered after the ones before it)."""
+def _sibling_values(reading: _Reading, report_input: ReportInput) -> list[tuple[str, ...]]:
+    """The readings of a reading's family that share its words, its statistic and its ids but its arms: every arm its
+    arm slots offer (each slot's ids as offered after the ones before it). A statistic is a figure of its own type (a
+    scoreboard's cost per reply is not its trials' total), so it is never varied."""
     combos: list[tuple[str, ...]] = [()]
     values = iter(reading.values)
     for slot in reading.family.slots:
         if isinstance(slot, _Word):
             continue
         value = next(values)
-        if isinstance(slot, _Statistic):
-            combos = [(*prefix, option) for prefix in combos for option in slot.options]
-        elif arms and isinstance(slot, _Ids) and slot.name in _ARM_SLOTS:
+        if isinstance(slot, _Ids) and slot.name in _ARM_SLOTS:
             combos = [(*prefix, option) for prefix in combos for option in _offered(slot, report_input, prefix)]
         else:
             combos = [(*prefix, value) for prefix in combos]
     return combos
 
 
-def _sibling_figures(reading: _Reading, report_input: ReportInput, *, arms: bool) -> list[Figure]:
+def _sibling_figures(reading: _Reading, report_input: ReportInput) -> list[Figure]:
     """The figures of :func:`_sibling_values`' readings that the input states; one it leaves unstated is no member."""
     figures: list[Figure] = []
-    for values in _sibling_values(reading, report_input, arms=arms):
+    for values in _sibling_values(reading, report_input):
         try:
             figures.append(reading.family.resolve(report_input, values, ".".join(values)))
         except UnresolvableReference:
@@ -6196,15 +6195,14 @@ def _sibling_figures(reading: _Reading, report_input: ReportInput, *, arms: bool
 
 
 def _fixed_values(reading: _Reading) -> tuple[str, ...]:
-    """A reading's values with its statistic and arm slots left blank: what every member of its set shares."""
+    """A reading's values with its arm slots left blank: what every member of its set shares."""
     fixed: list[str] = []
     values = iter(reading.values)
     for slot in reading.family.slots:
         if isinstance(slot, _Word):
             continue
         value = next(values)
-        varies = isinstance(slot, _Statistic) or (isinstance(slot, _Ids) and slot.name in _ARM_SLOTS)
-        fixed.append("" if varies else value)
+        fixed.append("" if isinstance(slot, _Ids) and slot.name in _ARM_SLOTS else value)
     return tuple(fixed)
 
 
@@ -6221,8 +6219,8 @@ def _numbers_of(figures: Iterable[Figure]) -> list[float]:
 
 def _money_amounts(reading: _Reading, figure: Figure, report_input: ReportInput) -> tuple[float, ...]:
     """The set a money figure is spelled with (:class:`Figure`'s ``amounts``): a change's compared amounts where its
-    family says what a change compares; else every amount its family states on its scale across the arms and
-    statistics (its amounts, or its changes where it states only changes).
+    family says what a change compares; else every amount its family states of the same statistic on its scale across
+    the arms.
 
     The set is the family's, never the figure's: every key of ``cost_per_1k.*`` reads the same set, so each is spelled
     in one form. Read once per family and fixed ids on an input."""
@@ -6235,7 +6233,7 @@ def _money_amounts(reading: _Reading, figure: Figure, report_input: ReportInput)
     if figure.change and compared is not None:
         found = tuple(compared)
     else:
-        siblings = [one for one in _sibling_figures(reading, report_input, arms=True) if one.scale == figure.scale]
+        siblings = [one for one in _sibling_figures(reading, report_input) if one.scale == figure.scale]
         amounts = _numbers_of(one for one in siblings if not one.change)
         found = tuple(amounts or _numbers_of(siblings))
     memo[key] = found

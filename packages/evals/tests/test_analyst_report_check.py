@@ -408,8 +408,10 @@ def _served(tool: MountedTool) -> list[str]:
 #: What the ``evals`` tool and the editor's cut of the analyst tool served before ``report_check``, as digested by
 #: :func:`_digest` over :func:`_served`. The ``evals`` digest moved once since, at the develop merge that brought in the
 #: read bounds (#1000: narrowed-read disclosures in pivot, history and frontier, and an export paged inside a run).
+#: The editor's cut and the analyst tool moved at #993: the figure-key grammar they teach words its ``usd`` filter for
+#: money's one form per family, and its examples render money in it.
 _EVALS_BYTES = "44d67c2a8ef61eca2ac994629949ee1d003e233bba5f410190ce86d61970229e"
-_EDITOR_BYTES = "2a1e4201091bdd3a95e99774a668fa5c60cb22ca6674a73d1a1bc62d71351c27"
+_EDITOR_BYTES = "f735986b0c22fa497158ed43875ece1b453164f1bd9f9978f0d9e650d1c0343d"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's
 #: description and its topics.
@@ -433,7 +435,7 @@ _ANALYST_ACTIONS_BEFORE = [
     "block_render",
     "capability_gap",
 ]
-_ANALYST_BYTES = "2c5b842838dc0125e158b2982c541b5f59f73b916458421eca4a3eb32b08a87b"
+_ANALYST_BYTES = "1f58d7aee01f6ccb181bb7249dda6cf5fba4343d9c500c2607953f7aaba87f0a"
 
 
 def test_the_evals_tool_serves_the_bytes_it_served_before() -> None:

@@ -141,8 +141,10 @@ def test_a_multiple_reads_two_figures_whole_from_ten() -> None:
 
 
 def _price(text: str) -> float:
-    """The dollars a spelled price reads, as a reader would take them off the page."""
-    return float(text.split(" ", 1)[0].replace("$", "").replace(",", ""))
+    """The dollars a spelled price reads, as a reader would take them off the page: ``$8/1000`` is $0.008 (#993)."""
+    amount = text.split(" ", 1)[0].replace("$", "").replace(",", "")
+    digits, mark, _ = amount.partition("/1000")
+    return float(digits) / (1000 if mark else 1)
 
 
 #: The inputs declaring a monthly volume, which a monthly cost is read at.

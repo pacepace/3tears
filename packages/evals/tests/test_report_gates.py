@@ -239,7 +239,11 @@ class TestTheCheck:
              "threshold": 0.0055, "label": "Cost per reply"},
         ]  # fmt: skip
         check = gate_check(_input(data), "September")
-        assert (check.status, check.borders) == ("borderline", ("Cost per reply $0.00541, interval $0.00522–$0.00559",))
+        # The measure's money reads per 1,000 (#993): its amounts are under a cent.
+        assert (check.status, check.borders) == (
+            "borderline",
+            ("Cost per reply $5.41/1000, interval $5.21/1000–$5.59/1000",),
+        )
 
     def test_a_cell_check_reads_the_cell_floor_in_that_cell(self):
         data = _r3_cell_floor_95()

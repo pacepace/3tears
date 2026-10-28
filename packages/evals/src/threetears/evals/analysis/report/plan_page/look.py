@@ -411,8 +411,8 @@ def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False) -
         ``usd_per_1k``, ``usd_per_1m``, ``ms``, ``s``, ``score``, empty for a bare number, or any other unit, written
         beside the number.
     :ptype unit: str
-    :param values: The figures drawn, in the input's units (before the factor): money's one form on the chart is chosen
-        from them (this module's money); no other format reads them.
+    :param values: The drawn values, in display units (after the factor): money's one form on the chart is chosen from
+        them (this module's money); no other format reads them.
     :ptype values: Sequence[float]
     :param change: Whether the values are changes (an arm less the control), read signed.
     :ptype change: bool
@@ -429,7 +429,7 @@ def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False) -
         return Quantity(1.0, "+num:0", POINTS, change=True)
     if unit in _MONEY_UNITS:
         factor = 1000.0 if unit == _PER_REPLY else 1.0
-        form = _chart_money([value * factor for value in values])
+        form = _chart_money(values)
         return Quantity(
             factor,
             _money_fmt(sign, form),
