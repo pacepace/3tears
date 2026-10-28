@@ -9,10 +9,11 @@ Two readings of one page, both deterministic (a page reads to the same text ever
 - :func:`above_appendix_text`, the text a reader reads above the appendix, as it is printed and nothing more (no claim
   id, no block's kind): the page's half of the invariant that no internal id appears above the appendix. Example
   cards are left out of it: they show a trial's and a case's ids so a reader can look the trial up, which the
-  invariant exempts, and only the renderer draws them. Besides its values table, each block gives every string its
-  drawn chart carries for a reader (:meth:`~threetears.evals.analysis.report.blocks.ChartBlock.kit_chart`'s data, as
-  resolved, never the drawing script's): legend labels, tooltip lines, short and narrow labels, notes, group heads and
-  axis titles, each once, in the data's order. Left out are the fields that only select a mark (an ``id``, the
+  invariant exempts, and only the renderer draws them. Besides its values table, each chart gives its title (the
+  values table's caption, which a screen reader reads and the page shows where the chart is not drawn), then every
+  string its drawn chart carries for a reader (:meth:`~threetears.evals.analysis.report.blocks.ChartBlock.kit_chart`'s
+  data, as resolved, never the drawing script's): legend labels, tooltip lines, short and narrow labels, notes, group
+  heads and axis titles, each once, in the data's order. Left out are the fields that only select a mark (an ``id``, the
   ``ids`` a path joins, the ``emphasis`` a chart stresses) and colour tokens.
 
 Both carry, beside each claim and each Method term, the labels of the caveats the document lands there.
@@ -98,9 +99,12 @@ def _shown(node: object, field: str = "") -> Iterator[str]:
 
 
 def _drawn_text(block: ChartBlock | TableBlock) -> list[str]:
-    """Every string a drawn chart shows a reader, each once; none for a table, which its values table is."""
-    drawn = block.kit_chart() if isinstance(block, ChartBlock) else None
-    return list(dict.fromkeys(_shown(drawn[1]))) if drawn is not None else []
+    """Every string a chart shows a reader beyond its values, each once: its title, which its values table prints as
+    its caption, then what its drawing shows; none for a table, which its values table is."""
+    if not isinstance(block, ChartBlock):
+        return []
+    drawn = block.kit_chart()
+    return list(dict.fromkeys([block.title, *(_shown(drawn[1]) if drawn is not None else ())]))
 
 
 def _caveats(labels: list[str]) -> str:

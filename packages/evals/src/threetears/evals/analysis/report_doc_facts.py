@@ -88,7 +88,7 @@ from threetears.evals.analysis.report_decision import control_arm, floors_not_he
 from threetears.evals.analysis.report_input import Aspect, Criterion, Reading, ReportInput
 from threetears.evals.analysis.report_margins import Margin, weakest_margin
 from threetears.evals.analysis.report_plan_checks import raised_warnings
-from threetears.evals.kernel.report_doc import REPORT_DOC_PROSE_FIELDS, ReportDoc
+from threetears.evals.kernel.report_doc import ReportDoc, report_doc_prose
 from threetears.evals.kernel.report_plan import WarningRef
 
 #: The names with a caller outside this module: none yet. :func:`editor_facts` and :class:`EditorFact` join it with
@@ -202,31 +202,9 @@ def _bounded(name: str, path: str) -> bool:
 # --- the keys a document cites -------------------------------------------------------------------------------------
 
 
-def _prose(doc: ReportDoc) -> Iterator[tuple[str, str]]:
-    """Every prose field the document holds (:data:`REPORT_DOC_PROSE_FIELDS`), by its field path, in document order."""
-    for field in REPORT_DOC_PROSE_FIELDS:
-        yield from _walk(doc, field.split("."), "")
-
-
-def _walk(node: object, parts: Sequence[str], at: str) -> Iterator[tuple[str, str]]:
-    if not parts:
-        if isinstance(node, str):
-            yield at, node
-        return
-    head, rest = parts[0], parts[1:]
-    name = head.removesuffix("[]")
-    value = getattr(node, name, None)
-    here = f"{at}.{name}" if at else name
-    if head.endswith("[]"):
-        for index, item in enumerate(value if isinstance(value, list) else []):
-            yield from _walk(item, rest, f"{here}[{index}]")
-    elif value is not None:
-        yield from _walk(value, rest, here)
-
-
 def _cited_keys(doc: ReportDoc) -> list[str]:
     """The path of every figure key the document's prose cites, as written; whether each resolves is invariant 1's."""
-    return [match.group(1) for _, text in _prose(doc) for match in _KEY.finditer(text)]
+    return [match.group(1) for _, text in report_doc_prose(doc) for match in _KEY.finditer(text)]
 
 
 # --- a recommended arm and the gates -------------------------------------------------------------------------------
@@ -499,7 +477,7 @@ _RATIO = re.compile(
 
 
 def _count_facts(doc: ReportDoc) -> Iterator[EditorFact]:
-    for path, text in _prose(doc):
+    for path, text in report_doc_prose(doc):
         masked = _KEY.sub(_KEY_MARK, text)
         for match in _RATIO.finditer(masked):
             if match.group("first") == _KEY_MARK and match.group("second") == _KEY_MARK:

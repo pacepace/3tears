@@ -17,8 +17,8 @@ report recommends: a tradeoff's lean stays in its prose, and an empty list (no c
 **Where the prose is.** :data:`REPORT_DOC_PROSE_FIELDS` names every field a reader reads as prose, by path. Three of
 them (``explore[].outcome``, ``next[].settles``, ``confidence.caveats[].label``) are not typed :data:`ModelProse`,
 because the prose scan reads by attribute name and other models read a structured ``outcome``, ``settles`` and
-``label`` by value; so a check over a document's prose (the invariants' typed digits and internal ids) walks this
-tuple, never the type alone.
+``label`` by value; so a check over a document's prose (the invariants' typed digits and internal ids, the editor's
+facts) reads it through :func:`report_doc_prose`, which walks this tuple, never the type alone.
 
 **Three layers of refusal, each with its own owner:**
 
@@ -61,7 +61,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Collection
+from collections.abc import Collection, Iterator, Sequence
 from typing import Annotated, Any, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
@@ -141,6 +141,39 @@ REPORT_DOC_PROSE_FIELDS: Final[tuple[str, ...]] = (
     "method[].term",
     "method[].text",
 )
+
+
+def report_doc_prose(doc: ReportDoc) -> Iterator[tuple[str, str]]:
+    """Every prose field a document holds, each by its concrete path, in :data:`REPORT_DOC_PROSE_FIELDS` order.
+
+    A path names each list item by its index (``claims[2].evidence[0].caption``); a field the document leaves out
+    (``flag``) yields nothing. The invariants and the editor's facts both read a document's prose through this, so
+    they scan the same text.
+
+    :param doc: The document.
+    :ptype doc: ReportDoc
+    :return: ``(path, text)`` for each prose field, a list field once per item.
+    :rtype: Iterator[tuple[str, str]]
+    """
+    for field in REPORT_DOC_PROSE_FIELDS:
+        yield from _prose_at(doc, field.split("."), "")
+
+
+def _prose_at(node: object, steps: Sequence[str], path: str) -> Iterator[tuple[str, str]]:
+    """The strings at ``steps`` under ``node``, each with its concrete path; a list step names each item."""
+    if not steps:
+        if isinstance(node, str):
+            yield path, node
+        return
+    step, rest = steps[0], steps[1:]
+    name = step.removesuffix("[]")
+    value = getattr(node, name, None)
+    here = f"{path}.{name}" if path else name
+    if step.endswith("[]"):
+        for index, item in enumerate(value if isinstance(value, list) else []):
+            yield from _prose_at(item, rest, f"{here}[{index}]")
+    elif value is not None:
+        yield from _prose_at(value, rest, here)
 
 
 def is_analyst_caveat(caveat_id: str) -> bool:
@@ -540,9 +573,8 @@ class EvalReportDoc(EvalDocumentModel):
 #: report-doc/1 surface; each joins this list with its first production caller (the invariants, the claims renderer,
 #: the writing loop), never for a test alone. The analyst's session reads a submission as a ReportDoc, checks its
 #: validity and briefs the analyst with its JSON schema; the claims renderer draws its evidence, caveats and findings;
-#: the invariants and the editor's facts walk its prose fields.
+#: the invariants and the editor's facts read its prose through report_doc_prose.
 __all__ = [
-    "REPORT_DOC_PROSE_FIELDS",
     "DecisionSlotWord",
     "DocCaveat",
     "EvalReportDoc",
@@ -551,5 +583,6 @@ __all__ = [
     "ReportFinding",
     "is_analyst_caveat",
     "report_doc_json_schema",
+    "report_doc_prose",
     "report_doc_validity",
 ]

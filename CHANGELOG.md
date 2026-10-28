@@ -20,13 +20,14 @@ why, Method under its own heading (each term with its landed caveats' labels), t
 severity, and the claim by its place, linked) and the made line.
 Nothing reads `story`: the page is byte-identical whatever it says. `doc_page_html`, `doc_page_markdown`,
 `doc_page_text` (the whole page as text, every block as its values table and each claim by its id: the editor's input
-and `report_check`'s output) and `above_appendix_text` (what a reader reads above the appendix, every block's values and
-every string its drawn chart shows a reader, example cards left out: the page half of the no-internal-id invariant) write it. Generation builds strict and refuses, by field path, a
-key that does not resolve, a block that does not complete or draw, an unproved `checked`, an unassigned caveat or an
-arm the input lacks; a stored document read with `strict=False` degrades instead: such a key prints `—`, a block that
-no longer draws prints as a table of its values or its caption alone, and the page carries one note to regenerate. The
-four entry points stay out of their modules' `__all__` until the writing loop, `report_check` and the report read call
-them (`tests/test_doc_page_exports.py` pins them).
+and `report_check`'s output) and `above_appendix_text` (what a reader reads above the appendix, every block's values,
+each chart's title, which its values table prints as its caption, and every string its drawn chart shows a reader,
+example cards left out: the page half of the no-internal-id invariant) write it. Generation builds strict and
+refuses, by field path, a key that does not resolve, a block that does not complete or draw, an unproved `checked`, an
+unassigned caveat or an arm the input lacks; a stored document read with `strict=False` degrades instead: such a key
+prints `—`, a block that no longer draws prints as a table of its values or its caption alone, and the page carries one
+note to regenerate. The four entry points stay out of their modules' `__all__` until the writing loop, `report_check`
+and the report read call them (`tests/test_doc_page_exports.py` pins them).
 
 The planned page's parts gain plan-free forms beside them, its own bytes unchanged: `plan_page.tables.arms_table`
 (every arm, `recommends` marked) and `plan_page.full_results.every_table` (every table the input holds a row of).
@@ -177,18 +178,22 @@ before.
 above_appendix_text="")` returns every verdict code proves against a `report-doc/1` document on its snapshot, each a
 `DocVerdict` of `invariant` (0 for validity, which runs first, then 1 to 6), field `path`, `fault` and `remedy`.
 Numbers come through figure keys (every key renders; no typed digit outside keys but the snapshot's names, percentile
-labels, a cost's unit such as `per 1k`, and the document's own claim ids; no unit doubled after a key that prints it);
-every evidence block completes, passes the chart rules and draws as `block_render` draws it; every report-wide or
-scoped caveat code assigns, stated or implied, lands where its reach allows (a method-level one may land anywhere or
-not at all), each once in the confidence, checked immaterial only where `caveat_materiality` proves it; the
-confidence form matches its open caveats; no internal id (an aspect, measure, criterion, task or stratum id, an arm id
-printed by another name, a caveat id, a slot word, an example's trial or case id) is typed above the appendix, in the
-prose or in the rendered page's text above the appendix when given (the claims renderer's, example cards left out);
-and Method holds an item. Nothing interpretive is a verdict, and no check reads `story`. The module
-exports nothing until its callers land (the store, the `report_check` action, the writing loop); the names are pinned
-in `tests/test_report_doc_exports.py`, which now covers both report-document modules. `kernel.report_doc` exports
-`ReportDoc`, `REPORT_DOC_PROSE_FIELDS`, `DecisionSlotWord`, `is_analyst_caveat` and `report_doc_validity`, which the
-invariants call.
+labels, a cost's unit such as `per 1k`, and the document's own claim ids, matched in their own case and never an id
+made of digits alone, which reads as a number; no unit doubled after a key that prints it); every evidence block
+completes, passes the chart rules and draws as `block_render` draws it; every report-wide or scoped caveat code
+assigns, stated or implied, lands where its reach allows (a method-level one may land anywhere or not at all), each
+once in the confidence, checked immaterial only where `caveat_materiality` proves it, and once it lands there it may
+be named again beside a claim or in Method; the confidence form matches its open caveats; no internal id (an aspect,
+measure, criterion, task or stratum id, an arm id printed by another name, a caveat id, a slot word, an example's
+trial or case id, or one of the document's claim ids; an example's and a claim's id matched in its own case) is typed
+above the appendix, in the prose or in the rendered page's text above the appendix when given (the claims
+renderer's, example cards left out), so a claim id may be typed only in what was left out and in Method; and Method
+holds an item. Nothing interpretive is a verdict, and no check reads `story`. The module exports nothing until its
+callers land (the store, the `report_check` action, the writing loop); the names are pinned in
+`tests/test_report_doc_exports.py`, which now covers both report-document modules. `kernel.report_doc` exports
+`ReportDoc`, `DecisionSlotWord`, `is_analyst_caveat`, `report_doc_validity` and `report_doc_prose(doc)`, which yields
+each prose field's concrete path and text in `REPORT_DOC_PROSE_FIELDS` order: the one walk of a document's prose,
+which the invariants and the editor's facts both read, so they scan the same text.
 
 **Changed:** the report plan's typed-digit, doubled-unit and internal-id checks moved to
 `threetears.evals.analysis.report_prose_checks` (`literal_faults`, `unit_faults`, `internal_ids`, `typed_ids`,

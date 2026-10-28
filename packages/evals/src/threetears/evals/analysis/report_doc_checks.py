@@ -15,8 +15,8 @@ the editor and never a verdict here.
 caveat id the snapshot does not hold. Its verdicts come first; the invariants still run, and pass over an id validity
 refused, so a revision sees everything at once.
 
-1. **Numbers come through figure keys.** Every key in a prose field (walked by
-   :data:`~threetears.evals.kernel.report_doc.REPORT_DOC_PROSE_FIELDS`) renders on the snapshot
+1. **Numbers come through figure keys.** Every key in a prose field (read by
+   :func:`~threetears.evals.kernel.report_doc.report_doc_prose`) renders on the snapshot
    (:func:`~threetears.evals.analysis.report.figure_keys.render`); no prose types a number outside its keys, except the
    names the snapshot states (arm, aspect, measure, setting and the other names
    :func:`~threetears.evals.analysis.report.figure_keys.literal_numbers` sets aside), the percentile labels (``p95``),
@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator, Sequence
-from typing import Any, Literal, get_args
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -79,10 +79,10 @@ from threetears.evals.analysis.report_prose_checks import (
     unit_faults,
 )
 from threetears.evals.kernel.report_doc import (
-    REPORT_DOC_PROSE_FIELDS,
     DecisionSlotWord,
     ReportDoc,
     is_analyst_caveat,
+    report_doc_prose,
     report_doc_validity,
 )
 from threetears.evals.kernel.report_plan import PlannedChart
@@ -115,8 +115,8 @@ _KEY_REMEDY = (
 )
 _DIGIT_REMEDY = (
     "write every figure as a figure key (figure_keys_check reads it); a number the snapshot does not hold is written in "
-    "words or left out. Names the snapshot states, percentile labels, a cost's unit (per 1,000, per 1k) and claim ids "
-    "may be typed"
+    "words or left out. Names the snapshot states, percentile labels and a cost's unit (per 1,000, per 1k) may be "
+    "typed; a claim id may be typed only in omitted and Method, and never one made of digits alone"
 )
 _UNIT_REMEDY = "a key prints its own unit and cost basis: drop the repeated word, or key the figure as the fault says"
 _BLOCK_REMEDY = (
@@ -186,7 +186,7 @@ def check_report_doc(doc: ReportDoc, report_input: ReportInput, *, above_appendi
             doc, arms=[arm.id for arm in report_input.arms], caveats=[caveat.id for caveat in caveats]
         )
     ]
-    prose = _prose(doc)
+    prose = list(report_doc_prose(doc))
     verdicts += _number_verdicts(doc, prose, report_input)
     verdicts += _block_verdicts(doc, report_input)
     verdicts += _coverage_verdicts(doc, report_input, caveats)
@@ -194,33 +194,6 @@ def check_report_doc(doc: ReportDoc, report_input: ReportInput, *, above_appendi
     verdicts += _id_verdicts(doc, prose, report_input, caveats, above_appendix_text)
     verdicts += _method_verdicts(doc)
     return verdicts
-
-
-# --- the prose -----------------------------------------------------------------------------------------------------
-
-
-def _walk(node: Any, steps: list[str], path: str) -> Iterator[tuple[str, str]]:
-    """The strings at ``steps`` under ``node``, each with its concrete path; a list step names each item."""
-    if not steps:
-        if isinstance(node, str):
-            yield path, node
-        return
-    step, rest = steps[0], steps[1:]
-    listed = step.endswith("[]")
-    name = step.removesuffix("[]")
-    value = node.get(name) if isinstance(node, dict) else None
-    here = f"{path}.{name}" if path else name
-    if listed:
-        for index, item in enumerate(value or []):
-            yield from _walk(item, rest, f"{here}[{index}]")
-    else:
-        yield from _walk(value, rest, here)
-
-
-def _prose(doc: ReportDoc) -> list[tuple[str, str]]:
-    """Every prose field the document holds, by its concrete path, in :data:`REPORT_DOC_PROSE_FIELDS` order."""
-    dumped = doc.model_dump(mode="json", by_alias=True)
-    return [found for field in REPORT_DOC_PROSE_FIELDS for found in _walk(dumped, field.split("."), "")]
 
 
 # --- 1. numbers come through figure keys ---------------------------------------------------------------------------

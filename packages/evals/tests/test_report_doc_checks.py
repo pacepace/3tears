@@ -5,8 +5,9 @@ negatives, each a small change to a passing document, and each is held two ways:
 check removed it passes, since every other check gives the same verdicts on it as on the document it was planted in.
 A check emits verdicts under its own number only, so dropping one invariant's verdicts is removing its check. The
 verdicts are byte-identical whatever the document's ``story`` says. Invariant 5's page half reads the claims
-renderer's text above the appendix, which is chunk R's and not on this branch: a fake stands in for it, built from the
-document's own prose with its keys written out.
+renderer's text above the appendix: every converted document passes on the page it builds, and a planted negative
+adds a line to a fake of that text, built from the document's own prose with its keys written out, or plants an id
+in a chart's title on the rendered page.
 """
 
 from __future__ import annotations
@@ -19,8 +20,12 @@ from typing import Any, get_args
 import pytest
 
 from packages.evals.tests.report_doc_support import LATER_DOCS, converted_doc, snapshot_of
-from threetears.evals.analysis.report_doc_checks import DocVerdict, check_report_doc
+from threetears.evals.analysis.report.blocks import ChartBlock
+from threetears.evals.analysis.report.charts import ExamplesChart
+from threetears.evals.analysis.report.doc_page.build import build
+from threetears.evals.analysis.report.doc_page.text import above_appendix_text
 from threetears.evals.analysis.report.figure_keys import render
+from threetears.evals.analysis.report_doc_checks import DocVerdict, check_report_doc
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.kernel.report_doc import ReportDoc, Story
@@ -192,13 +197,56 @@ def test_what_an_invariant_allows_passes(what: str, changes: tuple[_Change, ...]
     assert verdicts == [], f"{what}:\n{_said(verdicts)}"
 
 
-# --- the rendered page's text, by a fake of the claims renderer's ------------------------------------------------
+# --- the rendered page's text ------------------------------------------------------------------------------------
+
+
+def _rendered_above_appendix_text(doc: ReportDoc, report_input: ReportInput) -> str:
+    """The claims renderer's text above the appendix, on the page the document builds strict."""
+    return above_appendix_text(build(doc, report_input, strict=True))
+
+
+@pytest.mark.parametrize("name", LATER_DOCS)
+def test_each_later_document_passes_with_its_rendered_page_text(name: str) -> None:
+    """The page each converted document builds, as a reader reads it above the appendix, types no internal id."""
+    verdicts = _verdicts(name, page=_rendered_above_appendix_text)
+
+    assert verdicts == [], _said(verdicts)
+
+
+def _chart_titled(words: str) -> Callable[[ReportDoc, ReportInput], str]:
+    """The rendered page's text above the appendix, its first chart a reader reads ending its title in ``words``:
+    the title its values table prints as its caption."""
+
+    def text(doc: ReportDoc, report_input: ReportInput) -> str:
+        page = build(doc, report_input, strict=True)
+        at, place = next(
+            (at, place)
+            for at, claim in enumerate(page.claims)
+            for place, evidence in enumerate(claim.evidence)
+            if evidence.chart is not None
+            and isinstance(evidence.chart.chart, ChartBlock)
+            and not isinstance(evidence.chart.chart.data, ExamplesChart)
+        )
+        claim = page.claims[at]
+        evidence = claim.evidence[place]
+        assert evidence.chart is not None
+        block = evidence.chart.chart
+        titled = evidence.chart.model_copy(update={"chart": block.model_copy(update={"title": block.title + words})})
+        evidences = [
+            *claim.evidence[:place],
+            evidence.model_copy(update={"chart": titled}),
+            *claim.evidence[place + 1 :],
+        ]
+        claims = [*page.claims[:at], claim.model_copy(update={"evidence": evidences}), *page.claims[at + 1 :]]
+        return above_appendix_text(page.model_copy(update={"claims": claims}))
+
+    return text
 
 
 def _fake_above_appendix_text(doc: ReportDoc, report_input: ReportInput, extra: str = "") -> str:
-    """A stand-in for the claims renderer's ``above_appendix_text(page)`` (chunk R, not on this branch): the
-    document's prose above the appendix with every key written out as the page prints it, example cards left out,
-    and ``extra`` for what the renderer itself would print."""
+    """A stand-in for the claims renderer's ``above_appendix_text(page)``, for a plant of what the renderer itself
+    would print: the document's prose above the appendix with every key written out as the page prints it, example
+    cards left out, and ``extra``."""
     names = {arm.id: arm.name for arm in fact_arms(report_input)}
     texts = [doc.headline, doc.lede, doc.flag or ""]
     texts += [entry.text for entry in doc.decision]
@@ -276,8 +324,10 @@ _NEGATIVES = [
     _Negative("a card's id in prose", 5, (_append(_RECOMMENDATION, " Trial T15 shows it."),)),
     _Negative("a case id in prose, in its own case", 5, (_append(("decision", 0, "text"), " See tc-06."),), doc=_S1),
     _Negative("a claim id above the appendix", 5, (_append(_RECOMMENDATION, " (see c2)"),)),
+    _Negative("a claim id in another case above the appendix", 1, (_append(_RECOMMENDATION, " (see C2)"),)),
     _Negative("a measure key on the page", 5, page=_page_with("Cost | production_replicating_cost")),
     _Negative("a caveat id on the page", 5, page=_page_with("Open caveats: judge_uncalibrated")),
+    _Negative("a measure key in a chart's title on the page", 5, page=_chart_titled(" by production_replicating_cost")),
     _Negative("no Method item", 6, after=_no_method),
 ]
 

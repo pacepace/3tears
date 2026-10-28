@@ -228,8 +228,8 @@ def test_an_unsettled_reading_on_an_unasked_aspect_is_no_settled_loss() -> None:
 
 
 def _uncite(*arms: str) -> Callable[[dict[str, Any]], None]:
-    """Every figure key naming one of the arms, in any string of the document, replaced by a word; ids and queries are
-    strings with no braces, so only keys change."""
+    """Every figure key holding one of the names (an arm, or any part of a key), in any string of the document,
+    replaced by a word; ids and queries are strings with no braces, so only keys change."""
     named = re.compile(r"\{[^{}]*(?:" + "|".join(re.escape(arm) for arm in arms) + r")[^{}]*\}")
 
     def uncited(node: Any) -> Any:
@@ -259,6 +259,22 @@ def test_an_undecided_options_implied_read_no_key_names_is_a_fact() -> None:
         ("", [f"arm:{arm}", f"measure.latency_ms.{arm}.p95", "criteria.p95.threshold"]) for arm in _UNDECIDED
     ]
     assert "(inferred, not stated). No figure key in the document names it." in facts[0].fact
+
+
+def test_a_key_naming_the_option_but_not_the_read_does_not_answer_it() -> None:
+    """Only the latency keys on the two options taken out, their monthly costs still cited: a key answers the read
+    only where it names the option and the criterion or its measure, so both facts still fire."""
+    latency = [f"measure.latency_ms.{arm}." for arm in _UNDECIDED]
+    doc = converted_doc(_EACH_TASK)
+    _uncite(*latency)(doc)
+    written = json.dumps(doc)
+    facts = _of(_facts(_EACH_TASK, doc_change=_uncite(*latency)), "undecided_implied")
+
+    assert all(f"{{cost_per_month.{arm}|" in written for arm in _UNDECIDED)
+    assert not any(f"latency_ms.{arm}" in written for arm in _UNDECIDED)
+    assert [(fact.path, fact.figures) for fact in facts] == [
+        ("", [f"arm:{arm}", f"measure.latency_ms.{arm}.p95", "criteria.p95.threshold"]) for arm in _UNDECIDED
+    ]
 
 
 def test_an_undecided_read_the_document_cites_is_no_fact() -> None:
