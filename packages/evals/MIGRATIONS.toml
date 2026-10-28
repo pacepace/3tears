@@ -59,13 +59,13 @@
 
 [[release]]
 version = "unreleased"
-since = "v0.80.0"
+since = "v0.81.0"
 summary = """
 The report kit (none of it is in a final release): a generation is written by the report
 planner, and a planned analysis's page is the page its stored plan draws. An arm and a template's strata may declare
 the names a page prints for them, a reporter case may judge a report plan, and a campaign's report input may be
 frozen for the report analyst's tool, served on a cut of its own. Money is grouped by thousands. No public name
-has moved or been removed since 0.80.0; the durable version and what changed are in `notes`.
+has moved or been removed since 0.81.0; the durable version and what changed are in `notes`.
 """
 notes = [
     "The analyst line declared the version `0.80.0+analyst.N` for its Discodon pins (owner ruling, 2026-10-27), a PEP 440 local label that told a pin of this line from released 0.80.0, which holds none of this section. Folded into develop, it declares the plain release again, and this section stays `unreleased` since v0.80.0 until a release is tagged.",
@@ -89,6 +89,14 @@ notes = [
     "`analysis_generate(host, campaign_id, scope_id, *, writer, model=None)` (provisional) takes the report writer its job runs, bound to the caller (`threetears.evals.actions.report_writing.campaign_report_writer(caller)`, which the `analysis_generate` action hands it); a host calling the operation directly passes one. `analysis_estimate` makes no call and reads no run: `AnalysisGenerationEstimate.cap_usd` is the report budget in dollars (null for a token and turn budget, never 0), `max_calls` the most turns the writer can send under `AnalysisGeneration.limits` (`writer_turns`), `first_call_ceiling_usd` null, and `would_start` whether the start's checks pass, the analyst client a turn model whose turns can be priced. Two fields are new: `bound` (the budget in words) and `unchecked` (what the estimate does not check: the campaign's evidence, checked when the job freezes it). The planner's own path (`prepare_analysis_generation`, `run_analysis_generation`, `estimate_analysis_generation`) is unchanged, for the reporter kind.",
     "A run's results are read a page at a time by every reader that read a run whole (#998), so a host that implements a store port itself, rather than through `EvalStorage`, adds the paged reads where the port declares them: `AnalysisStore` and `CampaignStore` declare the key read `query_eval_result_keys_by_run(run_id, scope_id)` (each result's `ResultKey`) and the read by id `load_eval_results(result_ids, scope_id)` in place of `query_eval_results_by_run`; `LeaseStore` reads through `RunResultsStore` (those two reads); `CurationStore` declares `query_eval_result_ids_by_run` in place of `query_eval_results_by_run`; and `list_results` takes a `RunResultsStore` where it took a `ResultStore`. A store missing one fails at runtime in `delete_run`, `reporter_calibration`, the settling of a lost run or a campaign arm's variant key. `WitnessedJudging.spent` takes `(result id, judge spend)` pairs where it took the run's results. The key read raises `UnreadableResultKey` (`threetears.evals.kernel`, a `StorageError`) for a stored row whose key cannot be read. One behaviour changes: `delete_run` deletes a run this build reads together with a result it cannot reconstruct, where it refused the delete. No public name moved."
 ]
+
+[[release]]
+version = "0.81.0"
+since = "v0.80.0"
+summary = """
+Checkpoint L2 caches and identity block variants: no 3tears-evals name has moved or been removed since 0.80.0, and
+no judge wording changed.
+"""
 
 [[release]]
 version = "0.80.0"

@@ -56,9 +56,27 @@ from typing import TYPE_CHECKING, Any, Final, Generic, Protocol, TypeVar, runtim
 from threetears.observe import get_logger
 
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
-from threetears.core.keyset import keyset_pages, read_keyset_pages
+from threetears.core.collections.schema_backed import (
+    BIGINT_TYPE,
+    BOOL_TYPE,
+    DATETIMETZ_TYPE,
+    ENUM_TYPE,
+    INT_TYPE,
+    NUMERIC_TYPE,
+    STRING_TYPE,
+    TSVECTOR_TYPE,
+    UUID_TYPE,
+)
+from threetears.core.keyset import keyset_arrow_pages, keyset_pages, read_keyset_pages
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
 from threetears.core.fingerprint import KeyFingerprint, key_fingerprint, postgres_fingerprint_sql
+
+try:
+    import pyarrow as pa
+
+    _PYARROW = True
+except ImportError:  # NOSILENT: the snapshot extra is optional; the Arrow reads refuse without it, saying so
+    _PYARROW = False
 
 if TYPE_CHECKING:
     from threetears.core.backends.protocol import L3Reader
@@ -75,6 +93,8 @@ __all__ = [
     "copy_table",
     "l3_fingerprint",
     "l3_row_pages",
+    "rail_arrow_types",
+    "read_l3_arrow",
     "read_l3_rows",
 ]
 
@@ -309,9 +329,10 @@ async def read_l3_rows(
     key: Sequence[str],
     *,
     where: Mapping[str, Any] | None = None,
+    where_any: Mapping[str, tuple[str, Sequence[Any]]] | None = None,
     page_size: int = DEFAULT_PAGE_SIZE,
 ) -> list[dict[str, Any]]:
-    """every row of an L3 table (or the part ``where`` names), in key order, a page at a time.
+    """every row of an L3 table (or the part ``where`` and ``where_any`` name), in key order, a page at a time.
 
     The L3 rail answers at most :data:`~threetears.core.backends.protocol.L3_RAIL_ROW_CAP` rows a
     statement and does not say when it cut, so a read that did not page would be silently short:
@@ -335,13 +356,18 @@ async def read_l3_rows(
     :ptype key: Sequence[str]
     :param where: equality filters naming the rows; every row when None
     :ptype where: Mapping[str, Any] | None
+    :param where_any: set filters beside them, column -> (its array type, the values it may hold), each
+        ``"column" = ANY($n::<array type>)`` with every value bound at once (:func:`~threetears.core.keyset.read_keyset_pages`)
+    :ptype where_any: Mapping[str, tuple[str, Sequence[Any]]] | None
     :param page_size: rows per page; under the rail's cap
     :ptype page_size: int
     :return: the rows
     :rtype: list[dict[str, Any]]
     :raises ValueError: when ``page_size`` is under one
     """
-    read = await read_keyset_pages(l3, _select_from(table, columns), key, where=where, page_size=page_size)
+    read = await read_keyset_pages(
+        l3, _select_from(table, columns), key, where=where, where_any=where_any, page_size=page_size
+    )
     return read.rows
 
 
@@ -377,6 +403,140 @@ def l3_row_pages(
     :raises ValueError: when ``page_size`` is under one (at the first page)
     """
     return keyset_pages(l3, _select_from(table, columns), key, where=where, page_size=page_size)
+
+
+#: the L3 column types the rail's JSON answers as text: ``fetch`` answers them as text (a ``NUMERIC`` arrives as
+#: its digits, a timestamp outside ``date_*`` as its ISO text)
+_RAIL_TEXT_TYPES: Final = frozenset({STRING_TYPE, UUID_TYPE, ENUM_TYPE, TSVECTOR_TYPE, NUMERIC_TYPE, DATETIMETZ_TYPE})
+
+#: the prefix of the columns the rail's proxy answers as aware datetimes (``nats_proxy._deserialize_row``)
+_DATED_PREFIX: Final = "date_"
+
+
+def rail_arrow_types(columns: Sequence[Any]) -> dict[str, Any]:
+    """each column's Arrow type as the L3 rail's reply carries it: what :meth:`NatsProxyL3Backend.fetch_arrow
+    <threetears.core.backends.nats_proxy.NatsProxyL3Backend.fetch_arrow>` reads the rows as, so they equal ``fetch``'s.
+
+    Text, a UUID, an enum, a ``NUMERIC`` and a timestamp are text (as ``fetch`` answers them); an integer is
+    ``int64``; a boolean is ``bool``; a ``date_*`` timestamp is an instant in UTC (``fetch`` makes those aware
+    datetimes). A column ``fetch`` answers otherwise than the reply's JSON (``jsonb``, bytes, a vector), or a
+    ``date_*`` column that is not a timestamp (``fetch`` parses any ISO text there), has no such type: read it
+    with ``fetch``.
+
+    :param columns: the columns, each with ``name`` and ``column_type`` (a
+        :class:`~threetears.core.collections.schema_backed.Column`), in the order they are selected
+    :ptype columns: Sequence[Column]
+    :return: column name -> its Arrow type, in order
+    :rtype: dict[str, pyarrow.DataType]
+    :raises ValueError: for a column the rail does not answer as one Arrow type exactly
+    :raises ImportError: without pyarrow
+    """
+    if not _PYARROW:
+        raise ImportError("an L3 read as Arrow needs pyarrow: install 3tears[snapshot]")
+    types: dict[str, Any] = {}
+    for column in columns:
+        name, kind = column.name, column.column_type
+        dated = name.startswith(_DATED_PREFIX)
+        if dated and kind != DATETIMETZ_TYPE:
+            raise ValueError(
+                f"column {name!r}: fetch reads ISO text in a date_ column as a datetime; read it with fetch"
+            )
+        if dated:
+            types[name] = pa.timestamp("us", tz="UTC")
+        elif kind in _RAIL_TEXT_TYPES:
+            types[name] = pa.string()
+        elif kind in (INT_TYPE, BIGINT_TYPE):
+            types[name] = pa.int64()
+        elif kind == BOOL_TYPE:
+            types[name] = pa.bool_()
+        else:
+            raise ValueError(
+                f"column {name!r} ({kind}): the rail answers it otherwise than one Arrow type; read it with fetch"
+            )
+    return types
+
+
+async def read_l3_arrow(
+    l3: Any,
+    table: str,
+    columns: Sequence[Any],
+    key: Sequence[str],
+    *,
+    where: Mapping[str, Any] | None = None,
+    where_any: Mapping[str, tuple[str, Sequence[Any]]] | None = None,
+    page_size: int = DEFAULT_PAGE_SIZE,
+) -> Any:
+    """:func:`read_l3_rows` as one Arrow table: the same statements, a page at a time, the rows never Python objects.
+
+    For a reader that hands the rows on as columns (a worker process, a DuckDB table): each page is parsed by
+    Arrow from the rail's reply, off the interpreter lock (:meth:`~threetears.core.backends.nats_proxy.NatsProxyL3Backend.fetch_arrow`),
+    and the pages are joined without a copy. ``read_l3_arrow(...).to_pylist()`` equals :func:`read_l3_rows`'s rows
+    on the rail. Any other L3's dict rows are made the same table, value by value
+    (:func:`~threetears.core.backends.arrow_reply.rail_arrow_table`). Needs ``pyarrow``.
+
+    :param l3: the L3 backend: the rail's proxy, or anything with ``fetch``
+    :ptype l3: Any
+    :param table: the table, a TRUSTED identifier
+    :ptype table: str
+    :param columns: the columns to read, each with ``name`` and ``column_type``, TRUSTED identifiers (:func:`rail_arrow_types`)
+    :ptype columns: Sequence[Column]
+    :param key: the table's key, TRUSTED identifiers; unique, so paging steps past no row
+    :ptype key: Sequence[str]
+    :param where: equality filters naming the rows; every row when None
+    :ptype where: Mapping[str, Any] | None
+    :param where_any: set filters beside them, column -> (its array type, the values it may hold), each
+        ``"column" = ANY($n::<array type>)`` with every value bound at once (:func:`~threetears.core.keyset.read_keyset_pages`)
+    :ptype where_any: Mapping[str, tuple[str, Sequence[Any]]] | None
+    :param page_size: rows per page; under the rail's cap
+    :ptype page_size: int
+    :return: the rows, in key order
+    :rtype: pyarrow.Table
+    :raises ValueError: when ``page_size`` is under one, or a column has no rail Arrow type
+    """
+    pages = [
+        page
+        async for page in _l3_arrow_pages(
+            l3, table, columns, key, where=where, where_any=where_any, page_size=page_size
+        )
+    ]
+    return pa.concat_tables(pages)
+
+
+def _l3_arrow_pages(
+    l3: Any,
+    table: str,
+    columns: Sequence[Any],
+    key: Sequence[str],
+    *,
+    where: Mapping[str, Any] | None = None,
+    where_any: Mapping[str, tuple[str, Sequence[Any]]] | None = None,
+    page_size: int = DEFAULT_PAGE_SIZE,
+) -> AsyncGenerator[Any, None]:
+    """the pages :func:`read_l3_arrow` reads, handed over as each is read: :func:`l3_row_pages` as Arrow tables.
+
+    :param l3: the L3 backend: the rail's proxy, or anything with ``fetch``
+    :ptype l3: Any
+    :param table: the table, a TRUSTED identifier
+    :ptype table: str
+    :param columns: the columns to read, each with ``name`` and ``column_type``
+    :ptype columns: Sequence[Column]
+    :param key: the table's key, TRUSTED identifiers
+    :ptype key: Sequence[str]
+    :param where: equality filters naming the rows; every row when None
+    :ptype where: Mapping[str, Any] | None
+    :param where_any: set filters beside them, column -> (its array type, the values it may hold), each
+        ``"column" = ANY($n::<array type>)`` with every value bound at once (:func:`~threetears.core.keyset.read_keyset_pages`)
+    :ptype where_any: Mapping[str, tuple[str, Sequence[Any]]] | None
+    :param page_size: rows per page; under the rail's cap
+    :ptype page_size: int
+    :return: the pages, in key order, each a ``pyarrow.Table``; the last may be empty
+    :rtype: AsyncGenerator[pyarrow.Table, None]
+    :raises ValueError: when a column has no rail Arrow type
+    """
+    types = rail_arrow_types(columns)
+    return keyset_arrow_pages(
+        l3, _select_from(table, list(types)), key, types=types, where=where, where_any=where_any, page_size=page_size
+    )
 
 
 def _held_differs(

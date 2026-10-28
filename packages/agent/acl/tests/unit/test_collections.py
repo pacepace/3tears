@@ -912,6 +912,36 @@ class TestNamespaceListAllIds:
         assert result == ids
 
 
+class TestGroupMemberLoadForGroups:
+    """``GroupMemberCollection.load_for_groups`` reads a whole level of parent edges at once."""
+
+    @pytest.mark.asyncio
+    async def test_empty_input_no_round_trip(self) -> None:
+        pool = AsyncMock()
+        coll = make_collection(GroupMemberCollection, l3_pool=pool)
+        assert await coll.load_for_groups([]) == []
+        pool.fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_many_children_are_one_read_of_group_edges(self) -> None:
+        children = [uuid7(), uuid7(), uuid7()]
+        parent, customer = uuid7(), uuid7()
+        pool = AsyncMock()
+        pool.fetch.return_value = [
+            {"group_id": parent, "member_type": "group", "member_id": children[1], "customer_id": customer}
+        ]
+        coll = make_collection(GroupMemberCollection, l3_pool=pool)
+        result = await coll.load_for_groups(children)
+        assert result == [
+            GroupMembership(group_id=parent, member_type=MemberType.GROUP, member_id=children[1], customer_id=customer)
+        ]
+        pool.fetch.assert_awaited_once()
+        sql, ids = pool.fetch.await_args.args
+        assert "member_type = 'group'" in sql
+        assert "member_id = ANY($1::uuid[])" in sql
+        assert ids == children
+
+
 class TestGroupMembershipCycleGuard:
     """``membership_would_cycle`` keeps group-in-group edges acyclic.
 

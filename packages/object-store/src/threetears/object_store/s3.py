@@ -12,6 +12,14 @@ class first: on a shared CPU that held an event loop ~100 ms a URL, and a load t
 stalled its loop again and again (cobalt dev, 2026-10-27). So a store that opened its own session presigns on a
 worker thread, with one synchronous botocore client built once and kept: botocore signs from it safely across
 threads, and its credentials refresh themselves (an IRSA role's included).
+
+**One aiobotocore client a loop, kept.** Every request once opened a client of its own and closed it after. Each
+open built a botocore client on the loop (the same ~100 ms as a presign's), and each left about a thousand objects in
+reference cycles: a process that holds its cycle collector off while it works (a refresh holding rows, sweeping only
+the young generation) kept every request's, ~0.2 MiB each, until the hold ended (2026-10-27: a full LSF pull's tens of
+thousands of export reads). So a store that opened its own session opens one client per event loop on first use and
+keeps it, its connection pool sized for the reads a load runs at once, until :meth:`S3ObjectStore.aclose`. A store
+given a session (a test's fake) opens one per request, as before.
 """
 
 from __future__ import annotations
@@ -19,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from typing import Any
 
 import botocore.session  # type: ignore[import-untyped]
@@ -53,6 +62,10 @@ _DELETE_BATCH_SIZE = 1000
 #: behind it. Observed on a 469 MB dump: 36 MB read, then a commit outlasted the default and the
 #: stream died.
 _DEFAULT_READ_TIMEOUT_SECONDS = 900.0
+
+#: connections the kept client holds at most: every request of a store shares it, and a load reads a few states'
+#: files at once, several files a state (botocore's default is 10, which would queue them)
+_MAX_POOL_CONNECTIONS = 64
 
 
 class S3ObjectStore:
@@ -112,6 +125,11 @@ class S3ObjectStore:
         self._session = session if session is not None else get_session()
         self._presigner: Any = None
         self._presigner_lock = threading.Lock()
+        # the kept client, the loop it was opened on, and what closes it (a store that opened its own session)
+        self._kept: Any = None
+        self._kept_loop: asyncio.AbstractEventLoop | None = None
+        self._kept_exit: AsyncExitStack | None = None
+        self._kept_lock: asyncio.Lock | None = None
 
     def _config(self) -> BotoConfig:
         """the client configuration every client of this store is opened with.
@@ -119,10 +137,53 @@ class S3ObjectStore:
         :return: the configuration
         :rtype: BotoConfig
         """
-        return BotoConfig(signature_version="s3v4", read_timeout=self._read_timeout_seconds)
+        return BotoConfig(
+            signature_version="s3v4",
+            read_timeout=self._read_timeout_seconds,
+            max_pool_connections=_MAX_POOL_CONNECTIONS,
+        )
 
-    def _client(self) -> Any:
-        """Return an async-context-manager S3 client.
+    def _client(self) -> AbstractAsyncContextManager[Any]:
+        """an S3 client for one request: the store's kept client (its own session), or one opened for it (an
+        injected session).
+
+        :return: an async context manager yielding the client
+        :rtype: AbstractAsyncContextManager[Any]
+        """
+        return self._kept_client() if self._presigns_off_loop else self._opened_client()
+
+    @asynccontextmanager
+    async def _kept_client(self) -> AsyncIterator[Any]:
+        """the client this store keeps on the running loop, opened on first use (see the module's docstring).
+
+        :return: the client, left open after the request
+        :rtype: AsyncIterator[Any]
+        """
+        loop = asyncio.get_running_loop()
+        if self._kept_loop is not loop:
+            # a client is bound to the loop it was opened on: another loop (a test's, a new run) opens its own
+            self._kept, self._kept_exit, self._kept_loop, self._kept_lock = None, None, loop, asyncio.Lock()
+        assert self._kept_lock is not None  # noqa: S101 -- set with the loop above
+        async with self._kept_lock:
+            if self._kept is None:
+                exit_stack = AsyncExitStack()
+                self._kept = await exit_stack.enter_async_context(self._opened_client())
+                self._kept_exit = exit_stack
+        yield self._kept
+
+    async def aclose(self) -> None:
+        """close the kept client, if one is open on the running loop; the next request opens another.
+
+        :return: nothing
+        :rtype: None
+        """
+        exit_stack, loop = self._kept_exit, self._kept_loop
+        self._kept, self._kept_exit = None, None
+        if exit_stack is not None and loop is asyncio.get_running_loop():
+            await exit_stack.aclose()
+
+    def _opened_client(self) -> Any:
+        """a client opened for the caller's block and closed after it.
 
         :return: an S3 client context manager
         :rtype: Any

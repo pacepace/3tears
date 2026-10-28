@@ -574,6 +574,9 @@ module = [
     # pyarrow ships no py.typed marker; the scoped snapshot's chunk codec, the export reader
     # (a warehouse export's parquet files) and the SQL store's direct load from files import it.
     "threetears.core.collections.scoped_snapshot",
+    # and the L3 rail's replies read as Arrow (an Arrow read of a whole table, and its parse)
+    "threetears.core.collections.complete_copy",
+    "threetears.core.backends.arrow_reply",
     "threetears.core.backends.sql",
     "threetears.datasources.export_read",
     "threetears.datasources.partitioned_export",

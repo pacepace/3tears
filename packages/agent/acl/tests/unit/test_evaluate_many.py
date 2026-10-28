@@ -10,7 +10,13 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
-from threetears.agent.acl import HeldAssignmentsLoader, evaluate_decision, evaluate_many_with_trail, evaluate_with_trail
+from threetears.agent.acl import (
+    MAX_GROUP_MEMBERSHIP_DEPTH,
+    HeldAssignmentsLoader,
+    evaluate_decision,
+    evaluate_many_with_trail,
+    evaluate_with_trail,
+)
 from threetears.agent.acl.cache import GroupNamespaceKey
 from threetears.agent.acl.types import (
     EvaluationContext,
@@ -24,11 +30,11 @@ from threetears.agent.acl.types import (
 )
 from threetears.core.namespaces import build_agent_namespace_name
 
-from .fake_loaders import FakeStore, make_cache
+from .fake_loaders import FakeBatchingStore, FakeStore, make_cache
 
 
-class _CountingStore(FakeStore):
-    """a :class:`FakeStore` that counts every read the evaluator makes."""
+class _CountingStore(FakeBatchingStore):
+    """a :class:`FakeBatchingStore` that counts every read the evaluator makes."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -48,6 +54,10 @@ class _CountingStore(FakeStore):
     async def load_for_group(self, group_id: UUID) -> tuple[GroupMembership, ...]:
         self._count("load_for_group")
         return await super().load_for_group(group_id)
+
+    async def load_for_groups(self, group_ids: tuple[UUID, ...]) -> tuple[GroupMembership, ...]:
+        self._count("load_for_groups")
+        return await super().load_for_groups(group_ids)
 
     async def load_assignments_for_groups(
         self, group_ids: tuple[UUID, ...], namespace: Namespace
@@ -236,6 +246,14 @@ class TestOneDecisionDoesNotReadPerGroup:
 
     async def test_tenfold_the_states_reads_the_same(self) -> None:
         assert await self._reads(5) == await self._reads(50)
+
+    async def test_each_level_of_the_parent_walk_is_one_read(self) -> None:
+        """the walk past fifty state groups reads their parents together, never one by one."""
+        reads = await self._reads(50)
+        # one read per level above the direct groups; the agent side, in the same bundle, walks
+        # the same groups and is served from the cache
+        assert reads["load_for_groups"] == MAX_GROUP_MEMBERSHIP_DEPTH - 1
+        assert "load_for_group" not in reads
 
 
 class TestTheFenceStillGuardsTheBulkRead:

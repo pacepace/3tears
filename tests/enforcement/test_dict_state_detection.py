@@ -246,6 +246,15 @@ _ALLOWLIST = (
         rationale=("schema metadata for type-aware serialization, infrastructure"),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/cache/duckdb.py",
+        class_name="DuckDBBackend",
+        attr_name="_keyless",
+        rationale=(
+            "schema metadata: each key-less table's key columns, read from its declaration when the table is "
+            "created, as _schema_info is; every pod derives the same map from the same metadata"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/agent/tools/src/threetears/agent/tools/server.py",
         class_name="ToolServer",
         attr_name="_tools",
