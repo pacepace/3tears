@@ -28,6 +28,12 @@ A cell the input holds no figure for is a dash. A column outside these families 
 page can fill. A pill's cell says its status in words (``Passes``, ``Worse, within margin``), so Markdown and a
 screen reader, which lose the colour, lose nothing.
 
+**The arms table** (:func:`arms_table`), a report document's options table: every arm in the input's order, whatever
+the document says, as its chip, its role (the arms the document recommends marked ``recommended`` beside it), what
+it runs (as the options table says it, where some arm declares it) and its cost per 1,000 (of what the cost counts)
+with the cost cell's marks above (the uplift against the control's, and the arm's unanswered calls), where some arm
+holds a cost. It reads no plan: which arms and columns it shows is the input's, and only the mark is the document's.
+
 **The arms key** (GENERATOR §2.8, §6.1): each arm's full configuration once: its chip, its role, its settings as the
 campaign declared them, its served model, the share of its output spent reasoning, and its usable trials, each column
 present where some arm holds it.
@@ -35,7 +41,7 @@ present where some arm holds it.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
@@ -49,12 +55,14 @@ from threetears.evals.analysis.report.plan_page.words import (
     ARM_HEADERS,
     ARM_ROLE_WORDS,
     ARMS_EYEBROW,
+    ARMS_TABLE_ORDER,
     ARMS_TAKEAWAY,
     COST_HEADER,
     GATE_WORDS,
     OPTION_HEADERS,
     OPTIONS_TITLE,
     PASSES_TEMPLATE,
+    RECOMMENDED_MARK,
     ROLE_WORDS,
     reading_words,
 )
@@ -64,7 +72,7 @@ from threetears.evals.analysis.report_plan_checks import OPTION_COLUMN_FAMILIES
 from threetears.evals.analysis.report_rows import query_aspect
 from threetears.evals.kernel.report_plan import ReportPlan
 
-__all__ = ["arms_key", "options_table"]
+__all__ = ["arms_key", "arms_table", "options_table"]
 
 #: The roles whose row the options table sets apart: the recommendation, or the lean.
 _SET_APART = ("recommended", "lean")
@@ -293,6 +301,54 @@ def _runs(report_input: ReportInput, option: str) -> str:
     if served and served not in settings:
         return f"{settings} · {served}" if settings else served
     return settings
+
+
+def arms_table(report_input: ReportInput, look: PageLook, recommends: Collection[str]) -> TableBlock:
+    """The arms table, a report document's options table (this module's account).
+
+    :param report_input: The report input the document was written from.
+    :ptype report_input: ReportInput
+    :param look: The page's look.
+    :ptype look: PageLook
+    :param recommends: The arms the document recommends, by id; empty for no call.
+    :ptype recommends: Collection[str]
+    :return: The table, a row per arm in the input's order.
+    :rtype: TableBlock
+    """
+    arms = [arm.id for arm in report_input.arms]
+    described = any(_runs(report_input, arm) for arm in arms)
+    cells = {arm: _cost(_COST, arm, report_input, look) for arm in arms}
+    costed = any(cell.value is not None for cell in cells.values())
+    columns = [
+        TableColumn(key="option", header=OPTION_HEADERS["option"]),
+        TableColumn(key="role", header=OPTION_HEADERS["role"]),
+        *([TableColumn(key=_RUNS, header=ARM_HEADERS["settings"])] if described else []),
+        *([TableColumn(key=_COST, header=_header(_COST, report_input))] if costed else []),
+    ]
+    rows = []
+    for arm in report_input.arms:
+        row = {
+            "option": _option_cell(arm.id, look),
+            "role": TableCell(value=ARM_ROLE_WORDS[arm.role], flag=RECOMMENDED_MARK if arm.id in recommends else None),
+        }
+        if described:
+            row[_RUNS] = TableCell(value=_runs(report_input, arm.id) or None)
+        if costed:
+            row[_COST] = cells[arm.id]
+        rows.append(row)
+    return TableBlock(
+        section=PLANNED_SECTION,
+        name="options",
+        title=OPTIONS_TITLE,
+        columns=columns,
+        rows=rows,
+        order=ARMS_TABLE_ORDER,
+        total_rows=len(rows),
+    )
+
+
+#: The arms table's cost column: the options table's cost family.
+_COST = "cost_per_1k"
 
 
 def _settings(report_input: ReportInput, arm_id: str) -> str:

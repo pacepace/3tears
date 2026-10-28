@@ -74,6 +74,7 @@ __all__ = [
     "RenderedBlock",
     "block_catalog",
     "block_render",
+    "values_table",
 ]
 
 #: The values table's rows one page of a rendered block holds, by default.
@@ -375,7 +376,7 @@ def block_render(
             parameters=list(at_fault),
             valid_values_from="block_catalog",
         )
-    columns, rows = _values_table(drawn.chart)
+    columns, rows = values_table(drawn.chart)
 
     def rendered(page: list[list[str]]) -> RenderedBlock:
         after = offset + len(page)
@@ -449,14 +450,21 @@ def _parameter(path: str) -> str:
     return field
 
 
-def _values_table(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[str]]]:
-    """A drawn block's values: a chart's table of every value it draws, or a table's own columns and cells, each cell
-    after its arm's tag where it names an arm, as the page's Markdown prints it; and in either, every number at one
+def values_table(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[str]]]:
+    """A drawn block's values, as the analyst reads them and a report document's page text prints them: a chart's
+    table of every value it draws, or a table's own columns and cells, each cell after its arm's tag where it names an
+    arm, as the page's Markdown prints it; and in either, every number at one
     precision among the cells that read alike (:func:`~threetears.evals.analysis.report.charts.even_precision`), so
     two figures compared read at one precision. A table's bare numbers (no unit, no words) read alike within their
     column, which holds one figure: a count beside a distance in another column is no figure read alike, and stays
     whole (``617``, never ``617.0``); a figure in its unit reads alike across the table, so today's ``97.1%`` and its
-    line's ``97.0%`` read at one precision."""
+    line's ``97.0%`` read at one precision.
+
+    :param block: The drawn block: a chart, or a table.
+    :ptype block: ChartBlock | TableBlock
+    :return: ``(columns, rows)``: the headers, and each row's cells as text.
+    :rtype: tuple[list[str], list[list[str]]]
+    """
     if isinstance(block, ChartBlock):
         headers, body = block.values_table()
         return headers, even_precision(body)

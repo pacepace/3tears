@@ -6,6 +6,35 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the claims renderer draws a report document's page
+
+**Added (provisional, not yet exported from a root):** `analysis/report/doc_page`, the page a `report-doc/1` document
+draws. `build(doc, report_input, *, strict, findings=(), made="")` lays out code's masthead; the headline, lede and
+flag with every figure key written out; the confidence in code's form words, each caveat by code's label (the
+analyst's for an `analyst:` one) then its clause or code's checked line; the decision entries titled by their slot
+word alone; an options table of every arm with its settings, served model and cost (the unanswered-calls mark kept),
+the recommended arms marked and set apart; the claims in the document's order, each evidence block completed and drawn
+exactly as `block_render` draws it and each with the labels of the caveats the document lands beside it; explore as a
+table of prose rows; next steps; and an appendix of the arms key, every table the input holds, what was left out and
+why, Method under its own heading (each term with its landed caveats' labels), the editor's findings left open (by
+severity, and the claim by its place, linked) and the made line.
+Nothing reads `story`: the page is byte-identical whatever it says. `doc_page_html`, `doc_page_markdown`,
+`doc_page_text` (the whole page as text, every block as its values table and each claim by its id: the editor's input
+and `report_check`'s output) and `above_appendix_text` (what a reader reads above the appendix, every block's values and
+every string its drawn chart shows a reader, example cards left out: the page half of the no-internal-id invariant) write it. Generation builds strict and refuses, by field path, a
+key that does not resolve, a block that does not complete or draw, an unproved `checked`, an unassigned caveat or an
+arm the input lacks; a stored document read with `strict=False` degrades instead: such a key prints `—`, a block that
+no longer draws prints as a table of its values or its caption alone, and the page carries one note to regenerate. The
+four entry points stay out of their modules' `__all__` until the writing loop, `report_check` and the report read call
+them (`tests/test_doc_page_exports.py` pins them).
+
+The planned page's parts gain plan-free forms beside them, its own bytes unchanged: `plan_page.tables.arms_table`
+(every arm, `recommends` marked) and `plan_page.full_results.every_table` (every table the input holds a row of).
+`analysis.analyst.blocks.values_table`, the values table `block_render` returns, is public for the page text. From
+`kernel.report_doc`, `ReportDoc`, `Evidence`, `DocCaveat`, `ReportFinding` and `is_analyst_caveat` join `__all__` with
+the renderer as their caller. No kit, stylesheet or script changes: the page uses the kit's existing classes, and its
+one script is the kit's, so its content security policy is the planned page's.
+
 ### evals: tool turns over Anthropic's Messages API, recorded and replayed per session
 
 **Added (provisional):** the tool-turn port, `threetears.evals.schema.ToolTurnClient`:
