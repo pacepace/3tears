@@ -849,7 +849,7 @@ def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(
         if isinstance(page.chart, ChartBlock):
             assert "/1000" not in joined, (label, joined[:400])
         assert stale not in joined, (label, joined[:600])
-        if key in label or label.endswith("/all"):
+        if key in label or label.endswith("/all") or "reply_cost_usd" in label:
             # A chart states the count it moved its ruler to; a table either does, or writes each amount with the
             # per-1,000 mark (a figure key's own spelling, which a computed table prints as prose citing it does).
             amounts = [text for text in texts if "$" in text]
