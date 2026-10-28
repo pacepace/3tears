@@ -120,7 +120,7 @@ What the analyst writes, and what is stored: `report-doc/1`. It replaces the slo
 | `explore` | 0–3 rows | What a reader could change, and what it would do, in prose. |
 | `omitted` | any | What the analyst saw and left out, and why. |
 | `next` | 0–6 | Each step and what it would settle. |
-| `method` | 1–12 | The method appendix's terms. A caveat whose reach is the method lands here. |
+| `method` | 1–12 | The method appendix's terms. A caveat whose reach is the method may land here, but need not land anywhere: §7 asks that every caveat affecting confidence be shown, and a method-level one does not affect it. |
 
 - **`claims` is the story.** Its order is the page order. The first claim is whatever best carries the headline, chosen by the analyst and judged by the editor. Code never checks what kind of block it is.
 - **`omitted` makes elision accountable.** Anything substantial the analyst saw and chose not to show gets a one-line reason. The editor checks those reasons. The appendix still holds the omitted data.
