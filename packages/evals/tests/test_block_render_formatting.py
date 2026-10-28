@@ -40,6 +40,8 @@ from threetears.evals.analysis.analyst.compare import arms_compare
 from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow, lever_effects
 from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.analyst.snapshot import frozen_input
+from threetears.evals.analysis.report_gates import task_costs
+from threetears.evals.kernel.numbers import money_form
 from threetears.evals.analysis.report.figure_keys import arm_settings
 from threetears.evals.analysis.report.plan_page.look import quantity
 from threetears.evals.analysis.report.plan_page.charting import contrast_unit_of
@@ -250,8 +252,15 @@ def test_a_gate_matrix_prints_every_cost_at_one_precision_whatever_else_its_cell
     assert block is not None
     costs = [found for row in block.rows for cell in row.cells[1:] for found in _COST.findall(cell)]
     assert len(costs) > 1, "the control: r1's matrix prices its cells"
-    # One form for every cost the matrix prints (#993): one count of decimals, whatever its size.
-    assert len({len(decimals) for _whole, decimals in costs}) == 1, costs
+    # One form for every cost the matrix prints (#993): the decimals money_form gives every task cost it states.
+    held = _inputs()["r1"]
+    stated = [
+        cost
+        for task in held.tasks
+        for cost in (task_costs(held, task.id).get(arm.id) for arm in held.arms)
+        if cost is not None
+    ]
+    assert {len(decimals) for _whole, decimals in costs} == {money_form(stated).decimals}, costs
     assert any(cell.endswith("(Cheapest passing)") for row in block.rows for cell in row.cells), "the control"
 
 

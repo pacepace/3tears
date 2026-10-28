@@ -10,7 +10,9 @@ packages (bumped in lock-step).
 
 **Changed:** money is spelled one way per set, never per value (owner ruling of 2026-10-27, which supersedes the W2c
 rule of three significant figures from $0.10 to $1), and one owner states every set: `cost_unit.money_ruler`, which
-every chart, table and figure key reads its scale, form and count from. A set's form is chosen from the amounts
+every chart, table and figure key of the report document and the planned page reads its scale, form and count from,
+and the code-only report's money rulers, tables, means and intervals too (its ± spreads and margin lines keep the
+number rule). A set's form is chosen from the amounts
 themselves: whole dollars where the least is $10 or more (`$7,560`); else cents, with more decimals only where the
 least amount needs them for two significant figures (`$0.030` beside `$3.477`, so r2's `$0.302` reads alike in prose
 and in its tables). Where an amount is under a cent the ruler moves instead: money per reply is stated per 1,000
@@ -19,7 +21,13 @@ replacing the label's own count, never stacked beside it (`Cost per 1,000,000 ca
 1,000,000 calls`). A chart says what its dollars are per in a line under it and in its titles, and draws its ticks
 and notes to the same decimals (the kit's `usd:<decimals>`), never with a per-1,000 mark its ticks cannot write. A
 bare key, and a table where the ruler cannot move, write the per-1,000 mark instead (`$8.00/1000` for $0.008). A total
-(a run's cost, a month's) counts nothing and is never scaled. A change reads on the ruler of the amounts it compares,
+(a run's cost, a month's) counts nothing and is never scaled. One exception, a chart of totals under a cent: it has no
+ruler to move, and the chart kit's ticks can write neither the per-1,000 mark nor a bare count of thousandths that its
+values table would spell alike, so such a chart reads in dollars to the decimals its least total needs (`$0.00048`),
+where a key or a table writes the same total `$0.48/1000`. A gate's reason and a gate row's line state money on the
+criterion's ruler (the measure's every arm and the line), the count named once in the criterion's name (`Cost budget,
+per 1,000,000 calls $1.060 > $0.302`). A chart's lines name what its dollars are per by the measure's reader name,
+never a code key (`Cost per 1,000 replies, in dollars.`, where the scoreboard's key once showed). A change reads on the ruler of the amounts it compares,
 never scaled because an interval end sits near zero, to the precision of the change itself and of its widest
 interval: Kairo's production-cost contrast now reads `+$0.49 per 1,000 replies`, where it read `+$0.492` on an
 interval $0.64 wide, and a $0.40 change between monthly totals of $1,208 reads `+$0.40`, never `$0`. An unknown

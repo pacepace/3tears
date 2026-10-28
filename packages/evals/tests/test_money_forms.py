@@ -38,7 +38,7 @@ from threetears.evals.analysis import ABSENT, UNPRICED, dollars_text, format_num
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell, money_columns
-from threetears.evals.analysis.report.charts import BarsChart
+from threetears.evals.analysis.report.charts import BarsChart, GateMatrixChart, LatticeChart
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import even_precision
 from threetears.evals.analysis.report.figure_keys import Figure, format_figure, render, resolve
@@ -1039,3 +1039,33 @@ def test_a_change_columns_precision_is_capped_by_its_widest_interval() -> None:
     assert money_form([1.892, 2.427]).for_changes([0.4924, 0.616], [0.636, 0.474]).decimals == 2
     assert money_form([1.892, 2.427]).for_changes([0.4924], [6.36]).decimals == 2
     assert money_form([0.0012, 0.0015]).for_changes([0.000004], [0.002]).decimals == 2
+
+
+def _part_priced(held: ReportInput) -> tuple[ReportInput, str]:
+    """The input with its first arm's cost counting only part of its calls."""
+    arm = held.arms[0].id
+    return _priced(held, {arm: Pricing(sources=["openrouter:reported"], calls=897, priced_calls=850)}), arm
+
+
+def test_a_lattice_tile_says_a_partly_priced_cost_beside_it() -> None:
+    moved, arm = _part_priced(INPUTS["r3"])
+    spec, faults = complete_chart(_planned("lattice", _query("configs", [])), moved, "block")
+    assert not faults, faults
+    page = resolve_chart(spec, moved, block_look(moved, fact_arms(moved)), title="", fallback_title="t")
+    assert isinstance(page.chart, ChartBlock) and isinstance(page.chart.data, LatticeChart)
+    tips = {cell.id: " ".join(cell.tip or []) for row in page.chart.data.rows for cell in row.cells}
+    assert "850 of 897 calls priced" in tips[arm], tips[arm]
+    assert all("calls priced" not in tip for other, tip in tips.items() if other != arm)
+
+
+def test_a_task_matrix_cell_says_a_partly_priced_cost_beside_it() -> None:
+    moved, arm = _part_priced(INPUTS["r1"])
+    spec, faults = complete_chart(_planned("gate_matrix", _query("tasks", [])), moved, "block")
+    assert not faults, faults
+    page = resolve_chart(spec, moved, block_look(moved, fact_arms(moved)), title="", fallback_title="t")
+    assert isinstance(page.chart, ChartBlock) and isinstance(page.chart.data, GateMatrixChart)
+    column = [one.label for one in page.chart.data.columns].index(block_look(moved, fact_arms(moved)).arm(arm).name)
+    costed = [row.cells[column] for row in page.chart.data.rows if row.cells[column].cost is not None]
+    assert costed and all("850 of 897 calls priced" in (cell.reasons or []) for cell in costed)
+    others = [cell for row in page.chart.data.rows for at, cell in enumerate(row.cells) if at != column]
+    assert all("850 of 897 calls priced" not in (cell.reasons or []) for cell in others)
