@@ -6,6 +6,49 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### object-store: an S3 store keeps one client a loop
+
+**Fixed:** `S3ObjectStore` opened an aiobotocore client for every request: a botocore client built on the event loop
+each time, and about a thousand objects left in reference cycles, ~0.2 MiB a request. A process that holds its cycle
+collector off while it works (the ENR pod's refresh, sweeping only the young generation) kept every request's until
+the hold ended: a full LSF pull's tens of thousands of export reads on prod. A store that opened its own session now
+opens one client per event loop on first use and keeps it (its connection pool sized for 64 reads at once) until
+`aclose()` (new); a store given a session opens one per request, as before. 400 reads with the collector held left
+447,600 objects in cycles and grew the process 114 MiB before, none and 14 MiB after.
+
+### core: L3 rail reads and DuckDB answers as Arrow, never one Python object a row
+
+**Added:** `NatsProxyL3Backend.fetch_arrow(query, *params, types=...)` answers a SELECT's rows as one Arrow table: the
+reply's bytes (`nats_request_bytes`, new: `nats_request` before its parse) are parsed by Arrow's JSON reader on a
+thread, which lets go of the interpreter lock, so neither the event loop nor any thread makes a Python object of a
+row. `types` is each column's Arrow type as the rail's JSON carries it; `rail_arrow_types(columns)` (new, in
+`complete_copy`) names them for schema columns: text, UUID, enum, `NUMERIC` and timestamps as text, integers as
+`int64`, booleans as `bool`, a `date_*` timestamp as an instant in UTC, so `fetch_arrow(...).to_pylist()` equals
+`fetch(...)`. A column the rail answers otherwise (`jsonb`, bytes, a vector, a `date_*` column that is not a
+timestamp) has no such type, and a reply whose values are not of their types (or text carrying the rail's bytes mark)
+is refused (`ReplyNotArrowError`), never answered otherwise than `fetch` would. `read_l3_arrow`
+(new) pages a whole table as `read_l3_rows` does, with the same statements (`keyset_arrow_pages`, new,
+shares `keyset_pages`' statement builder). Needs pyarrow (`3tears[snapshot]`).
+
+**Added:** `read_l3_rows`, `read_l3_arrow` and the keyset pagers take `where_any`, set filters beside `where`: column ->
+(its array type, its values), each `"column" = ANY($n::type[])` with every value bound as one array, so a page is one
+statement however many values. An L3 other than the rail is read as Arrow too (`l3_fetch_arrow`:
+its dict rows made the table the rail's reply of them reads as), and `ArrowL3Reader` (new, `backends.protocol`) names
+an L3 that answers Arrow itself.
+
+**Added:** `DuckDBBackend.execute_arrow(sql, params)` answers a query as one Arrow table, which DuckDB writes without
+the interpreter lock (300k rows: a tenth of the calling thread's CPU that `execute_query` takes). Each column names its
+DuckDB type in its field metadata (`duckdb_type`), and a 128-bit integer (a `SUM` of integers) is an `int64` where
+every value fits; `query_arrow(connection, sql, params)` (new) does the same on any connection or cursor (a read
+transaction's). `arrow_rows(table)` (new) makes the rows `execute_query` answers from it a few hundred at a time, each
+value as `fetchall` answers it (an `int`, a `uuid.UUID`, a `timedelta`, a `dict`), so no call holds the lock long.
+`execute_query` is unchanged.
+
+**Changed:** a scoped snapshot's rebuild of a scope from L3 reads the rail's pages straight into Arrow when its L3 has
+`fetch_arrow` and every column has a rail type, and holds what the same pages read as dict rows hold; otherwise (and for
+a page `fetch_arrow` refuses) it reads dict rows, as before. `DuckDBBackend.storage_arrow` types a `NUMERIC`'s text (the
+rail's form) in Arrow where the cast is exact, and value by value as before where it is not.
+
 ### agent-acl: the visibility SQL's group nesting follows MAX_GROUP_MEMBERSHIP_DEPTH, and each level of the walk is one read
 
 **Changed:** `caller_visible_customer_clause` and `caller_visible_customers_query` generate their

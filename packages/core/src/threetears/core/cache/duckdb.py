@@ -19,11 +19,11 @@ import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy import Boolean, DateTime, Float, Integer, LargeBinary, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR, UUID
@@ -38,7 +38,9 @@ from threetears.observe import contain, get_logger
 __all__ = [
     "DuckDBBackend",
     "PartitionReplacement",
+    "arrow_rows",
     "fetch_arrow",
+    "query_arrow",
 ]
 
 try:
@@ -57,6 +59,7 @@ except ImportError:
 
 try:
     import pyarrow as pa
+    import pyarrow.compute as pc
 
     _PYARROW = True
 except ImportError:  # NOSILENT: the snapshot extra is optional; bulk writes bind value by value without it, said once
@@ -132,6 +135,136 @@ def fetch_arrow(result: Any, rows: int) -> Any:
     # ``to_arrow_table`` replaced ``fetch_arrow_table`` (deprecated in 1.4); older releases have only the latter
     fetch = getattr(result, "to_arrow_table", None) or result.fetch_arrow_table
     return fetch(min(max(int(rows), 1), _ARROW_BATCH_ROWS))
+
+
+#: the field metadata key :meth:`DuckDBBackend.execute_arrow` names each column's DuckDB type under
+_DUCKDB_TYPE_KEY: Final = b"duckdb_type"
+
+#: the rows one piece of :func:`arrow_rows` makes Python objects of: one short hold of the interpreter lock each
+_ROWS_PIECE: Final = 256
+
+#: DuckDB's 128-bit integers, which its Arrow answers as ``decimal128(38, 0)`` where ``fetchall`` answers an ``int``
+_WIDE_INTEGERS: Final = {"HUGEINT": "int64", "UHUGEINT": "uint64"}
+
+#: the DuckDB types whose Arrow form is not the Python value ``fetchall`` answers, made so value by value
+#: (:func:`arrow_rows`): a UUID (Arrow text), an interval (Arrow month-day-nano), a map (Arrow pairs)
+_UNLIKE_IN_ARROW: Final = ("UUID", "INTERVAL", "MAP(")
+
+
+def _like_fetchall(value: Any, code: str) -> Any:
+    """one value of a column as ``fetchall`` answers it, from its Arrow form (:data:`_UNLIKE_IN_ARROW`).
+
+    :param value: the value, as Arrow's ``to_pylist`` makes it
+    :ptype value: Any
+    :param code: the column's DuckDB type
+    :ptype code: str
+    :return: the value as ``fetchall`` makes it
+    :rtype: Any
+    """
+    result: Any = value
+    if value is None:
+        result = None
+    elif code == "UUID":
+        result = uuid.UUID(value)
+    elif code == "INTERVAL":
+        # fetchall's: a month is thirty days
+        result = timedelta(days=value.months * 30 + value.days, microseconds=value.nanoseconds // 1000)
+    elif code.startswith("MAP("):
+        result = dict(value)
+    elif code in _WIDE_INTEGERS:
+        result = int(value)
+    return result
+
+
+def arrow_rows(table: Any) -> list[dict[str, Any]]:
+    """an answer of :meth:`DuckDBBackend.execute_arrow` as the rows :meth:`DuckDBBackend.execute_query` answers, a
+    piece at a time.
+
+    Arrow's ``to_pylist`` makes every row in one call, holding the interpreter lock for all of them (840 ms for 400k
+    rows on a laptop, the event loop waiting the whole time); made :data:`_ROWS_PIECE` rows a call, no hold is long.
+    Each value is the one ``fetchall`` answers: a 128-bit integer an ``int``, a UUID a ``uuid.UUID``, an interval a
+    ``timedelta`` (a month thirty days), a map a ``dict``.
+
+    :param table: the answer
+    :ptype table: pyarrow.Table
+    :return: the rows, by column name
+    :rtype: list[dict[str, Any]]
+    :raises ValueError: for a UUID, interval, map or 128-bit integer nested in a list or a struct, which only
+        ``execute_query`` answers as ``fetchall`` does
+    """
+    unlike: dict[str, str] = {}
+    for field_ in table.schema:
+        code = (field_.metadata or {}).get(_DUCKDB_TYPE_KEY, b"").decode()
+        top = code in ("UUID", "INTERVAL") or code.startswith("MAP(")
+        top = top or (code in _WIDE_INTEGERS and pa.types.is_decimal(field_.type))
+        settled = top or code in _WIDE_INTEGERS or code.endswith("HUGEINT[]")
+        if not settled and any(word in code for word in (*_UNLIKE_IN_ARROW, "HUGEINT")):
+            raise ValueError(
+                f"column {field_.name!r} ({code}): nested in Arrow otherwise than fetchall; use execute_query"
+            )
+        if top:
+            unlike[field_.name] = code
+    rows: list[dict[str, Any]] = []
+    for batch in table.to_batches(max_chunksize=_ROWS_PIECE):
+        piece = batch.to_pylist()
+        if unlike:
+            for row in piece:
+                for name, code in unlike.items():
+                    row[name] = _like_fetchall(row[name], code)
+        rows.extend(piece)
+    return rows
+
+
+def query_arrow(connection: Any, sql: str, params: Sequence[Any] = ()) -> Any:
+    """:meth:`DuckDBBackend.execute_arrow` on any DuckDB connection or cursor: a read transaction's cursor
+    (:meth:`DuckDBBackend.read_snapshot`, a scoped snapshot's read), whose caller holds it alone.
+
+    :param connection: the connection or cursor to run the query on
+    :ptype connection: duckdb.DuckDBPyConnection
+    :param sql: the query
+    :ptype sql: str
+    :param params: its parameters
+    :ptype params: Sequence[Any]
+    :return: the rows, each column naming its DuckDB type (:data:`_DUCKDB_TYPE_KEY`)
+    :rtype: pyarrow.Table
+    """
+    result = connection.execute(sql, list(params))
+    described = [(str(column[0]), str(column[1])) for column in result.description]
+    return _typed_answer(fetch_arrow(result, _ARROW_BATCH_ROWS), described)
+
+
+def _typed_answer(table: Any, described: Sequence[tuple[str, str]]) -> Any:
+    """a DuckDB answer's Arrow, each column named with its DuckDB type, a 128-bit integer column an ``int64``
+    (``uint64``) where every value fits, as ``fetchall`` answers an ``int``.
+
+    :param table: the answer, as DuckDB's Arrow export gives it
+    :ptype table: pyarrow.Table
+    :param described: each column's name and DuckDB type, in order (the result's ``description``)
+    :ptype described: Sequence[tuple[str, str]]
+    :return: the answer
+    :rtype: pyarrow.Table
+    """
+    columns: list[Any] = []
+    fields: list[Any] = []
+    for index, (_name, code) in enumerate(described):
+        field_ = table.schema.field(index)
+        column = table.column(index)
+        wide = _WIDE_INTEGERS.get(code)
+        if wide is not None and pa.types.is_decimal(field_.type):
+            try:
+                column = pc.cast(column, wide)
+                field_ = field_.with_type(column.type)
+            except pa.ArrowInvalid, OverflowError:
+                # NOSILENT: past 64 bits stays decimal, and arrow_rows makes each value the int fetchall answers
+                pass
+        elif (
+            code.endswith("HUGEINT[]") and pa.types.is_list(field_.type) and pa.types.is_decimal(field_.type.value_type)
+        ):
+            column = pc.cast(column, pa.list_(pa.int64() if code == "HUGEINT[]" else pa.uint64()))
+            field_ = field_.with_type(column.type)
+        columns.append(column)
+        fields.append(field_.with_metadata({_DUCKDB_TYPE_KEY: code.encode()}))
+    return pa.Table.from_arrays(columns, schema=pa.schema(fields))
 
 
 #: DuckDB's widest exact ``DECIMAL``
@@ -615,6 +748,13 @@ class DuckDBBackend:
         kind = values.type
         ddl = _ddl_type(code).upper()
         scale = _decimal_code_scale(code)
+        if scale is not None and (pa.types.is_string(kind) or pa.types.is_large_string(kind)):
+            # a NUMERIC's digits as the rail answers them: cast in Arrow where that is exact (a value at the column's
+            # scale or fewer places); one the cast refuses (more places, rounded; NaN, refused) goes value by value
+            try:
+                return pc.cast(values, pa.decimal128(_DUCKDB_MAX_DECIMAL_PRECISION, scale))
+            except pa.ArrowInvalid, pa.ArrowNotImplementedError:
+                pass  # NOSILENT: stored value by value below, as serialize_value stores a dict row's
         if scale is not None:
             as_is = pa.types.is_decimal(kind) and kind.scale == scale
         elif pa.types.is_timestamp(kind):
@@ -962,6 +1102,26 @@ class DuckDBBackend:
         sql = f"DELETE FROM {quote_identifier(table)} WHERE {where_clause}"
         with self._db_lock:
             self._db.execute(sql, list(pk_vals))
+
+    def execute_arrow(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
+        """run a query and answer its rows as one Arrow table, never one Python object a row.
+
+        DuckDB runs the query and writes its Arrow without the interpreter lock, so neither the event loop nor any
+        other thread waits on it, however many rows it answers (400k rows: 10 ms, where ``fetchall`` made Python
+        objects for 1.4 s). Each column carries its DuckDB type in its field metadata (:data:`_DUCKDB_TYPE_KEY`), and
+        a 128-bit integer (a ``SUM`` of integers) is an ``int64`` where every value fits, the number
+        :meth:`execute_query` answers. For a caller that needs dict rows from it, :func:`arrow_rows` makes them a
+        piece at a time, each as :meth:`execute_query` answers it. Needs ``pyarrow``.
+
+        :param sql: the query
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: tuple[Any, ...]
+        :return: the rows
+        :rtype: pyarrow.Table
+        """
+        with self._db_lock:
+            return query_arrow(self._db, sql, params)
 
     def execute_query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         """Execute a generic SELECT query, returning list of row dicts."""

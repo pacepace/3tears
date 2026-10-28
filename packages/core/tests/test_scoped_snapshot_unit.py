@@ -20,7 +20,9 @@ import time
 from types import FrameType
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -29,6 +31,7 @@ pytest.importorskip("pyarrow")
 import duckdb  # noqa: E402
 from sqlalchemy import MetaData  # noqa: E402
 
+from threetears.core.backends.nats_proxy import NatsProxyL3Backend  # noqa: E402
 from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
@@ -3423,3 +3426,96 @@ class TestAStageGivenArrow:
             for given in (rows, _pa.Table.from_pylist(rows))
         ]
         assert encode_chunk(exports[1]) == encode_chunk(exports[0])
+
+
+_PRICED = TableSchema(
+    name="priced",
+    primary_key=("county",),
+    columns=[
+        Column("county", STRING_TYPE),
+        Column("state", STRING_TYPE),
+        Column("votes", BIGINT_TYPE, nullable=True),
+        Column("share", NUMERIC_TYPE, nullable=True, precision=12, scale=4),
+        Column("reported_at", DATETIMETZ_TYPE, nullable=True),
+        Column("date_updated", DATETIMETZ_TYPE, nullable=True),
+    ],
+    on_conflict="update",
+)
+
+
+class _RailL3(_L3):
+    """L3 behind the rail, read as dict rows: ``fetch`` decodes the broker's reply of the scope's rows."""
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        super().__init__(rows)
+        self.arrow_reads = 0
+
+    def _reply(self, sql: str, args: tuple[Any, ...]) -> bytes:
+        state = args[0] if args else None
+        kept = [r for r in self.rows if state is None or r["state"] == state]
+        return json.dumps({"success": True, "rows": kept}, default=_broker_json).encode()
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if "DISTINCT" in sql:
+            return await super().fetch(sql, *args)
+        proxy = _reply_proxy(self._reply(sql, args))
+        return await proxy.fetch(sql)
+
+
+class _ArrowRailL3(_RailL3):
+    """:class:`_RailL3` that reads Arrow as well: ``fetch_arrow`` parses the same reply."""
+
+    async def fetch_arrow(self, sql: str, *args: Any, types: Any) -> Any:
+        self.arrow_reads += 1
+        proxy = _reply_proxy(self._reply(sql, args))
+        return await proxy.fetch_arrow(sql, types=types)
+
+
+def _broker_json(value: Any) -> Any:
+    """a value as the broker's reply writes it (pydantic's JSON): a Decimal its digits, an instant ISO with Z."""
+    if isinstance(value, datetime):
+        return value.isoformat().replace("+00:00", "Z")
+    return str(value)
+
+
+def _reply_proxy(reply: bytes) -> Any:
+    nc = MagicMock()
+    nc.request_raw = AsyncMock(return_value=reply)
+    return NatsProxyL3Backend(nats_client=nc, namespace_prefix="t", agent_id="a", identity_token=lambda: "t")
+
+
+def _priced_backend() -> DuckDBBackend:
+    metadata = MetaData()
+    _PRICED.to_sqlalchemy_table(metadata)
+    backend = DuckDBBackend()
+    backend.initialize(metadata)
+    return backend
+
+
+async def test_a_scope_read_from_the_rail_as_arrow_is_the_scope_its_dict_rows_make() -> None:
+    """a build from L3 reads the rail's pages straight into Arrow (no row a Python object), and holds what the same
+    pages read as dict rows hold."""
+    rows = [
+        {
+            "county": f"c{index}",
+            "state": "TX" if index % 3 else "DE",
+            "votes": index,
+            "share": Decimal("0.5000") + index,
+            "reported_at": datetime(2026, 11, 3, 20, index % 60, tzinfo=UTC),
+            "date_updated": datetime(2026, 11, 3, 21, tzinfo=UTC),
+        }
+        for index in range(40)
+    ] + [{"county": "z", "state": "TX", "votes": None, "share": None, "reported_at": None, "date_updated": None}]
+    tables = (SnapshotTable(name="priced", scope_column="state", key=("county",)),)
+    held: dict[bool, Any] = {}
+    for arrow in (False, True):
+        l3 = _ArrowRailL3(rows) if arrow else _RailL3(rows)
+        backend = _priced_backend()
+        snapshot, *_ = _snapshot(l3=l3, tables=tables, backend=backend)
+        await snapshot.start()
+        await snapshot.wait_ready(timeout=5)
+        held[arrow] = backend.execute_query("SELECT * FROM priced ORDER BY county")
+        await snapshot.stop()
+        assert (l3.arrow_reads > 0) is arrow
+    assert len(held[True]) == len(rows)
+    assert held[True] == held[False]
