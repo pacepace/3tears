@@ -451,8 +451,9 @@ def _parameter(path: str) -> str:
 
 
 def values_table(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[str]]]:
-    """A drawn block's values, as the analyst reads them and a report document's page text prints them: a chart's table of every value it draws, or a table's own columns and cells, each cell
-    after its arm's tag where it names an arm, as the page's Markdown prints it; and in either, every number at one
+    """A drawn block's values, as the analyst reads them and a report document's page text prints them: a chart's
+    table of every value it draws, or a table's own columns and cells, each cell after its arm's tag where it names an
+    arm, as the page's Markdown prints it; and in either, every number at one
     precision among the cells that read alike (:func:`~threetears.evals.analysis.report.charts.even_precision`), so
     two figures compared read at one precision. A table's bare numbers (no unit, no words) read alike within their
     column, which holds one figure: a count beside a distance in another column is no figure read alike, and stays

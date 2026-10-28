@@ -3,9 +3,10 @@
 Line for line what :func:`~threetears.evals.analysis.report.doc_page.html.doc_page_html` lays out, so a reader of
 Markdown checks every number the page draws: the masthead line, code's note where part of a stored document no longer
 reads, the headline as the page's heading, the lede, the flag, the confidence (each caveat's label, then its clause or
-code's checked line), the decision's entries, the options table, each claim (its text as a heading, each block's
-values, notes, caption and code's lines), explore and the next steps, then the appendix under its heading: the arms
-key, every table the input holds, what was left out and why, Method, the review findings left open, and the made line.
+code's checked line), the decision's entries, the options table, each claim (its text as a heading, the labels of
+the caveats it lands, each block's values, notes, caption and code's lines), explore and the next steps, then the
+appendix under its heading: the arms key, every table the input holds, what was left out and why, Method under its
+own heading (each term with the labels of the caveats it lands), the review findings left open, and the made line.
 
 A block's values are :func:`~threetears.evals.analysis.analyst.blocks.values_table`'s, the table the analyst and the
 editor read. Nothing quoted is structure: the document's prose is laid out by the writers every page shares
@@ -22,8 +23,10 @@ from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.doc_page.model import DocClaim, DocPage
 from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
+    CAVEATS_TEMPLATE,
     CHECKED_MARK,
     FINDINGS_TITLE,
+    METHOD_TITLE,
     NEXT_TITLE,
     OMITTED_TITLE,
 )
@@ -57,8 +60,15 @@ def _values(block: ChartBlock | TableBlock) -> list[str]:
     return markdown_table(headers, rows) if rows else ["_(no rows)_"]
 
 
+def _caveats(labels: list[str]) -> str:
+    """The caveats landed beside a claim or a Method term, by label, as code's line."""
+    return CAVEATS_TEMPLATE.format(labels="; ".join(one_line(label) for label in labels))
+
+
 def _claim(claim: DocClaim) -> list[str]:
     lines = [f"{_WEIGHT_HEADINGS[claim.weight]}{one_line(claim.text)}"]
+    if claim.caveats:
+        lines += ["", inert(f"_{_caveats(claim.caveats)}_")]
     for evidence in claim.evidence:
         if evidence.chart is not None:
             lines += ["", *_values(evidence.chart.chart)]
@@ -108,7 +118,15 @@ def _lines(page: DocPage) -> Iterator[list[str]]:
             "",
             *(f"- **{one_line(item.what)}** {one_line(item.why)}" for item in page.omitted),
         ]
-    yield [f"- **{one_line(item.term)}** {one_line(item.text)}" for item in page.method]
+    yield [
+        f"### {METHOD_TITLE}",
+        "",
+        *(
+            f"- **{one_line(item.term)}** {one_line(item.text)}"
+            + (f" _{_caveats(item.caveats)}_" if item.caveats else "")
+            for item in page.method
+        ),
+    ]
     if page.findings:
         yield [
             f"### {FINDINGS_TITLE}",

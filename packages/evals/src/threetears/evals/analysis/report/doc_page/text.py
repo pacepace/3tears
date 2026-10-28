@@ -9,7 +9,13 @@ Two readings of one page, both deterministic (a page reads to the same text ever
 - :func:`above_appendix_text`, the text a reader reads above the appendix, as it is printed and nothing more (no claim
   id, no block's kind): the page's half of the invariant that no internal id appears above the appendix. Example
   cards are left out of it: they show a trial's and a case's ids so a reader can look the trial up, which the
-  invariant exempts, and only the renderer draws them.
+  invariant exempts, and only the renderer draws them. Besides its values table, each block gives every string its
+  drawn chart carries for a reader (:meth:`~threetears.evals.analysis.report.blocks.ChartBlock.kit_chart`'s data, as
+  resolved, never the drawing script's): legend labels, tooltip lines, short and narrow labels, notes, group heads and
+  axis titles, each once, in the data's order. Left out are the fields that only select a mark (an ``id``, the
+  ``ids`` a path joins, the ``emphasis`` a chart stresses) and colour tokens.
+
+Both carry, beside each claim and each Method term, the labels of the caveats the document lands there.
 
 Every block's values are :func:`~threetears.evals.analysis.analyst.blocks.values_table`'s, the table ``block_render``
 returns, so the editor reads a block's values as the analyst read them. A table is laid out in Markdown's pipes.
@@ -25,9 +31,11 @@ from threetears.evals.analysis.report.charts import ExamplesChart
 from threetears.evals.analysis.report.doc_page.model import DocClaim, DocEvidence, DocPage
 from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
+    CAVEATS_TEMPLATE,
     CHECKED_MARK,
     FINDINGS_TITLE,
     LEVEL_WORDS,
+    METHOD_TITLE,
     NEXT_TITLE,
     OMITTED_TITLE,
 )
@@ -67,11 +75,46 @@ def _facts(evidence: DocEvidence) -> Iterator[tuple[str, str]]:
     yield "reference", evidence.reference
 
 
+#: The kit data's fields that select a mark and are never shown: what ``emphasis`` and a path name.
+_UNSHOWN = frozenset({"id", "ids", "emphasis"})
+
+#: How a kit colour token opens: a token, never text.
+_TOKEN = "--"
+
+
+def _shown(node: object, field: str = "") -> Iterator[str]:
+    """Every string a reader is shown in a chart's kit data, in its order."""
+    if field in _UNSHOWN:
+        return
+    if isinstance(node, str):
+        if not node.startswith(_TOKEN):
+            yield node
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            yield from _shown(value, str(key))
+    elif isinstance(node, list):
+        for value in node:
+            yield from _shown(value, field)
+
+
+def _drawn_text(block: ChartBlock | TableBlock) -> list[str]:
+    """Every string a drawn chart shows a reader, each once; none for a table, which its values table is."""
+    drawn = block.kit_chart() if isinstance(block, ChartBlock) else None
+    return list(dict.fromkeys(_shown(drawn[1]))) if drawn is not None else []
+
+
+def _caveats(labels: list[str]) -> str:
+    """The caveats landed beside a claim or a Method term, by label, as code's line."""
+    return CAVEATS_TEMPLATE.format(labels="; ".join(one_line(label) for label in labels))
+
+
 def _evidence(evidence: DocEvidence, *, editor: bool) -> list[str]:
     lines = [_fixed(evidence)] if editor else []
     if evidence.chart is not None and (editor or not _cards(evidence)):
         lines += _table(evidence.chart.chart)
         lines += evidence.chart.notes
+        if not editor:
+            lines += _drawn_text(evidence.chart.chart)
     lines.append(one_line(evidence.caption))
     if evidence.degraded:
         lines.append(evidence.degraded)
@@ -81,6 +124,8 @@ def _evidence(evidence: DocEvidence, *, editor: bool) -> list[str]:
 def _claim(claim: DocClaim, *, editor: bool) -> list[str]:
     lines = [f"## Claim {claim.id} ({claim.weight})"] if editor else []
     lines.append(one_line(claim.text) if editor else f"## {one_line(claim.text)}")
+    if claim.caveats:
+        lines.append(_caveats(claim.caveats))
     for evidence in claim.evidence:
         lines += ["", *_evidence(evidence, editor=editor)]
     return lines
@@ -135,7 +180,13 @@ def _appendix(page: DocPage) -> Iterator[list[str]]:
         yield [f"## {table.title}", *_table(table)]
     if page.omitted:
         yield [f"## {OMITTED_TITLE}", *(f"- {one_line(item.what)}: {one_line(item.why)}" for item in page.omitted)]
-    yield [f"- {one_line(item.term)}: {one_line(item.text)}" for item in page.method]
+    yield [
+        f"## {METHOD_TITLE}",
+        *(
+            f"- {one_line(item.term)}: {one_line(item.text)}" + (f" {_caveats(item.caveats)}" if item.caveats else "")
+            for item in page.method
+        ),
+    ]
     if page.findings:
         yield [
             f"## {FINDINGS_TITLE}",

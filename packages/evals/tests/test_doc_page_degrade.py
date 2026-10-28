@@ -6,7 +6,9 @@ one thing that no longer reads:
 - a figure key that no longer resolves prints ``—``, and the page carries one note to regenerate;
 - a block that no longer draws as its kind prints as a table of its values, under its caption and code's line;
 - a block that draws in no form keeps its caption alone, with code's line;
-- a caveat the document says is checked immaterial, which code does not prove, prints ``—`` for its checked line.
+- a caveat the document says is checked immaterial, which code does not prove, prints ``—`` for its checked line;
+- an arm recommended that the input does not hold marks no row of the options table;
+- a caveat landed on a claim that code does not assign prints ``—`` for its label.
 
 Strict refuses each, naming the field path. A stored document that no longer validates never reaches the builder:
 its record is refused by its version first, with the remedy to regenerate.
@@ -85,6 +87,14 @@ def _checked_unproved(doc: dict[str, Any]) -> None:
     judge.update({"material_if": None, "checked": "immaterial"})
 
 
+def _recommends_gone(doc: dict[str, Any]) -> None:
+    doc["recommends"] = ["no-such-arm"]
+
+
+def _landed_unassigned(doc: dict[str, Any]) -> None:
+    doc["claims"][1]["caveats"] = ["late:no-such-criterion"]
+
+
 def test_the_unplanted_document_reads_with_nothing_degraded() -> None:
     page = build(ReportDoc.model_validate(converted_doc(_KAIRO)), _input(), strict=False)
 
@@ -133,6 +143,21 @@ def test_a_caveat_checked_where_code_proves_nothing_prints_a_dash() -> None:
     assert page.degraded == DEGRADED_PAGE
 
 
+def test_a_recommended_arm_the_input_lacks_marks_no_row_and_the_page_one_note() -> None:
+    page = _read(_recommends_gone)
+
+    assert page.recommended_rows == []
+    assert all(row["role"].flag is None for row in page.options.rows)
+    assert page.degraded == DEGRADED_PAGE
+
+
+def test_a_caveat_landed_on_a_claim_that_code_does_not_assign_prints_a_dash_for_its_label() -> None:
+    page = _read(_landed_unassigned)
+
+    assert page.claims[1].caveats == [UNRESOLVED]
+    assert page.degraded == DEGRADED_PAGE
+
+
 @pytest.mark.parametrize(
     ("change", "path"),
     [
@@ -140,8 +165,10 @@ def test_a_caveat_checked_where_code_proves_nothing_prints_a_dash() -> None:
         (_UNDRAWN_KIND, "claims[0].evidence[0]"),
         (_UNDRAWN, "claims[0].evidence[0]"),
         (_checked_unproved, "confidence.caveats[0].checked"),
+        (_recommends_gone, "recommends[0]"),
+        (_landed_unassigned, "claims[1].caveats[0]"),
     ],
-    ids=["key", "kind", "block", "checked"],
+    ids=["key", "kind", "block", "checked", "recommends", "landed"],
 )
 def test_generation_refuses_what_a_read_degrades(change: Callable[[dict[str, Any]], None], path: str) -> None:
     with pytest.raises(UnresolvableReference, match=re.escape(path)):

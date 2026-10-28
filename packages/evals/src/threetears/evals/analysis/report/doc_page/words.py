@@ -16,6 +16,7 @@ from typing import Final
 __all__ = [
     "APPENDIX_TITLE",
     "CAVEAT_LABELS",
+    "CAVEATS_TEMPLATE",
     "CHECKED_MARK",
     "CLAIM_WORD",
     "DEGRADED_BLOCK",
@@ -25,6 +26,7 @@ __all__ = [
     "EXPLORE_TITLE",
     "FINDINGS_TITLE",
     "LEVEL_WORDS",
+    "METHOD_TITLE",
     "NEXT_TITLE",
     "OMITTED_TITLE",
     "PAGE_WORD",
@@ -75,6 +77,9 @@ CAVEAT_LABELS: Final[dict[str, str]] = {
     "best_of_n": "The pick is the best of several candidates",
 }
 
+#: The caveats a claim or a Method item names, by their labels, as the line beside it says them.
+CAVEATS_TEMPLATE = "Caveats: {labels}."
+
 #: How a checked caveat's line is marked in Markdown and the page text: code's, not a caveat left open.
 CHECKED_MARK = "(checked)"
 
@@ -112,6 +117,9 @@ APPENDIX_TITLE = "Full results"
 
 #: The omitted list's heading (``report-doc/1``: ``omitted[]``).
 OMITTED_TITLE = "Left out, and why"
+
+#: Method's heading in the appendix, apart from what was left out.
+METHOD_TITLE = "Method"
 
 #: The heading of the editor's findings left unresolved, in Method.
 FINDINGS_TITLE = "Review findings left open"

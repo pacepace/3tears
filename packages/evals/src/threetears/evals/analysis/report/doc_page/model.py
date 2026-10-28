@@ -8,7 +8,7 @@ the document: every figure key is already written out, every block already drawn
 
 **Who wrote what.** A field the analyst wrote, its figure keys written out, is typed model prose; a line code wrote
 (the form words, a caveat's code label and checked line, the slot titles, a block's notes, the masthead) is plain
-text. The parts the planned page shares (the masthead, a drawn chart, the arms key, a Method term) are its models.
+text. The parts the planned page shares (the masthead, a drawn chart, the arms key, a decision entry) are its models.
 
 **Above the appendix, then the appendix.** The masthead, the first screen (headline, lede, flag, confidence, decision,
 options), the claims with their evidence, explore and next steps are what a reader reads first; the appendix is the
@@ -23,7 +23,7 @@ from typing import Literal
 from pydantic import Field
 
 from threetears.evals.analysis.report.blocks import TableBlock
-from threetears.evals.analysis.report.plan_page.model import PageArmsKey, PageChart, PageMasthead, PageSlot, PageTerm
+from threetears.evals.analysis.report.plan_page.model import PageArmsKey, PageChart, PageMasthead, PageSlot
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
 
@@ -36,6 +36,7 @@ __all__ = [
     "DocNext",
     "DocOmitted",
     "DocPage",
+    "DocTerm",
 ]
 
 
@@ -86,6 +87,15 @@ class DocClaim(EvalDocumentModel):
     text: ModelProse = Field(description="The claim, its keys written out.")
     weight: Literal["lead", "support", "detail"] = Field(description="Its weight, which sets its type size alone.")
     evidence: list[DocEvidence] = Field(description="The one or two blocks that show it.")
+    caveats: list[str] = Field(description="The labels of the caveats the document lands beside it, in its order.")
+
+
+class DocTerm(EvalDocumentModel):
+    """One Method term, its definition, and the labels of the caveats the document lands on it."""
+
+    term: ModelProse
+    text: ModelProse
+    caveats: list[str] = Field(description="The labels of the caveats landed on it, in the document's order.")
 
 
 class DocNext(EvalDocumentModel):
@@ -132,6 +142,6 @@ class DocPage(EvalDocumentModel):
     arms_key: PageArmsKey = Field(description="Each arm's full configuration once, first in the appendix.")
     full_results: list[TableBlock] = Field(description="Every table the input holds a row of.")
     omitted: list[DocOmitted] = Field(description="What was left out of the body, and why.")
-    method: list[PageTerm] = Field(description="The method's terms.")
+    method: list[DocTerm] = Field(description="The method's terms, each with the caveats landed on it.")
     findings: list[DocFinding] = Field(description="The editor's findings left unresolved.")
     made: str = Field(default="", description="How the page was made, in one line; empty for none.")

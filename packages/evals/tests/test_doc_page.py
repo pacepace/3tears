@@ -14,7 +14,11 @@ document itself, the input's arms, the figure keys and code's caveats.
 - **The options table** holds every arm of the input in its order, the ones ``recommends`` names marked and set apart,
   no other; the four tradeoff documents recommend nothing, so none is.
 - **The appendix and Method** are always on the page, in every form, after every claim.
-- **No internal id above the appendix**: no caveat id, measure key or claim id is in the text above the appendix.
+- **No internal id above the appendix**: no caveat id, measure key, claim id or arm id (where its name differs) is in
+  the text above the appendix, which holds each block's values and every string its drawn chart shows a reader.
+- **The appendix's own parts**: Method under its own heading, after what was left out; the editor's findings left
+  open after it, each by its severity and the claim's place (linked) or the page; the made line last; none of it
+  above the appendix. A caveat landed on a claim or a Method term is printed beside it by its label.
 - **``story`` is read by nothing**: the page, its Markdown and its text are byte-identical whatever it says.
 """
 
@@ -37,11 +41,21 @@ from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.doc_page.text import above_appendix_text, doc_page_text
-from threetears.evals.analysis.report.doc_page.words import APPENDIX_TITLE, DEGRADED_PAGE
+from threetears.evals.analysis.report.doc_page.words import (
+    APPENDIX_TITLE,
+    CAVEAT_LABELS,
+    CAVEATS_TEMPLATE,
+    DEGRADED_PAGE,
+    FINDINGS_TITLE,
+    METHOD_TITLE,
+    OMITTED_TITLE,
+    SEVERITY_WORDS,
+)
 from threetears.evals.analysis.report.figure_keys import format_figure, resolve
 from threetears.evals.analysis.report_decision import every_caveat
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.kernel.report_doc import ReportDoc, Story
+from threetears.evals.analysis.report_plan_facts import fact_arms
+from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding, Story
 
 #: Every converted document.
 _ALL = PROTOTYPE1_DOCS + LATER_DOCS
@@ -241,17 +255,27 @@ def test_the_appendix_and_method_are_always_on_the_page_after_every_claim(name: 
     assert markdown.index(last) < markdown.index(f"## {APPENDIX_TITLE}")
     assert text.index(last) < text.index(f"# {APPENDIX_TITLE}") < text.index(f"- {page.method[0].term}")
     assert f"# {APPENDIX_TITLE}" not in above_appendix_text(page)
+    for form, heading in (
+        (written, f"<h3>{METHOD_TITLE}</h3><dl"),
+        (markdown, f"### {METHOD_TITLE}\n\n- **"),
+        (text, f"## {METHOD_TITLE}\n- "),
+    ):
+        assert form.index(f"{APPENDIX_TITLE}") < form.index(heading)
+        if page.omitted:
+            assert form.index(OMITTED_TITLE) < form.index(heading)
 
 
 # --- no internal id above the appendix ----------------------------------------------------------------------------
 
 
 def _internal_ids(name: str) -> set[str]:
-    """The ids a reader is never shown above the appendix: caveat ids, measure keys and claim ids that read as ids."""
+    """The ids a reader is never shown above the appendix: caveat ids, measure keys and claim ids that read as ids,
+    and arm ids where the arm's name is not its id."""
     held = _input(name)
     ids = {caveat.id for caveat in every_caveat(held)} | {caveat.id for caveat in _doc(name).confidence.caveats}
     ids |= {key for key in [*held.measures, *held.judged] if re.search(r"[_.:]", key)}
     ids |= {claim.id for claim in _doc(name).claims}
+    ids |= {arm.id for arm in fact_arms(held) if arm.id not in arm.name}
     return ids
 
 
@@ -281,3 +305,72 @@ def test_the_page_is_byte_identical_whatever_the_story_says(name: str) -> None:
     }
 
     assert len(forms) == 1
+
+
+# --- the editor's findings, the made line, and caveats landed beside a claim or a term ------------------------------
+
+#: The made line a caller passes.
+_MADE = "Written by the analyst loop on 2026-10-28 from this campaign's frozen snapshot."
+
+#: One finding on the second claim, one on the page as a whole.
+_FINDINGS = (
+    ReportFinding(claim="c2", severity="must_fix", finding="The second claim reads a drop the interval does not show."),
+    ReportFinding(claim="", severity="should_fix", finding="The lede repeats the headline."),
+)
+
+
+def test_the_findings_left_open_and_the_made_line_close_the_appendix_in_every_form() -> None:
+    """After Method: each finding by its severity, the claim by its place (linked in HTML) or the page; then the made
+    line, last. None of it is above the appendix."""
+    name = "prototype3/kairo"
+    page = build(_doc(name), _input(name), strict=True, findings=_FINDINGS, made=_MADE)
+    written, markdown, text = html.unescape(doc_page_html(page)), doc_page_markdown(page), doc_page_text(page)
+    must, should = SEVERITY_WORDS["must_fix"], SEVERITY_WORDS["should_fix"]
+
+    assert '<li><b>Must fix</b> · <a href="#claim-2">Claim 2</a>: The second claim' in written
+    assert f"<li><b>{should}</b> · The page: The lede repeats the headline.</li>" in written
+    assert f"- **{must}** · Claim 2: The second claim" in markdown
+    assert f"- **{should}** · The page: The lede repeats the headline." in markdown
+    assert f"- {must} · Claim 2: The second claim" in text and f"- {should} · The page: The lede" in text
+    for form, method in (
+        (written, f"<h3>{METHOD_TITLE}</h3>"),
+        (markdown, f"### {METHOD_TITLE}"),
+        (text, f"## {METHOD_TITLE}"),
+    ):
+        assert form.index(method) < form.index(FINDINGS_TITLE) < form.index(must) < form.index(should)
+        assert form.index(should) < form.index(_MADE)
+    assert written.index(_MADE) > written.index("The lede repeats") and "</article>" in written[written.index(_MADE) :]
+    assert markdown.rstrip().endswith(f"_{_MADE}_") and text.rstrip().endswith(_MADE)
+    above = above_appendix_text(page)
+    assert not any(said in above for said in (FINDINGS_TITLE, must, should, _MADE))
+
+
+def _landed(doc: ReportDoc) -> ReportDoc:
+    """Kairo's document with a code caveat landed on its second claim and an analyst caveat on its first Method term."""
+    data = doc.model_dump(mode="json", by_alias=True)
+    data["confidence"]["caveats"].append(
+        {"id": "analyst:case-mix", "label": "Case mix differs from traffic", "material_if": "Only if traffic differs."}
+    )
+    data["claims"][1]["caveats"] = ["confound:model"]
+    data["method"][0]["caveats"] = ["analyst:case-mix"]
+    return ReportDoc.model_validate(data)
+
+
+def test_a_caveat_landed_on_a_claim_or_a_method_term_is_printed_beside_it_by_its_label() -> None:
+    """Code's label for a code caveat, the analyst's for its own, beside the claim and the term in every form."""
+    name = "prototype3/kairo"
+    page = build(_landed(_doc(name)), _input(name), strict=True)
+    on_claim = CAVEATS_TEMPLATE.format(labels=CAVEAT_LABELS["confound"].format(name="model"))
+    on_term = CAVEATS_TEMPLATE.format(labels="Case mix differs from traffic")
+    written, markdown, text = html.unescape(doc_page_html(page)), doc_page_markdown(page), doc_page_text(page)
+
+    assert page.claims[1].caveats == [CAVEAT_LABELS["confound"].format(name="model")]
+    assert page.method[0].caveats == ["Case mix differs from traffic"]
+    claim = written[written.index('id="claim-2"') : written.index('id="claim-3"')]
+    assert on_claim in claim and on_claim not in written.replace(claim, "")
+    assert on_term in written[written.index(f"<h3>{METHOD_TITLE}</h3>") :]
+    for form in (markdown, text):
+        assert form.index(page.claims[1].text[:30]) < form.index(on_claim) < form.index(page.claims[2].text[:30])
+        assert form.index(f"{METHOD_TITLE}") < form.index(on_term)
+    assert on_claim in above_appendix_text(page) and on_term not in above_appendix_text(page)
+    assert "confound:model" not in above_appendix_text(page)

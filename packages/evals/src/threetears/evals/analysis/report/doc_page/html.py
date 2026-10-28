@@ -15,7 +15,8 @@ with no class, style or script of its own:
   block's ``.fig`` (or the table of its values), its caption and code's lines as ``.cap``;
 - the explore table and the next steps, each its own ``section``;
 - the appendix under its ``.part`` divider (``data-part="appendix"``): the arms key, every table the input holds,
-  what was left out and why, ``dl.method``, the review findings left open, and the made line;
+  what was left out and why, Method under its own heading (``dl.method``), the review findings left open, and the made
+  line; the caveats a claim or a Method term lands, by label, as code's ``.cap`` line under it;
 - the kit's script, last, on the default page only.
 
 **Nothing written into a field can make the page run or load anything**, as on every page this package writes: every
@@ -37,10 +38,13 @@ from threetears.evals.analysis.report.doc_page.model import (
     DocNext,
     DocOmitted,
     DocPage,
+    DocTerm,
 )
 from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
+    CAVEATS_TEMPLATE,
     FINDINGS_TITLE,
+    METHOD_TITLE,
     NEXT_TITLE,
     OMITTED_TITLE,
 )
@@ -54,7 +58,7 @@ from threetears.evals.analysis.report.html_parts import (
     page_head,
     table_html,
 )
-from threetears.evals.analysis.report.plan_page.model import PageArmsKey, PageMasthead, PageSlot, PageTerm
+from threetears.evals.analysis.report.plan_page.model import PageArmsKey, PageMasthead, PageSlot
 from threetears.evals.analysis.report.plan_page.words import CONFIDENCE_LABEL, RUN_TEMPLATE, SYNTHETIC
 
 #: Empty until a production caller imports this module's entry point (``doc_page_html``): its callers are the writing
@@ -138,8 +142,15 @@ def _claim(claim: DocClaim, *, static: bool) -> str:
     )
     return (
         f'<section data-part="claim" data-weight="{escape(claim.weight)}" id="claim-{claim.place}">'
-        f"<header>{opening}{_prose(claim.text)}{closing}</header>{blocks}</section>"
+        f"<header>{opening}{_prose(claim.text)}{closing}{_caveats(claim.caveats)}</header>{blocks}</section>"
     )
+
+
+def _caveats(labels: Sequence[str]) -> str:
+    """The caveats landed beside a claim or a Method term, by label, as code's line; nothing for none."""
+    if not labels:
+        return ""
+    return f'<p class="cap" data-part="caveats">{escape(CAVEATS_TEMPLATE.format(labels="; ".join(labels)))}</p>'
 
 
 def _explore(explore: TableBlock) -> str:
@@ -166,9 +177,11 @@ def _omitted(omitted: Sequence[DocOmitted]) -> str:
     return f'<section data-part="omitted"><h3>{escape(OMITTED_TITLE)}</h3><dl class="method">{terms}</dl></section>'
 
 
-def _method(method: Sequence[PageTerm]) -> str:
-    terms = "".join(f"<dt>{_prose(item.term)}</dt><dd>{_prose(item.text)}</dd>" for item in method)
-    return f'<section data-part="method"><dl class="method">{terms}</dl></section>'
+def _method(method: Sequence[DocTerm]) -> str:
+    terms = "".join(
+        f"<dt>{_prose(item.term)}</dt><dd>{_prose(item.text)}{_caveats(item.caveats)}</dd>" for item in method
+    )
+    return f'<section data-part="method"><h3>{escape(METHOD_TITLE)}</h3><dl class="method">{terms}</dl></section>'
 
 
 def _finding(finding: DocFinding) -> str:

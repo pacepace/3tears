@@ -17,15 +17,17 @@ the page has or their order.
 - *Decision*: each entry in the document's order, titled by its slot word alone.
 - *Options*: every arm, with its settings, served model and cost, the arms ``recommends`` names marked
   (:func:`~threetears.evals.analysis.report.plan_page.tables.arms_table`).
-- *Claims*: in the document's order. Each evidence block is completed and drawn by the code ``block_render`` uses:
+- *Claims*: in the document's order, each with the labels of the caveats the document lands beside it (as the
+  confidence labels them), so a caveat landed on a claim is one its reader and the editor see. Each evidence block is
+  completed and drawn by the code ``block_render`` uses:
   :func:`~threetears.evals.analysis.report.block_spec.complete_chart`, then
   :func:`~threetears.evals.analysis.report.plan_page.resolve.resolve_chart` under
   :func:`~threetears.evals.analysis.report.block_spec.block_look` (the arms in the input's order, nothing
   recommended), so a block on the page is the block the analyst saw drawn, value for value.
 - *Explore*: a table of the document's prose rows. *Next steps*: after the claims.
 - *Appendix*: the arms key, every table the input holds
-  (:func:`~threetears.evals.analysis.report.plan_page.full_results.every_table`), what was left out and why, Method,
-  the editor's findings left open, and the made line.
+  (:func:`~threetears.evals.analysis.report.plan_page.full_results.every_table`), what was left out and why, Method
+  (each term with the labels of the caveats landed on it), the editor's findings left open, and the made line.
 
 **Strict, or reading.** Generation builds strict: a figure key that does not resolve, a block that does not complete
 or draw, a caveat code neither assigns nor proves immaterial where the document says it checked, or an arm
@@ -55,6 +57,7 @@ from threetears.evals.analysis.report.doc_page.model import (
     DocNext,
     DocOmitted,
     DocPage,
+    DocTerm,
 )
 from threetears.evals.analysis.report.doc_page.words import (
     CAVEAT_LABELS,
@@ -79,7 +82,6 @@ from threetears.evals.analysis.report.plan_page.model import (
     PageChart,
     PageMasthead,
     PageSlot,
-    PageTerm,
 )
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report.plan_page.tables import arms_key, arms_table
@@ -181,22 +183,48 @@ def _code_label(caveat: Caveat | ImpliedCaveat, look: PageLook) -> str:
     return label[:1].upper() + label[1:]
 
 
+@dataclass(frozen=True)
+class _Labels:
+    """Each caveat's label wherever the document names it: code's for a caveat code assigns, else the analyst's from
+    the confidence that declares it."""
+
+    reader: _Reader
+    look: PageLook
+    code: Mapping[str, Caveat | ImpliedCaveat]
+    declared: Mapping[str, str]
+
+    def label(self, caveat_id: str, path: str) -> str:
+        """One caveat's label; strict refuses a caveat neither code's nor the analyst's, reading prints ``—``.
+
+        :raises UnresolvableReference: Strict, and the caveat is neither one code assigns nor a declared analyst one.
+        """
+        assigned = self.code.get(caveat_id)
+        if assigned is not None:
+            return _code_label(assigned, self.look)
+        own = self.declared.get(caveat_id)
+        if is_analyst_caveat(caveat_id) and own is not None:
+            return own
+        self.reader.refuse(path, f"names caveat {caveat_id!r}, which code does not assign on this input")
+        return own or UNRESOLVED
+
+    def landed(self, caveat_ids: Sequence[str], path: str) -> list[str]:
+        """The labels of the caveats a claim or a Method item names, in its order."""
+        return [self.label(caveat_id, f"{path}[{index}]") for index, caveat_id in enumerate(caveat_ids)]
+
+
+def _labels(doc: ReportDoc, reader: _Reader, look: PageLook) -> _Labels:
+    return _Labels(
+        reader=reader,
+        look=look,
+        code={caveat.id: caveat for caveat in every_caveat(reader.report_input)},
+        declared={caveat.id: caveat.label for caveat in doc.confidence.caveats if caveat.label is not None},
+    )
+
+
 def _caveat(
-    caveat: DocCaveat,
-    path: str,
-    reader: _Reader,
-    look: PageLook,
-    code: Mapping[str, Caveat | ImpliedCaveat],
-    materiality: Mapping[str, Materiality],
+    caveat: DocCaveat, path: str, reader: _Reader, labels: _Labels, materiality: Mapping[str, Materiality]
 ) -> DocCaveatLine:
-    assigned = code.get(caveat.id)
-    if assigned is not None:
-        label = _code_label(assigned, look)
-    elif is_analyst_caveat(caveat.id) and caveat.label is not None:
-        label = caveat.label
-    else:
-        reader.refuse(f"{path}.id", f"names caveat {caveat.id!r}, which code does not assign on this input")
-        label = caveat.label or UNRESOLVED
+    label = labels.label(caveat.id, f"{path}.id")
     if caveat.material_if is not None:
         return DocCaveatLine(label=label, text=reader.written(caveat.material_if, f"{path}.material_if"), checked=False)
     held = materiality.get(caveat.id)
@@ -206,14 +234,13 @@ def _caveat(
     return DocCaveatLine(label=label, text=held.checked, checked=True)
 
 
-def _confidence(doc: ReportDoc, reader: _Reader, look: PageLook) -> DocConfidence:
-    code = {caveat.id: caveat for caveat in every_caveat(reader.report_input)}
+def _confidence(doc: ReportDoc, reader: _Reader, labels: _Labels) -> DocConfidence:
     materiality = caveat_materiality(reader.report_input)
     return DocConfidence(
         form=doc.confidence.form,
         words=CONFIDENCE_WORDS[doc.confidence.form],
         caveats=[
-            _caveat(caveat, f"confidence.caveats[{index}]", reader, look, code, materiality)
+            _caveat(caveat, f"confidence.caveats[{index}]", reader, labels, materiality)
             for index, caveat in enumerate(doc.confidence.caveats)
         ],
     )
@@ -361,6 +388,7 @@ def build(
     for index, arm in enumerate(doc.recommends):
         if arm not in held:
             reader.refuse(f"recommends[{index}]", f"names arm {arm!r}, which the input does not hold")
+    labels = _labels(doc, reader, look)
     claims = [
         DocClaim(
             id=claim.id,
@@ -371,6 +399,7 @@ def build(
                 _evidence(evidence, f"claims[{place - 1}].evidence[{index}]", reader, look)
                 for index, evidence in enumerate(claim.evidence)
             ],
+            caveats=labels.landed(claim.caveats, f"claims[{place - 1}].caveats"),
         )
         for place, claim in enumerate(doc.claims, start=1)
     ]
@@ -380,7 +409,7 @@ def build(
         headline=reader.written(doc.headline, "headline"),
         lede=reader.written(doc.lede, "lede"),
         flag=reader.written(doc.flag, "flag") if doc.flag is not None else "",
-        confidence=_confidence(doc, reader, look),
+        confidence=_confidence(doc, reader, labels),
         decision=[
             PageSlot(
                 key=entry.slot,
@@ -411,9 +440,10 @@ def build(
             for index, item in enumerate(doc.omitted)
         ],
         method=[
-            PageTerm(
+            DocTerm(
                 term=reader.written(item.term, f"method[{index}].term"),
                 text=reader.written(item.text, f"method[{index}].text"),
+                caveats=labels.landed(item.caveats, f"method[{index}].caveats"),
             )
             for index, item in enumerate(doc.method)
         ],
