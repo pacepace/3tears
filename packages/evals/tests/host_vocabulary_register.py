@@ -160,6 +160,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "schema/goal_grammar.py": {},
     "kernel/errors.py": {},
     "kernel/numbers.py": {},
+    "kernel/run_pages.py": {},
     "kernel/eval_file.py": {},
     "kernel/refusals.py": {},
     "kernel/remedies.py": {},

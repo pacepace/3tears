@@ -225,7 +225,7 @@ from threetears.evals.run.jobs import WorkFn
 from threetears.evals.run.judge_service import JudgeClientFactory, JudgeContext, JudgeOutcome
 from threetears.evals.run.rejudge import JudgeInputStore, ReproducibleJudgeInputs, RequestSettingsPolicy
 from threetears.evals.run.runner import EveryCellApparatusFailedError, NothingMeasuredError, RunCallbacks
-from threetears.evals.run.runner import StoredCells
+from threetears.evals.run.runner import StoredCell, StoredCells
 from threetears.evals.run.resume import (
     ResumableEnding,
     ResumableGroup,
@@ -416,6 +416,7 @@ __all__ = [
     "ResumableJob",
     "ResumableJobs",
     "RunResumption",
+    "StoredCell",
     "StoredCells",
     "resumable_jobs",
     "resume_run",
