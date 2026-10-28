@@ -1,0 +1,391 @@
+{
+  "mode": "decide",
+  "headline_kind": "decision",
+  "headline": "Adopt {arm:brisk-s.low.r1}: it meets both gates at {measure.cost_per_1k.brisk-s.low.r1.mean|usd_per_1k}.",
+  "lede": "{arm:brisk-s.low.r1} is the only configuration to clear the {criteria.pass_rate.threshold|pct} Pass rate gate while keeping tail Latency budget (p95) under {criteria.p95.threshold}. Relaxing Latency budget (p95) above {criteria.p95.brisk-s.high.r1.value} would unlock higher accuracy on {arm:brisk-s.high.r1}.",
+  "decision": {
+    "slots": [
+      {
+        "key": "recommendation",
+        "text": "Deploy {arm:brisk-s.low.r1}. It achieves {criteria.pass_rate.brisk-s.low.r1.value|pct} Pass rate and {criteria.p95.brisk-s.low.r1.value} tail latency at {measure.cost_per_1k.brisk-s.low.r1.mean|usd_per_1k}.",
+        "caveats": []
+      },
+      {
+        "key": "why_not",
+        "text": "{arm:atlas-m.high.r1} misses Latency budget (p95) at {criteria.p95.atlas-m.high.r1.value}; {arm:brisk-s.high.r1} misses Latency budget (p95) at {criteria.p95.brisk-s.high.r1.value}; {arm:nano-xs.off.r0} misses Pass rate at {criteria.pass_rate.nano-xs.off.r0.value|pct}.",
+        "caveats": []
+      },
+      {
+        "key": "watch",
+        "text": "{weakest.arm} achieves {weakest.value|pct} against {weakest.criterion} at {weakest.threshold|pct}, a clearance margin of {weakest.margin|pts} points. Slices with multi-hop dependencies remain the most fragile failure mode.",
+        "caveats": []
+      },
+      {
+        "key": "next",
+        "text": "Run an online canary test for {arm:brisk-s.low.r1} to verify production tail latencies stay below {criteria.p95.threshold} under peak concurrency.",
+        "caveats": []
+      }
+    ],
+    "confidence": {
+      "form": "high",
+      "caveats": []
+    }
+  },
+  "method": [
+    {
+      "term": "Test cases",
+      "text": "Evaluated across {scoreboard.brisk-s.low.r1.cases} synthetic query planning benchmark cases stratified across four task categories.",
+      "caveats": []
+    },
+    {
+      "term": "Pass rate definition",
+      "text": "A case passes when the executed tool sequence returns the gold target or appropriately requests user clarification.",
+      "caveats": []
+    },
+    {
+      "term": "Latency measurement",
+      "text": "Calculated as p50 and p95 elapsed duration in milliseconds across task runs including retries.",
+      "caveats": []
+    },
+    {
+      "term": "Cost basis",
+      "text": "Derived from measured input and output tokens multiplied by published list prices per thousand planner invocations.",
+      "caveats": []
+    },
+    {
+      "term": "Quality gate",
+      "text": "Requires an overall mean Pass rate of at least {criteria.pass_rate.threshold|pct}.",
+      "caveats": []
+    },
+    {
+      "term": "Latency gate",
+      "text": "Requires a p95 Latency budget (p95) under {criteria.p95.threshold} overall.",
+      "caveats": []
+    }
+  ],
+  "schema": "report-plan/1",
+  "signals": {
+    "candidate_structure": "factorial",
+    "baseline": "none",
+    "score_type": "pass_fail",
+    "strata": "tasks",
+    "criteria": "hard_gates",
+    "cross_cutting": [],
+    "log_cost_axis": true
+  },
+  "shape": "B",
+  "masthead": {
+    "kind": "Choice · candidates compared",
+    "system": "Research query planner",
+    "counts": "18 arms · 4 tasks",
+    "run_date": "{meta.run_date}",
+    "synthetic": true
+  },
+  "arms": [
+    {
+      "id": "atlas-m.off.r0",
+      "color_slot": 0
+    },
+    {
+      "id": "atlas-m.off.r1",
+      "color_slot": 1
+    },
+    {
+      "id": "atlas-m.low.r0",
+      "color_slot": 2
+    },
+    {
+      "id": "atlas-m.low.r1",
+      "color_slot": 3
+    },
+    {
+      "id": "atlas-m.high.r0",
+      "color_slot": 4
+    },
+    {
+      "id": "atlas-m.high.r1",
+      "color_slot": 5
+    },
+    {
+      "id": "brisk-s.off.r0",
+      "color_slot": 6
+    },
+    {
+      "id": "brisk-s.off.r1",
+      "color_slot": 7
+    },
+    {
+      "id": "brisk-s.low.r0",
+      "color_slot": 8
+    },
+    {
+      "id": "brisk-s.low.r1",
+      "color_slot": 9
+    },
+    {
+      "id": "brisk-s.high.r0",
+      "color_slot": 10
+    },
+    {
+      "id": "brisk-s.high.r1",
+      "color_slot": 11
+    },
+    {
+      "id": "nano-xs.off.r0",
+      "color_slot": 12
+    },
+    {
+      "id": "nano-xs.off.r1",
+      "color_slot": 13
+    },
+    {
+      "id": "nano-xs.low.r0",
+      "color_slot": 14
+    },
+    {
+      "id": "nano-xs.low.r1",
+      "color_slot": 15
+    },
+    {
+      "id": "nano-xs.high.r0",
+      "color_slot": 16
+    },
+    {
+      "id": "nano-xs.high.r1",
+      "color_slot": 17
+    }
+  ],
+  "show_arms_key": true,
+  "flag": [],
+  "options": {
+    "rows": [
+      {
+        "option": "brisk-s.low.r1",
+        "role": "recommended"
+      },
+      {
+        "option": "atlas-m.high.r1",
+        "role": "most_accurate"
+      },
+      {
+        "option": "brisk-s.high.r1",
+        "role": "near_miss"
+      },
+      {
+        "option": "nano-xs.off.r0",
+        "role": "cheapest"
+      }
+    ],
+    "columns": [
+      "pass_rate",
+      "gate",
+      "cost_per_1k"
+    ]
+  },
+  "summary": [
+    {
+      "kind": "bars",
+      "title": "Cost per 1k calls by configuration",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "cost_per_1k"
+        ],
+        "arms": [
+          "brisk-s.low.r1",
+          "atlas-m.high.r1",
+          "brisk-s.high.r1",
+          "nano-xs.off.r0"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "brisk-s.low.r1",
+      "level": "",
+      "unit": "usd_per_1k",
+      "domain": []
+    },
+    {
+      "kind": "bars",
+      "title": "Pass rate against quality threshold",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "pass_rate"
+        ],
+        "arms": [
+          "brisk-s.low.r1",
+          "atlas-m.high.r1",
+          "brisk-s.high.r1",
+          "nano-xs.off.r0"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [
+        {
+          "kind": "floor",
+          "key": "criteria.pass_rate.threshold"
+        }
+      ],
+      "emphasis": "brisk-s.low.r1",
+      "level": "95% computed",
+      "unit": "pct",
+      "domain": []
+    }
+  ],
+  "sections": [
+    {
+      "id": "gate_frontier",
+      "eyebrow": "Gate Frontier",
+      "headline": "{arm:brisk-s.low.r1} is the sole arm inside both gate thresholds",
+      "takeaway": "Configs in the top-left quadrant clear both the {criteria.pass_rate.threshold|pct} Pass rate floor and the {criteria.p95.threshold} tail latency budget.",
+      "chart": {
+        "kind": "gate_scatter",
+        "title": "",
+        "query": {
+          "source": "configs",
+          "aspect": "",
+          "measures": [
+            "pass_rate",
+            "latency_ms"
+          ],
+          "arms": [],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "brisk-s.low.r1",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "tasks_breakdown",
+      "eyebrow": "Task Performance",
+      "headline": "{task.multihop.name} shows the lowest pass rates across candidate models",
+      "takeaway": "Points show mean pass rate per task slice against the overall quality threshold.",
+      "chart": {
+        "kind": "dot_interval",
+        "title": "",
+        "query": {
+          "source": "tasks",
+          "aspect": "",
+          "measures": [
+            "pass_rate"
+          ],
+          "arms": [
+            "brisk-s.low.r1",
+            "atlas-m.high.r1",
+            "brisk-s.high.r1"
+          ],
+          "strata": [
+            "single",
+            "multihop",
+            "datemath",
+            "disamb"
+          ],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [
+          {
+            "kind": "floor",
+            "key": "criteria.pass_rate.threshold"
+          }
+        ],
+        "emphasis": "brisk-s.low.r1",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "failure_examples",
+      "eyebrow": "Failure Inspection",
+      "headline": "Errors cluster in query planning, argument bounds, and tool selection",
+      "takeaway": "Sampled failures showing missed multi-hop queries, boundary mistakes, and formatting defects.",
+      "chart": {
+        "kind": "examples",
+        "title": "",
+        "query": {
+          "source": "examples",
+          "aspect": "",
+          "measures": [],
+          "arms": [],
+          "strata": [],
+          "limit": 4,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "brisk-s.low.r1",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    }
+  ],
+  "explore": [
+    {
+      "title": "Adjust Gates",
+      "controls": [
+        {
+          "id": "p95_budget",
+          "kind": "slider",
+          "title": "Latency budget (p95)",
+          "binds": "p95",
+          "min": 300.0,
+          "max": 1200.0,
+          "step": 50.0,
+          "default": 600.0,
+          "options": []
+        }
+      ],
+      "recomputes": "Adjusting the p95 latency ceiling changes which arms pass. At or above {criteria.p95.brisk-s.high.r1.value}, {arm:brisk-s.high.r1} qualifies with higher accuracy."
+    }
+  ],
+  "full_results": [
+    "arms_by_measure",
+    "strata",
+    "gate_matrix_full",
+    "configs"
+  ],
+  "durable_claims": [
+    {
+      "text": "{arm:brisk-s.low.r1} delivers {criteria.pass_rate.brisk-s.low.r1.value|pct} Pass rate and {criteria.p95.brisk-s.low.r1.value} tail latency at {measure.cost_per_1k.brisk-s.low.r1.mean|usd_per_1k}.",
+      "confidence": "high",
+      "keys": [
+        "criteria.pass_rate.brisk-s.low.r1.value",
+        "criteria.p95.brisk-s.low.r1.value",
+        "measure.cost_per_1k.brisk-s.low.r1.mean"
+      ]
+    },
+    {
+      "text": "Higher reasoning tiers push tail latency beyond {criteria.p95.threshold}: {arm:atlas-m.high.r1} reaches {criteria.p95.atlas-m.high.r1.value} and {arm:brisk-s.high.r1} reaches {criteria.p95.brisk-s.high.r1.value}.",
+      "confidence": "high",
+      "keys": [
+        "criteria.p95.atlas-m.high.r1.value",
+        "criteria.p95.brisk-s.high.r1.value"
+      ]
+    }
+  ],
+  "answers": []
+}
