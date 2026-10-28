@@ -5857,8 +5857,8 @@ class _Stop:
 
 @dataclass
 class _Memo:
-    """What one report input has read as (:func:`_memo`): each key's figure or the refusal it raised, and the ids each
-    slot offered after the slots matched before it."""
+    """What one report input has read as (:func:`_memo`): each key's figure or the refusal it raised (kept with no frame,
+    :func:`_frameless`), and the ids each slot offered after the slots matched before it."""
 
     figures: dict[str, Figure | UnresolvableReference]
     offered: dict[tuple[Callable[[ReportInput, tuple[str, ...]], Iterable[str]], tuple[str, ...]], list[str]]
@@ -6057,18 +6057,32 @@ def resolve(key: str, report_input: ReportInput) -> Figure:
     figures = _memo(report_input).figures
     held = figures.get(key)
     if isinstance(held, UnresolvableReference):
-        again = type(held)(*held.args)
-        again.__cause__ = held.__cause__
-        raise again
+        raise _frameless(held)
     if held is not None:
         return held
     try:
         figure = _resolved(key, report_input)
     except UnresolvableReference as refused:
-        figures[key] = refused
+        figures[key] = _frameless(refused)
         raise
     figures[key] = figure
     return figure
+
+
+def _frameless(refused: UnresolvableReference) -> UnresolvableReference:
+    """A copy of a refusal that holds no frame: its type and message, its cause copied the same way, and whether a
+    traceback shows its context, as a first raise has it.
+
+    A raised refusal's traceback, and its cause's, hold the frames it unwound through, each with the report input among
+    its locals, so the memo keeps this copy and raises a fresh one on each read: a refused key never keeps its input
+    alive, and no two reads share an exception.
+    """
+    twin = type(refused)(*refused.args)
+    cause = refused.__cause__
+    if cause is not None:
+        twin.__cause__ = type(cause)(*cause.args)
+    twin.__suppress_context__ = refused.__suppress_context__
+    return twin
 
 
 def _resolved(key: str, report_input: ReportInput) -> Figure:

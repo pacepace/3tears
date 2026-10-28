@@ -36,6 +36,10 @@ from threetears.evals.analysis.report_input import ReportInput
 #: Every flip a test reads asks for this many.
 WHOLE = 500
 
+#: Why a cut at a negative value on a margin or a floor is read by no test here: those sweep from zero up, so a range
+#: ending below zero is refused (``RefusedInput``) rather than read.
+_NEGATIVE_CUT = "a margin or a floor sweeps from zero up, so a range cut below zero is refused, not read"
+
 
 @cache
 def _inputs() -> dict[str, ReportInput]:
@@ -100,9 +104,9 @@ def test_a_range_stopping_short_of_a_change_names_that_side_and_its_nearest_flip
     values = _values(whole)
     middle = (values[len(values) // 2 - 1] + values[len(values) // 2]) / 2
     moving = [flip for flip in whole.flips if flip.call_changes or flip.picks_change]
+    if parameter.partition(":")[0] in ("margin", "floor") and middle < 0:
+        pytest.skip(_NEGATIVE_CUT)
     for given, side in (({"range_low": middle}, "below_range_low"), ({"range_high": middle}, "above_range_high")):
-        if parameter.partition(":")[0] in ("margin", "floor") and middle < 0:
-            continue
         ranged = sensitivity(held, parameter, limit=WHOLE, **given)  # type: ignore[arg-type]
         past = [
             flip
@@ -170,7 +174,7 @@ def test_a_range_cut_exactly_at_a_flip_names_the_change_just_past_its_end(
     held = _inputs()[name]
     whole = _swept(name, parameter)
     if parameter.partition(":")[0] in ("margin", "floor") and value < 0:
-        return
+        pytest.skip(_NEGATIVE_CUT)
     ranged = sensitivity(held, parameter, limit=WHOLE, **{end: value})  # type: ignore[arg-type]
     moving = [flip for flip in whole.flips if flip.call_changes or flip.picks_change]
     side = "below_range_low" if end == "range_low" else "above_range_high"
