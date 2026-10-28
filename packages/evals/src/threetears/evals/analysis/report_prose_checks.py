@@ -18,7 +18,7 @@ Each check reads prose as ``(field path, text)`` pairs, so it holds for whatever
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.quantities import MONEY, UNIT_NAMES
@@ -240,12 +240,13 @@ def internal_ids(report_input: ReportInput) -> dict[str, tuple[str, str]]:
 _KEY_SPAN = re.compile(r"\{[^{}]*\}")
 
 
-def _bounded(name: str) -> re.Pattern[str]:
-    """``name`` where a non-word character or the text's edge bounds it on both sides, in any case: D3's rule."""
-    return re.compile(rf"(?<!\w){re.escape(name)}(?!\w)", re.IGNORECASE)
+def _bounded(name: str, *, exact: bool = False) -> re.Pattern[str]:
+    """``name`` where a non-word character or the text's edge bounds it on both sides, in any case unless ``exact``:
+    D3's rule."""
+    return re.compile(rf"(?<!\w){re.escape(name)}(?!\w)", 0 if exact else re.IGNORECASE)
 
 
-def typed_ids(text: str, ids: Mapping[str, object], shown: Iterable[str]) -> list[str]:
+def typed_ids(text: str, ids: Mapping[str, object], shown: Iterable[str], *, exact: Collection[str] = ()) -> list[str]:
     """The ids ``text`` types outside its keys and outside any name a reader is shown, each once, in order found.
 
     Names and ids are matched in one pass, longest first, each masked where it matched, so a shown name that is a
@@ -258,6 +259,9 @@ def typed_ids(text: str, ids: Mapping[str, object], shown: Iterable[str]) -> lis
     :ptype ids: Mapping[str, object]
     :param shown: The names a reader is shown, which hide an id inside them.
     :ptype shown: Iterable[str]
+    :param exact: The ids matched in their own case only, where a word of another case is not the id (a case id
+        ``q3`` against "Q3"); every other name is matched in any case.
+    :ptype exact: Collection[str]
     :return: The ids typed, in the order they first appear.
     :rtype: list[str]
     """
@@ -265,7 +269,7 @@ def typed_ids(text: str, ids: Mapping[str, object], shown: Iterable[str]) -> lis
     candidates = {name: False for name in shown} | dict.fromkeys(ids, True)
     found: dict[str, int] = {}
     for name in sorted(candidates, key=len, reverse=True):
-        for match in _bounded(name).finditer("".join(masked)):
+        for match in _bounded(name, exact=name in exact).finditer("".join(masked)):
             masked[match.start() : match.end()] = "_" * (match.end() - match.start())
             if candidates[name]:
                 found.setdefault(name, match.start())

@@ -20,7 +20,8 @@ refused, so a revision sees everything at once.
    (:func:`~threetears.evals.analysis.report.figure_keys.render`); no prose types a number outside its keys, except the
    names the snapshot states (arm, aspect, measure, setting and the other names
    :func:`~threetears.evals.analysis.report.figure_keys.literal_numbers` sets aside), the percentile labels (``p95``),
-   a cost's unit (``per 1,000``, ``per 1k``, ``$/1k``) and the document's own claim ids (``c1``); and no prose writes
+   a cost's unit (``per 1,000``, ``per 1k``, ``$/1k``) and the document's own claim ids (``c1``, never an id of digits
+   alone, which reads as a number; above the appendix invariant 5 refuses a claim id); and no prose writes
    a unit right after a key that prints it, nor keys sub-cent money per reply on a page that states its costs per
    1,000 (:mod:`~threetears.evals.analysis.report_prose_checks`).
 2. **Every evidence block resolves and renders**, as ``block_render`` draws it: completed
@@ -33,14 +34,17 @@ refused, so a revision sees everything at once.
    where its reach allows: a report-wide one in the confidence; a scoped one in the confidence or beside a claim. A
    method-level one (latency not compared, an unreported observation, an apparatus confound that is not report-wide)
    does not touch the confidence (ANALYST §7, invariant 3), so it may land in either place or a Method item, or not
-   at all. Each id appears once in the confidence, and ``checked: "immaterial"`` stands only where
+   at all. Once a caveat lands where its reach allows, naming it again beside a claim or in Method is the analyst's
+   emphasis, not a fault. Each id appears once in the confidence, and ``checked: "immaterial"`` stands only where
    :func:`~threetears.evals.analysis.report_decision.caveat_materiality` proves it.
 4. **The confidence form** matches its caveats: ``high`` holds no open caveat, ``high_if_immaterial`` at least one (each
    open caveat states its ``material_if``), and ``low`` holds whatever it holds.
 5. **No internal id above the appendix.** The prose above it (everything but ``omitted`` and ``method``) types no id
    that reads as one (:func:`~threetears.evals.analysis.report_prose_checks.reads_as_id`) where a reader is shown a
    name: an aspect, measure, judged dimension, stratum, task or criterion id, an arm id the page prints by another
-   name, a caveat id, a decision slot's word, or an example's trial or case id. The rendered page's text above the
+   name, a caveat id, a decision slot's word, an example's trial or case id, or one of the document's own claim ids
+   (the page places claims and never shows their ids; an example or claim id is matched in its own case, so a case
+   ``q3`` is not the word "Q3"). The rendered page's text above the
    appendix is checked the same way where the caller passes it (``above_appendix_text``, the renderer's
    ``above_appendix_text(page)``), which catches what the renderer itself prints: a caveat id, a measure key in a
    header. That text leaves out the example cards the renderer draws, which print their trial and case ids and are
@@ -120,9 +124,10 @@ _BLOCK_REMEDY = (
     "the evidence until block_render draws it"
 )
 _CAVEAT_REMEDY = {
-    "report": "it is report-wide: list it in confidence.caveats, open with its material_if or checked as code proves",
+    "report": "it is report-wide: list it in confidence.caveats, open with its material_if or checked as code proves; "
+    "it may be named beside a claim or in Method too",
     "scoped": "it touches some comparisons: list it in confidence.caveats, or name it in the caveats of the claim it "
-    "qualifies",
+    "qualifies; it may be named in Method too",
 }
 _REPEAT_REMEDY = "the confidence carries each caveat once: drop the repeat"
 _CHECKED_REMEDY = (
@@ -135,6 +140,8 @@ _FORM_REMEDY = {
     "is conditional on, or make the form high",
 }
 _ID_REMEDY = "a reader is shown names, never ids: write the name the page prints, or a figure key"
+_EXAMPLE_REMEDY = "a {kind} has no name a reader is shown: describe it in words; its example card shows the id"
+_CLAIM_REMEDY = "the page places claims and shows no id above the appendix: say what the claim found, in words"
 _METHOD_REMEDY = "Method holds at least one term: say how the evidence was gathered and read"
 
 #: A cost's unit, which prose may type with its digits: the count (``1,000``, ``1k``, ``1,000,000``) after ``per`` or
@@ -152,6 +159,8 @@ _PLACES: dict[str, frozenset[str]] = {
     "report": frozenset({"confidence"}),
     "scoped": frozenset({"confidence", "claim"}),
 }
+#: How a fault names each place a caveat lands.
+_LANDING_WORDS = {"confidence": "the confidence", "claim": "a claim's caveats"}
 #: Where a caveat left out is reported: the one place every reach may land.
 _HOME = "confidence.caveats"
 
@@ -217,10 +226,17 @@ def _prose(doc: ReportDoc) -> list[tuple[str, str]]:
 # --- 1. numbers come through figure keys ---------------------------------------------------------------------------
 
 
+def _claim_ids(doc: ReportDoc) -> list[str]:
+    """The document's claim ids that read as names, longest first: never one made only of digits, which reads as a
+    number (``literal_numbers``' own rule for an id of digits alone)."""
+    return sorted((claim.id for claim in doc.claims if not claim.id.isdecimal()), key=len, reverse=True)
+
+
 def _allowed_phrases(doc: ReportDoc) -> re.Pattern[str]:
     """What prose may type with its digits beside the snapshot's names: a cost's unit, and the document's own claim
-    ids (``c1``), by which its appendix and the editor's findings name a claim."""
-    claims = [rf"(?<!\w){re.escape(claim.id)}(?!\w)" for claim in sorted(doc.claims, key=lambda c: -len(c.id))]
+    ids (``c1``), matched in their own case. The appendix names a claim by its id; above it, invariant 5 refuses one,
+    so each draws that one verdict."""
+    claims = [rf"(?<!\w)(?-i:{re.escape(claim)})(?!\w)" for claim in _claim_ids(doc)]
     return re.compile("|".join([_COST_UNIT.pattern, *claims]), re.IGNORECASE)
 
 
@@ -301,7 +317,8 @@ def _coverage_verdicts(
         if caveat.reach == "method":
             continue  # lands anywhere a caveat may, or nowhere: it does not touch the call's confidence
         places = landed.get(caveat.id, [])
-        allowed = _PLACES[caveat.reach]
+        if any(place in _PLACES[caveat.reach] for _path, place in places):
+            continue  # it lands where its reach allows; naming it again elsewhere is the analyst's emphasis
         if not places:
             yield DocVerdict(
                 invariant=3,
@@ -309,14 +326,17 @@ def _coverage_verdicts(
                 fault=f"leaves out the caveat {caveat.id!r}, which code assigns on this snapshot ({caveat.reach} reach)",
                 remedy=_CAVEAT_REMEDY[caveat.reach],
             )
-        for path, place in places:
-            if place not in allowed:
-                yield DocVerdict(
-                    invariant=3,
-                    path=path,
-                    fault=f"names {caveat.id!r} in a {place}, where a caveat of {caveat.reach} reach does not land",
-                    remedy=_CAVEAT_REMEDY[caveat.reach],
-                )
+            continue
+        path, place = places[0]
+        yield DocVerdict(
+            invariant=3,
+            path=path,
+            fault=(
+                f"names {caveat.id!r} only in a {place}, and a caveat of {caveat.reach} reach lands in "
+                f"{' or '.join(sorted(_LANDING_WORDS[where] for where in _PLACES[caveat.reach]))}"
+            ),
+            remedy=_CAVEAT_REMEDY[caveat.reach],
+        )
     first: dict[str, int] = {}
     for index, entry in enumerate(doc.confidence.caveats):
         if entry.id in first:
@@ -374,8 +394,9 @@ def _id_verdicts(
     caveats: Sequence[Caveat | ImpliedCaveat],
     above_appendix_text: str,
 ) -> Iterator[DocVerdict]:
-    said = {
-        identifier: f"the {kind} id {identifier!r}" for identifier, (kind, _n) in internal_ids(report_input).items()
+    said: dict[str, tuple[str, str]] = {
+        identifier: (f"the {kind} id {identifier!r}", _ID_REMEDY)
+        for identifier, (kind, _name) in internal_ids(report_input).items()
     }
     arms = {arm.id: arm.name for arm in fact_arms(report_input)}
     printed = {
@@ -384,41 +405,47 @@ def _id_verdicts(
     }
     for arm, names in printed.items():
         if reads_as_id(arm) and arm.casefold() not in names:
-            said.setdefault(arm, f"the arm id {arm!r}, which the page prints as {arms[arm]!r}")
+            said.setdefault(arm, (f"the arm id {arm!r}, which the page prints as {arms[arm]!r}", _ID_REMEDY))
     named = [caveat.id for caveat in caveats] + [caveat.id for caveat in doc.confidence.caveats]
     for caveat in named:
         if reads_as_id(caveat):
-            said.setdefault(caveat, f"the caveat id {caveat!r}")
+            said.setdefault(caveat, (f"the caveat id {caveat!r}", _ID_REMEDY))
     for slot in get_args(DecisionSlotWord):
         if reads_as_id(slot):
-            said.setdefault(slot, f"the slot word {slot!r}, which titles its entry")
+            said.setdefault(slot, (f"the slot word {slot!r}, which titles its entry", _ID_REMEDY))
     shown = {name for names in reader_names(report_input).values() for name in names.values()}
     shown |= {
         name for arm in report_input.arms for name in (arm.id, arm.name, arm.short_name, arm.served_model) if name
     }
     shown |= set(arms.values())
-    folded = {name.casefold() for name in shown}
-    cards = {
-        identifier: f"the example id {identifier!r}"
-        for example in report_input.examples
-        for identifier in (example.trial, example.case)
-        if identifier
-        and identifier not in said
-        and identifier.casefold() not in folded
-        and (reads_as_id(identifier) or any(character.isdigit() for character in identifier))
-    }
-    above = [(path, text) for path, text in prose if not path.startswith(_APPENDIX)]
-    ids = said | cards
+    exact: dict[str, tuple[str, str]] = {}
+    for example in report_input.examples:
+        for kind, identifier in (("trial", example.trial), ("case", example.case)):
+            if identifier and identifier not in said and identifier not in shown and _reads_as_a_tag(identifier):
+                exact.setdefault(identifier, (f"the {kind} id {identifier!r}", _EXAMPLE_REMEDY.format(kind=kind)))
+    for claim in _claim_ids(doc):
+        if claim not in said and claim not in shown and _reads_as_a_tag(claim):
+            exact.setdefault(claim, (f"the claim id {claim!r}, which the page never shows", _CLAIM_REMEDY))
+    ids = said | exact
     hidden = shown - set(ids)
-    yield from _typed(above, ids, hidden, "above the appendix")
+    above = [(path, text) for path, text in prose if not path.startswith(_APPENDIX)]
+    yield from _typed(above, ids, hidden, set(exact), "above the appendix")
     if above_appendix_text:
-        yield from _typed([(_PAGE, above_appendix_text)], ids, hidden, "on the page above the appendix")
+        yield from _typed([(_PAGE, above_appendix_text)], ids, hidden, set(exact), "on the page above the appendix")
 
 
-def _typed(texts: Sequence[tuple[str, str]], said: dict[str, str], shown: set[str], where: str) -> Iterator[DocVerdict]:
+def _reads_as_a_tag(identifier: str) -> bool:
+    """An id no reader would take for a word: one that reads as an id, or carries a digit (``T15``, ``c2``)."""
+    return reads_as_id(identifier) or any(character.isdigit() for character in identifier)
+
+
+def _typed(
+    texts: Sequence[tuple[str, str]], said: dict[str, tuple[str, str]], shown: set[str], exact: set[str], where: str
+) -> Iterator[DocVerdict]:
     for path, text in texts:
-        for identifier in typed_ids(text, said, shown):
-            yield DocVerdict(invariant=5, path=path, fault=f"types {said[identifier]} {where}", remedy=_ID_REMEDY)
+        for identifier in typed_ids(text, said, shown, exact=exact):
+            what, remedy = said[identifier]
+            yield DocVerdict(invariant=5, path=path, fault=f"types {what} {where}", remedy=remedy)
 
 
 # --- 6. Method is present ------------------------------------------------------------------------------------------

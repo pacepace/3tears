@@ -29,6 +29,8 @@ from threetears.evals.kernel.report_doc import ReportDoc, Story
 _KAIRO = "prototype3/kairo"
 #: The third prototype's r2 document, whose arm ids read as ids and print as names.
 _R2 = "prototype3/r2"
+#: The second prototype's s1 document, whose snapshot's example cases carry digits (``tc-06``).
+_S1 = "prototype2/s1"
 
 #: A change to a document as stored.
 _Change = Callable[[dict[str, Any]], None]
@@ -124,6 +126,27 @@ def _only_checked_caveats(doc: dict[str, Any]) -> None:
     doc["confidence"]["form"] = "high"
 
 
+def _only_at(caveat_id: str, where: tuple[str | int, ...]) -> _Change:
+    """Name a caveat at one place alone: out of the confidence and every claim, then in ``where``'s caveats."""
+
+    def change(doc: dict[str, Any]) -> None:
+        _drop_caveat(caveat_id)(doc)
+        for part in (*doc["claims"], *doc["method"]):
+            part["caveats"] = [named for named in part["caveats"] if named != caveat_id]
+        node: Any = doc
+        for step in where:
+            node = node[step]
+        node["caveats"] = [*node["caveats"], caveat_id]
+
+    return change
+
+
+def _number_claims(doc: dict[str, Any]) -> None:
+    """Name the claims ``1``, ``2``, ``3`` and on, ids of digits alone."""
+    for number, claim in enumerate(doc["claims"], start=1):
+        claim["id"] = str(number)
+
+
 def _no_method(doc: ReportDoc) -> ReportDoc:
     """The document with no Method item, which the model refuses on its own: the invariant holds it for a document
     built without validation too."""
@@ -154,6 +177,10 @@ def test_each_later_converted_document_passes_every_invariant(name: str) -> None
         ("a cost's unit", (_append(_RECOMMENDATION, " Costs are read per 1k replies, or $/1,000."),)),
         ("a claim id in Method", (_append(("method", 0, "text"), " The cost claim is c1."),)),
         ("a low confidence with open caveats", (_set(("confidence", "form"), "low"),)),
+        ("a report-wide caveat named again beside a claim", (_set(("claims", 0, "caveats"), ["judge_uncalibrated"]),)),
+        ("a report-wide caveat named again in Method", (_set(("method", 0, "caveats"), ["judge_uncalibrated"]),)),
+        ("a scoped caveat named again in Method", (_set(("method", 0, "caveats"), ["confound:model"]),)),
+        ("claims numbered by digits alone", (_number_claims,)),
     ],
     ids=lambda value: value if isinstance(value, str) else "",
 )
@@ -217,12 +244,18 @@ class _Negative:
 
 _NEGATIVES = [
     _Negative("a typed digit", 1, (_append(_RECOMMENDATION, " It is 12 percent cheaper."),)),
+    _Negative(
+        "typed digits beside claims numbered by digits alone",
+        1,
+        (_append(_RECOMMENDATION, " It wins 2 of 3 aspects."),),
+        base=(_number_claims,),
+    ),
     _Negative("a doubled unit", 1, (_replace(_RECOMMENDATION, _COST_KEY, f"{_COST_KEY} per 1,000 replies"),)),
     _Negative("a key that does not render", 1, (_append(_RECOMMENDATION, " {scoreboard.September.no_such_figure}"),)),
     _Negative("a query naming no measure", 2, (_set(("claims", 0, "evidence", 0, "query", "measures"), ["nope"]),)),
     _Negative("a report-wide caveat left out", 3, (_drop_caveat("judge_uncalibrated"),)),
-    _Negative("a report-wide caveat beside a claim", 3, (_set(("claims", 0, "caveats"), ["judge_uncalibrated"]),)),
-    _Negative("a scoped caveat in Method", 3, (_set(("method", 0, "caveats"), ["confound:model"]),)),
+    _Negative("a report-wide caveat only beside a claim", 3, (_only_at("judge_uncalibrated", ("claims", 0)),)),
+    _Negative("a scoped caveat only in Method", 3, (_only_at("confound:model", ("method", 0)),)),
     _Negative("a caveat listed twice", 3, (_repeat_caveat("judge_uncalibrated"),)),
     _Negative(
         "a caveat checked that code does not prove",
@@ -241,6 +274,8 @@ _NEGATIVES = [
     _Negative("a slot word", 5, (_append(_RECOMMENDATION, " See why_not."),)),
     _Negative("a caveat id", 5, (_append(_RECOMMENDATION, " The late:margin holds."),)),
     _Negative("a card's id in prose", 5, (_append(_RECOMMENDATION, " Trial T15 shows it."),)),
+    _Negative("a case id in prose, in its own case", 5, (_append(("decision", 0, "text"), " See tc-06."),), doc=_S1),
+    _Negative("a claim id above the appendix", 5, (_append(_RECOMMENDATION, " (see c2)"),)),
     _Negative("a measure key on the page", 5, page=_page_with("Cost | production_replicating_cost")),
     _Negative("a caveat id on the page", 5, page=_page_with("Open caveats: judge_uncalibrated")),
     _Negative("no Method item", 6, after=_no_method),
@@ -287,6 +322,25 @@ def test_validity_comes_first_and_the_invariants_still_run() -> None:
         (0, "recommends[0]"),
         (1, "decision[0].text"),
     ]
+
+
+def test_an_example_id_in_another_case_is_a_word() -> None:
+    """A case id is matched in its own case: "TC-06" is not the case ``tc-06``."""
+    verdicts = _verdicts(_S1, _append(("decision", 0, "text"), " See TC-06."))
+
+    assert verdicts == [], _said(verdicts)
+
+
+def test_an_id_with_no_reader_name_is_sent_to_words() -> None:
+    """A trial, a case or a claim has no name the page shows, so its remedy is to say it in words, not to name it."""
+    remedies = [
+        verdict.remedy
+        for verdict in _verdicts(_KAIRO, _append(_RECOMMENDATION, " Trial T15 shows it (see c2)."))
+        if verdict.invariant == 5
+    ]
+
+    assert len(remedies) == 2
+    assert all("in words" in remedy and "name the page prints" not in remedy for remedy in remedies), remedies
 
 
 def test_a_verdict_names_where_it_sits_and_how_to_mend_it() -> None:
