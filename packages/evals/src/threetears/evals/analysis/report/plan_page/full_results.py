@@ -21,6 +21,11 @@ table                 rows and cells
 ``cells``             a target-matrix cell per row and measure: its cases and every arm's figure
 ====================  ============================================================================================
 
+**Every table the input holds** (:func:`every_table`): a report document's full-results appendix, which no plan
+lists. It is each table above, in that order, where the input holds a row of it: every arm by measure always, the
+rest as the input holds contrasts, strata or tasks, gates or guardrails, configurations and cells. Which tables print
+is read off the input's rows alone.
+
 **Numbers by the page's one rule.** A figure is stated as a chart states it
 (:func:`~threetears.evals.analysis.report.plan_page.charting.figure_unit`,
 :func:`~threetears.evals.analysis.report.plan_page.look.quantity`,
@@ -68,7 +73,7 @@ from threetears.evals.analysis.report_margins import criterion_figures, criterio
 from threetears.evals.analysis.style import humanize
 from threetears.evals.kernel.report_plan import ReportPlan
 
-__all__ = ["full_results"]
+__all__ = ["every_table", "full_results"]
 
 
 #: Each corrected comparison's verdict's pill: a separated gain or equivalence good, a regression bad, the rest
@@ -427,3 +432,16 @@ def full_results(plan: ReportPlan, report_input: ReportInput, look: PageLook) ->
     :rtype: list[TableBlock]
     """
     return [table for name in plan.full_results for table in _TABLES[name](report_input, look)]
+
+
+def every_table(report_input: ReportInput, look: PageLook) -> list[TableBlock]:
+    """Every Full results table the input holds a row of, in this module's order (this module's account).
+
+    :param report_input: The report input a report document was written from.
+    :ptype report_input: ReportInput
+    :param look: The page's look.
+    :ptype look: PageLook
+    :return: The tables, each with one row at least.
+    :rtype: list[TableBlock]
+    """
+    return [table for build in _TABLES.values() for table in build(report_input, look) if table.rows]

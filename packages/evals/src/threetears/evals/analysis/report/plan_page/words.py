@@ -39,6 +39,7 @@ __all__ = [
     "ARM_HEADERS",
     "ARM_ROLE_WORDS",
     "ARMS_EYEBROW",
+    "ARMS_TABLE_ORDER",
     "ARMS_TAKEAWAY",
     "ASPECT_MEASURE_TEMPLATE",
     "CONFIDENCE_LABEL",
@@ -70,6 +71,7 @@ __all__ = [
     "PASSES_TEMPLATE",
     "REFERENCE_TEMPLATE",
     "REPEAT_TEMPLATE",
+    "RECOMMENDED_MARK",
     "ROLE_WORDS",
     "RUN_TEMPLATE",
     "SYNTHETIC",
@@ -166,6 +168,12 @@ ROLE_WORDS: dict[str, str] = {
     "cheapest": "Cheapest",
     "alternative": "Alternative",
 }
+
+#: The mark beside an arm's role in a report document's options table where the document recommends it.
+RECOMMENDED_MARK = "recommended"
+
+#: How a report document's options table orders its rows: every arm, as the input lists them.
+ARMS_TABLE_ORDER = "every arm, in the campaign's arm order"
 
 #: The options table's title, which a reader of its values (a screen reader, Markdown) is given.
 OPTIONS_TITLE = "Options"

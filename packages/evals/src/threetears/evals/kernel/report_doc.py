@@ -539,4 +539,4 @@ class EvalReportDoc(EvalDocumentModel):
 #: The names with a caller outside this module. The document's own models and functions are this build's first
 #: report-doc/1 surface; each joins this list with its first production caller (the invariants, the claims renderer,
 #: the writing loop), never for a test alone.
-__all__ = ["EvalReportDoc"]
+__all__ = ["DocCaveat", "EvalReportDoc", "Evidence", "ReportDoc", "ReportFinding", "is_analyst_caveat"]

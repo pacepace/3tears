@@ -1,8 +1,9 @@
 """``kernel/report_doc.py`` exports a name once production code calls it, and not before.
 
-The module's ``__all__`` holds only :class:`~threetears.evals.kernel.report_doc.EvalReportDoc`, whose caller is the
-store. Its other public names (the document's models and functions) are this build's first ``report-doc/1`` surface,
-waiting for their production callers: the invariants, the claims renderer, the writing loop. ``CLAUDE.md`` holds that
+The module's ``__all__`` holds :class:`~threetears.evals.kernel.report_doc.EvalReportDoc`, whose caller is the store,
+and the names the claims renderer reads a document by (``analysis/report/doc_page/build.py``). Its other public names
+(the document's other models and functions) are this build's first ``report-doc/1`` surface, waiting for their
+production callers: the invariants and the writing loop. ``CLAUDE.md`` holds that
 no public API exists only for a test, and the caller gate (``tests/enforcement/test_public_api_has_a_caller.py``)
 reads a module's surface from its ``__all__``, so it cannot see the names left out. This test keeps the promise
 checkable: :data:`_AWAITING_A_CALLER` lists every public name left out, and goes red the moment a ``src`` module
@@ -36,17 +37,12 @@ _AWAITING_A_CALLER = frozenset(
         "ConfidenceForm",
         "DecisionEntry",
         "DecisionSlotWord",
-        "DocCaveat",
         "DocConfidence",
-        "Evidence",
         "ExploreRow",
         "MethodItem",
         "NextStep",
         "Omitted",
-        "ReportDoc",
-        "ReportFinding",
         "Story",
-        "is_analyst_caveat",
         "report_doc_json_schema",
         "report_doc_validity",
     }
