@@ -46,6 +46,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from threetears.evals.analysis.quantities import MONEY
+from threetears.evals.analysis.report.cost_unit import priced_in_part
 from threetears.evals.analysis.report.blocks import ChartBlock
 from threetears.evals.analysis.report.charts import (
     BarsChart,
@@ -98,6 +100,7 @@ from threetears.evals.analysis.report.plan_page.look import (
     log_spread,
     magnitude_domain,
     quantity,
+    quantity_of,
 )
 from threetears.evals.analysis.report.plan_page.words import (
     BAR_STRIP_NOTE,
@@ -179,6 +182,13 @@ def _declared_level(context: ChartContext, keys: Iterable[str]) -> str:
     return levels.pop() if len(levels) == 1 else ""
 
 
+def _priced_part(context: ChartContext, arm: str, drawn: Quantity) -> str:
+    """What a money figure of an arm whose cost counts only part of its calls says beside it: `` (850 of 897 calls
+    priced)``; empty for any other figure."""
+    share = priced_in_part(context.report_input, arm) if drawn.unit == MONEY and arm else None
+    return f" ({share})" if share is not None else ""
+
+
 def _dot(
     context: ChartContext,
     *,
@@ -195,6 +205,9 @@ def _dot(
     tip = [label, figure_text(value, drawn)]
     if interval is not None:
         tip[1] += f", {interval_words(*interval, drawn)}"
+    if drawn.unit == MONEY and arm and (share := priced_in_part(context.report_input, arm)) is not None:
+        # A cost over part of the arm's calls is a smaller total, never stated bare.
+        tip[1] += f" ({share})"
     strong = True if context.summary and arm and arm == context.look.recommended else None
     return _Dot(id=row_id, label=label, arm=arm, value=value, interval=interval, tip=tip, strong=strong)
 
@@ -414,7 +427,19 @@ def _bar_read_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[st
     several_aspects = len({aspect for aspect, *_ in groups}) > 1
     strips = []
     for (aspect, measure, bar, direction), held in groups.items():
-        drawn = quantity(figure_unit(report_input, measure))
+        # One form for the strip: its line and every read's value and interval ends (#993).
+        drawn = quantity_of(
+            figure_unit(report_input, measure),
+            [
+                bar,
+                *(
+                    float(number)
+                    for read in held
+                    for number in (read.value, *(read.interval or ()))
+                    if number is not None
+                ),
+            ],
+        )
         kind: Literal["floor", "budget"] = "floor" if direction == "higher_is_better" else "budget"
         line = ChartReference(
             value=bar * drawn.factor,
@@ -749,8 +774,8 @@ def _scatter(context: ChartContext) -> Drawn:
     points, x_key, y_key, x_unit, y_unit = _scatter_points(context)
     if not points:
         raise context.refuse("no arm holds both of its figures")
-    x_drawn = quantity(x_unit, [point.x for point in points])
-    y_drawn = quantity(y_unit, [point.y for point in points])
+    x_drawn = quantity_of(x_unit, [point.x for point in points])
+    y_drawn = quantity_of(y_unit, [point.y for point in points])
     xs = [point.x * x_drawn.factor for point in points]
     ys = [point.y * y_drawn.factor for point in points]
     tasks = list(dict.fromkeys(point.task for point in points))
@@ -798,8 +823,10 @@ def _scatter(context: ChartContext) -> Drawn:
                     muted=True if context.summary and point.arm not in context.look.survivors else None,
                     tip=[
                         _arm_name(context, point.arm),
-                        f"{measure_words(context.report_input, x_key)} {figure_text(x_value, x_drawn)}",
-                        f"{measure_words(context.report_input, y_key)} {figure_text(y_value, y_drawn)}",
+                        f"{measure_words(context.report_input, x_key)} {figure_text(x_value, x_drawn)}"
+                        + _priced_part(context, point.arm, x_drawn),
+                        f"{measure_words(context.report_input, y_key)} {figure_text(y_value, y_drawn)}"
+                        + _priced_part(context, point.arm, y_drawn),
                     ],
                 )
             )

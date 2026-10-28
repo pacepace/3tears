@@ -31,6 +31,7 @@ from threetears.evals.kernel.numbers import (
     PER_THOUSAND,
     PER_THOUSAND_MARK,
     WHOLE_FROM,
+    MoneyForm,
     format_number,
     group_thousands,
     money_form,
@@ -85,14 +86,16 @@ _FORMAT_UNITS: dict[str, str] = {
     "x": "×",
 }
 
-#: A format spec's parts: the sign flag and the name; the digits are the axis's, not the table's.
-_FORMAT_SPEC = re.compile(r"^(\+?)([a-z]+)(?::\d)?$")
+#: A format spec's parts: the sign flag, the name and the digits. The digits are the axis's, not the table's, but for
+#: money's: a chart chooses money's one form from every amount it draws (#993), and its table writes it too.
+_FORMAT_SPEC = re.compile(r"^(\+?)([a-z]+)(?::(\d))?$")
 
 
 def _formatted(spec: str, value: float, read_at: str = "") -> str:
     """``value`` as a chart's table prints it: in the unit the kit's named format ``spec`` states it in, by the
     package's one number rule, signed where the spec signs it; whatever digits the spec rounds its axis to, a table
-    never rounds away what the value holds.
+    never rounds away what the value holds, but money: a money format with digits (``usd:2``) is the chart's one money
+    form, chosen from every amount it draws, and its table writes each amount in it, as its ticks and notes do.
 
     Where the format names no unit (``num``) and its block says the unit its values are read at (``read_at``, a
     chart of what an analysis computes: two arms' difference, a lever's effect, in points), the value is spelled at
@@ -114,6 +117,8 @@ def _formatted(spec: str, value: float, read_at: str = "") -> str:
     if match is None or match[2] not in _FORMAT_UNITS:
         raise ValueError(f"fmt {spec!r} is not one of {', '.join(_FORMAT_UNITS)}")
     unit = _FORMAT_UNITS[match[2]]
+    if unit == MONEY and match[3] is not None:
+        return MoneyForm(decimals=int(match[3])).spell(value, signed=bool(match[1]))
     if not unit and read_at:
         text = number_in(value, read_at)
         # Signed as format_signed signs a change: a positive value carries its "+", a bound its own direction.
@@ -289,7 +294,7 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
     """A values table's cells, every number at one precision among the cells that read alike: cells that read the
     same but for their numbers (``94% · 3 calls``, ``96.4% · 4 calls``), wherever they sit in the table, have each
     number in the same place padded with zeros to the most decimals that place holds among them (``94.0%``), up to
-    three. Money is first put in one form per column (#993, :func:`money_by_column`): per 1,000 (``$8/1000``) throughout
+    three. Money is first put in one form per column (#993, :func:`_money_by_column`): per 1,000 (``$8/1000``) throughout
     a column where any amount it holds is under a cent, so a column never reads ``$0.008`` beside ``$0.11``, and its
     whole dollars grouped by thousands (``$1,239``), as the figure keys write money.
 
@@ -306,7 +311,7 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
     :return: The rows, each number padded among the cells that read like its own.
     :rtype: list[list[str]]
     """
-    table = money_by_column([list(row) for row in rows])
+    table = _money_by_column([list(row) for row in rows])
     shaped: dict[str, list[tuple[int, int]]] = {}
     for at, row in enumerate(table):
         for column, cell in enumerate(row):
@@ -327,7 +332,7 @@ def _money_amount(found: re.Match[str]) -> float:
     return -amount if found.group(1) in ("-", "−") else amount
 
 
-def money_by_column(table: list[list[str]]) -> list[list[str]]:
+def _money_by_column(table: list[list[str]]) -> list[list[str]]:
     """Every amount of money in each column of a table's text in that column's one form (#993): per 1,000
     (``$8/1000``) throughout where any amount the column holds is under a cent
     (:func:`~threetears.evals.kernel.numbers.money_form`), else in dollars, and every amount's whole dollars grouped by
@@ -1417,5 +1422,4 @@ __all__ = [
     "ScatterPath",
     "ScatterPoint",
     "even_precision",
-    "money_by_column",
 ]

@@ -33,18 +33,24 @@ import pytest
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_inputs, fixture_snapshots
 from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle
+from packages.evals.tests.run_facts_support import CASES, aspect_bundle, campaign_over, result_of, run_of
 from threetears.evals.analysis import ABSENT, UNPRICED, dollars_text, format_number
 from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_input
 from threetears.evals.analysis.bundle.schema import ArmPricing
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
-from threetears.evals.analysis.report.block_spec import block_look
+from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell, money_columns
+from threetears.evals.analysis.report.charts import BarsChart
+from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import even_precision
 from threetears.evals.analysis.report.figure_keys import Figure, format_figure, render, resolve
+from threetears.evals.analysis.report.plan_page.full_results import every_table
 from threetears.evals.analysis.report.plan_page.look import figure_text, quantity
-from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
+from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report.plan_page.tables import arms_table
+from threetears.evals.kernel.report_plan import ChartQuery, PlanChartKind, PlannedChart
 from threetears.evals.analysis.report_input import Pricing, ReportInput, Unanswered
+from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.schema.models import RoleUsage
 from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.kernel.numbers import MoneyForm, money_form, spell_dollars
 
@@ -53,6 +59,9 @@ INPUTS: dict[str, ReportInput] = {
     **{name: held for name, held in fixture_inputs().items() if name in ("r1", "r2", "r3", "r4", "r5")},
     KAIRO: frozen_input(fixture_snapshots("s")[KAIRO]),
 }
+
+#: The arms of the census's planted campaign: the control and the candidate.
+BASE, FAST = "base", "fast"
 
 #: An amount of money as a page prints it: its sign, its digits and the per-1,000 mark where it has one.
 _AMOUNT = re.compile(r"([+\-]?)\$(\d[\d,]*)(?:\.(\d+))?(/1000)?")
@@ -116,6 +125,21 @@ def test_the_decimals_give_the_least_member_two_figures_and_never_fewer_than_cen
     assert money_form([0.0013, 0.61]) == MoneyForm(per_thousand=True, decimals=2)
 
 
+def test_a_set_whose_least_amount_is_ten_dollars_or_more_reads_whole_dollars_on_every_surface() -> None:
+    """r4's monthly costs read alike on a chart, in a key and in a table: one rule, money_form's."""
+    assert money_form([14.5, 120.0]) == MoneyForm(per_thousand=False, decimals=0)
+    assert money_form([9.5, 120.0]) == MoneyForm(per_thousand=False, decimals=2)
+    held = INPUTS["r4"]
+    months = _arms(held, "cost_per_month.{arm}")
+    values = [float(figure.value) for figure in months.values() if isinstance(figure.value, float)]
+    drawn = quantity("dollars", values)
+    for figure in months.values():
+        assert isinstance(figure.value, float)
+        key = format_figure(figure, ("usd",))
+        assert key == figure_text(figure.value * drawn.factor, drawn) == money_form(values).spell(figure.value)
+        assert "." not in key
+
+
 def test_unknown_reads_unpriced_never_a_zero_and_is_no_member() -> None:
     form = money_form([None, 0.11, math.nan])
     assert form == money_form([0.11])
@@ -162,6 +186,10 @@ def test_every_key_of_a_money_family_reads_in_its_sets_one_form(
     factor = 1000.0 if filters == ("usd_per_1k",) and next(iter(figures.values())).scale == "usd" else 1.0
     values = {arm: float(figure.value) * factor for arm, figure in figures.items() if isinstance(figure.value, float)}
     form = money_form(values.values())
+    if filters == ("usd_per_1k",) and form.per_thousand:
+        # Per 1,000 a family under a cent moves its ruler to per 1,000,000, the mark never stacked on it.
+        values = {arm: value * 1000 for arm, value in values.items()}
+        form = money_form(values.values())
     texts = {arm: format_figure(figure, filters) for arm, figure in figures.items()}
     for arm, text in texts.items():
         assert text.startswith(form.spell(values[arm])), (arm, text)
@@ -198,21 +226,97 @@ def test_a_values_tables_column_reads_in_one_form_and_keeps_every_digit() -> Non
         assert _amount(row[1]) == pytest.approx(_amount(rows[spelled.index(row)][1]))
 
 
-def test_a_table_block_reads_each_columns_money_in_one_form() -> None:
-    table = TableBlock(
-        section=PLANNED_SECTION,
-        name="planted",
-        title="Planted",
-        columns=[TableColumn(key="arm", header="Arm"), TableColumn(key="cost", header="Cost")],
-        rows=[
-            {"arm": TableCell(value="A"), "cost": TableCell(value="$0.008")},
-            {"arm": TableCell(value="B"), "cost": TableCell(value="$0.11")},
-        ],
-        order="as planted",
-        total_rows=2,
+def test_a_tables_money_column_reads_one_form_chosen_from_its_values() -> None:
+    """A column holding $0.008 and $0.11 reads both per 1,000, to the same decimals: never $8.00/1000 beside
+    $110/1000; each cell is its own value at those decimals, so it states no digit the value does not hold."""
+    rows = money_columns(
+        [
+            {"arm": TableCell(value="A"), "cost": TableCell(value=0.008, unit="usd")},
+            {"arm": TableCell(value="B"), "cost": TableCell(value=0.11, unit="usd")},
+        ]
     )
-    cells = [str(row["cost"].value) for row in table.one_money_form().rows]
-    assert cells == ["$8/1000", "$110/1000"]
+    assert [row["cost"].text for row in rows] == ["$8.00/1000", "$110.00/1000"]
+    assert [row["arm"].text for row in rows] == ["A", "B"]
+
+
+def _money_cells(table: TableBlock) -> dict[str, list[tuple[TableCell, str]]]:
+    """Each column's money cells, with the text a reader is shown, by column key."""
+    cells: dict[str, list[tuple[TableCell, str]]] = {}
+    for row in table.rows:
+        for key, cell in row.items():
+            if cell.is_number and cell.unit == "usd":
+                cells.setdefault(key, []).append((cell, cell.text))
+    return cells
+
+
+def _query(source: str, measures: list[str]) -> ChartQuery:
+    """A chart's query over some measures, every other field at its plain value."""
+    return ChartQuery.model_validate(
+        {
+            "source": source,
+            "aspect": "",
+            "measures": measures,
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none",
+        }
+    )
+
+
+def _planned(kind: PlanChartKind, query: ChartQuery) -> PlannedChart:
+    """A block as the doc page plans one: a kind and a query, no title, line or emphasis."""
+    return PlannedChart(kind=kind, title="", query=query, reference=[], emphasis="")
+
+
+def _engine_tables(held: ReportInput) -> list[TableBlock]:
+    look = block_look(held, fact_arms(held))
+    tables = list(every_table(held, look))
+    for key, measure in held.measures.items():
+        if measure.unit in ("usd", "usd_per_1k", "usd_per_1m") and measure.per_arm:
+            spec, faults = complete_chart(
+                _planned("table", _query("measures", [key])), held, "block"
+            )
+            assert not faults, faults
+            drawn = resolve_chart(spec, held, look, title="", fallback_title="t")
+            assert isinstance(drawn.chart, TableBlock)
+            tables.append(drawn.chart)
+    return tables
+
+
+@pytest.mark.parametrize("name", sorted(INPUTS))
+def test_every_engine_tables_money_column_reads_one_form_from_its_values(name: str) -> None:
+    held = INPUTS[name]
+    checked = 0
+    for table in _engine_tables(held):
+        for key, cells in _money_cells(table).items():
+            values = [float(cell.value) for cell, _ in cells if isinstance(cell.value, int | float)]
+            ends = [float(end) for cell, _ in cells for end in (cell.low, cell.high) if end is not None]
+            form = money_form([*values, *ends])
+            assert len(_forms(text for _, text in cells)) == 1, (table.name, key)
+            for cell, text in cells:
+                assert isinstance(cell.value, int | float)
+                assert text.split(" (")[0] == form.spell(float(cell.value)), (table.name, key, text)
+            checked += 1
+    if not checked:
+        pytest.skip(f"{name}'s tables state no money")
+
+
+def test_r2s_cost_reads_in_its_tables_as_its_key_reads_in_prose() -> None:
+    """r2's brisk-s.low.r1 costs $0.302 per 1,000 calls; at 4,000,000 calls a month $0.30 would give $1,200 beside a
+    monthly $1,208, so the table keeps the third figure its whole column needs."""
+    held = INPUTS["r2"]
+    said = format_figure(resolve("cost_per_1k.brisk-s.low.r1", held), ("usd",))
+    assert said == "$0.302"
+    found = [
+        text
+        for table in _engine_tables(held)
+        for cells in _money_cells(table).values()
+        for cell, text in cells
+        if cell.value == pytest.approx(0.302)
+    ]
+    assert found and set(found) == {said}
 
 
 @pytest.mark.parametrize("name", sorted(INPUTS))
@@ -224,14 +328,44 @@ def test_a_charts_notes_and_ticks_read_in_one_form(name: str) -> None:
     drawn = quantity("usd_per_1k", costs)
     notes = [figure_text(cost * drawn.factor, drawn) for cost in costs]
     assert len(_forms(notes)) == 1, notes
-    assert drawn.money is not None
-    if not drawn.money.per_thousand:
-        assert drawn.fmt == f"usd:{drawn.money.decimals}"
+    assert drawn.money is not None and not drawn.money.per_thousand
+    assert drawn.fmt == f"usd:{drawn.money.decimals}"
+    assert _forms(notes) == {(False, drawn.money.decimals)}, "the ticks' decimals are the notes'"
 
 
-def test_a_planted_chart_under_a_cent_notes_per_1000() -> None:
+def test_a_planted_chart_under_a_cent_draws_a_thousand_times_over_its_ticks_and_notes_alike() -> None:
+    """A chart of $0.008 and $0.11 per 1,000 draws them per 1,000,000, as $8.00 and $110.00: its ticks (the kit's
+    usd:2) and its notes in one form, and no per-1,000 mark the ticks could not draw."""
     drawn = quantity("usd_per_1k", [0.008, 0.11])
-    assert [figure_text(value, drawn) for value in (0.008, 0.11)] == ["$8.00/1000", "$110.00/1000"]
+    assert (drawn.factor, drawn.counted, drawn.fmt) == (1000.0, 1_000_000, "usd:2")
+    notes = [figure_text(value * drawn.factor, drawn) for value in (0.008, 0.11)]
+    assert notes == ["$8.00", "$110.00"]
+    assert _forms(notes) == {(False, 2)}
+
+
+def test_a_cost_scatter_labels_its_money_in_its_axis_form() -> None:
+    """A cost-against-quality scatter over r5's cost per reply: drawn per 1,000 replies, its money reads $1.89-class,
+    never 1,000 times that."""
+    held = INPUTS["r5"]
+    spec, faults = complete_chart(
+        _planned("scatter_frontier", _query("measures", ["production_replicating_cost", "delivered_items"])),
+        held,
+        "block",
+    )
+    assert not faults, faults
+    drawn = resolve_chart(spec, held, block_look(held, fact_arms(held)), title="", fallback_title="t")
+    assert isinstance(drawn.chart, ChartBlock)
+    _, rows = drawn.chart.values_table()
+    costs = {
+        arm: float(stat.mean) * 1000
+        for arm, stat in held.measures["production_replicating_cost"].per_arm.items()
+        if stat.mean is not None
+    }
+    form = money_form(costs.values())
+    spelled = {form.spell(cost) for cost in costs.values()}
+    texts = [cell for row in rows for cell in row if "$" in cell]
+    assert texts and all(text.split(" ")[0] in spelled for text in texts), texts
+    assert all(float(text.split(" ")[0].lstrip("$")) < 10 for text in texts), texts
 
 
 # --- deltas follow their amounts ---------------------------------------------------------------------------------
@@ -286,9 +420,9 @@ def test_a_cost_per_1000_times_the_volume_reaches_the_monthly_figure_within_the_
     for arm in _arms(held, "cost_per_1k.{arm}"):
         price_text = render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {})
         month_text = render(f"{{cost_per_month.{arm}|usd}}", held, {})
-        price, month = _amount(price_text), _amount(month_text)
+        price, month = _amount(price_text) / (1000 if "per 1,000,000" in price_text else 1), _amount(month_text)
         (per_thousand, decimals), *_ = _forms([price_text])
-        rounding = 10.0**-decimals / 2 / (1000 if per_thousand else 1)
+        rounding = 10.0**-decimals / 2 / (1000 if per_thousand or "per 1,000,000" in price_text else 1)
         (_, month_decimals), *_ = _forms([month_text])
         assert abs(price * volume / 1000 - month) <= rounding * volume / 1000 + 10.0**-month_decimals / 2, arm
         checked += 1
@@ -417,3 +551,142 @@ def test_an_arms_pricing_reaches_the_report_input_and_an_arm_without_it_carries_
         assert row.pricing == Pricing(
             sources=["openrouter:reported"], providers=["DeepInfra"], calls=10, priced_calls=9
         )
+
+
+def _costing(held: ReportInput, per_1k: dict[str, float]) -> ReportInput:
+    """The input with each arm's cost per 1,000 (its cost_per_1k measure's mean) as given."""
+    measure = held.measures["cost_per_1k"]
+    per_arm = {arm: stat.model_copy(update={"mean": per_1k[arm]}) for arm, stat in measure.per_arm.items()}
+    return held.model_copy(
+        update={"measures": {**held.measures, "cost_per_1k": measure.model_copy(update={"per_arm": per_arm})}}
+    )
+
+
+def test_an_options_table_whose_costs_are_a_cent_or_more_a_run_reads_per_run() -> None:
+    """r4 with each arm costing $0.05 to $0.09 a reply: the column reads per reply, in dollars, one form."""
+    held = INPUTS["r4"]
+    arms = [arm.id for arm in held.arms]
+    planted = _costing(held, {arm: 50.0 + 10 * index for index, arm in enumerate(arms)})
+    table = arms_table(planted, block_look(planted, fact_arms(planted)), ())
+    (column,) = [column for column in table.columns if column.key == "cost_per_1k"]
+    assert column.header == "Cost per reply"
+    cells = [str(row["cost_per_1k"].value) for row in table.rows]
+    assert cells == [money_form([0.05, 0.06, 0.07, 0.08]).spell(0.05 + 0.01 * index) for index in range(len(arms))]
+    assert cells[0] == "$0.050"
+
+
+def test_an_options_table_under_a_cent_per_1000_runs_reads_per_1000000() -> None:
+    held = INPUTS["r3"]
+    table = arms_table(held, block_look(held, fact_arms(held)), ())
+    (column,) = [column for column in table.columns if column.key == "cost_per_1k"]
+    assert column.header == "Cost per 1,000,000 turns"
+    assert all("/1000" not in str(row["cost_per_1k"].value) for row in table.rows)
+
+
+def test_r3s_price_per_1000_moves_its_ruler_and_stacks_no_mark() -> None:
+    """r3's least cost is $0.0013 per 1,000 turns: its usd_per_1k keys read per 1,000,000 turns, never
+    $180.00/1000 per 1,000."""
+    held = INPUTS["r3"]
+    text = format_figure(resolve("measure.cost_per_1m.atlas-m.zero.mean", held), ("usd_per_1k",))
+    assert text.startswith("$180.00 per 1,000,000 "), text
+    assert "/1000" not in text
+
+
+# --- a partly priced arm ---------------------------------------------------------------------------------------------
+
+
+def _part_priced_control() -> tuple[ReportInput, str, str]:
+    held = INPUTS["r5"]
+    control, candidate = (arm.id for arm in held.arms[:2])
+    pricing = {arm.id: Pricing(sources=["openrouter:reported"], calls=897, priced_calls=897) for arm in held.arms}
+    pricing[control] = Pricing(sources=["openrouter:reported"], calls=897, priced_calls=850)
+    return _priced(held, pricing), control, candidate
+
+
+def test_no_uplift_is_read_against_a_partly_priced_control() -> None:
+    moved, control, candidate = _part_priced_control()
+    assert moved.arms[0].role == "control"
+    table = arms_table(moved, block_look(moved, fact_arms(moved)), ())
+    flag = _row(table, moved, candidate)["cost_per_1k"].flag or ""
+    assert "no uplift: the control has 850 of 897 calls priced" in flag
+    assert "%" not in flag
+
+
+def test_a_partly_priced_arms_cost_keys_say_so_beside_the_amount() -> None:
+    moved, control, candidate = _part_priced_control()
+    assert format_figure(resolve(f"cost_per_1k.{control}", moved), ("usd",)).endswith(" (850 of 897 calls priced)")
+    assert "calls priced" not in format_figure(resolve(f"cost_per_1k.{candidate}", moved), ("usd",))
+    assert "850 of 897 calls priced" in format_figure(resolve(f"cost.uplift.{candidate}", moved))
+
+
+def test_a_partly_priced_arms_bar_says_so_beside_its_cost() -> None:
+    moved, control, _ = _part_priced_control()
+    spec, faults = complete_chart(
+        _planned("bars", _query("measures", ["production_replicating_cost"])), moved, "block"
+    )
+    assert not faults, faults
+    drawn = resolve_chart(spec, moved, block_look(moved, fact_arms(moved)), title="", fallback_title="t")
+    assert isinstance(drawn.chart, ChartBlock)
+    data = drawn.chart.data
+    assert isinstance(data, BarsChart) and data.rows is not None
+    notes = {row.id: row.note or "" for row in data.rows}
+    assert notes[control].endswith(" (850 of 897 calls priced)")
+    assert all("calls priced" not in note for arm, note in notes.items() if arm != control)
+
+
+# --- the census reads an arm's pricing off its stored usage rows -------------------------------------------------------
+
+
+def _row_of(role: str, *, cost: float | None, calls: int | None, source: str = "", provider: str = "") -> RoleUsage:
+    return RoleUsage(
+        role=role,
+        model=FAST,
+        cost_usd=cost,
+        price_source=source or None,
+        call_count=calls,
+        provider=provider or None,
+    )
+
+
+def test_the_census_reads_an_arms_pricing_off_its_production_usage_rows() -> None:
+    """Sources from the priced rows only, providers from every row, the calls and priced calls the rows count; the
+    judge's rows, which no production deployment pays for, are no part of it."""
+    usage = [
+        [
+            _row_of("candidate", cost=0.002, calls=3, source="openrouter:reported"),
+            _row_of("external", cost=None, calls=1, provider="searx"),
+            _row_of("judge", cost=0.5, calls=1, source="anthropic:published"),
+        ]
+        for _ in range(CASES)
+    ]
+    base, fast = run_of(BASE), run_of(FAST)
+    trials = [
+        (base, [result_of(base, index) for index in range(CASES)]),
+        (fast, [result_of(fast, index, usage=rows) for index, rows in enumerate(usage)]),
+    ]
+    _, bundle, _ = aspect_bundle(trials)
+    (pricing,) = [row.pricing for row in bundle.scoreboard if row.pricing is not None and row.pricing.providers]
+    assert pricing == ArmPricing(
+        sources=["openrouter:reported"], providers=["searx"], calls=4 * CASES, priced_calls=3 * CASES
+    )
+    built = report_input(campaign_over(trials))
+    (row,) = [row for row in built.scoreboard.values() if row.pricing is not None and row.pricing.providers]
+    assert row.pricing == Pricing(
+        sources=["openrouter:reported"], providers=["searx"], calls=4 * CASES, priced_calls=3 * CASES
+    )
+    table = arms_table(built, block_look(built, fact_arms(built)), ())
+    assert any(
+        cell == f"{3 * CASES} of {4 * CASES} calls priced" for cell in (r["cost_per_1k"].value for r in table.rows)
+    )
+
+
+def test_a_row_that_did_not_count_its_calls_leaves_the_priced_share_uncounted() -> None:
+    usage = [[_row_of("candidate", cost=0.002, calls=None, source="openrouter:reported")] for _ in range(CASES)]
+    base, fast = run_of(BASE), run_of(FAST)
+    trials = [
+        (base, [result_of(base, index) for index in range(CASES)]),
+        (fast, [result_of(fast, index, usage=rows) for index, rows in enumerate(usage)]),
+    ]
+    _, bundle, _ = aspect_bundle(trials)
+    priced = [row.pricing for row in bundle.scoreboard if row.pricing is not None and row.pricing.calls is None]
+    assert priced and priced[0].priced_calls is None and priced[0].sources == ["openrouter:reported"]

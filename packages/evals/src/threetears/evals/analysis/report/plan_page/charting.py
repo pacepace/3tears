@@ -918,7 +918,14 @@ def unit_quantities(report_input: ReportInput, values: Mapping[str, Sequence[flo
         lead.setdefault(alike[key], units[key])
         shown.setdefault(alike[key], []).extend(figure * alike[key].factor for figure in figures)
     drawn = {each: quantity(lead[each], shown[each]) for each in shown}
-    return {key: dataclasses.replace(drawn[alike[key]], factor=alike[key].factor) for key in values}
+    # Each figure at its own factor, times what the class's money is drawn at past it (a thousand where some amount is
+    # under a cent: look's money), so every figure on the axis is drawn as its one form reads it.
+    return {
+        key: dataclasses.replace(
+            drawn[alike[key]], factor=alike[key].factor * drawn[alike[key]].factor / quantity(lead[alike[key]]).factor
+        )
+        for key in values
+    }
 
 
 def _a_panel_per_measure(kind: str, query: ChartQuery) -> bool:

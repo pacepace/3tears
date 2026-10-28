@@ -32,6 +32,8 @@ axis's level names where the input's factors name them.
 
 from __future__ import annotations
 
+import dataclasses
+
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -463,6 +465,9 @@ def _diff_heatmap(context: ChartContext) -> Drawn:
     levels = unit_quantities(report_input, figures)
     level = levels[keys[0]]
     change = quantity(figure_unit(report_input, keys[0]), change=True)
+    if level.money is not None:
+        # A difference reads in the form of the amounts it compares (#993), drawn at their factor.
+        change = dataclasses.replace(change, money=level.money, fmt=f"+{level.fmt}", factor=level.factor)
     base_name, compared_name = _arm_name(context, base), _arm_name(context, compared)
     rows: list[DiffHeatmapRow] = []
     for row_name, line in places:

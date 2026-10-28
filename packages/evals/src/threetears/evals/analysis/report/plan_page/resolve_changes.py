@@ -70,7 +70,13 @@ from threetears.evals.analysis.report.plan_page.charting import (
     stat_value,
     unit_refusal,
 )
-from threetears.evals.analysis.report.plan_page.look import Quantity, centred_domain, figure_text, quantity
+from threetears.evals.analysis.report.plan_page.look import (
+    Quantity,
+    centred_domain,
+    figure_text,
+    in_one_form,
+    quantity,
+)
 from threetears.evals.analysis.report.plan_page.words import (
     BASIS_NOTE,
     COMPARE_NARROW_NOTE,
@@ -93,7 +99,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     change_words,
 )
 from threetears.evals.kernel.numbers import format_number
-from threetears.evals.analysis.quantities import PERCENT, POINTS
+from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.figure_keys import arm_settings, correction_words, pairing_contrast
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_rows import lever_arms
@@ -126,6 +132,36 @@ class _Change:
     group: str | None = None
     panel: str | None = None
     short_label: str | None = None
+
+
+def _in_one_form(changes: list[_Change], drawn: Quantity) -> tuple[list[_Change], Quantity]:
+    """A chart's money changes in one form (#993), chosen from every change it draws and each interval's ends, where
+    they were drawn one at a time (a quantity made before its changes were read): the quantity in that form
+    (:func:`~threetears.evals.analysis.report.plan_page.look.in_one_form`), each change redrawn at its factor and its
+    note and tip respelled in it. Changes of any other unit, or already in one form, are returned as they are."""
+    if drawn.unit != MONEY or drawn.money is not None or not changes:
+        return changes, drawn
+    settled = in_one_form(drawn, [number for change in changes for number in (change.value, *(change.interval or ()))])
+    scale = settled.factor / drawn.factor
+
+    def respelled(text: str, numbers: Sequence[float]) -> str:
+        for number in numbers:
+            text = text.replace(figure_text(number, drawn), figure_text(number * scale, settled))
+        return text
+
+    redrawn = []
+    for change in changes:
+        numbers = (change.value, *(change.interval or ()))
+        redrawn.append(
+            dataclasses.replace(
+                change,
+                value=change.value * scale,
+                interval=(change.interval[0] * scale, change.interval[1] * scale) if change.interval else None,
+                note=respelled(change.note, numbers),
+                tip=[respelled(line, numbers) for line in change.tip],
+            )
+        )
+    return redrawn, settled
 
 
 @dataclass(frozen=True)
@@ -230,7 +266,7 @@ def _contrast_changes(
                     panel=named if panelled else None,
                 )
             )
-    return changes, drawn or quantity("points"), _missing_contrasts(context, contrasts)
+    return (*_in_one_form(changes, drawn or quantity("points")), _missing_contrasts(context, contrasts))
 
 
 def _missing_contrasts(context: ChartContext, contrasts: Sequence[Contrast]) -> tuple[str, ...]:
@@ -332,7 +368,7 @@ def _figure_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tup
             if change is not None:
                 group = measure_words(report_input, key) if grouped else None
                 changes.append(_with_group(change, group))
-    return changes, drawn, (UNCORRECTED_NOTE,) if any(c.strong is not None for c in changes) else ()
+    return (*_in_one_form(changes, drawn), (UNCORRECTED_NOTE,) if any(c.strong is not None for c in changes) else ())
 
 
 def _with_group(change: _Change, group: str | None, label: str | None = None) -> _Change:
@@ -366,7 +402,10 @@ def _slice_changes(context: ChartContext) -> tuple[dict[str, list[_Change]], Qua
                 if change is not None:
                     by_arm.setdefault(arm, []).append(_with_group(change, None, label=where))
     notes = (UNCORRECTED_NOTE,) if any(c.strong is not None for rows in by_arm.values() for c in rows) else ()
-    return by_arm, drawn, notes
+    # One form across every arm's changes (#993), each arm's rows kept in order.
+    flat, settled = _in_one_form([change for rows in by_arm.values() for change in rows], drawn)
+    redrawn = iter(flat)
+    return {arm: [next(redrawn) for _ in rows] for arm, rows in by_arm.items()}, settled, notes
 
 
 def _preference_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[str, ...]]:
@@ -443,7 +482,7 @@ def _lever_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tupl
                     group=factor.name or factor.id,
                 )
             )
-    return changes, drawn, (LEVER_NOTE,)
+    return (*_in_one_form(changes, drawn), (LEVER_NOTE,))
 
 
 # --- rows an analysis computes: two arms' difference, and the lever effects ----------------------------------------
@@ -556,7 +595,7 @@ def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tu
         measure=measure_words(context.report_input, key),
     )
     basis = tuple(dict.fromkeys(BASIS_NOTE.format(basis=basis) for basis in bases))
-    return changes, drawn, (named, *basis, *narrow_notes(context))
+    return (*_in_one_form(changes, drawn), (named, *basis, *narrow_notes(context)))
 
 
 def narrow_notes(context: ChartContext) -> tuple[str, ...]:
@@ -729,7 +768,7 @@ def _lever_rows(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[s
         changes = [_with_group(change, None) for change in changes]
     crossed = LEVERS_INTERACTION_NOTE if any(isinstance(row.item, InteractionRow) for row in rows) else ""
     note = LEVERS_NOTE.format(measure=measure_words(context.report_input, key), interactions=crossed)
-    return changes, drawn, (f"{note} {LEVERS_READ_NOTE}",)
+    return (*_in_one_form(changes, drawn), (f"{note} {LEVERS_READ_NOTE}",))
 
 
 # --- the charts ----------------------------------------------------------------------------------------------------

@@ -31,9 +31,9 @@ from threetears.evals.analysis.report.charts import (
     ScatterChart,
     ScatterPoint,
     Token,
-    money_by_column,
 )
 from threetears.evals.analysis.report.plan_page.look import arm_shape, arm_token, cost_axis_format
+from threetears.evals.kernel.numbers import MoneyForm, money_form
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
@@ -501,6 +501,20 @@ class TableCell(EvalDocumentModel):
             "serializer prints it after the value, in parentheses. None for none."
         ),
     )
+    decimals: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description=(
+            "For a money number, the decimals its column's one form writes it to (#993), chosen from every amount the "
+            "column holds; None for none, and the number rule spells the number."
+        ),
+    )
+    per_thousand: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="For a money number with `decimals`, whether its column reads per 1,000 (`$8.00/1000`).",
+    )
     status: ChartStatus | None = Field(
         default=None,
         description=(
@@ -565,6 +579,26 @@ class TableCell(EvalDocumentModel):
         return self
 
     @property
+    def money(self) -> MoneyForm | None:
+        """The one form a money number in this cell is written in, its column's (``decimals``, ``per_thousand``);
+        None where the cell holds no money number, or no form was given, so the number rule spells it."""
+        if self.decimals is None or not self.is_number or not is_money(self.unit):
+            return None
+        return MoneyForm(per_thousand=self.per_thousand, decimals=self.decimals)
+
+    def amount(self, number: float) -> str:
+        """A number of this cell's (its value, or an end of its interval) as the cell writes it: in its money form where
+        it holds one, else in its unit by the number rule.
+
+        :param number: The number, in the cell's unit.
+        :ptype number: float
+        :return: Its text.
+        :rtype: str
+        """
+        form = self.money
+        return form.spell(number) if form is not None else with_unit(number, self.unit)
+
+    @property
     def is_number(self) -> bool:
         """Whether the cell holds a number (a boolean is not one)."""
         return isinstance(self.value, int | float) and not isinstance(self.value, bool)
@@ -574,10 +608,48 @@ class TableCell(EvalDocumentModel):
         """``value`` as every serializer prints it, its ``flag`` after it in parentheses; the interval, where the cell
         has one, is the glyph's and the row's own interval column's, never spelled here twice."""
         if self.unit and isinstance(self.value, int | float) and not isinstance(self.value, bool):
-            said = with_unit(self.value, self.unit)
+            said = self.amount(self.value)
         else:
             said = render_cell(self.value)
         return said if self.flag is None else f"{said} ({self.flag})"
+
+
+def money_columns(rows: Sequence[Mapping[str, TableCell]]) -> list[dict[str, TableCell]]:
+    """A table's rows with each column's money in one form (#993): every money number a column holds, and the ends of
+    its intervals, choose the column's :func:`~threetears.evals.kernel.numbers.money_form` from the values themselves,
+    never from one cell, and every such cell is written in it (:attr:`TableCell.money`). The values are as stored, so
+    the shared decimals state no digit a value does not hold; a cell of words, of another unit, or already carrying a
+    form its builder chose from a wider set, is left as it is.
+
+    :param rows: The table's rows, by column key.
+    :ptype rows: Sequence[Mapping[str, TableCell]]
+    :return: The rows, each money cell carrying its column's form.
+    :rtype: list[dict[str, TableCell]]
+    """
+    forms: dict[str, MoneyForm] = {}
+    keys = dict.fromkeys(key for row in rows for key in row)
+    for key in keys:
+        cells = [
+            row[key]
+            for row in rows
+            if key in row and row[key].is_number and is_money(row[key].unit) and row[key].decimals is None
+        ]
+        if cells:
+            forms[key] = money_form(
+                float(number)
+                for cell in cells
+                for number in (cell.value, cell.low, cell.high)
+                if isinstance(number, int | float) and not isinstance(number, bool)
+            )
+    return [
+        {
+            key: cell.model_copy(update={"decimals": forms[key].decimals, "per_thousand": forms[key].per_thousand})
+            if key in forms and cell.is_number and is_money(cell.unit) and cell.decimals is None
+            else cell
+            for key, cell in row.items()
+        }
+        for row in rows
+    ]
 
 
 def table_row(values: Mapping[str, CellValue | TableCell]) -> dict[str, TableCell]:
@@ -631,34 +703,6 @@ class TableBlock(_Block):
         if bad := sorted({key for row in self.rows for key in row.keys() ^ keys}):
             raise ValueError(f"table {self.name!r} has rows that do not key exactly its columns: {', '.join(bad)}")
         return self
-
-    def one_money_form(self) -> TableBlock:
-        """The table with each column's money in one form (#993): every amount a column's words state, written in the
-        form :func:`~threetears.evals.analysis.report.charts.money_by_column` chooses from all of them, so successive
-        rows never alternate between ``$0.008`` and ``$0.11``. A cell holding a number rather than words, and every
-        flag, are left as they are.
-
-        :return: A copy, or the table itself where no column holds money in words.
-        :rtype: TableBlock
-        """
-        keys = [column.key for column in self.columns]
-        texts = [
-            [cell.value if isinstance(cell.value, str) else "" for cell in (row[key] for key in keys)]
-            for row in self.rows
-        ]
-        spelled = money_by_column([list(row) for row in texts])
-        if spelled == texts:
-            return self
-        rows = [
-            {
-                key: cell.model_copy(update={"value": new})
-                if isinstance(cell.value, str) and new != cell.value
-                else cell
-                for key, cell, new in ((key, row[key], line[at]) for at, key in enumerate(keys))
-            }
-            for row, line in zip(self.rows, spelled, strict=True)
-        ]
-        return self.model_copy(update={"rows": rows})
 
     def values(self) -> list[dict[str, CellValue]]:
         """The rows shown as their values alone — what a program reads a table for.
@@ -1187,5 +1231,6 @@ __all__ = [
     "interval_text",
     "interval_value_text",
     "reading_anchor",
+    "money_columns",
     "table_row",
 ]

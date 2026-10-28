@@ -69,7 +69,8 @@ from threetears.evals.analysis.report.plan_page.charting import (
     unit_quantities,
     unit_refusal,
 )
-from threetears.evals.analysis.report.cost_unit import per_count
+from threetears.evals.analysis.report.cost_unit import per_count, priced_in_part
+from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.figure_keys import cost_basis
 from threetears.evals.analysis.report.plan_page.look import (
     Quantity,
@@ -442,6 +443,11 @@ def _bar_row(context: ChartContext, bar: _Bar, drawn: Quantity) -> BarRow:
         tip[1] += f", {interval_words(*interval, drawn)}"
     elif open_from is not None:
         tip[1] += f", {OPEN_ABOVE.format(low=figure_text(open_from, drawn))}"
+    # A cost over part of the arm's calls is a smaller total, never stated bare.
+    share = priced_in_part(context.report_input, bar.arm) if drawn.unit == MONEY and bar.arm else None
+    note = figure_text(bar.value, drawn) + (f" ({share})" if share is not None else "")
+    if share is not None:
+        tip[1] += f" ({share})"
     strong = muted = None
     if context.summary and bar.arm:
         strong = True if bar.arm == context.look.recommended else None
@@ -457,7 +463,7 @@ def _bar_row(context: ChartContext, bar: _Bar, drawn: Quantity) -> BarRow:
         color=bar.color,
         strong=strong,
         muted=muted,
-        note=figure_text(bar.value, drawn),
+        note=note,
         tip=tip,
         group=bar.group or None,
     )

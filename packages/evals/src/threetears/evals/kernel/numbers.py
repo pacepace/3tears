@@ -154,6 +154,9 @@ UNPRICED = "unpriced"
 #: The least amount, in magnitude, that cents state: a non-zero member of a set under it puts the whole set per 1,000.
 CENT = 0.01
 
+#: The least amount from which a set whose every non-zero member reaches it is written in whole dollars.
+WHOLE_DOLLARS_FROM = 10.0
+
 #: How many times its amount a per-1,000 spelling writes, and the mark it carries: ``$8/1000`` is $0.008.
 PER_THOUSAND = 1000
 PER_THOUSAND_MARK = "/1000"
@@ -167,8 +170,10 @@ class MoneyForm:
 
     - ``per_thousand``: the set reads per 1,000 (``$8/1000`` for $0.008), because some member is too small for cents
       (under :data:`CENT`); then every member does (``$110/1000`` for $0.11 beside it).
-    - ``decimals``: the decimals every member is written to, after the per-1,000 factor: cents at least, and as many
-      more as give the set's smallest non-zero member two significant figures, so no member reads as a zero it is not.
+    - ``decimals``: the decimals every member is written to, after the per-1,000 factor: none where the set's smallest
+      non-zero member is :data:`WHOLE_DOLLARS_FROM` or more (cents on amounts of tens and thousands are noise), else
+      cents at least, and as many more as give that member two significant figures, so no member reads as a zero it is
+      not.
 
     An exact zero reads ``$0`` in every form: it is no measurement of a precision. ``None`` reads :data:`UNPRICED`,
     never ``$0``. A non-finite amount reads :data:`ABSENT`. Thousands are grouped (``$1,208.00``) and a negative
@@ -242,9 +247,11 @@ def per_thousand_digits(digits: str) -> str:
 def money_form(amounts: Iterable[float | None]) -> MoneyForm:
     """The one form a set of amounts is spelled in (:class:`MoneyForm`), chosen from the whole set.
 
-    Per 1,000 where any non-zero member is under a cent (:data:`CENT`) in magnitude; then the decimals that give the
-    smallest non-zero member, as the form writes it, two significant figures, and never fewer than cents. ``None`` and
-    non-finite members say nothing of the form and are passed over; a set with none left reads in dollars and cents.
+    Per 1,000 where any non-zero member is under a cent (:data:`CENT`) in magnitude; then whole dollars where the
+    smallest non-zero member, as the form writes it, is :data:`WHOLE_DOLLARS_FROM` or more, else the decimals that give
+    it two significant figures, and never fewer than cents. ``None`` and non-finite members say nothing of the form and
+    are passed over; a set with none left reads in dollars and cents. Charts, figure keys and tables all read money by
+    this one rule, so one amount reads alike on each.
 
     :param amounts: Every amount the set holds, in dollars as stored.
     :ptype amounts: Iterable[float | None]
@@ -256,6 +263,8 @@ def money_form(amounts: Iterable[float | None]) -> MoneyForm:
         return MoneyForm()
     per_thousand = min(stated) < CENT
     smallest = min(stated) * (PER_THOUSAND if per_thousand else 1)
+    if smallest >= WHOLE_DOLLARS_FROM:
+        return MoneyForm(per_thousand=per_thousand, decimals=0)
     # Placed by the smallest member as rounded to two figures, so one that rounds across a power of ten (0.0996 to
     # 0.10) is written to the decimals of what it became.
     exponent = int(f"{smallest:.1e}".split("e")[1])

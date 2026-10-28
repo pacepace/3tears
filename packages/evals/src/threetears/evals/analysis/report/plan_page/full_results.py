@@ -46,15 +46,15 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import replace
 
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.numbers import format_number, money_form
 from threetears.evals.analysis.quantities import MONEY
-from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
+from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, money_columns
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.cost_unit import per_count, per_noun
 from threetears.evals.analysis.report.figure_keys import cost_basis, format_figure, resolve
 from threetears.evals.analysis.report.plan_page.charting import figure_unit, measure_words, stat_value
-from threetears.evals.analysis.report.plan_page.look import GATE_STATUS, PageLook, figure_text, quantity
+from threetears.evals.analysis.report.plan_page.look import GATE_STATUS, PageLook, Quantity, figure_text, quantity
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
 from threetears.evals.analysis.report.plan_page.words import (
     CONTRAST_VERDICT_WORDS,
@@ -91,12 +91,13 @@ _TableBuilder = Callable[[ReportInput, PageLook], list[TableBlock]]
 
 
 def _table(name: str, columns: Sequence[TableColumn], rows: list[dict[str, TableCell]], order: str) -> TableBlock:
+    """A Full results table, each column's money in one form chosen from the column's own values (#993)."""
     return TableBlock(
         section=PLANNED_SECTION,
         name=name,
         title=FULL_RESULTS_TITLES[name],
         columns=list(columns),
-        rows=rows,
+        rows=money_columns(rows),
         order=order,
         total_rows=len(rows),
     )
@@ -137,9 +138,12 @@ def _stated(report_input: ReportInput, key: str, stat: Stat | None, *, kind: str
     if read is None:
         return TableCell(value=None)
     value, statistic = read
-    unit = figure_unit(report_input, key, kind=kind)
-    drawn = quantity(unit, [value * quantity(unit).factor])
-    return TableCell(value=figure_text(value * drawn.factor, drawn), flag=statistic if statistic != "mean" else None)
+    drawn = quantity(figure_unit(report_input, key, kind=kind))
+    flag = statistic if statistic != "mean" else None
+    if drawn.unit == MONEY:
+        # A number, which its column's one money form spells (:func:`_table`), never a form of its own.
+        return TableCell(value=value * drawn.factor, unit=MONEY, flag=flag)
+    return TableCell(value=figure_text(value * drawn.factor, drawn), flag=flag)
 
 
 # --- arms by measure -------------------------------------------------------------------------------------------------
@@ -207,9 +211,30 @@ def _arms_by_measure(report_input: ReportInput, look: PageLook) -> list[TableBlo
 # --- the corrected comparisons ---------------------------------------------------------------------------------------
 
 
-def _change(report_input: ReportInput, contrast: Contrast) -> tuple[TableCell, TableCell]:
-    """A comparison's change and its interval, in its measure's unit (a rate's in points)."""
-    drawn = quantity(figure_unit(report_input, contrast.measure, kind=contrast.kind), change=True)
+def _changes_drawn(report_input: ReportInput, contrasts: Sequence[Contrast]) -> dict[str, Quantity]:
+    """How each unit's changes are drawn in the comparisons table: money's in one form for every change of that unit
+    the table holds, deltas and interval ends alike (#993), at the unit's own factor; any other unit as it is."""
+    units = {figure_unit(report_input, c.measure, kind=c.kind) for c in contrasts}
+    drawn: dict[str, Quantity] = {}
+    for unit in units:
+        base = quantity(unit, change=True)
+        numbers = [
+            float(number) * base.factor
+            for c in contrasts
+            if figure_unit(report_input, c.measure, kind=c.kind) == unit
+            for number in (c.delta, *(c.interval or ()))
+            if number is not None
+        ]
+        drawn[unit] = replace(base, money=money_form(numbers)) if base.unit == MONEY else base
+    return drawn
+
+
+def _change(
+    report_input: ReportInput, contrast: Contrast, drawn_as: Mapping[str, Quantity]
+) -> tuple[TableCell, TableCell]:
+    """A comparison's change and its interval, in its measure's unit (a rate's in points), money in the table's one
+    form for its unit."""
+    drawn = drawn_as[figure_unit(report_input, contrast.measure, kind=contrast.kind)]
     change = (
         TableCell(value=figure_text(float(contrast.delta) * drawn.factor, drawn))
         if contrast.delta is not None
@@ -255,8 +280,9 @@ def _contrasts(report_input: ReportInput, look: PageLook) -> list[TableBlock]:
         _column("confounds"),
     ]
     rows = []
+    drawn_as = _changes_drawn(report_input, held)
     for contrast in held:
-        change, interval = _change(report_input, contrast)
+        change, interval = _change(report_input, contrast, drawn_as)
         cells = {
             "arm": _chip(look, contrast.arm),
             "measure": TableCell(value=_named(report_input, contrast.measure, kind=contrast.kind)),

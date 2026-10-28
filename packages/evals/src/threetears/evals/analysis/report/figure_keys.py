@@ -106,7 +106,7 @@ from threetears.evals.analysis.cell_mean import CellMeanInterval, NoCellMean, ce
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.kernel.numbers import MoneyForm, format_number, group_thousands, money_form, spell_multiple
 from threetears.evals.analysis.quantities import PERCENT, POINTS, number_in
-from threetears.evals.analysis.report.cost_unit import REPLIES, CostBasis, per_count, per_noun
+from threetears.evals.analysis.report.cost_unit import REPLIES, CostBasis, per_count, per_noun, priced_in_part
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import (
@@ -192,7 +192,7 @@ _FILTER_MEANS: dict[str, str] = {
     "pct10": "a rate rounded to the nearest 10%",
     "interval": "an interval's two ends, joined by 'to'",
     "usd_per_1k": "dollars per 1,000 of what the cost counts, with the words (`per 1,000 conversations` where the "
-    "measure's label counts conversations)",
+    "measure's label counts conversations); per 1,000,000 where the family's least cost is under a cent per 1,000",
     "usd_whole": "dollars to the whole dollar, thousands grouped, for a monthly or other large amount whose cents are "
     "noise; refused under $10, which it would round away",
     "words": "a count spelled as a word up to twenty, in grouped digits above",
@@ -285,7 +285,9 @@ class Figure:
     :func:`~threetears.evals.kernel.numbers.money_form` chooses one form for the whole family, so ``cost_per_1k.*`` never
     reads ``$0.008`` beside ``$0.11``; and ``spread``, the width of the interval a change is read with, which caps its
     decimals. :func:`resolve` fills both; a figure made without them is spelled as a set of its own value. Neither takes
-    part in a figure's equality: they say how it reads, not what it is.
+    part in a figure's equality: they say how it reads, not what it is. Nor does ``priced_in_part``: beside a cost of an
+    arm whose cost counts only part of its calls, the words its pricing gives (``850 of 897 calls priced``), which
+    :func:`format_figure` prints after the amount, so no key states a smaller total bare.
     """
 
     path: str
@@ -300,6 +302,7 @@ class Figure:
     level: bool = False
     amounts: tuple[float, ...] = field(default=(), compare=False, repr=False)
     spread: float | None = field(default=None, compare=False, repr=False)
+    priced_in_part: str = field(default="", compare=False, repr=False)
 
 
 # --- the vocabulary a path is matched against -------------------------------------------------------------------
@@ -6161,7 +6164,45 @@ def _resolved(key: str, report_input: ReportInput) -> Figure:
             amounts=_money_amounts(reading, figure, report_input),
             spread=_change_spread(reading, figure, report_input),
         )
+    if figure.kind in ("number", "interval") and (
+        figure.scale in _PER_THOUSAND_FACTORS or _family_word(reading) in _COST_RATIOS
+    ):
+        figure = replace(figure, priced_in_part=_priced_in_part(reading, report_input))
     return replace(figure, derived=figure.derived or _is_derived(reading))
+
+
+#: The families whose figure is a ratio of two arms' costs, not money, which a partly priced cost leaves a ratio to a
+#: smaller total.
+_COST_RATIOS = frozenset({"cost.uplift", "cost.gap", "cost.uplift_range"})
+
+
+def _family_word(reading: _Reading) -> str:
+    first = reading.family.slots[0]
+    return first.spelling if isinstance(first, _Word) else ""
+
+
+def _priced_in_part(reading: _Reading, report_input: ReportInput) -> str:
+    """The words beside a cost whose arms' costs count only part of their calls (:class:`Figure`'s ``priced_in_part``):
+    the arm's priced share where the key names one arm, each such arm's by name where it names more (an uplift names
+    the control it is on too), and every arm's where a ratio names none (a range over them all); empty where every cost
+    counts every call, or the input does not say."""
+    named = [
+        value for slot, value in zip(_value_slots(reading), reading.values, strict=True) if slot.name in _ARM_SLOTS
+    ]
+    ratio = _family_word(reading) in _COST_RATIOS
+    control = _control(report_input)
+    # A ratio of costs reads the control's cost too (an uplift is on it), and a range reads every arm's.
+    arms = list(dict.fromkeys([*named, *([control.id] if ratio and control is not None and named else [])]))
+    arms = arms or ([arm.id for arm in report_input.arms] if ratio else [])
+    parts = [(arm, share) for arm in arms if (share := priced_in_part(report_input, arm)) is not None]
+    if len(arms) == 1:
+        return parts[0][1] if parts else ""
+    return "; ".join(f"{_arm(report_input, arm).name or arm}: {share}" for arm, share in parts)
+
+
+def _value_slots(reading: _Reading) -> list[_Ids | _Statistic | _Number]:
+    """A reading's slots that took a value, in order: every slot but its words."""
+    return [slot for slot in reading.family.slots if not isinstance(slot, _Word)]
 
 
 def _sibling_values(reading: _Reading, report_input: ReportInput) -> list[tuple[str, ...]]:
@@ -6464,6 +6505,10 @@ def _money(value: float, signed: bool, form: MoneyForm) -> str:
     return form.spell(value, signed=signed)
 
 
+#: The most of what a cost counts a ``usd_per_1k`` key moves its ruler to, a family under a cent per 1,000 reading
+#: per 1,000,000 (as the options table and a chart do).
+_MOST_COUNTED = 1_000_000
+
 #: The spelling a figure on the ``usd_per_1m`` scale reads in without a filter: dollars with the words of what it
 #: counts, ``$180 per 1,000,000 turns``. No filter names it: a key's own spelling, never chosen.
 _PER_MILLION = "per_million"
@@ -6510,9 +6555,14 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
             raise _refuse(figure.path, f"cannot read as dollars: it is on the {figure.scale} scale")
         if spelling == "usd":
             return _Spelled(_money(value, signed, _money_form(figure, 1.0)))
-        factor = _PER_THOUSAND_FACTORS[figure.scale]
-        money = _money(value * factor, signed, _money_form(figure, factor))
-        return _Spelled(f"{money} {per_count(figure.per, 1_000)}")
+        # Per 1,000 of what the cost counts, or, where the family's least amount is under a cent even so, per
+        # 1,000,000: the ruler moves, never a per-1,000 mark stacked on a per-1,000 ruler (#993).
+        count, factor = 1_000, _PER_THOUSAND_FACTORS[figure.scale]
+        form = _money_form(figure, factor)
+        while form.per_thousand and count < _MOST_COUNTED:
+            count, factor = count * 1000, factor * 1000
+            form = _money_form(figure, factor)
+        return _Spelled(f"{_money(value * factor, signed, form)} {per_count(figure.per, count)}")
     if spelling == "usd_whole":
         if figure.scale not in _PER_THOUSAND_FACTORS:
             raise _refuse(figure.path, f"cannot read as dollars: it is on the {figure.scale} scale")
@@ -6570,6 +6620,12 @@ def format_figure(figure: Figure, filters: Sequence[str] = ()) -> str:
         ``interval`` on a single number, any filter on text.
     :raises ValueError: The figure is an arm.
     """
+    text = _formatted_figure(figure, tuple(filters))
+    return f"{text} ({figure.priced_in_part})" if figure.priced_in_part else text
+
+
+def _formatted_figure(figure: Figure, filters: tuple[str, ...]) -> str:
+    """A figure's text by its filters (:func:`format_figure`), without what it says beside the amount."""
     chosen = tuple(filters)
     if figure.kind == "arm":
         raise ValueError(f"{figure.path} is an arm, which render names with its tag")

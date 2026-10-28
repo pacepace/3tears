@@ -71,12 +71,12 @@ __all__ = [
     "OPTION_HEADERS",
     "PASSES_TEMPLATE",
     "PRICED_HEADER",
-    "PRICED_SHARE_TEMPLATE",
     "REFERENCE_TEMPLATE",
     "REPEAT_TEMPLATE",
     "RECOMMENDED_MARK",
     "ROLE_WORDS",
     "SERVED_BY_TEMPLATE",
+    "UPLIFT_NOT_COMPARABLE",
     "RUN_TEMPLATE",
     "SYNTHETIC",
     "STATISTIC_NOTE",
@@ -209,7 +209,9 @@ SERVED_BY_TEMPLATE = "served by {providers}"
 #: An arm's priced share of the calls its cost counts, beside its cost: all of them, or how many of how many. A partly
 #: priced arm says the second in place of its cost, which would be a smaller total read as whole.
 ALL_PRICED_TEMPLATE = "all {calls} calls priced"
-PRICED_SHARE_TEMPLATE = "{priced} of {calls} calls priced"
+
+#: The uplift beside an arm's cost where the control's cost counts only part of its calls: no ratio to a smaller total.
+UPLIFT_NOT_COMPARABLE = "no uplift: the control has {share}"
 
 #: An arm's role, as the arms key and the options table's control row say it.
 ARM_ROLE_WORDS: dict[str, str] = {"control": "Control", "challenger": "Candidate"}

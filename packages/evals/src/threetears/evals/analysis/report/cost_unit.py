@@ -33,14 +33,16 @@ import re
 from dataclasses import dataclass
 
 from threetears.evals.kernel.numbers import format_number, group_thousands
-from threetears.evals.analysis.report_input import Measure
+from threetears.evals.analysis.report_input import Measure, ReportInput
 
 __all__ = [
+    "PRICED_SHARE_TEMPLATE",
     "REPLIES",
     "CostBasis",
     "per_count",
     "per_noun",
     "per_one",
+    "priced_in_part",
 ]
 
 #: What money per one trial is per, as the package counts trials: one trial is one reply.
@@ -100,6 +102,35 @@ def per_noun(measure: Measure) -> str:
         return ""
     noun = found.group("noun").strip()
     return noun if 0 < len(noun.split()) <= _MOST_WORDS else ""
+
+
+#: How many of the calls an arm's cost counts were priced, said beside an amount priced over only part of them: a
+#: smaller total, which no page states bare.
+PRICED_SHARE_TEMPLATE = "{priced} of {calls} calls priced"
+
+
+def priced_in_part(report_input: ReportInput, arm: str) -> str | None:
+    """Whether an arm's cost counts only part of its calls, as its pricing says (``ScoreboardRow.pricing``): the words
+    every surface states beside such an amount (``850 of 897 calls priced``); None where all were priced, or the input
+    does not say.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param arm: The arm, by id.
+    :ptype arm: str
+    :return: The words, or None.
+    :rtype: str | None
+    """
+    row = report_input.scoreboard.get(arm)
+    pricing = row.pricing if row is not None else None
+    if (
+        pricing is None
+        or pricing.calls is None
+        or pricing.priced_calls is None
+        or pricing.priced_calls >= pricing.calls
+    ):
+        return None
+    return PRICED_SHARE_TEMPLATE.format(priced=pricing.priced_calls, calls=pricing.calls)
 
 
 def per_one(noun: str) -> str:

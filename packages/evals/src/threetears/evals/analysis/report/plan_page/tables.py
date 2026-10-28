@@ -56,7 +56,7 @@ from collections.abc import Callable, Collection
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
 from threetears.evals.analysis.report.charts import ChartStatus
-from threetears.evals.analysis.report.cost_unit import per_count, per_one
+from threetears.evals.analysis.report.cost_unit import PRICED_SHARE_TEMPLATE, per_count, per_one, priced_in_part
 from threetears.evals.analysis.report.figure_keys import Figure, cost_basis, format_figure, resolve
 from threetears.evals.analysis.report.plan_page.charting import figure_stat, measure_words, stat_value
 from threetears.evals.analysis.report.plan_page.look import GATE_STATUS, ArmLook, PageLook
@@ -74,10 +74,10 @@ from threetears.evals.analysis.report.plan_page.words import (
     OPTIONS_TITLE,
     PASSES_TEMPLATE,
     PRICED_HEADER,
-    PRICED_SHARE_TEMPLATE,
     RECOMMENDED_MARK,
     ROLE_WORDS,
     SERVED_BY_TEMPLATE,
+    UPLIFT_NOT_COMPARABLE,
     reading_words,
 )
 from threetears.evals.analysis.report_gates import gate_check
@@ -444,8 +444,12 @@ def _arm_cost(
     marks: list[str] = []
     control = look.control
     if control is not None and arm != control.id:
-        uplift = _figure(f"cost.uplift.{arm}", report_input)
-        if uplift is not None and isinstance(uplift.value, float):
+        # An uplift on a control whose cost counts only part of its calls is a ratio to a smaller total: none is read.
+        partial = priced_in_part(report_input, control.id)
+        uplift = _figure(f"cost.uplift.{arm}", report_input) if partial is None else None
+        if partial is not None:
+            marks.append(UPLIFT_NOT_COMPARABLE.format(share=partial))
+        elif uplift is not None and isinstance(uplift.value, float):
             marks.append(("+" if uplift.value > 0 else "") + format_figure(uplift))
     if share is not None:
         marks.append(share)
