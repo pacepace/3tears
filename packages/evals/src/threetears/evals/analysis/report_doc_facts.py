@@ -91,9 +91,9 @@ from threetears.evals.analysis.report_plan_checks import raised_warnings
 from threetears.evals.kernel.report_doc import ReportDoc, report_doc_prose
 from threetears.evals.kernel.report_plan import WarningRef
 
-#: The names with a caller outside this module: none yet. :func:`editor_facts` and :class:`EditorFact` join it with
-#: their first production caller, the writing loop's editor turn, never for a test alone.
-__all__: list[str] = []
+#: The names with a caller outside this module: the writing loop's editor turn, whose user message carries the facts.
+#: ``EditorFactKind`` joins them with its first production caller outside this module.
+__all__ = ["EditorFact", "editor_facts"]
 
 #: What a fact is about, one word per fact this module computes, in the order :func:`editor_facts` lists them.
 EditorFactKind = Literal[

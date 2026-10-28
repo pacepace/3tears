@@ -1,9 +1,9 @@
 """``analysis/report_doc_facts.py`` exports a name once production code calls it, and not before.
 
-The module's ``__all__`` is empty. Its public names (:class:`~threetears.evals.analysis.report_doc_facts.EditorFact`,
-:data:`~threetears.evals.analysis.report_doc_facts.EditorFactKind` and
-:func:`~threetears.evals.analysis.report_doc_facts.editor_facts`) are the editor's facts, waiting for their production
-caller: the writing loop's editor turn, whose user message carries them. ``CLAUDE.md`` holds that no public API exists
+The module's ``__all__`` holds :class:`~threetears.evals.analysis.report_doc_facts.EditorFact` and
+:func:`~threetears.evals.analysis.report_doc_facts.editor_facts`, whose caller is the writing loop's editor turn
+(its user message carries the facts). :data:`~threetears.evals.analysis.report_doc_facts.EditorFactKind` waits for a
+production caller outside the module. ``CLAUDE.md`` holds that no public API exists
 only for a test, and the caller gate (``tests/enforcement/test_public_api_has_a_caller.py``) reads a module's surface
 from its ``__all__``, so it cannot see the names left out. This test keeps the promise checkable:
 :data:`_AWAITING_A_CALLER` lists every public name left out, and goes red the moment a ``src`` module imports one, so
@@ -27,7 +27,7 @@ _REPO = Path(__file__).resolve().parents[3]
 _SOURCES = sorted([*_REPO.glob("packages/*/src"), *_REPO.glob("packages/agent/*/src")])
 
 #: The public names defined in the module and left out of its ``__all__`` until a production caller imports them.
-_AWAITING_A_CALLER = frozenset({"EditorFact", "EditorFactKind", "editor_facts"})
+_AWAITING_A_CALLER = frozenset({"EditorFactKind"})
 
 
 def _defined_public_names() -> set[str]:

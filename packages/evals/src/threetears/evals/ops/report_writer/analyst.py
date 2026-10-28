@@ -48,9 +48,16 @@ from threetears.evals.ops.report_writer.session import SessionLimits, SessionSto
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.turns import ToolTurnClient
 
-#: Empty until the report writer's entry point calls the session (plan §4.1, chunk L2): every public name here joins
-#: it with that first production caller (``tests/test_report_writer_exports.py`` holds the list).
-__all__: list[str] = []
+#: The names the writing loop calls. ``InvariantVerdict`` joins them with its first production caller outside this
+#: module (``tests/test_report_writer_exports.py`` holds the list).
+__all__ = [
+    "ANALYST_SESSION",
+    "AnalystLimits",
+    "AnalystOutcome",
+    "AnalystSession",
+    "InvariantCheck",
+    "SubmissionFault",
+]
 
 #: The analyst session's name, which its tally entries and its recorded turns are kept under.
 ANALYST_SESSION: Final = "analyst"

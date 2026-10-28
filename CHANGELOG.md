@@ -30,6 +30,54 @@ SKILL.md names it (step 5 and the tools table), so `load_skill().digest` moves.
 and the new `ops.analyst.report_check`, `DraftChecked` and `CHECK_LINES`, and `actions.analyst_render.BLOCKS_WORKFLOW`
 (was `_BLOCKS_WORKFLOW`).
 
+### evals: the report writer's editor, rounds, store gate and entry point
+
+**Added (provisional, not yet exported from a root):** `actions.report_writing.write_report(host, caller, *, model,
+budget, snapshot_id= | campaign_id= | analysis_id=, withhold=(), limits=None)` writes a campaign report from a frozen
+snapshot and stores it. It freezes the evidence first (unless handed a snapshot), so the two tools it mounts read
+only: `evals_analyst` on the analyst's cut (`analyst_tools(writes=False)`) and on the editor's
+(`analyst_tools(role="editor")`), each bound to the host and caller, described with its catalogue primer, and
+re-derivable, so a stored session drops result bodies it can read again. The caller passes the model (`Model(id,
+provider="anthropic", api_key=...)`); nothing reads an environment variable. It returns `ReportWritten`: the ending,
+the stored `EvalReportDoc`, the loop's outcome, the generation record and the stored page built strict. A paid run
+never loses its record: when the store gate or the store refuses the document, `ReportNotStored` is raised from the
+cause, carrying that `ReportWritten` (tally, reviews, sessions) with nothing stored. Its names stay out of `__all__`
+until the analysis job (W4) calls them (`tests/test_report_writer_exports.py`).
+
+- `ops.report_writer.editor`: `review_report` runs one review in a fresh session whose system text is `editor.md`.
+  Its one user message is the page as a reader sees it (`doc_page_text` over a strict `build`), the document's
+  `omitted`, the computed facts (`editor_facts`) labelled as facts to weigh, and from round 2 its earlier findings.
+  Its signature takes nothing of the analyst's session. The answer is read from its last fenced JSON block: seven items
+  keyed by `n` and named as the rubric names them, each scored 0 to 2 with a reason, and findings `{claim, severity,
+  finding}`. `Review` adds the scores up and says whether they pass (no 0, at least `PASS_TOTAL` = 11); a total the
+  editor writes is never read. An unreadable answer (a cut reply, or a tool call after its calls ran out, included) is asked
+  for once more; a second ends `review_failed`. A review has 40 tool calls (`EditorLimits`). A client failure is the
+  round's `failed` ending, contained at error level. Every round's session comes back on `EditorOutcome.session`,
+  whatever the ending, and is stored as `generation["sessions"]["editor-<n>"]` beside the analyst's, re-derivable
+  result bodies dropped, so it resumes sending what the uninterrupted session would.
+- `ops.report_writer.loop`: `write_rounds` drafts, reviews and revises in the analyst's own conversation, at most two
+  revisions (`WriterLimits`), and ends `stored`, `stored_with_findings`, `over_budget` (the last reviewed document,
+  with its review's findings, or nothing), `refused`, `review_failed` or `failed` (the client's failure, contained;
+  the tally keeps every turn). `TurnModel` is what it takes as the model: its id and a client per named session.
+- `analysis.report_doc_store`: `doc_verdicts` is the one checker, the analyst's and the store's: the invariants over
+  the strict page's above-appendix text, a strict build's refusal as a verdict. `store_report_doc` re-runs it on the
+  page as it will be read and refuses a document with any verdict. `generation_record` is the stored `generation`:
+  the model, the skill digests, the tally, every review as code scored it, and every session (the analyst's and each
+  review round's) as a stored value. `made_line` writes the page's made line from a stored record (models, served
+  models, cost, skill digest, date), the one place it is written.
+- `tests/fixtures/report_plans/analyst_cli.py write`: the dev command line that writes a report live over a fixture
+  snapshot and records it, the one route that reads `ANTHROPIC_API_KEY`; with no key, or into a recording already
+  made, it is refused with what to do instead. When the store refuses its report it still writes the recording's
+  `replay.json` and `generation.json`, then raises. `test_report_writer_replay.py` replays every recording that has a
+  `replay.json` beside it (the ending and why, whether it was stored), its tools run live, and holds it to its ending,
+  rounds, tally sums and every turn consumed; it refuses a recording of a run that ended `failed`, naming why.
+
+These join `__all__` with the writing loop as their caller: `editor_facts` and `EditorFact`; `load_skill`; the analyst session's `AnalystSession`, `AnalystLimits`, `AnalystOutcome`, `InvariantCheck`,
+`SubmissionFault` and `ANALYST_SESSION`; and the session's `ToolOutcome`. `analyst_tools` gains its production caller.
+`check_report_doc`, `DocVerdict` and `InvariantNumber`, `doc_page.build.build`, `doc_page.text.doc_page_text` and
+`above_appendix_text`, already exported with `report_check`, gain the store gate, the editor and the report writer as
+callers.
+
 ### evals: the claims renderer draws a report document's page
 
 **Added (provisional, not yet exported from a root):** `analysis/report/doc_page`, the page a `report-doc/1` document

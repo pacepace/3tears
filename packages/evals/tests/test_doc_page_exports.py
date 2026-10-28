@@ -1,8 +1,10 @@
 """The claims renderer's entry points are exported once production code calls them, and not before.
 
-``analysis/report/doc_page``'s builder and its page text have their first production caller, the analyst's
-``report_check`` (``ops/analyst.py``), which builds a draft's page and returns its text, and are exported
-(:data:`_CALLED`). Its HTML and Markdown writers wait for theirs, the report read (the page). ``CLAUDE.md`` holds that no public API exists only
+``analysis/report/doc_page``'s builder, its three writers and the page text are this build's report-document page.
+The builder and the page text are exported (:data:`_CALLED`): the analyst's ``report_check`` (``ops/analyst.py``)
+builds a draft's page strict and returns its text, the writing loop's editor reads the page text, the store gate checks
+the text above the appendix and the report writer builds the page it stores. The HTML and Markdown writers wait for the
+report read (the page). ``CLAUDE.md`` holds that no public API exists only
 for a test, and the caller gate (``tests/enforcement/test_public_api_has_a_caller.py``) reads a module's surface from
 its ``__all__``, so each module's ``__all__`` stays empty until its caller lands. This test keeps that checkable, as
 ``test_report_doc_exports.py`` does for the document's own names: :data:`_AWAITING_A_CALLER` lists each entry point
@@ -22,7 +24,7 @@ _AWAITING_A_CALLER: dict[str, frozenset[str]] = {
     "threetears.evals.analysis.report.doc_page.markdown": frozenset({"doc_page_markdown"}),
 }
 
-#: Each entry point with a production caller, by the module that defines and exports it.
+#: Each entry point exported with its production caller, by the module that defines it.
 _CALLED: dict[str, frozenset[str]] = {
     "threetears.evals.analysis.report.doc_page.build": frozenset({"build"}),
     "threetears.evals.analysis.report.doc_page.text": frozenset({"above_appendix_text", "doc_page_text"}),
@@ -45,18 +47,12 @@ def _defined_functions(module: str) -> set[str]:
     }
 
 
-def test_each_module_exports_nothing_and_defines_exactly_its_awaiting_entry_points() -> None:
-    """A module's public functions are its entry points, each listed here until its caller lands."""
-    for module, names in _AWAITING_A_CALLER.items():
-        assert importlib.import_module(module).__all__ == []
-        assert _defined_functions(module) == names
-
-
-def test_each_called_module_exports_exactly_its_entry_points() -> None:
-    """A module whose entry points have a caller exports them, and defines no other public function."""
-    for module, names in _CALLED.items():
-        assert set(importlib.import_module(module).__all__) == names
-        assert _defined_functions(module) == names
+def test_each_module_exports_exactly_its_called_entry_points_and_defines_no_others() -> None:
+    """A module's public functions are its entry points: exported once called, listed as awaiting until then."""
+    for module in sorted({*_AWAITING_A_CALLER, *_CALLED}):
+        exported = _CALLED.get(module, frozenset())
+        assert set(importlib.import_module(module).__all__) == exported
+        assert _defined_functions(module) == exported | _AWAITING_A_CALLER.get(module, frozenset())
 
 
 def test_no_entry_point_has_a_production_caller_yet() -> None:
