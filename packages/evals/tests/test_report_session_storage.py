@@ -51,7 +51,6 @@ from threetears.evals.actions import MountedTool, analyst_tools, eval_catalogue
 from threetears.evals.actions.catalogue import Caller, catalogue_primer
 from threetears.evals.actions.report_writing import ReportNotStored
 from threetears.evals.analysis.analyst.skill import load_skill
-from threetears.evals.analysis.report_decision import every_caveat
 from threetears.evals.analysis.report_doc_store import doc_verdicts, generation_record, store_report_doc
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel import StorageError
@@ -173,8 +172,6 @@ def resume_options(host: OpsHost, mount: HostTool) -> dict[str, Any]:
         "model": MODEL,
         "mount": mount,
         "skill": load_skill().analyst(),
-        "arms": [arm.id for arm in report_input.arms],
-        "caveats": [caveat.id for caveat in every_caveat(report_input)],
         "check": lambda doc: doc_verdicts(doc, report_input),
         "tally": Tally(),
         "budget": ReportBudget(usd=100),

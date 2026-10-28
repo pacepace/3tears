@@ -37,7 +37,6 @@ from typing import Any, Final, Literal, Protocol
 
 from threetears.evals.analysis.analyst.skill import SkillText
 from threetears.evals.analysis.report.md_parts import one_line
-from threetears.evals.analysis.report_decision import every_caveat
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
 from threetears.evals.ops.report_writer.analyst import (
@@ -196,7 +195,7 @@ async def write_rounds(
     :ptype model: TurnModel
     :param snapshot: The frozen snapshot's id.
     :ptype snapshot: str
-    :param report_input: Its report input, which validity, the editor's page and its facts read.
+    :param report_input: Its report input, which the editor's page and its facts read.
     :ptype report_input: ReportInput
     :param analyst_mount: The ``evals_analyst`` tool on the analyst's cut, read-only, bound to its host and caller.
     :ptype analyst_mount: ToolMount
@@ -224,8 +223,6 @@ async def write_rounds(
         mount=analyst_mount,
         skill=analyst_skill,
         snapshot=snapshot,
-        arms=[arm.id for arm in report_input.arms],
-        caveats=[caveat.id for caveat in every_caveat(report_input)],
         check=check,
         tally=tally,
         budget=budget,
