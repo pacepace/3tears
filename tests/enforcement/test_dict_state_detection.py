@@ -246,6 +246,15 @@ _ALLOWLIST = (
         rationale=("schema metadata for type-aware serialization, infrastructure"),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/cache/duckdb.py",
+        class_name="DuckDBBackend",
+        attr_name="_keyless",
+        rationale=(
+            "schema metadata: each key-less table's key columns, read from its declaration when the table is "
+            "created, as _schema_info is; every pod derives the same map from the same metadata"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/agent/tools/src/threetears/agent/tools/server.py",
         class_name="ToolServer",
         attr_name="_tools",
@@ -273,6 +282,21 @@ _ALLOWLIST = (
             "the VERIFIED customer so no cross-tenant reuse; genuinely ephemeral per-pod (no "
             "cross-instance coherence needed precisely because the mappings are immutable). Its "
             "sibling engagement resolver deliberately has NO cache because scope IS mutable"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/langgraph/src/threetears/langgraph/checkpoint.py",
+        class_name="ThreeTierCheckpointSaver",
+        attr_name="_l2_write_bypassed",
+        rationale=(
+            "this process's record of the L2 keys whose own write and then delete both failed, "
+            "so the key may still hold an older checkpoint. It is per process on purpose: it "
+            "describes this worker's failed writes, and the worker reads those keys from L3 until "
+            "one of its writes or deletes of the key lands. Other workers are protected by the "
+            "delete, not by this record, so sharing it would add nothing. Bounded by "
+            "4096 keys (oldest dropped, with a WARNING); a restart forgets it and costs "
+            "at most one read of a stale L2 entry per key, the state before the bypass existed. "
+            "Kept apart from the purge bypass (a set), which only a successful purge lifts"
         ),
     ),
     DictStateAllowlistEntry(

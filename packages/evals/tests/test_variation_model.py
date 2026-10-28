@@ -1064,13 +1064,18 @@ def test_the_history_pricer_reads_only_the_matching_runs_results(monkeypatch: py
     _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.10, 0.20, 0.30])
     _history(storage, template_id="another-template", model="m-priced", costs=[9.0, 9.0, 9.0])
     read: list[str | None] = []
-    query = storage.query_eval_results
+    query, keys = storage.query_eval_results, storage.query_eval_result_keys_by_run
 
     def recorded(scope_id: str, **filters: Any) -> Any:
         read.append(filters.get("run_id"))
         return query(scope_id, **filters)
 
+    def recorded_keys(run_id: str, scope_id: str, /) -> Any:
+        read.append(run_id)
+        return keys(run_id, scope_id)
+
     monkeypatch.setattr(storage, "query_eval_results", recorded)
+    monkeypatch.setattr(storage, "query_eval_result_keys_by_run", recorded_keys)
 
     assert history_launch_pricer(host)(_quote()).predicted_usd is not None
     assert None not in read, "the pricer scanned every result in the scope"

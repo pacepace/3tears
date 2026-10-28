@@ -1226,18 +1226,45 @@ def inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None 
     :return: The agreement per (dimension, scale, first judge, second judge), and the scores that could not be paired.
     :rtype: InterJudgeAgreement
     """
-    groups: dict[SecondJudgeGroup, list[_Pair]] = {}
-    served: dict[SecondJudgeGroup, set[str]] = {}
-    unpaired: list[UnpairedSecondScore] = []
-    read = 0
+    tally = InterJudgeTally(pass_id=pass_id)
     for result in results:
+        tally.add(result)
+    return tally.agreement()
+
+
+class InterJudgeTally:
+    """:func:`inter_judge_agreement` read one result at a time, for a reader that walks results it does not hold.
+
+    Each result's second-judge pairs are kept as the scalars the agreement figures need (each pair's two scores, its
+    pass and its result's id), never the result: kappa and its interval are read over every pair at once, so what
+    this holds grows with the pairs, never with the results' volume.
+    """
+
+    def __init__(self, *, pass_id: str | None = None) -> None:
+        """Start a tally reading every pass's pairs, or only ``pass_id``'s.
+
+        :param pass_id: Read only this pass's pairs; ``None`` for every pass.
+        :ptype pass_id: str | None
+        """
+        self._pass_id = pass_id
+        self._groups: dict[SecondJudgeGroup, list[_Pair]] = {}
+        self._served: dict[SecondJudgeGroup, set[str]] = {}
+        self._unpaired: list[UnpairedSecondScore] = []
+        self._read = 0
+
+    def add(self, result: EvalResult) -> None:
+        """Read one result's second-judge scores.
+
+        :param result: The result.
+        :ptype result: EvalResult
+        """
         for judging in result.judge_seconds:
-            if pass_id is not None and judging.pass_id != pass_id:
+            if self._pass_id is not None and judging.pass_id != self._pass_id:
                 continue
             for entry in judging.scores:
-                read += 1
+                self._read += 1
                 if entry.second is None and entry.cannot_tell is None:
-                    unpaired.append(
+                    self._unpaired.append(
                         UnpairedSecondScore(
                             result_id=result.id, rubric_dim=entry.dim, pass_id=judging.pass_id, reason="second_failed"
                         )
@@ -1253,39 +1280,48 @@ def inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None 
                 )
                 key = second_judge_group(first, judging, entry.dim)
                 second = entry.second.score if entry.second is not None else None
-                groups.setdefault(key, []).append(_Pair(entry.first_score, second, judging.pass_id, result.id))
+                self._groups.setdefault(key, []).append(_Pair(entry.first_score, second, judging.pass_id, result.id))
                 if entry.second is not None and entry.second.served_model is not None:
-                    served.setdefault(key, set()).add(entry.second.served_model)
-    dimensions = []
-    for key in sorted(groups, key=second_judge_group_sort_key):
-        first, model, config_id, temperature, second_sent = key
-        numbers = _agreement_numbers(first.scale, groups[key])
-        figure = numbers.weighted_kappa if first.scale == "ordinal" else numbers.kappa
-        dimensions.append(
-            InterJudgeDimension(
-                rubric_dim=first.rubric_dim,
-                scale=first.scale,
-                judge_model=first.judge_model,
-                judge_config_id=first.judge_config_id,
-                judge_temperature=first.judge_temperature,
-                judge_sent_settings=sent_settings_from_key(first.judge_sent_settings),
-                second_model=model,
-                second_judge_config_id=config_id,
-                second_temperature=temperature,
-                second_sent_settings=sent_settings_from_level(second_sent),
-                second_served_models=sorted(served.get(key, set())),
-                n=numbers.n,
-                results=numbers.results,
-                n_cannot_tell=numbers.cannot_tell,
-                passes=numbers.raters,
-                exact_agreement=numbers.exact_agreement,
-                kappa_weighting="quadratic" if first.scale == "ordinal" else "none",
-                kappa=figure,
-                kappa_undefined=KAPPA_UNDEFINED_ONE_SCORE if figure is None else None,
-                agreement_interval=numbers.interval,
+                    self._served.setdefault(key, set()).add(entry.second.served_model)
+
+    def agreement(self) -> InterJudgeAgreement:
+        """The agreement over every result read so far.
+
+        :return: The agreement per (dimension, scale, first judge, second judge), and the scores that could not be
+            paired.
+        :rtype: InterJudgeAgreement
+        """
+        groups, served = self._groups, self._served
+        dimensions = []
+        for key in sorted(groups, key=second_judge_group_sort_key):
+            first, model, config_id, temperature, second_sent = key
+            numbers = _agreement_numbers(first.scale, groups[key])
+            figure = numbers.weighted_kappa if first.scale == "ordinal" else numbers.kappa
+            dimensions.append(
+                InterJudgeDimension(
+                    rubric_dim=first.rubric_dim,
+                    scale=first.scale,
+                    judge_model=first.judge_model,
+                    judge_config_id=first.judge_config_id,
+                    judge_temperature=first.judge_temperature,
+                    judge_sent_settings=sent_settings_from_key(first.judge_sent_settings),
+                    second_model=model,
+                    second_judge_config_id=config_id,
+                    second_temperature=temperature,
+                    second_sent_settings=sent_settings_from_level(second_sent),
+                    second_served_models=sorted(served.get(key, set())),
+                    n=numbers.n,
+                    results=numbers.results,
+                    n_cannot_tell=numbers.cannot_tell,
+                    passes=numbers.raters,
+                    exact_agreement=numbers.exact_agreement,
+                    kappa_weighting="quadratic" if first.scale == "ordinal" else "none",
+                    kappa=figure,
+                    kappa_undefined=KAPPA_UNDEFINED_ONE_SCORE if figure is None else None,
+                    agreement_interval=numbers.interval,
+                )
             )
-        )
-    return InterJudgeAgreement(scores_read=read, dimensions=dimensions, unpaired=unpaired)
+        return InterJudgeAgreement(scores_read=self._read, dimensions=dimensions, unpaired=list(self._unpaired))
 
 
 # ---------------------------------------------------------------------------
@@ -1455,6 +1491,7 @@ __all__ = [
     "SecondJudgeGroup",
     "InterJudgeAgreement",
     "InterJudgeDimension",
+    "InterJudgeTally",
     "JudgeAgreement",
     "JudgeKey",
     "JudgeSelfAgreement",

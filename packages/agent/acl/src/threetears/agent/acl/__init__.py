@@ -204,7 +204,7 @@ from threetears.agent.acl.evaluator import (
     evaluate_with_trail,
 )
 
-from threetears.agent.acl.loader import GrantLoader, HeldAssignmentsLoader, MembershipLoader
+from threetears.agent.acl.loader import GrantLoader, HeldAssignmentsLoader, MembershipLoader, ParentGroupsLoader
 from threetears.agent.acl.loaders import (
     CollectionGrantLoader,
     CollectionMembershipLoader,
@@ -292,6 +292,7 @@ __all__ = [
     "NamespaceRescope",
     "NamespaceRescopeNotAdvanced",
     "NamespaceRescopeRefused",
+    "ParentGroupsLoader",
     "PermissionCatalog",
     "PermissionEscalation",
     "PLATFORM_BUILTIN_PRE_CHECK_TOOL_NAMES",

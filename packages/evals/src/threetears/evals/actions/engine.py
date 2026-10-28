@@ -280,15 +280,24 @@ ExportRunIds = Annotated[
     list[str] | None,
     Field(
         description="Export only these runs, archived ones included since they are named; omitted exports all. "
-        "Never paged: two or more whose results would pass one page's ceiling are refused."
+        "One named run past one page's ceiling is paged by its cases (follow page.next_after_run_id and "
+        "page.next_after_case_id, naming the run again); two or more named runs past it are refused."
     ),
 ]
 ExportAfterRunId = Annotated[
     str | None,
     Field(
         min_length=1,
-        description="The previous page's page.next_after_run_id: read the export page that starts after that run; "
-        "omitted reads the first page.",
+        description="The previous page's page.next_after_run_id: read the export page that starts after that run, or "
+        "inside it with export_after_case_id; omitted reads the first page.",
+    ),
+]
+ExportAfterCaseId = Annotated[
+    str | None,
+    Field(
+        min_length=1,
+        description="The previous page's page.next_after_case_id, beside export_after_run_id: read the page of that "
+        "run that starts after this case of it; omitted starts at the run after it.",
     ),
 ]
 # The condition's values spelled out rather than the enum itself, which would nest a definition in a flat
@@ -699,6 +708,7 @@ class ScopeExportParams(EvalBaseModel):
     run_status: RunStatusFilter = "completed"
     export_run_ids: ExportRunIds = None
     export_after_run_id: ExportAfterRunId = None
+    export_after_case_id: ExportAfterCaseId = None
 
 
 class LaunchEstimateParams(RunLaunchParams):
@@ -1350,6 +1360,7 @@ async def _scope_export(host: OpsHost, caller: Caller, params: ScopeExportParams
         status=params.run_status,
         run_ids=params.export_run_ids,
         after_run_id=params.export_after_run_id,
+        after_case_id=params.export_after_case_id,
     )
 
 
@@ -2485,6 +2496,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "what it left out and which runs measured less than they promised. A ranking pooled over the rows "
                 "that most rows contradict is flagged. A judged measure over several subjects is refused unless "
                 "subject_filter names one."
+                " A scope whose runs hold more results than the read tier aggregates in one call is refused, naming its"
+                " budget, unless subject_filter narrows it to runs that fit: an aggregate is never paged. A narrowed"
+                " answer reads only that subject's runs, and its narrowed_read_disclosure says what it did not count."
             ),
         ),
         Action(
@@ -2564,6 +2578,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "where the suite changed is marked so a new denominator does not read as a regression. A step that "
                 "misses significance reads not_separated, never no change; only an equivalence test against the "
                 "measure's declared materiality threshold reads equivalent."
+                " A scope whose runs hold more results than the read tier aggregates in one call is refused, naming its"
+                " budget, unless subject_filter narrows it to runs that fit: an aggregate is never paged. A narrowed"
+                " answer reads only that subject's runs, and its narrowed_read_disclosure says what it did not count."
             ),
         ),
         Action(
@@ -2582,6 +2599,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "every axis it measured. With a bar, a variant clears it only when its whole pass^k interval is at or "
                 "above it, and the verdict names the cheapest that cleared, beside every rival it was not shown cheaper "
                 "than. The arms of one compare share a subject, so its models rank on one frontier. Spends nothing."
+                " A scope whose runs hold more results than the read tier aggregates in one call is refused, naming its"
+                " budget, unless subject_filter narrows it to runs that fit: an aggregate is never paged. A narrowed"
+                " answer reads only that subject's runs, and its narrowed_read_disclosure says what it did not count."
             ),
         ),
         Action(
@@ -2598,8 +2618,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "One row per observation, every lever and host measure its own column. CSV holds the rows alone, "
                 "so the result says beside it how many observations were left out and why; JSON carries both. "
                 f"A scope whose runs hold more than {EXPORT_PAGE_RESULTS} results is exported in pages of whole runs, "
-                "oldest first: page names the runs a page holds, and its text the call that reads the next "
-                "(export_after_run_id). Named runs are never paged, and two or more past the ceiling are refused."
+                "oldest first, and a run past it in pages of its cases: page names what a page holds, and its text "
+                "the call that reads the next (export_after_run_id, and export_after_case_id inside a run). One named "
+                "run past the ceiling is paged by its cases; two or more named runs past it are refused."
             ),
         ),
         Action(

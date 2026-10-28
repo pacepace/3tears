@@ -11,7 +11,7 @@ transport would have refused:
   :class:`~threetears.search.contracts.errors.LocalCapExceeded` with scope
   ``response-bytes``, never cut;
 - the content-type gate: a successful answer whose declared type matches no
-  allowed prefix is refused with scope ``content-type``.
+  allowed entry is refused with scope ``content-type``.
 
 A URL with no recording is answered 404 and listed on
 :attr:`RecordedFetchTransport.unrecorded`, so a test that did not expect the
@@ -24,7 +24,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from threetears.search.contracts import EGRESS_DIRECT, FetchTransport, LocalCapExceeded, Spend, TransportResponse
+from threetears.search.contracts import (
+    EGRESS_DIRECT,
+    FetchTransport,
+    LocalCapExceeded,
+    Spend,
+    TransportResponse,
+    media_type_accepted,
+)
 
 __all__ = ["RecordedFetchTransport", "RecordedPage"]
 
@@ -134,7 +141,7 @@ class RecordedFetchTransport(FetchTransport):  # parity-with: threetears.search.
             raise page.failure
         media_type = (page.content_type or "").split(";", 1)[0].strip().lower()
         if allowed_content_types and 200 <= page.status_code < 300:
-            if not media_type or not any(media_type.startswith(p.lower()) for p in allowed_content_types):
+            if not media_type_accepted(media_type, allowed_content_types):
                 raise LocalCapExceeded(
                     f"response from {url} declared content type {media_type!r}, which this read does not accept",
                     spend=Spend(),

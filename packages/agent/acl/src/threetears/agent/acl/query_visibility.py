@@ -58,6 +58,8 @@ from uuid import UUID
 
 from threetears.observe import get_logger
 
+from threetears.agent.acl.types import MAX_GROUP_MEMBERSHIP_DEPTH
+
 __all__ = [
     "caller_visible_customer_clause",
     "caller_visible_customers_query",
@@ -71,31 +73,57 @@ log = get_logger(__name__)
 def _caller_membership_predicate(param_offset: int) -> str:
     """render the caller-reaches-this-group predicate, nesting included.
 
-    a caller reaches a granting group DIRECTLY, or through ONE level of
-    group nesting (group-in-group membership, depth capped at
-    :data:`MAX_GROUP_MEMBERSHIP_DEPTH` = 2): the granting group may
-    instead contain a group the caller is a direct member of. the
-    evaluator resolves nested grants at authorization time, so a
-    visibility clause that stopped at direct membership would hide rows
-    a caller is authorized to reach -- the two must name the same rows.
-    one private helper so both public clause builders emit the identical
-    predicate and cannot drift.
+    a caller reaches a granting group DIRECTLY, or through group nesting
+    (group-in-group membership) as deep as the evaluator walks: a chain of
+    up to :data:`MAX_GROUP_MEMBERSHIP_DEPTH` groups from the caller's own
+    group to the granting one, so ``MAX_GROUP_MEMBERSHIP_DEPTH - 1`` group
+    edges. the evaluator resolves nested grants at authorization time, so a
+    visibility clause that stopped short of it would hide rows a caller is
+    authorized to reach, and one that went past it would show rows the
+    caller cannot reach -- the two must name the same rows. one private
+    helper so every public clause builder emits the identical predicate and
+    cannot drift.
+
+    the predicate walks DOWN from the granting group (the ``gm`` alias the
+    callers join on ``ra.group_id``), one nested ``EXISTS`` per edge, each
+    keyed on ``group_members.group_id`` -- the leading column of the
+    table's primary key -- so every hop is a keyed lookup rather than a
+    scan. it is generated from the constant, never written per depth; the
+    nested aliases are ``gm2``, ``gm3``, ... so a caller composing the
+    clause keeps clear of the ``gm`` prefix.
 
     :param param_offset: the ``$N`` placeholder bound to the caller's user id
     :ptype param_offset: int
     :return: boolean SQL expression over the ``gm`` join alias
     :rtype: str
     """
-    return f"""(
-                (gm.member_type = 'user' AND gm.member_id = ${param_offset})
-             OR (gm.member_type = 'group' AND EXISTS (
+    return _member_reaches_caller("gm", MAX_GROUP_MEMBERSHIP_DEPTH - 1, param_offset)
+
+
+def _member_reaches_caller(alias: str, edges_left: int, param_offset: int) -> str:
+    """the membership row ``alias`` names the caller, directly or through up to ``edges_left`` group edges.
+
+    :param alias: the ``group_members`` alias whose row is tested
+    :ptype alias: str
+    :param edges_left: group edges the walk may still follow below this row
+    :ptype edges_left: int
+    :param param_offset: the ``$N`` placeholder bound to the caller's user id
+    :ptype param_offset: int
+    :return: boolean SQL expression over ``alias``
+    :rtype: str
+    """
+    direct = f"({alias}.member_type = 'user' AND {alias}.member_id = ${param_offset})"
+    if edges_left <= 0:
+        return f"({direct})"
+    child = f"gm{MAX_GROUP_MEMBERSHIP_DEPTH - edges_left + 1}"
+    nested = _member_reaches_caller(child, edges_left - 1, param_offset)
+    return f"""({direct}
+             OR ({alias}.member_type = 'group' AND EXISTS (
                     SELECT 1
-                      FROM group_members gm2
-                     WHERE gm2.group_id = gm.member_id
-                       AND gm2.member_type = 'user'
-                       AND gm2.member_id = ${param_offset}
-                ))
-           )"""
+                      FROM group_members {child}
+                     WHERE {child}.group_id = {alias}.member_id
+                       AND {nested}
+                )))"""
 
 
 def caller_visible_customer_clause(

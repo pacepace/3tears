@@ -36,6 +36,7 @@ re-consolidates the sources), so no rollback is attempted.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 from typing import Any, Protocol, runtime_checkable
@@ -158,7 +159,11 @@ def _cosine(a: list[float], b: list[float], norm_a: float, norm_b: float) -> flo
     denom = norm_a * norm_b
     if denom == 0.0:
         return 0.0
-    return sum(x * y for x, y in zip(a, b, strict=False)) / denom
+    if len(a) != len(b):
+        # vectors of two widths pair over the shorter one, as a zip would.
+        width = min(len(a), len(b))
+        a, b = a[:width], b[:width]
+    return math.sumprod(a, b) / denom
 
 
 def _cluster_by_cosine(
@@ -171,8 +176,9 @@ def _cluster_by_cosine(
     exhaustively. Two memories join the same cluster when their cosine
     similarity is at least ``threshold``; membership is transitive (union-
     find connected components), so a chain of pairwise-similar memories
-    forms one cluster. O(n^2) pairwise — bounded by a single scope grain's
-    memory count (hundreds), well within a background pass.
+    forms one cluster. O(n^2) pairwise, each pair a C-level
+    :func:`math.sumprod`; it is still CPU-bound for a few hundred memories,
+    so the async caller runs it in a worker thread, never on the event loop.
 
     :param embeddings: candidate embedding vectors, index-aligned to the
         caller's candidate list
@@ -200,7 +206,7 @@ def _cluster_by_cosine(
         if ra != rb:
             parent[rb] = ra
 
-    norms = [math.sqrt(sum(v * v for v in e)) for e in embeddings]
+    norms = [math.sqrt(math.sumprod(e, e)) for e in embeddings]
     for i in range(n):
         for j in range(i + 1, n):
             if _cosine(embeddings[i], embeddings[j], norms[i], norms[j]) >= threshold:
@@ -349,7 +355,10 @@ class DreamService:
                 gist_ids=[],
             )
 
-        clusters = _cluster_by_cosine(
+        # the pairwise pass is seconds of CPU for a few hundred memories; on
+        # the event loop it stalls every turn this worker is serving.
+        clusters = await asyncio.to_thread(
+            _cluster_by_cosine,
             [c["embedding"] for c in candidates],
             self._config.consolidation_cluster_threshold,
         )
