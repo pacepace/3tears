@@ -188,9 +188,10 @@ class Unanswered(_Part):
 class Pricing(_Part):
     """How one arm's cost was priced: what priced its calls, who served them, and how many of them were priced.
 
-    Read off the usage rows of the roles its cost counts (the ones a production deployment pays for), so a reader sees
-    where each cost comes from beside it: a cost is the provider routing's, never the model's alone. A partly priced
-    arm (``priced_calls`` under ``calls``) has a cost over part of its calls, which no page states as if it were whole.
+    As its producer states it for the calls the arm's cost counts, so a reader sees where each cost comes from beside
+    it: a cost is the provider routing's, never the model's alone. A partly priced arm (``priced_calls`` under
+    ``calls``) has a cost over part of its calls, which no page states as if it were whole. No assembly fills it from
+    a campaign's stored usage yet (#1011); an input that carries it is read.
     """
 
     sources: list[str] = Field(

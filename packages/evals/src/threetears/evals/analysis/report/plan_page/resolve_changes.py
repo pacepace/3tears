@@ -42,6 +42,7 @@ one decimal, as the rows' keys read (:func:`~threetears.evals.analysis.report.pl
 from __future__ import annotations
 
 import dataclasses
+import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
@@ -177,11 +178,15 @@ def _in_one_form(
             text = text.replace(figure_text(number, drawn), figure_text(number * scale, settled))
         return relabelled(text)
 
+    moved = {old: new for old, new in names.items() if old != new}
+    # One pass, the longest name first, so a measure named inside another's name (``cost`` in ``production replicating
+    # cost``) is never replaced twice.
+    pattern = re.compile("|".join(re.escape(old) for old in sorted(moved, key=len, reverse=True))) if moved else None
+
     def relabelled(text: str | None) -> str:
-        for old, new in names.items():
-            if text and old != new:
-                text = text.replace(old, new)
-        return text or ""
+        if not text or pattern is None:
+            return text or ""
+        return pattern.sub(lambda found: moved[found.group(0)], text)
 
     redrawn = []
     for change in changes:
@@ -344,7 +349,9 @@ def _descriptive(
     context: ChartContext, key: str, arm: str, mine: Stat | None, theirs: Stat | None, drawn: Quantity, where: str = ""
 ) -> _Change | None:
     """One arm less the control on one figure: the pipeline's own change where the arm's figure states only that,
-    else the difference of the two values, bold or muted by the descriptive rule; None where neither is held."""
+    else the difference of the two values, bold or muted by the descriptive rule; None where neither is held. The two
+    levels its tip compares are spelled on their measure's own ruler (:func:`_levels_drawn`), as the chart's words
+    state it, never at the change's factor before the chart settles its ruler."""
     if mine is None:
         return None
     look = context.look.arm(arm)
@@ -369,11 +376,11 @@ def _descriptive(
     spreads = [spread(mine), spread(theirs)]
     read = separated(change, [one * drawn.factor if one is not None else None for one in spreads])
     control = context.look.arm(_control_or_refuse(context))
-    level = quantity("percent") if drawn.unit == "pts" else drawn
+    level = quantity("percent") if drawn.unit == "pts" else _levels_drawn(context, key, drawn)
     tip = [
         *head,
-        f"{control.name} {_level_text(theirs_value[0] * drawn.factor, level)} · "
-        f"{look.name} {_level_text(mine_value[0] * drawn.factor, level)}",
+        f"{control.name} {_level_text(theirs_value[0] * level.factor, level)} · "
+        f"{look.name} {_level_text(mine_value[0] * level.factor, level)}",
         figure_text(change, drawn),
     ]
     return _Change(
@@ -389,8 +396,17 @@ def _descriptive(
 
 
 def _level_text(value: float, drawn: Quantity) -> str:
-    """A level (not a change) in the quantity's unit, unsigned."""
-    return figure_text(value, Quantity(drawn.factor, drawn.fmt, drawn.unit))
+    """A level (not a change) in the quantity's unit, unsigned: money in its ruler's form."""
+    return figure_text(value, dataclasses.replace(drawn, change=False))
+
+
+def _levels_drawn(context: ChartContext, key: str, drawn: Quantity) -> Quantity:
+    """How the levels a change compares are drawn: money on its measure's own ruler, by the one owner of money's scale
+    over every mean the input holds of it (the ruler :func:`_in_one_form` settles the chart's changes on); any other
+    unit as the change is drawn."""
+    if drawn.unit != MONEY:
+        return drawn
+    return quantity_of(figure_unit(context.report_input, key), held_means(context.report_input, key))
 
 
 def _figure_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[str, ...]]:

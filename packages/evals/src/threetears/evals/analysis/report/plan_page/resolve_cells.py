@@ -469,9 +469,12 @@ def _diff_heatmap(context: ChartContext) -> Drawn:
             figures[key] += [value for stat in (theirs, ours) if (value := _value(context, key, stat)) is not None]
     levels = unit_quantities(report_input, figures)
     level = levels[keys[0]]
+    renamed: dict[str, str] = {}
     if columns == [measure_words(report_input, key) for key in keys]:
-        # Columns that name the measures say what their money is drawn per (the one owner of money's words).
-        columns = [money_words(report_input, key, levels[key]) for key in keys]
+        # Columns that name the measures say what their money is drawn per (the one owner of money's words), in the
+        # tips that name them too.
+        renamed = {measure_words(report_input, key): money_words(report_input, key, levels[key]) for key in keys}
+        columns = [renamed[column] for column in columns]
     base_name, compared_name = _arm_name(context, base), _arm_name(context, compared)
     pairs: dict[tuple[str, str], tuple[float, float]] = {}
     for row_name, line in places:
@@ -496,7 +499,7 @@ def _diff_heatmap(context: ChartContext) -> Drawn:
                     value=mine - other,
                     detail=mine,
                     tip=[
-                        f"{row_name} · {column}",
+                        f"{row_name} · {renamed.get(column, column)}",
                         f"{base_name} {figure_text(other, level)}",
                         f"{compared_name} {figure_text(mine, level)}",
                         figure_text(mine - other, change),

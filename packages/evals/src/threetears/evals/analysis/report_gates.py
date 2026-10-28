@@ -54,6 +54,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
+from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report.figure_keys import Figure, format_figure, reader_name, resolve
 from threetears.evals.analysis.report_input import Criterion, ReportInput
 from threetears.evals.analysis.report_margins import (
@@ -65,6 +66,7 @@ from threetears.evals.analysis.report_margins import (
 )
 
 __all__ = [
+    "criterion_ruler",
     "GateCheck",
     "GateFinding",
     "GateStatus",
@@ -164,6 +166,36 @@ def _placed(report_input: ReportInput, reason: str, task: str | None, cell: str 
     return reason
 
 
+#: The scales a criterion's line is money on.
+_MONEY_SCALES = frozenset({"usd", "usd_per_1k", "usd_per_1m"})
+
+
+def criterion_ruler(report_input: ReportInput, criterion: Criterion, line: Figure) -> tuple[MoneyRuler, int]:
+    """The ruler a money criterion's figures are stated on, where its count is named once beside them (a gate's
+    reason, a gate row's line): the one owner of money's scale over the measure's every arm's figure and the line, per
+    1,000 of what it counts at least, never a per-1,000 mark.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param criterion: The criterion, on a money measure.
+    :ptype criterion: Criterion
+    :param line: Its threshold's figure (``criteria.<id>.threshold``).
+    :ptype line: Figure
+    :return: The ruler, and the count its measure's own unit is per.
+    :rtype: tuple[MoneyRuler, int]
+    """
+    own = _SCALE_COUNTS[line.scale]
+    measure = report_input.measures.get(criterion.measure)
+    amounts = [
+        float(stat.mean) for stat in (measure.per_arm.values() if measure is not None else ()) if stat.mean is not None
+    ]
+    return money_ruler([*amounts, float(criterion.threshold)], per=own, start=max(own, 1000)), own
+
+
+#: How many of what it counts a figure on each dollar scale is per.
+_SCALE_COUNTS = {"usd": 1, "usd_per_1k": 1000, "usd_per_1m": 1_000_000}
+
+
 def _interval(figure: CriterionFigure) -> tuple[float, float] | None:
     if figure.ci is not None:
         return figure.ci
@@ -192,12 +224,28 @@ def _read(
     )
     threshold = float(criterion.threshold)
     higher = criterion.direction == "higher_is_better"
-    stated = format_figure(replace(line, value=figure.value))
     meets = figure.value >= threshold if higher else figure.value <= threshold
+    interval = _interval(figure)
+    borderline = interval is not None and not (interval[0] >= threshold if higher else interval[1] <= threshold)
+    if line.scale in _MONEY_SCALES:
+        # Money on the one owner's ruler (#993): both figures in its form, its count named once, in the criterion's
+        # name (its own count replaced), never a per-1,000 mark.
+        ruler, own = criterion_ruler(report_input, criterion, line)
+        name = ruler.label(name, line.per, own)
+        if not meets:
+            return "fail", f"{name} {ruler.spell(figure.value)} {_MISSED[criterion.direction]} {ruler.spell(threshold)}"
+        if borderline and interval is not None:
+            if figure.ci is not None:
+                words = "derived interval " if figure.derived else "interval "
+                spread = f", {words}{ruler.spell(interval[0])}–{ruler.spell(interval[1])}"
+            else:
+                spread = f" ±{ruler.spell(float(figure.half_width or 0))}"
+            return "borderline", f"{name} {ruler.spell(figure.value)}{spread}"
+        return "pass", ""
+    stated = format_figure(replace(line, value=figure.value))
     if not meets:
         return "fail", f"{name} {stated} {_MISSED[criterion.direction]} {format_figure(line)}"
-    interval = _interval(figure)
-    if interval is not None and not (interval[0] >= threshold if higher else interval[1] <= threshold):
+    if borderline:
         separator = ", " if figure.ci is not None else " "
         return "borderline", f"{name} {stated}{separator}{_spread(line, figure)}"
     return "pass", ""

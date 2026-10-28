@@ -68,10 +68,11 @@ from threetears.evals.analysis.kinds import campaign_kind
 from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.references import cell_index, resolve_reading
+from threetears.evals.analysis.report.blocks import money_columns
+from threetears.evals.analysis.report.cost_unit import money_ruler
 from threetears.evals.analysis.report.figures import (
     NO_SUCCESSFUL_RESULTS,
     SHARE,
-    UNITLESS,
     MeasureRuler,
     Rulers,
     analysis_rulers,
@@ -603,7 +604,7 @@ def _page(
     # with what was not tested, though they are laid out with the questions).
     order = list(SECTION_TITLES)
     blocks.sort(key=lambda block: order.index(block.section))
-    blocks = _traced(blocks, bundle)
+    blocks = [_in_one_form(block) for block in _traced(blocks, bundle)]
     return Report(
         basis=basis,
         title=_title(bundle, name, arm),
@@ -613,6 +614,14 @@ def _page(
         verdicts=[*guardrails_read, *bars_read, *contrasts_read],
         bundle=bundle,
     )
+
+
+def _in_one_form(block: ReportBlock) -> ReportBlock:
+    """A table with each column's money in one form chosen from the column's own values, by the one owner of money's
+    scale (:func:`~threetears.evals.analysis.report.blocks.money_columns`, #993); any other block as it is."""
+    if not isinstance(block, TableBlock):
+        return block
+    return block.model_copy(update={"rows": money_columns(block.rows)})
 
 
 def _traced(blocks: Sequence[ReportBlock], bundle: AnalysisContextBundle) -> list[ReportBlock]:
@@ -850,10 +859,14 @@ def _date(stamp: str) -> str:
     return f"{moment.day} {moment:%b %Y}"
 
 
-def _dollars(amount: float | None, ruler: MeasureRuler = UNITLESS) -> str | None:
-    """A cost as the scoreboard prints it, on its ruler: ``$0.003092``, or ``$3.092`` per 1,000 replies; None where
-    none was measured."""
-    return None if amount is None else format_number(amount * ruler.factor, prefix="$")
+def _dollars(amount: float | None, ruler: MeasureRuler) -> str | None:
+    """A cost as the scoreboard prints it, on its ruler and in its one form (the one owner of money's scale, #993):
+    ``$3.09`` per 1,000 replies beside every other arm's; None where none was measured."""
+    if amount is None:
+        return None
+    if ruler.money is None:
+        raise ValueError("a cost is spelled on a money ruler, and this one holds no form")
+    return ruler.money.spell(amount * ruler.factor)
 
 
 def _cost_ruler(bundle: AnalysisContextBundle) -> MeasureRuler:
@@ -3137,6 +3150,9 @@ def _mean_text(value: float, ruler: MeasureRuler) -> str:
     """A mean on its ruler, the unit on the figure where the unit sits there (``98.9%``, ``$0.0459``), bare where the
     row's heading names it (a latency's ``950`` under ``Turn time (ms)``)."""
     scaled = value * ruler.factor
+    if is_money(ruler.unit) and ruler.money is not None:
+        # In the measure's one form, by the one owner of money's scale (#993).
+        return ruler.money.spell(scaled)
     if ruler.unit == PERCENT or is_money(ruler.unit):
         return with_unit(scaled, ruler.unit)
     return number_in(scaled, ruler.unit)
@@ -3146,6 +3162,8 @@ def _interval(low: float | None, high: float | None, ruler: MeasureRuler) -> str
     """An interval as ``[low, high]`` on its ruler, or nothing when either end is unestimated."""
     if low is None or high is None:
         return ""
+    if is_money(ruler.unit) and ruler.money is not None:
+        return f" [{ruler.money.spell(low * ruler.factor)}, {ruler.money.spell(high * ruler.factor)}]"
     return f" {_interval_cell(low * ruler.factor, high * ruler.factor, ruler.unit)}"
 
 
@@ -3822,8 +3840,10 @@ def _methods_table(
         )
         if level.judge_sent_settings:
             rows.append(("Judge settings sent", "; ".join(_settings_words(sent) for sent in level.judge_sent_settings)))
+    # What each arm's trials cost: totals, which count nothing and are never scaled, in their one form (#993).
+    totals = money_ruler((board.test_cost_usd for board in bundle.scoreboard), per=0)
     costs = [
-        f"{_namer(names)(board.variant_key)} {_dollars(board.test_cost_usd)}"
+        f"{_namer(names)(board.variant_key)} {totals.spell(board.test_cost_usd)}"
         for board in bundle.scoreboard
         if board.test_cost_usd is not None
     ]

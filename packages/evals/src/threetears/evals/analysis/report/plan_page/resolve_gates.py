@@ -132,7 +132,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     TASK_SHARE_TEMPLATE,
     reading_words,
 )
-from threetears.evals.analysis.report_gates import GateCheck, gate_check, routing_picks, task_costs
+from threetears.evals.analysis.report_gates import criterion_ruler, GateCheck, gate_check, routing_picks, task_costs
 from threetears.evals.analysis.report_input import (
     Aspect,
     Criterion,
@@ -304,10 +304,11 @@ def _task_matrix(context: ChartContext) -> Drawn:
                 cells.append(cell)
                 continue
             figures = task.per_arm.get(arm, {})
+            # The cost the cell prints beside its reasons is no figure to say twice.
             said = [
                 _figure_words(context, key, figures[key], measures_drawn[key])
                 for key in context.query.measures
-                if key in figures
+                if key in figures and key != costs.measure
             ]
             reasons = [line for line in said if line] + ([share] if share is not None else [])
             cells.append(GateCell(status="neutral", label=_ungated(gating), reasons=reasons or None, cost=cost))
@@ -471,7 +472,12 @@ def _floor_matrix(context: ChartContext) -> Drawn:
 
 def _gate_detail(context: ChartContext, criterion: Criterion) -> str:
     """A gate row's line: where it sits, by its direction, and where it is read beyond the whole comparison."""
-    line = format_figure(resolve(f"criteria.{criterion.id}.threshold", context.report_input))
+    threshold = resolve(f"criteria.{criterion.id}.threshold", context.report_input)
+    line = format_figure(threshold)
+    if threshold.scale in ("usd", "usd_per_1k", "usd_per_1m"):
+        # Money on the criterion's ruler, its count named once (the one owner of money's scale), never a mark.
+        ruler, _own = criterion_ruler(context.report_input, criterion, threshold)
+        line = f"{ruler.spell(float(criterion.threshold))} {ruler.words(threshold.per)}"
     said = GATE_LINE_WORDS[criterion.direction].format(line=line)
     if criterion.statistic != "mean":
         said = f"{criterion.statistic} {said}"

@@ -187,6 +187,11 @@ class MoneyRuler:
         """
         if not self.counted or self.counted == own:
             return label
+        if own == 1 and noun:
+            # Money per one of what it counts states its count as ``per reply``: the drawn count replaces it.
+            single = re.search(rf"(?<!\w){re.escape(per_one(noun))}(?!\w)", label, re.I)
+            if single is not None:
+                return label[: single.start()] + self.words(noun) + label[single.end() :]
         spellings = _COUNT_SPELLINGS.get(own)
         if spellings is not None:
             found = (

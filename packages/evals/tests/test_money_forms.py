@@ -42,12 +42,14 @@ from threetears.evals.analysis.report.charts import BarsChart
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import even_precision
 from threetears.evals.analysis.report.figure_keys import Figure, format_figure, render, resolve
+from threetears.evals.analysis.report_rows import PriceStep, query_rows
 from threetears.evals.analysis.report.plan_page.full_results import every_table
 from threetears.evals.analysis.report.plan_page.look import figure_text, quantity
 from threetears.evals.analysis.report.plan_page.model import PageChart
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report.plan_page.tables import arms_table
 from threetears.evals.kernel.report_plan import ChartQuery, PlanChartKind, PlannedChart
+from threetears.evals.analysis.report_gates import gate_check
 from threetears.evals.analysis.report_input import Pricing, ReportInput, Unanswered
 from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.kernel.numbers import MoneyForm, money_form, spell_dollars
@@ -655,11 +657,42 @@ def _measures_shrunk(held: ReportInput, keys: frozenset[str], by: float) -> Repo
     return ReportInput.model_validate(_shrunk(data, keys, by))
 
 
+def _sliced(held: ReportInput, key: str, *, gate: bool) -> ReportInput:
+    """The input with every arm's overall figure on a money measure copied into each of its slices (tasks and strata),
+    so a heatmap over them draws money; with ``gate``, a budget gate on it too, so a gate scatter draws it."""
+    data = held.model_dump(mode="json", by_alias=True)
+    overall = data["measures"][key]["per_arm"]
+    for part in ("tasks", "strata"):
+        for item in data.get(part) or []:
+            for arm, figures in item["per_arm"].items():
+                if arm in overall:
+                    figures[key] = dict(overall[arm])
+    if gate:
+        means = [stat["mean"] for stat in overall.values() if stat.get("mean") is not None]
+        data["criteria"].append(
+            {
+                "id": "cost_budget",
+                "kind": "gate",
+                "measure": key,
+                "statistic": "mean",
+                "direction": "lower_is_better",
+                "threshold": sorted(means)[len(means) // 2],
+                "scope": "overall",
+                "label": "Cost budget",
+            }
+        )
+    return ReportInput.model_validate(data)
+
+
 def _under_a_cent() -> dict[str, tuple[ReportInput, str, str, str]]:
     """Each planted input whose money is under a cent where its unit states it, with the money measure, what it counts,
     the words its own unit's ruler reads (which no scaled chart may print) and the words it must read instead."""
-    r2 = _measures_shrunk(INPUTS["r2"], frozenset({"cost_per_1k"}), 1000.0)
-    r5 = _measures_shrunk(INPUTS["r5"], frozenset({"production_replicating_cost", "cost_usd"}), 1000.0)
+    r2 = _measures_shrunk(_sliced(INPUTS["r2"], "cost_per_1k", gate=True), frozenset({"cost_per_1k"}), 1000.0)
+    r5 = _measures_shrunk(
+        _sliced(INPUTS["r5"], "production_replicating_cost", gate=False),
+        frozenset({"production_replicating_cost", "cost_usd"}),
+        1000.0,
+    )
     rows = {
         arm: row.model_copy(
             update={
@@ -685,14 +718,21 @@ UNDER_A_CENT = _under_a_cent()
 
 
 def _queries(held: ReportInput, key: str) -> list[ChartQuery]:
-    """Every query a money chart can be asked on an input: each source, over every measure and over the money one,
-    and two arms compared."""
+    """Every query a money chart can be asked on an input: each source over every measure, over the money one alone,
+    and over the money one against each other measure either way round (a scatter's and a gate scatter's two axes),
+    each also over two arms (two arms compared); the scoreboard over its own money, and prices over each gain axis."""
     sources = get_args(ChartQuery.model_fields["source"].annotation)
     arms = [arm.id for arm in held.arms]
+    others = [other for other in [*held.measures, *held.judged] if other != key]
     queries = []
     for source in sources:
-        # The scoreboard's own money: its cost per reply and its trials' total, which counts nothing.
-        named = [["reply_cost_usd"], ["test_cost_usd"]] if source == "scoreboard" else [[key]]
+        if source == "scoreboard":
+            # The scoreboard's own money: its cost per reply and its trials' total, which counts nothing.
+            named = [["reply_cost_usd"], ["test_cost_usd"]]
+        elif source == "prices":
+            named = [[other] for other in others]
+        else:
+            named = [[key], *([key, other] for other in others), *([other, key] for other in others)]
         for measures in ([], *named):
             queries.append(_query(source, measures))
             queries.append(ChartQuery.model_validate({**_query(source, measures).model_dump(), "arms": arms[:2]}))
@@ -703,6 +743,7 @@ def _drawn_money(held: ReportInput, key: str) -> list[tuple[str, PageChart]]:
     """Every chart and table of every kind the page draws money on, on the input, as the page draws it."""
     look = block_look(held, fact_arms(held))
     drawn = []
+    seen: set[str] = set()
     for kind in get_args(PlanChartKind):
         for query in _queries(held, key):
             spec, faults = complete_chart(_planned(kind, query), held, "block")
@@ -713,8 +754,10 @@ def _drawn_money(held: ReportInput, key: str) -> list[tuple[str, PageChart]]:
             except UnresolvableReference:
                 # NOSILENT: a kind the input cannot draw over this query is no chart of money; the sweep reads on.
                 continue
-            if _draws_money(page):
-                drawn.append((f"{kind}/{query.source}/{','.join(query.measures) or 'all'}", page))
+            label = f"{kind}/{query.source}/{','.join(query.measures) or 'all'}/{len(query.arms)}"
+            if _draws_money(page) and label not in seen:
+                seen.add(label)
+                drawn.append((label, page))
     return drawn
 
 
@@ -746,44 +789,209 @@ def _page_texts(page: PageChart) -> list[str]:
     return [*_texts(data), *(cell for row in rows for cell in row), *page.notes]
 
 
+#: A kit money format, its sign and its decimals.
+_MONEY_FMT = re.compile(r"\+?usd:(\d)")
+
+#: The fields of a chart's data that hold the format of the numbers beside them, by the numbers' field names.
+_FORMATTED = {
+    "fmt": ("value",),
+    "x_fmt": ("x",),
+    "y_fmt": ("y",),
+    "cost_fmt": ("cost",),
+    "detail_fmt": ("detail",),
+}
+
+#: The words a stated count of what money counts reads in: ``per 1,000,000 replies``.
+_COUNT = re.compile(r"per ([\d,]+) ")
+
+#: The fields that name a chart's parts in words: where a code key must never show.
+_NAMING = ("title", "subtitle", "x_title", "y_title", "label", "group", "row_header", "cost_unit")
+
+
+def _formats(node: Any) -> Iterator[tuple[str, int]]:
+    """Every money format in a chart's data, with the field it sits in, wherever a panel overrides it."""
+    if isinstance(node, dict):
+        for name, value in node.items():
+            if name in _FORMATTED and isinstance(value, str) and (found := _MONEY_FMT.fullmatch(value)):
+                yield name, int(found.group(1))
+            else:
+                yield from _formats(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _formats(value)
+
+
+def _numbers(node: Any, fields: tuple[str, ...]) -> Iterator[float]:
+    """Every number a chart's data holds in the named fields, wherever they sit, but in a panel drawn in another
+    format (a pass rate's beside a cost's), whose numbers are no money."""
+    if isinstance(node, dict):
+        own = node.get("fmt")
+        if isinstance(own, str) and not _MONEY_FMT.fullmatch(own) and "value" in fields:
+            return
+        for name, value in node.items():
+            if name in fields and isinstance(value, int | float) and not isinstance(value, bool):
+                yield float(value)
+            elif name in fields and isinstance(value, list):
+                yield from (float(one) for one in value if isinstance(one, int | float))
+            else:
+                yield from _numbers(value, fields)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _numbers(value, fields)
+
+
+def _naming(node: Any) -> Iterator[str]:
+    if isinstance(node, dict):
+        for name, value in node.items():
+            if name in _NAMING and isinstance(value, str):
+                yield value
+            else:
+                yield from _naming(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _naming(value)
+
+
+def _stored(held: ReportInput, keys: Iterable[str]) -> list[float]:
+    """Every money figure the input states of some keys, as stored: each statistic wherever it sits, each contrast,
+    each two arms' difference within a place, and each step's price along every frontier."""
+    data = held.model_dump(mode="json", by_alias=True)
+    found: list[float] = []
+    places: list[dict[str, float]] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            means: dict[str, float] = {}
+            for name, value in node.items():
+                if name in keys and isinstance(value, dict) and "mean" in value:
+                    found.extend(float(value[f]) for f in _STAT_NUMBERS if isinstance(value.get(f), int | float))
+                    found.extend(float(end) for end in value.get("ci") or [])
+                elif isinstance(value, dict):
+                    for key in keys:
+                        stat = value.get(key)
+                        if isinstance(stat, dict) and isinstance(stat.get("mean"), int | float):
+                            means[name] = float(stat["mean"])
+                if node.get("measure") in keys and name in ("delta", "threshold") and isinstance(value, int | float):
+                    found.append(float(value))
+                walk(value)
+            if len(means) > 1:
+                places.append(means)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(data)
+    for key in keys:
+        measure = held.measures.get(key)
+        if measure is not None:
+            stats = [*measure.per_arm.values(), *(stat for by in measure.by_aspect.values() for stat in by.values())]
+            for stat in stats:
+                found.extend(float(getattr(stat, f)) for f in _STAT_NUMBERS if getattr(stat, f) is not None)
+                found.extend(float(end) for end in stat.ci or ())
+            places.append({arm: float(stat.mean) for arm, stat in measure.per_arm.items() if stat.mean is not None})
+    for means in places:
+        found.extend(first - second for first in means.values() for second in means.values())
+    for gain in [*held.measures, *held.judged]:
+        try:
+            rows = query_rows(_query("prices", [gain]), held)
+        except UnresolvableReference:
+            # NOSILENT: a measure no frontier is priced on states no price.
+            continue
+        for row in rows:
+            if isinstance(row.item, PriceStep):
+                found.extend([float(row.item.value), *(float(end) for end in row.interval or ())])
+    for arm in held.arms:
+        row = held.scoreboard.get(arm.id)
+        if row is not None:
+            found.extend(float(v) for v in (row.reply_cost_usd, row.test_cost_usd) if v is not None)
+    return found
+
+
+def _reconciles(value: float, stored: list[float], scale: float) -> bool:
+    return value == 0 or any(math.isclose(value / scale, one, rel_tol=1e-6, abs_tol=1e-12) for one in stored)
+
+
 @pytest.mark.parametrize("name", sorted(UNDER_A_CENT))
 def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(name: str) -> None:
-    """Every chart and table kind that draws a set under a cent: it moves the ruler (no per-1,000 mark on a chart,
-    whose ticks cannot write one), never prints its own unit's ruler beside the moved one, and states the drawn count;
-    its ticks and its notes read in one form."""
+    """Every chart and table kind that draws a set under a cent, scatter, gate scatter, both heatmaps and prices
+    included: it moves the ruler (no per-1,000 mark on a chart, whose ticks cannot write one), never states two counts
+    nor its own unit's count beside the moved one, states the drawn count, and draws each value at that count times
+    the figure stored; its ticks, notes and tips read to one form's decimals; its words name no code key."""
     held, key, stale, moved = UNDER_A_CENT[name]
+    own = {"usd": 1, "usd_per_1k": 1000, "usd_per_1m": 1_000_000}[held.measures[key].unit or "usd"]
+    money = {name for name, measure in held.measures.items() if measure.unit in ("usd", "usd_per_1k", "usd_per_1m")}
+    stored = _stored(held, {*money, "reply_cost_usd"})
     drawn = _drawn_money(held, key)
+    reasons = {
+        reason
+        for arm in held.arms
+        for task in (None, *(one.id for one in held.tasks))
+        for reason in (lambda check: (*check.fails, *check.borders))(gate_check(held, arm.id, task=task))
+    }
     kinds = {label.split("/")[0] for label, _ in drawn}
-    assert {"bars", "table", "dot_interval", "diverging_bars"} <= kinds or name.startswith("r2"), kinds
-    assert len(kinds) >= 3, kinds
+    expected = {"bars", "table", "dot_interval", "diverging_bars", "scatter_frontier", "heatmap", "diff_heatmap"}
+    expected |= {"gate_scatter", "gate_matrix", "lattice"} if name.startswith("r2") else set()
+    assert expected <= kinds, sorted(expected - kinds)
+    checked = 0
     for label, page in drawn:
         texts = _page_texts(page)
         joined = " | ".join(texts)
         if isinstance(page.chart, ChartBlock):
             assert "/1000" not in joined, (label, joined[:400])
-        assert stale not in joined, (label, joined[:600])
-        if key in label or label.endswith("/all") or "reply_cost_usd" in label:
+        if "/prices/" not in label:
+            # A price per point is per 1,000 of what the cost counts: its own count, which is no stale one.
+            assert stale not in joined, (label, joined[:600])
+        # No count stacked on another: one text states one count (said again for each item it lists, at most), and
+        # never the same count twice in a row.
+        stacked = [
+            text
+            for text in texts
+            if len(set(_COUNT.findall(text))) > 1 or re.search(r"(per [\d,]+ [\w ]+?), \1(?!\w)", text)
+        ]
+        assert not stacked, (label, stacked[:3])
+        words = [
+            *page.notes,
+            *(
+                _naming(page.chart.data.model_dump(mode="json"))
+                if isinstance(page.chart, ChartBlock) and page.chart.data is not None
+                else []
+            ),
+        ]
+        assert not [text for text in words if re.search(r"\busd\b|\b\w+_usd\b", text, re.I)], (label, words)
+        totals = "test_cost_usd" in label
+        if not totals and (key in label or label.split("/")[2] == "all" or "reply_cost_usd" in label):
             # A chart states the count it moved its ruler to; a table either does, or writes each amount with the
             # per-1,000 mark (a figure key's own spelling, which a computed table prints as prose citing it does).
             amounts = [text for text in texts if "$" in text]
-            stated = [
-                text
-                for text in amounts
-                if any(
-                    float(f"{found.group(2).replace(',', '')}.{found.group(3) or 0}")
-                    for found in _AMOUNT.finditer(text)
-                )
-            ]
+            stated = [text for text in amounts if any(_amount(found.group(0)) for found in _AMOUNT.finditer(text))]
             marked = bool(stated) and all("/1000" in text for text in stated)
             assert moved in joined or (isinstance(page.chart, TableBlock) and marked), (label, joined[:600])
-        if isinstance(page.chart, ChartBlock) and page.chart.data is not None:
-            dump = page.chart.data.model_dump(mode="json")
-            digits = {int(fmt.rsplit(":", 1)[1]) for fmt in _texts(dump) if re.fullmatch(r"\\+?usd:\\d", fmt)}
-            notes = [text for text in _texts({k: v for k, v in dump.items()}) if "$" in text]
-            if len(digits) == 1 and notes:
-                (places,) = digits
-                spelled = {decimals for per_thousand, decimals in _forms(notes) if not per_thousand}
-                assert spelled <= {places} | ({0} if places == 0 else set()), (label, places, notes[:6])
+        if not isinstance(page.chart, ChartBlock) or page.chart.data is None:
+            continue
+        dump = page.chart.data.model_dump(mode="json")
+        formats = dict(_formats(dump))
+        digits = set(formats.values())
+        if len(digits) == 1:
+            # Ticks, notes and tips in one form: every amount the chart writes to its ticks' decimals, but a gate's
+            # reason, which a tip quotes as the gate check gives it on its criterion's own ruler.
+            (places,) = digits
+            amounts = [text for text in _texts(dump) if "$" in text and text not in reasons]
+            assert {decimals for _, decimals in _forms(amounts)} <= {places}, (label, places, amounts[:6])
+            checked += 1
+        counts = {int(count.replace(",", "")) for text in texts for count in _COUNT.findall(text)}
+        # A price per point is per 1,000 of what the cost counts, whatever the measure's own unit.
+        here = 1000 if "/prices/" in label else own
+        scale = (max(counts) / here) if counts and not totals else 1.0
+        if any(source in label for source in ("/levers/", "/settle/", "/configs/")) and label.startswith(
+            ("diverging", "forest", "dot_interval")
+        ):
+            # A lever's effect is a mean over the configs it moves between, which no stored figure states one by one.
+            continue
+        for field, _places in formats.items():
+            values = list(_numbers(dump, _FORMATTED[field]))
+            off = [value for value in values if not _reconciles(value, stored, scale)]
+            assert not off, (label, field, scale, off[:4])
+    assert checked, "the control: the one-form check reads some chart"
 
 
 def test_a_total_under_a_cent_is_never_scaled() -> None:

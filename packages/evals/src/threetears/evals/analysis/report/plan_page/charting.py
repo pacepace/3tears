@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
@@ -356,7 +357,11 @@ def measure_words(report_input: ReportInput, key: str, *, kind: str | None = Non
     if kind == "trial":
         return "pass rate"
     if key in report_input.measures and kind != "judged":
-        label = report_input.measures[key].label
+        measure = report_input.measures[key]
+        label = measure.label
+        if label is None and measure.unit in _MONEY_UNITS:
+            # A money key's last word names its currency, never what the money is: ``cost_usd`` reads ``cost``.
+            return _CURRENCY_WORD.sub("", measure_name(key))
         return measure_name(key) if label is None or label == goal_check_of(key) else label
     if key in report_input.judged:
         return report_input.judged[key].label or measure_name(key)
@@ -397,7 +402,26 @@ def money_words(
     :return: The words.
     :rtype: str
     """
-    return drawn.label(name or measure_words(report_input, key, kind=kind), money_noun(report_input, key))
+    return drawn.label(name or _money_name(report_input, key, kind=kind), money_noun(report_input, key))
+
+
+#: The units a money measure declares, whose key's currency word no reader name keeps.
+_MONEY_UNITS = frozenset({"usd", "usd_per_1k", "usd_per_1m"})
+
+#: The reader's name for the scoreboard's money per reply, which its key names in code alone.
+_REPLY_COST_NAME = "Cost per reply"
+
+#: A money key's last word, which names the currency, never what the money is: ``cost usd`` reads ``cost``.
+_CURRENCY_WORD = re.compile(r"[\s_]+usd$", re.I)
+
+
+def _money_name(report_input: ReportInput, key: str, *, kind: str | None = None) -> str:
+    """What a reader calls a money figure: its measure's words, the scoreboard's cost per reply by its reader name,
+    and a name made of its key without the currency its key ends on (``cost usd`` reads ``cost``), so no line under a
+    chart names a code key or says ``usd`` beside ``dollars``."""
+    if key == _SCOREBOARD_PER_REPLY:
+        return _REPLY_COST_NAME
+    return measure_words(report_input, key, kind=kind)
 
 
 def money_notes(report_input: ReportInput, drawn: Iterable[tuple[str, Quantity]]) -> list[str]:
