@@ -221,6 +221,7 @@
 "threetears.evals.schema.RubricScale": "provisional",
 "threetears.evals.schema.RubricScore": "stable",
 "threetears.evals.schema.RunCompleteness": "provisional",
+"threetears.evals.schema.RunDisclosure": "provisional",
 "threetears.evals.schema.RunLifetime": "provisional",
 "threetears.evals.schema.Scale": "provisional",
 "threetears.evals.schema.SCALES": "provisional",
