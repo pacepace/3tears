@@ -27,7 +27,7 @@ from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
 
-from threetears.evals.kernel.numbers import WHOLE_FROM, format_number, group_thousands
+from threetears.evals.kernel.numbers import PER_THOUSAND, WHOLE_FROM, format_number, money_form
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
 from threetears.evals.schema.base import EvalDocumentModel
 
@@ -272,16 +272,19 @@ _MOST_PADDED = 3
 #: :data:`~threetears.evals.kernel.numbers.WHOLE_FROM`, where it starts writing numbers whole.
 _SIGNIFICANT = len(str(int(WHOLE_FROM)))
 
-#: A dollar amount's whole dollars in a table cell, written without their thousands grouped: ``$1239``.
-_UNGROUPED_DOLLARS = re.compile(r"(?<=\$)\d{4,}(?![\d,])")
+#: An amount of money in a table cell: its sign, its digits with any thousands separators and decimals, and the
+#: per-1,000 mark where it carries one; never a bound (``< $0.000001``), which states no amount.
+_CELL_MONEY = re.compile(r"(?<![<>] )(?<![<>\w.,+\-−])([+\-−]?)\$(\d[\d,]*(?:\.\d+)?)(/1000)?(?![\d])")
 
 
 def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
     """A values table's cells, every number at one precision among the cells that read alike: cells that read the
-    same but for their numbers (``94% · $1 per 1,000 calls``, ``96.4% · $1.06 per 1,000 calls``), wherever they sit in
-    the table, have each number in the same place padded with zeros to the most decimals that place holds among them
-    (``94.0%``, ``$1.00``), up to three. Money's whole dollars are then grouped by thousands (``$1239`` reads
-    ``$1,239``), as the figure keys write money, so a table and the prose citing it print one amount alike.
+    same but for their numbers (``94% · 3 calls``, ``96.4% · 4 calls``), wherever they sit in the table, have each
+    number in the same place padded with zeros to the most decimals that place holds among them (``94.0%``), up to
+    three. Money is then written in one form per column (#993): every amount a column holds, in whichever cells, is
+    spelled by the column's :func:`~threetears.evals.kernel.numbers.money_form` (cents, with more decimals where its
+    least amount needs them, thousands grouped, and per 1,000, ``$8/1000``, where any of them is under a cent), so a
+    column never reads ``$0.008`` beside ``$0.11`` and a table prints an amount as the figure keys citing it do.
 
     Padding never rounds: a cell keeps every digit it had, so a table still never rounds away what a value holds,
     and two figures a reader compares read at one precision. Nor does it state a digit the number was never rounded
@@ -308,9 +311,37 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
         most = [max(len(numbers[place].group(3) or "") for numbers in found) for place in range(len(found[0]))]
         for at, column in places:
             table[at][column] = _padded_cell(table[at][column], most)
-    return [
-        [_UNGROUPED_DOLLARS.sub(lambda whole: group_thousands(whole.group(0)), cell) for cell in row] for row in table
-    ]
+    return money_by_column(table)
+
+
+def _money_amount(found: re.Match[str]) -> float:
+    """The dollars one amount in a cell states, its sign and any per-1,000 mark read back."""
+    amount = float(found.group(2).replace(",", "")) / (PER_THOUSAND if found.group(3) else 1)
+    return -amount if found.group(1) in ("-", "−") else amount
+
+
+def money_by_column(table: list[list[str]]) -> list[list[str]]:
+    """Every amount of money in each column of a table's text written in that column's one form (#993): chosen from
+    every amount the column holds (:func:`~threetears.evals.kernel.numbers.money_form`), never from one cell, and each
+    amount re-spelled in it, its sign kept; a bound (``< $0.000001``) is left as it is.
+
+    :param table: The table's rows of cell texts; changed in place.
+    :ptype table: list[list[str]]
+    :return: The same rows.
+    :rtype: list[list[str]]
+    """
+    width = max((len(row) for row in table), default=0)
+    for column in range(width):
+        cells = [row[column] for row in table if column < len(row)]
+        form = money_form(_money_amount(found) for cell in cells for found in _CELL_MONEY.finditer(cell))
+
+        def spelled(found: re.Match[str]) -> str:
+            return form.spell(_money_amount(found), signed=found.group(1) == "+")
+
+        for row in table:
+            if column < len(row):
+                row[column] = _CELL_MONEY.sub(spelled, row[column])
+    return table
 
 
 def _own_decimals(whole: str) -> int:
@@ -1373,4 +1404,5 @@ __all__ = [
     "ScatterPath",
     "ScatterPoint",
     "even_precision",
+    "money_by_column",
 ]

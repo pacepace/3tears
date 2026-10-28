@@ -300,6 +300,8 @@ def _evidence(evidence: Evidence, path: str, reader: _Reader, look: PageLook) ->
             degraded=degraded,
         )
     spec, chart = drawn
+    if isinstance(chart.chart, TableBlock):
+        chart = chart.model_copy(update={"chart": chart.chart.one_money_form()})
     return DocEvidence(
         block=evidence.block,
         chart=chart,
@@ -431,7 +433,7 @@ def build(
             for index, step in enumerate(doc.next)
         ],
         arms_key=arms_key(report_input, look),
-        full_results=every_table(report_input, look),
+        full_results=[table.one_money_form() for table in every_table(report_input, look)],
         omitted=[
             DocOmitted(
                 what=reader.written(item.what, f"omitted[{index}].what"),

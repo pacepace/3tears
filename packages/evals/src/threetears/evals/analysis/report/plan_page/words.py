@@ -36,6 +36,7 @@ __all__ = [
     "BASIS_NOTE",
     "ANSWER_TEMPLATES",
     "APPENDIX_TITLE",
+    "ALL_PRICED_TEMPLATE",
     "ARM_HEADERS",
     "ARM_ROLE_WORDS",
     "ARMS_EYEBROW",
@@ -69,10 +70,13 @@ __all__ = [
     "OPTIONS_TITLE",
     "OPTION_HEADERS",
     "PASSES_TEMPLATE",
+    "PRICED_HEADER",
+    "PRICED_SHARE_TEMPLATE",
     "REFERENCE_TEMPLATE",
     "REPEAT_TEMPLATE",
     "RECOMMENDED_MARK",
     "ROLE_WORDS",
+    "SERVED_BY_TEMPLATE",
     "RUN_TEMPLATE",
     "SYNTHETIC",
     "STATISTIC_NOTE",
@@ -195,6 +199,17 @@ COST_HEADER = "Cost {per}"
 
 #: A count out of a total, as a cell's marker reads it: passes over usable trials, usable trials over those run.
 PASSES_TEMPLATE = "{passed} of {usable}"
+
+#: The arms table's column saying what priced each arm's cost: its price sources, and who served its calls beside them.
+PRICED_HEADER = "Priced by"
+
+#: Who served an arm's calls, beside its price sources.
+SERVED_BY_TEMPLATE = "served by {providers}"
+
+#: An arm's priced share of the calls its cost counts, beside its cost: all of them, or how many of how many. A partly
+#: priced arm says the second in place of its cost, which would be a smaller total read as whole.
+ALL_PRICED_TEMPLATE = "all {calls} calls priced"
+PRICED_SHARE_TEMPLATE = "{priced} of {calls} calls priced"
 
 #: An arm's role, as the arms key and the options table's control row say it.
 ARM_ROLE_WORDS: dict[str, str] = {"control": "Control", "challenger": "Candidate"}

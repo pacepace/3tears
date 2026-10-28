@@ -40,6 +40,7 @@ __all__ = [
     "CostBasis",
     "per_count",
     "per_noun",
+    "per_one",
 ]
 
 #: What money per one trial is per, as the package counts trials: one trial is one reply.
@@ -99,6 +100,25 @@ def per_noun(measure: Measure) -> str:
         return ""
     noun = found.group("noun").strip()
     return noun if 0 < len(noun.split()) <= _MOST_WORDS else ""
+
+
+def per_one(noun: str) -> str:
+    """The words a cost per one of ``noun`` is printed with: ``per reply``, ``per conversation``.
+
+    :param noun: What the cost counts, as a plural noun (:func:`per_noun`); empty where the input does not say.
+    :ptype noun: str
+    :return: ``per`` and the noun made singular (``replies`` to ``reply``, ``calls`` to ``call``); ``per`` and
+        ``(unit not stated)`` where the noun is empty.
+    :rtype: str
+    """
+    if not noun:
+        return f"per {_UNSTATED}"
+    *rest, last = noun.split(" ")
+    if last.endswith("ies"):
+        last = last[:-3] + "y"
+    elif last.endswith("s") and not last.endswith("ss"):
+        last = last[:-1]
+    return "per " + " ".join([*rest, last])
 
 
 def per_count(noun: str, count: int = 1_000) -> str:

@@ -30,9 +30,19 @@ screen reader, which lose the colour, lose nothing.
 
 **The arms table** (:func:`arms_table`), a report document's options table: every arm in the input's order, whatever
 the document says, as its chip, its role (the arms the document recommends marked ``recommended`` beside it), what
-it runs (as the options table says it, where some arm declares it) and its cost per 1,000 (of what the cost counts)
-with the cost cell's marks above (the uplift against the control's, and the arm's unanswered calls), where some arm
-holds a cost. It reads no plan: which arms and columns it shows is the input's, and only the mark is the document's.
+it runs (as the options table says it, where some arm declares it), its quality and its cost side by side:
+
+- its pass rate, with its passes over its usable trials, where some arm's scoreboard holds one;
+- its cost per run (per one of what the cost counts), or per 1,000 where the column's
+  :func:`~threetears.evals.kernel.numbers.money_form` goes per 1,000 (#993): one form for the whole column, so the
+  header says which and every cell is written in it. Beside it, the uplift against the control's, the priced share of
+  the calls the cost counts (``all 897 calls priced``), and the arm's unanswered calls. A partly priced arm states
+  ``n of m calls priced`` in place of a cost, which would be a smaller total read as whole; an arm none of whose calls
+  were priced reads ``unpriced``, never ``$0``;
+- what priced it: its price sources, and the providers that served its calls, where some arm's pricing names one
+  (:class:`~threetears.evals.analysis.report_input.Pricing`).
+
+It reads no plan: which arms and columns it shows is the input's, and only the mark is the document's.
 
 **The arms key** (GENERATOR §2.8, §6.1): each arm's full configuration once: its chip, its role, its settings as the
 campaign declared them, its served model, the share of its output spent reasoning, and its usable trials, each column
@@ -46,12 +56,13 @@ from collections.abc import Callable, Collection
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
 from threetears.evals.analysis.report.charts import ChartStatus
-from threetears.evals.analysis.report.cost_unit import per_count
+from threetears.evals.analysis.report.cost_unit import per_count, per_one
 from threetears.evals.analysis.report.figure_keys import Figure, cost_basis, format_figure, resolve
 from threetears.evals.analysis.report.plan_page.charting import figure_stat, measure_words, stat_value
 from threetears.evals.analysis.report.plan_page.look import GATE_STATUS, ArmLook, PageLook
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION, PageArmsKey, PageOptions
 from threetears.evals.analysis.report.plan_page.words import (
+    ALL_PRICED_TEMPLATE,
     ARM_HEADERS,
     ARM_ROLE_WORDS,
     ARMS_EYEBROW,
@@ -62,14 +73,18 @@ from threetears.evals.analysis.report.plan_page.words import (
     OPTION_HEADERS,
     OPTIONS_TITLE,
     PASSES_TEMPLATE,
+    PRICED_HEADER,
+    PRICED_SHARE_TEMPLATE,
     RECOMMENDED_MARK,
     ROLE_WORDS,
+    SERVED_BY_TEMPLATE,
     reading_words,
 )
 from threetears.evals.analysis.report_gates import gate_check
-from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_input import Pricing, ReportInput
 from threetears.evals.analysis.report_plan_checks import OPTION_COLUMN_FAMILIES
 from threetears.evals.analysis.report_rows import query_aspect
+from threetears.evals.kernel.numbers import UNPRICED, MoneyForm, money_form
 from threetears.evals.kernel.report_plan import ReportPlan
 
 __all__ = ["arms_key", "arms_table", "options_table"]
@@ -317,13 +332,19 @@ def arms_table(report_input: ReportInput, look: PageLook, recommends: Collection
     """
     arms = [arm.id for arm in report_input.arms]
     described = any(_runs(report_input, arm) for arm in arms)
-    cells = {arm: _cost(_COST, arm, report_input, look) for arm in arms}
+    quality = {arm: _pass_rate(_PASS_RATE, arm, report_input, look) for arm in arms}
+    rated = any(cell.value is not None for cell in quality.values())
+    header, cells = _arm_costs(report_input, look)
     costed = any(cell.value is not None for cell in cells.values())
+    priced = {arm: _priced_by(_pricing(report_input, arm)) for arm in arms}
+    sourced = any(cell.value is not None or cell.flag is not None for cell in priced.values())
     columns = [
         TableColumn(key="option", header=OPTION_HEADERS["option"]),
         TableColumn(key="role", header=OPTION_HEADERS["role"]),
         *([TableColumn(key=_RUNS, header=ARM_HEADERS["settings"])] if described else []),
-        *([TableColumn(key=_COST, header=_header(_COST, report_input))] if costed else []),
+        *([TableColumn(key=_PASS_RATE, header=OPTION_HEADERS[_PASS_RATE])] if rated else []),
+        *([TableColumn(key=_COST, header=header)] if costed else []),
+        *([TableColumn(key=_PRICED, header=PRICED_HEADER)] if sourced else []),
     ]
     rows = []
     for arm in report_input.arms:
@@ -333,8 +354,12 @@ def arms_table(report_input: ReportInput, look: PageLook, recommends: Collection
         }
         if described:
             row[_RUNS] = TableCell(value=_runs(report_input, arm.id) or None)
+        if rated:
+            row[_PASS_RATE] = quality[arm.id]
         if costed:
             row[_COST] = cells[arm.id]
+        if sourced:
+            row[_PRICED] = priced[arm.id]
         rows.append(row)
     return TableBlock(
         section=PLANNED_SECTION,
@@ -349,6 +374,97 @@ def arms_table(report_input: ReportInput, look: PageLook, recommends: Collection
 
 #: The arms table's cost column: the options table's cost family.
 _COST = "cost_per_1k"
+
+#: The arms table's quality column, the options table's pass-rate family, and its column of what priced each cost.
+_PASS_RATE = "pass_rate"
+_PRICED = "priced_by"
+
+
+def _pricing(report_input: ReportInput, arm: str) -> Pricing | None:
+    """How an arm's cost was priced, as its scoreboard row says; None where the input does not say."""
+    row = report_input.scoreboard.get(arm)
+    return row.pricing if row is not None else None
+
+
+def _part_priced(pricing: Pricing | None) -> bool:
+    """Whether an arm's cost counts only part of its calls: some were priced and some were not."""
+    return (
+        pricing is not None
+        and pricing.calls is not None
+        and pricing.priced_calls is not None
+        and pricing.priced_calls < pricing.calls
+    )
+
+
+def _arm_costs(report_input: ReportInput, look: PageLook) -> tuple[str, dict[str, TableCell]]:
+    """The arms table's cost column: its header and each arm's cell, every cost in one form (#993).
+
+    Each arm's cost per run is its cost per 1,000 of what the cost counts over 1,000. The column's form is chosen from
+    every cost it states (:func:`~threetears.evals.kernel.numbers.money_form`), never one cell's: per run in dollars,
+    or, where some cost is under a cent, per 1,000 (per 1,000,000 where one is under a cent even per 1,000), which the
+    header says, so the cells are written without the mark.
+    A partly priced arm is left out of the choice and states its priced share in place of a cost; an arm with no
+    cost whose pricing counted no priced call reads ``unpriced``.
+    """
+    noun = cost_basis(report_input).noun
+    figures = {arm.id: _figure(f"{_COST}.{arm.id}", report_input) for arm in report_input.arms}
+    per_run = {
+        arm: figure.value / 1000.0
+        for arm, figure in figures.items()
+        if figure is not None and isinstance(figure.value, float) and not _part_priced(_pricing(report_input, arm))
+    }
+    count, form = 1, money_form(per_run.values())
+    while form.per_thousand and count < _MOST_COUNTED:
+        count *= 1000
+        form = money_form(cost * count for cost in per_run.values())
+    header = COST_HEADER.format(per=per_one(noun) if count == 1 else per_count(noun, count))
+    cells = {arm.id: _arm_cost(arm.id, report_input, look, per_run, form, float(count)) for arm in report_input.arms}
+    return header, cells
+
+
+#: The most runs the arms table's cost is stated per: a cost under a cent per 1,000 runs reads per 1,000,000, as a
+#: cost measure per 1,000,000 of what it counts states it.
+_MOST_COUNTED = 1_000_000
+
+
+def _arm_cost(
+    arm: str, report_input: ReportInput, look: PageLook, per_run: dict[str, float], form: MoneyForm, factor: float
+) -> TableCell:
+    """One arm's cost cell in the column's form: its cost, then the uplift, the priced share and the unanswered calls."""
+    pricing = _pricing(report_input, arm)
+    share = _priced_share(pricing)
+    if _part_priced(pricing):
+        return TableCell(value=share, flag="; ".join(_unanswered_marks(arm, report_input)) or None)
+    if arm not in per_run:
+        unpriced = pricing is not None and pricing.priced_calls == 0 and bool(pricing.calls)
+        return TableCell(value=UNPRICED if unpriced else None)
+    marks: list[str] = []
+    control = look.control
+    if control is not None and arm != control.id:
+        uplift = _figure(f"cost.uplift.{arm}", report_input)
+        if uplift is not None and isinstance(uplift.value, float):
+            marks.append(("+" if uplift.value > 0 else "") + format_figure(uplift))
+    if share is not None:
+        marks.append(share)
+    marks += _unanswered_marks(arm, report_input)
+    return TableCell(value=form.spell(per_run[arm] * factor), flag="; ".join(marks) or None)
+
+
+def _priced_share(pricing: Pricing | None) -> str | None:
+    """How many of the calls an arm's cost counts were priced, in words; None where they were not counted."""
+    if pricing is None or pricing.calls is None or pricing.priced_calls is None or not pricing.calls:
+        return None
+    if pricing.priced_calls == pricing.calls:
+        return ALL_PRICED_TEMPLATE.format(calls=pricing.calls)
+    return PRICED_SHARE_TEMPLATE.format(priced=pricing.priced_calls, calls=pricing.calls)
+
+
+def _priced_by(pricing: Pricing | None) -> TableCell:
+    """What priced an arm's cost: its price sources, and who served its calls beside them; empty where unsaid."""
+    if pricing is None:
+        return TableCell(value=None)
+    served = SERVED_BY_TEMPLATE.format(providers=", ".join(pricing.providers)) if pricing.providers else None
+    return TableCell(value=", ".join(pricing.sources) or None, flag=served)
 
 
 def _settings(report_input: ReportInput, arm_id: str) -> str:

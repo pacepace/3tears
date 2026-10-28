@@ -85,6 +85,7 @@ from threetears.evals.analysis.report_input import (
     PairRead,
     PassK,
     Precision,
+    Pricing,
     PriorInsight,
     Reading,
     ReportInput,
@@ -542,6 +543,19 @@ class _Builder:
                         }
                     }
                     if row.unanswered
+                    else {}
+                ),
+                # Only where the census read it, so an arm assembled before it did carries no key.
+                **(
+                    {
+                        "pricing": Pricing(
+                            sources=row.pricing.sources,
+                            providers=row.pricing.providers,
+                            calls=row.pricing.calls,
+                            priced_calls=row.pricing.priced_calls,
+                        )
+                    }
+                    if row.pricing is not None
                     else {}
                 ),
             )

@@ -31,6 +31,7 @@ from threetears.evals.analysis.report.charts import (
     ScatterChart,
     ScatterPoint,
     Token,
+    money_by_column,
 )
 from threetears.evals.analysis.report.plan_page.look import arm_shape, arm_token, cost_axis_format
 from threetears.evals.analysis.style import GLOSSARY
@@ -630,6 +631,34 @@ class TableBlock(_Block):
         if bad := sorted({key for row in self.rows for key in row.keys() ^ keys}):
             raise ValueError(f"table {self.name!r} has rows that do not key exactly its columns: {', '.join(bad)}")
         return self
+
+    def one_money_form(self) -> TableBlock:
+        """The table with each column's money in one form (#993): every amount a column's words state, written in the
+        form :func:`~threetears.evals.analysis.report.charts.money_by_column` chooses from all of them, so successive
+        rows never alternate between ``$0.008`` and ``$0.11``. A cell holding a number rather than words, and every
+        flag, are left as they are.
+
+        :return: A copy, or the table itself where no column holds money in words.
+        :rtype: TableBlock
+        """
+        keys = [column.key for column in self.columns]
+        texts = [
+            [cell.value if isinstance(cell.value, str) else "" for cell in (row[key] for key in keys)]
+            for row in self.rows
+        ]
+        spelled = money_by_column([list(row) for row in texts])
+        if spelled == texts:
+            return self
+        rows = [
+            {
+                key: cell.model_copy(update={"value": new})
+                if isinstance(cell.value, str) and new != cell.value
+                else cell
+                for key, cell, new in ((key, row[key], line[at]) for at, key in enumerate(keys))
+            }
+            for row, line in zip(self.rows, spelled, strict=True)
+        ]
+        return self.model_copy(update={"rows": rows})
 
     def values(self) -> list[dict[str, CellValue]]:
         """The rows shown as their values alone — what a program reads a table for.

@@ -25,13 +25,15 @@ score           a judged score                                               ``n
 (other)         the number, its unit beside it                               ``num``
 ==============  ===========================================================  ==================
 
-**Money has one spelling within a chart, by its size** (the kit's ``usd``): its values, its notes and its ticks
-alike, thousands grouped (``$8,400``), an amount of :data:`_WHOLE_DOLLARS_FROM` or more in whole dollars and a smaller
-one as the package spells money (:func:`~threetears.evals.kernel.numbers.spell_dollars`: cents from ten cents up,
-three significant figures below, never ``$0.00``). Cents on an axis of thousands are noise,
-and under ten dollars whole dollars round away the figure; a rule by each amount's size reads one amount alike on
-every chart and panel that draws it. Money per reply is its own quantity (``per`` ``reply``): drawn per 1,000 replies,
-which another cost's thousand may not count, so it never shares an axis with one.
+**Money has one form within a chart, chosen from every amount it draws** (#993): its notes and its ticks alike, thousands
+grouped, in whole dollars where every amount is :data:`_WHOLE_DOLLARS_FROM` or more (``$8,400``; cents on an axis of
+thousands are noise), else in the set's :func:`~threetears.evals.kernel.numbers.money_form` (cents, with more decimals
+where its least amount needs them; per 1,000, ``$8/1000``, where some amount is under a cent), the kit drawing its ticks
+to the same decimals (``usd:<decimals>``). A quantity made without its drawn values (a change read alone) spells each
+amount as the package spells money (:func:`~threetears.evals.kernel.numbers.spell_dollars`), by the kit's ``usd``. A
+set the form reads per 1,000 has its notes per 1,000 and its ticks by the kit's ``usd``, which draws no per-1,000 mark.
+Money per reply is its own quantity (``per`` ``reply``): drawn per 1,000 replies, which another cost's thousand may not
+count, so it never shares an axis with one.
 
 **A level's look** (:func:`series_token`): where a chart colours by a factor's levels (a factorial grid's paths and
 tiles), each level takes the kit's series colours in the factor's order, as candidates do in theirs.
@@ -60,7 +62,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from threetears.evals.kernel.numbers import format_number, group_thousands, spell_dollars
+from threetears.evals.kernel.numbers import MoneyForm, format_number, group_thousands, money_form, spell_dollars
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, signed_with_unit, with_unit
 from threetears.evals.analysis.report.charts import ChartShape, ChartStatus
 from threetears.evals.analysis.style import humanize
@@ -337,6 +339,8 @@ class Quantity:
     :ivar rate: Whether the values are a rate in percent (or a change in one), whose axis never runs past 0 to 100.
     :ivar per: What money's thousand counts where it is not the measure's own (``reply``: money per reply, drawn per
         1,000 replies); empty otherwise.
+    :ivar money: The one form money is spelled in on the chart, chosen from its drawn values (this module's money);
+        None where the quantity was made without them, or is no money.
     """
 
     factor: float = field(compare=False)
@@ -346,6 +350,7 @@ class Quantity:
     change: bool = False
     rate: bool = False
     per: str = ""
+    money: MoneyForm | None = field(default=None, compare=False)
 
 
 #: The money units a cost is stated in, per reply and per a number of replies, and dollars as they are (a run's total).
@@ -362,10 +367,34 @@ _REPLY = "reply"
 _MONEY_FORMAT = "usd"
 
 
+def _chart_money(values: Sequence[float]) -> MoneyForm | None:
+    """The one form a chart's money is spelled in, from every amount it draws (this module's money); None for none."""
+    drawn = [value for value in values if math.isfinite(value)]
+    if not drawn:
+        return None
+    if all(abs(value) >= _WHOLE_DOLLARS_FROM or value == 0 for value in drawn):
+        return MoneyForm(decimals=0)
+    return money_form(drawn)
+
+
+#: The most decimals the kit's format names (``usd:<digit>``).
+_MOST_KIT_DECIMALS = 9
+
+
+def _money_fmt(sign: str, form: MoneyForm | None) -> str:
+    """The kit's format for a chart's money: to the form's decimals (``usd:2``), so its ticks read as its notes; by the
+    kit's sizes (``usd``) where the chart's money has no form, or reads per 1,000, which the kit draws no mark for."""
+    if form is None or form.per_thousand:
+        return f"{sign}{_MONEY_FORMAT}"
+    return f"{sign}{_MONEY_FORMAT}:{min(form.decimals, _MOST_KIT_DECIMALS)}"
+
+
 def _money_text(value: float, drawn: Quantity) -> str:
-    """An amount as the chart's money spelling writes it (this module's money), as the kit's ``usd`` draws it: whole
-    dollars, grouped, from :data:`_WHOLE_DOLLARS_FROM`; under it the package's money spelling
-    (:func:`~threetears.evals.kernel.numbers.spell_dollars`)."""
+    """An amount as the chart's money spelling writes it (this module's money): in the chart's one form where the
+    quantity holds one; else as the kit's ``usd`` draws it: whole dollars, grouped, from :data:`_WHOLE_DOLLARS_FROM`;
+    under it the package's money spelling (:func:`~threetears.evals.kernel.numbers.spell_dollars`)."""
+    if drawn.money is not None:
+        return drawn.money.spell(value, signed=drawn.change)
     size = abs(value)
     if size >= _WHOLE_DOLLARS_FROM:
         text = f"${group_thousands(format_number(float(round(size))))}"
@@ -382,7 +411,8 @@ def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False) -
         ``usd_per_1k``, ``usd_per_1m``, ``ms``, ``s``, ``score``, empty for a bare number, or any other unit, written
         beside the number.
     :ptype unit: str
-    :param values: The drawn values, in display units, where the format follows their magnitude.
+    :param values: The figures drawn, in the input's units (before the factor): money's one form on the chart is chosen
+        from them (this module's money); no other format reads them.
     :ptype values: Sequence[float]
     :param change: Whether the values are changes (an arm less the control), read signed.
     :ptype change: bool
@@ -399,12 +429,14 @@ def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False) -
         return Quantity(1.0, "+num:0", POINTS, change=True)
     if unit in _MONEY_UNITS:
         factor = 1000.0 if unit == _PER_REPLY else 1.0
+        form = _chart_money([value * factor for value in values])
         return Quantity(
             factor,
-            f"{sign}{_MONEY_FORMAT}",
+            _money_fmt(sign, form),
             MONEY,
             change=change,
             per=_REPLY if unit == _PER_REPLY else "",
+            money=form,
         )
     if unit == "ms":
         return Quantity(1.0, f"{sign}ms", "ms", change=change)

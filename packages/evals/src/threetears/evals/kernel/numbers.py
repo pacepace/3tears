@@ -41,6 +41,8 @@ A browser renderer that restates this rule pins itself to the same cases this pa
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 #: What an absent or non-finite number reads as. Never ``0``, which would say something was measured.
 ABSENT = "—"
@@ -145,33 +147,105 @@ def spell_dollars(amount: float) -> str:
     return f"{sign}${amount:.{decimals}f}"
 
 
-#: The amount below which cents keep fewer than three significant figures of a price (``$0.30`` of ``$0.302``).
-_THIRD_FIGURE_BELOW = 1.0
+#: What an amount no client could price reads as. Never ``$0``: an unpriced call may have been billed.
+UNPRICED = "unpriced"
+
+#: The least amount, in magnitude, that cents state: a non-zero member of a set under it puts the whole set per 1,000.
+CENT = 0.01
+
+#: How many times its amount a per-1,000 spelling writes, and the mark it carries: ``$8/1000`` is $0.008.
+PER_THOUSAND = 1000
+PER_THOUSAND_MARK = "/1000"
 
 
-def spell_price(amount: float) -> str:
-    """An amount of money a reader may multiply, such as a cost per 1,000 replies: :func:`spell_dollars`, with a third
-    significant figure from ten cents to a dollar, where cents keep only two.
+@dataclass(frozen=True)
+class MoneyForm:
+    """One spelling of money for a whole set of amounts: a column, a chart's axis, a figure-key family
+    (``cost_per_1k.*``). Every member of the set is written in it, so successive rows never alternate between
+    ``$0.008`` and ``$0.11`` (#993). :func:`money_form` chooses it from the set, never from one value.
 
-    Cents are what money is read in, and from a dollar up they carry three significant figures or more; below ten
-    cents :func:`spell_dollars` already writes three. Between, cents round away a third of a percent and more: a cost
-    of $0.302 per 1,000 calls reads ``$0.30``, and a reader who multiplies it by a declared 4,000,000 calls a month
-    reaches $1,200 beside a monthly figure of $1,208. Three significant figures there (``$0.302``) keep the product
-    within half a percent of the monthly figure, the rounding of the price's own third figure. A third figure that is
-    zero is left off (``$0.30``, not ``$0.300``): cents already say it.
+    - ``per_thousand``: the set reads per 1,000 (``$8/1000`` for $0.008), because some member is too small for cents
+      (under :data:`CENT`); then every member does (``$110/1000`` for $0.11 beside it).
+    - ``decimals``: the decimals every member is written to, after the per-1,000 factor: cents at least, and as many
+      more as give the set's smallest non-zero member two significant figures, so no member reads as a zero it is not.
 
-    :param amount: Dollars, as stored.
-    :ptype amount: float
-    :return: ``$0.302``, ``$0.30``, ``-$0.495``; :func:`spell_dollars`'s spelling outside ten cents to a dollar.
-    :rtype: str
+    An exact zero reads ``$0`` in every form: it is no measurement of a precision. ``None`` reads :data:`UNPRICED`,
+    never ``$0``. A non-finite amount reads :data:`ABSENT`. Thousands are grouped (``$1,208.00``) and a negative
+    amount's sign goes before the dollar sign.
+
+    :ivar per_thousand: Whether the set reads per 1,000.
+    :ivar decimals: The decimals each member is written to.
     """
-    if not 0.1 <= abs(amount) < _THIRD_FIGURE_BELOW:
-        return spell_dollars(amount)
-    text = f"{abs(amount):.3f}"
-    if float(text) >= _THIRD_FIGURE_BELOW:
-        return spell_dollars(amount)
-    sign = "-" if amount < 0 else ""
-    return f"{sign}${text[:-1] if text.endswith('0') else text}"
+
+    per_thousand: bool = False
+    decimals: int = 2
+
+    def spell(self, amount: float | None, *, signed: bool = False) -> str:
+        """One member of the set, in the set's form.
+
+        :param amount: Dollars, as stored; ``None`` for an amount no client priced.
+        :ptype amount: float | None
+        :param signed: Whether a positive amount carries its ``+`` (a change); a zero, or an amount that rounds to
+            zero in the form, carries none.
+        :ptype signed: bool
+        :return: ``$1.89``, ``$1.89/1000``, ``-$0.30``, ``+$0.49/1000``, ``$0``; :data:`UNPRICED` for ``None``.
+        :rtype: str
+        """
+        if amount is None:
+            return UNPRICED
+        if not math.isfinite(amount):
+            return ABSENT
+        if amount == 0:
+            return "$0"
+        scaled = abs(amount) * (PER_THOUSAND if self.per_thousand else 1)
+        digits = f"{scaled:.{self.decimals}f}"
+        zero = float(digits) == 0
+        sign = "-" if amount < 0 and not zero else "+" if signed and amount > 0 and not zero else ""
+        return f"{sign}${group_thousands(digits)}{PER_THOUSAND_MARK if self.per_thousand else ''}"
+
+    def for_change(self, width: float | None) -> MoneyForm:
+        """The form a change between members of the set reads in: the set's own (per 1,000 where the set is), to no
+        more decimals than the width of the change's interval supports.
+
+        A change is a difference of two amounts, so it reads in their form; its interval says how much of it is known.
+        Two significant figures of the interval's width are what it supports: a change of $0.4924 on an interval
+        $0.64 wide reads ``+$0.49``, never ``+$0.492``. Money keeps cents or whole dollars, never one decimal.
+
+        :param width: The width of the change's interval, in dollars as stored; ``None`` where none is stated, which
+            leaves the set's own decimals.
+        :ptype width: float | None
+        :return: The change's form.
+        :rtype: MoneyForm
+        """
+        if width is None or not math.isfinite(width) or width <= 0:
+            return self
+        scaled = width * (PER_THOUSAND if self.per_thousand else 1)
+        supported = max(0, 1 - math.floor(math.log10(scaled)))
+        supported = 2 if supported == 1 else supported
+        return MoneyForm(per_thousand=self.per_thousand, decimals=min(self.decimals, supported))
+
+
+def money_form(amounts: Iterable[float | None]) -> MoneyForm:
+    """The one form a set of amounts is spelled in (:class:`MoneyForm`), chosen from the whole set.
+
+    Per 1,000 where any non-zero member is under a cent (:data:`CENT`) in magnitude; then the decimals that give the
+    smallest non-zero member, as the form writes it, two significant figures, and never fewer than cents. ``None`` and
+    non-finite members say nothing of the form and are passed over; a set with none left reads in dollars and cents.
+
+    :param amounts: Every amount the set holds, in dollars as stored.
+    :ptype amounts: Iterable[float | None]
+    :return: The set's form.
+    :rtype: MoneyForm
+    """
+    stated = [abs(amount) for amount in amounts if amount is not None and math.isfinite(amount) and amount != 0]
+    if not stated:
+        return MoneyForm()
+    per_thousand = min(stated) < CENT
+    smallest = min(stated) * (PER_THOUSAND if per_thousand else 1)
+    # Placed by the smallest member as rounded to two figures, so one that rounds across a power of ten (0.0996 to
+    # 0.10) is written to the decimals of what it became.
+    exponent = int(f"{smallest:.1e}".split("e")[1])
+    return MoneyForm(per_thousand=per_thousand, decimals=max(2, 1 - exponent))
 
 
 #: The multiple from which a multiple is written whole: ``21 times``, never ``21.05 times``.
@@ -228,9 +302,12 @@ def format_signed(value: float | None) -> str:
 
 __all__ = [
     "ABSENT",
+    "CENT",
+    "UNPRICED",
+    "MoneyForm",
     "format_number",
     "format_signed",
+    "money_form",
     "spell_dollars",
     "spell_multiple",
-    "spell_price",
 ]

@@ -2544,6 +2544,28 @@ class RoleUnanswered(EvalDocumentModel):
         return None if reasons is None else dict(sorted(reasons.items(), key=lambda item: (-item[1], item[0])))
 
 
+class ArmPricing(EvalDocumentModel):
+    """How one arm's cost was priced, read off the usage rows of the roles its production cost counts.
+
+    Beside the arm's cost, so a page says where the cost comes from (the price source, the provider that served the
+    calls) and how much of it was priced: ``priced_calls`` under ``calls`` is a cost over part of the arm's calls, never
+    the whole.
+    """
+
+    sources: list[str] = Field(default_factory=list, description="Each price source a priced row names, sorted.")
+    providers: list[str] = Field(
+        default_factory=list, description="Each provider a row names as serving its calls, sorted; empty where none does."
+    )
+    calls: int | None = Field(
+        default=None, ge=0, description="The calls the rows counted; None = some row did not count its calls."
+    )
+    priced_calls: int | None = Field(
+        default=None,
+        ge=0,
+        description="Those of them on a row that observed a price; None = some row did not count its calls.",
+    )
+
+
 class ArmScoreboard(EvalDocumentModel):
     """One arm's census: how many trials it ran, lost, could use, passed and failed, and what it cost."""
 
@@ -2583,6 +2605,16 @@ class ArmScoreboard(EvalDocumentModel):
         description=(
             "Each role's unanswered calls over the arm's trials, in the order the roles are known, for every role a "
             "usage row counted them in. Empty = no row counted any: not counted, never none."
+        ),
+    )
+    # Left out of the document while unset, so an arm assembled before the field existed is censused, and
+    # fingerprinted, as it was.
+    pricing: ArmPricing | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "How the arm's production cost was priced: its price sources, serving providers and priced calls. None = "
+            "no row of a production role was recorded."
         ),
     )
 
@@ -3911,6 +3943,7 @@ __all__ = [
     "AliasedFactors",
     "AnalysisContextBundle",
     "ArmMechanismReading",
+    "ArmPricing",
     "ArmServedModel",
     "BundleInspection",
     "CANDIDATE_SERVED_MODEL_CONFOUND",

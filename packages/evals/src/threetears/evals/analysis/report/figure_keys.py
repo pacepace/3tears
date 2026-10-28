@@ -98,14 +98,14 @@ import math
 import re
 import weakref
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Literal, get_args
 
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.cell_mean import CellMeanInterval, NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.kernel.numbers import format_number, group_thousands, spell_multiple, spell_price
-from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
+from threetears.evals.kernel.numbers import MoneyForm, format_number, group_thousands, money_form, spell_multiple
+from threetears.evals.analysis.quantities import PERCENT, POINTS, number_in
 from threetears.evals.analysis.report.cost_unit import REPLIES, CostBasis, per_count, per_noun
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report.words import arm_tags
@@ -185,8 +185,8 @@ _FILTER_MEANS: dict[str, str] = {
     "pct": "a rate as a percent",
     "pts": "a change in points, signed, one decimal at most",
     "abs": "the magnitude, without its sign",
-    "usd": "dollars, three significant figures at least (`$0.302`, where cents would round a price a reader "
-    "multiplies to `$0.30`)",
+    "usd": "dollars, in one form for the key's whole family: cents, with more decimals where its least amount needs "
+    "them, and per 1,000 (`$8/1000`) where any of its amounts is under a cent",
     "int": "the nearest whole number, its thousands separated; a multiple keeps its unit (`21 times`), every other "
     "unit is left for the prose to write",
     "pct10": "a rate rounded to the nearest 10%",
@@ -279,6 +279,13 @@ class Figure:
     ``level`` marks an interval's confidence level, read in percent as the input states it, to every digit the number
     rule keeps (``97.5%``, ``98.33%``), never rounded to a whole percent or to a rate's one decimal: two levels that
     differ never print alike.
+
+    A money figure also carries the set it is spelled with (#993): ``amounts``, every amount of its family on its scale
+    (each arm's, each statistic's), or, for a change, the amounts it compares, from which
+    :func:`~threetears.evals.kernel.numbers.money_form` chooses one form for the whole family, so ``cost_per_1k.*`` never
+    reads ``$0.008`` beside ``$0.11``; and ``spread``, the width of the interval a change is read with, which caps its
+    decimals. :func:`resolve` fills both; a figure made without them is spelled as a set of its own value. Neither takes
+    part in a figure's equality: they say how it reads, not what it is.
     """
 
     path: str
@@ -291,6 +298,8 @@ class Figure:
     derived: bool = False
     per: str = ""
     level: bool = False
+    amounts: tuple[float, ...] = field(default=(), compare=False, repr=False)
+    spread: float | None = field(default=None, compare=False, repr=False)
 
 
 # --- the vocabulary a path is matched against -------------------------------------------------------------------
@@ -351,6 +360,9 @@ class _Family:
     otherwise copied family that are (a slice's ``vs_control``, a floor's ``held_above``). ``example`` is a key on the
     grammar's made-up input, which the grammar renders. ``derived_note`` replaces the grammar's "descriptive, no
     interval" line for a derived family that is not descriptive: one whose figures are read off stated spreads.
+    ``compares`` gives, for a family whose money figures are changes, the amounts a change compares (each arm's cost per
+    1,000 for a cost gap, the measure's means for a contrast), whose form the change reads in; ``None`` from it, or no
+    ``compares``, reads the family's own amounts (:func:`_money_amounts`).
     """
 
     slots: tuple[_Slot, ...]
@@ -360,6 +372,7 @@ class _Family:
     derived_statistics: tuple[str, ...] = ()
     example: str = ""
     derived_note: str = ""
+    compares: Callable[[ReportInput, tuple[str, ...]], Iterable[float] | None] | None = None
 
     def form(self) -> str:
         return ".".join(slot.spelling if isinstance(slot, _Word) else slot.name for slot in self.slots)
@@ -2243,6 +2256,41 @@ def _slice_seconds(kind: SliceKind) -> Callable[[ReportInput, tuple[str, ...]], 
         return [arm for arm in _slice_arms(kind)(report_input, prior[:1]) if arm != prior[1]]
 
     return arms
+
+
+def _means_of(report_input: ReportInput, key: str) -> list[float] | None:
+    """The amounts a change on a measure compares: each arm's mean on it; None for a key that names no measure."""
+    measure = report_input.measures.get(key)
+    if measure is None:
+        return None
+    return [float(stat.mean) for stat in measure.per_arm.values() if stat.mean is not None]
+
+
+def _gap_compares(report_input: ReportInput, costs: Mapping[str, float], field: str) -> list[float] | None:
+    """The amounts a cost gap compares: each option's cost per 1,000 (per month for a ``monthly`` gap, where a volume is
+    declared); None for a field that is no cost gap, which reads its family's own amounts."""
+    if field in ("cost_gap", "per_1k"):
+        return list(costs.values())
+    if field in ("monthly_cost_gap", "monthly") and report_input.meta.volume_per_month is not None:
+        factor = float(report_input.meta.volume_per_month) / 1000.0
+        return [cost * factor for cost in costs.values()]
+    return None
+
+
+def _slice_compares(kind: SliceKind) -> Callable[[ReportInput, tuple[str, ...]], list[float] | None]:
+    """The amounts a cost gap within a slice compares: the options' costs its price reads (:func:`_slice_basis`)."""
+
+    def compares(report_input: ReportInput, values: tuple[str, ...]) -> list[float] | None:
+        slice_id, _first, _second, key, field = values
+        try:
+            basis = _slice_basis(report_input, kind, slice_id, key, f"{kind}.{slice_id}.price")
+        except UnresolvableReference:
+            # NOSILENT: a slice that bases no price leaves its gap unread by resolve, which raises that refusal itself;
+            # here it only means no compared amounts, so the family's own are read.
+            return None
+        return _gap_compares(report_input, basis.costs, field)
+
+    return compares
 
 
 def _cost_per_month(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
@@ -4440,6 +4488,7 @@ def _family_of(
     derived_statistics: tuple[str, ...] = (),
     example: str = "",
     derived_note: str = "",
+    compares: Callable[[ReportInput, tuple[str, ...]], Iterable[float] | None] | None = None,
 ) -> _Family:
     return _Family(
         slots=slots,
@@ -4449,6 +4498,7 @@ def _family_of(
         derived_statistics=derived_statistics,
         example=example,
         derived_note=derived_note,
+        compares=compares,
     )
 
 
@@ -4496,6 +4546,7 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         resolve=_compare_figure,
         derived=True,
         derived_note=_SEPARATION_NOTE,
+        compares=lambda ri, values: _means_of(ri, values[2]),
         example="compare.fast.v2.base.tone.kept.overall.interval|pts",
     ),
     _family_of(
@@ -5111,6 +5162,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Statistic(_CONTRAST_STATISTICS),
         what="a corrected contrast of an arm against the control on a measure or judged dimension",
         resolve=_contrast,
+        compares=lambda ri, values: _means_of(ri, values[1]),
     ),
     _family_of(
         _Word("judged"),
@@ -5278,6 +5330,7 @@ _FAMILIES: tuple[_Family, ...] = (
         "than one",
         resolve=_aspect_contrast,
         example="aspects.answers.contrast.fast.v2.tone.kept.delta|pts",
+        compares=lambda ri, values: _means_of(ri, values[2]),
     ),
     _family_of(
         *_ON_ASPECT,
@@ -5558,6 +5611,7 @@ _FAMILIES: tuple[_Family, ...] = (
         derived=True,
         derived_note=_PRICE_NOTE,
         example="price.base.fast.v2.latency_ms.monthly_per_point",
+        compares=lambda ri, values: _gap_compares(ri, _costs_per_thousand(ri), values[-1]),
     ),
     _family_of(
         _Word("task"),
@@ -5573,6 +5627,7 @@ _FAMILIES: tuple[_Family, ...] = (
         resolve=_slice_price("task"),
         derived=True,
         derived_note=_PRICE_NOTE,
+        compares=_slice_compares("task"),
     ),
     _family_of(
         *_STRATUM,
@@ -5585,6 +5640,7 @@ _FAMILIES: tuple[_Family, ...] = (
         resolve=_slice_price("strata"),
         derived=True,
         derived_note=_PRICE_NOTE,
+        compares=_slice_compares("strata"),
     ),
     _family_of(
         _Word("cells"),
@@ -5598,6 +5654,7 @@ _FAMILIES: tuple[_Family, ...] = (
         resolve=_slice_price("cells"),
         derived=True,
         derived_note=_PRICE_NOTE,
+        compares=_slice_compares("cells"),
     ),
     _family_of(
         _Word("pooled"),
@@ -5824,6 +5881,7 @@ _FAMILIES: tuple[_Family, ...] = (
         resolve=_cost_gap,
         derived=True,
         example="cost.gap.fast.v2.base.multiple",
+        compares=lambda ri, values: _gap_compares(ri, _costs_per_thousand(ri), values[-1]),
     ),
     _family_of(
         _Word("cost.unreported"),
@@ -5862,6 +5920,7 @@ class _Memo:
 
     figures: dict[str, Figure | UnresolvableReference]
     offered: dict[tuple[Callable[[ReportInput, tuple[str, ...]], Iterable[str]], tuple[str, ...]], list[str]]
+    amounts: dict[tuple[int, tuple[str, ...], str, bool], tuple[float, ...]]
 
 
 @dataclass(frozen=True, eq=False)
@@ -5891,7 +5950,7 @@ _MEMO_INPUTS = 256
 @functools.lru_cache(maxsize=_MEMO_INPUTS)
 def _memo_of(held: _ByIdentity) -> _Memo:
     """A fresh memo for one input (:func:`_memo`)."""
-    return _Memo(figures={}, offered={})
+    return _Memo(figures={}, offered={}, amounts={})
 
 
 def _memo(report_input: ReportInput) -> _Memo:
@@ -6096,7 +6155,115 @@ def _resolved(key: str, report_input: ReportInput) -> Figure:
     figure = reading.family.resolve(report_input, reading.values, key)
     if figure.scale in _PER_THOUSAND_FACTORS and not figure.per:
         figure = replace(figure, per=_money_per(report_input, reading.values))
+    if figure.scale in _PER_THOUSAND_FACTORS and figure.kind in ("number", "interval"):
+        figure = replace(
+            figure,
+            amounts=_money_amounts(reading, figure, report_input),
+            spread=_change_spread(reading, figure, report_input),
+        )
     return replace(figure, derived=figure.derived or _is_derived(reading))
+
+
+def _sibling_values(reading: _Reading, report_input: ReportInput, *, arms: bool) -> list[tuple[str, ...]]:
+    """The readings of a reading's family that share its words and fixed ids: every statistic in its statistic slot,
+    and, with ``arms``, every arm its arm slots offer (each slot's ids as offered after the ones before it)."""
+    combos: list[tuple[str, ...]] = [()]
+    values = iter(reading.values)
+    for slot in reading.family.slots:
+        if isinstance(slot, _Word):
+            continue
+        value = next(values)
+        if isinstance(slot, _Statistic):
+            combos = [(*prefix, option) for prefix in combos for option in slot.options]
+        elif arms and isinstance(slot, _Ids) and slot.name in _ARM_SLOTS:
+            combos = [(*prefix, option) for prefix in combos for option in _offered(slot, report_input, prefix)]
+        else:
+            combos = [(*prefix, value) for prefix in combos]
+    return combos
+
+
+def _sibling_figures(reading: _Reading, report_input: ReportInput, *, arms: bool) -> list[Figure]:
+    """The figures of :func:`_sibling_values`' readings that the input states; one it leaves unstated is no member."""
+    figures: list[Figure] = []
+    for values in _sibling_values(reading, report_input, arms=arms):
+        try:
+            figures.append(reading.family.resolve(report_input, values, ".".join(values)))
+        except UnresolvableReference:
+            # NOSILENT: a sibling the input leaves unstated, or one its resolver refuses, has no amount to add to the
+            # set; the key being read raises its own refusal where it is the one unstated.
+            continue
+    return figures
+
+
+def _fixed_values(reading: _Reading) -> tuple[str, ...]:
+    """A reading's values with its statistic and arm slots left blank: what every member of its set shares."""
+    fixed: list[str] = []
+    values = iter(reading.values)
+    for slot in reading.family.slots:
+        if isinstance(slot, _Word):
+            continue
+        value = next(values)
+        varies = isinstance(slot, _Statistic) or (isinstance(slot, _Ids) and slot.name in _ARM_SLOTS)
+        fixed.append("" if varies else value)
+    return tuple(fixed)
+
+
+def _numbers_of(figures: Iterable[Figure]) -> list[float]:
+    """Every number the figures hold: a number's value, an interval's two ends."""
+    held: list[float] = []
+    for figure in figures:
+        if isinstance(figure.value, float):
+            held.append(figure.value)
+        elif isinstance(figure.value, tuple):
+            held.extend(float(end) for end in figure.value)
+    return held
+
+
+def _money_amounts(reading: _Reading, figure: Figure, report_input: ReportInput) -> tuple[float, ...]:
+    """The set a money figure is spelled with (:class:`Figure`'s ``amounts``): a change's compared amounts where its
+    family says what a change compares; else every amount its family states on its scale across the arms and
+    statistics (its amounts, or its changes where it states only changes).
+
+    The set is the family's, never the figure's: every key of ``cost_per_1k.*`` reads the same set, so each is spelled
+    in one form. Read once per family and fixed ids on an input."""
+    memo = _memo(report_input).amounts
+    key = (id(reading.family), _fixed_values(reading), figure.scale, figure.change)
+    held = memo.get(key)
+    if held is not None:
+        return held
+    compared = reading.family.compares(report_input, reading.values) if reading.family.compares is not None else None
+    if figure.change and compared is not None:
+        found = tuple(compared)
+    else:
+        siblings = [one for one in _sibling_figures(reading, report_input, arms=True) if one.scale == figure.scale]
+        amounts = _numbers_of(one for one in siblings if not one.change)
+        found = tuple(amounts or _numbers_of(siblings))
+    memo[key] = found
+    return found
+
+
+def _change_spread(reading: _Reading, figure: Figure, report_input: ReportInput) -> float | None:
+    """The width of the interval a money change is read with: its own, for an interval; for a number, its family's
+    interval at the same arms (a contrast's delta beside its ``interval``), where it states one."""
+    if not figure.change:
+        return None
+    if isinstance(figure.value, tuple):
+        return abs(figure.value[1] - figure.value[0])
+    statistic = reading.family.statistic()
+    if statistic is None:
+        return None
+    at = [slot for slot in reading.family.slots if not isinstance(slot, _Word)].index(statistic)
+    for option in ("interval", "ci", "gain_interval"):
+        if option in statistic.options:
+            values = list(reading.values)
+            values[at] = option
+            try:
+                held = reading.family.resolve(report_input, tuple(values), ".".join(values))
+            except UnresolvableReference:
+                # NOSILENT: a change whose family states no interval at these arms reads its set's own decimals.
+                return None
+            return abs(held.value[1] - held.value[0]) if isinstance(held.value, tuple) else None
+    return None
 
 
 def _one_reading(key: str, report_input: ReportInput) -> _Reading:
@@ -6282,13 +6449,19 @@ def _plus(text: str, value: float) -> str:
     return f"+{text}" if value > 0 and not text.startswith(("<", "+")) and text != "0" else text
 
 
-def _money(value: float, signed: bool) -> str:
-    """Dollars as a key writes them: to three significant figures at least (:func:`spell_price`), so a price a reader
-    multiplies by a volume reaches the monthly figure beside it."""
-    text = spell_price(abs(value))
-    if value < 0:
-        return f"-{text}"
-    return _plus(text, value) if signed else text
+def _money_form(figure: Figure, factor: float) -> MoneyForm:
+    """The one form a money figure's family is spelled in (#993), at ``factor`` times its scale: chosen from the
+    family's whole set (:class:`Figure`'s ``amounts``), never from the figure alone, and for a change capped at the
+    decimals its interval's width supports. A figure made without its set is a set of its own numbers."""
+    own = figure.value if isinstance(figure.value, tuple) else (figure.value,) if isinstance(figure.value, float) else ()
+    form = money_form(amount * factor for amount in figure.amounts or own)
+    return form.for_change(figure.spread * factor) if figure.change and figure.spread is not None else form
+
+
+def _money(value: float, signed: bool, form: MoneyForm) -> str:
+    """Dollars as a key writes them: in its family's one form (:func:`_money_form`), ``$8/1000`` for a set too small
+    for cents, signed where the figure is a change."""
+    return form.spell(value, signed=signed)
 
 
 #: The spelling a figure on the ``usd_per_1m`` scale reads in without a filter: dollars with the words of what it
@@ -6336,25 +6509,26 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
         if figure.scale not in _PER_THOUSAND_FACTORS:
             raise _refuse(figure.path, f"cannot read as dollars: it is on the {figure.scale} scale")
         if spelling == "usd":
-            return _Spelled(_money(value, signed))
-        per_thousand = value * _PER_THOUSAND_FACTORS[figure.scale]
-        return _Spelled(f"{_money(per_thousand, signed)} {per_count(figure.per, 1_000)}")
+            return _Spelled(_money(value, signed, _money_form(figure, 1.0)))
+        factor = _PER_THOUSAND_FACTORS[figure.scale]
+        money = _money(value * factor, signed, _money_form(figure, factor))
+        return _Spelled(f"{money} {per_count(figure.per, 1_000)}")
     if spelling == "usd_whole":
         if figure.scale not in _PER_THOUSAND_FACTORS:
             raise _refuse(figure.path, f"cannot read as dollars: it is on the {figure.scale} scale")
         if abs(value) < _WHOLE_DOLLARS_FROM:
             raise _refuse(
                 figure.path,
-                f"is {_money(value, signed)}, under ${format_number(_WHOLE_DOLLARS_FROM)}, which whole dollars would "
+                f"is {_money(value, signed, _money_form(figure, 1.0))}, under ${format_number(_WHOLE_DOLLARS_FROM)}, "
+                "which whole dollars would "
                 "round away: write it with `usd`",
             )
         dollars = "$" + group_thousands(format_number(float(round(abs(value)))))
         return _Spelled(f"-{dollars}" if value < 0 else _plus(dollars, value) if signed else dollars)
     if spelling == _PER_MILLION:
-        # The package's money spelling (the scoreboard's): a price per million of anything is whole dollars or near it,
-        # and two decimals on it are noise.
-        amount = signed_with_unit(value, MONEY) if signed else with_unit(value, MONEY)
-        return _Spelled(f"{amount} {per_count(figure.per, 1_000_000)}")
+        # In its family's one form, as every other money key: a price per million of anything is whole dollars or near
+        # it, so the form's cents are its precision.
+        return _Spelled(f"{_money(value, signed, _money_form(figure, 1.0))} {per_count(figure.per, 1_000_000)}")
     if spelling == "words":
         whole = round(value)
         if figure.scale != "count" or whole != value or whole < 0:

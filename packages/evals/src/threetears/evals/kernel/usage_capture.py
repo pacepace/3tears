@@ -815,8 +815,23 @@ def production_replicating_cost(
         return None
     if any(row.role not in USAGE_ROLES for row in usage):
         return None
+    return _sum_costs(production_rows(usage, candidate_kind=candidate_kind))
+
+
+def production_rows(usage: Sequence[RoleUsage], *, candidate_kind: str | None) -> list[RoleUsage]:
+    """The rows of the roles a production deployment pays for, as :func:`production_replicating_cost` sums them: the
+    candidate's, the inner agent's and the external ones, or the judge's in a judge-kind result, whose subject it is.
+
+    :param usage: A result's per-role rows.
+    :ptype usage: Sequence[RoleUsage]
+    :param candidate_kind: The kind that produced the rows (``EvalResult.candidate_kind``); ``None`` reads as any kind
+        but the judge kind.
+    :ptype candidate_kind: str | None
+    :return: Those rows, in their order.
+    :rtype: list[RoleUsage]
+    """
     roles = _JUDGE_KIND_PRODUCTION_ROLES if candidate_kind == JUDGE_KIND else PRODUCTION_REPLICATING_ROLES
-    return _sum_costs([row for row in usage if row.role in roles])
+    return [row for row in usage if row.role in roles]
 
 
 def program_cost(usage: list[RoleUsage]) -> float | None:
@@ -996,6 +1011,7 @@ __all__ = [
     "count_substituted",
     "count_substituted_deliveries",
     "production_replicating_cost",
+    "production_rows",
     "program_cost",
     "resolve_result_usage",
     "spend_observed",
