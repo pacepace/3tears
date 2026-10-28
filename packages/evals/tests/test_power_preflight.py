@@ -32,7 +32,8 @@ from threetears.evals.analysis.stats import (
     paired_t_power,
     variance_components,
 )
-from threetears.evals.kernel import EvalStorage
+from threetears.evals.analysis import reads
+from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops import DetectableEffects, LaunchArguments, launch_estimate
 from threetears.evals.ops.lenses import detectable_effects, estimate_text
@@ -40,6 +41,7 @@ from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT, ops_fixture
+from packages.evals.tests.run_pages_support import BatchRecordingStore
 from packages.evals.tests.simulation_support import (
     ClusteredDesign,
     at_least,
@@ -284,3 +286,36 @@ def test_the_launch_estimate_prints_one_line_per_reading() -> None:
         else:
             assert f"- {effect.name}: cannot estimate: {effect.cannot_estimate}" in text
     assert "assumes: the planned arms run the same cases" in text
+
+
+class TestThePlanningReadIsHeldToTheReadBudget:
+    """Every earlier run's results are held at once, so past the read tier's budget the block is refused before any
+    result is read (#996 is the store computing it). Two runs of 6 cases × 2: 24 results by their matrices."""
+
+    def _host(self) -> tuple[BatchRecordingStore, EvalHost]:
+        store = BatchRecordingStore()
+        host = replace(ops_fixture().host.eval_host, storage=EvalStorage(store))
+        by_case = {f"c{index}": [float(index), float(index) + 0.5] for index in range(6)}
+        _store_history(host.storage, {"model-a": by_case, "model-b": by_case})
+        store.clear()
+        return store, host
+
+    def test_one_result_past_the_budget_is_refused_reading_no_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        store, host = self._host()
+        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 23)
+
+        with pytest.raises(ValidationFailedError) as refused:
+            detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
+
+        assert refused.value.details == {"runs": 2, "results_estimated": 24, "result_budget": 23}
+        assert refused.value.remedy.startswith("archive the template's earlier runs the plan need not read")
+        assert store.typed_reads == [] and store.id_reads == [], "refused before any result was read"
+
+    def test_at_the_budget_it_plans_as_before(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        store, host = self._host()
+        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 24)
+
+        block = detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
+
+        assert block.run_ids == ["run-model-a", "run-model-b"] and _reading(block)
+        assert sum(rows for _, _, rows in store.typed_reads) == 24

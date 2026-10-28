@@ -37,6 +37,7 @@ from threetears.evals.analysis.reads import (
     export_results,
     frontier,
     history,
+    hold_to_read_budget,
     pivot,
 )
 
@@ -793,6 +794,16 @@ async def launch_estimate(
     )
 
 
+#: The operation a launch's planning read past the read budget is refused as.
+_PLANNING_LENS = "detectable_effects"
+
+#: How a launch's planning read past the read budget narrows: the refusal's remedy begins with it.
+_NARROW_THE_PLANNING_READ = (
+    "archive the template's earlier runs the plan need not read (it leaves archived runs out), or estimate a launch "
+    "of a template with fewer earlier runs; the store computing the planning read for a history of any size is #996"
+)
+
+
 def detectable_effects(
     host: EvalHost, scope_id: str, template_id: str, *, n_cases: int | None, k_runs: int, n_arms: int
 ) -> DetectableEffects:
@@ -824,9 +835,23 @@ def detectable_effects(
     :ptype n_arms: int
     :return: The block.
     :rtype: DetectableEffects
+    :raises ValidationFailedError: The template's earlier runs are estimated past
+        :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` results by their matrices (refused before any result
+        is read), or their reads returned more than it.
     """
     runs = [run for run in list_runs(host, scope_id) if run.template_id == template_id]
+    # Every earlier run's results are held at once to read their variances, so the read is held to the read tier's
+    # budget as the aggregates are, estimated off the listing above before any result is read (the store computing it
+    # is #996).
+    hold_to_read_budget(_PLANNING_LENS, scope_id, runs, how=_NARROW_THE_PLANNING_READ)
     results_by_run = {run.id: host.storage.query_eval_results_by_run(run.id, scope_id) for run in runs}
+    hold_to_read_budget(
+        _PLANNING_LENS,
+        scope_id,
+        runs,
+        how=_NARROW_THE_PLANNING_READ,
+        returned=sum(len(results) for results in results_by_run.values()),
+    )
     runs = [run for run in runs if results_by_run[run.id]]
     readings = planning_readings(runs, results_by_run, profile=host.profile) if runs else []
     family_size = max(1, len(readings)) * max(1, n_arms - 1)

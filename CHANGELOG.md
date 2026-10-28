@@ -23,7 +23,7 @@ status). `program_budget` and `orphaned_runs` take no filter, so past the budget
 returns more than the budget (a deleted run's results are in no listing) is not aggregated: a call for one subject
 reads that subject's runs instead, and any other call is refused, its `details` adding `results_returned`. Campaign
 reports read their runs by id, so the scope's size never refuses them; a campaign's own runs past the budget are
-refused (see "a campaign's bundle past the read budget" below). A narrowed pivot, frontier or history says what it did not count
+refused (see "a campaign's bundle, a launch's planning block" below). A narrowed pivot, frontier or history says what it did not count
 in `narrowed_read_disclosure` (new on `PivotTable`, `HistoryResult` and `FrontierResult`, printed in each one's text,
 and left out of a dump while unset, so no stored bundle's fingerprint moves); a narrowed frontier's judge tiers are
 read on that subject's results alone, and it says that too. `RegressionWatch` now reads the history of the completed
@@ -164,13 +164,12 @@ did and which no figure reads.
   one store call per read however large the campaign (`CampaignReadStore`, `test_bundle_store_reads`). It is held to the
   read budget instead (the next entry), until the store computes its aggregates (#996). The scope aggregates (bounded by
   the read budget, SQL pushdown #996) and the export of several runs a page (bounded by `EXPORT_PAGE_RESULTS`) are
-  bounded already. Two readers #998 did not list still read runs whole: `detectable_effects` (a launch's planning block,
-  every earlier run of its template) and `RegressionWatch`'s judged tiers over one subject's runs
-  (`query_eval_results_by_runs`); both are reads over many runs, like the scope aggregates. `quick`'s calibration,
-  labelling rows and arm variants read each arm's results through `list_results`, which pages its reads but returns
-  every result; a `quick` run is the caller's own, in memory.
+  bounded already, and so, with the bundle, are the two readers over many runs #998 did not list,
+  `detectable_effects` and `RegressionWatch`'s judged tiers (the next entry). `quick`'s calibration, labelling rows
+  and arm variants read each arm's results through `list_results`, which pages its reads but returns every result; a
+  `quick` run is the caller's own, in memory.
 
-### evals: a campaign's bundle past the read budget is refused before its results are read
+### evals: a campaign's bundle, a launch's planning block and a regression watch's judged tiers are refused past the read budget
 
 **Changed:** `assemble_context_bundle` (so every analysis generation and campaign report) read every result of the runs
 it assembles in one batch, however many: a campaign past what one process holds was read whole. It is held to
@@ -187,6 +186,16 @@ under assembles as before, in the same store calls. `hold_to_read_budget` (new, 
 that check, for a reader outside the aggregates that holds a set of runs' results whole. The store computing the
 bundle's aggregates and a bounded sample of its trials' evidence, so a campaign of any size assembles in flat calls,
 memory and reply size, is #996.
+
+**Changed:** the two other readers that hold many runs' results at once are held to the same budget the same way.
+`detectable_effects`, the planning block a launch estimate (`launch_estimate`, the `launch_estimate` action) carries,
+read every earlier run of its template whole: it now estimates them off the run listing it already reads and refuses
+past the budget before reading a result, naming archiving the template's earlier runs it need not read (it leaves
+archived runs out), or a template with fewer; the refusal refuses the estimate with it, price included. A regression
+watch's judged tiers, read over the run's subject when its history read that subject alone, are held to the budget off
+the run listing they already read (the history it reads first refuses on the same runs and estimate, so this is the
+same bound held where the read is made); the watch's hook logs it at ERROR as it logs the history's refusal. Each
+refuses a read that returned more than the budget too.
 
 ### langgraph: a checkpoint L2 entry that cannot be refreshed is deleted, not left holding an older checkpoint
 
