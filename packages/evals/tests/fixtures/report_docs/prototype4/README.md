@@ -14,9 +14,9 @@ The fourth prototype, and the first one the report writer made itself: `write_re
 | r2 with its gates read in each task | stored | $8 | $3.48 | $2.35 | $1.13 | 37 | 60 | 2/2 | 10.6 min |
 | r3 without its configs | stored | $8 | $2.17 | $1.50 | $0.67 | 23 | 50 | 2/2 | 6.8 min |
 
-The seven reports cost $14.88: $1.58 to $3.48 each, $2.13 on average. No draft bounced. A revision round adds $0.50 to $1.60.
+The seven reports cost $14.87: $1.58 to $3.48 each, $2.12 on average. No draft bounced. The second round cost $1.46 on "r2 with its gates read in each task" and $0.56 on "r3 without its configs".
 
-Two runs replaced earlier ones. At a $4 cap, "r2 with its gates read in each task" and "r3 without its configs" each ended `over_budget` after round 1: they had spent $1.87 and $1.83, and the turn bound refused a revision turn priced at up to $2.52. The owner approved reruns at $8. Both ended `stored`, and they are the runs kept here. The two refused runs cost $3.70, so X spent $18.58 in all.
+Two runs replaced earlier ones. At a $4 cap, "r2 with its gates read in each task" and "r3 without its configs" each ended `over_budget` after round 1: they had spent $1.87 and $1.83, and the turn bound refused a revision turn priced at up to $2.52 and $2.51. The owner approved reruns at $8. Both ended `stored`, and they are the runs kept here. The two refused runs cost $3.70, so X spent $18.57 in all.
 
 **Against W2.** W2 recorded no dollar cost. Its prototypes ran as Claude Code subagents, and the plan's W2 status records "analyst ≈130–180k subagent tokens and 10–16 min per report; editor ≈100k and ~5 min; a revision ≈150–180k cumulative context". That measures something else: the tally here counts every turn's whole prompt again. Its nearest match is each session's largest prompt: 95k to 149k for the analyst and 30k to 67k for an editor. The comparable counts are below.
 

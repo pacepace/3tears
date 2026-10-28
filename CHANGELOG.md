@@ -159,8 +159,17 @@ The planned page's parts gain plan-free forms beside them, its own bytes unchang
 (every arm, `recommends` marked) and `plan_page.full_results.every_table` (every table the input holds a row of).
 `analysis.analyst.blocks.values_table`, the values table `block_render` returns, is public for the page text. From
 `kernel.report_doc`, `ReportDoc`, `Evidence`, `DocCaveat`, `ReportFinding` and `is_analyst_caveat` join `__all__` with
-the renderer as their caller. No kit, stylesheet or script changes: the page uses the kit's existing classes, and its
-one script is the kit's, so its content security policy is the planned page's.
+the renderer as their caller. The page uses the kit's existing classes, and its one script is the kit's, so its
+content security policy is the planned page's.
+
+**Changed:** the kit, for the 390 px render check on the acceptance pages. A reference line's label (a floor, budget
+or margin) is drawn to the right of its line where it fits, else to its left, else wrapped at its spaces to the wider
+side, on every kind that draws one; forest's narrow-width special case (the label at the plot's foot) gives way to it.
+A computed tick count steps down until no two tick labels touch. A lattice's tiles keep a 6.5rem floor and its row
+headers one line, and a lattice too wide scrolls in a `.tbl` frame, as a table does. `kit.js` and `kit.css` are
+inlined in every default-mode HTML page, planned and reference pages included, so their text (and the script's hash)
+changed: a host allowing the kit by a CSP hash it computed from an earlier wheel recomputes it from this one. A
+`static=True` page carries no script and is unaffected by the script's change.
 
 ### evals: tool turns over Anthropic's Messages API, recorded and replayed per session
 
