@@ -262,8 +262,9 @@ def money_form(amounts: Iterable[float | None], *, marked: bool = True) -> Money
 
     :param amounts: Every amount the set holds, in dollars as stored.
     :ptype amounts: Iterable[float | None]
-    :param marked: Whether the surface can write the per-1,000 mark; False for one that cannot (a chart's ticks), whose
-        set under a cent reads in dollars to the decimals its least amount needs instead.
+    :param marked: Whether the set may carry the per-1,000 mark; False for one that states the count its money is
+        drawn per (a table headed by it, a ruler at its cap), whose set under a cent reads in dollars to the decimals
+        its least amount needs instead, so no amount carries two scales.
     :ptype marked: bool
     :return: The set's form.
     :rtype: MoneyForm

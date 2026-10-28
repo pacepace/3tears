@@ -89,6 +89,36 @@ reads; null otherwise) and says `analysis_id` is the analysis the page renders o
 the `report_read` lines (:441 and the transcripts paragraph) say a `plan` analysis reads code-only with that line, that
 `trials="all"` adds the evidence record after a document's page, and that `include_sessions` is JSON only.
 
+### evals: a computed lever arm name reads one way on every surface; the arms key names settings in words; the kit writes a per-1,000 tick
+
+**Changed:** an arm name the engine computes from an arm's levers is capitalised where it is made, so prose, the arms
+key, the options table, a chart's labels and the code-only page all print `Fanout 2` (owner, 2026-10-28: "people might
+think Fanout 1 is different from fanout 1"). It applies to a derived campaign arm (one no person named) and to a name a
+code-only page spells from the levers, when it opens on a lever's name; a level value (`careful`), a model's name, a
+label a person gave and a declared short name print as written. The arm's id (the campaign's derived label), its
+variant key and the `axis=level` names are unchanged, so figure keys and stored documents still name arms by id, and
+prose typing the id stands, since it differs from the printed name only in case. A campaign with derived lever arms
+gets a new report input digest and snapshot id; one whose arms are named or named by model does not.
+
+**Changed:** the arms key's Configuration column names each setting in words: the name the report input declares
+for it (a factor's), else the package's reader name (`fanout 1 · research timeout 30s · reply limit 45s`, where it
+read `research_timeout 30s · reply_limit 45s`). The model and every value read as written.
+
+**Changed:** a chart of totals under a cent (a run's trials' cost) reads per 1,000 with the mark, `$8.00/1000`, on its
+ticks, its labels and its values table, as a key and a table write it; it read in dollars to its least total's
+decimals (`$0.00048`). The chart kit gains a `usdpk` format (dollars per 1,000 with the mark) for it. A set that counts
+something still moves its count and never carries the mark beside it, at 1,000,000 included. `money_ruler` loses its
+`marked` parameter, which never shipped. **For a host that allows the kit's inline script by hash:** `kit.js` changed,
+so its hash moved; re-read it from the package (`analysis/report/kit/kit.js`). A host serving the static page, which
+carries no script, needs nothing.
+
+**Fixed:** what the misfit reviews of the W3 acceptance runs found on the page. A values table no longer prints a Note
+that only restates its row's value (`+2` beside `+2`, `+0.8 pts` beside `+0.8`); a note that says more (`worse`) stays.
+A count key groups its thousands (`4,000,000 a month`, where it read `4000000`). The levers block
+lists each interaction of four arms once, where it listed it once per setting (`reasoning effect, across retry` and
+`retry effect, across reasoning`, one difference of differences). The full gate grid reads a cell the input holds no
+figure for as `Unknown (no figure)`, where it read `Fails (no figure)`, as the page reads it everywhere else.
+
 ### evals: money reads one form per figure type, tiny amounts per 1,000 (#993), and each arm's cost sits beside its quality
 
 **Changed:** money is spelled one way per set, never per value (owner ruling of 2026-10-27, which supersedes the W2c
@@ -111,14 +141,12 @@ and in its tables). Where an amount is under a cent the ruler moves instead: mon
 replies, and a set under a cent per 1,000 per 1,000,000 (r3's keys read `$180.00 per 1,000,000 turns`), the words
 replacing the label's own count, never stacked beside it (`Cost per 1,000,000 calls`, never `Cost per 1k calls, per
 1,000,000 calls`). A chart says what its dollars are per in a line under it and in its titles, and draws its ticks
-and notes to the same decimals (the kit's `usd:<decimals>`), never with a per-1,000 mark its ticks cannot write. A
+and notes to the same decimals (the kit's `usd:<decimals>`), never with the per-1,000 mark beside the count it states. A
 set still under a cent per 1,000,000 moves no further: it reads at that count, to the decimals its least amount needs
 for two significant figures (`$0.0030` under `($/1,000,000 replies)`), never with the per-1,000 mark beside the count,
 so no amount carries two scales. A total (a run's cost, a month's) counts nothing and is never scaled; a bare key or a
-table of totals under a cent writes the per-1,000 mark instead (`$8.00/1000` for $0.008). One exception, a chart of totals under a cent: it has no
-ruler to move, and the chart kit's ticks can write neither the per-1,000 mark nor a bare count of thousandths that its
-values table would spell alike, so such a chart reads in dollars to the decimals its least total needs (`$0.00048`),
-where a key or a table writes the same total `$0.48/1000`. A gate's reason and a gate row's line state money on the
+table or chart of totals under a cent writes the per-1,000 mark instead (`$8.00/1000` for $0.008), a chart on its
+ticks too (the kit's `usdpk` format). A gate's reason and a gate row's line state money on the
 criterion's ruler (the measure's every arm and the line), the count named once in the criterion's name (`Cost budget,
 per 1,000,000 calls $1.060 > $0.302`). A chart's lines name what its dollars are per by the measure's reader name,
 never a code key (`Cost per 1,000 replies, in dollars.`, where the scoreboard's key once showed). A change reads on the ruler of the amounts it compares,

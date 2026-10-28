@@ -85,7 +85,9 @@ def _bundle(*, control_label: str | None = None, control_short_name: str | None 
     profile = toyhost_profile()
     host = toyhost_host(profile=profile)
     batches = [
-        toyhost_batch(chunk_tokens=chunk, retriever_top_k=depth, extraction_schema="v1", ocr_engine_version="tess-5.3.1")
+        toyhost_batch(
+            chunk_tokens=chunk, retriever_top_k=depth, extraction_schema="v1", ocr_engine_version="tess-5.3.1"
+        )
         for chunk, depth in _RUNS
     ]
     for batch in batches:
@@ -241,8 +243,15 @@ def _assert_printed_everywhere(page: DocPage) -> None:
         ("fanouts 2", ["fanout"], "fanouts 2"),
         ("deepseek-v4.1-flash", ["model"], "deepseek-v4.1-flash"),
     ],
-    ids=["one lever", "two levers", "a lever with an underscore", "a level value", "a model first", "another word",
-         "a model's name"],
+    ids=[
+        "one lever",
+        "two levers",
+        "a lever with an underscore",
+        "a level value",
+        "a model first",
+        "another word",
+        "a model's name",
+    ],
 )
 def test_a_name_opening_on_a_levers_reader_name_is_capitalised_and_any_other_printed_as_written(
     name: str, levers: list[str], printed: str
@@ -346,13 +355,13 @@ def test_every_surface_of_the_documents_page_prints_the_one_name() -> None:
         assert "Run " + _PRINTED[1] in written
 
 
-def test_a_name_capitalised_in_prose_rendering_instead_fails_the_surfaces_check(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_name_capitalised_in_prose_rendering_instead_fails_the_surfaces_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The mutation: the input's name left as the levers spell it (the rule not called where the name is made) and
     the page's prose capitalising it as it renders. The tables and the chart then print the other name, so the check
     above fails: the name is made in one place, never in prose rendering."""
-    monkeypatch.setattr(
-        "threetears.evals.analysis.report_input_build.arm_display_name", lambda name, levers: name
-    )
+    monkeypatch.setattr("threetears.evals.analysis.report_input_build.arm_display_name", lambda name, levers: name)
     unmade = analyst_input(_bundle())
     assert {arm.id: arm.name for arm in unmade.arms}[_candidate(1)] == _COMPUTED[1]
     page = build(_draft(unmade), unmade, strict=True)
