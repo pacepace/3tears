@@ -98,7 +98,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
 from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict, refuse_on_event_loop
 from threetears.evals.schema.logs import get_logger
-from threetears.evals.kernel.run_pages import ResultKey
+from threetears.evals.kernel.run_pages import ResultKey, RunResultsStore
 from threetears.evals.kernel.job_leases import RUN_LOST_STATUS, lease_lapsed, leased_kind_of, settle_tolerantly
 
 log = get_logger(__name__)
@@ -491,19 +491,16 @@ class LeaseClock(Protocol):
         ...
 
 
-class LeaseStore(JobRecordStore, LeaseClock, Protocol):
+class LeaseStore(JobRecordStore, LeaseClock, RunResultsStore, Protocol):
     """A job record's read-modify-write, a cancel asked of it, and the store's time: what job leases are kept through.
 
     Every job record is renewed, cancelled and written lost the same way (:mod:`threetears.evals.kernel.job_leases`).
-    A run's results are here too: a run written lost has its completeness reconstructed from them in the same write.
+    A run's results are here too, read a page at a time (:class:`~threetears.evals.kernel.run_pages.RunResultsStore`):
+    a run written lost has its completeness reconstructed from them in the same write.
     """
 
     def merge_job_record_fields(self, record_id: str, scope_id: str, fields: dict[str, Any], /) -> bool:
         """See :meth:`EvalStorage.merge_job_record_fields`."""
-        ...
-
-    def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
-        """See :meth:`EvalStorage.query_eval_results_by_run`."""
         ...
 
 
@@ -2549,9 +2546,12 @@ class EvalStorage:
     def query_eval_result_ids_by_run(self, run_id: str, scope_id: str) -> list[str]:
         """The ids of every result stored for one run, read off the rows without reconstructing them.
 
-        For a delete of a run this build cannot read, whose results were written by the same model and may not read
-        either: :meth:`delete_eval_result` works from the stored row, so finding them by the run id they carry is
-        all the cascade needs, and a refused result never stops it.
+        For a run's delete, whether this build can read the run or not (a run it cannot read had its results written
+        by the same model, and they may not read either): :meth:`delete_eval_result` works from the stored row, so
+        finding them by the run id they carry is all the cascade needs, and a refused result never stops it. The
+        read is the one a read of the run's keys makes (:meth:`query_eval_result_keys_by_run`), with the fields that
+        grow with what a cell did left out, so it ships each result's scalars and never its whole row; only the id
+        is read of them, so a row this build cannot reconstruct is still found.
 
         :param run_id: The run.
         :ptype run_id: str
@@ -2563,7 +2563,7 @@ class EvalStorage:
         """
         store = self._store
         try:
-            items = store.by_doc_type("eval_result", scope_id, eval_run_id=run_id)
+            items = store.by_doc_type("eval_result", scope_id, exclude=_RESULT_KEY_EXCLUDED, eval_run_id=run_id)
         # prawduct:ok-broad-except — DB read boundary; re-raised as a typed eval error
         except Exception as e:
             raise StorageError(f"failed to read the results of eval run {run_id!r}: {e}") from e

@@ -487,8 +487,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWiring) -> EvalRun`
 - **`launchable_judge_kind`** · function · The judge kind's entry in a host's launch registry: each arm one judge over the template's frozen cases.
   <br>`launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKind`
-- **`list_results`** · *host contract* · function · List every result for one eval run within its scope.
-  <br>`list_results(storage: ResultStore, run_id: str, scope_id: str) -> list[EvalResult]`
+- **`list_results`** · *host contract* · function · List every result for one eval run within its scope, read a page at a time in the store's order.
+  <br>`list_results(storage: RunResultsStore, run_id: str, scope_id: str) -> list[EvalResult]`
 - **`list_runs`** · function · List eval runs in a scope, optionally filtered by status.
   <br>`list_runs(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> list[EvalRun]`
 - **`load_seed_corpus`** · *host contract* · function · Read a corpus off disk, constructing each document through its model in `scope_id`.

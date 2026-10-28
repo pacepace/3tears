@@ -104,10 +104,8 @@ the run. `iter_run_results`, `run_result_keys`, `run_case_pages` and `read_resul
   bound is not pinned by one, and it now loads the run, so a run this build cannot read refuses the poll, and a run
   whose lease lapsed is settled by it. The SQLite store parses each row's JSON while it holds its connection's lock,
   so other threads wait on that one connection for longer.
-- **Still read whole**, each its own follow-up: comparing two runs (`runs_compare`, `compare_two_runs`,
-  `bisect_runs`, and the pair disclosures' measurement windows), settling a lapsed run that recorded no
-  completeness, the witnessed cells' judge-ceiling check, `results_list` and `list_results`, `delete_run`'s cascade,
-  the campaign and analysis readers, `run_summary` (the lens) and the scope aggregates.
+- **Every other reader of a whole run** is paged too: see the next entry. The scope aggregates are bounded by the read
+  budget above instead.
 
 **Changed (MCP):** `scope_export` takes `export_after_case_id`, the previous page's `page.next_after_case_id`, beside
 `export_after_run_id`, and the text of a page inside a run names it (and `export_run_ids` for a named run):
@@ -115,6 +113,57 @@ the run. `iter_run_results`, `run_result_keys`, `run_case_pages` and `read_resul
 `page: run 2 of 7, its cases 1-1000 of 2400`. `export_after_case_id` without `export_after_run_id`, or naming no case
 of that run, is refused (`VALIDATION_FAILED`, `details` `after_run_id` and `after_case_id`). A run archived or
 moved to another status between its pages is left, and the next page starts at the run after it.
+
+### evals: the remaining readers of a whole run walk it a page at a time
+
+**Fixed:** the readers the entry above left reading every stored result of a run at once now walk it a page at a
+time, with no ceiling on the run (#998; owner, 2026-10-27: "Fix reads, drop ceiling"). Each makes one read of the
+run's result keys and reads its results by id, `RUN_RESULTS_PAGE` at a time, in the order the store keeps them
+(`iter_stored_results`, new in `threetears.evals.kernel.run_pages`, beside `iter_keyed_results`, which pages any
+keys in a reader's order), the order a whole read handed them out in, so every figure is the one that read gave.
+Checked against the previous build on two runs of 75 shuffled results: `runs_compare`,
+`runs_bisect`, the `run_summary` lens and `results_list` are byte for byte its output. A reader that must hold every
+result to fold it into figures keeps it without its two verbatim fields, `world_events` and `kind_payload`
+(`without_payloads`, `results_without_payloads`), which grow without bound with what a cell
+did and which no figure reads.
+
+- **Two runs side by side:** `compare_two_runs` and `bisect_runs` (so `runs_compare` and `runs_bisect`, operations
+  and actions) hold each run's results without their verbatim fields. The pair disclosures' measurement window reads
+  the runs' keys alone, which carry when each result was stored: `measurement_window` takes keys as well as results.
+- **A run written lost** with no completeness of its own counts what it stored as it walks it, keeping nothing:
+  `reconstruct_completeness` takes any iterable of results. `LeaseStore` now reads results through
+  `RunResultsStore` (the key read and the read by id) in place of `query_eval_results_by_run`.
+- **The witnessed judge ceiling** keeps each saved cell's id and judge spend. **Changed:** `WitnessedJudging.spent`
+  takes `(result id, judge spend)` pairs, where it took the run's results.
+- **`results_list`** sorts the run's keys (case, repeat, id): unfiltered, it reads only the page's results;
+  filtered by `condition`, it reads every result a page at a time to count the matches and keeps the page's rows.
+  **`list_results`** reads the run a page at a time and returns the list as before; it takes a `RunResultsStore`.
+- **`delete_run`** reads the run's result ids (`query_eval_result_ids_by_run`), as `delete_unreadable_run` does,
+  where it reconstructed every result; that read now leaves out what the key read leaves out, so it ships each
+  result's scalars, never its row. **Changed:** a run this build reads whose result it cannot reconstruct is now
+  deleted with that result, where the delete was refused; `CurationStore` declares
+  `query_eval_result_ids_by_run` in place of `query_eval_results_by_run`.
+- **The `run_summary` lens** (no engine caller), **a reporter calibration** (`reporter_calibration`; `AnalysisStore`
+  gains the key read and the read by id in place of `query_eval_results_by_run`) and **a campaign arm's variant key**
+  (which reads the run's keys and its first result by id; `CampaignStore` likewise) read the run a page at a time.
+- **The judge passes:** a judge repeat (`collect_repeatable`, so the judge temperature comparison too) and a second
+  judge pass read the run's keys, refuse a named result that is not the run's from them, read only the named results
+  when results are named, and plan each result without its verbatim fields (each write reads the result again). A
+  judge case freeze from runs, and a judge profile's readout (`judge_kind_readings` keeps each trial's result without
+  its verbatim fields once the trial is read) walk their runs a page at a time. The jobs conformance kit's
+  cancelled-before-its-cells stage reads the run's result ids alone.
+- **A host's reader** handed a run's results by a comparison, a bisection or `run_summary` (a sweepable's `read`, its
+  `row_columns`, `production_footing`) now reads them without `world_events` and `kind_payload`: a host reads its
+  kind's payload as the cell ends, into the measures it reports. Discodon's readers read neither.
+- **Not converted, and why:** a campaign's bundle (`assemble_context_bundle`, so every analysis and campaign
+  report) still reads its member runs' results in one batch (`query_eval_results_by_runs`): its port promises one
+  store call per read however large the campaign (`CampaignReadStore`, held by `test_bundle_store_reads`, after a
+  per-run read outran a host's call budget), and paging it is a call per page; that trade is the owner's to make.
+  The scope aggregates (bounded by the read budget, SQL pushdown #996) and the export of several runs a page
+  (bounded by `EXPORT_PAGE_RESULTS`) are bounded already. Two readers #998 did not list still read runs whole:
+  `detectable_effects` (a launch's planning block, every earlier run of its template) and `RegressionWatch`'s judged
+  tiers over one subject's runs (`query_eval_results_by_runs`); both are reads over many runs, like the scope
+  aggregates.
 
 ### langgraph: a checkpoint L2 entry that cannot be refreshed is deleted, not left holding an older checkpoint
 

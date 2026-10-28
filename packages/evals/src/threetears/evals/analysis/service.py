@@ -78,6 +78,7 @@ from threetears.evals.kernel.errors import (
     ValidationFailedError,
 )
 from threetears.evals.kernel.refusals import job_refusal
+from threetears.evals.kernel.run_pages import ResultKey, results_without_payloads
 from threetears.evals.schema.refusal import JobRefusal
 from threetears.evals.kernel.job_leases import ANALYSIS_JOB, JobLeases, write_held_record
 from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
@@ -192,8 +193,13 @@ class AnalysisStore(CampaignReadStore, JobRecordStore, Protocol):
         """Load one template as stored in a scope, or ``None`` when it does not resolve — the calibration read's raw read."""
         ...
 
-    def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
-        """Every result of one run within a scope — the calibration read's."""
+    def query_eval_result_keys_by_run(self, run_id: str, scope_id: str, /) -> list[ResultKey]:
+        """The key of every result of one run within a scope, in one read that ships no other field — the calibration
+        read's pass over the run, before it reads the run's results by id a page at a time."""
+        ...
+
+    def load_eval_results(self, result_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
+        """The named results within a scope, in one read by id — a page of the calibration read's."""
         ...
 
     def query_calibration_ratings(
@@ -2527,7 +2533,8 @@ def reporter_calibration(
         )
     bank = reporter_case_bank(storage, template_id, scope_id)
     superseded_by = {case_id: list(ids) for case_id, ids in bank.superseded_by.items()}
-    results = storage.query_eval_results_by_run(run_id, scope_id)
+    # Read a page at a time, the results kept without their verbatim fields, which no calibration reads.
+    results = results_without_payloads(storage, run_id, scope_id)
     template = storage.load_template(template_id, scope_id)
     # The template names the dims in order; a template deleted since the run still leaves its
     # results, so the dims they were scored on stand in for it rather than dropping the read.

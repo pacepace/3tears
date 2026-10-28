@@ -95,7 +95,13 @@ from threetears.evals.kernel.scoring import (
 from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN
-from threetears.evals.kernel.run_pages import RunResultsStore, read_results, run_case_pages, run_result_keys
+from threetears.evals.kernel.run_pages import (
+    RunResultsStore,
+    read_results,
+    results_without_payloads,
+    run_case_pages,
+    run_result_keys,
+)
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -1575,7 +1581,8 @@ def run_summary(
     """
     # The summary reads the run's scalars and never its payload.
     run = load_run_listed(run_id, scope_id)
-    results = storage.query_eval_results_by_run(run_id, scope_id)
+    # Read a page at a time, the results kept without their verbatim fields, which no figure here reads.
+    results = results_without_payloads(storage, run_id, scope_id)
 
     pass_hat = compute_pass_hat_k(results, rubric_threshold=rubric_threshold)
     latency = compute_latency_summary(results)
@@ -1714,8 +1721,9 @@ def bisect_runs(
     run_a = _load_run(storage, run_a_id, scope_id)
     run_b = _load_run(storage, run_b_id, scope_id)
 
-    results_a = storage.query_eval_results_by_run(run_a_id, scope_id)
-    results_b = storage.query_eval_results_by_run(run_b_id, scope_id)
+    # Each run read a page at a time, its results kept without their verbatim fields, which no input is read off.
+    results_a = results_without_payloads(storage, run_a_id, scope_id)
+    results_b = results_without_payloads(storage, run_b_id, scope_id)
 
     sweepables = profile.sweepables
     values_a = sweepables.read_all(run_a, results_a)
@@ -1853,8 +1861,9 @@ def compare_two_runs(
     """
     run_a = _load_run(storage, run_a_id, scope_id)
     run_b = _load_run(storage, run_b_id, scope_id)
-    results_a = storage.query_eval_results_by_run(run_a_id, scope_id)
-    results_b = storage.query_eval_results_by_run(run_b_id, scope_id)
+    # Each run read a page at a time, its results kept without their verbatim fields, which no figure here reads.
+    results_a = results_without_payloads(storage, run_a_id, scope_id)
+    results_b = results_without_payloads(storage, run_b_id, scope_id)
 
     pass_a = compute_pass_hat_k(results_a, rubric_threshold=rubric_threshold)
     pass_b = compute_pass_hat_k(results_b, rubric_threshold=rubric_threshold)

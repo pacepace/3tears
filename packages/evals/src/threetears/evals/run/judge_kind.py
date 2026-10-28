@@ -51,6 +51,7 @@ from threetears.evals.kernel.candidate_kind import (
 )
 from threetears.evals.kernel.capped_completion import call_ceiling, refresh_prices
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.run_pages import iter_keyed_results
 from threetears.evals.kernel.judge_cases import (
     JUDGE_CASE_KEY,
     JUDGE_KIND,
@@ -618,9 +619,12 @@ def freeze_judge_cases(
         run = storage.load_eval_run(run_id, scope_id)
         if run is None:
             raise NotFoundError("run", run_id, remedy=FIND_RUN)
-        for result in storage.query_eval_results_by_run(run.id, scope_id):
-            if wanted is not None and result.id not in wanted:
-                continue
+        # The run's keys, then its results by id a page at a time (the named ones alone when results are named),
+        # each frozen and let go before the next page is read.
+        keys = storage.query_eval_result_keys_by_run(run.id, scope_id)
+        for result in iter_keyed_results(
+            storage, scope_id, [key for key in keys if wanted is None or key.id in wanted]
+        ):
             found.add(result.id)
             try:
                 frozen = _cases_of_result(storage, template, run, result, scope_id, dims)

@@ -67,6 +67,7 @@ from pydantic import ValidationError
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep
 from threetears.evals.kernel.errors import ConflictError, JobFenced, StorageError
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.run_pages import iter_stored_results
 from threetears.evals.kernel.scoring import reconstruct_completeness
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.job_lease import (
@@ -168,7 +169,8 @@ def _run_lost(run: EvalRun, loss: JobLoss, store: LeaseStore) -> EvalRun:
     unreadable: list[str] = []
     if completeness is None:
         try:
-            completeness = reconstruct_completeness(run, store.query_eval_results_by_run(run.id, run.scope_id))
+            # Read a page at a time: the run is lost at its largest, and the count keeps nothing of a result.
+            completeness = reconstruct_completeness(run, iter_stored_results(store, run.id, run.scope_id))
         except ValidationError as refused:
             # NOSILENT: the completeness is written None, which every reader reads as unknown, and why is written
             # on the run itself as an error_details entry below.

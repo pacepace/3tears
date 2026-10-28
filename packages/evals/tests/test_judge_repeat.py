@@ -46,7 +46,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import JudgeKey, judge_agreement, judge_evidence_tiers, judge_self_agreement
-from threetears.evals.kernel import EvalStorage, JobLeases
+from threetears.evals.kernel import EvalStorage, JobLeases, run_pages
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink, CellSpanWindow, VariantConfig
 from threetears.evals.kernel.cassettes import CellCassettes
 from threetears.evals.kernel.errors import ConflictError, StorageError, ValidationFailedError
@@ -80,6 +80,7 @@ from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.run_pages_support import BatchRecordingStore
 
 _SCOPE = "scope-repeat"
 _KIND = "repeat-probe"
@@ -641,6 +642,28 @@ class TestWhatCannotBeReproducedIsRefusedBeforeAnySpend:
 
         with pytest.raises(ValidationFailedError, match="are not results of run"):
             await _repeated(host, run_id, _SCOPE, out_of_run_cap_usd=1.0, result_ids=["elsewhere"])
+
+
+class TestARepeatReadsItsRunAPageAtATime:
+    async def test_it_plans_from_pages_and_reads_only_the_results_it_names(self, monkeypatch: pytest.MonkeyPatch):
+        store = BatchRecordingStore()
+        judge = _PricedJudge()
+        host, run_id = await _judged_run(judge, cases=5, storage=EvalStorage(store))
+        stored = off_loop(_results, host, run_id)
+        monkeypatch.setattr(run_pages, "RUN_RESULTS_PAGE", 2)
+        store.clear()
+
+        report = await _repeated(host, run_id, _SCOPE, out_of_run_cap_usd=1.0)
+
+        assert sorted(report.repeated) == [result.id for result in stored]
+        assert store.row_reads() == [], "no read hands out the run's rows"
+        assert store.key_reads_of(run_id) == [5] and store.id_reads == [2, 2, 1], "the run walked two results a read"
+
+        store.clear()
+        named = await _repeated(host, run_id, _SCOPE, out_of_run_cap_usd=1.0, result_ids=[stored[3].id])
+
+        assert named.repeated == [stored[3].id]
+        assert store.row_reads() == [] and store.id_reads == [1], "the named result alone is read"
 
 
 class TestAgreeingRepeatsSeparateTheJudge:

@@ -427,7 +427,8 @@ def _pair_disclosures(
     windows = [
         window
         for run in runs
-        if (window := measurement_window(run.id, storage.query_eval_results_by_run(run.id, scope_id))) is not None
+        # When each result was stored is on its key, so the window reads the run's keys and none of its results.
+        if (window := measurement_window(run.id, storage.query_eval_result_keys_by_run(run.id, scope_id))) is not None
     ]
     completeness = {
         run.id: sentence for run in runs if (sentence := completeness_disclosure(run.completeness)) is not None

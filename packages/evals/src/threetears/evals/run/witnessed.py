@@ -38,7 +38,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from typing import Any, Literal
 
 from threetears.evals.kernel.candidate_kind import CandidateOutput
@@ -71,6 +71,7 @@ from threetears.evals.run.rejudge import (
     recorded_judged_dims,
 )
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.run_pages import iter_stored_results
 from threetears.evals.run.runner import (
     DEFAULT_JUDGE_CONCURRENCY,
     assemble_completed_cell,
@@ -640,7 +641,7 @@ class WitnessedJudging:
         """
         self._superseded.append(spend)
 
-    def spent(self, saved: Sequence[EvalResult]) -> list[float | None]:
+    def spent(self, saved: Iterable[tuple[str, float | None | Literal[False]]]) -> list[float | None]:
         """Every judgement of the run's cells to count against its ceiling, given what the store holds now.
 
         A cell judged here counts its latest judgement from here, whether or not the host has saved it; a cell
@@ -648,16 +649,17 @@ class WitnessedJudging:
         replaced counts too. Judgements another :class:`WitnessedJudging` made and its host has not saved, and
         what a re-judge elsewhere replaced, are beyond it — save each pair as it is recorded.
 
-        :param saved: The run's results as the store holds them.
-        :ptype saved: Sequence[EvalResult]
+        :param saved: What each of the run's results as the store holds them spent on its judge, by result id: the
+            sum of its judge rows, ``None`` when any is unpriced, ``False`` when it carries none. A pair per result,
+            so the run is read a page at a time and none of its results is kept.
+        :ptype saved: Iterable[tuple[str, float | None | Literal[False]]]
         :return: Each judgement's spend; ``None`` for an unpriced one.
         :rtype: list[float | None]
         """
         self._stored = {}
-        for result in saved:
-            spend = _judge_spend(result)
+        for result_id, spend in saved:
             if spend is not False:
-                self._stored[result.id] = spend
+                self._stored[result_id] = spend
         from_store = [spend for result_id, spend in self._stored.items() if result_id not in self._latest]
         return [*from_store, *self._latest.values(), *self._superseded]
 
@@ -675,6 +677,15 @@ class WitnessedJudging:
         """
         async with self._lock:
             yield
+
+
+def _saved_judge_spend(host: EvalHost, run: EvalRun) -> list[tuple[str, float | None | Literal[False]]]:
+    """Each stored result of the run and what it spent on its judge (:func:`_judge_spend`), read a page at a time.
+
+    Blocking: :func:`_refuse_past_the_judge_ceiling` calls it on the host's blocking executor, once per witnessed cell,
+    so the run is read a page at a time and only the pair is kept of each result.
+    """
+    return [(result.id, _judge_spend(result)) for result in iter_stored_results(host.storage, run.id, run.scope_id)]
 
 
 async def _refuse_past_the_judge_ceiling(host: EvalHost, run: EvalRun, judging: WitnessedJudging) -> None:
@@ -703,14 +714,14 @@ async def _refuse_past_the_judge_ceiling(host: EvalHost, run: EvalRun, judging: 
     if run.max_cost_usd is None:
         # The host enforces no ceiling, and the run recorded that: uncapped, as a launched run would be.
         return
-    saved = await run_blocking(host.blocking_executor, host.storage.query_eval_results_by_run, run.id, run.scope_id)
+    saved = await run_blocking(host.blocking_executor, _saved_judge_spend, host, run)
     cap = EvalRunCostCap(run.id, run.max_cost_usd, enabled=True)
     judgements = judging.spent(saved)
     for spend in judgements:
         cap.record(spend)
     breach = cap.check()
     if breach is not None:
-        cells = {result.id for result in saved} | judging.judged_ids
+        cells = {result_id for result_id, _ in saved} | judging.judged_ids
         raise BudgetStoppedError(len(cells), len(run.test_case_ids) * run.k_runs, breach)
 
 

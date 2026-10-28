@@ -65,8 +65,8 @@ class CurationStore(Protocol):
     :class:`~threetears.evals.kernel.storage.EvalStorage` does, with no
     inheritance and no registration.
 
-    **Two members are redeclared rather than inherited, and that is the choice.**
-    ``load_eval_runs`` / ``query_eval_results_by_run`` are
+    **A member is redeclared rather than inherited, and that is the choice.**
+    ``load_eval_runs`` is
     :class:`~threetears.evals.analysis.bundle.assemble.CampaignReadStore`'s, and composing from
     it would be legal here. It would also hand a consumer of this family a
     contract naming the bundle-assembly port it has no concept of,
@@ -103,8 +103,8 @@ class CurationStore(Protocol):
         """Destroy one run document, reporting whether it was there."""
         ...
 
-    def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
-        """Every result belonging to one run within a scope."""
+    def query_eval_result_ids_by_run(self, run_id: str, scope_id: str, /) -> list[str]:
+        """The id of every result belonging to one run within a scope, read off the rows without reconstructing them."""
         ...
 
     def delete_eval_result(self, result_id: str, scope_id: str, /) -> bool:
@@ -542,8 +542,8 @@ def delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: 
             remedy=f"cancel it first (job_cancel run:{run_id}), confirm it reached a terminal status, then delete",
         )
 
-    results = [result.id for result in storage.query_eval_results_by_run(run_id, scope_id)]
-    return _delete_run_cascade(storage, run_id, scope_id, results)
+    # Only the ids are read, as the cascade of a run this build cannot read reads them: never the run's results.
+    return _delete_run_cascade(storage, run_id, scope_id, storage.query_eval_result_ids_by_run(run_id, scope_id))
 
 
 def _delete_run_cascade(
