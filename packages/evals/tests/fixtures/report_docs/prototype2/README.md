@@ -37,3 +37,7 @@ Each directory's `doc.json` is its `report.json` converted to `report-doc/1` as 
 This prototype's conversion also:
 - rewrites s3's headline (252 characters) within the 240 the schema allows, keeping every key it cited and its finding;
 - drops `point_estimate:overall` from r3 without its configs: code no longer assigns it there, since an overall that is the plain mean of its cells now reads an interval derived from theirs. The analyst's clause on it asked for that interval.
+
+## Mended for the invariants (`tests/test_report_doc_checks.py`)
+
+Each converted document of this prototype passes `check_report_doc` with no verdict. One needed a mend, a fault the invariants rightly find, made in `doc.json` alone: s1's Method item "Source" called the campaign "s1", the fixture's name and not the campaign's, a typed digit; it now reads "this campaign".

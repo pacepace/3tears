@@ -428,7 +428,7 @@
     },
     {
       "term": "Source",
-      "text": "The evidence frozen for campaign s1 on its run date, {meta.run_date}.",
+      "text": "The evidence frozen for this campaign on its run date, {meta.run_date}.",
       "caveats": []
     }
   ]

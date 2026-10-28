@@ -539,8 +539,11 @@ class EvalReportDoc(EvalDocumentModel):
 #: The names with a caller outside this module. The document's own models and functions are this build's first
 #: report-doc/1 surface; each joins this list with its first production caller (the invariants, the claims renderer,
 #: the writing loop), never for a test alone. The analyst's session reads a submission as a ReportDoc, checks its
-#: validity and briefs the analyst with its JSON schema; the claims renderer draws its evidence, caveats and findings.
+#: validity and briefs the analyst with its JSON schema; the claims renderer draws its evidence, caveats and findings;
+#: the invariants and the editor's facts walk its prose fields.
 __all__ = [
+    "REPORT_DOC_PROSE_FIELDS",
+    "DecisionSlotWord",
     "DocCaveat",
     "EvalReportDoc",
     "Evidence",

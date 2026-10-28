@@ -37,7 +37,7 @@
     },
     {
       "slot": "why_not",
-      "text": "{arm:nano-xs.few} would cut cost sharply (the pick costs {cost.gap.brisk-s.few.nano-xs.few.multiple|int} times as much) but misses the cell floor on complex news, and more cases won't move it: its interval sits wholly under the line. {arm:brisk-s.rubric} and every Atlas-M configuration run past the latency budget, the closest at {criteria.p95.atlas-m.zero.value}. Brisk-S and Nano-XS zero-shot, and Nano-XS with the rubric, miss overall accuracy."
+      "text": "{arm:nano-xs.few} would cut cost sharply (the pick costs {cost.gap.brisk-s.few.nano-xs.few.multiple|int} as much) but misses the cell floor on complex news, and more cases won't move it: its interval sits wholly under the line. {arm:brisk-s.rubric} and every Atlas-M configuration run past the latency budget, the closest at {criteria.p95.atlas-m.zero.value}. Brisk-S and Nano-XS zero-shot, and Nano-XS with the rubric, miss overall accuracy."
     },
     {
       "slot": "watch",

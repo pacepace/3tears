@@ -29,6 +29,12 @@
         "checked": null
       },
       {
+        "id": "borderline:trouble.resolves",
+        "label": null,
+        "material_if": "only if {arm:atlas-m}'s true resolve rate on troubleshooting is under {criteria.trouble.resolves.threshold}: its figure sits on the line and its interval reaches below it, and below the line no model passes and the choice becomes a trade between resolving issues and speed.",
+        "checked": null
+      },
+      {
         "id": "no_control",
         "label": null,
         "material_if": "only for how much overall quality {arm:atlas-m} gives up against {arm:atlas-l}, which reads two models' own figures unpaired; the call rests on gates each model meets or misses on its own figures.",
