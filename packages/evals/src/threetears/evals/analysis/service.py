@@ -74,6 +74,8 @@ from threetears.evals.analysis.report.plan_page.build import plan_page
 from threetears.evals.analysis.report.plan_page.words import MADE_TEMPLATE
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
 from threetears.evals.analysis.report.words import campaign_arm_tags, declared_arm_names
+from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
+from threetears.evals.analysis.report_doc_store import StoredReportPage, read_report_doc
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalCampaign
 from threetears.evals.kernel.campaign_writes import serialized_campaign_write
@@ -1788,6 +1790,8 @@ def _campaign_page(
     plan: EvalReportPlan | None = None,
     fingerprints: Mapping[str, str] | None = None,
     trials: TrialDetail = "table",
+    unread_analysis_id: str | None = None,
+    unread_report_doc_id: str | None = None,
 ) -> CampaignReport:
     """Lay a campaign bundle out as the campaign's page: code's readings, the memo or the plan where there is one, the
     call.
@@ -1812,6 +1816,10 @@ def _campaign_page(
     :ptype fingerprints: Mapping[str, str] | None
     :param trials: How much of each failed or lost trial each fold lays out (:data:`TrialDetail`).
     :ptype trials: TrialDetail
+    :param unread_analysis_id: On a code-only page, the analysis this version no longer reads that it stands in for.
+    :ptype unread_analysis_id: str | None
+    :param unread_report_doc_id: On a code-only page, the report document read by its id that it stands in for.
+    :ptype unread_report_doc_id: str | None
     :return: The page.
     :rtype: CampaignReport
     """
@@ -1845,6 +1853,8 @@ def _campaign_page(
         resolutions=analysis.resolutions if analysis is not None else (),
         trial_ids=bundle.trial_ids(),
         report_doc_id=analysis.report_doc_id if analysis is not None else None,
+        unread_analysis_id=unread_analysis_id,
+        unread_report_doc_id=unread_report_doc_id,
     )
     if analysis is None:
         return page
@@ -2007,18 +2017,33 @@ def campaign_report(
 ) -> CampaignReport:
     """The campaign's page — THE answer to "what is this campaign's report", for every caller and every campaign.
 
-    **The rule.** The campaign's newest analysis that is not archived, laid out over what was frozen with it
-    (``basis="analysis"``, as :func:`analysis_report` lays it out). When it has none — no generation has run, or every
-    analysis it had was archived (an archive is the claim that an analysis was wrong, so it is not the campaign's
+    **The rule.** The campaign's newest analysis that is not archived. When it has none — no generation has run, or
+    every analysis it had was archived (an archive is the claim that an analysis was wrong, so it is not the campaign's
     report) — the campaign's evidence assembled now (``basis="code_only"``), which says that no analysis was written.
-    Either way the page is the campaign's (:class:`~threetears.evals.analysis.report.CampaignReport`): code's readings
-    across its aspects, the writer's recommendation where there is one, the person's call, then one fold per aspect.
-    A campaign of one aspect has one fold, holding that aspect's page. A particular analysis, archived ones included,
-    is read by its id through :func:`analysis_report`.
+    A particular analysis, archived ones included, is read by its id through :func:`analysis_report`, and a particular
+    report document, any version, through :func:`report_doc_report`.
 
-    Costs no model call either way: the code-only page is storage reads and arithmetic. It reads one analysis however
-    many the campaign holds: the store picks the newest not archived
-    (:meth:`AnalysisStore.load_reported_analysis`), so a read's memory does not grow with the analyses archived.
+    **What the analysis is laid out as**, by what wrote it:
+
+    - a report document's (``doc``, the report writer's): the page its stored document draws on its own snapshot
+      (``basis="analysis"``, :attr:`~threetears.evals.analysis.report.CampaignReport.doc_page`), read as a stored
+      document is, so it degrades rather than refuses
+      (:func:`~threetears.evals.analysis.report_doc_store.read_report_doc`), its made line at its foot; the campaign's
+      readings and folds are read off that snapshot's bundle, as the JSON form carries them;
+    - a report plan's (``plan``, the report planner's): every one is written in a shape this version no longer reads,
+      so its page is the code-only page with the one regenerate line on its first screen
+      (:data:`~threetears.evals.analysis.report.campaign.memo_blocks.NO_LONGER_READS`,
+      :attr:`~threetears.evals.analysis.report.CampaignReport.unread_analysis_id`). No planner page is reached;
+    - a memo's: laid out over what was frozen with it, as :func:`analysis_report` lays it out.
+
+    A report document this version no longer reads — its record does not validate, its snapshot is gone, holds no
+    bundle or no longer reads, or the campaign no longer lays out over it — is laid out as a plan is: the code-only page
+    with the one regenerate line. Neither is ever refused. Either way the page is the campaign's
+    (:class:`~threetears.evals.analysis.report.CampaignReport`).
+
+    Costs no model call: every page is storage reads and arithmetic. It reads one analysis however many the campaign
+    holds: the store picks the newest not archived (:meth:`AnalysisStore.load_reported_analysis`), so a read's memory
+    does not grow with the analyses archived.
 
     :param host: The host: where the campaign and its analyses are read, and the vocabulary its evidence is
         assembled in when there is no analysis.
@@ -2029,22 +2054,123 @@ def campaign_report(
     :ptype scope_id: str
     :param trials: How much of each failed or lost trial the page lays out (:data:`TrialDetail`): by default their
         table alone, each row naming its stored result (``result_get`` reads it); ``all`` adds each one's full
-        record, which is most of a large campaign's page.
+        record, which is most of a large campaign's page. A report document's page draws no trial records.
     :ptype trials: TrialDetail
     :return: The page; its ``basis`` says which it is.
     :rtype: CampaignReport
     :raises NotFoundError: No campaign with that id in the scope.
-    :raises RefusedInput: Its reported analysis was written over a bundle of another shape, or as a report plan this
-        build no longer reads: the page refuses, naming the regeneration (``analysis_generate``).
+    :raises RefusedInput: Its reported analysis is a memo written over a bundle of another shape: the page refuses,
+        naming the regeneration (``analysis_generate``).
     """
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     reported = host.storage.load_reported_analysis(campaign_id, scope_id)
-    if reported is not None:
-        return _analysis_page(reported, campaign, trials=trials, plan=get_report_plan(host.storage, reported))
-    return _code_only_page(host, campaign, trials=trials)
+    if reported is None:
+        return _code_only_page(host, campaign, trials=trials)
+    if reported.report_doc_id is not None:
+        try:
+            read = read_report_doc(host.storage, reported.report_doc_id, scope_id)
+        except NotFoundError as missing:
+            # NOSILENT: the page is the code-only page with the one regenerate line, naming the analysis; the
+            # listing's needs_regeneration says the same.
+            log.warning("campaign %s's analysis %s reads code-only: %s", campaign_id, reported.id, missing.message)
+            return _code_only_page(host, campaign, trials=trials, unread_analysis_id=reported.id)
+        except RefusedInput as unread:
+            # NOSILENT: as above.
+            log.warning("campaign %s's analysis %s reads code-only: %s", campaign_id, reported.id, unread.fault)
+            return _code_only_page(host, campaign, trials=trials, unread_analysis_id=reported.id)
+        return _doc_page(
+            host, campaign, read, declared=_as_analysed(reported, campaign), analysis_id=reported.id, trials=trials
+        )
+    if reported.report_plan_id is not None:
+        return _code_only_page(host, campaign, trials=trials, unread_analysis_id=reported.id)
+    return _analysis_page(reported, campaign, trials=trials)
 
 
-def _code_only_page(host: EvalHost, campaign: EvalCampaign, *, trials: TrialDetail = "table") -> CampaignReport:
+def report_doc_report(
+    host: EvalHost, campaign_id: str, scope_id: str, report_doc_id: str, *, trials: TrialDetail = "table"
+) -> CampaignReport:
+    """One of the campaign's stored report documents, any version, laid out as :func:`campaign_report` lays out a
+    report document's analysis: that document's page on its own snapshot, or, where this version no longer reads it,
+    the code-only page with the one regenerate line, never refused.
+
+    Read by its id, the page names no analysis (``analysis_id`` is None): what the campaign's report is stays
+    :func:`campaign_report`'s answer, and the campaign is laid out as it is declared now.
+
+    :param host: The host whose store holds the campaign and the document.
+    :ptype host: EvalHost
+    :param campaign_id: The campaign the document was written for.
+    :ptype campaign_id: str
+    :param scope_id: The scope they live in.
+    :ptype scope_id: str
+    :param report_doc_id: The document's id (``EvalAnalysis.report_doc_id``; a later version stores a new one).
+    :ptype report_doc_id: str
+    :param trials: How much of each failed or lost trial the code-only page lays out, where it stands in.
+    :ptype trials: TrialDetail
+    :return: The page.
+    :rtype: CampaignReport
+    :raises NotFoundError: No campaign with that id in the scope, or no report document with that id in the scope, or
+        one written for another campaign.
+    """
+    campaign = _load_campaign(host.storage, campaign_id, scope_id)
+    try:
+        read = read_report_doc(host.storage, report_doc_id, scope_id)
+    except RefusedInput as unread:
+        # NOSILENT: the page is the code-only page with the one regenerate line, naming the document.
+        log.warning("report document %s of campaign %s reads code-only: %s", report_doc_id, campaign_id, unread.fault)
+        return _code_only_page(host, campaign, trials=trials, unread_report_doc_id=report_doc_id)
+    if read.record.campaign_id != campaign_id:
+        raise NotFoundError(
+            "report document",
+            report_doc_id,
+            remedy=f"analyses_list names the report document of each of campaign {campaign_id}'s analyses",
+        )
+    return _doc_page(host, campaign, read, declared=campaign, analysis_id=None, trials=trials)
+
+
+def _doc_page(
+    host: EvalHost,
+    campaign: EvalCampaign,
+    read: StoredReportPage,
+    *,
+    declared: EvalCampaign,
+    analysis_id: str | None,
+    trials: TrialDetail,
+) -> CampaignReport:
+    """A stored report document's page, its readings and folds off its snapshot's bundle laid out over the campaign as
+    ``declared`` (as its analysis read it, or as it stands); the code-only page of ``campaign`` with the one regenerate
+    line where the snapshot holds no bundle or the campaign no longer lays out over it."""
+    snapshot = read.snapshot
+    try:
+        if snapshot.bundle is None or snapshot.bundle_assembled_at is None:
+            raise RefusedInput(f"its snapshot {snapshot.id} holds no bundle", remedy=NO_LONGER_READS)
+        bundle = CampaignBundle.from_dict(snapshot.bundle, what=f"report snapshot {snapshot.id}")
+        page = _campaign_page(declared, bundle, assembled_at=snapshot.bundle_assembled_at, trials=trials)
+    except RefusedInput as unread:
+        # NOSILENT: the page is the code-only page with the one regenerate line.
+        log.warning("report document %s reads code-only: %s", read.record.id, unread.fault)
+        if analysis_id is None:
+            return _code_only_page(host, campaign, trials=trials, unread_report_doc_id=read.record.id)
+        return _code_only_page(host, campaign, trials=trials, unread_analysis_id=analysis_id)
+    return CampaignReport.model_validate(
+        {
+            **dict(page),
+            "basis": "analysis",
+            "analysis_id": analysis_id,
+            "blocks": [],
+            "doc_page": read.page,
+            "report_doc": read.summary(),
+        }
+    )
+
+
+def _code_only_page(
+    host: EvalHost,
+    campaign: EvalCampaign,
+    *,
+    trials: TrialDetail = "table",
+    unread_analysis_id: str | None = None,
+    unread_report_doc_id: str | None = None,
+) -> CampaignReport:
     """The campaign's code-only page over its evidence assembled now, whatever analyses it holds.
 
     :param host: The host: where the campaign's runs, results and insights are read, and its vocabulary.
@@ -2053,12 +2179,25 @@ def _code_only_page(host: EvalHost, campaign: EvalCampaign, *, trials: TrialDeta
     :ptype campaign: EvalCampaign
     :param trials: How much of each failed or lost trial each fold lays out.
     :ptype trials: TrialDetail
+    :param unread_analysis_id: The campaign's analysis this version no longer reads, which the page stands in for,
+        saying so in the one regenerate line; None for none.
+    :ptype unread_analysis_id: str | None
+    :param unread_report_doc_id: The report document, read by its id, that this version no longer reads and the page
+        stands in for; None for none.
+    :ptype unread_report_doc_id: str | None
     :return: The page, ``basis="code_only"``.
     :rtype: CampaignReport
     """
     assembled_at = utc_now_iso()
     bundle = _assembled_campaign_bundle(campaign, storage=host.storage, profile=host.profile)
-    return _campaign_page(campaign, bundle, assembled_at=assembled_at, trials=trials)
+    return _campaign_page(
+        campaign,
+        bundle,
+        assembled_at=assembled_at,
+        trials=trials,
+        unread_analysis_id=unread_analysis_id,
+        unread_report_doc_id=unread_report_doc_id,
+    )
 
 
 def campaign_verdicts(host: EvalHost, campaign_id: str, scope_id: str) -> list[Verdict]:
@@ -3045,6 +3184,7 @@ __all__ = [
     "DEFAULT_WRITER_UNRESOLVED",
     "PreparedGeneration",
     "analysis_report",
+    "report_doc_report",
     "describe_insight_id_filters",
     "estimate_analysis_generation",
     "freeze_reporter_case",

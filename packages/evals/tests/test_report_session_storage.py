@@ -63,7 +63,6 @@ from threetears.evals.kernel.report_doc import (
     new_report_doc_id,
     report_session_id,
 )
-from threetears.evals.kernel import storage as storage_module
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.ops import OpsHost
 from threetears.evals.ops.report_writer.analyst import AnalystSession
@@ -769,26 +768,3 @@ def test_a_report_session_is_stored_under_the_id_its_report_and_name_give_and_no
     with pytest.raises(ValidationError, match="the one its report and name give"):
         EvalReportSession.model_validate({**session.to_dict(), "id": "report-1:session:analyst"})
 
-
-# --- awaiting a caller ---------------------------------------------------------------------------------------------
-
-#: Every workspace member's ``src`` tree.
-_REPO: Final = Path(__file__).resolve().parents[3]
-_SOURCES: Final = sorted([*_REPO.glob("packages/*/src"), *_REPO.glob("packages/agent/*/src")])
-
-#: The module that defines ``EvalStorage.load_report_sessions``, the one ``src`` file allowed to name it until VIEW.
-_DEFINED_IN: Final = Path(storage_module.__file__ or "").resolve()
-
-
-def test_loading_a_report_s_sessions_awaits_its_production_caller() -> None:
-    """``EvalStorage.load_report_sessions`` is the audit read's (``report_read(include_sessions=true)``, wave 2's VIEW).
-
-    Until VIEW calls it, the store is its only ``src`` reader; the change that gives it a caller removes this pin.
-    """
-    callers = sorted(
-        str(path)
-        for root in _SOURCES
-        for path in root.rglob("*.py")
-        if "load_report_sessions" in path.read_text() and path.resolve() != _DEFINED_IN
-    )
-    assert callers == [], f"load_report_sessions has a production caller now: drop this pin. Callers: {callers}"

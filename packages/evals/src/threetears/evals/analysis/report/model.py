@@ -43,7 +43,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.kernel.authored import Recommendation
 from threetears.evals.kernel.declaration import CampaignCall
-from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.base import EvalDocumentModel, VerbatimJsonObject
 from threetears.evals.schema.hashing import round_floats
 from threetears.evals.analysis.report.blocks import (
     FINDING_ROLES,
@@ -84,6 +84,7 @@ from threetears.evals.analysis.report.blocks import (
     reading_anchor,
     table_row,
 )
+from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.plan_page.model import PlannedPage
 from threetears.evals.analysis.report.serialize_html import campaign_report_html, report_html
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown, report_markdown
@@ -351,6 +352,11 @@ class CampaignReport(EvalDocumentModel):
     **A planned analysis's page** holds no blocks: its :attr:`plan_page` is the page its report plan draws, which the
     serializers write in place of the first screen and headed sections, the folds a closed appendix after its
     Method.
+
+    **A report document's page** holds no blocks either: its :attr:`doc_page` is the page its stored report document
+    draws on its own snapshot, which the serializers write whole in place of the campaign's page (the document's own
+    appendix holds every table), and its :attr:`report_doc` is the stored document the JSON form carries. The folds
+    stay, as the JSON form's readings and bundles.
     """
 
     basis: ReportBasis = Field(description="`analysis` with a memo over the campaign, `code_only` without one.")
@@ -388,6 +394,31 @@ class CampaignReport(EvalDocumentModel):
             "code-only page. Set only on an analysis's page, and then with no blocks of its own."
         ),
     )
+    doc_page: DocPage | None = Field(
+        default=None,
+        description=(
+            "The page a stored report document draws on its own snapshot, read as a stored document is (degrading, "
+            "never refusing), which the serializers write whole in place of the blocks; None for any other page. Set "
+            "only on an analysis's page, with no blocks of its own, and exactly when `report_doc` is."
+        ),
+    )
+    report_doc: VerbatimJsonObject | None = Field(
+        default=None,
+        description=(
+            "The stored report document the page draws, as the JSON form carries it: its `id`, `snapshot_id`, "
+            "`created_at`, `ending`, `doc` (`report-doc/1`), `findings`, `made` (the page's made line) and "
+            "`generation` (the generation record: each session by digest, turns and ref, never a transcript); None "
+            "for any other page."
+        ),
+    )
+    unread_analysis_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The campaign's analysis this version no longer reads, which this code-only page stands in for, its first "
+            "screen saying so in the one regenerate line; None for any other page. Set only on a code-only page."
+        ),
+    )
 
     @model_validator(mode="after")
     def _the_recommendation_is_keyed(self) -> Self:
@@ -417,6 +448,30 @@ class CampaignReport(EvalDocumentModel):
             raise ValueError(
                 f"a planned page is the page's whole first part, and this page holds {len(self.blocks)} blocks"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _a_document_page_is_an_analysiss_and_holds_no_blocks(self) -> Self:
+        """Refuse a report document's page on a code-only page, beside blocks or a planned page, or without the
+        document it draws; and an unread analysis named on any page but a code-only one.
+
+        :raises ValueError: ``doc_page`` is set and ``basis`` is not ``analysis``, ``blocks`` or ``plan_page`` is set
+            too, or ``report_doc`` is set without it or it without ``report_doc``; or ``unread_analysis_id`` is set and
+            ``basis`` is not ``code_only``.
+        """
+        if self.unread_analysis_id is not None and self.basis != "code_only":
+            raise ValueError(
+                f"an analysis this version no longer reads is named on the code-only page standing in for it, and "
+                f"this page's basis is {self.basis}"
+            )
+        if (self.doc_page is None) != (self.report_doc is None):
+            raise ValueError("a report document's page carries the document it draws: set both or neither")
+        if self.doc_page is None:
+            return self
+        if self.basis != "analysis":
+            raise ValueError(f"a report document's page lays out an analysis, and this page's basis is {self.basis}")
+        if self.blocks or self.plan_page is not None:
+            raise ValueError("a report document's page is the page's whole first part, beside no blocks or plan")
         return self
 
     @model_validator(mode="after")
@@ -571,7 +626,9 @@ class CampaignReport(EvalDocumentModel):
         """The page's machine form, tagged ``kind: campaign`` at shape :data:`CAMPAIGN_JSON_SHAPE`: code's readings,
         the writer's recommendation (its arm's label and variant key, and how sure) where there is a memo, the call,
         and each aspect's bundle by its fingerprint and shape, with each criterion set after its readings were visible
-        and when (``late_criteria``, empty where none was), since its readings read the same either way.
+        and when (``late_criteria``, empty where none was), since its readings read the same either way; and
+        ``report_doc``, the stored report document a document's page draws (:attr:`report_doc`, never a session's
+        transcript), ``None`` on every other page.
 
         Every float in it is served to twelve significant figures (:func:`~threetears.evals.schema.hashing.round_floats`):
         a figure code computed carries bits past that which two Python builds compute differently, so one campaign
@@ -607,6 +664,7 @@ class CampaignReport(EvalDocumentModel):
                 }
                 for fold in self.aspects
             ],
+            "report_doc": self.report_doc,
         }
         served: dict[str, object] = round_floats(document)
         return served

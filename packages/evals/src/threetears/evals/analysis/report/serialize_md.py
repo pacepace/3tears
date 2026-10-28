@@ -45,6 +45,7 @@ from threetears.evals.analysis.report.md_parts import (
     paragraphs,
     table_lines,
 )
+from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report.plan_page.markdown import planned_page_markdown
 from threetears.evals.analysis.report.verdict import cause_short
 from threetears.evals.analysis.style import GLOSSARY
@@ -92,11 +93,16 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     (:func:`~threetears.evals.analysis.report.plan_page.markdown.planned_page_markdown`), with each aspect's fold and
     the glossary as its appendix after Method.
 
+    A report document's page (``doc_page`` set) is the page its stored document draws
+    (:func:`~threetears.evals.analysis.report.doc_page.markdown.doc_page_markdown`), written whole.
+
     :param report: The campaign's page.
     :ptype report: CampaignReport
     :return: The Markdown text, ending in a newline.
     :rtype: str
     """
+    if report.doc_page is not None:
+        return doc_page_markdown(report.doc_page)
     if report.plan_page is not None:
         return planned_page_markdown(report.plan_page, appendix=[*_fold_lines(report), *_glossary_lines(report.terms)])
     # The title first, then the decision: the question, the answer, then what warns, as consequences.

@@ -227,11 +227,12 @@ async def test_a_generation_is_a_job_polled_to_the_analysis_it_stored() -> None:
     (line,) = off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
     assert line.id == status.analysis_id
     markdown = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
-    # The report writer wrote it, and the listing and the read say so. Until the report view reads the document (wave
-    # 2), the page is the code-only page over the analysis's frozen evidence, naming the analysis; it carries no plan.
+    # The report writer wrote it, and the listing and the read say so: the page is the one its stored document draws,
+    # and the read carries that document.
     assert (line.basis, markdown.analysis_basis, line.report_plan_id) == ("doc", "doc", None)
     assert line.report_doc_id is not None and line.findings == 1
-    assert (markdown.basis, markdown.analysis_id, markdown.plan) == ("code_only", line.id, None)
+    assert (markdown.basis, markdown.analysis_id) == ("analysis", line.id)
+    assert markdown.doc is not None and markdown.doc["schema"] == "report-doc/1"
     html = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="html")
     assert what_runs(html.body) == [], "the page runs the kit's script and nothing else"
     assert f"<title>{fixture.campaign.name}</title>" in html.body

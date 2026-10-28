@@ -61,11 +61,9 @@ from threetears.evals.analysis.report.html_parts import (
 from threetears.evals.analysis.report.plan_page.model import PageArmsKey, PageMasthead, PageSlot
 from threetears.evals.analysis.report.plan_page.words import CONFIDENCE_LABEL, RUN_TEMPLATE, SYNTHETIC
 
-#: Empty until a production caller imports this module's entry point (``doc_page_html``): its callers are the writing
-#: loop's editor and ``report_check`` (the page text), and the report read (the page);
-#: ``tests/test_doc_page_exports.py`` lists the name as awaiting one, and goes red when it has one, so it joins this
-#: list then.
-__all__: list[str] = []
+#: The module's entry point, which the campaign page's serializer calls for a report document's page (the report
+#: read).
+__all__ = ["doc_page_html"]
 
 #: The confidence forms set in the amber box: caveats stay open, or the evidence is weak.
 _AMBER_FORMS = frozenset({"high_if_immaterial", "low"})

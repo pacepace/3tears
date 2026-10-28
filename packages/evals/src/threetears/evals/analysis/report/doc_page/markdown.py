@@ -34,11 +34,9 @@ from threetears.evals.analysis.report.md_parts import inert, markdown_table, one
 from threetears.evals.analysis.report.plan_page.model import PageMasthead
 from threetears.evals.analysis.report.plan_page.words import CONFIDENCE_LABEL, RUN_TEMPLATE, SYNTHETIC
 
-#: Empty until a production caller imports this module's entry point (``doc_page_markdown``): its callers are the
-#: writing loop's editor and ``report_check`` (the page text), and the report read (the page);
-#: ``tests/test_doc_page_exports.py`` lists the name as awaiting one, and goes red when it has one, so it joins this
-#: list then.
-__all__: list[str] = []
+#: The module's entry point, which the campaign page's serializer calls for a report document's page (the report
+#: read).
+__all__ = ["doc_page_markdown"]
 
 #: Each claim weight's heading level: its type size, and nothing else.
 _WEIGHT_HEADINGS = {"lead": "## ", "support": "### ", "detail": "#### "}

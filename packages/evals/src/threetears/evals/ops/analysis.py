@@ -16,6 +16,7 @@ prepares, because preparing builds a client — work a refused request need not 
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
@@ -52,8 +53,10 @@ from threetears.evals.analysis.service import (
     list_insights,
     record_campaign_call,
     record_written_generation,
+    report_doc_report,
     running_analysis_attempt,
 )
+from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
 from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.schema.base import EvalBaseModel, VerbatimText
 from threetears.evals.kernel.declaration import CampaignCall, Margin, OverriddenBar
@@ -282,8 +285,9 @@ class AnalysisLine(EvalBaseModel):
     basis: AnalysisBasis = Field(
         description=(
             "What wrote the analysis: `memo` (the memo writer; findings count the memo's findings), `plan` (the "
-            "report planner; findings count the plan's evidence sections, and report_read carries the plan) or `doc` "
-            "(the report writer; findings count the document's claims, and report_doc_id names it)."
+            "report planner, whose analyses report_read renders code-only; findings count the plan's evidence "
+            "sections) or `doc` (the report writer; findings count the document's claims, report_doc_id names it, "
+            "and report_read carries it)."
         )
     )
     report_plan_id: str | None = Field(
@@ -320,10 +324,11 @@ class AnalysisLine(EvalBaseModel):
     needs_regeneration: str | None = Field(
         default=None,
         description=(
-            "Why this build cannot read the evidence the analysis was frozen over, and what to do: set when it was "
-            "written over a bundle of another shape, or as a report plan or document this build no longer reads (or "
-            "deleted apart from it), so its report and page are refused until it is generated again "
-            "(analysis_generate), and a plan or document it cannot read counts no findings. None when it reads."
+            "Why this build cannot read the analysis, and what to do. Every report plan, and a report document that "
+            "no longer reads (its shape moved, or it was deleted apart from it), is rendered code-only by report_read: "
+            "its line is the one regenerate line, then why in parentheses where there is more to say, and a plan or "
+            "document it cannot read counts no findings. A memo written over a bundle of another shape says why, and "
+            "its report is refused until it is generated again (analysis_generate). None when it reads."
         ),
     )
 
@@ -340,28 +345,46 @@ class ReportDocument(EvalBaseModel):
 
     campaign_id: str
     basis: ReportBasis = Field(
-        description="`analysis` when the report renders the campaign's analysis; `code_only` when it has none."
+        description=(
+            "`analysis` when the report renders a written report (the campaign's analysis, or a report document read "
+            "by its id); `code_only` when it renders the campaign's evidence alone: it has no analysis, or "
+            "needs_regeneration says why the one it has is not rendered."
+        )
     )
-    analysis_id: str | None = Field(description="The analysis the report renders; None on a code-only report.")
+    analysis_id: str | None = Field(
+        description=(
+            "The campaign's analysis the report renders, or stands in for where needs_regeneration is set; None when "
+            "it has none, and for a report document read by its id."
+        )
+    )
     analysis_basis: AnalysisBasis | None = Field(
         default=None,
         description=(
-            "What wrote the analysis the report renders: `memo` or `plan` (whose plan is `plan`); None on a code-only "
-            "report."
+            "What wrote that analysis: `memo`, `plan` (the report planner, whose analyses this version renders "
+            "code-only) or `doc` (the report writer, whose stored document is `doc`); None with no analysis."
         ),
     )
-    plan: dict[str, Any] | None = Field(
+    doc: dict[str, Any] | None = Field(
         default=None,
         description=(
-            "The report plan a `plan` analysis was written as, as `report-plan/1` JSON (its prose names figures by "
-            "key); None for a memo or a code-only report."
+            "The stored report document the report renders, as `report-doc/1` JSON (its prose names figures by key); "
+            "None for any other report."
+        ),
+    )
+    needs_regeneration: str | None = Field(
+        default=None,
+        description=(
+            "Set where the report stands in, code-only, for an analysis or report document this version no longer "
+            "reads (every report-plan analysis; a document that no longer validates, or whose snapshot is gone): the "
+            "one regenerate line, which the page's first screen prints too. None otherwise."
         ),
     )
     format: ReportFormat
     body: VerbatimText = Field(
         description="The report in that form, exactly as its serializer wrote it: Markdown, canonical JSON, or "
-        "HTML (one page whose one script is the kit's, or, static, with no script and no link). A `plan` analysis's "
-        "Markdown and HTML are the page its plan draws, each aspect's fold a closed appendix after its Method."
+        "HTML (one page whose one script is the kit's, or, static, with no script and no link). A report "
+        "document's Markdown and HTML are the page it draws; its JSON is the campaign's, with `report_doc` the "
+        "stored document (and, asked for, `report_doc.sessions`, its transcripts)."
     )
 
 
@@ -688,8 +711,9 @@ def campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archive
 
 
 def _analysis_line(host: EvalHost, analysis: EvalAnalysis) -> AnalysisLine:
-    # One analysis frozen over a bundle this build cannot read, or whose plan no longer resolves, is listed as needing
-    # regeneration, never allowed to refuse the listing of every other one.
+    # One analysis frozen over a bundle this build cannot read, or whose plan or document no longer reads, is listed as
+    # needing regeneration, never allowed to refuse the listing of every other one. Every plan, and a document that no
+    # longer reads, is one the report read renders code-only: its line leads with the one regenerate line.
     needs_regeneration: str | None = None
     try:
         verdict = analysis_verdict(analysis)
@@ -697,21 +721,24 @@ def _analysis_line(host: EvalHost, analysis: EvalAnalysis) -> AnalysisLine:
         needs_regeneration = f"{unreadable.fault}; {unreadable.remedy}" if unreadable.remedy else unreadable.fault
         verdict = f"Needs regeneration: {needs_regeneration}"
     plan: EvalReportPlan | None = None
+    unread: str | None = None
     try:
         plan = get_report_plan(host.storage, analysis)
     except NotFoundError as missing:
-        needs_regeneration = needs_regeneration or f"{missing.message}; {missing.remedy}"
+        unread = missing.message
     except RefusedInput as unreadable:
-        # NOSILENT: the stored plan no longer validates; the line names why and the regeneration, and the report and
-        # page of this analysis refuse the same way (get_report_plan), so nothing reads it as if it were whole.
-        needs_regeneration = needs_regeneration or f"{unreadable.fault}; {unreadable.remedy}"
+        # NOSILENT: the stored plan no longer validates; the line names why and the regeneration, and the report of
+        # this analysis is the code-only page saying the same, so nothing reads it as if it were whole.
+        unread = unreadable.fault
     if analysis.document is not None:
         findings = len(analysis.document.findings)
     elif analysis.report_doc_id is not None:
-        claims, unread = _doc_claims(host, analysis.report_doc_id, analysis.scope_id)
-        findings, needs_regeneration = claims, needs_regeneration or unread
+        findings, unread = _doc_claims(host, analysis.report_doc_id, analysis.scope_id)
     else:
         findings = len(report_plan_of(plan).sections) if plan is not None else 0
+    if analysis.report_plan_id is not None or unread is not None:
+        why = "; ".join(reason for reason in (unread, needs_regeneration) if reason is not None)
+        needs_regeneration = f"{NO_LONGER_READS} ({why})" if why else NO_LONGER_READS
     return AnalysisLine(
         id=analysis.id,
         campaign_id=analysis.campaign_id,
@@ -732,17 +759,16 @@ def _doc_claims(host: EvalHost, report_doc_id: str, scope_id: str) -> tuple[int,
     """How many claims a ``doc`` analysis's document holds, and why it does not read when it does not. Blocking.
 
     A document that no longer reads (its shape moved, or it was deleted apart from its analysis) counts no claims and
-    says so, never refusing the listing of every other analysis.
+    says why, never refusing the listing of every other analysis.
     """
-    remedy = "generate the analysis again (analysis_generate)"
     try:
         stored = host.storage.load_report_doc(report_doc_id, scope_id)
-        if stored is None:
-            return 0, f"its report document {report_doc_id!r} was deleted apart from it; {remedy}"
-        return len(ReportDoc.model_validate(stored.doc).claims), None
-    except (RefusedInput, ValidationError) as unread:
-        # NOSILENT: the line names why and the regeneration, and counts no claims, so nothing reads it as whole.
-        return 0, f"its report document {report_doc_id!r} does not read under this build ({unread}); {remedy}"
+    except ValidationError as unread:
+        # NOSILENT: the line leads with the one regenerate line and counts no claims, so nothing reads it as whole.
+        return 0, f"its report document {report_doc_id!r} does not read under this build ({unread.error_count()} fault(s))"
+    if stored is None:
+        return 0, f"its report document {report_doc_id!r} was deleted apart from it"
+    return len(ReportDoc.model_validate(stored.doc).claims), None
 
 
 def analysis_archive(
@@ -1528,7 +1554,9 @@ async def _write_doc_analysis(
             eval_host.blocking_executor, eval_host.storage.load_report_snapshot, written.snapshot_id, attempt.scope_id
         )
         if snapshot is None or snapshot.bundle is None or snapshot.bundle_assembled_at is None:
-            raise StorageError(f"its snapshot {written.snapshot_id} holds no bundle")
+            raise StorageError(
+                f"the report document {stored.id} is stored, and its snapshot {written.snapshot_id} holds no bundle"
+            )
         minted = doc_analysis(
             CampaignBundle.from_dict(snapshot.bundle, what=f"report snapshot {snapshot.id}"),
             await snapshot_input(host, attempt.scope_id, written.snapshot_id),
@@ -1542,14 +1570,17 @@ async def _write_doc_analysis(
         )
         await ledger()
     except asyncio.CancelledError:
-        await ended("cancelled", f"cancelled after report document {stored.id} was stored, before its analysis was")
+        await ended(
+            "cancelled",
+            f"cancelled after report document {stored.id} was stored, before its analysis was; {_unlinked(stored.id)}",
+        )
         raise
     # prawduct:ok-broad-except — a stored document's analysis failing is a defect, never the writer's: recorded as the ending, then raised on as itself
     except Exception as unminted:
         await ended(
             "failed",
             f"the report document {stored.id} is stored, and its analysis could not be built or ledgered "
-            f"({type(unminted).__name__}: {unminted})",
+            f"({type(unminted).__name__}: {unminted}); {_unlinked(stored.id)}",
         )
         raise
     insights = await record_written_generation(
@@ -1570,6 +1601,11 @@ async def _write_doc_analysis(
         tally.sent,
         attempt.generator_model,
     )
+
+
+def _unlinked(report_doc_id: str) -> str:
+    """What an attempt's ending says of a stored report document no analysis links: what removes it."""
+    return f"no analysis links report document {report_doc_id}, which delete_report_doc removes"
 
 
 def _refuse_unstartable(host: EvalHost, campaign_id: str, scope_id: str, model: str | None) -> EvalCampaign:
@@ -1661,22 +1697,38 @@ def report_read(
     format: ReportFormat,
     trials: TrialDetail = "table",
     static: bool = False,
+    report_doc_id: str | None = None,
+    include_sessions: bool = False,
 ) -> ReportDocument:
     """The campaign's report, serialized in one form — the same report the command line's ``report`` prints.
 
-    What "the campaign's report" is has one answer,
-    :func:`~threetears.evals.analysis.campaign_report`: its newest analysis that is not archived, else a
-    code-only report of its evidence. ``basis`` on the result says which, and ``analysis_basis`` what wrote the
-    analysis: ``memo`` (one stored before the report planner, laid out as written) or ``plan``, whose report plan is
-    ``plan``, as ``report-plan/1`` JSON. A planned analysis's page is the page its plan draws (the report kit's page:
-    masthead, headline, lede, confidence and decision, options table and summary charts, the evidence sections, the
-    explore part and Full results, Method), with each aspect's fold as a closed appendix after Method; a memo's and a
-    code-only page are laid out as before.
+    What "the campaign's report" is has one answer, :func:`~threetears.evals.analysis.campaign_report`: its newest
+    analysis that is not archived, else a code-only report of its evidence. ``basis`` on the result says which, and
+    ``analysis_basis`` what wrote the analysis:
+
+    - ``doc`` (the report writer, which ``analysis_generate`` runs): the page its stored report document draws on its
+      own snapshot, its made line at its foot, read as a stored document is (a figure that no longer resolves prints
+      ``—``, a block that no longer draws prints its values or its caption, with one note to regenerate); ``doc`` is
+      the document, as ``report-doc/1`` JSON;
+    - ``plan`` (the report planner): the code-only page, its first screen saying in one line that the analysis is
+      written in a shape this version no longer reads, and to regenerate it with ``analysis_generate``;
+    - ``memo`` (an analysis stored before the report planner): laid out as written.
+
+    A report document that no longer reads (its version, its model, or a snapshot gone or holding no bundle) reads as a
+    plan does. Neither is ever refused, and ``needs_regeneration`` carries that one line, as the page prints it.
 
     **The trials.** By default each aspect's trials section is the census line, the table of its failed and lost
     trials, each row naming its stored result (read one with ``result_get``), and the table of its passed trials;
     ``trials="all"`` adds each failed or lost trial's full record (what it asked, what the judge saw and said, and
-    why), which is most of a large campaign's page. The JSON form carries no trial records either way.
+    why), which is most of a large campaign's page. A report document's page draws no trial records, and the JSON form
+    carries none either way.
+
+    **Any stored version, and its transcripts** (the audit read). ``report_doc_id`` reads one of the campaign's report
+    documents, not just the newest (:func:`~threetears.evals.analysis.service.report_doc_report`): its page, as above.
+    ``include_sessions`` adds, to the JSON form's ``report_doc``, ``sessions``: every session that wrote it (the
+    analyst's and each review round's), by name, each its stored ``eval_report_session`` document whole. Only the JSON
+    form carries a transcript: a page a reader sees never holds one, so ``include_sessions`` with ``markdown`` or
+    ``html`` is refused, saying to ask for ``json``.
 
     :param host: The host whose store holds the campaign.
     :ptype host: EvalHost
@@ -1684,9 +1736,10 @@ def report_read(
     :ptype campaign_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
-    :param format: ``markdown``, ``html`` (one page, its charts drawn by the kit's inlined script; see ``static``) or ``json`` (the page's machine form: code's
-        readings across the campaign's aspects, the recommendation, the call, and each aspect's bundle by its
-        fingerprint, as ``campaign.json`` beside a written page holds it).
+    :param format: ``markdown``, ``html`` (one page, its charts drawn by the kit's inlined script; see ``static``) or
+        ``json`` (the page's machine form: code's readings across the campaign's aspects, the recommendation, the
+        call, each aspect's bundle by its fingerprint, as ``campaign.json`` beside a written page holds it, and
+        ``report_doc``, the stored report document the page draws, or None).
     :ptype format: ReportFormat
     :param trials: ``table`` (the default) or ``all``, which adds each failed or lost trial's full record.
     :ptype trials: TrialDetail
@@ -1694,24 +1747,53 @@ def report_read(
         no ``<script>``, no ``<link>``, the system faces, every chart its table of values. Markdown and JSON are
         the same either way.
     :ptype static: bool
+    :param report_doc_id: One of the campaign's stored report documents, any version, to read in place of the
+        campaign's report; None for the campaign's report.
+    :ptype report_doc_id: str | None
+    :param include_sessions: With ``json``, add the transcripts of the report document the page draws.
+    :ptype include_sessions: bool
     :return: The report in that form.
     :rtype: ReportDocument
-    :raises NotFoundError: No campaign with that id in the scope.
-    :raises RefusedInput: The campaign's reported analysis was written over a bundle of another shape, or as a report
-        plan this build no longer reads: refused with the regeneration that mends it (``analysis_generate``).
+    :raises NotFoundError: No campaign with that id in the scope; or no report document with ``report_doc_id`` in the
+        scope, or one written for another campaign.
+    :raises ValidationFailedError: ``include_sessions`` with a form other than ``json``.
+    :raises RefusedInput: The campaign's reported analysis is a memo written over a bundle of another shape: refused
+        with the regeneration that mends it (``analysis_generate``).
     """
-    report = campaign_report(host, campaign_id, scope_id, trials=trials)
-    analysis = get_analysis(host.storage, report.analysis_id, scope_id) if report.analysis_id is not None else None
-    plan = get_report_plan(host.storage, analysis) if analysis is not None else None
+    if include_sessions and format != "json":
+        raise ValidationFailedError(
+            f"include_sessions adds a report document's transcripts, which only the json form carries; a {format} "
+            "page is read by a person, and never holds a transcript",
+            remedy="ask for format='json' with include_sessions, or leave include_sessions off for the page",
+        )
+    if report_doc_id is None:
+        report = campaign_report(host, campaign_id, scope_id, trials=trials)
+    else:
+        report = report_doc_report(host, campaign_id, scope_id, report_doc_id, trials=trials)
+    analysis_id = report.analysis_id or report.unread_analysis_id
+    analysis = get_analysis(host.storage, analysis_id, scope_id) if analysis_id is not None else None
+    unread = report.unread_analysis_id is not None or (report_doc_id is not None and report.report_doc is None)
+    body = serialize_report(report, format, static=static)
+    if include_sessions and report.report_doc is not None:
+        body = _with_sessions(host, report.json_document(), scope_id)
     return ReportDocument(
         campaign_id=campaign_id,
         basis=report.basis,
-        analysis_id=report.analysis_id,
+        analysis_id=analysis_id,
         analysis_basis=analysis.basis if analysis is not None else None,
-        plan=dict(plan.plan) if plan is not None else None,
+        doc=dict(report.report_doc["doc"]) if report.report_doc is not None else None,
+        needs_regeneration=NO_LONGER_READS if unread else None,
         format=format,
-        body=serialize_report(report, format, static=static),
+        body=body,
     )
+
+
+def _with_sessions(host: EvalHost, document: dict[str, object], scope_id: str) -> str:
+    """The JSON form with every session of the report document it carries, under ``report_doc.sessions``. Blocking."""
+    served = dict(cast("dict[str, Any]", document["report_doc"]))  # Any: the stored document's JSON
+    sessions = host.storage.load_report_sessions(str(served["id"]), scope_id)
+    served["sessions"] = {name: session.to_dict() for name, session in sessions.items()}
+    return json.dumps({**document, "report_doc": served}, indent=2)
 
 
 class ProposedBar(EvalBaseModel):

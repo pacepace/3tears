@@ -6,6 +6,41 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the report view serves the stored report document, and reads code-only, never refused, what it no longer reads
+
+**Changed:** `report_read` (and `campaign_report`, the command line's `report`, the quick path's page) lays out the
+campaign's newest analysis by what wrote it. A `doc` analysis, the one `analysis_generate` stores now, is the page its
+stored report document draws on its own snapshot, its made line at its foot, read as a stored document is: a figure
+that no longer resolves prints `—`, a block that no longer draws prints its values or its caption, with one note to
+regenerate. Markdown, HTML and the static HTML (no `<script>`, no `<link>`, no URL: it serves under Discodon's
+`REPORT_HTML_POLICY` unchanged) are that page; the JSON form is the campaign's JSON, every member it carried, plus
+`report_doc`: the stored document, its id, its snapshot, its ending, its findings, its made line and its generation
+record (sessions by digest, turns and ref, never a transcript), `null` on any other page. Every `plan` analysis (the
+report planner's) and a report document this version no longer reads (its version, its model, a snapshot gone or
+holding no bundle) read as the code-only page with one line on its first screen, "written in a shape this version no
+longer reads; regenerate with analysis_generate", never refused; no planner page is reached from the report read (the
+planner's page stays for the reporter kind, and for `analysis_report` by id). That line is one constant
+(`report.campaign.memo_blocks.NO_LONGER_READS`), which `ReportDocument.needs_regeneration` (new) and the analysis
+listing's `needs_regeneration` print byte for byte: the listing now sets it on every `plan` analysis, and leads with it
+where a plan or document no longer reads, the reason after it in parentheses. A memo analysis reads as before.
+`ReportDocument.plan` is replaced by `doc` (the stored `report-doc/1` JSON for a `doc` analysis), with no alias; a
+host reading only `.body` (Discodon) changes nothing. `ReportDocument.analysis_id` names the analysis a code-only
+page stands in for, `basis` reading `code_only` there.
+
+**Added:** `report_read(report_doc_id=, include_sessions=)` and the action's two arguments: `report_doc_id` reads one
+of the campaign's stored report documents, any version (`analysis.service.report_doc_report`; one of another campaign
+or of none is refused as not found), and `include_sessions` adds, to the JSON form's `report_doc`, `sessions`: every
+session that wrote it, by name, each its stored `eval_report_session` whole (the audit read, #977). A Markdown or HTML
+page never holds a transcript, so `include_sessions` with either is refused, saying to ask for `json`; a read without
+it loads no session. `CampaignReport` gains `doc_page`, `report_doc` and `unread_analysis_id`;
+`analysis.report_doc_store.read_report_doc` reads a stored document back as its page.
+
+**Fixed:** `analysis_generate`'s attempt, ending after its report document is stored and before its analysis is (a
+failure or a cancel), names the document and that `delete_report_doc` removes it, since no analysis links it; the
+error raised where the snapshot holds no bundle names the stored document again. The out-of-run ledger's totals line
+counts each way its calls were admitted (`1 admitted at up to $0.0300, 2 admitted by a report budget, 1 admitted
+unbounded`), and a scope whose calls were all unbounded no longer reads "admitted at up to $0.0000".
+
 ### evals: money reads one form per figure type, tiny amounts per 1,000 (#993), and each arm's cost sits beside its quality
 
 **Changed:** money is spelled one way per set, never per value (owner ruling of 2026-10-27, which supersedes the W2c
