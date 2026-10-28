@@ -38,7 +38,9 @@ exclude-newer = "14 days"
 # sub/test_a.py, test_b.py, sub/test_c.py -- what testament's batches and any id
 # list look like -- then fails test_c with "fixture ... not found" and drops sub's
 # autouse fixtures (#999; pytest-dev/pytest#14635, fixed in 9.2.0).
-# tests/enforcement/test_conftest_fixtures_survive_recollection.py holds it.
+# tests/enforcement/test_conftest_fixtures_survive_recollection.py holds it. Unlike
+# lxml, this is a test-runner bug, not an install failure: a consumer repo needs the
+# same constraint only if it runs its tests through testament or another id list.
 constraint-dependencies = ["lxml>=6.1.0,<7", "pytest!=9.1.*"]
 dev-dependencies = [
     "pytest>=8.0",
