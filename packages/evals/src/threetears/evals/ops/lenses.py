@@ -37,6 +37,7 @@ from threetears.evals.analysis.reads import (
     export_results,
     frontier,
     history,
+    hold_to_read_budget,
     pivot,
 )
 
@@ -427,7 +428,8 @@ def _pair_disclosures(
     windows = [
         window
         for run in runs
-        if (window := measurement_window(run.id, storage.query_eval_results_by_run(run.id, scope_id))) is not None
+        # When each result was stored is on its key, so the window reads the run's keys and none of its results.
+        if (window := measurement_window(run.id, storage.query_eval_result_keys_by_run(run.id, scope_id))) is not None
     ]
     completeness = {
         run.id: sentence for run in runs if (sentence := completeness_disclosure(run.completeness)) is not None
@@ -739,7 +741,9 @@ async def launch_estimate(
     :rtype: LaunchEstimate
     :raises NotFoundError: The template is not in the scope.
     :raises ValidationFailedError: Any refusal the launch makes before pricing an arm, or an ``n_test_cases``
-        below one.
+        below one. The template's earlier runs past the read tier's budget refuse no estimate: the planning block
+        says so in its ``cannot_estimate``, and the price is returned (:func:`detectable_effects` called directly
+        refuses).
     """
     quote = await quote_launch(
         host.launch,
@@ -766,7 +770,7 @@ async def launch_estimate(
     detectable = await run_blocking(
         host.eval_host.blocking_executor,
         partial(
-            detectable_effects,
+            _planning_block,
             host.eval_host,
             scope_id,
             quote.template_id,
@@ -790,6 +794,52 @@ async def launch_estimate(
         computed_at=datetime.now(UTC).isoformat(),
         detectable_effect=detectable,
     )
+
+
+def _planning_block(
+    host: EvalHost, scope_id: str, template_id: str, *, n_cases: int | None, k_runs: int, n_arms: int
+) -> DetectableEffects:
+    """A launch estimate's planning block: :func:`detectable_effects`, or, when the template's earlier runs are past
+    the read tier's budget, the block saying so in ``cannot_estimate``.
+
+    The price does not depend on the block, so a planning read past the budget blocks only the block: it is a
+    disclosure on the estimate, never a refusal of it. Runs past the budget by their matrices are not read:
+    :func:`detectable_effects` refused before reading a result (or, a read that returned more than the budget, after
+    it, and the results were dropped), and logged the refusal at WARNING. Every other refusal propagates.
+    """
+    try:
+        return detectable_effects(host, scope_id, template_id, n_cases=n_cases, k_runs=k_runs, n_arms=n_arms)
+    except ValidationFailedError as refused:
+        if "result_budget" not in refused.details:
+            raise
+        details = refused.details
+        held = (
+            f"hold about {details['results_estimated']} results by their matrices"
+            if "results_returned" not in details
+            else f"returned {details['results_returned']} results"
+        )
+        # No reading was read, so the family is the one contrast per arm a launch of these arms would test.
+        family_size = max(1, n_arms - 1)
+        return DetectableEffects(
+            n_cases=n_cases,
+            k_runs=k_runs,
+            family_size=family_size,
+            per_comparison_alpha=SIGNIFICANCE_ALPHA / family_size,
+            cannot_estimate=(
+                f"the earlier runs of template {template_id!r} {held}, past the read tier's budget of "
+                f"{details['result_budget']}, so their variances were not read; {refused.remedy}"
+            ),
+        )
+
+
+#: The operation a launch's planning read past the read budget is refused as.
+_PLANNING_LENS = "detectable_effects"
+
+#: How a launch's planning read past the read budget narrows: the refusal's remedy begins with it.
+_NARROW_THE_PLANNING_READ = (
+    "archive the template's earlier runs the plan need not read (it leaves archived runs out), or estimate a launch "
+    "of a template with fewer earlier runs; the store computing the planning read for a history of any size is #996"
+)
 
 
 def detectable_effects(
@@ -823,9 +873,24 @@ def detectable_effects(
     :ptype n_arms: int
     :return: The block.
     :rtype: DetectableEffects
+    :raises ValidationFailedError: The template's earlier runs are estimated past
+        :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` results by their matrices (refused before any result
+        is read), or their reads returned more than it. A launch estimate reports that in the block's
+        ``cannot_estimate`` instead, and is still priced (:func:`launch_estimate`).
     """
     runs = [run for run in list_runs(host, scope_id) if run.template_id == template_id]
+    # Every earlier run's results are held at once to read their variances, so the read is held to the read tier's
+    # budget as the aggregates are, estimated off the listing above before any result is read (the store computing it
+    # is #996).
+    hold_to_read_budget(_PLANNING_LENS, scope_id, runs, how=_NARROW_THE_PLANNING_READ)
     results_by_run = {run.id: host.storage.query_eval_results_by_run(run.id, scope_id) for run in runs}
+    hold_to_read_budget(
+        _PLANNING_LENS,
+        scope_id,
+        runs,
+        how=_NARROW_THE_PLANNING_READ,
+        returned=sum(len(results) for results in results_by_run.values()),
+    )
     runs = [run for run in runs if results_by_run[run.id]]
     readings = planning_readings(runs, results_by_run, profile=host.profile) if runs else []
     family_size = max(1, len(readings)) * max(1, n_arms - 1)

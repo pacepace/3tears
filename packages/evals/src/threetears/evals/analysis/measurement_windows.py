@@ -7,13 +7,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, NamedTuple
 
 from threetears.evals.schema.base import EvalBaseModel
 
 if TYPE_CHECKING:
+    from threetears.evals.kernel.run_pages import ResultKey
     from threetears.evals.schema.models import (
         EvalResult,
     )
@@ -55,15 +56,19 @@ class MeasurementWindow(EvalBaseModel):
     end: str
 
 
-def measurement_window(run_id: str, results: Sequence[EvalResult]) -> MeasurementWindow | None:
+def measurement_window(run_id: str, results: Iterable[EvalResult | ResultKey]) -> MeasurementWindow | None:
     """Derive one run's measurement window from the results it produced.
+
+    Only when each was stored is read, so a run's result keys
+    (:meth:`~threetears.evals.kernel.storage.EvalStorage.query_eval_result_keys_by_run`) give the window its results
+    give, and a reader holding no results reads none to say when the run was measured.
 
     :param run_id: The run the window describes.
     :ptype run_id: str
-    :param results: That run's stored results. Callers filter to one run; nothing
+    :param results: That run's stored results, or their keys. Callers filter to one run; nothing
         here checks ``eval_run_id``, so passing another run's results
         produces a window describing a population that never existed.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Iterable[EvalResult | ResultKey]
     :return: The window, or ``None`` when the run produced no results. ``None`` is an
         honest absence and never a zero-length span at some arbitrary instant: a
         run that measured nothing did not measure it "at" a time, and a synthetic

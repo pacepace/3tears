@@ -54,7 +54,7 @@ from threetears.evals.analysis.agreement import (
     judge_self_agreement,
     tier_for_judges,
 )
-from threetears.evals.analysis.reads import narrowed_read_disclosure
+from threetears.evals.analysis.reads import hold_to_read_budget, narrowed_read_disclosure
 from threetears.evals.analysis.reporting import METRIC_COMPOSITE, METRIC_OUTCOME, METRIC_TRANSCRIPT
 from threetears.evals.analysis.lenses.history import (
     HistoryError,
@@ -250,7 +250,7 @@ class RegressionWatch:
             fire, in the order the measures were named.
         :rtype: list[RegressionAlert]
         :raises ValidationFailedError: The history was refused: the run's subject alone is past the read tier's
-            budget.
+            budget; or, for a judged step, the subject's results its evidence tiers read are past it.
         """
         alerts: list[RegressionAlert] = []
         tiers = None
@@ -329,10 +329,27 @@ class RegressionWatch:
         """The results a judged step's tiers are read over: the scope's, or, when the history read one subject's runs
         alone (``narrowed`` is its disclosure), that subject's runs' results, every status and archived ones too."""
         if narrowed is None or subject_id is None:
+            # The scope the history read whole: its listing's estimate and what its read returned were both within
+            # the read tier's budget, or the history would have read the subject's runs instead (below) or refused.
             return self.host.storage.query_eval_results(scope_id)
         runs = list_runs(self.host, scope_id, include_archived=True)
-        subject_runs = [run.id for run in runs if run.subject_snapshot.subject_id == subject_id]
-        return self.host.storage.query_eval_results_by_runs(subject_runs, scope_id)
+        subject_runs = [run for run in runs if run.subject_snapshot.subject_id == subject_id]
+        # The subject's runs the history read: held to the budget here too, off the listing above and before any
+        # result is read, so the tiers are bounded by their own read and never by the history's alone.
+        hold_to_read_budget(_JUDGED_TIERS, scope_id, subject_runs, how=_NARROW_THE_JUDGED_TIERS)
+        results = self.host.storage.query_eval_results_by_runs([run.id for run in subject_runs], scope_id)
+        hold_to_read_budget(_JUDGED_TIERS, scope_id, subject_runs, how=_NARROW_THE_JUDGED_TIERS, returned=len(results))
+        return results
+
+
+#: The read a judged step's evidence tiers are refused as past the read budget.
+_JUDGED_TIERS = "regression_watch_judged_tiers"
+
+#: How that read narrows: nothing narrower than the run's subject exists for a watch.
+_NARROW_THE_JUDGED_TIERS = (
+    "nothing narrower than the run's own subject exists for a regression watch (it reads every run of that subject, "
+    "archived ones too); the store computing the read tier (#996) is what checks a subject this large"
+)
 
 
 def _step_into(series: MeasureSeries, run_id: str) -> tuple[str, RegressionFlag] | None:

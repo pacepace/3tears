@@ -77,6 +77,7 @@ from threetears.evals.analysis.lenses.comparison_sets import compute_comparison_
 from threetears.evals.analysis.lenses.frontier import compute_frontier
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget
 from threetears.evals.analysis.completeness import completeness_disclosure
+from threetears.evals.analysis.reads import hold_to_read_budget
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.campaign import EvalInsight, derive_window
 from threetears.evals.kernel.judge_cases import JUDGE_KIND
@@ -321,6 +322,17 @@ def _first_result_at(scored_at: Sequence[str]) -> tuple[str | None, int]:
     return (min(ordered)[1] if ordered else None), untimed
 
 
+#: The operation a bundle past the read budget is refused as, in its refusal and its log line.
+_BUNDLE_LENS = "assemble_context_bundle"
+
+#: How a bundle past the read budget narrows: the refusal's remedy begins with it.
+_NARROW_THE_BUNDLE = (
+    "assemble a campaign of fewer member runs, or archive the members it need not read, or, where the call takes one, "
+    "name one aspect that reads fewer runs (aspect); the store computing the bundle's aggregates for a campaign of any "
+    "size is #996"
+)
+
+
 def assemble_context_bundle(
     campaign: EvalCampaign,
     *,
@@ -372,6 +384,9 @@ def assemble_context_bundle(
     :return: A schema-valid, JSON-serializable :class:`AnalysisContextBundle`.
     :rtype: AnalysisContextBundle
     :raises RefusedInput: ``aspect`` is None and the campaign has several aspects, or it names none of them.
+    :raises ValidationFailedError: The runs it reads are estimated past
+        :data:`~threetears.evals.analysis.reads.READ_TIER_ROW_BUDGET` results by their matrices (refused before any
+        result is read), or their read returned more than it.
     """
     view = aspect_view(campaign, aspect)
     declared = view.declared
@@ -424,9 +439,19 @@ def assemble_context_bundle(
     every_result: dict[str, list[EvalResult]] = {
         run_id: [] for run_id in (*run_ids, *(archived if read_archived else ()))
     }
-    for result in storage.query_eval_results_by_runs(list(every_result), scope_id):
+    # Held to the read tier's budget before any result is read, as the aggregates are: the bundle holds every result it
+    # reads at once, so past the budget it is refused, never assembled in part (the store computing it is #996). The
+    # estimate is each run's matrix, off the batch read above; no further read is made to refuse.
+    read_runs = [loaded[run_id] for run_id in every_result]
+    hold_to_read_budget(_BUNDLE_LENS, scope_id, read_runs, how=_NARROW_THE_BUNDLE)
+    read = storage.query_eval_results_by_runs(list(every_result), scope_id)
+    # The safety net: results their runs' matrices did not promise (a run that wrote past its matrix and recorded no
+    # completeness) are not assembled past the budget either.
+    hold_to_read_budget(_BUNDLE_LENS, scope_id, read_runs, how=_NARROW_THE_BUNDLE, returned=len(read))
+    for result in read:
         if result.eval_run_id in every_result:
             every_result[result.eval_run_id].append(result)
+    del read
     # When the aspect's readings could first be seen: the first stored result of the runs it reads, never a run's
     # creation, nor when the campaign holding them was declared. A criterion set after it (the aspect, its control,
     # margin, bars or floors) is named in `reading_scope.late_criteria`; one set before it reads as pre-registered,

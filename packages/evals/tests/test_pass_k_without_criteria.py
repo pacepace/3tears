@@ -20,6 +20,7 @@ from threetears.evals.analysis.lenses.frontier import compute_frontier
 from threetears.evals.schema import RubricScore
 from threetears.evals.schema.models import GoalStateOutcome, RoleUsage
 from threetears.evals.kernel.scoring import NO_PASS_CRITERION_REASON, compute_pass_hat_k, has_pass_criterion
+from threetears.evals.kernel.run_pages import ResultKey
 from packages.evals.tests.factories import (
     fixture_variant_key,
     make_eval_result,
@@ -150,8 +151,11 @@ def test_the_rendered_comparison_says_the_classifier_has_no_pass_k() -> None:
     classifier, judged, results = _arms(3688)
 
     class _Store:
-        def query_eval_results_by_run(self, run_id: str, scope_id: str):
-            return results[run_id]
+        def query_eval_result_keys_by_run(self, run_id: str, scope_id: str):
+            return [ResultKey(r.id, r.test_case_id, r.k_iteration, r.model, r.scored_at) for r in results[run_id]]
+
+        def load_eval_results(self, result_ids, scope_id: str):
+            return [r for rows in results.values() for r in rows if r.id in set(result_ids)]
 
         def load_eval_run(self, run_id: str, scope_id: str):
             return classifier if run_id == classifier.id else judged
