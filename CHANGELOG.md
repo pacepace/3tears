@@ -20,16 +20,23 @@ immunity line a caveat on its evidence could move as must_fix. The Kairo reasoni
 leave cost untouched. The skill's digest moves with it.
 
 **Added:** the editor is handed one more computed fact, `caveat_not_carried`: a caveat code attaches to a contrast a
-claim's evidence reads (a block reading its measure for its arm, or a key naming them) that neither the claim nor the
-confidence carries. Like every fact it never refuses and is the editor's to weigh.
+claim's evidence reads that neither the claim nor the confidence carries (a method-reach caveat landed on a Method term
+counts as carried). Evidence reads a contrast when a block names the contrast's measure for its arm, or reads the
+contrasts source with no measure named, or when a key in the claim names its arm and measure. A block that reads every
+reading of an aspect without naming the contrast's measure does not count as reading it, and a caveat the confidence
+carries satisfies the fact even where its clause calls the finding untouched; the editor's must_fix rule (a finding
+called immune while a caveat on its evidence could move it) covers what the fact misses. Like every fact it never
+refuses and is the editor's to weigh. `contrasts_list` and the fact name a contrast's figures and its confounds through
+one shared pair, `analysis.analyst.facts.contrast_key` and `confound_caveat_id` (new, provisional).
 
 **Changed:** an analyst submission is checked in one pass by the store gate's checker, its validity included, so one
 bounce carries every verdict, each with its remedy, where a validity fault used to bounce alone, without its remedy,
 and cost a bounce of its own. The tally still counts that bounce as `validity`.
 
 **Changed:** on a report document's page, caveats that share a label beside one claim or Method term print that label
-once, saying how many carry it and the arms their records name (`A run fell short of its usable measurements (2 of
-them, on qwen3.8-flash (A))`), where the label printed once per caveat; Markdown, text and HTML print the same line.
+once, saying how many carry it, in words, and the arms their records name (`A run fell short of its usable
+measurements — two of them, on qwen3.8-flash (A)`), where the label printed once per caveat; Markdown, text and HTML
+print the same line.
 
 A host needs no code change.
 

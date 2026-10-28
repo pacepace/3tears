@@ -7,14 +7,14 @@ The pipeline computes every statistic. Your job is to read them correctly and sa
 - An interval is over **cases, not attempts**. Repeats of one case are not independent draws, and the tools' intervals already account for that. Five cases run three times each is five cases.
 - Read the level on every interval you cite, and keep levels apart. A 95% interval on one confirmatory reading and a 99.69% interval on a corrected contrast answer different questions.
 - **Separated** means the interval excludes zero (or the line). **Overlapping intervals don't prove two options alike.** Two options are alike only when a reading or contrast says *equivalent*. An *unclear* reading is unresolved, never "no change". An established null and a comparison too weak to resolve are different findings. Say which one you have.
-- **Parity words need an equivalence.** "As good as", "as reliably", "matches", or calling a figure one option's strength over another, claims a difference the evidence must show. A difference whose interval crosses zero is "within noise of", with its interval, never parity and never a strength.
-- **A line found from the data is a band when it has an interval.** A flip point or a price step whose ends come from an interval (`decision_sensitivity`'s flips, a `price.*` step's low and high) is stated as its band, "anywhere from {low} to {high} a point", never as a sharp line ("any price under {point}"). Inside the band this run doesn't settle the call; say so where the reader would act on it.
+- **Parity words need an equivalence.** "As good as", "as reliably", "matches", or calling a figure one option's strength over another, claims a difference the evidence must show. A difference whose interval crosses zero is "not told apart from", with its interval, never parity and never a strength.
+- **A line found from the data is a band when it has an interval.** A flip point or a price step whose ends come from an interval (`decision_sensitivity`'s flips, a `price.*` step's low and high) is stated as its band, "from {low} to {high}", never as one sharp value ("at {point}"). Inside the band this run doesn't settle the call; say so where the reader would act on it.
 
 ## Caveats on the evidence a claim rests on
 
 Code attaches caveats to the figures they touch: `contrasts_list` names each contrast's confounds by caveat id, and `caveats_list` says which arms, aspects and measures each caveat touches. Before a claim is final, read the caveats on every contrast and reading it rests on, the deciding one above all.
 
-- **Carry each one with the claim** (its `caveats`), or in the confidence when it bears on the whole call, and say its likely direction from the figures you have: would removing it widen the gap, narrow it, or could it reverse it? A direction that favours the call is still said; it is part of why the call holds.
+- **Carry each one with the claim** (its `caveats`), or in the confidence when it bears on the whole call, and say which way it would likely move the claim, from the figures you have: would removing it widen the gap, narrow it, or could it reverse it? A direction that favours the call is still said; it is part of why the call holds.
 - **Nothing is immune while a caveat on its evidence could move it.** Never write that a finding "cannot be reversed" or is untouched by the caveats when one is attached to the figure it rests on. Measured telemetry is no exception: a setting that differed between arms changes what the cost or latency measures.
 - **State the deciding measure's coverage.** Say how many of the trials run the measure read, and whether the missing ones could flip the order. For cost, `cost.unreported.<arm>.missing` counts the trials with no cost, `free` is the least the arm's cost could be had each of them cost nothing, and `at_p95` a what-if at its own 95th percentile. If the order holds either way, one clause says so; if it doesn't, the measure does not settle the call.
 
@@ -37,9 +37,9 @@ A margin larger than any plausible result could fail is uninformative. If the ma
 
 A point estimate on the right side of a gate whose interval crosses the line is borderline. It passes for the call. Watch names it, with what would decide it: `settle_cases` sizes the run that would settle it and how often a run of today's size reads the other way. Its sizes against a line are one-sided; quote the two-sided size where the reader will compare it with a printed interval, and say whether it counts cases or trials.
 
-**Size a run to settle, not to toss a coin.** `settle_cases` gives two sizes. The plain one (`cases_needed`, `cases_needed_two_sided`) is the size at which a run settles the question half the time if today's estimate is the truth. The `_80` one (`cases_needed_two_sided_80`, `trials_needed_two_sided_80`) settles it four times in five. A next step sizes its run at the `_80` size, or says plainly that its size settles the question only half the time. Never call the plain size "enough".
+**Size a run to settle, not to toss a coin.** `settle_cases` gives two sizes. The plain one (`cases_needed`, `cases_needed_two_sided`) is the size at which a run settles the question half the time if today's estimate is the truth. The `_80` one (`cases_needed_two_sided_80`, `trials_needed_two_sided_80`) settles it four times in five. A next step sizes its run at the `_80` size, or says plainly that a run of its size comes out decided about one time in two. Never call the plain size "enough".
 
-**Name every thin leg.** When the call, or a route or mix the page proposes, rests on several borderline readings (one per task, cell or leg), Watch names each of them with how often it reads the wrong way, not only the thinnest, and a rerun step sizes every leg it needs.
+**Name every thin leg.** When the call, or a combination of options the page suggests, rests on several borderline readings (one per task, cell or leg), Watch names each of them with how often it reads the wrong way, not only the thinnest, and a rerun step sizes every leg it needs.
 
 Decide which kind of "not settled" you have:
 
@@ -52,7 +52,7 @@ Read each line one way. Say once whether a line is read on the point estimate or
 
 Treat near options' noise even-handedly. If you size one option's thin clearance in standard errors, size the rival's thin miss the same way before leaning between them.
 
-When you pick the one option out of many that clears a line, its estimate is optimistic. The best of eighteen configurations near a gate is partly the luckiest of eighteen. The thinner the clearance, the more this matters. Say so in Watch.
+When you pick the one option out of many that clears a line, its estimate is optimistic. The best of many configurations near a gate is partly the luckiest of many. The thinner the clearance, the more this matters. Say so in Watch.
 
 ## Corrected versus uncorrected
 
@@ -62,7 +62,7 @@ Average effects over a crossed grid (what a retry buys, what more reasoning buys
 
 ## Unknown is not a fail
 
-A gate read in each task, on a figure the snapshot holds only overall, has no figure in those places. The tools call such an option **undecided**, never failed or removed, and list its unknown places. Don't write that it fails the gate. Say what is unknown and what measuring it would settle. A labelled implied fact (for example, an overall p95 over the budget implies some task is over it) is an inference you may state as one, never a verdict.
+A gate read in each task, on a figure the snapshot holds only overall, has no figure in those places. The tools call such an option **undecided**, never failed or removed, and list its unknown places. Don't write that it fails the gate. Say what is unknown and what measuring it would settle. A labelled implied fact (for example, an overall figure past its line implies at least one place past it too) is an inference you may state as one, never a verdict.
 
 Bars warn by default. Where the question makes a bar the condition, read it as a gate with `bars_as: "gates"` and say in Method that you did.
 
@@ -73,7 +73,7 @@ The snapshot keeps a few failures per slice. `examples_list` says how many it ke
 ## Small strata and zero counts
 
 - A stratum with few cases (under about ten) produces deltas dominated by noise. Keep it in the full table and out of the leads, even when its delta is the largest.
-- **A stratum with no traffic share is a probe.** Its rates say what an arm does when probed, not what live traffic meets. Where such a rate decides something (a floor, a lean, a gap the call cites), say it is a probe there, not only in Method.
+- **A stratum that carries none of the traffic is a test, not traffic.** Its rates say what an arm does when tested that way, not what live traffic meets. Where such a rate decides something (a floor, a lean, a gap the call cites), say so there, not only in Method.
 - **Zero of n is not zero.** With no events in n cases, the 95% upper bound is roughly 3/n. Twenty clean cases still allow a 15% failure rate.
 - A zero can also mean *not measured*. A cost of zero, or a rate with no trials behind it, is missing data, not a free or perfect arm. Check `n` before reading a zero.
 
@@ -85,7 +85,7 @@ Depth is how many times each arm ran each case. Arms can differ when old runs po
 
 A judged figure is only as good as the judge. Read its tier, calibration state, calibration ratings and agreement from the overview: each judged dimension's `judge` figures there (`judged.<dimension>.tier`, `.calibration`, `.calibration_ratings`, `.agreement`), which the `judge_uncalibrated` caveat in `caveats_list` cites too. A field the input leaves unstated is left out.
 
-- An **uncalibrated** judge is a report-wide caveat. Its `material_if` names how a misreading would change the call ("only if it misreads in-character replies"). If the deciding finding is measured telemetry (cost, latency, a tool-call check), say the call doesn't rest on the judge.
+- An **uncalibrated** judge is a report-wide caveat. Its `material_if` names how a misreading would change the call ("only if it favours one arm's style"). If the deciding finding is measured telemetry (cost, latency, a tool-call check), say the call doesn't rest on the judge.
 - **Relative** comparisons on one judge are sturdier than **absolute** claims. "Lower than the control on the same cases" survives a biased judge better than "holds character 85% of the time". An absolute judged claim needs a calibrated judge.
 - When labels come from humans (classifiers), human agreement is the ceiling. Errors concentrated where annotators also disagree are partly label noise.
 - How many human ratings would turn a judge caveat into evidence: `settle_cases` sizes cases, not calibration labels, so log a `capability_gap` and say it in words.

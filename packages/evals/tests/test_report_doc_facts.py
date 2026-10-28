@@ -314,8 +314,8 @@ _STORED_KAIRO = "prototype4/kairo"
 #: The reasoning-ratio confound, which Kairo's snapshot attaches to 1017's contrasts.
 _REASONING = "confound:observed:reasoning_ratio"
 
-#: 1017's contrasts on character adherence (v2), by key.
-_ON_1017 = "aspects.character adherence (v2).contrast.1017"
+#: 1017's contrasts, by key (each arm and measure is held once, so unqualified, as contrasts_list cites them).
+_ON_1017 = "contrast.1017"
 
 
 def test_a_caveat_on_a_contrast_a_claim_reads_that_nothing_carries_is_a_fact() -> None:
@@ -367,6 +367,30 @@ def test_a_caveat_the_confidence_carries_is_no_fact() -> None:
         doc["confidence"]["caveats"].append({"id": _REASONING, "material_if": "Only if 1017's budget moved its cost."})
 
     assert not _of(_facts(_STORED_KAIRO, doc_change=confided), "caveat_not_carried")
+
+
+def _apparatus_on_cost(data: dict[str, Any]) -> None:
+    """The simulator's settings, an apparatus confound of method reach on Kairo, named on 1017's cost contrast too."""
+    for contrast in data["contrasts"]:
+        if (contrast["arm"], contrast["measure"]) == ("1017", "production_replicating_cost"):
+            contrast["confounds"].append("simulator_sent_settings")
+
+
+def test_a_method_reach_caveat_landed_on_a_method_term_is_carried() -> None:
+    """Kairo lands apparatus:simulator_sent_settings, a method-reach caveat, on its Method term: planted on 1017's cost
+    contrast, it is carried there and is no fact; taken off the term, it is one, on the cost claim."""
+
+    def unlanded(doc: dict[str, Any]) -> None:
+        for item in doc["method"]:
+            item["caveats"] = [caveat for caveat in item["caveats"] if not caveat.startswith("apparatus:")]
+
+    def apparatus(facts: list[EditorFact]) -> list[str]:
+        return [fact.path for fact in _of(facts, "caveat_not_carried") if "`apparatus:" in fact.fact]
+
+    assert apparatus(_facts(_STORED_KAIRO, input_change=_apparatus_on_cost)) == []
+    assert apparatus(_facts(_STORED_KAIRO, doc_change=unlanded, input_change=_apparatus_on_cost)) == [
+        "claims[0].caveats"
+    ]
 
 
 def test_a_key_naming_a_contrast_is_evidence_that_reads_it() -> None:

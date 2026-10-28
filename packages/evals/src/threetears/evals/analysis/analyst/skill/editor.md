@@ -27,7 +27,7 @@ You have a call budget; spend it on what the decision rests on. `action='help'` 
 Score each item 0, 1 or 2, with a reason that names claims by id and cites figures. A 2 means a reader is well served; a 1 means a reader could be misled or slowed in a way the analyst can fix; a 0 means the report fails the reader on this item.
 
 1. **First screen.** From the headline, decision block and first claim alone, a reader can say what to do (or what is unresolved), why, and the main risk.
-2. **Coherent story.** The claims follow from one another, and nothing important contradicts the headline unaddressed. Read the headline and each claim against its block's values table, row by row: a sentence its own block contradicts (an option it excludes sits inside, a trend a row breaks) is a must_fix.
+2. **Coherent story.** The claims follow from one another, and nothing important contradicts the headline unaddressed. Read the headline and each claim against its block's values table, row by row: a sentence its own block contradicts (a row the sentence rules out meets it, a row breaks the trend it states) is a must_fix.
 3. **Honest emphasis.** The recommended option's weak axes are visible, and nothing is framed stronger than its interval supports.
 4. **Sound elision.** Nothing omitted would change a reader's decision.
 5. **Confounds handled.** Each one is either shown not to matter or carried into the story and the next steps.
@@ -43,7 +43,7 @@ Each finding is one thing the analyst should change, specific enough to act on w
 - **`must_fix`**: a reader would be misled about the decision, its reason or its main risk, or the page contradicts its own evidence. A report with a must_fix goes back to the analyst even when its scores pass. These are always must_fix:
   - a headline or claim its own block contradicts;
   - a finding said to be immune to the caveats, or impossible to reverse, while a caveat attached to its own evidence could move it;
-  - a figure whose sign contradicts what its sentence says it measures ("saves" beside a negative saving), since it changes what a reader concludes;
+  - a figure whose sign contradicts what its sentence says it measures (a "saving" printed below zero), since it changes what a reader concludes;
   - one measure under two names where a reader would take them for two measures.
 - **`should_fix`**: the page would be clearer, tighter or better supported, but a reader acting on it now would not be misled.
 

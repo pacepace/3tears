@@ -44,6 +44,7 @@ from threetears.evals.analysis.report.doc_page.text import above_appendix_text, 
 from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
     CAVEAT_LABELS,
+    CAVEAT_REPEATED,
     CAVEAT_REPEATED_ON,
     CAVEATS_TEMPLATE,
     DEGRADED_PAGE,
@@ -379,20 +380,38 @@ def test_a_caveat_landed_on_a_claim_or_a_method_term_is_printed_beside_it_by_its
 
 def test_a_label_two_caveats_share_is_printed_once_naming_what_tells_them_apart_in_every_form() -> None:
     """Kairo's character claim lands two short runs, both of qwen3.8-flash, which code labels alike: the line beside it
-    says the label once, how many caveats carry it and the arm their records name, in HTML, Markdown and text alike.
-    A claim landing one of them prints its label alone."""
+    says the label once, how many caveats carry it (in words) and the arm their records name, in HTML, Markdown and
+    text alike. A claim landing one of them prints its label alone."""
     name = "prototype4/kairo"
     doc = _doc(name)
     runs = doc.claims[1].caveats
     label = CAVEAT_LABELS["short_run"]
-    line = CAVEATS_TEMPLATE.format(labels=CAVEAT_REPEATED_ON.format(label=label, count="2", arms="qwen3.8-flash (A)"))
+    said = CAVEAT_REPEATED_ON.format(label=label, count="two", arms="qwen3.8-flash (A)")
     page = build(doc, _input(name), strict=True)
-    written, markdown, text = html.unescape(doc_page_html(page)), doc_page_markdown(page), doc_page_text(page)
 
     assert len(runs) == 2 and all(run.startswith("short_run:") for run in runs)
-    assert page.claims[1].caveats == [CAVEAT_REPEATED_ON.format(label=label, count="2", arms="qwen3.8-flash (A)")]
-    for form in (written, markdown, text):
-        assert form.count(line) == 1
-        assert f"{label}; {label}" not in form
+    assert page.claims[1].caveats == [said]
+    _printed_once(page, CAVEATS_TEMPLATE.format(labels=said), label)
     one = doc.model_copy(update={"claims": [doc.claims[0], doc.claims[1].model_copy(update={"caveats": runs[:1]})]})
     assert build(one, _input(name), strict=True).claims[1].caveats == [label]
+
+
+def test_a_shared_label_whose_records_name_no_arm_says_only_how_many() -> None:
+    """The same two short runs with no arm recorded on either: the line says the label once and how many, no arm."""
+    name = "prototype4/kairo"
+    held = _input(name)
+    runs = [run.model_copy(update={"arm": None}) for run in held.caveats.short_runs]
+    armless = held.model_copy(update={"caveats": held.caveats.model_copy(update={"short_runs": runs})})
+    label = CAVEAT_LABELS["short_run"]
+    said = CAVEAT_REPEATED.format(label=label, count="two")
+    page = build(_doc(name), armless, strict=True)
+
+    assert page.claims[1].caveats == [said]
+    _printed_once(page, CAVEATS_TEMPLATE.format(labels=said), label)
+
+
+def _printed_once(page: DocPage, line: str, label: str) -> None:
+    """The line is printed once in every form, and the label is never printed twice in a row."""
+    for form in (html.unescape(doc_page_html(page)), doc_page_markdown(page), doc_page_text(page)):
+        assert form.count(line) == 1
+        assert f"{label}; {label}" not in form
