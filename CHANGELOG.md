@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a DuckDB L1 table can be key-less, its key kept by the backend
+
+**Added:** `DuckDBBackend(keyless=[...])` names tables to create with no primary key, their key columns still
+`NOT NULL`. DuckDB never reclaims a deleted row of a table with an index (its row ids are the index's), and never
+compresses or frees the index, so a keyed table whose rows are let go as fast as they come grows by every row it
+ever held. The backend keeps a key-less table's key itself: `upsert`, `upsert_many`, `replace_all` and a
+replacement's `rows` replace the rows of the keys they name (a delete and an insert, in one transaction); Arrow rows
+added by `replace_partitions` are refused (`duckdb.ConstraintException`, nothing changed) when they name a key the
+table holds or one key twice, as the key would refuse them; `load_parquet` refuses a key-less table. A table with no
+primary key to keep is refused by `initialize`. The ENR pod's copy holds its run-retaining LSF tables this way, and no
+longer overrides the backend's private table creation and insert.
+
 ### object-store: an S3 store keeps one client a loop
 
 **Fixed:** `S3ObjectStore` opened an aiobotocore client for every request: a botocore client built on the event loop
