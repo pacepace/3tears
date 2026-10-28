@@ -386,7 +386,7 @@ class ReportBudget:
         """
         if self.usd is None:
             if self.turns is not None and self._sent >= self.turns:
-                return f"the report's {self.turns}-turn budget is spent: {self._sent} turns were sent"
+                return f"the report's {self.turns}-turn budget is spent"
             if self.tokens is not None and self._spent_tokens + tokens > self.tokens:
                 return (
                     f"the next turn can use up to {group_thousands(str(tokens))} tokens, and "
