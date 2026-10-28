@@ -173,32 +173,32 @@ did and which no figure reads.
 
 **Changed:** `assemble_context_bundle` (so every analysis generation and campaign report) read every result of the runs
 it assembles in one batch, however many: a campaign past what one process holds was read whole. It is held to
-`READ_TIER_ROW_BUDGET` (50,000) as the aggregates are (owner, 2026-10-28: the aggregates' "refuse now, SQL later"), and
-is not paged, since its port promises one store call per read. Before any result is read, the runs it reads (the
-aspect's unarchived member runs, and its archived ones when a declared control may be among them) are estimated as the
-aggregates estimate them, off the batch run read it already makes: each run's matrix (cases × k), or the cells it
-recorded persisting when those are more, with no further read. Past the budget it is refused (`VALIDATION_FAILED`,
-`details` `runs`, `results_estimated` and `result_budget`, one WARNING line `eval.read_tier lens=assemble_context_bundle
-... refused`), and the remedy names how to narrow: a campaign of fewer member runs, archiving the members it need not
-read, or, where the call takes one, an aspect that reads fewer runs. A read that returns more than the budget (results
-their runs' matrices did not promise) is refused too, `details` adding `results_returned`. A campaign at the budget or
-under assembles as before, in the same store calls. `hold_to_read_budget` (new, `threetears.evals.analysis.reads`) is
-that check, for a reader outside the aggregates that holds a set of runs' results whole. The store computing the
-bundle's aggregates and a bounded sample of its trials' evidence, so a campaign of any size assembles in flat calls,
-memory and reply size, is #996.
+`READ_TIER_ROW_BUDGET` (50,000) as the aggregates are (owner, 2026-10-28, under the aggregates' 2026-10-27 "refuse now,
+SQL later"), and is not paged, since its port promises one store call per read. Before any result is read, the runs it
+reads (the aspect's unarchived member runs, and its archived ones when a declared control may be among them) are
+estimated as the aggregates estimate them, off the batch run read it already makes: each run's matrix (cases × k), or
+the cells it recorded persisting when those are more, with no further read. Past the budget it is refused
+(`VALIDATION_FAILED`, `details` `runs`, `results_estimated` and `result_budget`, one WARNING line `eval.read_tier
+lens=assemble_context_bundle ... refused`), and the remedy names how to narrow: a campaign of fewer member runs,
+archiving the members it need not read, or, where the call takes one, an aspect that reads fewer runs. A read that
+returns more than the budget (results their runs' matrices did not promise) is refused too, `details` adding
+`results_returned`. A campaign at the budget or under assembles as before, in the same store calls.
+`hold_to_read_budget` (new, `threetears.evals.analysis.reads`) is that check, for a reader outside the aggregates that
+holds a set of runs' results whole. The store computing the bundle's aggregates and a bounded sample of its trials'
+evidence, so a campaign of any size assembles in flat calls, memory and reply size, is #996.
 
 **Changed:** the two other readers that hold many runs' results at once are held to the same budget the same way.
 `detectable_effects`, the planning block a launch estimate (`launch_estimate`, the `launch_estimate` action) carries,
 read every earlier run of its template whole: it now estimates them off the run listing it already reads and refuses
 past the budget before reading a result, naming archiving the template's earlier runs it need not read (it leaves
-archived runs out), or a template with fewer. A launch estimate is not refused with it: the price does not depend on
-the block, so past the budget the block reads nothing and says why in its `cannot_estimate` (the budget, what the
-runs hold, and the same remedy), and the arms' prices, the total and the verdict are returned as within it.
-`detectable_effects` called on its own still refuses. A regression
-watch's judged tiers, read over the run's subject when its history read that subject alone, are held to the budget off
-the run listing they already read (the history it reads first refuses on the same runs and estimate, so this is the
-same bound held where the read is made); the watch's hook logs it at ERROR as it logs the history's refusal. Each
-refuses a read that returned more than the budget too.
+archived runs out), or a template with fewer. A launch estimate is not refused with it: the price does not depend on the
+block, so past the budget by the runs' matrices the block reads none of their results (a read that returned more than
+the budget is read and dropped) and says why in its `cannot_estimate` (the budget, what the runs hold, and the same
+remedy), and the arms' prices, the total and the verdict are returned as within it. `detectable_effects` called on its
+own still refuses. A regression watch's judged tiers, read over the run's subject when its history read that subject
+alone, are held to the budget off the run listing they already read (the history it reads first refuses on the same runs
+and estimate, so this is the same bound held where the read is made); the watch's hook logs it at ERROR as it logs the
+history's refusal. Each refuses a read that returned more than the budget too.
 
 ### langgraph: a checkpoint L2 entry that cannot be refreshed is deleted, not left holding an older checkpoint
 

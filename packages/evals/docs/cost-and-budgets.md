@@ -273,7 +273,7 @@ shared cases; otherwise one arm's case-to-case spread, counted twice). With no e
 cases, a reading says it cannot estimate and why; no default variance is ever used. The block states its
 assumptions, among them near-normal per-case differences and that only the one comparison differs. The block
 holds every earlier run's results at once, so for a template whose earlier runs (archived ones left out) hold more
-than `READ_TIER_ROW_BUDGET` results by their matrices it reads none of them and says so in its `cannot_estimate`,
+than `READ_TIER_ROW_BUDGET` results by their matrices it reads none of their results and says so in its `cannot_estimate`,
 naming the budget and how to narrow (archive earlier runs it need not plan from); the price is still estimated
 and returned, since it does not depend on the block (#996 is the store computing it). `detectable_effects` called
 on its own refuses past the budget, as the read tier's aggregates do.

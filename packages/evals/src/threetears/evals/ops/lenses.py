@@ -803,9 +803,9 @@ def _planning_block(
     the read tier's budget, the block saying so in ``cannot_estimate``.
 
     The price does not depend on the block, so a planning read past the budget blocks only the block: it is a
-    disclosure on the estimate, never a refusal of it. Nothing past the budget is read: :func:`detectable_effects`
-    refused before reading a result (or, past its estimate, once its read returned more), and logged the refusal at
-    WARNING. Every other refusal propagates.
+    disclosure on the estimate, never a refusal of it. Runs past the budget by their matrices are not read:
+    :func:`detectable_effects` refused before reading a result (or, a read that returned more than the budget, after
+    it, and the results were dropped), and logged the refusal at WARNING. Every other refusal propagates.
     """
     try:
         return detectable_effects(host, scope_id, template_id, n_cases=n_cases, k_runs=k_runs, n_arms=n_arms)
