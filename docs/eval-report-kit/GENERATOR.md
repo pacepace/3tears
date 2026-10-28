@@ -1,10 +1,10 @@
 # Eval report generator: procedure and rules
 
-> **Superseded in part by [ANALYST.md](ANALYST.md)** (agreed with the owner, 2026-10-26). An expert analyst agent writes the report; code computes and verifies and never chooses structure. Once the analyst ships, ANALYST.md replaces, as rules: the shape table and its spine (§1), the mode computed by code as a refusal (§1.1), and the two-call planner. Until then the planner still enforces them: its plan checks refuse a plan whose first section does not draw the §1 spine or whose mode §1.1 does not allow, and its prompt and facts teach both. The rest of this file stays as guidance the analyst reads until it moves into the analyst skill.
+> **The analyst writes campaign reports; this file is the spec of the planned report.** A campaign's report is written by the analyst described in [ANALYST.md](ANALYST.md): it investigates a frozen snapshot with tools, writes a report document, and code verifies it. Code computes and verifies and never chooses structure. The planned report below (a shape lookup, a spine, a mode code allows, and one planner call) is what the analysis reporter's plan cases still judge; nothing else writes one. Sections 3 and 5–8 (gate logic, charts, words, the visual system and the definition of done) describe the kit and the renderer both pages share, and the analyst skill carries their judgment.
 
-This is the complete spec for turning one campaign's results into a decision memo like the references in `references/`. It assumes no other context. Read it top to bottom once; after that, sections 3–6 are the working reference.
+This is the spec for turning one campaign's results into a planned report like the references in `references/`. It assumes no other context.
 
-The generator has three stages. Each one has a typed output that is stored and testable:
+The planned report has three stages. Each one has a typed output that is stored and testable:
 
 ```
 campaign bundle ──adapter──▶ report input ──planner──▶ report plan ──renderer──▶ HTML page (+ Markdown)
@@ -15,7 +15,7 @@ campaign bundle ──adapter──▶ report input ──planner──▶ repor
 - **Planner** (LLM, validated). Reads the report input and writes a report plan: the shape, the mode, the sections, the charts, the explore controls, and every sentence of prose. Prose refers to figures by key, never by typed numbers (§6.2).
 - **Renderer** (deterministic code). Draws the plan with the kit. It owns layout, typography, chart geometry, color, responsiveness and accessibility. The planner never writes markup.
 
-The planner is the part that makes the structure fit the data. A fixed template per eval kind is what overfits; a planner choosing from a fixed vocabulary does not.
+The analyst's report keeps the first and last stages: its tools read the same report input, and its document is drawn by the same renderer parts. It replaces the planner with an investigation, because a planner choosing from a fixed vocabulary still overfit the evals nobody anticipated.
 
 ---
 
@@ -242,7 +242,9 @@ Grammar: `{path|filter|filter}`, in single braces. (The memo's `{{cell|…}}` re
 
 **D3: no digit outside a key.** Keys are set aside; then every name the input holds is set aside where a non-word character or the text's edge bounds it on both sides: arm ids and names, served models, settings as displayed (`64k`), aspect, measure, dimension, stratum, task and factor ids and names, the campaign's name, trial and case ids. So are, under the same bound, two fixed package vocabularies: the percentile names `p50`, `p90`, `p95` and `p99` (`p95 latency`, never `p-ninety-five`), and the package's own unit phrases, each matched whole (`per 1,000 replies`, `($/1,000 replies)`, `per 1,000,000 replies`), which are the templates rendered figures are joined with. Any Unicode decimal digit left (`95%`, `95 percent`, `1,000 cases`, `٣`, the `95` in `xp95`) is an error. An id made only of digits is never set aside: write `{arm:1017}`, never `1017`.
 
-Until the renderer exists (CONVERGENCE.md P3–P4), a page is hand-built with the kit. Write the plan first and keep it beside the page, then compute every prose number in the page script from the same data the keys name. That keeps the two honest. For example: `"{arm:qwen3.8-flash} is clearly worse: down {reading.qwen3.8-flash.change|abs|pts} points ({reading.qwen3.8-flash.interval|pts})"`. That makes three things true by construction: no number is invented, rounding matches the tables, and a re-run updates the prose. A sentence whose figure is missing from the input is dropped.
+A reference page in `references/` is hand-built with the kit: its plan is written first and kept beside it, and every prose number in the page script is computed from the same data the keys name. For example: `"{arm:qwen3.8-flash} is clearly worse: down {reading.qwen3.8-flash.change|abs|pts} points ({reading.qwen3.8-flash.interval|pts})"`. That makes three things true by construction: no number is invented, rounding matches the tables, and a re-run updates the prose. A sentence whose figure is missing from the input is dropped.
+
+**Money reads one way per set.** A column, a chart axis or a family of keys (every arm's cost per call, say) spells all its amounts in one form, chosen for the set, never per value. When any member is too small for cents, the whole set reads per 1,000. A difference between amounts takes their form, with as many places as its interval's width supports.
 
 ### 6.3 Style
 

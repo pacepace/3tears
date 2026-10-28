@@ -98,7 +98,9 @@ pass it to every entrypoint. It holds:
   and is refused when the template does not declare it, exactly as a campaign's own bar on a judged dimension is;
 
 - the `EvalStorage` you read and write through;
-- a factory for the completion clients the engine's own judge, simulator and analysis roles call. Every
+- a factory for the completion clients the engine's own roles call: the judge, the simulator, case generation, the
+  proposers, the memo writer (`analysis`) and the report writer (`analyst`, one model for both the analyst and its
+  editor, whose client must also take tool turns; one that cannot is refused before anything is spent). Every
   completion a client returns is read by `CompletionResult`'s attribute names, and the usage ledger reads the
   token and cost attributes with a default, so a renamed attribute would degrade every usage row to
   "unreported" in silence. Check your completion type in your own suite with
@@ -318,10 +320,21 @@ temperature, and only then without enforcement, for that call alone. The refused
 billed, so the price ceiling is one request's, but each refused send can take up to a request timeout
 (`MAX_RESENDS`, 4).
 
-**Pricing.** An OpenRouter call is priced by OpenRouter's own figure (`usage.cost`); under bring-your-own-key that
+**What your host pays is yours to say.** Hand each model your pricer (`Model(..., pricer=...)`), the port every call
+the model makes is priced through, a completion or a tool turn alike. Before a call it answers the rates you are
+billed for that model on that provider, and whether they are guaranteed; the engine computes the bound from them,
+so you never write the bound's arithmetic, and a bound on rates you do not guarantee admits the call as a disclosed
+estimate. After a call it receives the provider's usage block as returned, the provider that served it and the cache
+writes split by how long they are kept, and answers the price and its source: your own figure, your router's billed
+figure, or `None` with a reason. A model you hand no pricer gets the package's default, for standalone and
+development use: Anthropic's published rates for a direct Anthropic call, then the catalogue. Unpriced is
+`None` with `pricing_failure` saying why, never `0`.
+
+**How the default prices.** An OpenRouter call is priced by OpenRouter's own figure (`usage.cost`); under bring-your-own-key that
 figure is OpenRouter's fee alone, so the cost is it plus `cost_details.upstream_inference_cost`, and a BYOK reply
 without the upstream figure is unpriced. A reply that carries no `is_byok` is unpriced too (`cost_usd` and
-`price_source` are `None`, `pricing_failure` says why), since its `cost` may be the fee alone. A direct Anthropic or OpenAI call is priced by the catalogue row
+`price_source` are `None`, `pricing_failure` says why), since its `cost` may be the fee alone. A direct Anthropic call is priced at Anthropic's published rates, which need no
+fetch; a direct OpenAI call, or an Anthropic model those rates do not list, is priced by the catalogue row
 for the matching `vendor/model`, from the same reading of the row as the price ceiling: at the tier its prompt fell
 in, its reasoning tokens at the reasoning rate where the row lists one apart from the completion rate, its cache reads
 and writes at their rates, plus the request fee. Where a price applies that the reply's counts cannot price (reasoning
@@ -329,13 +342,8 @@ tokens it does not split out) the call is unpriced, never priced lower; its `pri
 when a cache share was priced at a rate the row does not list for it. The `price_source` words are `PriceSource`'s (host contract, from
 `threetears.evals.providers`, each member the string itself): `OPENROUTER_REPORTED`, `OPENROUTER_REPORTED_UPSTREAM`
 (the BYOK sum, `openrouter:reported+upstream`) and `OPENROUTER_CATALOGUE`, the prefix of
-`openrouter-catalogue:<id>`. Compare a stored `price_source` with them rather than spelling the words. What your host
-pays is yours to say: hand each model a `Pricer` (`Model(..., pricer=...)`), whose `rates_for(model, provider=)`
-answers the `ModelRates` you are billed (and the `price_source` to write), or `None` to leave the call to the
-catalogue; a call it answers is priced and bounded from those rates and reads no catalogue. A model handed neither a
-pricer nor a catalogue gets the package's default for standalone and development use, `AnthropicPublishedRates`
-(Anthropic's published rates for a direct Anthropic call); a model handed a catalogue and no pricer is priced from the
-catalogue, as before. Unpriced is `None` with `pricing_failure` saying why, never `0`. A
+`openrouter-catalogue:<id>`. Compare a stored `price_source` with them rather than spelling the words.
+A
 model's `price_ceiling` answers once its catalogue is loaded. The engine awaits the model's `refresh_prices()`
 before it prices a call, which loads it; `await clients.load_prices()` at boot reads it early and says which models
 it cannot price. A long-lived process is not priced from its first
@@ -863,7 +871,7 @@ subject's insights, so one insight from before the bump refuses every generation
 that subject until it is gone; the refusal names this step. With the engine stopped:
 
 ```python
-dropped = storage.drop_derived(["support"])          # analyses, insights and judge profiles of these scopes
+dropped = storage.drop_derived(["support"])          # analyses, reports, insights and judge profiles of these scopes
 for profile in dropped.judge_profiles:                # the one kind that does not come back by itself
     judge_profiles_record(host, JudgeProfilesRecord(judge_run_ids=profile.run_ids), profile.scope_id)
 ```
@@ -879,8 +887,8 @@ corpus); a replay that asks for a refused recording stops its cell with a `Casse
 
 **Each version space moves on its own.** Core documents (v15.7), durable documents (v16.3), regenerable documents
 (v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`), the cell model
-(`CELL_MODEL_VERSION`) and the identity keys (`IDENTITY_VERSION`, 25) carry separate versions. The report has none: it is a page rendered from the bundle, which is the versioned machine
-form.
+(`CELL_MODEL_VERSION`) and the identity keys (`IDENTITY_VERSION`, 25) carry separate versions. The code-only page has none: it is rendered from the bundle, which is the versioned machine
+form. A report document is regenerable: a change to its shape is a regenerable bump, and a report from before it reads as the code-only page with a line to regenerate it.
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
 each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of the engine's own judge prompt, or
 `<config id>@<sha12>`, your `JudgeConfig` and a fingerprint of the reply-format suffix the engine appends to its
@@ -1365,9 +1373,10 @@ job's `budget_s`, the output cap of the client you build for the simulator or th
 scheduling call, a deadline over a generation or a cell's judge phase) must sit at or above the ceiling inside it, or
 you cancel work the engine would still finish inside its own bound, after it was billed. `Ceilings` (host contract,
 in `threetears.evals.run`) carries them as one value: `Ceilings()` holds `scheduler_call_attempts`,
-`simulator_max_tokens`, `simulator_answer_budget_tokens` and `proposer_max_tokens`, and the two functions
-`generation_ceiling_s` and `judge_phase_ceiling_s`, which turn your own ceiling for one request into the ceiling of a
-generation or a judge phase. Derive each outer budget from a field, never from a number you copied: a release that
+`simulator_max_tokens`, `simulator_answer_budget_tokens` and `proposer_max_tokens`, and the functions
+`generation_ceiling_s`, `judge_phase_ceiling_s` and `writer_ceiling_s`, which turn your own ceiling for one request
+into the ceiling of a generation, a judge phase, or the writing of a report (every analyst round, revision, bounce
+and editor review its limits allow). A report's job budget is `writer_ceiling_s` plus your headroom. Derive each outer budget from a field, never from a number you copied: a release that
 raises an inner ceiling then raises your budget with it, so the budget cannot drift below it. The package exports
 no other name for them: the six separate constants and functions `.32` kept beside `Ceilings` were removed in `.33`.
 
@@ -1497,7 +1506,7 @@ campaign_record(
 )
 ```
 
-The call is read against code's readings of the evidence as it stands, never the memo's words, and is refused:
+The call is read against code's readings of the evidence as it stands, never the report's words, and is refused:
 
 | When | Why |
 |---|---|
@@ -1515,27 +1524,55 @@ joined since it was made. In a choice, an arm shown behind another on some aspec
 beside the call.
 
 
+## Campaign reports: what your host supplies
+
+`analysis_generate` writes a campaign's report as a job: it freezes the evidence, runs the analyst and its editor
+([the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence)), and stores the
+document, linked to the campaign as its analysis. Your host supplies four things:
+
+- **The model**, from your factory's `analyst` role, built on your own key. One model serves the analyst and the
+  editor. Its client must take tool turns, or the job is refused before anything is spent, naming what to forward.
+- **The budget**, on your `AnalysisGeneration`, from your own config: dollars, or tokens and turns for a model you
+  have no price for. Callers cannot raise it.
+- **The time**, derived from `writer_ceiling_s` plus your headroom
+  ([deriving your budgets](#deriving-your-budgets-from-the-engines-ceilings)).
+- **The page.** `report_read` serves the newest report in each format; serve the static HTML, or frame it as an
+  iframe's `srcdoc` with an empty `sandbox` ([embedding](reading-reports.md#embedding-the-page-in-a-host)). A report
+  this version no longer reads is never refused: it reads as the code-only page with one line to regenerate.
+
+Two document types come with it, routed like any other: each report's session transcripts, derived and swept with
+their report, and the analyst's capability gaps, durable. The engine posts no gap anywhere; if you want a digest or
+filed issues, run `analyst_gaps_list` from a scheduled job of your own and post its groups with your own credentials.
+To let your own agents investigate a campaign the way the analyst does, mount the `evals_analyst` tool beside `evals`
+([serving](serving.md#the-analysts-tool)).
+
 ## The engine's prompts: shipped defaults, optional overrides
 
-The engine steers three kinds of LLM call of its own with a prompt: the report planner (`REPORT_PLAN_PROMPT`,
-`eval_report_plan`), which writes every analysis, the capability proposer (`PROPOSER_PROMPT`) and the boundary
-proposer (`BOUNDARY_GEN_PROMPT`). **A new host does nothing here.** Each call runs the default the package ships
-(`EVAL_REPORT_PLAN_DEFAULT` in `analysis`, which both of the planner's calls share,
-`EVAL_PROPOSER_TEMPLATE_DEFAULT` and `EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT` in `gen`) unless you hand it a prompt
-of your own: an `AnalysisGeneration` with no `resolve_prompt`, and `plan_draft(axis=..., subject_feed=...,
-catalog_feed=...)` with no `system_prompt` (`default_system_prompt(axis)` is the text it sends).
+**The report writer reads a skill, not a prompt you hold.** A campaign report is written by the analyst and its
+editor from the skill the package ships as data (principles, story forms, charts, statistics, writing, reasoning
+notes, and the editor's rubric). It is not overridable: an improvement lands as a change to the package, checked
+against the acceptance campaigns and the editor's scores, so every host's reports are written by a version someone
+measured. Each report records the skill's digest as its provenance.
+
+The engine steers its other LLM calls with a prompt: the capability proposer (`PROPOSER_PROMPT`), the boundary
+proposer (`BOUNDARY_GEN_PROMPT`), and the planner and memo writer the analysis reporter evaluates. **A new host does
+nothing here.** Each call runs the default the package ships (`EVAL_PROPOSER_TEMPLATE_DEFAULT` and
+`EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT` in `gen`) unless you hand it a prompt of your own: `plan_draft(axis=...,
+subject_feed=..., catalog_feed=...)` with no `system_prompt` (`default_system_prompt(axis)` is the text it sends).
 
 **An override is yours to keep.** If an operator tunes a prompt without a deploy, keep the copy in your own
-registry and hand it in: `AnalysisGeneration(resolve_prompt=..., prompt_id=...)` (the id is recorded on every
-analysis as its provenance), and `plan_draft(..., system_prompt=..., reset=...)`. `SEED_PROMPTS` (from
+registry and hand it in: `plan_draft(..., system_prompt=..., reset=...)`. `SEED_PROMPTS` (from
 `threetears.evals.kernel`) lists them (the planner's, the retired memo writer's and the two proposers'), one `SeedPrompt` each: its id (`prompt_type`), its registry kind
 (`template` or `text`) and `seed_ref`, the `(module, constant)` its default is imported from. Seed an empty slot
 from each and never overwrite a stored one. The engine's ids start with `eval_`, so your own prompts can use any
 other name.
 
-**The preparation bound is yours to set.** `AnalysisGeneration(preparation_budget_s=...)` bounds a generation's
-preparation (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s), alongside `budget_s`, which bounds its generator calls.
-Both are read on every generation, so a timeout kept in host config can change without a restart.
+**A report's budget and bounds are yours to set.** `AnalysisGeneration` carries three, each read on every
+generation, so a value kept in host config can change without a restart: the report budget (dollars, or tokens and
+turns for a model you have no price for), which no caller can raise; `budget_s`, the job's time, derived from
+`writer_ceiling_s` ([above](#deriving-your-budgets-from-the-engines-ceilings)); and `preparation_budget_s`, the
+bound on its preparation (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s). How the budget admits each turn is in
+[Cost and budgets](cost-and-budgets.md#spend-outside-any-run).
 
 **A proposer override states the draft shape it was written for, and the engine checks it.** Each shipped
 proposer default ends with its output-contract line, `eval-output-contract: rubric_proposal <fingerprint>`
@@ -1572,7 +1609,8 @@ check.
 The analysis reporter (`REPORTER_KIND`) evaluates the analysis writer itself. Its cases are frozen campaign
 bundles (see [Serving](serving.md#reporter-runs-evaluating-the-analysis-writer-itself)). A
 candidate is a preset of the memo writer's `ANALYSIS_GEN_PROMPT` prompt on a generator model, or `AS_RECORDED_MODEL`,
-which replays the memo each campaign got.
+which replays the memo or planned report each campaign got. The analyst's report is not yet one of its subjects
+([open problems](open-problems.md#reporter-cases-judge-memos-and-planned-reports-not-the-analysts-report)).
 
 The kind is declared by the engine, so your host supplies only two things:
 
