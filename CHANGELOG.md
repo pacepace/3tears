@@ -45,12 +45,18 @@ A host needs no code change.
 **Added:** `capability_gap` (on the `evals_analyst` tool, the analyst's cut and the editor's) takes `kind`:
 `missing`, the default, is the call as it was (a capability no tool gave); `suspect` is a result that looks wrong,
 and names what reproduces it: `figure_keys` (the keys whose readings look wrong) and `calls` (each tool call as it was
-sent, its `action` and its other arguments), at least one of them. Each gap is stored as one record of a new durable
+sent, its `action` and its other arguments), at least one of them. A gap is a note, never a transcript: `need`,
+`why` and `workaround` hold at most 2,000 characters each, `figure_keys`, `calls` and `claim_ids` at most 20 each (a
+key or claim id at most 500 characters, a call at most 2,000 as JSON), and a call past a bound is refused with its
+remedy. Each gap is stored as one record of a new durable
 document type, `eval_analyst_gap` (`EvalAnalystGap`, durable v16.7), under an id derived from the call (the snapshot,
 kind, need and why; a `missing` gap keeps the id `capability_gap` always returned), so a replay, a retried write or the
 same call made twice stores it once (`EvalStorage.save_analyst_gap`, create-only; `list_analyst_gaps(scope_id,
 since=)` reads them back). A gap is durable: `drop_derived` never sweeps it, and a core reset keeps it. Where it is
-stored depends on the mount, never on anything the model sets. Called through any mount (Claude Code over MCP, the dev
+stored depends on the mount, never on anything the model sets. `capability_gap` stays a `read` action, so a read-only
+mount carries it, and it is the one read that appends a record (`Action.appends`): a tool carrying it reports
+`readOnlyHint` false and `idempotentHint` true, and the read-only `evals` tool's description now says a read changes no
+evaluation data and may append a bounded, idempotent feedback record. Called through any mount (Claude Code over MCP, the dev
 command line), the call stores the gap at once, with its snapshot and caller; its result says `recorded_in: store`.
 Inside a report write, the writer's own mount stores nothing (`recorded_in: write`), and `report_write` stores every
 gap its sessions noted when it ends, on every ending, a `ReportNotStored` included: each names the snapshot, the report
@@ -58,18 +64,26 @@ it stored (or none), the session's role and name, the model and the session's tr
 notices to the same store, from what the write already holds: `unresolved_key`, a figure key a draft cited that does
 not resolve on its snapshot and sent the draft back, with the key and the bounce's verdicts at its field; and
 `editor_score`, a rubric item the editor scored 0 or 1, with its score and reason and whether that review held a
-`must_fix` finding. `ReportWritten` gains `gaps` (every record the write made) and `gaps_not_stored` (why the store
-refused them, if it did, logged at error level; the report and its record stand either way). A write that crashes
+`must_fix` finding (evidence only: a finding names a claim and never a rubric item, so such a notice is never ranked as
+linked to one). A notice's id carries its session's transcript digest, so a byte-for-byte replay names the notices it
+named before and a second paid write on the same snapshot gets its own. `ReportWritten` gains `gaps` (every record the write made) and `gaps_not_stored` (why the store
+refused them or they could not be read, logged at error level; the report and its record stand either way), and
+`analysis_generate`'s job notes it on its attempt's `faults`, which `job_poll` shows, without changing the ending. A write that crashes
 before its end loses its gaps, as it loses the write. The analyst skill's tool table names `kind` and what a suspect
 gap carries, and the editor's tool list says it may note a gap, which is stored and never sent to the analyst.
 
 **Added:** `analyst_gaps_list` (a read action on the `evals` tool, `since=` an ISO 8601 time with its offset, read
 against each record's own time) returns the scope's gaps as a digest. Gaps group by kind and need, the need compared
-with its case, spacing, punctuation and the ids and keys it names set aside; no model reads them, so a paraphrase is a
-group of its own. Groups rank `suspect` first, then those that came with a `must_fix` finding, then the rest; within
+with its case, spacing and punctuation set aside, and with the ids the engine mints (a snapshot's, a gap's, a UUID, a
+digest) and the figure keys the grammar reads (braced, backticked or a dotted path in a family's form) read as one; any
+other word, an action's name, a model id, a version or a ratio included, keeps two needs apart. No model reads them, so
+a paraphrase is a group of its own. Groups rank `suspect` first, then those that came with a `must_fix` finding, then the rest; within
 each, the larger count, then the later last seen. Each group carries its count, first and last seen, snapshots,
 reports and record ids, and an issue title and body with the evidence (a suspect gap's keys and calls, a key notice's
-verdicts, an editor notice's item and reason). The engine calls neither GitHub nor a scheduler. A host needs no code:
+verdicts, an editor notice's item and reason), never the caller's identity, and every `@` followed by a zero-width
+space so a quoted name pings no one; the needs are what a model wrote, so a host reads them before filing on a public
+tracker. One digest reads at most 1,000 records, newest first: a window holding more is refused, naming a later
+`since`. The engine calls neither GitHub nor a scheduler. A host needs no code:
 the new type routes by its facts in `DOC_TYPE_FACTS` (origin `record`, lifecycle `durable`). A host may run a
 scheduled job that calls `analyst_gaps_list(since=)` and posts the digest, filing each group's issue with its own
 credentials. During a rolling deploy, a pod before durable v16.7 never reads a gap, and its operator wipe of durable

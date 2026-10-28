@@ -44,6 +44,7 @@ from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.service import assemble_campaign_bundle, get_analysis, require_evidence
 from threetears.evals.kernel.analyst_gap import CallGapKind, EvalAnalystGap, GapDigest, GapToolCall, call_gap_id
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, RefusedInput, ValidationFailedError
+from threetears.evals.kernel.numbers import group_thousands
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.kernel.report_snapshot import (
@@ -62,6 +63,10 @@ from threetears.evals.schema.models import utc_now_iso
 _ANALYST_LOGGER = "threetears.evals.analyst"
 
 log = get_logger(_ANALYST_LOGGER)
+
+#: The most gap records one digest reads (``analyst_gaps_list``): a window holding more is refused, naming a later
+#: ``since``, so a digest's read stays bounded however many gaps a scope collects.
+GAPS_READ_LIMIT = 1_000
 
 #: What a reused snapshot's fields report: the first freeze's evidence, not this call's.
 _REUSED_NOTE = (
@@ -691,13 +696,23 @@ async def analyst_gaps_list(host: OpsHost, scope_id: str, *, since: datetime | N
     :return: The digest.
     :rtype: GapDigest
     :raises ValueError: ``since`` names no zone, so no instant.
+    :raises ValidationFailedError: The window holds more than :data:`GAPS_READ_LIMIT` records: a bounded read
+        refuses, naming a later ``since``, rather than reading every record the scope holds.
     """
     if since is not None and (since.tzinfo is None or since.utcoffset() is None):
         raise ValueError(f"since {since.isoformat()} names no zone, so no instant: give it with its offset")
     eval_host = host.eval_host
-    records = await run_blocking(
-        eval_host.blocking_executor, lambda: eval_host.storage.list_analyst_gaps(scope_id, since=since)
+    records, more = await run_blocking(
+        eval_host.blocking_executor,
+        lambda: eval_host.storage.list_analyst_gaps(scope_id, since=since, limit=GAPS_READ_LIMIT),
     )
+    if more:
+        window = f"since {since.isoformat()}" if since is not None else "in all"
+        raise ValidationFailedError(
+            f"the scope holds more than {group_thousands(str(GAPS_READ_LIMIT))} gaps {window}, past what one digest "
+            "reads",
+            remedy=f"name a later since: the newest of them was stored at {records[-1].created_at}",
+        )
     return gap_digest(records, since=since.isoformat() if since is not None else None)
 
 

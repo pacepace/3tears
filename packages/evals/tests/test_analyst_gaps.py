@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
@@ -19,7 +20,7 @@ import pytest
 
 from packages.evals.tests.fixtures.report_plans.analyst_cli import seeded_host
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER
+from packages.evals.tests.ops_support import CALLER, generate, ops_fixture, settled
 from packages.evals.tests.report_writer_support import (
     DOC,
     MODEL,
@@ -30,13 +31,16 @@ from packages.evals.tests.report_writer_support import (
     reply,
     review,
     submitted,
+    thinking,
     written,
 )
-from threetears.evals.actions import MountedTool, analyst_tools, eval_catalogue, standard_tools
+import threetears.evals.ops.analyst as ops_analyst
+import threetears.evals.ops.report_writer.write as report_write_module
+from threetears.evals.actions import MountedTool, analyst_tools, eval_catalogue, read_only_tools, standard_tools
 from threetears.evals.actions.report_writing import ReportNotStored
 from threetears.evals.analysis.analyst_gaps import gap_digest
 from threetears.evals.kernel import StorageError
-from threetears.evals.kernel.analyst_gap import EvalAnalystGap, GapToolCall
+from threetears.evals.kernel.analyst_gap import EvalAnalystGap, GapEditorItem, GapToolCall
 from threetears.evals.ops import OpsHost
 from threetears.evals.ops.report_writer.analyst import AnalystLimits
 from threetears.evals.ops.report_writer.loop import WriterLimits
@@ -81,7 +85,9 @@ def _editor(*replies: Any) -> FakeToolTurnClient:
 
 
 def _gaps(host: OpsHost, *, since: datetime | None = None) -> list[EvalAnalystGap]:
-    return off_loop(lambda: host.eval_host.storage.list_analyst_gaps(CALLER.scope_id, since=since))
+    read, more = off_loop(lambda: host.eval_host.storage.list_analyst_gaps(CALLER.scope_id, since=since, limit=100))
+    assert not more, "the control: a test's scope holds few gaps"
+    return read
 
 
 def _by_kind(gaps: list[EvalAnalystGap]) -> dict[str, list[EvalAnalystGap]]:
@@ -187,13 +193,25 @@ async def test_a_store_that_refuses_the_gaps_fails_neither_the_report_nor_the_re
     assert [gap.kind for gap in result.gaps] == ["missing", "suspect"], "the records ride on the result"
 
 
-async def test_a_replayed_write_stores_nothing_twice() -> None:
+async def test_a_byte_for_byte_replay_stores_nothing_twice() -> None:
     host = off_loop(seeded_host)
     for _ in range(2):
-        model = FakeTurnModel(analyst=_analyst(), editor_1=_editor(reply(review(scores=(2, 2, 2, 2, 2, 2, 2)))))
+        model = FakeTurnModel(analyst=_analyst(), editor_1=_editor(reply(review())))
         await written(model, host=host)
 
-    assert [gap.kind for gap in _gaps(host)] == ["missing", "suspect"]
+    assert [gap.kind for gap in _gaps(host)] == ["missing", "suspect", "editor_score"]
+
+
+async def test_a_second_paid_write_on_the_same_snapshot_gets_its_own_notices() -> None:
+    host = off_loop(seeded_host)
+    for said in ("a first look", "a second look"):
+        model = FakeTurnModel(analyst=_analyst(), editor_1=_editor(reply(thinking(said), review())))
+        await written(model, host=host)
+
+    kinds = _by_kind(_gaps(host))
+    assert len(kinds["editor_score"]) == 2, "each write's editor saw the item low: two notices"
+    assert len({gap.transcript_digest for gap in kinds["editor_score"]}) == 2
+    assert (len(kinds["missing"]), len(kinds["suspect"])) == (1, 1), "the same call is the same gap"
 
 
 async def test_a_call_outside_a_write_stores_at_call_time_naming_its_caller_and_no_report() -> None:
@@ -264,7 +282,8 @@ async def test_an_unresolved_key_that_bounced_a_draft_and_a_low_score_are_notice
     (low,) = kinds["editor_score"]
     assert low.editor_item is not None
     assert (low.editor_item.round, low.editor_item.n, low.editor_item.score) == (1, 6, 1)
-    assert low.editor_item.reason == "item 6 reads so" and low.editor_item.must_fix and low.must_fix
+    assert low.editor_item.reason == "item 6 reads so" and low.editor_item.must_fix
+    assert not low.must_fix, "a finding names a claim, never the item: the review's must_fix is evidence, not a link"
     assert (low.session, low.role) == ("editor-1", "editor")
     assert low.transcript_digest == result.generation["tally"]["transcripts"].get("editor-1")
 
@@ -317,25 +336,24 @@ def _record(
         why=fields.pop("why", "to say what would settle it"),
         workaround=fields.pop("workaround", "said it in words"),
         must_fix=must_fix,
-        snapshot_id=fields.pop("snapshot_id", "report-snapshot:aaaa1111"),
+        snapshot_id=fields.pop("snapshot_id", SNAP_A),
         created_by=CALLER.identity,
         created_at=(datetime(2026, 10, 28, tzinfo=UTC) + timedelta(hours=at)).isoformat(),
         **fields,
     )
 
 
-def test_needs_that_differ_only_in_case_spacing_punctuation_ids_and_keys_group_and_other_words_stay_apart() -> None:
+#: Two snapshot ids as the engine mints them.
+SNAP_A: Final = "report-snapshot:0193a1b2c3d4e5f60718293a4b5c6d7e"
+SNAP_B: Final = "report-snapshot:ffee00112233445566778899aabbccdd"
+
+
+def test_needs_that_differ_only_in_case_spacing_punctuation_and_the_keys_they_name_group() -> None:
     records = [
-        _record(1, "The cases needed to separate `arm.a` from arm.b", at=0),
-        _record(
-            2,
-            "the  CASES needed to separate {compare.a.b.cost} from x.y!",
-            at=1,
-            snapshot_id="report-snapshot:bbbb2222",
-        ),
-        _record(3, "the cases needed to separate report-snapshot:0193ab12 from arm.c", at=2),
-        _record(4, "the trials needed to separate arm.a from arm.b", at=3),
-        _record(5, "the cases needed to separate arm.a from arm.b", kind="suspect", figure_keys=["{k}"], at=4),
+        _record(1, "The cases needed to separate `reading.a.change` from {compare.a.b.cost}", at=0),
+        _record(2, "the  CASES needed to separate {reading.b.change|abs} from cost.gap.a.b!", at=1, snapshot_id=SNAP_B),
+        _record(3, "the trials needed to separate `reading.a.change` from {compare.a.b.cost}", at=2),
+        _record(4, "the cases needed to separate {reading.a.change} from {compare.a.b.cost}", kind="suspect", at=3),
     ]
 
     digest = gap_digest(records)
@@ -343,13 +361,47 @@ def test_needs_that_differ_only_in_case_spacing_punctuation_ids_and_keys_group_a
     groups = {(group.kind, group.normalized): group for group in digest.groups}
     near = groups[("missing", "the cases needed to separate _key_ from _key_")]
     assert near.count == 2 and near.gap_ids == ["gap:0000000000000001", "gap:0000000000000002"]
-    assert near.need == "The cases needed to separate `arm.a` from arm.b"
-    assert near.snapshots == ["report-snapshot:aaaa1111", "report-snapshot:bbbb2222"]
+    assert near.need == records[0].need
+    assert near.snapshots == [SNAP_A, SNAP_B]
     assert (near.first_seen, near.last_seen) == (records[0].created_at, records[1].created_at)
-    assert ("missing", "the cases needed to separate _id_ from _key_") in groups
-    assert ("missing", "the trials needed to separate _key_ from _key_") in groups, "other words stay apart"
+    assert ("missing", "the trials needed to separate _key_ from _key_") in groups, "another word stays apart"
     assert ("suspect", "the cases needed to separate _key_ from _key_") in groups, "another kind stays apart"
-    assert len(digest.groups) == 4 and digest.records == 5
+    assert len(digest.groups) == 3 and digest.records == 4
+
+
+def test_two_needs_differing_only_in_an_id_the_engine_mints_group() -> None:
+    records = [
+        _record(1, f"the overview of {SNAP_A} lists no lever arm", at=0),
+        _record(2, f"the overview of {SNAP_B} lists no lever arm", at=1),
+        _record(3, "gap 01a180c7-821a-73b1-88ea-98d87dc63523 again: see gap:0123456789abcdef", at=2),
+        _record(4, "gap 01a180c7-821a-73b1-88ea-98d87dc63599 again: see gap:fedcba9876543210", at=3),
+    ]
+
+    assert [group.count for group in gap_digest(records).groups] == [2, 2]
+
+
+@pytest.mark.parametrize(
+    ("one", "other"),
+    [
+        ("`pivot` has no per-stratum split", "`frontier` has no per-stratum split"),
+        ("qwen3.8-flash costs more per reply", "claude-4.5 costs more per reply"),
+        ("v0.81 drops the interval", "v0.82 drops the interval"),
+        ("a 2:1 ratio of trials", "a 3:1 ratio of trials"),
+        ("the run at 10:30 has no cost", "the run at 11:30 has no cost"),
+        ("arm.a has no reading", "arm.b has no reading"),
+    ],
+)
+def test_needs_differing_in_a_word_that_is_no_key_or_minted_id_stay_apart(one: str, other: str) -> None:
+    digest = gap_digest([_record(1, one, at=0), _record(2, other, at=1)])
+
+    assert [group.count for group in digest.groups] == [1, 1], [group.normalized for group in digest.groups]
+
+
+#: An editor notice's evidence: its review held a must_fix, which names a claim, not the item.
+_LOW: Final[dict[str, Any]] = {
+    "editor_item": GapEditorItem(round=1, n=5, name="Confounds handled", score=1, reason="r", must_fix=True),
+    "workaround": None,
+}
 
 
 def test_suspect_groups_rank_first_then_must_fix_linked_then_the_rest_by_count_then_last_seen() -> None:
@@ -361,6 +413,7 @@ def test_suspect_groups_rank_first_then_must_fix_linked_then_the_rest_by_count_t
         _record(5, "a third capability", at=4),
         _record(6, "a linked capability", must_fix=True, at=5),
         _record(7, "a wrong result", kind="suspect", figure_keys=["{k}"], at=6),
+        _record(8, "the editor scored rubric item 5, Confounds handled, below 2", kind="editor_score", at=7, **_LOW),
     ]
 
     ranked = [group.need for group in gap_digest(records).groups]
@@ -369,9 +422,10 @@ def test_suspect_groups_rank_first_then_must_fix_linked_then_the_rest_by_count_t
         "a wrong result",
         "a linked capability",
         "a capability",
+        "the editor scored rubric item 5, Confounds handled, below 2",
         "a third capability",
         "another capability",
-    ]
+    ], "an editor notice whose review held a must_fix ranks with the rest: no finding is about its item"
 
 
 def test_a_suspect_groups_issue_text_carries_its_reproducing_keys_and_calls() -> None:
@@ -445,3 +499,121 @@ def test_the_editors_cut_carries_the_gap_note_with_its_kind() -> None:
 
     assert "capability_gap" in editor.input_schema()["properties"]["action"]["enum"]
     assert {"kind", "figure_keys", "calls"} <= set(editor.input_schema()["properties"])
+
+
+# --- the issue text quotes no caller and pings no one --------------------------------------------------------------
+
+
+def test_the_issue_text_names_no_caller_and_mentions_no_one() -> None:
+    record = _record(1, "ask @alice why the cost reads low", why="@bob said so")
+
+    (group,) = gap_digest([record]).groups
+
+    assert CALLER.identity not in group.body and "asked by" not in group.body
+    assert "@alice" not in group.title + group.body and "@bob" not in group.body
+    assert "@​alice" in group.title and "@​bob" in group.body
+
+
+# --- the bounds a stored gap is held to ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("arguments", "says"),
+    [
+        ({"need": "n" * 2001}, "need holds 2001 characters, past the 2,000 a gap keeps"),
+        ({"why": "w" * 2001}, "why holds 2001 characters"),
+        ({"workaround": "x" * 2001}, "workaround holds 2001 characters"),
+        ({"kind": "suspect", "figure_keys": [f"{{k{n}}}" for n in range(21)]}, "figure_keys names 21, past the 20"),
+        ({"kind": "suspect", "calls": [{"action": "measure_read"}] * 21}, "calls names 21, past the 20"),
+        ({"claim_ids": [f"c{n}" for n in range(21)]}, "claim_ids names 21, past the 20"),
+        ({"kind": "suspect", "figure_keys": ["k" * 501]}, "past the 500 a gap keeps"),
+        ({"kind": "suspect", "calls": [{"action": "measure_read", "x": "y" * 2001}]}, "calls [0] run past the 2,000"),
+    ],
+    ids=["need", "why", "workaround", "keys", "calls", "claims", "key-length", "call-size"],
+)
+async def test_a_gap_past_its_bounds_is_refused_with_its_remedy_and_stores_nothing(
+    arguments: dict[str, Any], says: str
+) -> None:
+    host = off_loop(seeded_host)
+    (spec,) = analyst_tools()
+    tool = eval_catalogue().mount(spec)
+
+    outcome = await tool.call(
+        {"action": "capability_gap", "snapshot_id": kairo_id(), **MISSING, **arguments}, host=host, caller=CALLER
+    )
+
+    assert outcome.refusal is not None and says in outcome.text, outcome.text
+    assert _gaps(host) == []
+
+
+def test_the_analyst_tool_that_stores_gaps_is_no_read_only_tool_and_stays_idempotent() -> None:
+    (spec,) = analyst_tools()
+    (editor_spec,) = analyst_tools(role="editor")
+    for mounted in (eval_catalogue().mount(spec), eval_catalogue().mount(editor_spec)):
+        assert (mounted.hints.read_only, mounted.hints.idempotent) == (False, True)
+        action = mounted.action("capability_gap")
+        assert action is not None and action.permission == "read" and action.appends
+
+
+def test_the_read_tool_says_a_read_may_append_a_feedback_record() -> None:
+    (spec,) = read_only_tools()
+
+    assert "may append a bounded, idempotent feedback record" in spec.description
+    assert "changes evaluation data" in spec.description
+
+
+def test_a_read_of_gaps_reads_the_newest_records_and_says_when_the_window_holds_more() -> None:
+    storage = off_loop(seeded_host).eval_host.storage
+    for n in range(3):
+        storage.save_analyst_gap(_record(n, f"need {n}", at=n))
+
+    read, more = storage.list_analyst_gaps(CALLER.scope_id, limit=2)
+    since, fewer = storage.list_analyst_gaps(CALLER.scope_id, limit=2, since=datetime(2026, 10, 28, 1, tzinfo=UTC))
+
+    assert [gap.need for gap in read] == ["need 1", "need 2"] and more
+    assert [gap.need for gap in since] == ["need 1", "need 2"] and not fewer
+
+
+async def test_a_digest_past_its_read_bound_is_refused_naming_a_later_since(monkeypatch: pytest.MonkeyPatch) -> None:
+    host = off_loop(seeded_host)
+    for n in range(3):
+        off_loop(host.eval_host.storage.save_analyst_gap, _record(n, f"need {n}", at=n))
+    monkeypatch.setattr(ops_analyst, "GAPS_READ_LIMIT", 2)
+    tool = eval_catalogue().mount(_evals_spec())
+
+    refused = await tool.call({"action": "analyst_gaps_list"}, host=host, caller=CALLER)
+    narrowed = await tool.call(
+        {"action": "analyst_gaps_list", "since": "2026-10-28T01:00:00+00:00"}, host=host, caller=CALLER
+    )
+
+    assert refused.refusal is not None and "more than 2 gaps in all" in refused.text and "later since" in refused.text
+    assert narrowed.refusal is None and "2 records" in narrowed.text
+
+
+# --- a gap the write cannot keep -----------------------------------------------------------------------------------
+
+
+async def test_gaps_that_cannot_be_read_ride_on_the_result_and_the_job_notes_it_on_its_attempt(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def unread(**_: Any) -> list[EvalAnalystGap]:
+        raise ValueError("a stored session out of shape")
+
+    monkeypatch.setattr(report_write_module, "write_gaps", unread)
+    host = off_loop(seeded_host)
+    model = FakeTurnModel(analyst=_analyst(), editor_1=_editor(reply(review(scores=(2, 2, 2, 2, 2, 2, 2)))))
+
+    with caplog.at_level(logging.ERROR):
+        result = await written(model, host=host)
+
+    assert result.ending == "stored" and result.stored is not None
+    assert result.gaps == () and result.gaps_not_stored is not None
+    assert "could not be read (ValueError: a stored session out of shape)" in result.gaps_not_stored
+    assert any("gaps could not be read" in record.getMessage() for record in caplog.records)
+
+    fixture = off_loop(ops_fixture)
+    (job,) = (await generate(fixture.host, fixture.campaign.id)).jobs
+    status = await settled(fixture.host, job.job_id)
+
+    assert status.status == "stored", "the generation's ending is unaffected"
+    assert any("gaps and notices were not stored" in fault for fault in status.faults), status.faults

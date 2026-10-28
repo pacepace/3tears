@@ -79,6 +79,7 @@ from threetears.evals.kernel.campaign import EvalGenerationSlot, generation_slot
 from threetears.evals.kernel.job_leases import (
     ANALYSIS_JOB,
     LEASE_WRITE_ATTEMPTS,
+    note_job_fault,
     settle_job_record,
     write_held_record,
 )
@@ -1487,6 +1488,8 @@ async def _write_doc_analysis(
         await ended("failed", f"the report writer failed after {tally.sent} turn(s) ({type(broke).__name__})")
         raise
     outcome = written.outcome
+    if written.gaps_not_stored is not None:
+        await _note_gaps_not_stored(eval_host, attempt, written)
     if not_stored is not None or written.stored is None:
         reason = (
             f"{not_stored}; any session it wrote before the store failed is under report document "
@@ -1570,6 +1573,30 @@ async def _write_doc_analysis(
         tally.sent,
         attempt.generator_model,
     )
+
+
+async def _note_gaps_not_stored(host: EvalHost, attempt: WrittenAttempt, written: ReportWritten) -> None:
+    """Note on the attempt that its report write's gaps were not stored, so ``job_poll`` shows it beside the ending.
+
+    The write recorded the failure on its logger and carried it on its result (``ReportWritten.gaps_not_stored``); a
+    note the store also refuses is recorded here at error level, and the job goes on to its ending either way.
+    """
+    entry = (
+        f"report writer: {len(written.gaps)} gaps and notices were not stored ({written.gaps_not_stored}); the "
+        "generation's ending is unaffected"
+    )
+    try:
+        await run_blocking(
+            host.blocking_executor,
+            note_job_fault,
+            host.storage,
+            ANALYSIS_JOB,
+            attempt.attempt_id,
+            attempt.scope_id,
+            entry,
+        )
+    except (ConflictError, StorageError) as unnoted:
+        contain(unnoted, log=log, what=f"eval.generate_analysis attempt {attempt.attempt_id}: {entry}", level="error")
 
 
 def _refuse_unstartable(host: EvalHost, campaign_id: str, scope_id: str, model: str | None) -> EvalCampaign:

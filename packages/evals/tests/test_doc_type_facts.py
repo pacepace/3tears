@@ -41,7 +41,7 @@ _OWN_SPACES: dict[type[Any], tuple[str, Any]] = {
 }
 
 #: What people author: the eight types decided at ``.26``, the campaign, at durable v16, and the analyst's gap notes, at
-#: durable v16.7, which nothing makes again — the types a core baseline reset never touches.
+#: a later durable minor, which nothing makes again — the types a core baseline reset never touches.
 DURABLE = frozenset(
     {
         "eval_template",

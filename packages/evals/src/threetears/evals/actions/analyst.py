@@ -29,6 +29,7 @@ never a parameter the model sets.
 from __future__ import annotations
 
 import functools
+import json
 from dataclasses import replace
 from typing import Annotated, Any, Literal, get_args
 
@@ -45,7 +46,8 @@ from threetears.evals.actions.catalogue import DEFAULT_PREFIX, Action, Caller, H
 from threetears.evals.actions.params import AnalysisId, CampaignId, SnapshotId
 from threetears.evals.actions.render import render_cited
 from threetears.evals.ops.analyst_blocks import figure_key_index, figure_key_pages
-from threetears.evals.kernel.analyst_gap import CallGapKind
+from threetears.evals.kernel.numbers import group_thousands
+from threetears.evals.kernel.analyst_gap import GAP_LIST_MAX, GAP_NAME_MAX_CHARS, GAP_TEXT_MAX_CHARS, CallGapKind
 from threetears.evals.ops.analyst import GapNoted, SnapshotFrozen, capability_gap, report_snapshot_freeze
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
@@ -55,6 +57,9 @@ ANALYST_CUT = "analyst"
 
 #: The help index's group for the freeze.
 SNAPSHOT_WORKFLOW = "Investigate: snapshot"
+
+#: A gap's text bound, as its refusals spell it.
+_TEXT_MAX = group_thousands(str(GAP_TEXT_MAX_CHARS))
 
 #: The help index's group for a noted capability gap.
 GAPS_WORKFLOW = "Investigate: gaps"
@@ -142,33 +147,46 @@ class CapabilityGapParams(EvalBaseModel):
     )
     need: Annotated[
         str,
-        Field(min_length=1, description="What you needed and no tool gave, as one capability; or what looks wrong."),
+        Field(
+            min_length=1,
+            description="What you needed and no tool gave, as one capability; or what looks wrong. At most 2,000 characters.",
+        ),
     ]
     why: Annotated[
         str,
-        Field(min_length=1, description="What you needed it for: the question it would answer; or why it looks wrong."),
+        Field(
+            min_length=1,
+            description="What you needed it for: the question it would answer; or why it looks wrong. At most 2,000 characters.",
+        ),
     ]
-    workaround: Annotated[str, Field(min_length=1, description="What you did instead, and go on doing.")]
+    workaround: Annotated[
+        str, Field(min_length=1, description="What you did instead, and go on doing. At most 2,000 characters.")
+    ]
     claim_ids: list[str] = Field(
-        default_factory=list, description="The claims of your report the workaround touches; empty for none yet."
+        default_factory=list,
+        description="The claims of your report the workaround touches, at most 20; empty for none yet.",
     )
     figure_keys: list[str] = Field(
-        default_factory=list, description="suspect: the figure keys whose readings look wrong, as you cite them."
+        default_factory=list,
+        description="suspect: the figure keys whose readings look wrong, as you cite them; at most 20.",
     )
     calls: list[dict[str, Any]] = Field(
         default_factory=list,
         description=(
             "suspect: the tool calls that return the result that looks wrong, each as you sent it: its action and its "
-            'other arguments ({"action": "measure_read", "measure_key": "cost"}).'
+            'other arguments ({"action": "measure_read", "measure_key": "cost"}); at most 20, each at most 2,000 '
+            "characters as JSON."
         ),
     )
 
     @model_validator(mode="after")
     def _suspect_reproduces(self) -> CapabilityGapParams:
-        """Refuse a suspect gap that names nothing to reproduce it by, and a call that names no action.
+        """Refuse a suspect gap that names nothing to reproduce it by, a call that names no action, and a gap past its
+        bounds (the store keeps each gap for good, so it keeps a note, never a transcript).
 
-        :raises ValueError: ``kind`` is ``suspect`` and neither ``figure_keys`` nor ``calls`` is given, or a call
-            names no action.
+        :raises ValueError: ``kind`` is ``suspect`` and neither ``figure_keys`` nor ``calls`` is given; a call names no
+            action; a text runs past :data:`GAP_TEXT_MAX_CHARS`, a list past :data:`GAP_LIST_MAX`, a key or claim id
+            past :data:`GAP_NAME_MAX_CHARS`, or a call's JSON past :data:`GAP_TEXT_MAX_CHARS`.
         """
         if self.kind == "suspect" and not self.figure_keys and not self.calls:
             raise ValueError(
@@ -177,6 +195,30 @@ class CapabilityGapParams(EvalBaseModel):
         unnamed = [index for index, call in enumerate(self.calls) if not str(call.get("action") or "").strip()]
         if unnamed:
             raise ValueError(f"each call names its action, as you sent it; calls {unnamed} name none")
+        for name in ("need", "why", "workaround"):
+            if len(getattr(self, name)) > GAP_TEXT_MAX_CHARS:
+                raise ValueError(
+                    f"{name} holds {len(getattr(self, name))} characters, past the {_TEXT_MAX} a gap keeps: "
+                    "say the one capability in a sentence or two, and leave the detail to the calls that show it"
+                )
+        for name in ("figure_keys", "calls", "claim_ids"):
+            if len(getattr(self, name)) > GAP_LIST_MAX:
+                raise ValueError(
+                    f"{name} names {len(getattr(self, name))}, past the {GAP_LIST_MAX} a gap keeps: name the few that "
+                    "show it, or note each gap on its own"
+                )
+        long = [text for text in (*self.figure_keys, *self.claim_ids) if len(text) > GAP_NAME_MAX_CHARS]
+        if long:
+            raise ValueError(
+                f"a figure key or claim id holds {len(long[0])} characters, past the {GAP_NAME_MAX_CHARS} a gap keeps: "
+                "name it as you cite it"
+            )
+        big = [index for index, call in enumerate(self.calls) if len(json.dumps(call)) > GAP_TEXT_MAX_CHARS]
+        if big:
+            raise ValueError(
+                f"calls {big} run past the {_TEXT_MAX} characters a gap keeps of each call as JSON: send "
+                "only the arguments that return the result"
+            )
         return self
 
 
@@ -265,6 +307,7 @@ def _snapshot_actions(gaps_kept_by: Literal["call", "write"]) -> tuple[Action, .
             params=CapabilityGapParams,
             result=GapNoted,
             handler=_GAP_HANDLERS[gaps_kept_by],
+            appends=gaps_kept_by == "call",
             render=render_cited,
             example={
                 "snapshot_id": _EXAMPLE_SNAPSHOT,

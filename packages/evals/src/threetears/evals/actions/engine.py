@@ -2332,11 +2332,13 @@ def engine_actions() -> tuple[Action, ...]:
                 "Every capability_gap call an analyst or editor made (missing: a capability no tool gave; suspect: a "
                 "result that looked wrong, with the keys and calls that reproduce it), and code's notices from report "
                 "writes (unresolved_key: a figure key that sent a draft back; editor_score: a rubric item scored 0 or "
-                "1). Gaps group by kind and need, the need compared with its case, spacing, punctuation and the ids "
-                "and keys it names set aside, and no model reads them. Groups rank suspect first, then those that "
-                "came with a must_fix finding, then the rest; within each, the larger count, then the later last "
-                "seen. Each group carries a title and a body to file as an issue as written, with its evidence. "
-                "Stores and posts nothing."
+                "1). Gaps group by kind and need, the need compared with its case, spacing, punctuation, the ids the "
+                "engine mints and the figure keys it names set aside, and no model reads them. Groups rank suspect "
+                "first, then those a must_fix finding is about (a gap touching a claim it names), then the rest; "
+                "within each, the larger count, then the later last seen. Each group carries a title and a body to "
+                "file as an issue, with its evidence and never the caller's identity, every @ kept from mentioning "
+                "anyone; the needs are what a model wrote, so read them before filing on a public tracker. At most "
+                "1,000 gaps a digest: a window holding more is refused, naming a later since. Stores and posts nothing."
             ),
         ),
         Action(

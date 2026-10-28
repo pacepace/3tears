@@ -7,26 +7,31 @@
 to the same text. The normalization, in order:
 
 1. Unicode NFKC, then case folded;
-2. every figure key (``{path|filter}``) and every backticked span becomes ``_key_``;
-3. every prefixed id (``report-snapshot:0193…``, ``gap:ab12…``, ``arm:1017``: a word, a colon, then a run holding a
-   digit) and every UUID or run of eight or more hex digits holding a digit becomes ``_id_``;
-4. every dotted path (a word starting with a letter, then one or more ``.part``: ``cost.unreported.qwen``) becomes
-   ``_key_``;
-5. every character that is not a letter, a digit, an underscore or whitespace becomes a space;
-6. runs of whitespace become one space, and the ends are trimmed.
+2. every id the engine mints becomes ``_id_``: a snapshot's (``report-snapshot:`` and 32 hex digits), a gap's
+   (``gap:`` and 16), a UUID, and a 32- or 64-hex digest;
+3. every figure key becomes ``_key_``: a braced key, a backticked span, or a dotted path, each only where the
+   figure-key grammar reads it as a key (``figure_keys.is_figure_key``: its filters known, its path a family's or an
+   arm's); a backticked span that is no key keeps its words;
+4. every character that is not a letter, a digit, an underscore or whitespace becomes a space;
+5. runs of whitespace become one space, and the ends are trimmed.
 
-So a need that differs only in case, spacing, punctuation, or the ids and keys it names joins its group, and one that
-differs in any word stays apart. No model reads a need: a paraphrase is a group of its own (D7: model grouping
-waits for a digest that shows paraphrase noise).
+So a need that differs only in case, spacing, punctuation, the ids the engine mints, or the figure keys it names joins
+its group, and one that differs in any other word stays apart: an action's name (`` `pivot` ``), a model id
+(``qwen3.8-flash``), a version (``v0.81``) and a ratio or a time (``2:1``, ``10:30``) are words. No model reads a
+need: a paraphrase is a group of its own (D7: model grouping waits for a digest that shows paraphrase noise).
 
-**Ranking.** ``suspect`` groups first (a result that looks wrong), then groups any of whose records came with a
-``must_fix`` finding, then the rest. Within each, the larger count first, then the later last-seen time, then the
+**Ranking.** ``suspect`` groups first (a result that looks wrong), then groups any of whose records a ``must_fix``
+finding is about (a model's gap touching a claim such a finding names; an ``editor_score`` notice never is, since a
+finding names no rubric item), then the rest. Within each, the larger count first, then the later last-seen time, then the
 kind and the normalized need in alphabetical order, so one store's digest reads in one order every time.
 
 **Issue text.** Each group carries a title and a body a host may post as an issue as written: what was needed and
 why, every distinct workaround, and each record's evidence (a ``suspect`` call's reproducing keys and tool calls, an
 ``unresolved_key`` notice's key and its bounce's verdicts, an ``editor_score`` notice's item, score and reason), with
-where each came from. The engine posts nothing: filing the issue is the host's, with its own credentials.
+where each came from: its snapshot, report, session, model and transcript, never the caller's identity. Every ``@`` in
+the text is followed by a zero-width space, so a quoted ``@name`` pings no one. The needs, whys and reasons are what a
+model wrote and may quote the campaign; a host filing them on a public tracker reads them first. The engine posts
+nothing: filing the issue is the host's, with its own credentials.
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ import unicodedata
 from collections.abc import Iterable, Sequence
 from typing import Final
 
+from threetears.evals.analysis.report.figure_keys import is_figure_key
 from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.kernel.analyst_gap import EvalAnalystGap, GapDigest, GapGroup
 
@@ -55,13 +61,20 @@ _SUSPECT, _MUST_FIX, _REST = 0, 1, 2
 _KEY_MARK: Final = " _key_ "
 _ID_MARK: Final = " _id_ "
 
-_BRACED_KEY = re.compile(r"\{[^{}]*\}")
-_BACKTICKED = re.compile(r"`[^`]*`")
-_PREFIXED_ID = re.compile(r"\b[\w-]+:[\w.-]*\d[\w.-]*")
-_HEX_ID = re.compile(r"\b(?=[0-9a-f-]*\d)[0-9a-f]{8,}(?:-[0-9a-f]{4,})*\b")
-_DOTTED_PATH = re.compile(r"\b[^\W\d_][\w-]*(?:\.[\w-]+)+\b")
+#: What the engine mints as an id: a snapshot's (``report_snapshot_id``), a gap's (``analyst_gap_id``), a UUID (a
+#: report, a run), and a sha256 digest whole or in its 32-digit form. Read after case folding.
+_MINTED_ID = re.compile(
+    r"report-snapshot:[0-9a-f]{32}\b|gap:[0-9a-f]{16}\b"
+    r"|\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|\b(?:[0-9a-f]{64}|[0-9a-f]{32})\b"
+)
+_BRACED = re.compile(r"\{[^{}]*\}")
+_BACKTICKED = re.compile(r"`([^`]*)`")
+_DOTTED = re.compile(r"(?<![\w.:-])[^\W\d_][\w:-]*(?:\.[\w-]+)+")
 _NOT_A_WORD = re.compile(r"[^\w\s]")
 _SPACES = re.compile(r"\s+")
+
+#: An ``@`` a posted issue never reads as a mention: the sign, then a zero-width space.
+_AT: Final = "@\u200b"
 
 #: The most characters of a need a title carries.
 _TITLE_NEED: Final = 100
@@ -76,11 +89,10 @@ def _normalized_need(need: str) -> str:
     :rtype: str
     """
     text = unicodedata.normalize("NFKC", need).casefold()
-    text = _BRACED_KEY.sub(_KEY_MARK, text)
-    text = _BACKTICKED.sub(_KEY_MARK, text)
-    text = _PREFIXED_ID.sub(_ID_MARK, text)
-    text = _HEX_ID.sub(_ID_MARK, text)
-    text = _DOTTED_PATH.sub(_KEY_MARK, text)
+    text = _MINTED_ID.sub(_ID_MARK, text)
+    text = _BRACED.sub(lambda found: _KEY_MARK if is_figure_key(found.group(0)) else found.group(0), text)
+    text = _BACKTICKED.sub(lambda found: _KEY_MARK if is_figure_key(found.group(1)) else found.group(1), text)
+    text = _DOTTED.sub(lambda found: _KEY_MARK if is_figure_key(found.group(0)) else found.group(0), text)
     text = _NOT_A_WORD.sub(" ", text)
     return _SPACES.sub(" ", text).strip()
 
@@ -127,9 +139,14 @@ def _group(kind: str, normalized: str, members: list[EvalAnalystGap]) -> GapGrou
         snapshots=_distinct(member.snapshot_id for member in members),
         reports=_distinct(member.report_doc_id for member in members if member.report_doc_id is not None),
         gap_ids=[member.id for member in members],
-        title=_title(kind, first.need),
-        body=_body(kind, members, must_fix=must_fix),
+        title=_unmentioned(_title(kind, first.need)),
+        body=_unmentioned(_body(kind, members, must_fix=must_fix)),
     )
+
+
+def _unmentioned(text: str) -> str:
+    """``text`` with every ``@`` followed by a zero-width space, so a host posting it pings no one it quotes."""
+    return text.replace("@", _AT)
 
 
 def _distinct(values: Iterable[str]) -> list[str]:
@@ -153,7 +170,7 @@ def _body(kind: str, members: list[EvalAnalystGap], *, must_fix: bool) -> str:
     )
     lines = [
         f"**Kind:** {kind}: {what}. {seen}",
-        f"**Came with a must_fix finding:** {'yes' if must_fix else 'no'}.",
+        f"**A must_fix finding is about it:** {'yes' if must_fix else 'no'}.",
         "",
         "**Need:**",
         *_bullets(member.need for member in members),
@@ -189,7 +206,6 @@ def _evidence(record: EvalAnalystGap) -> list[str]:
         where.append(f"model {record.model}")
     if record.transcript_digest is not None:
         where.append(f"transcript {record.transcript_digest}")
-    where.append(f"asked by {record.created_by}")
     lines = [f"- {record.id}, {record.created_at}: {'; '.join(where)}"]
     if record.claim_ids:
         lines.append(f"  - claims: {', '.join(record.claim_ids)}")

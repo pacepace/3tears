@@ -1,7 +1,7 @@
 """The durable space's shape is pinned, and it is the one space where a major must ship an upgrader.
 
 ``schema/versioning.py`` splits what people author (templates, rubric dims, judge configs and their tombstones, case
-sets, test cases, calibration ratings, since durable v16 campaigns, and since v16.7 the analyst's gap notes) out of
+sets, test cases, calibration ratings, since durable v16 campaigns, and since a later minor the analyst's gap notes) out of
 the evidence core into a version space of its own, forked from core v15 at ``.26``. The core may reset its baseline (a stamp and a refusal, no steps); the durable space never does, so
 this file is the gate that holds it to its promise:
 
@@ -98,7 +98,7 @@ PINNED_DURABLE_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
     "eval_campaign": frozenset(
         {"id", "doc_type", "schema_version", "scope_id", "subject_id", "behavior", "archived", "created_at"}
     ),
-    "eval_analyst_gap": frozenset({"id", "doc_type", "schema_version", "scope_id"}),
+    "eval_analyst_gap": frozenset({"id", "doc_type", "schema_version", "scope_id", "created_at"}),
 }
 
 #: The frozen durable corpus: one directory per durable major, one stored document per durable type.

@@ -8,14 +8,16 @@ item the editor scored 0 or 1 (``editor_score``, with the item, its score and re
 ``must_fix`` finding). Each is one :class:`EvalAnalystGap`, what was said and where, deciding nothing.
 
 **Durable.** Nothing makes a gap again: it is what a model said in a paid session, or what code saw during one, and a
-session a write did not store is gone once the write ends. So the type is ``durable`` (durable v16.7), outliving every
+session a write did not store is gone once the write ends. So the type is ``durable`` (a durable minor), outliving every
 core baseline reset and never swept by ``EvalStorage.drop_derived``.
 
 **One record per call.** A record's id is the call's own (:func:`analyst_gap_id`): a model's gap is named by its
 snapshot, kind, need and why, so a replay or a retried write over the same snapshot names the gap it named before, and
 the store keeps the first (``EvalStorage.save_analyst_gap``, create-only). A ``missing`` gap's id is the one
-``capability_gap`` returned before kinds existed. A notice is named by its snapshot, kind, session, and the submission
-and key, or the review round and item, it records.
+``capability_gap`` returned before kinds existed. A notice is named by its snapshot, kind, session and that session's
+transcript digest, and the submission and key, or the review round and item, it records: a byte-for-byte replay of a
+write names the notices it named before, and a second paid write on the same snapshot, whose transcripts differ,
+names its own.
 
 **Provenance.** The snapshot always; inside a report write, the report the write stored (``None`` when it stored
 none), the session's role and name, the model, and the session's transcript digest as the write's tally holds it;
@@ -62,6 +64,16 @@ CallGapKind = Literal["missing", "suspect"]
 
 #: The type of a stored gap's ``kind``: one of :data:`GAP_KINDS`, or a newer minor's.
 StoredGapKind = Annotated[GapKind, known_unless_newer_minor("gap kind", GAP_KINDS)]
+
+#: The most characters a gap call's need, why or workaround holds, and each of its calls as JSON: a note of one
+#: capability, not a transcript, so a durable record stays small.
+GAP_TEXT_MAX_CHARS: Final = 2_000
+
+#: The most figure keys, calls or claim ids one gap call names.
+GAP_LIST_MAX: Final = 20
+
+#: The most characters one figure key or claim id a gap call names holds.
+GAP_NAME_MAX_CHARS: Final = 500
 
 #: How many hex digits of the sha256 a gap id carries.
 _GAP_DIGITS: Final = 16
@@ -173,8 +185,9 @@ class EvalAnalystGap(DurableDocumentModel):
     must_fix: bool = Field(
         default=False,
         description=(
-            "Whether a must_fix finding came with it: the review that scored an editor_score item held one, or a "
-            "review's must_fix finding names a claim a model's gap touches."
+            "Whether a must_fix finding is about it: a review's must_fix finding names a claim a model's gap touches. "
+            "A finding names no rubric item, so an editor_score notice is never linked; its item says whether its "
+            "review held one."
         ),
     )
 
@@ -216,7 +229,7 @@ class GapGroup(EvalBaseModel):
     count: int = Field(ge=1, description="How many records the group holds within the digest's window.")
     first_seen: str = Field(description="The first record's time.")
     last_seen: str = Field(description="The last record's time.")
-    must_fix: bool = Field(description="Whether any record came with a must_fix finding.")
+    must_fix: bool = Field(description="Whether a must_fix finding is about any of its records.")
     snapshots: list[str] = Field(description="The snapshots its records were noted against, in first-seen order.")
     reports: list[str] = Field(description="The stored reports its records came from, in first-seen order.")
     gap_ids: list[str] = Field(description="Its records' ids, in first-seen order.")
@@ -245,6 +258,9 @@ class GapDigest(EvalBaseModel):
 
 
 __all__ = [
+    "GAP_LIST_MAX",
+    "GAP_NAME_MAX_CHARS",
+    "GAP_TEXT_MAX_CHARS",
     "CallGapKind",
     "EvalAnalystGap",
     "GapBounce",

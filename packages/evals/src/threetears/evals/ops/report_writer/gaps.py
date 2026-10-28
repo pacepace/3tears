@@ -13,7 +13,13 @@ what it already holds (:func:`write_gaps`):
   their verdicts are the write's own checker's (:class:`CheckedDrafts`, wrapping the checker the write hands the loop),
   and each key is read by the renderer the check reads it by (``figure_keys.render``);
 - **a low score** (``editor_score``): each rubric item a review scored 0 or 1, with its score and reason, and whether
-  that review held a ``must_fix`` finding.
+  that review held a ``must_fix`` finding. That is evidence, not a link: a finding names a claim and never a rubric
+  item, so no finding can be shown to be about the item, and the notice is not ranked as ``must_fix``-linked.
+
+**Keys live in prose.** Every field a report document cites a figure key in is a prose field
+(``kernel.report_doc.report_doc_prose``), so a key is read there and nowhere else. A verdict at any other field (a
+block's query, a strict build's refusal of a block) is about the block, whose query names arms and measures, never a
+key, and writes no ``unresolved_key`` notice.
 
 A notice's need is code's words (``_NOTICE_NEEDS``), so notices of one item, or of any key, group exactly. Nothing
 here reads a need, a reason or a finding's words, or chooses anything by them: the records hold what was said.
@@ -262,7 +268,15 @@ def _unresolved(
 ) -> EvalAnalystGap:
     kind = "unresolved_key"
     return EvalAnalystGap(
-        id=analyst_gap_id(provenance.snapshot_id, kind, ANALYST_SESSION, str(submission), path, key),
+        id=analyst_gap_id(
+            provenance.snapshot_id,
+            kind,
+            ANALYST_SESSION,
+            provenance.transcripts.get(ANALYST_SESSION, ""),
+            str(submission),
+            path,
+            key,
+        ),
         kind=kind,
         need=_NOTICE_NEEDS[kind].format(key=key),
         why=refused,
@@ -288,7 +302,7 @@ def _low_scores(reviews: Sequence[Review], provenance: _Provenance) -> Iterator[
             if item.score >= 2:
                 continue
             yield EvalAnalystGap(
-                id=analyst_gap_id(provenance.snapshot_id, kind, session, str(item.n)),
+                id=analyst_gap_id(provenance.snapshot_id, kind, session, provenance.transcripts.get(session, ""), str(item.n)),
                 kind=kind,
                 need=_NOTICE_NEEDS[kind].format(n=item.n, name=item.name),
                 why=item.reason.strip() or _NO_REASON,
@@ -300,6 +314,8 @@ def _low_scores(reviews: Sequence[Review], provenance: _Provenance) -> Iterator[
                     reason=item.reason,
                     must_fix=review.must_fix,
                 ),
-                must_fix=review.must_fix,
+                # A finding names a claim, never a rubric item, so no must_fix finding can be shown to be about this
+                # item: the review's must_fix is evidence on the item, and the notice ranks with the rest.
+                must_fix=False,
                 **provenance.of(session, "editor"),
             )

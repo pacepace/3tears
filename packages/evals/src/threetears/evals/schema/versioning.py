@@ -536,8 +536,8 @@ DURABLE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyTyp
         "judge_config_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
         "case_set": _ADDRESSED_EVERYWHERE | {"name", "version"},
         "eval_campaign": _ADDRESSED_EVERYWHERE | {"subject_id", "behavior", "archived", "created_at"},
-        # Listed by scope alone (``EvalStorage.list_analyst_gaps``), its time read off each document.
-        "eval_analyst_gap": _ADDRESSED_EVERYWHERE,
+        # Listed newest first by its time, a bounded read (``EvalStorage.list_analyst_gaps``).
+        "eval_analyst_gap": _ADDRESSED_EVERYWHERE | {"created_at"},
     }
 )
 

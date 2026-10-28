@@ -1644,24 +1644,34 @@ class EvalStorage:
             return False
         return True
 
-    def list_analyst_gaps(self, scope_id: str, *, since: datetime | None = None) -> list[EvalAnalystGap]:
-        """Every analyst gap and notice in a scope, oldest first, or those stored at or after ``since``.
+    def list_analyst_gaps(
+        self, scope_id: str, *, limit: int, since: datetime | None = None
+    ) -> tuple[list[EvalAnalystGap], bool]:
+        """The newest analyst gaps and notices in a scope, at most ``limit``, oldest first, stored at or after ``since``.
 
-        Oldest is by ``created_at``, then the id, so one listing reads in one order on every store. ``since`` is read
-        against each record's own time, in memory: the store keeps no range predicate.
+        A bounded read: the store is asked for the newest ``limit + 1`` records by ``created_at`` (an addressing field)
+        and nothing else, and ``since`` is read against each record's own time, so a window holding more than ``limit``
+        records says so rather than reading every record the scope holds. Oldest is by ``created_at``, then the id.
 
         :param scope_id: The scope to read.
         :ptype scope_id: str
+        :param limit: The most records returned, at least 1.
+        :ptype limit: int
         :param since: An aware time; only the records stored at or after it. ``None`` for every one.
         :ptype since: datetime | None
-        :return: The gaps.
-        :rtype: list[EvalAnalystGap]
+        :return: The records, and whether the window holds more than ``limit`` (the oldest were left unread).
+        :rtype: tuple[list[EvalAnalystGap], bool]
+        :raises ValueError: ``limit`` is below 1.
         :raises ValidationError: A stored gap does not read under this build's model.
         """
-        gaps = self._hydrate_all(EvalAnalystGap, self._store.by_doc_type("eval_analyst_gap", scope_id))
+        if limit < 1:
+            raise ValueError(f"a read of gaps reads at least one, not {limit}")
+        rows = self._store.by_doc_type("eval_analyst_gap", scope_id, order_by="created_at", limit=limit + 1)
+        gaps = self._hydrate_all(EvalAnalystGap, rows)
         if since is not None:
             gaps = [gap for gap in gaps if datetime.fromisoformat(gap.created_at) >= since]
-        return sorted(gaps, key=lambda gap: (datetime.fromisoformat(gap.created_at), gap.id))
+        newest = sorted(gaps, key=lambda gap: (datetime.fromisoformat(gap.created_at), gap.id), reverse=True)
+        return sorted(newest[:limit], key=lambda gap: (datetime.fromisoformat(gap.created_at), gap.id)), len(newest) > limit
 
     def save_analysis_attempt(self, attempt: EvalAnalysisAttempt, *, if_match: str | None = None) -> None:
         """Persist one generation attempt's record in the scope it names; conditionally when ``if_match`` is given.
