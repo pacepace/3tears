@@ -533,6 +533,9 @@ class ArmEstimate(EvalBaseModel):
     :ivar call_ceiling_lower_bound: Whether ``call_ceiling_usd`` is a floor under the arm's largest call rather than
         its exact ceiling — a subject kind's, priced with its transcripts left out
         (:attr:`~threetears.evals.run.CallCeiling.lower_bound`). Its largest call is reserved at that or more.
+    :ivar call_ceiling_estimate: Whether ``call_ceiling_usd`` is built on rates the host's pricer does not guarantee
+        (:attr:`~threetears.evals.run.CallCeiling.estimate`): the arm's cap is checked against an estimate. Left out
+        of the JSON while false.
     """
 
     described: str
@@ -551,6 +554,7 @@ class ArmEstimate(EvalBaseModel):
     band_high_usd: float | None = None
     call_ceiling_usd: float | None = None
     call_ceiling_lower_bound: bool = False
+    call_ceiling_estimate: bool = Field(default=False, exclude_if=lambda value: value is False)
 
 
 class DetectableEffect(EvalBaseModel):
@@ -1024,6 +1028,7 @@ def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimat
         remedy=arm.remedy,
         call_ceiling_usd=plan.call_ceiling.usd if plan is not None and plan.call_ceiling is not None else None,
         call_ceiling_lower_bound=plan is not None and plan.call_ceiling is not None and plan.call_ceiling.lower_bound,
+        call_ceiling_estimate=plan is not None and plan.call_ceiling is not None and plan.call_ceiling.estimate,
     )
 
 
@@ -1518,6 +1523,11 @@ def estimate_text(estimate: LaunchEstimate) -> str:
         )
         # one line: an arm's description is its repr'd model and template id and its counts (run.launch)
         lines.append(f"- {arm.described}: {figure} — {arm.outcome}; {arm.basis}")
+        if arm.call_ceiling_estimate:
+            lines.append(
+                "  its cap is checked against estimated rates: its largest call is bounded on rates the host's "
+                "pricer does not guarantee"
+            )
         if arm.refusal is not None:
             lines.append(f"  refused: {arm.refusal}")
             lines.append(f"  remedy: {arm.remedy}")

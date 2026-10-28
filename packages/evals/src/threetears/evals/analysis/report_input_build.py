@@ -57,7 +57,7 @@ from typing import Any, Literal
 
 from threetears.evals.analysis.arms import writer_arms
 from threetears.evals.analysis.bundle.caps import capped_text
-from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS, AnalysisContextBundle, TrialRow
+from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS, AnalysisContextBundle, ArmPricing, TrialRow
 from threetears.evals.analysis.campaign_bundle import CAMPAIGN_MESSAGE_CHARS_PER_ASPECT, KIND_MEANS, CampaignBundle
 from threetears.evals.analysis.campaign_readings import AspectReading, PairReading
 from threetears.evals.analysis.depth import REPEATS_FLOOR
@@ -74,6 +74,7 @@ from threetears.evals.analysis.report_input import (
     Contrast,
     ContrastFamily,
     Criterion,
+    Disclosure,
     Depth,
     Example,
     FailedTrials,
@@ -85,6 +86,7 @@ from threetears.evals.analysis.report_input import (
     PairRead,
     PassK,
     Precision,
+    Pricing,
     PriorInsight,
     Reading,
     ReportInput,
@@ -96,7 +98,7 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Unanswered,
 )
-from threetears.evals.analysis.report.words import declared_arm_names
+from threetears.evals.analysis.report.words import declared_arm_names, printed_arm_labels
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import VariantIndexEntry
@@ -292,12 +294,15 @@ class _Builder:
         seen: set[str] = set()
         roles = {key: arm.role for arm in bundle.arms for key in bundle.arm_keys(arm)}
         declared = declared_arm_names(bundle.arms)
+        # The name each arm is printed by: a label a person gave as written, one code computed by the display rule.
+        printed = printed_arm_labels(bundle)
         for key in [*(arm.variant_key for arm in bundle.arms), *entries]:
             label = self.arm(key)
             if label in seen:
                 continue
             seen.add(label)
             levers = self.levers(key, entries)
+            name = printed.get(key, label)
             model = served.get(label) or levers.pop(CANDIDATE_MODEL_LEVER, (None, None))[1]
             levers.pop(CANDIDATE_MODEL_LEVER, None)
             if roles.get(key) != "control" and control is not None:
@@ -312,7 +317,7 @@ class _Builder:
             arms.append(
                 Arm(
                     id=label,
-                    name=label,
+                    name=name,
                     role="control" if roles.get(key) == "control" else "challenger",
                     served_model=model,
                     variant_key=key,
@@ -526,24 +531,22 @@ class _Builder:
                 cases=row.cases,
                 reply_cost_usd=row.reply_cost_usd,
                 test_cost_usd=row.test_cost_usd,
-                # Only where a role counted them, so an arm none counted for carries no key.
-                **(
-                    {
-                        "unanswered": {
-                            held.role: Unanswered(
-                                retried=held.retried,
-                                lost=held.lost,
-                                reasons=held.reasons,
-                                calls=held.calls,
-                                share=held.share,
-                                uncounted=held.results_uncounted,
-                            )
-                            for held in row.unanswered
-                        }
-                    }
-                    if row.unanswered
-                    else {}
-                ),
+                # Only where a role counted them: None for an arm none counted for, which its document leaves out.
+                unanswered={
+                    held.role: Unanswered(
+                        retried=held.retried,
+                        lost=held.lost,
+                        reasons=held.reasons,
+                        calls=held.calls,
+                        share=held.share,
+                        uncounted=held.results_uncounted,
+                    )
+                    for held in row.unanswered
+                }
+                if row.unanswered
+                else None,
+                # None where the census read none, which the row leaves out of its document.
+                pricing=_pricing(row.pricing),
             )
             for row in aspect.scoreboard
         }
@@ -587,6 +590,11 @@ class _Builder:
                         cell_concurrency=rig.cell_concurrency,
                         execution_modes=rig.execution_modes,
                         rubric_scales=rig.rubric_scales,
+                        disclosure=(
+                            Disclosure(values=rig.run_disclosure.values, statements=rig.run_disclosure.statements)
+                            if rig.run_disclosure is not None
+                            else None
+                        ),
                     )
                 )
         return held or None
@@ -1240,3 +1248,10 @@ def _rounded(node: Any) -> Any:
     if isinstance(node, float) and math.isfinite(node) and node != 0:
         return round(node, PLANNER_FIGURES - 1 - math.floor(math.log10(abs(node))))
     return node
+
+
+def _pricing(held: ArmPricing | None) -> Pricing | None:
+    """An arm's pricing as the bundle's census read it, copied into the report input; None where it read none."""
+    if held is None:
+        return None
+    return Pricing(sources=held.sources, providers=held.providers, calls=held.calls, priced_calls=held.priced_calls)

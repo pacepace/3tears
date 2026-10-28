@@ -18,11 +18,14 @@ findings left open, and the made line.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Literal
 
 from pydantic import Field
 
 from threetears.evals.analysis.report.blocks import TableBlock
+from threetears.evals.analysis.report.doc_page.words import CAVEATS_TEMPLATE
+from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.analysis.report.plan_page.model import PageArmsKey, PageChart, PageMasthead, PageSlot
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
@@ -37,6 +40,7 @@ __all__ = [
     "DocOmitted",
     "DocPage",
     "DocTerm",
+    "caveats_line",
 ]
 
 
@@ -87,7 +91,10 @@ class DocClaim(EvalDocumentModel):
     text: ModelProse = Field(description="The claim, its keys written out.")
     weight: Literal["lead", "support", "detail"] = Field(description="Its weight, which sets its type size alone.")
     evidence: list[DocEvidence] = Field(description="The one or two blocks that show it.")
-    caveats: list[str] = Field(description="The labels of the caveats the document lands beside it, in its order.")
+    caveats: list[str] = Field(
+        description="The labels of the caveats the document lands beside it, in its order, each distinct label once "
+        "(a label several share says how many and the arms their records name)."
+    )
 
 
 class DocTerm(EvalDocumentModel):
@@ -95,7 +102,9 @@ class DocTerm(EvalDocumentModel):
 
     term: ModelProse
     text: ModelProse
-    caveats: list[str] = Field(description="The labels of the caveats landed on it, in the document's order.")
+    caveats: list[str] = Field(
+        description="The labels of the caveats landed on it, in the document's order, each distinct label once."
+    )
 
 
 class DocNext(EvalDocumentModel):
@@ -145,3 +154,19 @@ class DocPage(EvalDocumentModel):
     method: list[DocTerm] = Field(description="The method's terms, each with the caveats landed on it.")
     findings: list[DocFinding] = Field(description="The editor's findings left unresolved.")
     made: str = Field(default="", description="How the page was made, in one line; empty for none.")
+
+
+def caveats_line(labels: Sequence[str]) -> str:
+    """The line beside a claim or a Method term naming the caveats landed on it, as every writer prints it.
+
+    The labels are already one per distinct label (the page builder says a shared label once); the Markdown, text and
+    HTML writers each wrap this one line, so the three never word it apart.
+
+    :param labels: The landed caveats' labels (:attr:`DocClaim.caveats`, :attr:`DocTerm.caveats`).
+    :ptype labels: Sequence[str]
+    :return: The line, each label on one line; empty for no label.
+    :rtype: str
+    """
+    if not labels:
+        return ""
+    return CAVEATS_TEMPLATE.format(labels="; ".join(one_line(label) for label in labels))

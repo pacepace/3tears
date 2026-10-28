@@ -23,6 +23,7 @@ from threetears.evals.schema.versioning import (
     CORE_BASELINE_VERSION,
     CORE_SCHEMA_VERSION,
     REGENERABLE_SCHEMA_VERSION,
+    REPORT_DOC_SCHEMA_VERSION,
     VersionSpace,
 )
 from threetears.evals.schema.models import (
@@ -30,9 +31,11 @@ from threetears.evals.schema.models import (
     EvalResult,
     EvalRun,
 )
+from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.kernel.identity import IDENTITY_VERSION
 from packages.evals.tests.factories import memory_storage
+from packages.evals.tests.schema_pin_support import ADDED_AT_MAJOR
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.stored_models import doc_type_of, sampled_model_names, stored_models, stored_sample
 
@@ -335,11 +338,13 @@ def test_every_stored_model_refuses_a_field_it_does_not_declare(model: type[Eval
         model.from_dict({**document, "written_by_a_newer_build": True})
 
 
+#: The regenerable models with a version space of their own: the cassette's, and a report document's and its sessions'.
+_OWN_SPACES: frozenset[type[EvalBaseModel]] = frozenset({EvalCassette, EvalReportDoc, EvalReportSession})
+
+
 def _regenerable_models() -> list[type[EvalBaseModel]]:
-    """The regenerable models governed by ``REGENERABLE_SCHEMA_VERSION``: every one but the cassette, which has its own."""
-    return [
-        model for model in stored_models() if not issubclass(model, CoreDocumentModel) and model is not EvalCassette
-    ]
+    """The regenerable models governed by ``REGENERABLE_SCHEMA_VERSION``: every one but those with a space of their own."""
+    return [model for model in stored_models() if not issubclass(model, CoreDocumentModel) and model not in _OWN_SPACES]
 
 
 def _core_models() -> list[type[EvalBaseModel]]:
@@ -375,6 +380,28 @@ def test_a_cassette_refuses_a_document_from_another_cassette_version_naming_the_
     assert f"reads cassette format v{CASSETTE_SCHEMA_VERSION} only" in str(refused.value)
     assert "re-capture the template" in str(refused.value)
     assert "a new corpus" in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    "version",
+    sorted({REPORT_DOC_SCHEMA_VERSION - 1, REPORT_DOC_SCHEMA_VERSION + 1, REGENERABLE_SCHEMA_VERSION}),
+    ids=str,
+)
+@pytest.mark.parametrize("model", [EvalReportDoc, EvalReportSession], ids=lambda model: model.__name__)
+def test_a_report_document_or_session_refuses_another_report_version_naming_the_rewrite(
+    model: type[EvalBaseModel], version: int
+) -> None:
+    """A report document or session at any report version but this build's does not load, and says to write it again.
+
+    The shared regenerable version is among those refused: a report is never read against the analyses' number.
+    """
+    document = stored_sample(model)
+
+    with pytest.raises(ValidationError) as refused:
+        model.from_dict({**document, "schema_version": version})
+    assert f"written under report document schema v{version} " in str(refused.value)
+    assert f"reads report document schema v{REPORT_DOC_SCHEMA_VERSION} only" in str(refused.value)
+    assert "writes each report again from a fresh snapshot" in str(refused.value)
 
 
 def test_a_cassette_at_this_build_s_cassette_version_loads() -> None:
@@ -426,11 +453,19 @@ def test_every_core_model_refuses_a_document_at_a_version_it_does_not_read(
         model.from_dict({**document, "schema_version": version})
 
 
-@pytest.mark.parametrize(("model", "version"), _versioned(lambda space: range(space.baseline, space.version + 1)))
+@pytest.mark.parametrize(
+    ("model", "version"),
+    [
+        param
+        for param in _versioned(lambda space: range(space.baseline, space.version + 1))
+        if param.values[1] >= ADDED_AT_MAJOR.get(doc_type_of(param.values[0]), 0)  # type: ignore[operator]
+    ],
+)
 def test_every_core_model_reads_a_document_at_every_version_from_the_baseline(
     model: type[EvalBaseModel], version: int
 ) -> None:
-    """A kept document at any version from its space's baseline to this build's reads, at this build's version."""
+    """A kept document at any version from its space's baseline (or the major its type was added in) to this build's
+    reads, at this build's version."""
     document = _document_at(model, version)
 
     read = model.from_dict({**document, "schema_version": version})

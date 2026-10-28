@@ -413,11 +413,13 @@ def _usd(value: float, spec: str) -> str:
 
 @pytest.mark.parametrize("costs", [(0.00042, 0.00018), (0.002, 0.0002), (0.0000042, 0.0000018)])
 def test_a_cost_axis_at_a_real_reply_cost_prints_distinct_ticks_none_reading_as_zero(costs: tuple[float, ...]) -> None:
-    """A reply costs a fraction of a cent, so the chart draws cost per 1,000 replies and gives the axis the digits its
-    ticks need: every tick past the origin prints a figure of its own, none of them zero."""
+    """A reply costs a fraction of a cent, so the chart draws cost per 1,000 replies (per 1,000,000 where a cost is
+    under a cent even per 1,000, the one owner's ruler) and gives the axis the digits its ticks need: every tick past
+    the origin prints a figure of its own, none of them zero."""
     _, data = _drawn(_cost_chart(*costs))
-    assert [p["x"] for p in data["points"]] == pytest.approx([cost * 1000 for cost in costs])
-    assert data["x_title"] == "Cost per 1,000 replies ($)"
+    count = 1000 if min(costs) * 1000 >= 0.01 else 1_000_000
+    assert [p["x"] for p in data["points"]] == pytest.approx([cost * count for cost in costs])
+    assert data["x_title"] == f"Cost per {count:,} replies ($)"
     spec = data["x_fmt"]
     assert re.fullmatch(r"usd:\d", spec)
     labels = [_usd(tick, spec) for tick in _nice_ticks(data["x_domain"][1])]

@@ -6,6 +6,383 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: analyst skill round 2: the Kairo review's findings, the misfits' and the planner re-record's, in the skill and the editor
+
+**Changed:** the analyst skill and the report editor's rubric carry what the W3 acceptance runs' reviews found, as
+general guidance: every caveat code attaches to the evidence a claim rests on is carried beside it with its likely
+direction, measured telemetry included, and no finding is called immune to the caveats while one could move it; the
+deciding measure's coverage is stated; a claim about a gap draws the gap, its percent on the same basis; a caption
+describes only what its block draws; a count written as a word comes from a key; a saving is written as its size with
+its direction in words; one measure keeps one name; a rerun is sized at the size that settles four times in five;
+Watch cites code's weakest margin by its keys and names every thin leg a route rests on; a headline and its own block
+never disagree. The editor treats a page its own evidence contradicts, a sign that contradicts its sentence, and an
+immunity line a caveat on its evidence could move as must_fix. The Kairo reasoning note no longer says the caveats
+leave cost untouched. The skill's digest moves with it.
+
+**Added:** the editor is handed one more computed fact, `caveat_not_carried`: a caveat code attaches to a contrast a
+claim's evidence reads that neither the claim nor the confidence carries (a method-reach caveat landed on a Method term
+counts as carried). Evidence reads a contrast when a block names the contrast's measure for its arm, or reads the
+contrasts source with no measure named, or when a key in the claim names its arm and measure. A block that reads every
+reading of an aspect without naming the contrast's measure does not count as reading it, and a caveat the confidence
+carries satisfies the fact even where its clause calls the finding untouched; the editor's must_fix rule (a finding
+called immune while a caveat on its evidence could move it) covers what the fact misses. Like every fact it never
+refuses and is the editor's to weigh. `contrasts_list` and the fact name a contrast's figures and its confounds through
+one shared pair, `analysis.analyst.facts.contrast_key` and `confound_caveat_id` (new, provisional).
+
+**Changed:** an analyst submission is checked in one pass by the store gate's checker, its validity included, so one
+bounce carries every verdict, each with its remedy, where a validity fault used to bounce alone, without its remedy,
+and cost a bounce of its own. The tally still counts that bounce as `validity`.
+
+**Changed:** on a report document's page, caveats that share a label beside one claim or Method term print that label
+once, saying how many carry it, in words, and the arms their records name (`A run fell short of its usable
+measurements — two of them, on qwen3.8-flash (A)`), where the label printed once per caveat; Markdown, text and HTML
+print the same line.
+
+A host needs no code change.
+
+### evals: the report view serves the stored report document, and reads code-only, never refused, what it no longer reads
+
+**Changed:** `report_read` (and `campaign_report`, the command line's `report`, the quick path's page) lays out the
+campaign's newest analysis by what wrote it. A `doc` analysis, the one `analysis_generate` stores now, is the page its
+stored report document draws on its own snapshot, its made line at its foot, read as a stored document is: a figure
+that no longer resolves prints `—`, a block that no longer draws prints its values or its caption, with one note to
+regenerate. Markdown, HTML and the static HTML (no `<script>`, no `<link>`, no URL: it serves under Discodon's
+`REPORT_HTML_POLICY` unchanged) are that page; the JSON form is the campaign's JSON, every member it carried, plus
+`report_doc`: the stored document, its id, its snapshot, its ending, its findings, its made line and its generation
+record (sessions by digest, turns and ref, never a transcript), `null` on any other page. Every `plan` analysis (the
+report planner's) and a report document this version no longer reads (its version, its model, a snapshot gone or
+holding no bundle) read as the code-only page with one line on its first screen, "written in a shape this version no
+longer reads; regenerate with analysis_generate", never refused; no planner page is reached from the report read (the
+planner's page stays for the reporter kind, and for `analysis_report` by id). That line is one constant
+(`report.campaign.memo_blocks.NO_LONGER_READS`), which `ReportDocument.needs_regeneration` (new) and the analysis
+listing's `needs_regeneration` print byte for byte: the listing now sets it on every `plan` analysis, and leads with it
+where a plan or document no longer reads, the reason after it in parentheses. A memo analysis reads as before.
+`ReportDocument.plan` is replaced by `doc` (the stored `report-doc/1` JSON for a `doc` analysis), with no alias; a
+host reading only `.body` (Discodon) changes nothing. `ReportDocument.analysis_id` names the analysis a code-only
+page stands in for, `basis` reading `code_only` there. Such a stand-in never reads as a campaign never analysed: its
+`needs_regeneration` (the JSON body's new member too, `null` on every other page) is the line, then why in parentheses.
+A document's page carries no memo `recommendation`: the arms its document recommends are `report_doc.doc.recommends`.
+With `trials="all"`, a document's page is followed, closed, by an "Evidence record": each aspect's fold as the
+code-only page draws it, every failed or lost trial's record in it, the document above it as stored; `trials="table"`
+lays out the document alone. Every document's readings and folds are laid out over the campaign as its snapshot
+declared it, so a version written before the campaign relabelled or gained an aspect reads as written.
+
+**Added:** `report_read(report_doc_id=, include_sessions=)` and the action's two arguments: `report_doc_id` reads one
+of the campaign's stored report documents, any version (`analysis.service.report_doc_report`; one of another campaign
+or of none is refused as not found, the campaign checked as soon as the record loads, before its snapshot is read),
+and `include_sessions` adds, to the JSON form's `report_doc`, `sessions`: every
+session that wrote it, by name, each its stored `eval_report_session` whole (the audit read, #977). A Markdown or HTML
+page never holds a transcript, so `include_sessions` with either is refused, saying to ask for `json`; a read without
+it loads no session. `CampaignReport` gains `doc_page`, `report_doc` and `unread_analysis_id`;
+`analysis.report_doc_store.read_report_doc` reads a stored document back as its page.
+
+**Fixed:** `analysis_generate`'s attempt, ending after its report document is stored and before its analysis is (a
+failure or a cancel), names the document and that `delete_report_doc` removes it, since no analysis links it; the
+error raised where the snapshot holds no bundle names the stored document again. The out-of-run ledger's totals line
+counts each way its calls were admitted (`1 admitted at up to $0.0300, 2 admitted by a report budget, 1 admitted
+unbounded`), and a scope whose calls were all unbounded no longer reads "admitted at up to $0.0000". The ledger keeps
+its four decimals (`:.4f`, the spend ledger the number rule exempts), so every figure on the line reads one way.
+
+**For the docs scrub (`docs/evals-w4`):** `packages/evals/docs/serving.md`'s campaign JSON table (:448-458) gains
+`needs_regeneration` (the one regenerate line and why, on a page standing in for an analysis this version no longer
+reads; null otherwise) and says `analysis_id` is the analysis the page renders or stands in for, never "the memo's";
+the `report_read` lines (:441 and the transcripts paragraph) say a `plan` analysis reads code-only with that line, that
+`trials="all"` adds the evidence record after a document's page, and that `include_sessions` is JSON only.
+
+### evals: a computed lever arm name reads one way on every surface; the arms key names settings in words; the kit writes a per-1,000 tick
+
+**Changed:** an arm name the engine computes from an arm's levers is capitalised where it is made, so every surface
+prints `Fanout 2` (owner, 2026-10-28: "people might think Fanout 1 is different from fanout 1"): the document's page
+(prose, the arms key, the options table, a chart's labels), the plan page, the campaign page (its call lines, its own readings and
+every aspect's fold), a code-only page, and quick's contrast rows. It applies to a derived campaign arm (one no arm of
+the campaign's declaration names) and to a name a code-only page spells from the levers, when it opens on a lever's
+name; a level value (`careful`), a model's name, a label a person gave and a declared short name print as written.
+The arm's id (the campaign's derived label), its variant key and the `axis=level` names are unchanged, so figure keys
+and stored documents still name arms by id, and prose typing the id stands, since it differs from the printed name
+only in case. **For a host:** a served campaign page's `readings` print the name too (`arm_label`, `control_label`,
+`first_label`, `second_label`, `ahead_label` and each `reason`, by the arm's variant key); the readings a bundle
+freezes, and its fingerprint, keep the label they were read under. quick's `contrasts()` rows key `contrast` and
+`control` by the printed name (`Callable prompt v2, model a`, where it read `callable prompt v2, model a`). A campaign
+with derived lever arms gets a new report input digest and snapshot id; one whose arms are named or named by model
+does not.
+
+**Changed:** the arms key's Configuration column names each setting in words: the name the report input declares for
+it (a factor's: r2 reads `Atlas-M · Reasoning budget low · Retry on failure 1`), else the package's reader name
+(`fanout 1 · research timeout 30s · reply limit 45s`, where it read `research_timeout 30s · reply_limit 45s`). A
+computed arm name reads the same one source (`style.lever_reader_name`), so the two columns name a lever alike. The
+model and every value read as written.
+
+**Changed:** a chart of totals under a cent (a run's trials' cost) reads per 1,000 with the mark, `$8.00/1000`, on its
+ticks, its labels and its values table, as a key and a table write it; it read in dollars to its least total's
+decimals (`$0.00048`). The chart kit gains a `usdpk` format (dollars per 1,000 with the mark) for it. A set that counts
+something still moves its count and never carries the mark beside it, at 1,000,000 included. `money_ruler` loses its
+`marked` parameter, which never shipped. **For a host that allows the kit's inline script by hash:** `kit.js` changed,
+so its hash moved; re-read it from the package (`analysis/report/kit/kit.js`). A host serving the static page, which
+carries no script, needs nothing.
+
+**Fixed:** what the misfit reviews of the W3 acceptance runs found on the page. A values table no longer prints a Note
+that only restates its row's value (`+2` beside `+2`, `+0.8 pts` beside `+0.8`); a note that says more (`worse`) stays.
+A count key groups its thousands (`4,000,000 a month`, where it read `4000000`). The levers block
+lists the four arms two settings cross once where its two readings agree (`reasoning effect, across retry` beside
+`retry effect, across reasoning`, one difference of differences, both within), by the first setting's reading, and
+both where their verdicts differ, so a reversal one reading shows is never hidden. The full gate grid reads a cell the input holds no
+figure for as `Unknown (no figure)`, where it read `Fails (no figure)`, as the page reads it everywhere else.
+
+### evals: the analyst's capability gaps are stored durably, and `analyst_gaps_list` digests them as issue text
+
+**Added:** `capability_gap` (on the `evals_analyst` tool, the analyst's cut and the editor's) takes `kind`:
+`missing`, the default, is the call as it was (a capability no tool gave); `suspect` is a result that looks wrong,
+and names what reproduces it: `figure_keys` (the keys whose readings look wrong) and `calls` (each tool call as it was
+sent, its `action` and its other arguments), at least one of them. A gap is a note, never a transcript: `need`,
+`why` and `workaround` hold at most 2,000 characters each, `figure_keys`, `calls` and `claim_ids` at most 20 each (a
+key or claim id at most 500 characters, a call at most 2,000 as JSON), and a call past a bound is refused with its
+remedy. Each gap is stored as one record of a new durable
+document type, `eval_analyst_gap` (`EvalAnalystGap`, durable v16.7), under an id derived from the call (the snapshot,
+kind, need and why; a `missing` gap keeps the id `capability_gap` always returned), so a replay, a retried write or the
+same call made twice stores it once (`EvalStorage.save_analyst_gap`, create-only; `list_analyst_gaps(scope_id,
+since=)` reads them back). A gap is durable: `drop_derived` never sweeps it, and a core reset keeps it. Where it is
+stored depends on the mount, never on anything the model sets. `capability_gap` stays a `read` action, so a read-only
+mount carries it, and it is the one read that appends a record (`Action.appends`): a tool carrying it reports
+`readOnlyHint` false and `idempotentHint` true, and the read-only `evals` tool's description now says a read changes no
+evaluation data and may append a bounded, idempotent feedback record. Called through any mount (Claude Code over MCP, the dev
+command line), the call stores the gap at once, with its snapshot and caller; its result says `recorded_in: store`.
+Inside a report write, the writer's own mount stores nothing (`recorded_in: write`), and `report_write` stores every
+gap its sessions noted when it ends, on every ending, a `ReportNotStored` included: each names the snapshot, the report
+it stored (or none), the session's role and name, the model and the session's transcript digest. Code adds two
+notices to the same store, from what the write already holds: `unresolved_key`, a figure key a draft cited that does
+not resolve on its snapshot and sent the draft back, with the key and the bounce's verdicts at its field; and
+`editor_score`, a rubric item the editor scored 0 or 1, with its score and reason and whether that review held a
+`must_fix` finding (evidence only: a finding names a claim and never a rubric item, so such a notice is never ranked as
+linked to one). A notice's id carries its session's transcript digest, so a byte-for-byte replay names the notices it
+named before and a second paid write on the same snapshot gets its own. `ReportWritten` gains `gaps` (every record the write made) and `gaps_not_stored` (why the store
+refused them or they could not be read, logged at error level; the report and its record stand either way), and
+`analysis_generate`'s job notes it on its attempt's `faults`, which `job_poll` shows, without changing the ending. A write that crashes
+before its end loses its gaps, as it loses the write. The analyst skill's tool table names `kind` and what a suspect
+gap carries, and the editor's tool list says it may note a gap, which is stored and never sent to the analyst.
+
+**Added:** `analyst_gaps_list` (a read action on the `evals` tool, `since=` an ISO 8601 time with its offset, read
+against each record's own time) returns the scope's gaps as a digest. Gaps group by kind and need, the need compared
+with its case, spacing and punctuation set aside, and with the ids the engine mints (a snapshot's, a gap's, a UUID, a
+digest) and the figure keys the grammar reads (braced, backticked or a dotted path in a family's form) read as one; any
+other word, an action's name, a model id, a version or a ratio included, keeps two needs apart. No model reads them, so
+a paraphrase is a group of its own. Groups rank `suspect` first, then those that came with a `must_fix` finding, then the rest; within
+each, the larger count, then the later last seen. Each group carries its count, first and last seen, snapshots,
+reports and record ids, and an issue title and body with the evidence (a suspect gap's keys and calls, a key notice's
+verdicts, an editor notice's item and reason), never the caller's identity, and every `@` followed by a zero-width
+space so a quoted name pings no one; the needs are what a model wrote, so a host reads them before filing on a public
+tracker. One digest reads at most 1,000 records, newest first: a window holding more is refused, naming a later
+`since`. The engine calls neither GitHub nor a scheduler. A host needs no code:
+the new type routes by its facts in `DOC_TYPE_FACTS` (origin `record`, lifecycle `durable`). A host may run a
+scheduled job that calls `analyst_gaps_list(since=)` and posts the digest, filing each group's issue with its own
+credentials. During a rolling deploy, a pod before durable v16.7 never reads a gap, and its operator wipe of durable
+documents leaves them in place.
+
+### evals: money reads one form per figure type, tiny amounts per 1,000 (#993), and each arm's cost sits beside its quality
+
+**Changed:** money is spelled one way per set, never per value (owner ruling of 2026-10-27, which supersedes the W2c
+rule of three significant figures from $0.10 to $1), and one owner states every set: `cost_unit.money_ruler`, which
+every chart, table and figure key of the report document and the planned page reads its scale, form and count from,
+and the code-only report's money rulers, tables, means and intervals too (its ± spreads and margin lines keep the
+number rule; a cost there drawn per 1,000,000 replies is headed `($/1,000,000 replies)`, where it read
+`($/1,000 replies)`). A set is every amount of one figure type a table or chart shows, across its rows and columns:
+a column of arms by measure, and in a table of slices by arm (Full results' strata, tasks and cells) each measure's
+every row across the arms, so r1's tasks read `$58.00 | $24.00 | $4.60 | $8.90`, where a row read `$58 | $24 | $4.60 |
+$8.90`; the code-only report's two arms' means in one row, a contrast's change and its interval's ends (`$0.47 |
+[$0.35, $0.60]`, where it read `$0.51 | [$0.4107, $0.606]`), and its projected costs (`$0.92` beside `$11.00`, where
+it read `$2.3` beside `$27`); and the campaign page's cost/quality chart, its tips and its table (`$4.00 [$3.60,
+$4.40] per 1,000 replies` beside `$0.80`, where a tip read `$4` beside `$0.8`, and a cost under a cent per reply is no
+longer spelled per reply). The code-only report's Methods row states a partly priced total as one (`cheaper candidate
+$0.063 (21 of 24 trials priced)`), as every other surface does. A set's form is chosen from the amounts
+themselves: whole dollars where the least is $10 or more (`$7,560`); else cents, with more decimals only where the
+least amount needs them for two significant figures (`$0.030` beside `$3.477`, so r2's `$0.302` reads alike in prose
+and in its tables). Where an amount is under a cent the ruler moves instead: money per reply is stated per 1,000
+replies, and a set under a cent per 1,000 per 1,000,000 (r3's keys read `$180.00 per 1,000,000 turns`), the words
+replacing the label's own count, never stacked beside it (`Cost per 1,000,000 calls`, never `Cost per 1k calls, per
+1,000,000 calls`). A chart says what its dollars are per in a line under it and in its titles, and draws its ticks
+and notes to the same decimals (the kit's `usd:<decimals>`), never with the per-1,000 mark beside the count it states. A
+set still under a cent per 1,000,000 moves no further: it reads at that count, to the decimals its least amount needs
+for two significant figures (`$0.0030` under `($/1,000,000 replies)`), never with the per-1,000 mark beside the count,
+so no amount carries two scales. A total (a run's cost, a month's) counts nothing and is never scaled; a bare key or a
+table or chart of totals under a cent writes the per-1,000 mark instead (`$8.00/1000` for $0.008), a chart on its
+ticks too (the kit's `usdpk` format). A gate's reason and a gate row's line state money on the
+criterion's ruler (the measure's every arm and the line), the count named once in the criterion's name (`Cost budget,
+per 1,000,000 calls $1.060 > $0.302`). A chart's lines name what its dollars are per by the measure's reader name,
+never a code key (`Cost per 1,000 replies, in dollars.`, where the scoreboard's key once showed). A change reads on the ruler of the amounts it compares,
+never scaled because an interval end sits near zero, to the precision of the change itself and of its widest
+interval: Kairo's production-cost contrast now reads `+$0.49 per 1,000 replies`, where it read `+$0.492` on an
+interval $0.64 wide, and a $0.40 change between monthly totals of $1,208 reads `+$0.40`, never `$0`. An unknown
+amount reads `unpriced`, never `$0`. The single-value helpers `dollars_text`, `format_number` and `spell_dollars`
+read exactly as before, so a host printing one amount sees no change. `numbers.spell_price`, which never shipped, is
+removed.
+
+**Added:** the report document's options table puts each arm's quality beside its cost: its pass rate (passes over
+usable trials), then its cost per run, or per 1,000 runs where the column reads per 1,000 (the header says which),
+then what priced it. Beside the cost: the uplift on the control's, the priced share of the calls the cost counts
+(`all 897 calls priced`) and the unanswered calls, as before. An arm only part of whose calls were priced states
+`850 of 897 calls priced` in place of a cost, which would be a smaller total read as whole; an arm none of whose
+calls were priced reads `unpriced`; and no uplift is read against a partly priced control (`no uplift: the control
+has 850 of 897 calls priced`). Everywhere else such an amount is stated, its figure keys (`cost_per_1k`, a cost
+uplift or gap), a chart's bars, dots, points and lattice tiles, and a task matrix's costs say the priced share beside
+it. The new "Priced by" column names each arm's price sources and the providers that served its calls. They come from
+a new optional `ScoreboardRow.pricing` on the report input (price sources, serving providers, calls and priced
+calls), left out of the document while unset so every stored input digests as it did. The bundle's census fills it
+from each arm's stored production usage rows (see the next entry). Token-metered calls record no upstream serving provider yet (#1010). Monthly figures
+still appear only where the campaign declares a volume.
+
+### evals: each arm's pricing is read off its usage rows and moves no fingerprint; a run says which build launched it and what its host disclosed
+
+**Added:** the bundle's census reads how each arm's production cost was priced (`ArmScoreboard.pricing`, an
+`ArmPricing`: the price sources its priced rows name, the providers its rows name, the calls counted and priced) off
+the usage rows of the roles a production deployment pays for, never the judge's. The report input copies it into
+`ScoreboardRow.pricing`, so the options table's "Priced by" column and priced share are filled on a real campaign
+(#1011). **The price source is no part of any fingerprint** (owner ruling, 2026-10-28): `AnalysisContextBundle.
+fingerprint`, `evidence_digest`, `CampaignBundle.fingerprint` and `campaign_evidence_digest` leave each arm's pricing
+out, so every stored analysis and reporter case fingerprints as it did, and two bundles over the same runs priced by
+different sources share a fingerprint. A report snapshot's content address (`report_input_digest`) does include it, so
+two inputs priced differently are two snapshots. The document of a bundle over runs with production usage rows, and
+the memo writer's message over it, now carry the pricing.
+
+**Added:** a run records which build launched it: `EvalRun.package_version` (the installed 3tears-evals version) and
+`EvalRun.package_rev` (the git commit its installer recorded in the distribution's `direct_url.json`, written for an
+install from a git URL; `None` for a wheel from an index, an editable or local-directory install, or no metadata, never
+a guess). A run that pins a simulated user records `EvalRun.simulator_prompt_digest`, the content address of what the
+simulated user is told, beside `simulator_asked_settings`: it moves with an actor's policy or intent, the scheduler, the
+round's cap or any of the engine's own words its calls carry (prompts, reply formats, the scheduler's repair).
+
+**Added:** a host may disclose what it knows about each launch (its machine, that machine's load, how it measures
+latency) by setting `LaunchHost.run_disclosure`, a callable returning a `RunDisclosure` (`values`, each by the host's
+own name, and `statements`, in its own words). The launch stamps it on every run of every kind, the engine's judge kind
+included, as `EvalRun.run_disclosure`; the bundle carries it on each run summary's `RunApparatus.run_disclosure`, the
+report input on its rig (`RunRig.disclosure`), and `campaign_overview` on the rig row, by run (`RigRow.disclosed`). It
+is a disclosure, never a coordinate: it is in no identity, context key, cell, confound or apparatus class, and runs
+that disclose different machines share one rig row. It is evidence the bundle carries, so a run carrying one moves
+its bundle's fingerprint and a snapshot's id. A disclosure callable that fails, or returns no `RunDisclosure`, refuses
+the launch naming `LaunchHost.run_disclosure`. Every new field is left out of its document when unset, so a run,
+bundle or input with none stores and digests as before. Core schema v15.11.
+
+### evals: `analysis_generate` writes the report with the analyst and the report editor, on the host's model and budget
+
+**Changed:** a generation no longer runs the report planner. Its job freezes the campaign's evidence and runs the
+report writer (`write_report`) on the client the host returns for the new `analyst` completion role, which both the
+analyst and the report editor use. Every turn is admitted against the host's report budget
+(`AnalysisGeneration.report_budget`, a `ReportBudget` read from host config as each generation starts), the only
+admission on the report: no caller can raise it, and the out-of-run cap is not read. The loop is held to
+`AnalysisGeneration.limits` (`WriterLimits()` by default), passed through unchanged, and the job is bounded by
+`budget_s`, which a host derives from the same limits with `Ceilings().writer_ceiling_s(limits, request_s=...)` plus
+its headroom. A stored report is linked by an analysis whose `basis` is `doc` and whose `report_doc_id` names the
+document; its recommended variant is set when the document recommends exactly one arm, and each claim marked durable
+becomes an insight that later campaigns read as a prior. A report that stores nothing ends the job failed or refused
+with its ending and reason, and the attempt keeps the turns' count and cost, a turn in flight when the writing stopped
+counted as sent and unpriced. The report's spend is ledgered once under `analysis`: one row stating every turn sent,
+its priced share and its unpriced turns apart, and that the report budget admitted them, its total unpriced when any
+turn was, never $0 (new optional `OutOfRunSpend` fields, core v15.10). Provenance is the analyst skill's digest, not the
+planner's prompt id. Until the report view lands, `report_read` of a `doc` analysis serves the code-only page over
+its frozen evidence, its first screen saying the report is stored as report document `<id>`. The planner stays for the reporter kind.
+
+**Hosts must change** (`packages/evals/MIGRATIONS.toml` has the port): `AnalysisGeneration` drops `prompt_id`,
+`resolve_prompt` and `max_output_tokens` and takes `report_budget`, `limits`, `budget_s` and `preparation_budget_s`;
+a host factory adds an `analyst` row, and a client wrapper forwards `turn_session` and `turn_pricing_refusal` (and
+wraps the session client `turn_session` returns). A client that is not a turn model, or a host with no report budget,
+is refused before anything is frozen or sent, saying what to set. `threetears.evals.ops` exports, provisional,
+`ReportBudget`, `WriterLimits` and the limits it holds (`AnalystLimits`, `EditorLimits`, `SessionLimits`) for a host
+building its own, and `ReportWriter`, the opaque type of `analysis_generate`'s `writer` (the action hands its job one;
+a host calling the operation directly passes `actions.report_writing.campaign_report_writer(caller)`). `analysis_estimate` states the budget and the most
+turns the writer can send, makes no call, and says it does not check the campaign's evidence, which the job checks
+when it freezes it. The jobs conformance kit counts a turn model's turns as requests.
+
+### evals: the pricing port: the host prices a call, the engine bounds it; a report budget in tokens and turns
+
+**Why.** The engine cannot know what a host pays, so the host owns prices and the engine owns the arithmetic (owner,
+2026-10-28). W3's `Pricer` answered rates alone; a host also needs to price what a call actually cost from the reply
+(OpenRouter's reported cost, a bring-your-own-key upstream's charge, cache writes split by lifetime), to say when its
+rates are only an estimate, and to write a report on a model nothing prices.
+
+**Changed (provisional, `threetears.evals.providers`; none of it was in a final release):** `Pricer` is the host's
+port, asked for every `Model` call, a completion and a tool turn alike (every client the engine ships), with two
+halves.
+- **Before a call**, `rates_for(model, *, provider)` answers `HostRates(rates, guaranteed)`: the `ModelRates` the call
+  is billed at, and whether the host guarantees them. The model computes the bound from them with its own arithmetic
+  (`price_ceiling`, `turn_price_ceiling`), so a host writes none. Rates that are not guaranteed (an OpenRouter route
+  whose upstream may bill otherwise) still bound and admit the call, and a report's dollar budget says it was
+  checked against an estimate. `None` leaves the call to the catalogue route, its bound and its price both:
+  OpenRouter's reported cost for an OpenRouter call, else the catalogue row.
+- **After a call**, `price(model, *, provider, usage, served_provider)` answers `CallPrice(usd, source,
+  unpriced_reason)`. `usage` is the reply's raw usage block exactly as the wire returned it (OpenRouter's `cost`,
+  `is_byok` and `cost_details.upstream_inference_cost`; Anthropic's `cache_creation` split by lifetime), and
+  `served_provider` the upstream OpenRouter routed to. An unpriced call is `usd=None` with its reason, never `0`.
+  `providers.wire.usage_counts(provider, usage)` reads a usage block's tokens exactly as the engine does.
+
+A call no pricer answers rates for is priced as before: OpenRouter's reported figure for an OpenRouter call, else the
+catalogue's row, and `AnthropicPublishedRates` stays the default for a model handed neither a pricer nor a catalogue,
+now implementing both halves. The default reproduces every recorded completion's and turn's `cost_usd`,
+`price_source` and bound byte for byte. `ModelRates` no longer carries a `source`: the price's source is `CallPrice`'s.
+`PriceSource` and its two `OPENROUTER_REPORTED*` words are unchanged. Only rates a pricer guarantees bound a call
+exactly: Anthropic's published rates for a direct call, and a host's `guaranteed=True`. A bound from OpenRouter's
+catalogue row is always an estimate, since OpenRouter may route a call to an endpoint priced otherwise and a
+bring-your-own-key upstream bills at its own rates, so a cap checked against one says so; no dollar figure moves.
+
+`ToolTurnClient.turn_price_ceiling` answers a `TurnCeiling(usd, estimate)` (new, `threetears.evals.schema`), so a
+wrapper forwarding it carries the estimate through; a turn recording writes `"estimate": true` beside a ceiling that is
+one, and reads every recording made before as it was.
+
+**Added:** a report's budget takes one of two forms, declared by the host: `ReportBudget(usd=)` as before, or
+`ReportBudget(tokens=, turns=)` (either cap, or both) for a model nothing prices, such as a local model or a
+subscription. A token and turn budget admits each turn by a bound on its tokens and by the turns sent, never by its
+price, so `report_write` asks for no price before it starts and the report is written, tallied unpriced; its made line
+says `unpriced (N turns, none of them priced)`, never `$0`. Both forms at once, or neither, are refused when the budget
+is built. An admission refusal still sends nothing. Each tallied turn records `admitted_on_estimate`, each sum counts
+them and lists the pricer's `unpriced_reasons`, and the made line of a report whose dollar budget admitted turns on an
+estimate says `its budget checked against estimated rates on K of N turns`. Run launches keep their dollar rule.
+
+**A host's own client** (one that is not a `Model`) needs no pricer: it prices its own calls. Its `price_ceiling` is
+the bound its calls are held to, and its completions' `cost_usd` and `price_source` are recorded as reported; a
+missing cost reads `unpriced`, never `$0`.
+
+**Added: a run's cap says when it was checked against estimates.** `Model.ceiling_is_estimate()` (and the lease a
+`Clients` role hands out) says whether the model's price ceilings are built on rates its pricer does not guarantee,
+and `kernel.ceiling_is_estimate(client)` reads it beside `call_ceiling`. The engine's own `price_largest_call`
+pricers (judge kind, reporter, `price_subject_call_floor`) set the new `CallCeiling.estimate` from it; an arm whose
+largest call is bounded on an estimate is still admitted, its estimate says `its cap is checked against estimated
+rates` (`ArmEstimate.call_ceiling_estimate`, left out of the JSON while false), its run records
+`EvalRun.cap_checked_on_estimates` (core v15.9, left out of the document when unset), and its summary's spend cap
+line ends `, checked against estimated rates`. A host wrapping a `Model` forwards `ceiling_is_estimate` beside
+`price_ceiling`, or its runs read as checked against guaranteed rates; a host building its own `CallCeiling` sets
+`estimate=` the same way.
+
+**Added:** `RoleUsage.unpriced_reasons` (core v15.9): each distinct reason a pricer gave for a call it could not price,
+beside a `cost_usd` of `None`, left out of the document when unset, so every stored row and digest is unchanged. A host
+that builds `RoleUsage` itself need not set it.
+
+**Removed, never released:** `Pricer.rates_for` answering a bare `ModelRates`, and `ModelRates.source`.
+
+### evals: a report's sessions are stored as their own documents, so listing reports loads none
+
+**Changed (stored shape):** the report writer stored every session it ran (the analyst's and each review round's)
+whole inside the report document's `generation`, so `list_report_docs` loaded every transcript; the Kairo record was
+253,272 bytes, 180 KB of them sessions. Each session is now its own derived, regenerable document,
+`eval_report_session` (`EvalReportSession`: the report it belongs to, its name, its transcript digest, its turns and
+its JSON exactly as the session wrote it, with W3's elided tool results still marked), stored under an id its report
+and name give (`report_session_id`). The report's `generation` record (format 2) names each session by
+`{digest, turns, ref}` and holds no message; the Kairo record is 38,120 bytes. `EvalStorage.save_report_doc` takes
+the report's `sessions` and writes them before the report, so a stored report never names a session that was not
+written (a write that fails part way leaves only sessions no report names, which `drop_derived` sweeps);
+`EvalStorage.load_report_sessions(report_doc_id, scope_id, name=)` reads them back, all or one by name;
+`delete_report_doc` and `drop_derived` remove them with their report; `list_report_docs` reads none. The store gate
+`store_report_doc` takes `report_doc_id` (minted by `new_report_doc_id` before anything is written) and the
+`sessions`, and `generation_record` takes `report_doc_id` (`None` for a record held only in memory). A stored
+session (format 3) keeps each message as its JSON text, so a store that hands object keys back in another order (a
+Postgres `jsonb` column, shortest key first) cannot change what a resume sends again: a session reloaded from any
+store and resumed sends the request an uninterrupted one sends, byte for byte, tool-call arguments in the order they
+were sent and every thinking block, signature included, as the reply carried it. A paid run that stores nothing, or
+whose store refuses, still keeps every session in memory: `ReportWritten.generation` holds each inline (`session`,
+`ref` None), as before. `ReportNotStored.report_doc_id` (new) names the id the report was minted under, so a host
+removes any session written before the store failed with `delete_report_doc(report_doc_id, scope_id)` alone. Report documents and their sessions get their own version,
+`REPORT_DOC_SCHEMA_VERSION` (14); a report document written before (version 13) is refused on read by its version,
+with the step to clear it (`EvalStorage.drop_derived`) and write the report again. The shared
+`REGENERABLE_SCHEMA_VERSION` stays at 13, so analyses, insights, judge profiles, plans and snapshots read as before.
+A host stores no report documents yet, so nothing stored is dropped. Discodon needs no code: the new type routes by
+its facts in `DOC_TYPE_FACTS`; only its test that lists every eval doc type gains `eval_report_session`.
+
 ### evals: reader prose may not type a lever arm's id the page prints by another name
 
 **Fixed:** a planner's plan and an analyst's report document could type an arm's internal id above Full results (or
@@ -115,7 +492,7 @@ skipped it in silence, OpenRouter's catalogue was never read, no turn had a pric
 first one. The engine cannot know what a host pays (a deal, BYOK, a subscription, a local model), so the host
 supplies prices; the package ships a default only for standalone and development use (owner, 2026-10-28).
 
-**Added (provisional; W4 replaces it with the host pricing port; `threetears.evals.providers`):**
+**Added (provisional; replaced before release by the pricing port above; `threetears.evals.providers`):**
 `Model(..., pricer=...)` takes a `Pricer`, whose
 `rates_for(model, provider=)` answers the `ModelRates` a call is billed at (base input, five-minute and one-hour cache
 writes, cache reads, output, an optional long-prompt tier, and the `price_source` to write), or `None` to leave the

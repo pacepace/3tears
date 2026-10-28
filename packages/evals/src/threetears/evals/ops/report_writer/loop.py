@@ -17,7 +17,7 @@
 
 - ``stored``: a review cleared the document, which is stored with the review's findings (``should_fix`` ones only);
 - ``stored_with_findings``: the revisions ran out; the last document is stored with its review's findings;
-- ``over_budget``: the report's dollar budget refused a turn, or the analyst called a tool after it was told to
+- ``over_budget``: the report's budget refused a turn, or the analyst called a tool after it was told to
   submit. The last document a review was read for is stored with that review's findings; with none, nothing;
 - ``refused``: a submission still had faults after its round's bounces; nothing is stored, the faults are returned;
 - ``review_failed``: the editor's answer could not be read twice; nothing is stored;
@@ -37,7 +37,6 @@ from typing import Any, Final, Literal, Protocol
 
 from threetears.evals.analysis.analyst.skill import SkillText
 from threetears.evals.analysis.report.md_parts import one_line
-from threetears.evals.analysis.report_decision import every_caveat
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
 from threetears.evals.ops.report_writer.analyst import (
@@ -148,6 +147,9 @@ class WritingOutcome:
     :ivar sessions: Every session begun, by name, as a stored value, whatever the ending: the analyst's
         (``AnalystSession.to_json()``, under ``analyst``) and each review round's (``ToolSession.to_json()``, under
         ``editor-<round>``).
+    :ivar failure: The client's failure a ``failed`` loop ended on, when one did (the analyst's or a review's), so a
+        caller that records it can ask the host what of it is safe to keep: its text, which ``reason`` carries, may
+        hold a provider's account. Never stored.
     """
 
     ending: WriterEnding
@@ -159,6 +161,7 @@ class WritingOutcome:
     faults: tuple[SubmissionFault, ...] = ()
     reason: str = ""
     sessions: dict[str, dict[str, Any]] = field(default_factory=dict)  # Any: JSON objects
+    failure: Exception | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -192,7 +195,7 @@ async def write_rounds(
     :ptype model: TurnModel
     :param snapshot: The frozen snapshot's id.
     :ptype snapshot: str
-    :param report_input: Its report input, which validity, the editor's page and its facts read.
+    :param report_input: Its report input, which the editor's page and its facts read.
     :ptype report_input: ReportInput
     :param analyst_mount: The ``evals_analyst`` tool on the analyst's cut, read-only, bound to its host and caller.
     :ptype analyst_mount: ToolMount
@@ -206,7 +209,7 @@ async def write_rounds(
     :ptype check: InvariantCheck
     :param tally: The report's tally, which every turn of every session is counted in.
     :ptype tally: Tally
-    :param budget: The report's dollar budget, which admits every turn.
+    :param budget: The report's budget (dollars, or tokens and turns), which admits every turn.
     :ptype budget: ReportBudget
     :param limits: What the loop is held to; plan §4.3's defaults when ``None``.
     :ptype limits: WriterLimits | None
@@ -220,8 +223,6 @@ async def write_rounds(
         mount=analyst_mount,
         skill=analyst_skill,
         snapshot=snapshot,
-        arms=[arm.id for arm in report_input.arms],
-        caveats=[caveat.id for caveat in every_caveat(report_input)],
         check=check,
         tally=tally,
         budget=budget,
@@ -273,7 +274,7 @@ async def write_rounds(
         # A failure the loop reports as its `failed` ending: the client's own (a provider's, after its retries) or
         # a refused reply, which the engine cannot name by type. The tally, the caller's, keeps every turn sent.
         contain(exc, log=log, what="the report writing loop failed and ends failed", level="error")
-        return _outcome("failed", seen, analyst, reason=f"{type(exc).__name__}: {exc}")
+        return _outcome("failed", seen, analyst, reason=f"{type(exc).__name__}: {exc}", failure=exc)
 
 
 def _not_submitted(drafted: AnalystOutcome, seen: _Rounds, analyst: AnalystSession) -> WritingOutcome:
@@ -292,7 +293,7 @@ def _not_reviewed(reviewed: EditorOutcome, seen: _Rounds, analyst: AnalystSessio
     if reviewed.ending == "review_failed":
         faults = "; ".join(reviewed.faults)
         return _outcome("review_failed", seen, analyst, reason=f"{reviewed.reason}: {faults}")
-    return _outcome("failed", seen, analyst, reason=reviewed.reason)
+    return _outcome("failed", seen, analyst, reason=reviewed.reason, failure=reviewed.failure)
 
 
 def _outcome(
@@ -303,6 +304,7 @@ def _outcome(
     stores: bool = False,
     faults: tuple[SubmissionFault, ...] = (),
     reason: str = "",
+    failure: Exception | None = None,
 ) -> WritingOutcome:
     """The outcome, storing (where the ending stores) the last document a review was read for, with its findings."""
     return WritingOutcome(
@@ -315,6 +317,7 @@ def _outcome(
         faults=faults,
         reason=reason,
         sessions={ANALYST_SESSION: analyst.to_json(), **seen.editors},
+        failure=failure,
     )
 
 

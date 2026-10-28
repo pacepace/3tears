@@ -52,14 +52,14 @@ from threetears.evals.analysis.report.plan_page.charting import (
     Drawn,
     KindResolver,
     STORED_SPAN_REFUSAL,
-    chart_block,
+    money_drawn,
     computed_notes,
     drawn_keys,
     figure_interval,
     figure_stat,
     figure_unit,
+    money_words,
     interval_words,
-    measure_words,
     missing_note,
     reference_line,
     slice_keys,
@@ -69,7 +69,8 @@ from threetears.evals.analysis.report.plan_page.charting import (
     unit_quantities,
     unit_refusal,
 )
-from threetears.evals.analysis.report.cost_unit import per_count
+from threetears.evals.analysis.report.cost_unit import per_count, priced_in_part
+from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.figure_keys import cost_basis
 from threetears.evals.analysis.report.plan_page.look import (
     Quantity,
@@ -132,6 +133,7 @@ class _Bar:
     tip: tuple[str, ...] = ()
     drawn: Quantity | None = None
     short_label: str | None = None
+    key: str = ""
 
 
 def _statistic_note(statistics: set[str]) -> tuple[str, ...]:
@@ -183,15 +185,15 @@ def _figure_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[str]]
     for key, arm, value, interval in picked:
         drawn = quantities[key]
         shown = (interval[0] * drawn.factor, interval[1] * drawn.factor) if interval is not None else None
-        group = measure_words(report_input, key) if len(keys) > 1 else None
+        group = money_words(report_input, key, drawn) if len(keys) > 1 else None
         if arm in configs:
             first, *rest = _config_levels(context, arm)
             label = " · ".join(rest) or first
             bar = _arm_bar(context, arm, value * drawn.factor, shown, group=first if rest else (group or ""))
-            bars.append(dataclasses.replace(bar, label=label, drawn=drawn))
+            bars.append(dataclasses.replace(bar, label=label, drawn=drawn, key=key))
         else:
             bar = _arm_bar(context, arm, value * drawn.factor, shown, group=group or "")
-            bars.append(dataclasses.replace(bar, drawn=drawn))
+            bars.append(dataclasses.replace(bar, drawn=drawn, key=key))
     if configs:
         order = {arm: index for index, arm in enumerate(config.arm for config in report_input.configs)}
         bars.sort(key=lambda bar: (_first_level_place(context, bar.arm), order.get(bar.arm, len(order))))
@@ -236,14 +238,17 @@ def _scoreboard_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[s
     # One unit: the one-unit rule (charting.unit_refusal, which the bars resolver reads first) has refused figures in
     # more than one.
     unit = figure_unit(context.report_input, keys[0], source="scoreboard")
-    drawn = quantity(unit, [value for _, _, value in picked])
+    drawn = quantity(unit, [value * quantity(unit).factor for _, _, value in picked])
     bars = [
-        _arm_bar(
-            context,
-            arm,
-            value * drawn.factor,
-            None,
-            group=measure_words(context.report_input, key) if len(keys) > 1 else "",
+        dataclasses.replace(
+            _arm_bar(
+                context,
+                arm,
+                value * drawn.factor,
+                None,
+                group=money_words(context.report_input, key, drawn) if len(keys) > 1 else "",
+            ),
+            key=key,
         )
         for key, arm, value in picked
     ]
@@ -260,8 +265,7 @@ def _slice_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[str]]:
     picked: list[tuple[str, str, str, float, tuple[float, float] | None]] = []
     for key in keys:
         for item in slices:
-            name = slice_name(context, item)
-            where = name if len(keys) == 1 else f"{name} · {measure_words(report_input, key)}"
+            where = slice_name(context, item)
             for arm in context.arm_order(arm for arm in item.per_arm if arm in allowed):
                 stat = item.per_arm[arm].get(key)
                 read = stat_value(report_input, key, stat) if stat is not None else None
@@ -272,10 +276,12 @@ def _slice_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[str]]:
                 picked.append((where, key, arm, read[0], interval))
     quantities = unit_quantities(report_input, {key: [one[3] for one in picked if one[1] == key] for key in keys})
     bars = []
-    for where, key, arm, value, interval in picked:
+    for name, key, arm, value, interval in picked:
         drawn = quantities[key]
         shown = (interval[0] * drawn.factor, interval[1] * drawn.factor) if interval is not None else None
-        bars.append(dataclasses.replace(_arm_bar(context, arm, value * drawn.factor, shown, group=where), drawn=drawn))
+        where = name if len(keys) == 1 else f"{name} · {money_words(report_input, key, drawn)}"
+        bar = _arm_bar(context, arm, value * drawn.factor, shown, group=where)
+        bars.append(dataclasses.replace(bar, drawn=drawn, key=key))
     return bars, quantities[keys[0]], statistics
 
 
@@ -442,6 +448,11 @@ def _bar_row(context: ChartContext, bar: _Bar, drawn: Quantity) -> BarRow:
         tip[1] += f", {interval_words(*interval, drawn)}"
     elif open_from is not None:
         tip[1] += f", {OPEN_ABOVE.format(low=figure_text(open_from, drawn))}"
+    # A cost over part of the arm's calls is a smaller total, never stated bare.
+    share = priced_in_part(context.report_input, bar.arm) if drawn.unit == MONEY and bar.arm else None
+    note = figure_text(bar.value, drawn) + (f" ({share})" if share is not None else "")
+    if share is not None:
+        tip[1] += f" ({share})"
     strong = muted = None
     if context.summary and bar.arm:
         strong = True if bar.arm == context.look.recommended else None
@@ -457,7 +468,7 @@ def _bar_row(context: ChartContext, bar: _Bar, drawn: Quantity) -> BarRow:
         color=bar.color,
         strong=strong,
         muted=muted,
-        note=figure_text(bar.value, drawn),
+        note=note,
         tip=tip,
         group=bar.group or None,
     )
@@ -598,10 +609,11 @@ def _bars(context: ChartContext) -> Drawn:
             *notes,
             PRICE_STEP_NOTES[
                 any(isinstance(row.item, PriceStep) and row.item.monthly for row in context.rows())
-            ].format(per=per_count(cost_basis(context.report_input).noun)),
+            ].format(per=per_count(cost_basis(context.report_input).noun, drawn.counted or 1000)),
             *price_notes(context),
         )
-    return Drawn(chart_block(context, data), notes)
+    money = {(bar.key, bar.drawn or drawn) for bar in bars if bar.key}
+    return money_drawn(context, data, notes, money=sorted(money, key=lambda pair: pair[0]))
 
 
 # --- lines ------------------------------------------------------------------------------------------------------
@@ -642,8 +654,9 @@ def _slice_lines(context: ChartContext) -> tuple[list[str], list[_Line], Quantit
                 bands=bands if len(bands) == len(stats) else None,
             )
         )
-    values = [value for line in lines for value in line.values]
-    return categories, lines, quantity(figure_unit(report_input, key), values), missing
+    unit = figure_unit(report_input, key)
+    values = [value * quantity(unit).factor for line in lines for value in line.values]
+    return categories, lines, quantity(unit, values), missing
 
 
 def _arm_name(context: ChartContext, arm: str) -> str:
@@ -688,8 +701,9 @@ def _figure_lines(context: ChartContext) -> tuple[list[str], list[_Line], Quanti
             missing.append(_arm_name(context, arm))
             continue
         lines.append(_Line(arm=arm, values=[read[0] for read in reads if read is not None], bands=None))
-    values = [value for line in lines for value in line.values]
-    return categories, lines, quantity(figure_unit(report_input, key), values), missing
+    unit = figure_unit(report_input, key)
+    values = [value * quantity(unit).factor for line in lines for value in line.values]
+    return categories, lines, quantity(unit, values), missing
 
 
 def _lines(context: ChartContext) -> Drawn:
@@ -733,7 +747,8 @@ def _lines(context: ChartContext) -> Drawn:
         fmt=drawn.fmt,
         level=context.level if banded else None,
     )
-    return Drawn(chart_block(context, data), missing_note(missing))
+    keys = list(dict.fromkeys([*context.query.measures, *(row.key for row in context.rows() if row.key)]))
+    return money_drawn(context, data, missing_note(missing), money=[(keys[0], drawn)] if keys else [])
 
 
 #: The kinds this module resolves.

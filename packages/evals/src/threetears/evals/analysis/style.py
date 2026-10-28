@@ -9,6 +9,8 @@ The renderer (:mod:`threetears.evals.analysis.report`) reads this module for eve
   expression, verbatim.
 - :class:`ArmName` names an arm twice: in full on its first mention (``deepseek-v4.1-flash (production, control)``)
   and by its given label after that (``production``).
+- :func:`arm_display_name` is the one rule a name code computed from an arm's levers is printed by, on every page:
+  ``Fanout 2``, never ``fanout 2`` beside a ``Fanout 2`` elsewhere.
 - :data:`GLOSSARY` defines every term of art a page uses, once, in one plain sentence.
 - :func:`lint_prose` holds a sentence to the rules. The package's own tests apply them to the text code writes (the
   page, whole); a host may apply them to its own. Nothing here reads, rewrites or drops what a model wrote; the
@@ -19,7 +21,7 @@ The renderer (:mod:`threetears.evals.analysis.report`) reads this module for eve
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -133,6 +135,9 @@ class ArmName:
     model: str | None = None
     control: bool = False
     given: bool = True
+    #: The levers whose reader names spell ``label``, where code computed it from them (``fanout 2, retry 1``); empty
+    #: for a label given, or a level value read as written (``careful``, a model's name).
+    levers: tuple[str, ...] = ()
 
     def first(self) -> str:
         """The first mention: ``deepseek-v4.1-flash (production, control)``, ``v1 (control)``, or the label."""
@@ -158,14 +163,58 @@ def arm_name(display: str, *, control: bool = False) -> ArmName:
         named: list[re.Match[str] | None] = [match for match in pairs if match and match["axis"] != "candidate_kind"]
         pairs = named if len(named) == 1 else pairs
     if len(pairs) > 1 and all(pairs):
-        label = ", ".join(f"{humanize('dimension', match['axis'])} {match['level']}" for match in pairs if match)
-        return ArmName(label=label, control=control)
+        label = ", ".join(f"{lever_reader_name(match['axis'])} {match['level']}" for match in pairs if match)
+        return ArmName(label=label, control=control, levers=tuple(match["axis"] for match in pairs if match))
     level = pairs[0]["level"] if len(pairs) == 1 and pairs[0] else display
     if labelled := _LABELLED.match(level):
         return ArmName(label=labelled["label"], model=labelled["model"], control=control)
     if "/" in level and " " not in level:
         return ArmName(label=humanize("model", level), model=level, control=control, given=False)
     return ArmName(label=level, control=control)
+
+
+def lever_reader_name(lever: str, declared: Mapping[str, str] | None = None) -> str:
+    """The one name a reader is shown for a lever, everywhere a page names one: an arm name computed from it, and a
+    configuration's setting. The name declared for it where one is (``declared``: a report input's factor names, by
+    id, ``Reasoning budget``), else the package's reader name for its id (:func:`humanize`, ``max output tokens``,
+    never ``max_output_tokens``).
+
+    :param lever: The lever, by id.
+    :ptype lever: str
+    :param declared: Each lever's declared name, by id; None or empty where nothing declares one.
+    :ptype declared: Mapping[str, str] | None
+    :return: Its reader name.
+    :rtype: str
+    """
+    return (declared or {}).get(lever) or humanize("dimension", lever)
+
+
+def arm_display_name(name: str, levers: Iterable[str], declared: Mapping[str, str] | None = None) -> str:
+    """The name every surface prints for an arm whose name code computed from its levers: its first character upper
+    case where it opens on one of ``levers``' reader names (``fanout 2`` to ``Fanout 2``, ``fanout 2 · retry 1`` to
+    ``Fanout 2 · retry 1``), so prose, tables, legends and keys print one name and no reader takes ``Fanout 2`` and
+    ``fanout 2`` for two arms (owner, 2026-10-28). A name opening on anything else, a level value (``careful``) or a
+    model's name, is a value, printed as written.
+
+    Called only where the data says code computed the name: a label a person gave, a declared short name and a
+    model's name never pass through it. The name is shown capitalised and never stored so: an arm's id, its variant
+    key and :func:`~threetears.evals.analysis.arms.arm_names`' ``axis=level`` names are unchanged.
+
+    :param name: The computed name, as code spelled it.
+    :ptype name: str
+    :param levers: The levers it was spelled from, by id; their reader names (:func:`lever_reader_name`) are what
+        may open it.
+    :ptype levers: Iterable[str]
+    :param declared: Each lever's declared name, by id, as :func:`lever_reader_name` reads it.
+    :ptype declared: Mapping[str, str] | None
+    :return: The name as printed.
+    :rtype: str
+    """
+    for lever in levers:
+        reader = lever_reader_name(lever, declared)
+        if reader and (name == reader or name.startswith(f"{reader} ")):
+            return name[:1].upper() + name[1:]
+    return name
 
 
 #: Every term of art a page may use, in one plain sentence each.
@@ -344,11 +393,13 @@ __all__ = [
     "ArmName",
     "HumanizeKind",
     "StyleViolation",
+    "arm_display_name",
     "arm_name",
     "code",
     "declared_check_name",
     "humanize",
     "is_dump",
+    "lever_reader_name",
     "lint_prose",
     "measure_name",
     "sentences",

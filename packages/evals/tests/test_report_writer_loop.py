@@ -22,7 +22,7 @@ from __future__ import annotations
 import copy
 import inspect
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -30,7 +30,7 @@ import pytest
 
 from packages.evals.tests.fixtures.report_plans.analyst_cli import seeded_host
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, OpsFixture, ops_fixture, settled
+from packages.evals.tests.ops_support import CALLER, ops_fixture, OpsFixture, planned_generation
 from packages.evals.tests.report_doc_support import snapshot_of
 from packages.evals.tests.report_writer_support import (
     DOC,
@@ -54,8 +54,15 @@ from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report_doc_store import doc_verdicts, generation_record, made_line, store_report_doc
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel import StorageError
-from threetears.evals.kernel.report_doc import EvalReportDoc, ReportDoc, ReportFinding
-from threetears.evals.ops import OpsHost, analysis_generate
+from threetears.evals.kernel.report_doc import (
+    EvalReportDoc,
+    EvalReportSession,
+    ReportDoc,
+    ReportFinding,
+    new_report_doc_id,
+    report_session_id,
+)
+from threetears.evals.ops import OpsHost
 from threetears.evals.ops.report_writer.editor import EditorLimits, Review, RubricScore, review_report
 from threetears.evals.ops.report_writer.loop import WriterLimits
 from threetears.evals.ops.report_writer.session import ToolOutcome, ToolSession
@@ -128,9 +135,14 @@ async def test_a_review_that_clears_in_round_one_stores_the_report_with_its_shou
     assert generation["tally"]["total"]["tool_calls"] == 2
     assert [item["total"] for item in generation["reviews"]] == [13]
     assert set(generation["sessions"]) == {"analyst", "editor-1"}
-    assert generation["sessions"]["analyst"]["session"]["name"] == "analyst"
-    assert generation["sessions"]["editor-1"]["name"] == "editor-1"
-    assert {result["stored"] for result in generation["sessions"]["editor-1"]["results"]} == {"rederive"}
+    assert {entry["ref"] for entry in generation["sessions"].values()} == {
+        report_session_id(stored.id, "analyst"),
+        report_session_id(stored.id, "editor-1"),
+    }
+    sessions = off_loop(host.eval_host.storage.load_report_sessions, stored.id, CALLER.scope_id)
+    assert sessions["analyst"].session["session"]["name"] == "analyst"
+    assert sessions["editor-1"].session["name"] == "editor-1"
+    assert {result["stored"] for result in sessions["editor-1"].session["results"]} == {"rederive"}
     assert result.page is not None and result.page.made.startswith(f"Written by {model.model_name}")
     assert [finding.finding for finding in result.page.findings] == [SHOULD_FIX["finding"]]
 
@@ -260,6 +272,30 @@ async def test_a_submission_that_still_fails_after_its_bounces_ends_refused_and_
     assert result.outcome.faults and result.generation["tally"]["total"]["bounces"] == 3
 
 
+async def test_a_validity_fault_and_an_invariant_fault_bounce_once_together_each_with_its_remedy() -> None:
+    """One bounce carries every verdict the store gate's checker finds, validity's included: a draft naming an arm the
+    snapshot does not hold and typing a digit is sent back once, listing both, each with its remedy, and the next
+    submission goes to the editor. A session that checked validity on its own first would bounce twice, the first time
+    with validity's fault alone and no remedy."""
+    broken = copy.deepcopy(DOC)
+    broken["recommends"] = ["October"]
+    broken["headline"] += " It costs 40 percent more."
+    first = analyst(reply(submitted(broken)), reply(submitted()))
+    model = FakeTurnModel(analyst=first, editor_1=editor(reply(review())))
+
+    result = await written(model)
+
+    assert result.ending == "stored", result.outcome.reason
+    bounces = [_texts({"messages": [request["messages"][-1]]}) for request in first.requests[2:]]
+    assert len(bounces) == 1 and "bounce 1 of 3" in bounces[0]
+    (bounce,) = bounces
+    validity = [line for line in bounce.splitlines() if line.startswith("- [validity] recommends")]
+    invariant = [line for line in bounce.splitlines() if line.startswith("- [invariant] headline")]
+    assert validity and "October" in validity[0] and "campaign_overview lists its arms" in validity[0]
+    assert invariant and "figure_keys_check" in invariant[0]
+    assert result.generation["tally"]["by_round"]["analyst:1"]["bounce_kinds"] == {"validity": 1}
+
+
 async def test_a_client_failure_ends_failed_and_keeps_the_tally() -> None:
     failing = editor(ConnectionError("the provider refused the connection after its retries"))
     model = FakeTurnModel(analyst=analyst(), editor_1=failing)
@@ -269,8 +305,8 @@ async def test_a_client_failure_ends_failed_and_keeps_the_tally() -> None:
     assert result.ending == "failed" and result.stored is None
     assert "ConnectionError" in result.outcome.reason
     assert result.generation["tally"]["total"]["turns"] == 3
-    assert result.generation["sessions"]["analyst"]["session"]["messages"]
-    assert result.generation["sessions"]["editor-1"]["messages"], "the failed round's session is kept"
+    assert result.generation["sessions"]["analyst"]["session"]["session"]["messages"]
+    assert result.generation["sessions"]["editor-1"]["session"]["messages"], "the failed round's session is kept"
 
 
 # --- the editor ---------------------------------------------------------------------------------------------------
@@ -390,8 +426,10 @@ def _kairo_input() -> ReportInput:
 
 def _store(doc: dict[str, Any], storage: Any) -> Any:
     snapshot = snapshot_of("prototype3/kairo")
+    report_doc_id = new_report_doc_id()
     return store_report_doc(
         storage,
+        report_doc_id=report_doc_id,
         scope_id=CALLER.scope_id,
         snapshot_id=snapshot.id,
         campaign_id=snapshot.campaign_id,
@@ -400,12 +438,14 @@ def _store(doc: dict[str, Any], storage: Any) -> Any:
         ending="stored",
         findings=[ReportFinding.model_validate(SHOULD_FIX)],
         generation=generation_record(
+            report_doc_id=report_doc_id,
             model="m",
             tally={"turns": [], "total": {"cost_usd": None, "unpriced_turns": 0}},
             skill={"package": "f" * 64},
             reviews=[],
             sessions={},
         ),
+        sessions={},
         created_by=CALLER.identity,
     )
 
@@ -451,7 +491,7 @@ async def test_an_editor_reply_the_model_stopped_short_ends_failed_and_keeps_the
 
     assert result.ending == "failed" and result.stored is None
     assert "content_filter" in result.outcome.reason
-    assert result.generation["sessions"]["editor-1"]["state"]["turns"] == 2
+    assert result.generation["sessions"]["editor-1"]["session"]["state"]["turns"] == 2
 
 
 async def test_an_editor_reply_cut_at_the_output_cap_is_asked_for_once_more() -> None:
@@ -593,8 +633,7 @@ async def test_a_report_written_from_a_campaign_freezes_it_first_and_mounts_no_w
 
 async def test_a_report_written_from_an_analysis_freezes_its_bundle_first_and_mounts_no_write() -> None:
     fixture = off_loop(ops_fixture)
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, CALLER.scope_id)).jobs
-    assert (await settled(fixture.host, job.job_id)).state == "completed"
+    await planned_generation(fixture)
     (analysis,) = off_loop(
         fixture.host.eval_host.storage.list_analyses_by_campaign, fixture.campaign.id, CALLER.scope_id
     )
@@ -655,6 +694,7 @@ def _generation(cost: float | None, unpriced: int) -> dict[str, Any]:
         {"model": "writer-b", "served_model": "writer-b-20260901"},
     ]
     return generation_record(
+        report_doc_id="report-1",
         model="writer-a",
         tally={"turns": turns, "total": {"cost_usd": cost, "unpriced_turns": unpriced}},
         skill={"analyst": "a" * 64, "editor": "e" * 64, "package": "0123456789abcdef" * 4},
@@ -678,8 +718,8 @@ def test_the_made_line_of_a_report_with_unpriced_turns() -> None:
 
 
 def test_the_made_line_refuses_a_generation_record_of_another_format() -> None:
-    with pytest.raises(ValueError, match="this build reads format 1"):
-        made_line(_record({**_generation(1.0, 0), "format": 2}))
+    with pytest.raises(ValueError, match="this build reads format 2"):
+        made_line(_record({**_generation(1.0, 0), "format": 1}))
 
 
 # --- a paid run never loses its record ------------------------------------------------------------------------------
@@ -691,7 +731,7 @@ async def test_a_store_that_fails_after_the_run_raises_with_the_runs_record_on_i
     host = off_loop(seeded_host)
     failure = StorageError("the document is larger than the store takes")
 
-    def refuse(report: EvalReportDoc) -> None:
+    def refuse(report: EvalReportDoc, *, sessions: Sequence[EvalReportSession] = ()) -> None:
         raise failure
 
     monkeypatch.setattr(host.eval_host.storage, "save_report_doc", refuse)

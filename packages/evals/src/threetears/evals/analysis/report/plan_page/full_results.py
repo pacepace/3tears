@@ -43,24 +43,39 @@ is the gate check spelled out, never a second reading of it.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import replace
 
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.quantities import MONEY
-from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
+from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, money_columns
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.cost_unit import per_count, per_noun
-from threetears.evals.analysis.report.figure_keys import cost_basis, format_figure, resolve
-from threetears.evals.analysis.report.plan_page.charting import figure_unit, measure_words, stat_value
-from threetears.evals.analysis.report.plan_page.look import GATE_STATUS, PageLook, figure_text, quantity
+from threetears.evals.analysis.report.cost_unit import priced_in_part
+from threetears.evals.analysis.report.figure_keys import cost_basis, cost_ruler, format_figure, resolve
+from threetears.evals.analysis.report.plan_page.charting import (
+    figure_unit,
+    held_means,
+    money_words,
+    stat_value,
+)
+from threetears.evals.analysis.report.plan_page.look import (
+    GATE_STATUS,
+    PageLook,
+    Quantity,
+    figure_text,
+    in_change_form,
+    quantity,
+    quantity_of,
+)
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
 from threetears.evals.analysis.report.plan_page.words import (
     CONTRAST_VERDICT_WORDS,
     COST_HEADER,
     FULL_RESULTS_HEADERS,
     FULL_RESULTS_TITLES,
+    GATE_UNKNOWN,
     GATE_WORDS,
     LINE_TEMPLATES,
     NO_FIGURE,
@@ -90,13 +105,24 @@ _Slice = tuple[str, int | None, Mapping[str, Mapping[str, Stat]]]
 _TableBuilder = Callable[[ReportInput, PageLook], list[TableBlock]]
 
 
-def _table(name: str, columns: Sequence[TableColumn], rows: list[dict[str, TableCell]], order: str) -> TableBlock:
+def _table(
+    name: str,
+    columns: Sequence[TableColumn],
+    rows: list[dict[str, TableCell]],
+    order: str,
+    *,
+    by_row: Sequence[str | None] | None = None,
+) -> TableBlock:
+    """A Full results table, each figure type's money in one form chosen from its own values (#993): a column's, or,
+    where ``by_row`` names each row's measure (a slice table, each row one measure across the arms), every row's on
+    that measure, across the table. Every column's head or row names the count its money is drawn per, so it never
+    carries the per-1,000 mark beside it."""
     return TableBlock(
         section=PLANNED_SECTION,
         name=name,
         title=FULL_RESULTS_TITLES[name],
         columns=list(columns),
-        rows=rows,
+        rows=money_columns(rows, by_row=by_row, marked=False),
         order=order,
         total_rows=len(rows),
     )
@@ -119,15 +145,18 @@ def _arm_columns(report_input: ReportInput, look: PageLook) -> list[TableColumn]
     return [_column(f"arm:{arm.id}", look.arm(arm.id).label) for arm in report_input.arms if arm.id in look.arms]
 
 
+def _drawn(report_input: ReportInput, key: str, *, kind: str | None = None) -> Quantity:
+    """How a measure's figures are drawn in every Full results table: by the one owner of money's scale over every
+    figure the input holds of it, so its money is drawn per one count in every table (per 1,000 replies for money per
+    reply, per 1,000,000 where it is under a cent per 1,000); any other unit as it is."""
+    unit = figure_unit(report_input, key, kind=kind)
+    return quantity_of(unit, held_means(report_input, key)) if kind != "judged" else quantity(unit)
+
+
 def _named(report_input: ReportInput, key: str, *, kind: str | None = None) -> str:
-    """A measure's reader name, and where its figures are money per reply, that the table states them per 1,000
-    replies, as every chart does."""
-    words = measure_words(report_input, key, kind=kind)
-    drawn = quantity(figure_unit(report_input, key, kind=kind))
-    measure = report_input.measures.get(key) if kind is None else None
-    if measure is None or drawn.unit != MONEY or drawn.factor == 1.0:
-        return words
-    return f"{words}, {per_count(per_noun(measure))}"
+    """A measure's reader name, with the count its money is drawn per in it (the one owner of money's words: the
+    label's own count replaced, never a second), as every chart names it."""
+    return money_words(report_input, key, _drawn(report_input, key, kind=kind), kind=kind)
 
 
 def _stated(report_input: ReportInput, key: str, stat: Stat | None, *, kind: str | None = None) -> TableCell:
@@ -137,8 +166,12 @@ def _stated(report_input: ReportInput, key: str, stat: Stat | None, *, kind: str
     if read is None:
         return TableCell(value=None)
     value, statistic = read
-    drawn = quantity(figure_unit(report_input, key, kind=kind), [value])
-    return TableCell(value=figure_text(value * drawn.factor, drawn), flag=statistic if statistic != "mean" else None)
+    drawn = _drawn(report_input, key, kind=kind)
+    flag = statistic if statistic != "mean" else None
+    if drawn.unit == MONEY:
+        # A number, which its column's one money form spells (:func:`_table`), never a form of its own.
+        return TableCell(value=value * drawn.factor, unit=MONEY, flag=flag)
+    return TableCell(value=figure_text(value * drawn.factor, drawn), flag=flag)
 
 
 # --- arms by measure -------------------------------------------------------------------------------------------------
@@ -156,9 +189,15 @@ def _pass_rate(report_input: ReportInput, arm: str) -> TableCell:
 
 
 def _cost(report_input: ReportInput, arm: str) -> TableCell:
-    """The arm's cost per 1,000 of what it counts, by the package's one cost rule (the ``cost_per_1k`` figure key)."""
+    """The arm's cost by the package's one cost rule (the ``cost_per_1k`` figure), a number drawn per the count the
+    column's head names (:func:`~threetears.evals.analysis.report.figure_keys.cost_ruler`), its priced share beside it
+    where only part of its calls were priced."""
     try:
-        return TableCell(value=format_figure(resolve(f"cost_per_1k.{arm}", report_input), ("usd",)))
+        figure = resolve(f"cost_per_1k.{arm}", report_input)
+        if not isinstance(figure.value, float):
+            return TableCell(value=None)
+        drawn = cost_ruler(report_input).drawn(figure.value)
+        return TableCell(value=drawn, unit=MONEY, flag=priced_in_part(report_input, arm))
     except UnresolvableReference:
         # NOSILENT: the key is code's, built from an arm id, so one that does not resolve means the input holds no
         # cost for the arm, which the cell says with a dash.
@@ -184,7 +223,15 @@ def _arms_by_measure(report_input: ReportInput, look: PageLook) -> list[TableBlo
         *([_column("pass_rate")] if passing else []),
         *(_column(f"judged:{key}", _named(report_input, key, kind="judged")) for key in judged),
         *(_column(f"measure:{key}", _named(report_input, key)) for key in measures),
-        *([_column("cost_per_1k", COST_HEADER.format(per=per_count(cost_basis(report_input).noun)))] if costed else []),
+        *(
+            [
+                _column(
+                    "cost_per_1k", COST_HEADER.format(per=cost_ruler(report_input).words(cost_basis(report_input).noun))
+                )
+            ]
+            if costed
+            else []
+        ),
     ]
     rows = []
     for arm in arms:
@@ -206,9 +253,36 @@ def _arms_by_measure(report_input: ReportInput, look: PageLook) -> list[TableBlo
 # --- the corrected comparisons ---------------------------------------------------------------------------------------
 
 
-def _change(report_input: ReportInput, contrast: Contrast) -> tuple[TableCell, TableCell]:
-    """A comparison's change and its interval, in its measure's unit (a rate's in points)."""
-    drawn = quantity(figure_unit(report_input, contrast.measure, kind=contrast.kind), change=True)
+def _changes_drawn(report_input: ReportInput, contrasts: Sequence[Contrast]) -> dict[tuple[str, str | None], Quantity]:
+    """How each measure's changes are drawn in the comparisons table: on its figures' own ruler (:func:`_drawn`), so a
+    change is drawn per the count its measure's name says, in the changes' own form capped by their widest interval
+    (#993); any other unit's change quantity as it is."""
+    drawn: dict[tuple[str, str | None], Quantity] = {}
+    for measure, kind in dict.fromkeys((c.measure, c.kind) for c in contrasts):
+        amounts = _drawn(report_input, measure, kind=kind)
+        held = [c for c in contrasts if (c.measure, c.kind) == (measure, kind)]
+        drawn[measure, kind] = (
+            in_change_form(
+                amounts,
+                [float(c.delta) * amounts.factor for c in held if c.delta is not None],
+                [
+                    abs(float(c.interval[1]) - float(c.interval[0])) * amounts.factor
+                    for c in held
+                    if c.interval is not None
+                ],
+            )
+            if amounts.unit == MONEY
+            else quantity(figure_unit(report_input, measure, kind=kind), change=True)
+        )
+    return drawn
+
+
+def _change(
+    report_input: ReportInput, contrast: Contrast, drawn_as: Mapping[tuple[str, str | None], Quantity]
+) -> tuple[TableCell, TableCell]:
+    """A comparison's change and its interval, in its measure's unit (a rate's in points), money in the table's one
+    form for its unit."""
+    drawn = drawn_as[contrast.measure, contrast.kind]
     change = (
         TableCell(value=figure_text(float(contrast.delta) * drawn.factor, drawn))
         if contrast.delta is not None
@@ -254,8 +328,9 @@ def _contrasts(report_input: ReportInput, look: PageLook) -> list[TableBlock]:
         _column("confounds"),
     ]
     rows = []
+    drawn_as = _changes_drawn(report_input, held)
     for contrast in held:
-        change, interval = _change(report_input, contrast)
+        change, interval = _change(report_input, contrast, drawn_as)
         cells = {
             "arm": _chip(look, contrast.arm),
             "measure": TableCell(value=_named(report_input, contrast.measure, kind=contrast.kind)),
@@ -295,6 +370,7 @@ def _slices_table(
     ]
     arms = [column.key.removeprefix("arm:") for column in columns if column.key.startswith("arm:")]
     rows = []
+    kinds: list[str | None] = []
     for label, cases, per_arm in slices:
         for key in measures:
             if not any(key in per_arm.get(arm, {}) for arm in arms):
@@ -306,7 +382,9 @@ def _slices_table(
             for arm in arms:
                 cells[f"arm:{arm}"] = _stated(report_input, key, per_arm.get(arm, {}).get(key), kind=kind)
             rows.append(cells)
-    return _table(name, columns, rows, "in the input's order, each slice's measures in the order it holds them")
+            kinds.append(key)
+    order = "in the input's order, each slice's measures in the order it holds them"
+    return _table(name, columns, rows, order, by_row=kinds)
 
 
 def _strata(report_input: ReportInput, look: PageLook) -> list[TableBlock]:
@@ -357,14 +435,18 @@ def _places(
 def _gate_cell(
     report_input: ReportInput, criterion: Criterion, arm: str, task: str | None, cell: str | None
 ) -> TableCell:
-    """One arm against one criterion at one place: the gate check's status in words, the figure beside it."""
-    checked: GateCheck = gate_check(report_input, arm, task=task, cell=cell, criterion=criterion.id)
+    """One arm against one criterion at one place: the gate check's status in words, the figure beside it; where the
+    input holds no figure there, ``Unknown (no figure)``, never a fail: the gate check counts an unknown figure among
+    an arm's fails, but a reader of the grid reads what is known at that place, as the rest of the page does."""
     figure = next(
         (held for held in criterion_figures(report_input, criterion, arm) if (held.task, held.cell) == (task, cell)),
         None,
     )
+    if figure is None or not math.isfinite(figure.value):
+        return TableCell(value=GATE_UNKNOWN, status="neutral", flag=NO_FIGURE)
+    checked: GateCheck = gate_check(report_input, arm, task=task, cell=cell, criterion=criterion.id)
     line = resolve(f"criteria.{criterion.id}.threshold", report_input)
-    said = format_figure(replace(line, value=figure.value)) if figure is not None else NO_FIGURE
+    said = format_figure(replace(line, value=figure.value))
     return TableCell(value=GATE_WORDS[checked.status], status=GATE_STATUS[checked.status], flag=said)
 
 

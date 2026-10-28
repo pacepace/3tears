@@ -21,14 +21,33 @@ and what HTML keeps beside the chart for a screen reader and a page whose script
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable, Iterator, Sequence
+from functools import partial
 from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
 
-from threetears.evals.kernel.numbers import WHOLE_FROM, format_number, group_thousands
-from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
+from threetears.evals.kernel.numbers import (
+    PER_THOUSAND,
+    PER_THOUSAND_MARK,
+    WHOLE_FROM,
+    MoneyForm,
+    format_number,
+    group_thousands,
+    money_form,
+    per_thousand_digits,
+)
+from threetears.evals.analysis.quantities import (
+    MONEY,
+    PERCENT,
+    POINTS,
+    UNSPACED_UNITS,
+    number_in,
+    signed_with_unit,
+    with_unit,
+)
 from threetears.evals.schema.base import EvalDocumentModel
 
 #: A colour as the kit takes one: the name of one of its tokens, never a literal colour.
@@ -38,8 +57,11 @@ Token = Annotated[str, Field(pattern=r"^--[a-z][a-z0-9-]*$", description='A kit 
 Fmt = Annotated[
     str,
     Field(
-        pattern=r"^\+?(num|int|pct|pts|usd|usdk|ms|s|dur|x|k)(:\d)?$",
-        description="A kit format: num, int, pct, pts, usd, usdk, ms, s, dur, x or k, as `name` or `name:digits`.",
+        pattern=r"^\+?(num|int|pct|pts|usd|usdk|usdpk|ms|s|dur|x|k)(:\d)?$",
+        description=(
+            "A kit format: num, int, pct, pts, usd, usdk, usdpk (dollars per 1,000, the mark written: `$8.00/1000`), "
+            "ms, s, dur, x or k, as `name` or `name:digits`."
+        ),
     ),
 ]
 
@@ -71,20 +93,26 @@ _FORMAT_UNITS: dict[str, str] = {
     "pts": POINTS,
     "usd": MONEY,
     "usdk": MONEY,
+    "usdpk": MONEY,
     "ms": "ms",
     "dur": "ms",
     "s": "s",
     "x": "×",
 }
 
-#: A format spec's parts: the sign flag and the name; the digits are the axis's, not the table's.
-_FORMAT_SPEC = re.compile(r"^(\+?)([a-z]+)(?::\d)?$")
+#: The kit's format for money per 1,000 with its mark (``$8.00/1000``): the one a chart of totals under a cent reads in.
+_PER_THOUSAND_FORMAT = "usdpk"
+
+#: A format spec's parts: the sign flag, the name and the digits. The digits are the axis's, not the table's, but for
+#: money's: a chart chooses money's one form from every amount it draws (#993), and its table writes it too.
+_FORMAT_SPEC = re.compile(r"^(\+?)([a-z]+)(?::(\d))?$")
 
 
 def _formatted(spec: str, value: float, read_at: str = "") -> str:
     """``value`` as a chart's table prints it: in the unit the kit's named format ``spec`` states it in, by the
     package's one number rule, signed where the spec signs it; whatever digits the spec rounds its axis to, a table
-    never rounds away what the value holds.
+    never rounds away what the value holds, but money: a money format with digits (``usd:2``) is the chart's one money
+    form, chosen from every amount it draws, and its table writes each amount in it, as its ticks and notes do.
 
     Where the format names no unit (``num``) and its block says the unit its values are read at (``read_at``, a
     chart of what an analysis computes: two arms' difference, a lever's effect, in points), the value is spelled at
@@ -106,6 +134,12 @@ def _formatted(spec: str, value: float, read_at: str = "") -> str:
     if match is None or match[2] not in _FORMAT_UNITS:
         raise ValueError(f"fmt {spec!r} is not one of {', '.join(_FORMAT_UNITS)}")
     unit = _FORMAT_UNITS[match[2]]
+    if match[2] == _PER_THOUSAND_FORMAT:
+        # Dollars per 1,000, the mark written, as the kit's ticks write them (a set of totals under a cent, #993).
+        form = MoneyForm(per_thousand=True, decimals=int(match[3]) if match[3] is not None else 2)
+        return form.spell(value, signed=bool(match[1]))
+    if unit == MONEY and match[3] is not None:
+        return MoneyForm(decimals=int(match[3])).spell(value, signed=bool(match[1]))
     if not unit and read_at:
         text = number_in(value, read_at)
         # Signed as format_signed signs a change: a positive value carries its "+", a bound its own direction.
@@ -272,16 +306,18 @@ _MOST_PADDED = 3
 #: :data:`~threetears.evals.kernel.numbers.WHOLE_FROM`, where it starts writing numbers whole.
 _SIGNIFICANT = len(str(int(WHOLE_FROM)))
 
-#: A dollar amount's whole dollars in a table cell, written without their thousands grouped: ``$1239``.
-_UNGROUPED_DOLLARS = re.compile(r"(?<=\$)\d{4,}(?![\d,])")
+#: An amount of money in a table cell: its sign, its digits with any thousands separators and decimals, and the
+#: per-1,000 mark where it carries one; never a bound (``< $0.000001``), which states no amount.
+_CELL_MONEY = re.compile(r"(?<![<>] )(?<![<>\w.,+\-−])([+\-−]?)\$(\d[\d,]*(?:\.\d+)?)(/1000)?(?![\d])")
 
 
 def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
     """A values table's cells, every number at one precision among the cells that read alike: cells that read the
-    same but for their numbers (``94% · $1 per 1,000 calls``, ``96.4% · $1.06 per 1,000 calls``), wherever they sit in
-    the table, have each number in the same place padded with zeros to the most decimals that place holds among them
-    (``94.0%``, ``$1.00``), up to three. Money's whole dollars are then grouped by thousands (``$1239`` reads
-    ``$1,239``), as the figure keys write money, so a table and the prose citing it print one amount alike.
+    same but for their numbers (``94% · 3 calls``, ``96.4% · 4 calls``), wherever they sit in the table, have each
+    number in the same place padded with zeros to the most decimals that place holds among them (``94.0%``), up to
+    three. Money is first put in one form per column (#993, :func:`_money_by_column`): per 1,000 (``$8/1000``) throughout
+    a column where any amount it holds is under a cent, so a column never reads ``$0.008`` beside ``$0.11``, and its
+    whole dollars grouped by thousands (``$1,239``), as the figure keys write money.
 
     Padding never rounds: a cell keeps every digit it had, so a table still never rounds away what a value holds,
     and two figures a reader compares read at one precision. Nor does it state a digit the number was never rounded
@@ -296,7 +332,7 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
     :return: The rows, each number padded among the cells that read like its own.
     :rtype: list[list[str]]
     """
-    table = [list(row) for row in rows]
+    table = _money_by_column([list(row) for row in rows])
     shaped: dict[str, list[tuple[int, int]]] = {}
     for at, row in enumerate(table):
         for column, cell in enumerate(row):
@@ -308,9 +344,50 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
         most = [max(len(numbers[place].group(3) or "") for numbers in found) for place in range(len(found[0]))]
         for at, column in places:
             table[at][column] = _padded_cell(table[at][column], most)
-    return [
-        [_UNGROUPED_DOLLARS.sub(lambda whole: group_thousands(whole.group(0)), cell) for cell in row] for row in table
-    ]
+    return table
+
+
+def _money_amount(found: re.Match[str]) -> float:
+    """The dollars one amount in a cell states, its sign and any per-1,000 mark read back."""
+    amount = float(found.group(2).replace(",", "")) / (PER_THOUSAND if found.group(3) else 1)
+    return -amount if found.group(1) in ("-", "−") else amount
+
+
+def _money_by_column(table: list[list[str]]) -> list[list[str]]:
+    """Every amount of money in each column of a table's text in that column's one form (#993): per 1,000
+    (``$8/1000``) throughout where any amount the column holds is under a cent
+    (:func:`~threetears.evals.kernel.numbers.money_form`), else in dollars, and every amount's whole dollars grouped by
+    thousands (``$1,239``). An amount is moved per 1,000 by its digits exactly, so it keeps every digit it was written
+    with and gains none it was never rounded to; a bound (``< $0.000001``) is left as it is. A cell naming the count
+    its money is drawn per (``$0.0240 per 1,000,000 conversations``) already states its scale: its amounts neither
+    choose the mark nor take it, so no amount carries two scales.
+
+    :param table: The table's rows of cell texts; changed in place.
+    :ptype table: list[list[str]]
+    :return: The same rows.
+    :rtype: list[list[str]]
+    """
+    width = max((len(row) for row in table), default=0)
+    for column in range(width):
+        cells = [row[column] for row in table if column < len(row) and not _COUNTED.search(row[column])]
+        per_thousand = money_form(_money_amount(found) for cell in cells for found in _CELL_MONEY.finditer(cell))
+        for row in table:
+            if column < len(row):
+                mark = per_thousand.per_thousand and not _COUNTED.search(row[column])
+                row[column] = _CELL_MONEY.sub(partial(_respelled, per_thousand=mark), row[column])
+    return table
+
+
+#: Words naming the count money is drawn per: ``per 1,000,000 conversations``.
+_COUNTED = re.compile(r"\bper [\d,]+ ")
+
+
+def _respelled(found: re.Match[str], per_thousand: bool) -> str:
+    """One amount in its column's form: moved per 1,000 by its digits where the column reads so, its thousands grouped."""
+    sign, digits, mark = found.group(1), found.group(2).replace(",", ""), found.group(3) or ""
+    if per_thousand and not mark:
+        digits, mark = per_thousand_digits(digits), PER_THOUSAND_MARK
+    return f"{sign}${group_thousands(digits)}{mark}"
 
 
 def _own_decimals(whole: str) -> int:
@@ -345,6 +422,22 @@ def _interval(spec: str, low: float | None, high: float | None, read_at: str = "
     if low is None or high is None:
         return ""
     return f"{_formatted(spec, low, read_at)} to {_formatted(spec, high, read_at)}"
+
+
+def _restates(note: str | None, value: float | None, said: str, spec: str, read_at: str) -> bool:
+    """Whether a row's note only restates its value, the label a chart draws at the bar's end: the value as the table
+    writes it (``said``), or that value with the unit the row is read in beside it (the block's ``read_at`` or its
+    format's own: ``+0.8 pts`` beside ``+0.8`` read in points), so a values table never prints one figure twice, in two
+    columns. A note that says more (``worse``, ``-7.6 pts worse``), or names another unit, is kept. Only the code's own
+    spellings of the row's own number are compared: no word of the note is read."""
+    match = _FORMAT_SPEC.fullmatch(spec)
+    if note is None or value is None or not math.isfinite(value) or match is None:
+        return False
+    spellings = {said}
+    for unit in {read_at, _FORMAT_UNITS.get(match[2], "")} - {"", MONEY}:
+        spellings.add(signed_with_unit(value, unit) if match[1] else with_unit(value, unit))
+        spellings.add(f"{said}{unit}" if unit in UNSPACED_UNITS else f"{said} {unit}")
+    return note in spellings
 
 
 #: An interval open above, as a table cell or a tooltip writes it: its low end, and no upper bound.
@@ -459,7 +552,12 @@ class _BarsFields(_Kind):
         grouped = any(row.group is not None for row in rows)
         stacked = any(row.segments for row in rows)
         intervals = any(row.lo is not None for row in rows)
-        notes = any(row.note for row in rows)
+        said = [_formatted(self._format, row.total, read_at) for row in rows]
+        kept = [
+            None if _restates(row.note, row.total, text, self._format, read_at) else row.note
+            for row, text in zip(rows, said, strict=True)
+        ]
+        notes = any(kept)
         headers = [
             *(["Group"] if grouped else []),
             "Row",
@@ -469,7 +567,7 @@ class _BarsFields(_Kind):
             *(["Note"] if notes else []),
         ]
         body: list[list[str]] = []
-        for row in rows:
+        for row, text, note in zip(rows, said, kept, strict=True):
             parts = " · ".join(
                 (f"{names[seg.color, seg.pattern]} " if (seg.color, seg.pattern) in names else "")
                 + _formatted(self._format, seg.value)
@@ -479,10 +577,10 @@ class _BarsFields(_Kind):
                 [
                     *([row.group or ""] if grouped else []),
                     _tagged(row.tag, row.label),
-                    _formatted(self._format, row.total, read_at),
+                    text,
                     *([parts] if stacked else []),
                     *([_bar_interval(self._format, row.lo, row.hi, read_at)] if intervals else []),
-                    *([row.note or ""] if notes else []),
+                    *([note or ""] if notes else []),
                 ]
             )
         reference = _reference_row(self.reference, self._format, len(headers) - grouped)
@@ -537,7 +635,12 @@ class ForestChart(_Drawable):
 
     def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         grouped = any(row.group is not None for row in self.rows)
-        notes = any(row.note for row in self.rows)
+        said = [_formatted(self.fmt, row.value, read_at) for row in self.rows]
+        kept = [
+            None if _restates(row.note, row.value, text, self.fmt, read_at) else row.note
+            for row, text in zip(self.rows, said, strict=True)
+        ]
+        notes = any(kept)
         headers = [
             *(["Group"] if grouped else []),
             "Row",
@@ -549,11 +652,11 @@ class ForestChart(_Drawable):
             [
                 *([row.group or ""] if grouped else []),
                 row.label,
-                _formatted(self.fmt, row.value, read_at),
+                text,
                 _interval(self.fmt, row.lo, row.hi, read_at),
-                *([row.note or ""] if notes else []),
+                *([note or ""] if notes else []),
             ]
-            for row in self.rows
+            for row, text, note in zip(self.rows, said, kept, strict=True)
         ]
         reference = _reference_row(self.reference, self.fmt, len(headers) - grouped)
         return headers, body + [[""] * grouped + line for line in reference]

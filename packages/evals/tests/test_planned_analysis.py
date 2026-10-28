@@ -14,13 +14,15 @@ Contracts held here (``threetears.evals.analysis.planned_analysis``, ``threetear
 - a model or storage bug building the analysis from an accepted plan is recorded as a failure and raised as one,
   never as the planner's refusal;
 - the plan is regenerable: ``drop_derived`` sweeps it, and deleting its analysis deletes it (its insights stay);
-- the campaign's page for a planned analysis is the page its stored plan draws over the input it was written against
-  (no blocks of its own, its made line naming the planner), the aspects' folds a closed appendix after Method in HTML
-  and Markdown; ``report_read`` serves it static where asked and ``trials="all"`` still reaches every failed trial's
-  record through the folds; a key the frozen evidence no longer holds refuses the page naming the regeneration; a
-  planned page is an analysis's and holds no blocks of its own;
-- the actions round-trip: a generation started through ``analysis_generate`` is listed by ``analyses_list`` as a plan
-  and read by ``report_read`` with its plan;
+- a planned analysis read by its id (``analysis_report``) is the page its stored plan draws over the input it was
+  written against (no blocks of its own, its made line naming the planner), the aspects' folds a closed appendix after
+  Method in HTML and Markdown, and ``trials="all"`` still reaches every failed trial's record through the folds; a key
+  the frozen evidence no longer holds refuses that page naming the regeneration; a planned page is an analysis's and
+  holds no blocks of its own;
+- the campaign's page and ``report_read`` of a planned analysis are the code-only page with the one regenerate line,
+  static where asked, never refused (``test_report_read_doc.py`` holds every form);
+- the actions round-trip: a generation started through ``analysis_generate`` is the report writer's, never the
+  planner's, listed by ``analyses_list`` as a document and read by ``report_read`` with no plan;
 - a key's subjects (the arms and aspects it names) are read off its one reading of the input.
 
 The model is the one non-production part: a fixtured planner writes a structure and its prose over whatever report
@@ -30,6 +32,7 @@ input the generation built (``toyhost_plan``).
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pytest
@@ -48,6 +51,7 @@ from threetears.evals.analysis.report.plan_page.build import plan_page
 from threetears.evals.analysis.report.serialize import serialize_report
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.service import (
+    analysis_report,
     campaign_report,
     get_report_plan,
     prepare_analysis_generation,
@@ -57,15 +61,20 @@ from threetears.evals.kernel.campaign import EvalAnalysis, report_plan_id
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.kernel.errors import RefusedInput, ValidationFailedError
 from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
-from threetears.evals.ops import analyses_list, analysis_delete, analysis_generate, report_read
+from threetears.evals.ops import analyses_list, analysis_delete, report_read
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, settled
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, planned_generation, settled
 from packages.evals.tests.report_plan_support import r5_input
 from packages.evals.tests.report_support import stored_memo_analysis, toy_campaign_host
 from packages.evals.tests.reporter_case_support import freeze_corpus_campaign, reporter_fixture
 from packages.evals.tests.static_page_support import assert_static, less_what_static_leaves_out
 from packages.evals.tests.toyhost_plan import PLAN_CALLS, PlanWriter, contract_name
 from threetears.evals.kernel.inner_ceilings import MAX_GENERATION_CALLS
+from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
+
+
+def _without_instants(body: str) -> str:
+    return re.sub(r"\d{4}-\d{2}-\d{2}T[0-9:.+]+", "", body)
 
 
 async def _prompt() -> str:
@@ -159,7 +168,7 @@ class TestAGeneration:
         stored = off_loop(get_report_plan, host.storage, analysis)
         assert stored is not None
 
-        page = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
+        page = off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id)
 
         assert (page.basis, page.analysis_id, page.finding_count, page.blocks) == ("analysis", analysis.id, 0, [])
         assert page.plan_page is not None
@@ -181,21 +190,22 @@ class TestAGeneration:
         assert markdown.index(page.plan_page.made) < markdown.index("## Evidence record")
         assert all(f"## {fold.aspect}" in markdown.split("## Evidence record", 1)[1] for fold in page.aspects)
 
-    async def test_its_report_read_serves_the_planned_page_static_where_asked(self) -> None:
+    async def test_its_report_read_serves_the_code_only_page_with_the_line_static_where_asked(self) -> None:
         host, _, analysis, _, _ = await _generated()
 
         static = off_loop(report_read, host, analysis.campaign_id, analysis.scope_id, format="html", static=True)
         default = off_loop(report_read, host, analysis.campaign_id, analysis.scope_id, format="html")
 
-        assert 'data-page="planned"' in static.body and 'data-part="appendix"' in static.body
+        assert (static.basis, static.analysis_id, static.analysis_basis) == ("code_only", analysis.id, "plan")
+        assert '<article data-page="planned"' not in static.body and NO_LONGER_READS in static.body
         assert_static(static.body)
-        assert static.body == less_what_static_leaves_out(default.body)
+        assert _without_instants(static.body) == _without_instants(less_what_static_leaves_out(default.body))
 
     async def test_trials_all_lays_each_failed_trial_s_record_out_in_its_fold(self) -> None:
         host, _, analysis, _, _ = await _generated()
 
-        table = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
-        everything = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id, trials="all")
+        table = off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id)
+        everything = off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id, trials="all")
 
         assert table.plan_page == everything.plan_page, "the plan's page reads the same either way"
         assert [fold.report for fold in table.aspects] != [fold.report for fold in everything.aspects]
@@ -211,14 +221,16 @@ class TestAGeneration:
         off_loop(host.storage.save_report_plan, stored.model_copy(update={"plan": unheld}))
 
         with pytest.raises(RefusedInput, match=r"generate the analysis again \(analysis_generate\)") as refused:
-            off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
+            off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id)
         assert "pass_rate.nobody" in str(refused.value)
+        page = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
+        assert (page.basis, page.unread_analysis_id) == ("code_only", analysis.id), "the campaign's page never refuses"
         lines = off_loop(analyses_list, host, analysis.campaign_id, analysis.scope_id).analyses
-        assert [line.needs_regeneration for line in lines] == [None], "the listing reads the plan, which still parses"
+        assert [line.needs_regeneration for line in lines] == [NO_LONGER_READS], "the plan still parses: the line alone"
 
     async def test_a_planned_page_is_an_analysis_s_and_holds_no_blocks_of_its_own(self) -> None:
         host, _, analysis, _, _ = await _generated()
-        page = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
+        page = off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id)
         assert page.plan_page is not None
 
         with pytest.raises(ValidationError, match="a planned page lays out an analysis"):
@@ -344,36 +356,30 @@ class TestStoredMemos:
         assert (line.id, line.basis, line.report_plan_id) == (memo.id, "memo", None)
         assert (line.findings, line.recommendations) == (len(memo.document.findings), 1)
         read = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
-        assert (read.basis, read.analysis_id, read.analysis_basis, read.plan) == ("analysis", memo.id, "memo", None)
+        assert (read.basis, read.analysis_id, read.analysis_basis, read.doc) == ("analysis", memo.id, "memo", None)
+        assert read.needs_regeneration is None
         assert "**Recommended:**" in read.body, "the memo's recommendation, as written"
         assert off_loop(get_report_plan, fixture.host.eval_host.storage, memo) is None
         assert build_report(memo).basis == "analysis"
 
     async def test_a_reporter_case_pins_a_memo_as_a_memo_case_and_a_plan_as_a_plan_case(self) -> None:
         fixture = off_loop(reporter_fixture)
-        (job,) = (await _generate_through_the_action(fixture)).jobs
-        planned = (await settled(fixture.host, job.job_id)).analysis_id
-        assert planned is not None
+        planned = (await planned_generation(fixture))[0].id
         memo, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
 
         assert off_loop(freeze_corpus_campaign, fixture, recorded_analysis_id=memo.id).kind_version == 1
         assert off_loop(freeze_corpus_campaign, fixture, recorded_analysis_id=planned).kind_version == 2
 
 
-async def _generate_through_the_action(fixture: Any) -> Any:
-    return await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
-
-
 class TestAStoredPlanThisBuildCannotRead:
     """A plan stored under a shape the plan model no longer accepts (it moves inside regenerable v13) is listed as
-    needing regeneration, its reason on the line, beside every analysis that reads; its report and page refuse,
-    naming the regeneration."""
+    needing regeneration, the one regenerate line then its reason, beside every analysis that reads; its report and the
+    campaign's page are the code-only page with that line, never refused, and its page by id refuses, naming the
+    regeneration."""
 
     async def _unreadable(self) -> tuple[Any, str]:
         fixture = off_loop(ops_fixture)
-        (job,) = (await _generate_through_the_action(fixture)).jobs
-        analysis_id = (await settled(fixture.host, job.job_id)).analysis_id
-        assert analysis_id is not None
+        analysis_id = (await planned_generation(fixture))[0].id
         storage = fixture.host.eval_host.storage
         analysis = off_loop(storage.load_analysis, analysis_id, TOYHOST_SCOPE)
         stored = off_loop(get_report_plan, storage, analysis)
@@ -392,19 +398,22 @@ class TestAStoredPlanThisBuildCannotRead:
         }
 
         unreadable = lines[analysis_id].needs_regeneration
-        assert unreadable is not None and "report plan this build cannot read" in unreadable
-        assert "headline" in unreadable and "analysis_generate" in unreadable
+        assert unreadable is not None and unreadable.startswith(f"{NO_LONGER_READS} (")
+        assert "report plan this build cannot read" in unreadable and "headline" in unreadable
         assert (lines[analysis_id].basis, lines[analysis_id].findings) == ("plan", 0)
         assert lines[memo.id].needs_regeneration is None, "one unreadable plan refuses no other analysis's line"
 
-    async def test_its_report_and_page_refuse_naming_the_regeneration(self) -> None:
+    async def test_its_report_reads_code_only_with_the_line_and_its_page_by_id_refuses(self) -> None:
         fixture, analysis_id = await self._unreadable()
         host = fixture.host.eval_host
 
-        with pytest.raises(RefusedInput, match=r"generate the analysis again \(analysis_generate\)"):
-            off_loop(report_read, host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
+        read = off_loop(report_read, host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
+        assert (read.basis, read.analysis_id) == ("code_only", analysis_id)
+        assert read.needs_regeneration is not None and read.needs_regeneration.startswith(f"{NO_LONGER_READS} (")
+        assert NO_LONGER_READS in read.body
+        assert off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE).unread_analysis_id == analysis_id
         with pytest.raises(RefusedInput, match="report plan this build cannot read"):
-            off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE)
+            off_loop(analysis_report, host.storage, analysis_id, TOYHOST_SCOPE)
 
 
 class TestThePlanIsDerived:
@@ -418,9 +427,7 @@ class TestThePlanIsDerived:
 
     async def test_deleting_its_analysis_deletes_it_and_keeps_the_insights(self) -> None:
         fixture = off_loop(ops_fixture)
-        (job,) = (await _generate_through_the_action(fixture)).jobs
-        analysis_id = (await settled(fixture.host, job.job_id)).analysis_id
-        assert analysis_id is not None
+        analysis_id = (await planned_generation(fixture))[0].id
         storage = fixture.host.eval_host.storage
         analysis = off_loop(storage.load_analysis, analysis_id, TOYHOST_SCOPE)
         assert analysis is not None and analysis.report_plan_id is not None
@@ -433,8 +440,9 @@ class TestThePlanIsDerived:
         ]
 
 
-async def test_the_actions_round_trip_a_planned_analysis() -> None:
-    """Generate, poll, list and read through the mounted tool: the listing and the read say a plan wrote it."""
+async def test_the_actions_round_trip_a_generated_analysis_as_a_report_document() -> None:
+    """Generate, poll, list and read through the mounted tool: ``analysis_generate`` reaches the report writer, never
+    the planner, so the listing and the read say a report document wrote it."""
     fixture = off_loop(ops_fixture)
     evals = eval_catalogue().mount_all(standard_tools())[0]
 
@@ -451,12 +459,9 @@ async def test_the_actions_round_trip_a_planned_analysis() -> None:
     )
     assert listed.structured is not None, listed.text
     (line,) = listed.structured["analyses"]
-    assert (line["id"], line["basis"], line["report_plan_id"]) == (
-        status.analysis_id,
-        "plan",
-        report_plan_id(str(status.analysis_id)),
-    )
-    assert (line["findings"], line["recommendations"]) == (1, 1)
+    assert (line["id"], line["basis"], line["report_plan_id"]) == (status.analysis_id, "doc", None)
+    assert line["report_doc_id"] is not None
+    assert (line["findings"], line["recommendations"]) == (1, 0)
 
     read = await evals.call(
         {"action": "report_read", "campaign_id": fixture.campaign.id, "format": "json"},
@@ -464,14 +469,15 @@ async def test_the_actions_round_trip_a_planned_analysis() -> None:
         caller=CALLER,
     )
     assert read.structured is not None, read.text
+    # The page is the stored report document's, and the result carries the document.
     assert (read.structured["basis"], read.structured["analysis_id"], read.structured["analysis_basis"]) == (
         "analysis",
         status.analysis_id,
-        "plan",
+        "doc",
     )
-    plan = read.structured["plan"]
-    assert plan["schema"] == "report-plan/1" and plan["mode"] == "decide" and plan["durable_claims"]
-    assert json.loads(read.structured["body"])["analysis_id"] == status.analysis_id
+    assert "plan" not in read.structured and read.structured["doc"]["schema"] == "report-doc/1"
+    body = json.loads(read.structured["body"])
+    assert body["analysis_id"] == status.analysis_id and body["report_doc"]["id"] == line["report_doc_id"]
 
 
 class TestKeySubjects:

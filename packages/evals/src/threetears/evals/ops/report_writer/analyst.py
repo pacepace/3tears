@@ -6,13 +6,14 @@
 ``report-doc/1`` JSON schema, and the snapshot's ``campaign_overview`` as the tool answers it, held to the result limit. The analyst then calls
 the tool as it needs, and a reply that calls no tool is its submission: one fenced JSON object.
 
-**A submission is read in four steps, and the first that finds a fault sends it back** (a bounce, which costs no
+**A submission is read in three steps, and the first that finds a fault sends it back** (a bounce, which costs no
 editor call): the fenced JSON (exactly one fenced block, holding one JSON object); its shape
-(:class:`~threetears.evals.kernel.report_doc.ReportDoc`); its validity on the snapshot
-(:func:`~threetears.evals.kernel.report_doc.report_doc_validity`, over the snapshot's arm ids and the caveat ids code
-assigns on it); and the invariants, by the checker the caller hands in (``analysis/report_doc_checks.py``'s, on the
-snapshot's report input). A reply stopped at its output cap is a bounce too. Each bounce tells the analyst every fault
-found, as text. A round allows :attr:`AnalystLimits.bounces` bounces; a fault after the last ends the round
+(:class:`~threetears.evals.kernel.report_doc.ReportDoc`); then the checker the caller hands in, the store gate's
+(``analysis/report_doc_checks.py``'s, on the snapshot's report input), which reads the document's validity on the
+snapshot as its invariant 0 (:func:`~threetears.evals.kernel.report_doc.report_doc_validity`) and every invariant after
+it in the same pass. So one bounce carries every verdict, validity's included, each with its remedy; a validity
+verdict is a fault of kind ``validity``, every other an ``invariant`` one. A reply stopped at its output cap is a
+bounce too. Each bounce tells the analyst every fault found, as text. A round allows :attr:`AnalystLimits.bounces` bounces; a fault after the last ends the round
 ``refused``, carrying the faults.
 
 **Code reads nothing it would choose by.** Nothing here reads the document's story, a claim's weight, a block's kind
@@ -22,7 +23,7 @@ the same for every report.
 **Rounds.** :meth:`AnalystSession.draft` is round 1, with :attr:`AnalystLimits.draft_calls` tool calls; each
 :meth:`AnalystSession.revise` (the editor's findings, sent back by the caller) is the next round, in the same
 conversation, with :attr:`AnalystLimits.revision_calls`. A round ends ``submitted`` (the document passed every
-check), ``refused``, ``over_budget`` (the report's dollar budget refused a turn, or the analyst called a tool after
+check), ``refused``, ``over_budget`` (the report's budget refused a turn, or the analyst called a tool after
 its calls ran out and it was told to submit) or ``failed`` (the model refused, or its reply stopped short).
 
 **Stored and resumed.** :meth:`AnalystSession.to_json` is the session as a value (the tool session's record, with
@@ -36,14 +37,14 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal, Protocol
 
 from pydantic import ValidationError
 
 from threetears.evals.analysis.analyst.skill import SkillText
-from threetears.evals.kernel.report_doc import ReportDoc, report_doc_json_schema, report_doc_validity
+from threetears.evals.kernel.report_doc import ReportDoc, report_doc_json_schema
 from threetears.evals.ops.report_writer.session import SessionLimits, SessionStop, ToolMount, ToolSession
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.turns import ToolTurnClient
@@ -99,7 +100,12 @@ class AnalystLimits:
 
 
 class InvariantVerdict(Protocol):
-    """One fault the invariants find in a valid document: where, what, and how to fix it."""
+    """One fault the checker finds in a document: which check, where, what, and how to fix it."""
+
+    @property
+    def invariant(self) -> int:
+        """The check that found it: 0 for the document's validity on the snapshot, 1 and up for the invariants."""
+        ...
 
     @property
     def path(self) -> str:
@@ -117,8 +123,8 @@ class InvariantVerdict(Protocol):
         ...
 
 
-#: The invariants' checker, on the snapshot the session reads: the faults it finds in a valid document, none for one
-#: that passes.
+#: The checker, on the snapshot the session reads: every fault it finds in a document, validity's (invariant 0) and the
+#: invariants', none for one that passes.
 InvariantCheck = Callable[[ReportDoc], Sequence[InvariantVerdict]]
 
 
@@ -178,8 +184,6 @@ class AnalystSession:
         session: ToolSession,
         *,
         snapshot: str,
-        arms: Collection[str],
-        caveats: Collection[str],
         check: InvariantCheck,
         limits: AnalystLimits,
         bounces: int = 0,
@@ -190,11 +194,7 @@ class AnalystSession:
         :ptype session: ToolSession
         :param snapshot: The snapshot it reads, by id.
         :ptype snapshot: str
-        :param arms: The snapshot's arm ids, which validity reads.
-        :ptype arms: Collection[str]
-        :param caveats: The caveat ids code assigns on the snapshot, stated and implied, which validity reads.
-        :ptype caveats: Collection[str]
-        :param check: The invariants' checker on the snapshot.
+        :param check: The checker on the snapshot, validity's and the invariants'.
         :ptype check: InvariantCheck
         :param limits: What its rounds are held to.
         :ptype limits: AnalystLimits
@@ -207,8 +207,6 @@ class AnalystSession:
         self.snapshot = snapshot
         self.limits = limits
         self._session = session
-        self._arms = frozenset(arms)
-        self._caveats = frozenset(caveats)
         self._check = check
         self._bounces = bounces
 
@@ -221,8 +219,6 @@ class AnalystSession:
         mount: ToolMount,
         skill: SkillText,
         snapshot: str,
-        arms: Collection[str],
-        caveats: Collection[str],
         check: InvariantCheck,
         tally: Tally,
         budget: ReportBudget,
@@ -240,15 +236,11 @@ class AnalystSession:
         :ptype skill: SkillText
         :param snapshot: The frozen snapshot it reads, by id.
         :ptype snapshot: str
-        :param arms: The snapshot's arm ids.
-        :ptype arms: Collection[str]
-        :param caveats: The caveat ids code assigns on the snapshot, stated and implied.
-        :ptype caveats: Collection[str]
-        :param check: The invariants' checker on the snapshot.
+        :param check: The checker on the snapshot, validity's and the invariants'.
         :ptype check: InvariantCheck
         :param tally: The report's tally.
         :ptype tally: Tally
-        :param budget: The report's dollar budget.
+        :param budget: The report's budget (dollars, or tokens and turns).
         :ptype budget: ReportBudget
         :param limits: What its rounds are held to; plan §4.3's defaults when ``None``.
         :ptype limits: AnalystLimits | None
@@ -267,7 +259,7 @@ class AnalystSession:
             budget=budget,
             limits=held.session,
         )
-        return cls(session, snapshot=snapshot, arms=arms, caveats=caveats, check=check, limits=held)
+        return cls(session, snapshot=snapshot, check=check, limits=held)
 
     @property
     def session(self) -> ToolSession:
@@ -365,14 +357,12 @@ class AnalystSession:
         found = _read_submission(text)
         if not isinstance(found, ReportDoc):
             return None, found
-        validity = tuple(
-            SubmissionFault("validity", path, why)
-            for path, why in report_doc_validity(found, arms=self._arms, caveats=self._caveats)
-        )
-        if validity:
-            return None, validity
         verdicts = tuple(
-            SubmissionFault("invariant", verdict.path, f"{verdict.fault}; {verdict.remedy}")
+            SubmissionFault(
+                "validity" if verdict.invariant == 0 else "invariant",
+                verdict.path,
+                f"{verdict.fault}; {verdict.remedy}",
+            )
             for verdict in self._check(found)
         )
         if verdicts:
@@ -415,8 +405,6 @@ class AnalystSession:
         client: ToolTurnClient,
         mount: ToolMount,
         skill: SkillText,
-        arms: Collection[str],
-        caveats: Collection[str],
         check: InvariantCheck,
         tally: Tally,
         budget: ReportBudget,
@@ -433,11 +421,7 @@ class AnalystSession:
         :ptype mount: ToolMount
         :param skill: The analyst's system text, the one the session started with.
         :ptype skill: SkillText
-        :param arms: The snapshot's arm ids.
-        :ptype arms: Collection[str]
-        :param caveats: The caveat ids code assigns on the snapshot.
-        :ptype caveats: Collection[str]
-        :param check: The invariants' checker on the snapshot.
+        :param check: The checker on the snapshot, validity's and the invariants'.
         :ptype check: InvariantCheck
         :param tally: The tally its next turns are counted in.
         :ptype tally: Tally
@@ -466,7 +450,7 @@ class AnalystSession:
         session = await ToolSession.from_json(
             stored, model=model, client=client, mount=mount, system=skill, tally=tally, budget=budget
         )
-        return cls(session, snapshot=snapshot, arms=arms, caveats=caveats, check=check, limits=held, bounces=bounces)
+        return cls(session, snapshot=snapshot, check=check, limits=held, bounces=bounces)
 
 
 def _read_submission(text: str) -> ReportDoc | tuple[SubmissionFault, ...]:

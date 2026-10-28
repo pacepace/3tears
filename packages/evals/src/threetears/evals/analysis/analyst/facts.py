@@ -68,6 +68,7 @@ from threetears.evals.analysis.report_input import (
     Aspect,
     BarRead,
     Contrast,
+    Disclosure,
     Example,
     FloorRead,
     Judged,
@@ -102,6 +103,8 @@ __all__ = [
     "ReadingsListing",
     "campaign_overview",
     "caveats_list",
+    "confound_caveat_id",
+    "contrast_key",
     "contrasts_list",
     "examples_list",
     "measure_read",
@@ -403,14 +406,23 @@ class RigRow(_Fact):
     execution_modes: dict[str, int] = Field(
         description="The runs' results by the execution mode each recorded, summed."
     )
+    # Left out when empty, so a rig whose runs' hosts disclosed nothing reads as it did before the field existed.
+    disclosed: dict[str, Disclosure] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description="What the launching host disclosed about each of the runs (its machine, load, how it measures), "
+        "by run id, for each run it disclosed something for. A disclosure, never part of the rig: runs that disclose "
+        "different values share one row.",
+    )
 
 
 def _rigs(report_input: ReportInput) -> list[RigRow]:
     """The input's run rigs, one row per rig in first-seen order: runs alike in every field but their execution modes
-    share one row, which names each with the arm it ran and sums those."""
+    and their hosts' disclosures share one row, which names each with the arm it ran, sums the modes and keeps each
+    run's disclosure by its id: a disclosure is no coordinate of the rig, so it splits no row."""
     grouped: dict[str, tuple[RunRig, list[RunRig]]] = {}
     for rig in report_input.apparatus or ():
-        shape = rig.model_dump_json(exclude={"run", "arm", "aspect", "execution_modes"})
+        shape = rig.model_dump_json(exclude={"run", "arm", "aspect", "execution_modes", "disclosure"})
         grouped.setdefault(shape, (rig, []))[1].append(rig)
     rows: list[RigRow] = []
     for first, members in grouped.values():
@@ -431,6 +443,7 @@ def _rigs(report_input: ReportInput) -> list[RigRow]:
                 cell_concurrency=first.cell_concurrency,
                 rubric_scales=dict(first.rubric_scales),
                 execution_modes=dict(sorted(modes.items())),
+                disclosed={member.run: member.disclosure for member in members if member.disclosure is not None},
             )
         )
     return rows
@@ -995,17 +1008,37 @@ class ContrastListing(_Fact):
     next_offset: int | None = Field(description="The next page's offset; none on the last page.")
 
 
-def _contrast_prefix(report_input: ReportInput, contrast: Contrast) -> str:
+def contrast_key(report_input: ReportInput, contrast: Contrast) -> str:
     """The key a contrast's figures are read under: unqualified, or by its aspect where the input holds its arm and
-    measure more than once."""
+    measure more than once. ``contrasts_list`` cites a contrast's figures under it, and the editor's
+    ``caveat_not_carried`` fact (``analysis/report_doc_facts.py``) names them alike.
+
+    :param report_input: The snapshot's frozen report input.
+    :ptype report_input: ReportInput
+    :param contrast: One of its contrasts.
+    :ptype contrast: Contrast
+    :return: The key's path, before its statistic (``contrast.<arm>.<measure>``).
+    :rtype: str
+    """
     held = [c for c in report_input.contrasts if (c.arm, c.measure) == (contrast.arm, contrast.measure)]
     if len(held) > 1 and contrast.aspect is not None:
         return f"aspects.{contrast.aspect}.contrast.{contrast.arm}.{contrast.measure}"
     return f"contrast.{contrast.arm}.{contrast.measure}"
 
 
-def _caveat_id(caveats: Iterable[Caveat], dimension: str) -> str:
-    """A confound's caveat id: its apparatus or confound caveat where the input lists one, else the dimension."""
+def confound_caveat_id(caveats: Iterable[Caveat], dimension: str) -> str:
+    """A confound's caveat id: its apparatus or confound caveat where the input lists one, else the dimension.
+
+    ``contrasts_list`` names each contrast's confounds by it, and the editor's ``caveat_not_carried`` fact reads them
+    alike.
+
+    :param caveats: The caveats code assigns on the snapshot (``report_caveats``).
+    :ptype caveats: Iterable[Caveat]
+    :param dimension: The confound's dimension, as a contrast names it.
+    :ptype dimension: str
+    :return: ``apparatus:<dimension>`` or ``confound:<dimension>``, whichever the caveats hold, else the dimension.
+    :rtype: str
+    """
     ids = {caveat.id for caveat in caveats}
     return next((held for held in (f"apparatus:{dimension}", f"confound:{dimension}") if held in ids), dimension)
 
@@ -1057,9 +1090,9 @@ def contrasts_list(
             arm=cite(f"arm:{contrast.arm}", report_input),
             measure=contrast.measure,
             aspect=contrast.aspect,
-            confounds=[_caveat_id(caveats, dimension) for dimension in contrast.confounds],
+            confounds=[confound_caveat_id(caveats, dimension) for dimension in contrast.confounds],
             figures=_figures(
-                (f"{_contrast_prefix(report_input, contrast)}.{statistic}" for statistic in _CONTRAST), report_input
+                (f"{contrast_key(report_input, contrast)}.{statistic}" for statistic in _CONTRAST), report_input
             ),
         )
         for contrast in page

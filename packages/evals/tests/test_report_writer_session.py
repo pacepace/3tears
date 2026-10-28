@@ -17,7 +17,7 @@ from typing import Any, Final
 import pytest
 
 from threetears.evals.analysis.analyst.skill import SkillText
-from threetears.evals.kernel.report_doc import ReportDoc
+from threetears.evals.kernel.report_doc import ReportDoc, report_doc_validity
 from threetears.evals.ops import report_writer
 from threetears.evals.ops.report_writer.analyst import AnalystLimits, AnalystSession
 from threetears.evals.ops.report_writer.session import SessionLimits
@@ -26,6 +26,7 @@ from threetears.evals.schema.turns import (
     ThinkingBinding,
     ToolResultClearing,
     TurnBlock,
+    TurnCeiling,
     TurnMessage,
     TurnReply,
     TurnReplyRefused,
@@ -97,11 +98,10 @@ class FakeToolTurnClient:
 
     def turn_price_ceiling(
         self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int
-    ) -> float | None:
+    ) -> TurnCeiling | None:
         self.ceilings_asked += 1
-        if self.ceilings is not None:
-            return self.ceilings.pop(0)
-        return self.ceiling
+        usd = self.ceilings.pop(0) if self.ceilings is not None else self.ceiling
+        return TurnCeiling(usd=usd) if usd is not None else None
 
     async def refresh_prices(self) -> None:
         self.refreshed += 1
@@ -158,10 +158,16 @@ class Verdict:
     path: str
     fault: str
     remedy: str
+    invariant: int = 1
+
+
+#: The remedy the scripted checker gives a validity verdict.
+VALIDITY_REMEDY: Final = "name only what the snapshot holds"
 
 
 class ScriptedCheck:
-    """The invariants' checker: the scripted verdicts for each call in turn, then none."""
+    """The checker, as the store gate's runs: the document's validity on these tests' arms and caveats (invariant 0),
+    then the scripted verdicts for each call in turn, then none."""
 
     def __init__(self, *rounds: Sequence[Verdict]) -> None:
         self.rounds = list(rounds)
@@ -169,7 +175,11 @@ class ScriptedCheck:
 
     def __call__(self, doc: ReportDoc) -> list[Verdict]:
         self.checked += 1
-        return list(self.rounds.pop(0)) if self.rounds else []
+        validity = [
+            Verdict(path, fault, VALIDITY_REMEDY, invariant=0)
+            for path, fault in report_doc_validity(doc, arms=ARMS, caveats=CAVEATS)
+        ]
+        return validity + (list(self.rounds.pop(0)) if self.rounds else [])
 
 
 def reply(
@@ -223,8 +233,6 @@ def start(
         mount=mount or FakeToolMount(),
         skill=SKILL,
         snapshot=SNAPSHOT,
-        arms=ARMS,
-        caveats=CAVEATS,
         check=check or ScriptedCheck(),
         tally=tally or Tally(),
         budget=budget or ReportBudget(usd=100),
@@ -510,8 +518,6 @@ async def test_a_reply_holding_the_snapshot_placeholder_is_tallied_before_it_is_
         mount=FakeToolMount(),
         skill=SKILL,
         snapshot=SNAPSHOT,
-        arms=ARMS,
-        caveats=CAVEATS,
         check=ScriptedCheck(),
         tally=tally,
         budget=budget,
@@ -566,6 +572,11 @@ async def test_a_refusal_or_a_reply_stopped_short_fails_the_round(stop: TurnStop
 # --- stored and resumed ---------------------------------------------------------------------------------------------
 
 
+def stored_blocks(stored: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every block of a stored tool session's messages, each message read from the JSON text it is stored as."""
+    return [block for text in stored["messages"] for block in json.loads(text)["content"]]
+
+
 def _script() -> list[TurnReply]:
     return [
         reply(thinking(1), call(1)),
@@ -597,8 +608,6 @@ async def test_a_stored_session_resumes_with_the_request_an_uninterrupted_one_se
         client=later,
         mount=mount,
         skill=SKILL,
-        arms=ARMS,
-        caveats=CAVEATS,
         check=ScriptedCheck(),
         tally=Tally(),
         budget=ReportBudget(usd=10),
@@ -609,10 +618,10 @@ async def test_a_stored_session_resumes_with_the_request_an_uninterrupted_one_se
     assert later.requests == uninterrupted.requests[3:], "the resumed session sends what the uninterrupted one did"
     stored = record["session"]
     assert {result["stored"] for result in stored["results"]} == {"rederive"}
-    held = [block for message in stored["messages"] for block in message["content"] if block["type"] == "tool_result"]
+    held = [block for block in stored_blocks(stored) if block["type"] == "tool_result"]
     assert all(block["content"] == "" for block in held), "a re-derivable body is not stored"
     assert [call["n"] for call in mount.calls[:3]] == [1, 2, 3], "each dropped body is called again to resume"
-    thought = [block for message in stored["messages"] for block in message["content"] if block["type"] == "thinking"]
+    thought = [block for block in stored_blocks(stored) if block["type"] == "thinking"]
     assert thought == [thinking(n).to_json() for n in (1, 2, 3)], "thinking blocks are stored exactly"
     assert stored["skill_digest"] == SKILL.digest
 
@@ -624,7 +633,7 @@ async def test_a_mount_whose_results_cannot_be_rederived_stores_them_whole() -> 
 
     stored = session.to_json()["session"]
 
-    held = [block for message in stored["messages"] for block in message["content"] if block["type"] == "tool_result"]
+    held = [block for block in stored_blocks(stored) if block["type"] == "tool_result"]
     assert held[0]["content"].startswith("readings_list reads")
     assert stored["results"][0]["stored"] == "whole"
 
@@ -645,8 +654,6 @@ async def test_a_session_is_not_resumed_with_another_skill_text() -> None:
             client=FakeToolTurnClient(),
             mount=FakeToolMount(refused=frozenset({"bogus"})),
             skill=other,
-            arms=ARMS,
-            caveats=CAVEATS,
             check=ScriptedCheck(),
             tally=Tally(),
             budget=ReportBudget(usd=10),
@@ -661,8 +668,6 @@ async def test_a_session_whose_tool_now_answers_otherwise_is_not_resumed() -> No
             client=FakeToolTurnClient(),
             mount=FakeToolMount(refused=frozenset({"bogus"}), salt=" (changed)"),
             skill=SKILL,
-            arms=ARMS,
-            caveats=CAVEATS,
             check=ScriptedCheck(),
             tally=Tally(),
             budget=ReportBudget(usd=10),
@@ -675,8 +680,6 @@ async def _resume(record: Mapping[str, Any], client: FakeToolTurnClient, **optio
         "client": client,
         "mount": FakeToolMount(refused=frozenset({"bogus"})),
         "skill": SKILL,
-        "arms": ARMS,
-        "caveats": CAVEATS,
         "check": ScriptedCheck(),
         "tally": Tally(),
         "budget": ReportBudget(usd=10),
@@ -786,9 +789,11 @@ MALFORMED: Final = [
     pytest.param(_set("session.state.calls_used", "two"), id="count-of-the-wrong-type"),
     pytest.param(_set("session.state.warned", 1), id="flag-of-the-wrong-type"),
     pytest.param(_set("session.results", [{"tool_use_id": "toolu_001"}]), id="result-missing-its-digest"),
-    pytest.param(_set("session.messages", [{"role": "user"}]), id="message-missing-its-content"),
+    pytest.param(_set("session.messages", ['{"role": "user"}']), id="message-missing-its-content"),
+    pytest.param(_set("session.messages", [{"role": "user", "content": []}]), id="message-not-stored-as-text"),
+    pytest.param(_set("session.messages", ['{"role": "user", "content": ']), id="message-text-not-json"),
     pytest.param(_set("session.limits", {"max_tokens": 0}), id="limit-out-of-range"),
-    pytest.param(_set("session.format", 1), id="an-older-session-format"),
+    pytest.param(_set("session.format", 2), id="an-older-session-format"),
 ]
 
 

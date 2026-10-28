@@ -42,7 +42,7 @@ from packages.evals.tests.analyst_support import (
     read_actions,
 )
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture, settled
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, OpsFixture, planned_generation
 from threetears.evals.actions import (
     ActionCatalogue,
     ActionOutcome,
@@ -76,7 +76,6 @@ from threetears.evals.analysis.report.figures import PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel import EvalReportSnapshot, report_snapshot_id
 from threetears.evals.kernel.campaign import EvalAnalysis
-from threetears.evals.ops import analysis_generate
 from threetears.evals.storage import InMemoryDocumentStore
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "threetears" / "evals"
@@ -154,8 +153,7 @@ def _seeded(store: InMemoryDocumentStore | None = None) -> tuple[OpsFixture, dic
 
 async def _generated(fixture: OpsFixture) -> EvalAnalysis:
     """The one analysis generated of the toy campaign."""
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
-    assert (await settled(fixture.host, job.job_id)).state == "completed"
+    await planned_generation(fixture)
     (analysis,) = off_loop(fixture.host.eval_host.storage.list_analyses_by_campaign, fixture.campaign.id, TOYHOST_SCOPE)
     return analysis
 
@@ -709,7 +707,7 @@ def test_a_figure_the_input_leaves_unstated_is_absent_and_a_key_naming_nothing_i
 # =============================================================================
 
 
-async def test_a_gap_is_noted_alike_for_the_same_need_logged_once_and_stored_nowhere(
+async def test_a_gap_is_noted_alike_for_the_same_need_logged_and_stored_once_under_that_id(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     store = InMemoryDocumentStore()
@@ -726,12 +724,14 @@ async def test_a_gap_is_noted_alike_for_the_same_need_logged_once_and_stored_now
 
     assert one.structured is not None and two.structured is not None and other.structured is not None
     assert one.structured["gap_id"] == two.structured["gap_id"] != other.structured["gap_id"]
-    assert one.structured["recorded_in"] == "transcript"
+    assert one.structured["recorded_in"] == "store"
     assert "read the intervals" in one.text and "c2" in one.text
     records = [record for record in caplog.records if record.name == "threetears.evals.analyst"]
     assert len(records) == 1 and records[0].levelno == logging.INFO
     assert one.structured["gap_id"] in records[0].getMessage()
     assert off_loop(lambda: sorted(store.iter_by_doc_type("eval_report_snapshot", TOYHOST_SCOPE))) == stored
+    gaps = off_loop(lambda: sorted(store.iter_by_doc_type("eval_analyst_gap", TOYHOST_SCOPE)))
+    assert gaps == sorted([one.structured["gap_id"], other.structured["gap_id"]]), "the same gap is stored once"
 
 
 # =============================================================================
@@ -753,7 +753,8 @@ def test_the_analyst_tool_carries_every_analyst_action_and_read_only_it_carries_
     assert _analyst_tool().hints.idempotent, "the freeze, its one write, names the snapshot it stored on a repeat"
     (reading,) = analyst_tools(writes=False)
     read_only = eval_catalogue().mount(reading)
-    assert read_only.hints.read_only and "report_snapshot_freeze" not in {a.name for a in read_only.actions}
+    assert "report_snapshot_freeze" not in {a.name for a in read_only.actions}
+    assert not read_only.hints.read_only, "its gap note appends a bounded, idempotent feedback record"
     assert read_only.hints.idempotent
     assert {action.permission for action in analyst_actions()} <= {"read", "write"}
     assert [action.name for action in analyst_actions() if action.permission == "write"] == ["report_snapshot_freeze"]
@@ -782,7 +783,7 @@ def test_the_editors_cut_is_the_analyst_tool_read_off_the_workflows_with_no_bloc
         "Investigate: analyses",
         "Investigate: gaps",
     }
-    assert editor.hints.read_only and editor.hints.idempotent
+    assert not editor.hints.read_only and editor.hints.idempotent, "its gap note appends a bounded, idempotent record"
     # One meaning per parameter: every parameter the editor's cut carries reads exactly as the analyst's tool says it.
     editor_params, analyst_params = editor.input_schema()["properties"], analyst.input_schema()["properties"]
     assert all(editor_params[name] == analyst_params[name] for name in editor_params if name != "action")

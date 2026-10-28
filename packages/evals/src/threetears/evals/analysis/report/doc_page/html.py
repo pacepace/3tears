@@ -39,10 +39,11 @@ from threetears.evals.analysis.report.doc_page.model import (
     DocOmitted,
     DocPage,
     DocTerm,
+    caveats_line,
 )
 from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
-    CAVEATS_TEMPLATE,
+    EVIDENCE_TITLE,
     FINDINGS_TITLE,
     METHOD_TITLE,
     NEXT_TITLE,
@@ -61,11 +62,9 @@ from threetears.evals.analysis.report.html_parts import (
 from threetears.evals.analysis.report.plan_page.model import PageArmsKey, PageMasthead, PageSlot
 from threetears.evals.analysis.report.plan_page.words import CONFIDENCE_LABEL, RUN_TEMPLATE, SYNTHETIC
 
-#: Empty until a production caller imports this module's entry point (``doc_page_html``): its callers are the writing
-#: loop's editor and ``report_check`` (the page text), and the report read (the page);
-#: ``tests/test_doc_page_exports.py`` lists the name as awaiting one, and goes red when it has one, so it joins this
-#: list then.
-__all__: list[str] = []
+#: The module's entry point, which the campaign page's serializer calls for a report document's page (the report
+#: read).
+__all__ = ["doc_page_html"]
 
 #: The confidence forms set in the amber box: caveats stay open, or the evidence is weak.
 _AMBER_FORMS = frozenset({"high_if_immaterial", "low"})
@@ -150,7 +149,7 @@ def _caveats(labels: Sequence[str]) -> str:
     """The caveats landed beside a claim or a Method term, by label, as code's line; nothing for none."""
     if not labels:
         return ""
-    return f'<p class="cap" data-part="caveats">{escape(CAVEATS_TEMPLATE.format(labels="; ".join(labels)))}</p>'
+    return f'<p class="cap" data-part="caveats">{escape(caveats_line(labels))}</p>'
 
 
 def _explore(explore: TableBlock) -> str:
@@ -208,13 +207,27 @@ def _appendix(page: DocPage) -> list[str]:
     ]
 
 
-def doc_page_html(page: DocPage, *, static: bool = False) -> str:
+def _evidence_record(record: Sequence[str]) -> list[str]:
+    """Code's record after the document, closed, under its own heading; nothing where none is passed."""
+    if not record:
+        return []
+    return [
+        f'<details class="section" data-part="evidence"><summary><h2>{escape(EVIDENCE_TITLE)}</h2></summary>'
+        + "".join(record)
+        + "</details>"
+    ]
+
+
+def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] = ()) -> str:
     """Write a report document's page as one standalone HTML page (this module's account).
 
     :param page: The page.
     :ptype page: DocPage
     :param static: Write the static page: no ``<script>``, no ``<link>``, every chart as its table of values.
     :ptype static: bool
+    :param record: Markup this package wrote (the campaign's folds, each failed or lost trial's record in them), laid
+        out closed after the document, which it leaves as it is; none by default.
+    :ptype record: Sequence[str]
     :return: The page.
     :rtype: str
     """
@@ -245,6 +258,7 @@ def doc_page_html(page: DocPage, *, static: bool = False) -> str:
         *([_explore(page.explore)] if page.explore is not None else []),
         *([_next(page.next)] if page.next else []),
         *_appendix(page),
+        *_evidence_record(record),
         "</article>",
         "</div>",
         *([] if static else [f"<script>{KIT_JS}</script>"]),

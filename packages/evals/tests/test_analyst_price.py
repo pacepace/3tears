@@ -49,10 +49,9 @@ from threetears.evals.actions.render import render_cited
 from threetears.evals.analysis.analyst.analyses import gate_reads
 from threetears.evals.analysis.analyst.price import Price, PriceTradeoff, price_tradeoff
 from threetears.evals.analysis.report_gates import gate_findings
-from threetears.evals.analysis.summary import dollars_text
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.kernel.numbers import WHOLE_FROM, format_number
+from threetears.evals.kernel.numbers import money_form
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_count, per_noun
 from threetears.evals.analysis.report.figure_keys import (
     cost_basis,
@@ -159,7 +158,11 @@ def test_r4s_switch_to_the_cheaper_option_reads_its_saving_per_point_lost_a_mont
     expected = _r4_expected(cheaper, dearer)
     key = f"price.{cheaper}.{dearer}.persona"
     assert expected["monthly_cost_gap"] >= 1000, "the control: a saving a month of a thousand dollars or more"
-    assert render(f"{{{key}.monthly_cost_gap}}", held, {}) == "+" + dollars_text(expected["monthly_cost_gap"])
+    # The gap reads in the form of the monthly costs it compares (#993): every one is $10 or more, so whole dollars.
+    months = [float(resolve(f"cost_per_month.{arm.id}", held).value) for arm in held.arms]
+    assert render(f"{{{key}.monthly_cost_gap}}", held, {}) == money_form(months).spell(
+        expected["monthly_cost_gap"], signed=True
+    )
     assert _value(f"{key}.monthly_per_point", held) == pytest.approx(expected["monthly_per_point"])
     assert _value(f"{key}.gain", held) == pytest.approx(expected["gain"])
     assert _value(f"{key}.gain_interval", held) == pytest.approx(expected["gain_interval"])
@@ -953,10 +956,9 @@ def _monthly_steps(held: ReportInput) -> Iterator[tuple[str, list[Price]]]:
 
 def test_a_prices_tables_money_reads_with_its_thousands_grouped_and_a_months_to_the_whole_dollar() -> None:
     """A step's price a month reads as its key reads under ``usd_whole`` (``$1,239``, never ``$1239``) where every step
-    on the axis is $10 or more, which whole dollars do not round away; under that, no price is rounded to the whole
-    dollar: each keeps every digit the number rule spells its value with, so its cents wherever it holds any (a price
-    of $1,000 or more the rule writes whole, and padding states no cent it was never rounded to). Either way no dollar
-    amount prints four digits ungrouped, in the table or in the bars' values."""
+    on the axis is $10 or more, which whole dollars do not round away; under that, the column reads in its prices' one
+    form (#993): cents at least, and as many more decimals as its least price needs. Either way no dollar amount prints
+    four digits ungrouped, in the table or in the bars' values."""
     whole_seen = cents_seen = False
     for name, held in fixture_inputs().items():
         for key, steps in _monthly_steps(held):
@@ -974,11 +976,16 @@ def test_a_prices_tables_money_reads_with_its_thousands_grouped_and_a_months_to_
                 assert cells == whole, (name, key)
                 whole_seen |= any(abs(value) >= 1000 for value in values)
             else:
+                # One form for the column (#993): every cell to the decimals money_form gives the prices (cents at
+                # least, more where the least price needs them), each its own value at them, so no cell states a
+                # digit its value does not hold.
+                decimals = {len(cell.partition(".")[2]) for cell in cells}
+                assert decimals == {money_form(values).decimals}, (name, key, cells)
+                (places,) = decimals
+                assert places >= 2, (name, key, cells)
                 for cell, value in zip(cells, values, strict=True):
-                    spelled = format_number(abs(value))
-                    assert cell.lstrip("-").removeprefix("$").replace(",", "").startswith(spelled), (name, key, cell)
-                    if abs(value) < WHOLE_FROM and value != int(value):
-                        assert "." in cell, (name, key, cells)
+                    number = float(cell.lstrip("+-").removeprefix("$").replace(",", ""))
+                    assert abs(number - abs(value)) <= 10.0**-places / 2 + 1e-12, (name, key, cell)
                 cents_seen = True
     assert whole_seen, "the control: some fixture prices a step a month at $1,000 or more"
     assert cents_seen, "the control: some fixture prices a step a month under $10"

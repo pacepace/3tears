@@ -67,6 +67,7 @@ __all__ = [
     "request_body",
     "turn_body",
     "turn_settings_refusal",
+    "usage_counts",
 ]
 
 
@@ -447,22 +448,20 @@ def read_reply(provider: Provider, model: str, status: int, body: Mapping[str, A
     else:
         stop = _OPENAI_STOPS.get(finish, "truncated") if finish else "truncated"
     usage = _mapping(body.get("usage"))
-    prompt_details = _mapping(usage.get("prompt_tokens_details"))
-    read = _count(prompt_details.get("cached_tokens")) or 0
-    written = _count(prompt_details.get("cache_write_tokens")) or 0
+    counts = usage_counts(provider, usage)
     served = _named(body.get("model"))
     if served is not None and provider == "openrouter" and served == model and _is_alias(model):
         served = None
     upstream = _named(body.get("provider")) if provider == "openrouter" else None
     return Reply(
         content=text,
-        input_tokens=_count(usage.get("prompt_tokens")),
-        output_tokens=_count(usage.get("completion_tokens")),
-        reasoning_tokens=_count(_mapping(usage.get("completion_tokens_details")).get("reasoning_tokens")),
-        cache_tokens=read + written,
-        cache_read_tokens=read,
-        cache_write_tokens=written,
-        cache_write_1h_tokens=0 if not written else None,
+        input_tokens=counts.input_tokens,
+        output_tokens=counts.output_tokens,
+        reasoning_tokens=counts.reasoning_tokens,
+        cache_tokens=counts.cache_read_tokens + counts.cache_write_tokens,
+        cache_read_tokens=counts.cache_read_tokens,
+        cache_write_tokens=counts.cache_write_tokens,
+        cache_write_1h_tokens=counts.cache_write_1h_tokens,
         served_model=served,
         served_provider=upstream,
         stop_reason=stop,
@@ -480,26 +479,85 @@ def _read_anthropic(body: Mapping[str, Any]) -> Reply:  # Any: JSON
     )
     raw = _named(body.get("stop_reason"))
     usage = _mapping(body.get("usage"))
-    fresh = _count(usage.get("input_tokens"))
-    read = _count(usage.get("cache_read_input_tokens")) or 0
-    written = _count(usage.get("cache_creation_input_tokens")) or 0
-    cache = read + written
-    lifetimes = usage.get("cache_creation")
-    one_hour = _count(lifetimes.get("ephemeral_1h_input_tokens")) if isinstance(lifetimes, Mapping) else None
+    counts = usage_counts("anthropic", usage)
     return Reply(
         content=text,
-        input_tokens=fresh + cache if fresh is not None else None,
-        output_tokens=_count(usage.get("output_tokens")),
-        reasoning_tokens=_count(_mapping(usage.get("output_tokens_details")).get("thinking_tokens")),
-        cache_tokens=cache,
-        cache_read_tokens=read,
-        cache_write_tokens=written,
-        cache_write_1h_tokens=0 if not written else one_hour,
+        input_tokens=counts.input_tokens,
+        output_tokens=counts.output_tokens,
+        reasoning_tokens=counts.reasoning_tokens,
+        cache_tokens=counts.cache_read_tokens + counts.cache_write_tokens,
+        cache_read_tokens=counts.cache_read_tokens,
+        cache_write_tokens=counts.cache_write_tokens,
+        cache_write_1h_tokens=counts.cache_write_1h_tokens,
         served_model=_named(body.get("model")),
         served_provider=None,
         stop_reason=_ANTHROPIC_STOPS.get(raw, "truncated") if raw else "truncated",
         provider_stop_reason=raw,
         usage=usage,
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UsageCounts:
+    """What a reply's raw ``usage`` block counts, in the engine's terms, every count ``None`` where it reported none.
+
+    :ivar input_tokens: Prompt tokens, cache reads and writes included; ``None`` when unreported.
+    :ivar output_tokens: Output tokens, reasoning included; ``None`` when unreported.
+    :ivar reasoning_tokens: The reasoning share of ``output_tokens``; ``None`` when unsplit.
+    :ivar cache_read_tokens: Prompt tokens read from a cache (0 when none were reported).
+    :ivar cache_write_tokens: Prompt tokens written to one, both lifetimes (0 when none were reported).
+    :ivar cache_write_1h_tokens: The one-hour share of ``cache_write_tokens``, or ``None`` when the reply wrote to a
+        cache without splitting the writes by lifetime.
+    """
+
+    input_tokens: int | None
+    output_tokens: int | None
+    reasoning_tokens: int | None
+    cache_read_tokens: int
+    cache_write_tokens: int
+    cache_write_1h_tokens: int | None
+
+
+def usage_counts(provider: Provider, usage: Mapping[str, Any]) -> UsageCounts:  # Any: a JSON object
+    """The counts a reply's raw ``usage`` block holds, read as the reply itself is read.
+
+    The one reader of a usage block: :func:`read_reply` reads a reply's counts through it, and a pricer handed the raw
+    block (:meth:`~threetears.evals.providers.Pricer.price`) may too, so the two never count a call differently. On
+    Anthropic the prompt is ``input_tokens`` plus the cache reads and writes, and the writes are split by lifetime
+    under ``cache_creation`` (``ephemeral_1h_input_tokens``); on the OpenAI shape the prompt is ``prompt_tokens``,
+    which already holds the cached share, and a write is never split.
+
+    :param provider: The provider whose shape ``usage`` is in.
+    :ptype provider: Provider
+    :param usage: The reply's ``usage`` object, as the wire returned it.
+    :ptype usage: Mapping[str, Any]
+    :return: The counts.
+    :rtype: UsageCounts
+    """
+    if provider == "anthropic":
+        fresh = _count(usage.get("input_tokens"))
+        read = _count(usage.get("cache_read_input_tokens")) or 0
+        written = _count(usage.get("cache_creation_input_tokens")) or 0
+        lifetimes = usage.get("cache_creation")
+        one_hour = _count(lifetimes.get("ephemeral_1h_input_tokens")) if isinstance(lifetimes, Mapping) else None
+        return UsageCounts(
+            input_tokens=fresh + read + written if fresh is not None else None,
+            output_tokens=_count(usage.get("output_tokens")),
+            reasoning_tokens=_count(_mapping(usage.get("output_tokens_details")).get("thinking_tokens")),
+            cache_read_tokens=read,
+            cache_write_tokens=written,
+            cache_write_1h_tokens=0 if not written else one_hour,
+        )
+    prompt_details = _mapping(usage.get("prompt_tokens_details"))
+    read = _count(prompt_details.get("cached_tokens")) or 0
+    written = _count(prompt_details.get("cache_write_tokens")) or 0
+    return UsageCounts(
+        input_tokens=_count(usage.get("prompt_tokens")),
+        output_tokens=_count(usage.get("completion_tokens")),
+        reasoning_tokens=_count(_mapping(usage.get("completion_tokens_details")).get("reasoning_tokens")),
+        cache_read_tokens=read,
+        cache_write_tokens=written,
+        cache_write_1h_tokens=0 if not written else None,
     )
 
 

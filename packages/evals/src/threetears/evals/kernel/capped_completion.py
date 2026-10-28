@@ -27,14 +27,23 @@ from __future__ import annotations
 import json
 import math
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Final, Protocol, runtime_checkable
 
 from threetears.evals.kernel.candidate_kind import CellPending, CellSink
 from threetears.evals.kernel.usage_capture import CallUsage
 from threetears.evals.schema.completion import CompletionGenerator
+from threetears.evals.schema.turns import TurnMessage, TurnToolSpec
 
-__all__ = ["PROMPT_FRAMING_TOKENS", "CappedCompletion", "call_ceiling", "prompt_token_bound", "refresh_prices"]
+__all__ = [
+    "PROMPT_FRAMING_TOKENS",
+    "CappedCompletion",
+    "call_ceiling",
+    "ceiling_is_estimate",
+    "prompt_token_bound",
+    "refresh_prices",
+    "turn_prompt_token_bound",
+]
 
 #: The tokens :func:`prompt_token_bound` allows for a prompt's framing beyond its text (role markers, a schema's
 #: re-encoding).
@@ -77,6 +86,29 @@ def prompt_token_bound(system: str, user: str, response_format: Mapping[str, Any
     return bound
 
 
+def turn_prompt_token_bound(system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec]) -> int:
+    """A bound on the prompt tokens one tool turn sends: :func:`prompt_token_bound` over its system prompt and the
+    JSON of every block and tool definition it carries.
+
+    The one bound a turn's prompt is held to, for its price ceiling
+    (:meth:`~threetears.evals.providers.Model.turn_price_ceiling`) and for a report budget counted in tokens, so the
+    two never measure one turn differently.
+
+    :param system: The system prompt the turn sends.
+    :ptype system: str
+    :param messages: The conversation it sends.
+    :ptype messages: Sequence[TurnMessage]
+    :param tools: The tools it sends.
+    :ptype tools: Sequence[TurnToolSpec]
+    :return: The bound, in tokens.
+    :rtype: int
+    """
+    sent = json.dumps(
+        [message.to_json() for message in messages] + [tool.to_json() for tool in tools], ensure_ascii=False
+    )
+    return prompt_token_bound(system, sent, None)
+
+
 @runtime_checkable
 class _PricesItsCalls(Protocol):
     """A client that can bound what one call costs before it is made."""
@@ -84,6 +116,30 @@ class _PricesItsCalls(Protocol):
     def price_ceiling(
         self, *, system: str, user: str, response_format: dict[str, Any] | None = None
     ) -> float | None: ...  # pragma: no cover — protocol
+
+
+@runtime_checkable
+class _SaysWhetherItEstimates(Protocol):
+    """A client that says whether its ``price_ceiling`` is an estimate (the shipped ``Model``'s
+    ``ceiling_is_estimate``)."""
+
+    def ceiling_is_estimate(self) -> bool: ...  # pragma: no cover — protocol
+
+
+def ceiling_is_estimate(client: object) -> bool:
+    """Whether ``client``'s price ceilings are estimates: bounds on rates its host's pricer does not guarantee.
+
+    Read beside :func:`call_ceiling`, which answers the dollars, by whoever builds a
+    :class:`~threetears.evals.run.CallCeiling` from them, so a run's cap says when it was checked against estimates.
+    A client with no ``ceiling_is_estimate()`` (a host's own client, which prices its own calls) is read as a true
+    bound, as its ``price_ceiling`` says it is; a wrapper forwards the shipped client's.
+
+    :param client: The client a call will be made on.
+    :ptype client: object
+    :return: Whether its ceilings are estimates.
+    :rtype: bool
+    """
+    return isinstance(client, _SaysWhetherItEstimates) and client.ceiling_is_estimate() is True
 
 
 async def refresh_prices(client: object) -> None:

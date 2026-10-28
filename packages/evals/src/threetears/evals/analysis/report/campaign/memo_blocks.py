@@ -50,6 +50,7 @@ from threetears.evals.kernel.metrics import goal_check_of
 
 __all__ = [
     "NO_CALL",
+    "NO_LONGER_READS",
     "NO_RECOMMENDATION",
     "aspect_summary_blocks",
     "behind_on_blocks",
@@ -57,10 +58,34 @@ __all__ = [
     "memo_blocks",
     "memo_summary_blocks",
     "recommendation_blocks",
+    "report_doc_blocks",
+    "unread_analysis_blocks",
 ]
 
 #: The first screen's line where no memo was written over the campaign.
 NO_RECOMMENDATION = "No recommendation was written: no analysis has been generated over this campaign."
+
+#: The first screen's line where the analysis laid out is a report document's (``EvalAnalysis.report_doc_id``): the
+#: report is stored apart, and this page is code's over the same evidence.
+DOC_WRITTEN = (
+    "A report was written over this campaign's evidence and is stored as report document {report_doc_id}. This page "
+    "is the code-only page over the same evidence."
+)
+
+#: The one line every surface prints where the campaign's reported analysis is one this version no longer reads: every
+#: analysis the report planner wrote (``report-plan/1``), and a report document that no longer validates, whose snapshot
+#: is gone or no longer reads, or whose campaign no longer lays out over it. Worded once, here: the page's first screen
+#: (the stand-in line below), ``ReportDocument.needs_regeneration`` and the analysis listing's ``needs_regeneration``
+#: each print it byte for byte. It names the action bare: the HTML page sets a backticked word as code, which would
+#: print it differently there.
+NO_LONGER_READS = "written in a shape this version no longer reads; regenerate with analysis_generate"
+
+#: The first screen's line on the code-only page that stands in for an analysis this version no longer reads, in place
+#: of "no analysis has been generated".
+_UNREAD_ANALYSIS = "This campaign's analysis {analysis_id} was " + NO_LONGER_READS + "."
+
+#: The same line where the code-only page stands in for one report document read by its id.
+_UNREAD_REPORT_DOC = "Report document {report_doc_id} was " + NO_LONGER_READS + "."
 
 #: The first screen's line while no person has made the call.
 NO_CALL = "No call is recorded yet: a person decides, over code's readings."
@@ -80,7 +105,43 @@ def memo_summary_blocks(memo: AuthoredCampaignAnalysis | None) -> list[ReportBlo
     return [TextBlock(section="answer", role="summary", body=said)]
 
 
-def recommendation_blocks(memo: AuthoredCampaignAnalysis | None, kind: str) -> list[ReportBlock]:
+def report_doc_blocks(report_doc_id: str | None) -> list[ReportBlock]:
+    """The one line saying a report document was written and where it is stored; nothing for any other page.
+
+    :param report_doc_id: The report document the analysis laid out names (``EvalAnalysis.report_doc_id``), or None.
+    :ptype report_doc_id: str | None
+    :return: The line, or nothing.
+    :rtype: list[ReportBlock]
+    """
+    if report_doc_id is None:
+        return []
+    return [DisclosureBlock(section="answer", source="memo", text=DOC_WRITTEN.format(report_doc_id=report_doc_id))]
+
+
+def unread_analysis_blocks(analysis_id: str | None, report_doc_id: str | None = None) -> list[ReportBlock]:
+    """The one line saying what the code-only page stands in for is one this version no longer reads: the campaign's
+    analysis, or a report document read by its id, each in its own words around :data:`NO_LONGER_READS`; nothing for
+    any other page.
+
+    :param analysis_id: The analysis the code-only page stands in for, or None.
+    :ptype analysis_id: str | None
+    :param report_doc_id: The report document it stands in for, read by its id, or None.
+    :ptype report_doc_id: str | None
+    :return: The line, or nothing.
+    :rtype: list[ReportBlock]
+    """
+    if analysis_id is not None:
+        text = _UNREAD_ANALYSIS.format(analysis_id=analysis_id)
+    elif report_doc_id is not None:
+        text = _UNREAD_REPORT_DOC.format(report_doc_id=report_doc_id)
+    else:
+        return []
+    return [DisclosureBlock(section="answer", source="memo", text=text)]
+
+
+def recommendation_blocks(
+    memo: AuthoredCampaignAnalysis | None, kind: str, *, noted: bool = False
+) -> list[ReportBlock]:
     """The writer's recommendation, the arm and how sure, then each reason in its words, as written; one line with no
     memo, and one by the campaign's kind where the memo recommends nothing.
 
@@ -88,9 +149,15 @@ def recommendation_blocks(memo: AuthoredCampaignAnalysis | None, kind: str) -> l
     :ptype memo: AuthoredCampaignAnalysis | None
     :param kind: The campaign's kind, which words a memo recommending nothing.
     :ptype kind: str
-    :return: The recommendation and its reasons, or the one line.
+    :param noted: Whether a line on the first screen already says what became of the campaign's analysis (a report
+        document's, :func:`report_doc_blocks`, or one this version no longer reads, :func:`unread_analysis_blocks`),
+        which stands in for "no analysis has been generated".
+    :ptype noted: bool
+    :return: The recommendation and its reasons, or the one line, or nothing beside a report document's line.
     :rtype: list[ReportBlock]
     """
+    if memo is None and noted:
+        return []
     if memo is None:
         return [DisclosureBlock(section="answer", source="memo", text=NO_RECOMMENDATION)]
     recommendation = memo.recommended()
@@ -189,7 +256,11 @@ def call_blocks(
     named = next((arm for arm in campaign.arms if arm.variant_key == call.variant_key), None)
     keys = {call.variant_key, *(resolve_control_arm(named).variant_keys if named is not None else [])}
     verb = "keep" if readings.control in keys else "adopt"
-    head = f"Called: {verb} {call.arm}, by {call.called_by} on {_date(call.called_at)}"
+    # The decided arm as the page names it (its readings print it by the name every surface prints), never the label
+    # the call stored, which a computed lever name reads in another case.
+    labels = readings.arm_labels()
+    decided = next((labels[key] for key in (call.variant_key, *keys) if key in labels), call.arm)
+    head = f"Called: {verb} {decided}, by {call.called_by} on {_date(call.called_at)}"
     if call.run_ids and (added := [run for run in campaign.run_ids if run not in set(call.run_ids)]):
         over = len(call.run_ids)
         head += f", over {over} run{'' if over == 1 else 's'}; {len(added)} added since"
@@ -238,7 +309,7 @@ def call_blocks(
             lines.append(f"The call does not name the missed bar on {names(aspect)} as overridden: {said}.")
     for pair in readings.pairs:
         if pair.ahead is not None and pair.ahead not in keys and keys & {pair.first, pair.second}:
-            lines.append(f"{pair.ahead_label or pair.ahead} is shown ahead of {call.arm} on {names(pair.aspect)}.")
+            lines.append(f"{pair.ahead_label or pair.ahead} is shown ahead of {decided} on {names(pair.aspect)}.")
     return [DisclosureBlock(section="header", source="call", text=line) for line in lines]
 
 

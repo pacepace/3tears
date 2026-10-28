@@ -14,8 +14,10 @@ Contracts held here (``threetears.evals.analysis.report.figure_keys``'s lever fa
 - **the interactions**: each pairs two effects of one move whose starting and ending arms differ in exactly one other
   setting (``across``); its difference is the second effect minus the first, its interval recovered from theirs; its
   verdict follows from the intervals (reverses, differs, within) or is ``no_interval``; a fixture holds a reversal;
-  every such pair of moves is listed once, however the arms are ordered (a move listed the other way round is read in
-  the first's direction);
+  the four arms such a pair spans are read twice, each setting's move across the other: one reading is listed where
+  the two verdicts agree (the first setting's by id), both where they differ, however the arms are ordered (a move
+  listed the other way round is read in the first's direction); a planted reversal one reading shows and the other
+  does not is listed beside it in either order;
 - **the order**: effects, then interactions; within each, the rows with an interval first;
 - **the refusals**: arms varying no setting, arms none of which differ in one setting alone (naming what a pair also
   differs in), a setting, place or measure the snapshot does not hold, and a measure no lever pair holds overall, each
@@ -44,7 +46,7 @@ from threetears.evals.actions.analyst_analyses import ANALYSES_WORKFLOW
 from threetears.evals.analysis.analyst.levers import LeverEffects, lever_effects
 from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, resolve
-from threetears.evals.analysis.report_input import ReportInput, Stat
+from threetears.evals.analysis.report_input import Measure, ReportInput, Stat
 from threetears.evals.kernel.errors import RefusedInput
 
 #: Every input the walk reads: the fixtures and the shape and wide campaigns.
@@ -387,18 +389,91 @@ def _reordered(held: ReportInput) -> ReportInput:
     return held.model_copy(update={"arms": [*others, *reversed_arms]})
 
 
+def _setting_of(held: ReportInput, crossing: frozenset[frozenset[str]]) -> str:
+    """The setting a crossing's two moves move."""
+    move = next(iter(crossing))
+    (setting,) = _differ(_settings(held), *sorted(move))
+    return setting
+
+
+def _expected_verdict(held: ReportInput, key: str, crossing: frozenset[frozenset[str]], scale: str) -> str:
+    """A crossing's verdict, from the compare family's two effects, each move read from its setting's lower value."""
+    settings = _settings(held)
+    setting = _setting_of(held, crossing)
+    first, second = (
+        _expected_effect(held, key, *sorted(move, key=lambda arm: repr(settings[arm][setting])), None, scale)
+        for move in sorted(crossing, key=sorted)
+    )
+    if first.interval is None or second.interval is None or first.level != second.level:
+        return "no_interval"
+    sides = [1 if lo > 0 else -1 if hi < 0 else 0 for lo, hi in (first.interval, second.interval)]
+    if sides[0] * sides[1] < 0:
+        return "reverses"
+    low, high = _recovered((first.change, *first.interval), (second.change, *second.interval))
+    return "differs" if low > 0 or high < 0 else "within"
+
+
+def _expected_listing(held: ReportInput, key: str, scale: str) -> set[frozenset[frozenset[str]]]:
+    """The crossings listed: of the two readings of each four arms, the first setting's by id where their verdicts
+    agree, both where they do not."""
+    squares: dict[frozenset[str], list[frozenset[frozenset[str]]]] = {}
+    for crossing in _expected_crossings(held, key, None):
+        squares.setdefault(frozenset(arm for move in crossing for arm in move), []).append(crossing)
+    kept: set[frozenset[frozenset[str]]] = set()
+    for readings in squares.values():
+        if len({_expected_verdict(held, key, crossing, scale) for crossing in readings}) > 1:
+            kept.update(readings)
+        else:
+            kept.add(min(readings, key=lambda crossing: _setting_of(held, crossing)))
+    return kept
+
+
 @pytest.mark.parametrize("name", ["r2", "r2 reordered"])
-def test_every_two_moves_of_one_setting_one_context_apart_are_listed_once_however_the_arms_are_ordered(
-    name: str,
-) -> None:
+def test_four_arms_are_listed_once_where_their_two_readings_agree_however_the_arms_are_ordered(name: str) -> None:
+    """Every two moves of one setting one context apart are an interaction, and the four arms they span are read
+    twice, each setting's move across the other: one difference of differences. Where the two verdicts agree, one
+    reading is listed, the first setting's by id, whatever the arms' order (the misfit review of r2 printed one
+    interaction twice); where they differ, both are."""
     held = _reordered(INPUTS["r2"]) if name == "r2 reordered" else INPUTS[name]
     key = "pass_rate"
     read = lever_effects(held, key, limit=10_000)
     listed = _listed_crossings(read, key, None)
-    expected = _expected_crossings(held, key, None)
-    assert expected, "the control: the input holds moves one context apart"
+    assert _expected_crossings(held, key, None), "the control: the input holds moves one context apart"
     assert len(listed) == len(set(listed)), "each once"
-    assert set(listed) == expected
+    assert set(listed) == _expected_listing(held, key, read.effects[0].figures[0].scale)
+
+
+def _square_planted(*, reversed_order: bool) -> ReportInput:
+    """r1's four arms on a two-by-two of settings ``a`` and ``b``, a score of 0 at a1 b1, 10 at a2 b1, 20 at a1 b2 and
+    15 at a2 b2, each with an interval one either side: ``a``'s effect goes +10 then -5 across ``b`` (it reverses),
+    ``b``'s goes +20 then +5 across ``a`` (it differs). The arms listed as given or reversed."""
+    held = INPUTS["r1"]
+    cells = [("1", "1", 0.0), ("2", "1", 10.0), ("1", "2", 20.0), ("2", "2", 15.0)]
+    arms = [
+        arm.model_copy(update={"settings": {"model": "M", "a": a, "b": b}})
+        for arm, (a, b, _) in zip(held.arms, cells, strict=True)
+    ]
+    score = Measure(
+        label="Score",
+        unit="",
+        level="95%",
+        per_arm={
+            arm.id: Stat(mean=mean, ci=(mean - 1, mean + 1)) for arm, (_, _, mean) in zip(arms, cells, strict=True)
+        },
+    )
+    listed = arms[::-1] if reversed_order else arms
+    return held.model_copy(update={"arms": listed, "measures": {**held.measures, "score": score}})
+
+
+@pytest.mark.parametrize("reversed_order", [False, True], ids=["as listed", "reversed"])
+def test_a_reversal_one_reading_shows_and_the_other_does_not_is_listed_beside_it_in_either_arm_order(
+    reversed_order: bool,
+) -> None:
+    read = lever_effects(_square_planted(reversed_order=reversed_order), "score", limit=100)
+    assert sorted((row.setting, row.across, row.verdict) for row in read.interactions) == [
+        ("a", "b", "reverses"),
+        ("b", "a", "differs"),
+    ]
 
 
 def _one_arm_uncounted(held: ReportInput) -> ReportInput:

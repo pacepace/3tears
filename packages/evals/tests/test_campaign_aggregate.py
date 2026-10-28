@@ -258,9 +258,10 @@ def test_s2_draws_its_arms_on_one_aspect_with_that_aspect_s_own_figures_and_no_r
     assert '<figure class="fig" data-figure="cost_quality">' in html and 'data-kind="scatter_frontier"' in html
     assert '<div class="tbl chart-values"><table><caption>Cost and pass rate</caption>' in html
     markdown = campaign_report_markdown(page)
-    # The table reads cost per 1,000 replies, as the chart's axis and the scoreboard do: $0.004 a reply is $4.
+    # The table reads cost per 1,000 replies, as the chart's axis and the scoreboard do: $0.004 a reply is $4.00, in
+    # the one form beta's $0.80 needs (#993), as the scoreboard reads it.
     assert "| Arm | Cost per 1,000 replies ($) | Interval ($) | Pass rate (%) | Interval (%) |" in markdown
-    assert "| alpha | 4 | [4, 4] | 88.3 |" in markdown
+    assert "| alpha | 4.00 | [4.00, 4.00] | 88.3 |" in markdown
 
 
 def test_s1_draws_every_arm_across_its_aspects() -> None:

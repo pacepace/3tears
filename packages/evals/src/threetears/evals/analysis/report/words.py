@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import typing
 from collections.abc import Callable, Iterable, Sequence
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from threetears.evals.analysis.arms import arm_label, arm_names, multi_rig_variants, short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ComparisonVerdict
@@ -26,7 +26,7 @@ from threetears.evals.analysis.references import cell_index, resolve_reading, re
 from threetears.evals.analysis.report.figures import MeasureRuler, analysis_rulers
 from threetears.evals.analysis.report.blocks import CellValue, TableCell
 from threetears.evals.kernel.analysis_measures import BarDecision
-from threetears.evals.analysis.style import declared_check_name, measure_name
+from threetears.evals.analysis.style import arm_display_name, arm_name, declared_check_name, measure_name
 from threetears.evals.kernel.campaign import (
     AspectAnalysis,
     ConfidenceTier,
@@ -38,6 +38,9 @@ from threetears.evals.kernel.campaign import (
 from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
 from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.kernel.surface import DecisionSurface, GuardrailDecision
+
+if TYPE_CHECKING:
+    from threetears.evals.analysis.campaign_bundle import CampaignBundle
 
 
 def _literal_values(annotation: Any) -> frozenset[str]:
@@ -489,6 +492,33 @@ def declared_arm_names(arms: Iterable[CampaignArm]) -> dict[str, str]:
     }
 
 
+def printed_arm_labels(bundle: CampaignBundle) -> dict[str, str]:
+    """The name every page prints for each arm of a campaign, by every variant key a label names: the one display-name
+    rule (:func:`~threetears.evals.analysis.style.arm_display_name`) every surface reads, the doc page's ``Arm.name``,
+    the campaign page's folds and readings, and the plan page alike.
+
+    "Computed" is read from data: an arm no arm of the campaign's declaration covers is labelled by code, from the
+    levers its variant's ``axis=level`` name spells (:func:`~threetears.evals.analysis.style.arm_name`'s ``levers``,
+    as a code-only page reads them), so it prints by the rule; an arm a person named (any the declaration covers) keeps
+    its label as written. The labels themselves, which name the arms as ids, are unchanged.
+
+    :param bundle: The campaign's evidence.
+    :ptype bundle: CampaignBundle
+    :return: Variant key -> the name a page prints.
+    :rtype: dict[str, str]
+    """
+    given = {key for arm in bundle.declaration.arms for key in bundle.arm_keys(arm)}
+    entries = {entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}
+    spelled = arm_names(list(entries.values()))
+    keys = [*(key for arm in bundle.arms for key in bundle.arm_keys(arm)), *entries]
+    printed: dict[str, str] = {}
+    for key in dict.fromkeys(keys):
+        label = bundle.label_of(key)
+        levers = arm_name(spelled[key]).levers if key in spelled and key not in given else ()
+        printed[key] = arm_display_name(label, levers)
+    return printed
+
+
 def counted(n: int, of: int, what: str) -> str:
     """``n of m <what>``: a count, never a rate."""
     return f"{n} of {of} {what}"
@@ -513,6 +543,7 @@ __all__ = [
     "campaign_arm_tags",
     "cell_arm_labels",
     "declared_arm_names",
+    "printed_arm_labels",
     "comparison_words",
     "counted",
     "evidence_rows",

@@ -192,7 +192,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
-  <br>`= 8`
+  <br>`= 11`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
@@ -205,7 +205,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`DURABLE_DOC_TYPES`** · constant (frozenset) · What people author, by `doc_type`: the `durable` entries of `DOC_TYPE_FACTS`, derived as `CORE_DOC_TYPES` is.
 - **`DURABLE_SCHEMA_MINOR`** · *host contract* · constant (int) · The durable minor this build writes within `DURABLE_SCHEMA_VERSION`, under the core's minor rules.
-  <br>`= 6`
+  <br>`= 7`
 - **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
   <br>`= 16`
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
@@ -428,7 +428,7 @@ The host contract — what a consuming product declares, and what the engine nev
 **Types**
 
 - **`CompletionRole`** · *host contract* · literal · The apparatus roles the engine asks a host for a completion client in.
-  <br>`'judge'` | `'simulator'` | `'analysis'` | `'variation'` | `'proposer'`
+  <br>`'judge'` | `'simulator'` | `'analysis'` | `'variation'` | `'proposer'` | `'analyst'`
 
 **Constants**
 
@@ -862,7 +862,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`price_largest_reporter_call`** · async function · A reporter arm's largest generator call, priced before launch, for its `LaunchableKind.price_largest_call`.
   <br>`price_largest_reporter_call(host: EvalHost, request: LaunchRequest, *, prompts: ReporterPrompts, resolve_model: ReporterModelResolver) -> CallCeiling | None`
 - **`report_read`** · function · The campaign's report, serialized in one form — the same report the command line's `report` prints.
-  <br>`report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat, trials: TrialDetail = 'table', static: bool = False) -> ReportDocument`
+  <br>`report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat, trials: TrialDetail = 'table', static: bool = False, report_doc_id: str | None = None, include_sessions: bool = False) -> ReportDocument`
 - **`reporter_case_archive`** · function · Retire a reporter case, or restore one: a retired case is never launched again and stays readable.
   <br>`reporter_case_archive(host: EvalHost, test_case_id: str, scope_id: str, *, archived: bool, reason: str | None = None) -> FrozenReporterCase`
 - **`run_get`** · function · One run, summarised from its stored results.
@@ -886,7 +886,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Classes**
 
-- **`AnalysisGeneration`** · dataclass · How this host generates an analysis as a background job.
+- **`AnalysisGeneration`** · dataclass · How this host generates an analysis as a background job: the report writer, on the host's model and budget.
 - **`CampaignDefinition`** · model · What creating a campaign names: what it is called, its subject and behavior, its question, arms, aspects and floors, and the campaigns whose aspects it adopts.
 - **`CampaignLine`** · model · One campaign, as a listing shows it.
 - **`CampaignListing`** · model · A scope's campaigns, newest first.
@@ -915,7 +915,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Constants**
 
-- **`ANALYSIS_PREPARATION_BUDGET_S`** · *host contract* · constant (float) · The default wall-clock ceiling on a generation job's preparation, used when a host supplies none (`AnalysisGeneration.preparation_budget_s`, read on every call): assembling the bundle, the prompt, the client, the default-writer check and the first call's price — in seconds.
+- **`ANALYSIS_PREPARATION_BUDGET_S`** · *host contract* · constant (float) · The default wall-clock ceiling on a generation job's preparation, used when a host supplies none (`AnalysisGeneration.preparation_budget_s`, read on every call): building the `analyst` client, holding it to the host's allowed writers and asking whether its turns can be priced — in seconds.
   <br>`= 900.0`
 - **`REPORTER_UNHONOURED_LAUNCH_ARGUMENTS`** · constant (frozenset) · The launch arguments a reporter arm cannot honour, for its `LaunchableKind`: it drives no simulated user, calls no tool a cassette could record, and generates no case — each is frozen from a campaign.
 
@@ -1576,8 +1576,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `campaign_runs_add` | `write` | `campaign_id`, `run_ids`, `aspect?` | Put runs in a campaign's aspect — runs launched after it was created, or measured on their own first. |
 | `campaign_runs_remove` | `write` | `campaign_id`, `run_ids`, `aspect?` | Take runs out of a campaign; the runs and their results stay, in any other campaign too. |
 | `campaign_record` | `write` | `campaign_id`, `arm`, `call_reason?`, `floors_overridden?`, `bars_overridden?`, `analysis_id?` | Record a person's call on a campaign: the arm decided, why, and each warning it overrides. |
-| `analysis_generate` | `spend`, job | `campaign_id`, `model?` | Generate a campaign's analysis with a paid model call, as a job to poll. |
-| `analysis_estimate` | `read` | `campaign_id`, `model?` | Price a campaign's analysis generation against the host's out-of-run cap, without spending. |
+| `analysis_generate` | `spend`, job | `campaign_id`, `model?` | Write a campaign's report with the analyst and the report editor (paid model turns), as a job to poll. |
+| `analysis_estimate` | `read` | `campaign_id`, `model?` | State the report budget a campaign's analysis generation would be held to, without spending. |
 | `judge_second` | `spend`, job | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Ask a second judge to score a seeded share of a finished run's judged results, as a job; read agreement. |
 | `judge_second_estimate` | `read` | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Price a second judge's pass over a run against the host's out-of-run cap, without spending. |
 | `judge_drift_check` | `spend`, job | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?` | Re-score every judged result of a run under a changed judge, as a job; read how far each moved. |
@@ -1587,7 +1587,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `insights_list` | `read` | `subject_filter?`, `campaign_filter?` | List the scope's insights — the durable claims analyses minted — newest first. |
 | `insight_get` | `read` | `insight_id` | Read one insight in full: its statement, evidence runs, provenance and standing. |
 | `analyses_undescribable` | `read` | — | List the scope's analyses holding an arm whose levels this build cannot describe. |
-| `report_read` | `read` | `campaign_id`, `format?`, `trials?`, `static?` | Read a campaign's report — its analysis, else its evidence alone — as Markdown, JSON or HTML. |
+| `report_read` | `read` | `campaign_id`, `format?`, `trials?`, `static?`, `report_doc_id?`, `include_sessions?` | Read a campaign's report — its analysis, else its evidence alone — as Markdown, JSON or HTML. |
+| `analyst_gaps_list` | `read` | `since?` | List the capability gaps analysts noted, and code's notices, grouped and ranked as issue text. |
 | `bars_propose` | `read` | `campaign_id` | Propose bars from a single-cell baseline campaign's measured incumbent; registers nothing. |
 | `reporter_case_freeze` | `write` | `template_id`, `campaign_id`, `recorded_analysis_id?`, `labels?`, `supersedes?` | Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template. |
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
@@ -1684,6 +1685,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `format` | `'markdown'` \| `'json'` \| `'html'` | The report's form: markdown (the memo), json (the schema's form), html (one page; its one script is the kit's, which draws its charts). |
 | `from_labels` | `boolean` | Freeze from the scope's person labels instead of from runs: one case per output and criterion, from the content each label carries, reading no run or result, so it works after the runs are gone. A label that carries no content is skipped by name. |
 | `include_archived` | `boolean` | List archived records too; they are left out by default. |
+| `include_sessions` | `boolean` | With json, add the full transcripts of the report document the page draws, as report_doc.sessions: every session that wrote it, by name. Refused with markdown or html, which never hold a transcript. |
 | `insight_id` | `string` | An insight's id, as insights_list names it. |
 | `intent` | `string` | What its judge campaign measures, in a sentence a reader of its report is told. |
 | `into_case_set` | `string` or `null` | A case set to mint the next version of, listing exactly the frozen cases — what a launch targets. |
@@ -1729,6 +1731,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `reason` | `string` or `null` | Why, recorded on a cancelled run. |
 | `recorded_analysis_id` | `string` or `null` | A stored analysis of the campaign whose memo the case pins as the one it got, as analyses_list names it; one the report planner wrote pins its plan, as a plan case; omitted freezes the bundle alone, which only a generating candidate can run. |
 | `repeats` | `integer` | How many times each dim is judged at each temperature. |
+| `report_doc_id` | `string` or `null` | A stored report document of the campaign, any version (analyses_list names each analysis's report_doc_id): given, the report is that document's page in place of the campaign's report; omitted, the campaign's report. |
 | `reporter_case_id` | `string` | A reporter case's id, as reporter_case_freeze or reporter_cases_list returns it. |
 | `result_id` | `string` | A result's id, as results_list names it. |
 | `result_ids` | array of `string` or `null` | A run's result ids, as results_list names them; omitted for every result of the run. |
@@ -1748,6 +1751,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `selection` | `'borderline'` \| `'all'` | Which scored dims are re-judged: borderline (stored score inside the scale, or a recorded repeat or second judge disagreed) or all. |
 | `short_names` | `object` or `null` | An aspect's label to its short name, what a page prints for it in table cells and sentences (at most 32 characters, no other aspect's label or short name), or to null to print its label whole. An aspect not named keeps its own. Editable once runs have joined, since it changes nothing any run measures; refused beside aspects, whose own short_name says it. |
 | `simulator_model` | `string` or `null` | The simulated user's model, where the kind has one. |
+| `since` | `string` or `null` | Read only the gaps stored at or after this time, ISO 8601 with its offset (2026-10-28T00:00:00Z), each by its own time; omit for every gap. |
 | `static` | `boolean` | With html, the static page, for a host whose policy lets a page neither run nor load anything: no script and no link, the system's fonts, and every chart shown as its table of values. Markdown and json are the same either way. |
 | `status` | `'pending'` \| `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` \| `'budget_stopped'` \| `'exhausted'` or `null` | List only runs with this stored status. |
 | `subject` | `string` or `null` | Who or what produced the output, as the judge should know it; omitted for none. |

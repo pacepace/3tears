@@ -168,6 +168,9 @@ class CallUsage:
     #: ``None`` when it reported none, or when the folded attempts were not all sent alike and
     #: reported — one record cannot name two, so a fold of unlike sends reads as unverified.
     sent_settings: ClientRequestSettings | None = None
+    #: Why the call is unpriced, as its pricer said (a completion's optional ``pricing_failure``, the shipped
+    #: client's); ``None`` when it is priced or said nothing. Carried to the row's ``unpriced_reasons``.
+    pricing_failure: str | None = None
 
     @classmethod
     def billed(cls, completion: Any) -> CallUsage:
@@ -189,7 +192,7 @@ class CallUsage:
         read: dict[str, Any] = {name: getattr(completion, name, None) for name in USAGE_LEDGER_ATTRIBUTES}
         read["model"] = read["model"] or None
         read["served_model"] = read["served_model"] or None
-        return cls(**read)
+        return cls(**read, pricing_failure=_pricing_failure_of(completion))
 
     @classmethod
     def of(cls, completion: Any) -> CallUsage:
@@ -208,6 +211,21 @@ class CallUsage:
             caller that counts it reads :meth:`billed` on its way out (see there).
         """
         return replace(cls.billed(completion), sent_settings=sent_settings_of(completion))
+
+
+def _pricing_failure_of(completion: object) -> str | None:
+    """Why ``completion`` is unpriced, as its client said, or ``None``.
+
+    Reads the optional ``pricing_failure`` member the shipped client's completions and tool turns carry (the pricer's
+    reason). A disclosure, never a refusal: an absent member, an empty one, or one that is not text says nothing.
+
+    :param completion: A completion, or a usage record standing for one.
+    :ptype completion: object
+    :return: The reason, or ``None``.
+    :rtype: str | None
+    """
+    said = getattr(completion, "pricing_failure", None)
+    return said if isinstance(said, str) and said else None
 
 
 #: The attributes :meth:`RoleUsageLedger.add_llm_result` reads beyond
@@ -256,6 +274,8 @@ class _ModelTotals:
     #: A contribution reported no sent settings, so the row cannot say what all its calls were sent with:
     #: like an unpriced call's dollars, one unverified call makes the row's record unverified.
     sent_unverified: bool = False
+    #: Each distinct reason a contribution gave for being unpriced, first seen first: the row's ``unpriced_reasons``.
+    unpriced_reasons: list[str] = field(default_factory=list)
 
 
 #: One ledger row's key: ``(model, served_model, provider, provider_unit, price_source, actor_id, purpose)``.
@@ -318,6 +338,7 @@ class RoleUsageLedger:
         actor_id: str | None = None,
         purpose: KnownSimulatorPurpose | None = None,
         sent_settings: ClientRequestSettings | None = None,
+        unpriced_reason: str | None = None,
     ) -> None:
         """Fold one call's usage into this role's totals.
 
@@ -360,6 +381,9 @@ class RoleUsageLedger:
         API). It is not part of the key: the row keeps every distinct value, and one ``None`` makes the row's
         record unverified.
 
+        ``unpriced_reason`` is why an unpriced contribution is unpriced, as its pricer said; the row keeps each distinct
+        one as its ``unpriced_reasons`` while its dollars are unknown.
+
         :raises ValueError: ``actor_id`` or ``purpose`` was given to a role other than ``simulator``.
         """
         if (actor_id is not None or purpose is not None) and self.role != "simulator":
@@ -378,6 +402,8 @@ class RoleUsageLedger:
             totals.cost_observed = True
         else:
             totals.cost_unpriced = True
+            if unpriced_reason and unpriced_reason not in totals.unpriced_reasons:
+                totals.unpriced_reasons.append(unpriced_reason)
         if sent_settings is None:
             totals.sent_unverified = True
         else:
@@ -430,6 +456,7 @@ class RoleUsageLedger:
             actor_id=actor_id,
             purpose=purpose,
             sent_settings=read.sent_settings,
+            unpriced_reason=read.pricing_failure,
         )
 
     def add_external(self, spend: ExternalSpend) -> None:
@@ -559,6 +586,9 @@ class RoleUsageLedger:
                         None
                         if totals.sent_unverified or not totals.sent
                         else [totals.sent[form] for form in sorted(totals.sent)]
+                    ),
+                    unpriced_reasons=(
+                        list(totals.unpriced_reasons) if totals.cost_unpriced and totals.unpriced_reasons else None
                     ),
                 )
             )
@@ -815,8 +845,23 @@ def production_replicating_cost(
         return None
     if any(row.role not in USAGE_ROLES for row in usage):
         return None
+    return _sum_costs(production_rows(usage, candidate_kind=candidate_kind))
+
+
+def production_rows(usage: Sequence[RoleUsage], *, candidate_kind: str | None) -> list[RoleUsage]:
+    """The rows of the roles a production deployment pays for, as :func:`production_replicating_cost` sums them: the
+    candidate's, the inner agent's and the external ones, or the judge's in a judge-kind result, whose subject it is.
+
+    :param usage: A result's per-role rows.
+    :ptype usage: Sequence[RoleUsage]
+    :param candidate_kind: The kind that produced the rows (``EvalResult.candidate_kind``); ``None`` reads as any kind
+        but the judge kind.
+    :ptype candidate_kind: str | None
+    :return: Those rows, in their order.
+    :rtype: list[RoleUsage]
+    """
     roles = _JUDGE_KIND_PRODUCTION_ROLES if candidate_kind == JUDGE_KIND else PRODUCTION_REPLICATING_ROLES
-    return _sum_costs([row for row in usage if row.role in roles])
+    return [row for row in usage if row.role in roles]
 
 
 def program_cost(usage: list[RoleUsage]) -> float | None:
@@ -996,6 +1041,7 @@ __all__ = [
     "count_substituted",
     "count_substituted_deliveries",
     "production_replicating_cost",
+    "production_rows",
     "program_cost",
     "resolve_result_usage",
     "spend_observed",

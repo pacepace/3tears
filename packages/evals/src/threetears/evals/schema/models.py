@@ -3482,6 +3482,52 @@ def sent_settings_phrase(settings: ClientRequestSettings | None) -> str:
 DEFAULT_LAUNCH_K_RUNS = 3
 
 
+class RunDisclosure(EvalDocumentModel, CoreShapeModel):
+    """What the launching host discloses about the launch a run came from: the machine, its load, how it measures.
+
+    Stated by the host (``LaunchHost.run_disclosure``), stamped on every run the launch starts whatever its kind, and
+    carried as it was stated through the analysis bundle (``RunApparatus.run_disclosure``) and the report input to
+    ``campaign_overview``, where the analyst reads it. **A disclosure, never a coordinate**: nothing in the engine reads
+    a value of it to decide anything, so it is in no identity, context key, variant key, cell, confound list or
+    apparatus class, and two runs that disclose different machines or loads are still one cell (a host owner's ruling:
+    machine identity is apparatus with no rig coordinate). A host that wants a value to group or split runs declares
+    it as a sweepable instead.
+
+    Unlike ``host_payload``, which the engine never reads, this is read, and only to be shown.
+    """
+
+    values: dict[str, str | int | float | bool] = Field(
+        default_factory=dict,
+        description=(
+            "Each disclosed value by the host's own name for it, a word, a count or a reading, never a structure: the machine the launch ran on, its one-minute load "
+            "as the launch began, the host's build. Printed as given, never compared."
+        ),
+    )
+    statements: list[str] = Field(
+        default_factory=list,
+        description=(
+            "What the host states about how the run was measured, each a sentence in the host's words, such as how "
+            "latency is taken and when it is valid. Carried verbatim to the analyst, never parsed."
+        ),
+    )
+
+    @field_validator("values")
+    @classmethod
+    def _named(cls, values: dict[str, str | int | float | bool]) -> dict[str, str | int | float | bool]:
+        """Refuse a value disclosed under a blank name, which no reader could cite."""
+        if blank := [name for name in values if not name.strip()]:
+            raise ValueError(f"a disclosed value needs a name; {len(blank)} have a blank one")
+        return values
+
+    @field_validator("statements")
+    @classmethod
+    def _stated(cls, statements: list[str]) -> list[str]:
+        """Refuse a blank statement, which says nothing."""
+        if any(not statement.strip() for statement in statements):
+            raise ValueError("a disclosed statement is a sentence; a blank one says nothing")
+        return statements
+
+
 #: The merit axes a declaration may name, defined here because ``kernel.metrics`` imports this module, which
 #: binds :data:`~threetears.evals.kernel.metrics.MeritAxis` to this same object.
 DeclaredMeritAxis = Literal["quality", "cost", "latency", "reliability"]
@@ -4152,6 +4198,20 @@ class EvalRun(CoreDocumentModel):
             "user was pinned, or the run's writer recorded no settings."
         ),
     )
+    simulator_prompt_digest: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The content address of the simulated user's prompts as this run sends them, stamped at launch beside "
+            "simulator_asked_settings (``threetears.evals.run.simulator.simulator_prompt_digest``): every engine-"
+            "authored word its calls carry around the conversation's actors (each utterance call's framing and reply "
+            "format; under ``llm_decided``, the scheduler's system and user prompts, its reply format, its repair and "
+            "its refusal reasons), with the parts each cell fills (the case's scenario parameters, the transcript so "
+            "far, the round's count, the reply a repair quotes) left empty, since the frozen cases address those. "
+            "Moves with any change to what the simulator is told, the engine's own words included. None = no simulated user was pinned, or the run was stored before the field existed. Left out "
+            "of the document when unset, and in no identity, key or digest."
+        ),
+    )
     max_cost_usd: float | None = Field(
         default=None,
         gt=0.0,
@@ -4174,6 +4234,50 @@ class EvalRun(CoreDocumentModel):
             "hashed into any identity key, on the same reasoning: two runs bounded by the same ceiling were "
             "measured under the same condition however each arrived at it. None = the run's writer recorded "
             "no ceiling (a run assembled without its launch, which is where the cascade resolves)."
+        ),
+    )
+    cap_checked_on_estimates: bool | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "True when max_cost_usd was checked against estimates: the arm's largest call was bounded on rates the "
+            "host's pricer does not guarantee (an OpenRouter route whose upstream may bill otherwise), so the run "
+            "was admitted on an estimate and its cap reads against one. None = not recorded: no cap, a bound on "
+            "guaranteed rates, or a run stored before the field existed. Left out of the document when unset, and "
+            "in no identity, key or digest."
+        ),
+    )
+
+    package_version: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The 3tears-evals version that launched the run, from the installed distribution's metadata. None = the "
+            "launching build carried no metadata (a source tree on the path), or the run was stored before the field "
+            "existed. Left out of the document when unset, and in no identity, key or digest."
+        ),
+    )
+    package_rev: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The git commit the launching 3tears-evals was built from, as its installer recorded it (``vcs_info`` of "
+            "the distribution's ``direct_url.json``, PEP 610, written for an install from a git URL). None = the "
+            "install recorded none (a wheel from an index, an editable or local-directory install), the build carried "
+            "no metadata, or the run was stored before the field existed: not known, never guessed. Left out of the "
+            "document when unset, and in no identity, key or digest."
+        ),
+    )
+    run_disclosure: RunDisclosure | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What the launching host disclosed about the launch (``RunDisclosure``, from ``LaunchHost.run_disclosure``)"
+            ": its machine, load and how it measures, stamped on every run of every kind. A disclosure, never a "
+            "coordinate: in no identity, context or variant key, cell or confound. It is evidence the bundle carries, so "
+            "it moves the bundle's fingerprint and a snapshot's id as any recorded fact does. None = the host disclosed "
+            "nothing, or the run "
+            "was stored before the field existed. Left out of the document when unset."
         ),
     )
 
@@ -5224,6 +5328,35 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
             "reason is counted there and not here. None = no reasons were counted."
         ),
     )
+
+    unpriced_reasons: list[str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Why this row's dollars are unknown: each distinct reason its pricer gave for a call it could not price "
+            "(a completion's pricing_failure), in the order first seen. Set only beside a cost_usd of None, which is "
+            "unknown and never $0. None = no reason was given (the row is priced, or its unpriced calls said "
+            "nothing)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _unpriced_reasons_explain_an_unknown_cost(self) -> RoleUsage:
+        """Refuse reasons beside a known cost, an empty list, or an empty reason.
+
+        :return: The row, unchanged.
+        :rtype: RoleUsage
+        :raises ValueError: ``unpriced_reasons`` is set beside a ``cost_usd``, is empty, or holds an empty reason.
+        """
+        if self.unpriced_reasons is None:
+            return self
+        if self.cost_usd is not None:
+            raise ValueError("unpriced_reasons says why a row's cost is unknown, and this row's cost_usd is known")
+        if not self.unpriced_reasons or not all(self.unpriced_reasons):
+            raise ValueError(
+                "unpriced_reasons holds at least one reason, none empty; leave it None when none was given"
+            )
+        return self
 
     @model_validator(mode="after")
     def _reasons_count_the_unanswered(self) -> RoleUsage:
@@ -6704,6 +6837,7 @@ __all__ = [
     "CatalogRubricDim",
     "CellTermination",
     "ClientRequestSettings",
+    "RunDisclosure",
     "CompletenessSource",
     "ControlEndState",
     "ConversationSpec",

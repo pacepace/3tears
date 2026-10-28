@@ -22,6 +22,7 @@ job from the record its work writes, and :func:`job_cancel` asks it to stop. Pin
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from typing import Any
 
@@ -29,14 +30,14 @@ import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.kernel import ConflictError, NotFoundError, ValidationFailedError
-from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
 from threetears.evals.ops import (
     AnalysisGeneration,
     CampaignDefinition,
+    ReportBudget,
+    WriterLimits,
     LaunchArguments,
     analyses_list,
     analysis_archive,
-    analysis_generate,
     analysis_job_id,
     await_job,
     campaign_archive,
@@ -52,7 +53,6 @@ from threetears.evals.ops import (
     run_launch,
 )
 from threetears.evals.analysis import judge_agreement
-from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.run import LAUNCH_CANCEL_REASON
 from threetears.evals.analysis.summary import budget_stop_line
 from threetears.evals.schema.models import BudgetStop
@@ -60,6 +60,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSIO
 from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import (
+    generate,
     CALLER,
     RUN_MODELS,
     TOYHOST_SCOPE,
@@ -217,7 +218,7 @@ async def test_cancelling_a_run_that_has_ended_is_refused() -> None:
 
 async def test_a_generation_is_a_job_polled_to_the_analysis_it_stored() -> None:
     fixture = off_loop(ops_fixture)
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     assert job.kind == "analysis" and parse_job_id(job.job_id)[:2] == ("analysis", fixture.campaign.id)
 
     status = await settled(fixture.host, job.job_id)
@@ -226,18 +227,15 @@ async def test_a_generation_is_a_job_polled_to_the_analysis_it_stored() -> None:
     (line,) = off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
     assert line.id == status.analysis_id
     markdown = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
+    # The report writer wrote it, and the listing and the read say so: the page is the one its stored document draws,
+    # and the read carries that document.
+    assert (line.basis, markdown.analysis_basis, line.report_plan_id) == ("doc", "doc", None)
+    assert line.report_doc_id is not None and line.findings == 1
     assert (markdown.basis, markdown.analysis_id) == ("analysis", line.id)
-    # The page is the one its plan draws: it opens on the plan's masthead, then its headline as the page's heading,
-    # then the decision, its recommendation among it; the HTML page is titled by the campaign's name. The report
-    # planner wrote it, and the read says so and carries the plan.
-    assert (line.basis, markdown.analysis_basis) == ("plan", "plan") and line.report_plan_id is not None
-    assert markdown.plan is not None and markdown.plan["schema"] == "report-plan/1"
-    opening, _, heading = markdown.body.split("\n", 3)[:3]
-    assert markdown.plan["masthead"]["kind"] in opening and heading.startswith("# ")
-    assert "**Recommendation.**" in markdown.body and line.findings >= 1
+    assert markdown.doc is not None and markdown.doc["schema"] == "report-doc/1"
     html = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="html")
     assert what_runs(html.body) == [], "the page runs the kit's script and nothing else"
-    assert f"<title>{fixture.campaign.name}</title>" in html.body and 'data-page="planned"' in html.body
+    assert f"<title>{fixture.campaign.name}</title>" in html.body
     canonical = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="json")
     document = json.loads(canonical.body)
     assert (document["kind"], document["campaign_id"], document["analysis_id"]) == (
@@ -250,17 +248,17 @@ async def test_a_generation_is_a_job_polled_to_the_analysis_it_stored() -> None:
 async def test_a_held_generation_is_running_refuses_a_second_and_cancels_to_cancelled() -> None:
     gate = asyncio.Event()
     fixture = off_loop(ops_fixture, gate=gate)
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     async with asyncio.timeout(10):
-        while not fixture.writers:
-            # The first generation's job prepares its client before it is held at its call.
+        while not (fixture.analysts and fixture.analysts[0].sessions):
+            # The first generation's job prepares its client and freezes the snapshot before it is held at its turn.
             await asyncio.sleep(0.01)
 
     running = await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)
     assert (running.state, running.done) == ("running", False)
     with pytest.raises(ConflictError, match="is already running"):
-        await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
-    assert len(fixture.writers) == 1, "the refused second generation built no client"
+        await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+    assert len(fixture.analysts) == 1, "the refused second generation built no client"
 
     await job_cancel(fixture.host, job.job_id, TOYHOST_SCOPE)
     cancelled = await settled(fixture.host, job.job_id)
@@ -281,7 +279,7 @@ async def test_a_generation_is_neither_polled_nor_cancelled_from_outside_its_cam
     """The job manager is process-wide; a generation is live only to the scope and campaign that started it."""
     gate = asyncio.Event()
     fixture = off_loop(ops_fixture, gate=gate)
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     await asyncio.sleep(0)
     _, _, attempt = parse_job_id(job.job_id)
     assert attempt is not None
@@ -338,8 +336,8 @@ async def test_a_generation_that_loses_the_race_ends_its_attempt_having_built_no
 
     monkeypatch.setattr(fixture.host.launch.job_manager, "start_task", taken)
     with pytest.raises(ConflictError):
-        await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
-    assert fixture.writers == []
+        await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+    assert fixture.writers == fixture.analysts == []
     (attempt,) = off_loop(
         fixture.host.eval_host.storage.list_analysis_attempts_by_campaign, fixture.campaign.id, TOYHOST_SCOPE
     )
@@ -355,41 +353,32 @@ async def test_a_generation_with_no_attempt_record_reads_absent() -> None:
 async def test_a_host_without_generation_settings_refuses_a_generation() -> None:
     fixture = off_loop(ops_fixture, generation=False)
     with pytest.raises(ValidationFailedError, match="does not generate analyses here"):
-        await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
-    assert fixture.writers == []
+        await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+    assert fixture.writers == fixture.analysts == []
 
 
 @pytest.mark.parametrize(
     ("fields", "message"),
-    [
-        ({"prompt_id": " "}, "prompt_id is blank"),
-        ({"max_output_tokens": 0}, "max_output_tokens must be positive"),
-        ({"budget_s": 0.0}, "budget_s must be positive"),
-    ],
+    [({"budget_s": 0.0}, "budget_s must be positive"), ({"budget_s": -1.0}, "budget_s must be positive")],
 )
 def test_generation_settings_that_cannot_bound_a_generation_are_refused(fields: dict[str, Any], message: str) -> None:
-    async def prompt() -> str:
-        return "p"
-
-    valid: dict[str, Any] = {"prompt_id": "p", "resolve_prompt": prompt, "max_output_tokens": 10, "budget_s": 1.0}
+    valid: dict[str, Any] = {"report_budget": lambda: ReportBudget(usd=1.0), "budget_s": 1.0}
     AnalysisGeneration(**valid)
     with pytest.raises(ValueError, match=message):
         AnalysisGeneration(**(valid | fields))
 
 
-async def test_a_generation_naming_no_prompt_runs_the_shipped_default() -> None:
-    """A host with no prompt registry names no prompt: the report planner runs its default under the engine's id."""
-    generation = AnalysisGeneration(max_output_tokens=10, budget_s=1.0)
+def test_generation_settings_name_no_prompt_and_default_the_writers_limits() -> None:
+    """The report writer's words are the analyst skill's, so the settings name no prompt; the limits default."""
+    generation = AnalysisGeneration(budget_s=1.0)
 
-    assert generation.prompt_id == REPORT_PLAN_PROMPT
-    assert await generation.prompt() == EVAL_REPORT_PLAN_DEFAULT
-
-
-async def test_a_generation_naming_a_prompt_runs_the_override() -> None:
-    async def prompt() -> str:
-        return "tuned"
-
-    assert await AnalysisGeneration(resolve_prompt=prompt, max_output_tokens=10, budget_s=1.0).prompt() == "tuned"
+    assert {field.name for field in dataclasses.fields(generation)} == {
+        "report_budget",
+        "limits",
+        "budget_s",
+        "preparation_budget_s",
+    }
+    assert generation.limits == WriterLimits() and generation.report_budget is None
 
 
 # =============================================================================
@@ -465,7 +454,7 @@ def test_a_campaign_is_created_archived_and_listed_as_typed_lines() -> None:
 async def test_an_analysis_is_archived_and_restored_through_the_action_its_delete_points_to() -> None:
     """``analysis_delete`` says "archive instead"; ``analysis_archive`` is that action, and it is reversible."""
     fixture = off_loop(ops_fixture)
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     analysis_id = (await settled(fixture.host, job.job_id)).analysis_id
     assert analysis_id is not None
     tools = {tool.name: tool for tool in eval_catalogue().mount_all(standard_tools())}

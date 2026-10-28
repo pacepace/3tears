@@ -90,6 +90,7 @@ from threetears.evals.analysis.report.html_parts import (
     table_html,
     term_link,
 )
+from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.plan_page.html import planned_page_html
 from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, SUMMARY_LEADS, trial_summary
 from threetears.evals.analysis.style import GLOSSARY
@@ -157,6 +158,11 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
     aspects' folds and the glossary they link as its closed appendix after Method, so a trial's id and its stored
     result are reached as on every other campaign page.
 
+    A report document's page (``doc_page`` set) is the page its stored document draws
+    (:func:`~threetears.evals.analysis.report.doc_page.html.doc_page_html`), static where this page is, written whole:
+    its own appendix holds every table its snapshot holds. With ``doc_trials`` (``trials="all"``), the aspects' folds
+    and the glossary they link follow it, closed, as its evidence record, each failed or lost trial's record in them.
+
     :param report: The campaign's page.
     :ptype report: CampaignReport
     :param static: Write the static page, as :func:`report_html` does: no script, no link, every chart its table.
@@ -164,6 +170,10 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
     :return: The page.
     :rtype: str
     """
+    if report.doc_page is not None:
+        if not report.doc_trials:
+            return doc_page_html(report.doc_page, static=static)
+        return _links_in_sight(doc_page_html(report.doc_page, static=static, record=_appendix(report, static)))
     if report.plan_page is not None:
         return _links_in_sight(planned_page_html(report.plan_page, appendix=_appendix(report, static), static=static))
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]

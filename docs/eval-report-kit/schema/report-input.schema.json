@@ -976,10 +976,31 @@
      "type": "object",
      "additionalProperties": {"enum": ["ordinal", "pass_fail"]},
      "description": "The scale each rubric dimension was answered on."
+    },
+    "disclosure": {
+     "anyOf": [{"$ref": "#/$defs/Disclosure"}, {"type": "null"}],
+     "description": "What the launching host disclosed about the launch; none where it disclosed nothing."
     }
    },
    "additionalProperties": false,
    "description": "The rig one run of one arm was measured with, as the run recorded it at launch."
+  },
+  "Disclosure": {
+   "type": "object",
+   "properties": {
+    "values": {
+     "type": "object",
+     "additionalProperties": {"type": ["string", "integer", "number", "boolean"]},
+     "description": "Each disclosed value by the host's name for it."
+    },
+    "statements": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "What the host states, in its own words."
+    }
+   },
+   "additionalProperties": false,
+   "description": "What the launching host disclosed about one run's launch, as it stated it: values by its own names, and its statements of how the run was measured. Shown, never compared: it splits no rig and names no confound."
   },
   "ScoreboardRow": {
    "type": "object",
@@ -1009,6 +1030,10 @@
     "unanswered": {
      "anyOf": [{"type": "object", "additionalProperties": {"$ref": "#/$defs/Unanswered"}}, {"type": "null"}],
      "description": "The arm's unanswered calls by usage role, for each role that counted them; none where no role did (not counted, never none)."
+    },
+    "pricing": {
+     "anyOf": [{"$ref": "#/$defs/Pricing"}, {"type": "null"}],
+     "description": "How the arm's cost was priced: its price sources, serving providers and priced calls; none where the input does not say."
     }
    },
    "additionalProperties": false,
@@ -1128,6 +1153,28 @@
    },
    "additionalProperties": false,
    "description": "A named slice of the work, with each arm's figures in it.\n\nA routable task's traffic can go to its own arm; a cross-cutting one occurs inside every other task, so an arm\nserving any traffic must pass it."
+  },
+  "Pricing": {
+   "type": "object",
+   "properties": {
+    "sources": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "Each price source its priced calls name (RoleUsage.price_source), sorted."
+    },
+    "providers": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "Each provider its calls name as serving them (RoleUsage.provider), sorted; empty where none does."
+    },
+    "calls": {"type": ["integer", "null"], "description": "The calls its cost counts; none where a row did not count its."},
+    "priced_calls": {
+     "type": ["integer", "null"],
+     "description": "Those of them a price was observed for; none where a row did not count its calls."
+    }
+   },
+   "additionalProperties": false,
+   "description": "How one arm's cost was priced: what priced its calls, who served them, and how many of them were priced."
   },
   "Unanswered": {
    "type": "object",

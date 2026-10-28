@@ -10,6 +10,7 @@ neither a pricer nor a catalogue gets it. Its rates are pinned here as Anthropic
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any, Final
 
@@ -18,12 +19,15 @@ import pytest
 
 from threetears.evals.providers import (
     AnthropicPublishedRates,
+    CallPrice,
     Catalogue,
     Clients,
+    HostRates,
     Model,
     ModelRates,
     Provider,
 )
+from threetears.evals.providers.wire import usage_counts
 from threetears.evals.schema.turns import TurnMessage
 
 #: Per model, dollars a million tokens: base input, five-minute cache write, one-hour cache write, cache read, output.
@@ -98,10 +102,11 @@ def as_page(rates: ModelRates) -> tuple[str, str, str, str, str]:
 def test_the_default_rates_are_the_pricing_page_as_read_on_their_date() -> None:
     default = AnthropicPublishedRates()
     for model_id, page in PAGE.items():
-        found = default.rates_for(model_id, provider="anthropic")
-        assert found is not None, model_id
+        answered = default.rates_for(model_id, provider="anthropic")
+        assert answered is not None, model_id
+        assert answered.guaranteed, "Anthropic's published rates are what it bills a direct call"
+        found = answered.rates
         assert as_page(found) == page, model_id
-        assert found.source == SOURCE
         if model_id == "claude-haiku-5-5":
             assert found.long_prompt is not None and as_page(found.long_prompt) == HAIKU_LONG
             assert found.long_prompt_tokens == 100_000
@@ -118,8 +123,8 @@ def test_a_dated_or_dotted_id_names_its_row_and_an_unlisted_one_none() -> None:
     default = AnthropicPublishedRates()
     dated = default.rates_for("claude-haiku-4-5-20251001", provider="anthropic")
     dotted = default.rates_for("Claude-Opus-4.8", provider="anthropic")
-    assert dated is not None and as_page(dated) == PAGE["claude-haiku-4-5"]
-    assert dotted is not None and as_page(dotted) == PAGE["claude-opus-4-8"]
+    assert dated is not None and as_page(dated.rates) == PAGE["claude-haiku-4-5"]
+    assert dotted is not None and as_page(dotted.rates) == PAGE["claude-opus-4-8"]
     assert default.rates_for("claude-opus-9", provider="anthropic") is None
 
 
@@ -186,13 +191,16 @@ def test_a_ceiling_bounds_every_prompt_token_at_the_five_minute_write_and_reache
     opus = default.rates_for("claude-opus-5-5", provider="anthropic")
     haiku = default.rates_for("claude-haiku-5-5", provider="anthropic")
     assert opus is not None and haiku is not None
-    assert opus.ceiling(prompt_tokens=10_000, output_tokens=1_000) == Decimal("0.07")  # 10,000 x $5 + 1,000 x $20
-    assert haiku.ceiling(prompt_tokens=200_000, output_tokens=0) == Decimal("0.125")  # the long tier's $0.625 write
+    assert opus.rates.ceiling(prompt_tokens=10_000, output_tokens=1_000) == Decimal("0.07")  # 10,000 x $5 + 1,000 x $20
+    assert haiku.rates.ceiling(prompt_tokens=200_000, output_tokens=0) == Decimal(
+        "0.125"
+    )  # the long tier's $0.625 write
 
 
 def test_counts_that_contradict_each_other_are_unpriced_never_guessed() -> None:
-    opus = AnthropicPublishedRates().rates_for("claude-opus-5-5", provider="anthropic")
-    assert opus is not None
+    answered = AnthropicPublishedRates().rates_for("claude-opus-5-5", provider="anthropic")
+    assert answered is not None
+    opus = answered.rates
     cost, why = opus.cost(input_tokens=10, output_tokens=1, cache_read_tokens=20)
     assert cost is None and why is not None and "20 cached prompt tokens within 10" in why
     cost, why = opus.cost(input_tokens=100, output_tokens=1, cache_write_tokens=5, cache_write_1h_tokens=6)
@@ -279,7 +287,7 @@ async def test_a_host_s_pricer_that_answers_no_rates_is_named_and_the_shipped_ra
         "claude-sonnet-5-5",  # in the shipped rates, and not in the host's: the host's pricer is what prices it
         provider="anthropic",
         api_key="test-key",
-        pricer=HostRates(),
+        pricer=FakeHostPricer(),
         catalogue=_down_catalogue(),
         http=anthropic_reply("claude-sonnet-5-5", {"input_tokens": 1, "output_tokens": 1}),
     )
@@ -298,28 +306,39 @@ async def test_a_host_s_pricer_that_answers_no_rates_is_named_and_the_shipped_ra
 # --- a host's own prices -------------------------------------------------------------------------------------------
 
 
-class HostRates:
-    """A host's deal: Opus 5.5 at half the list price, named as the host names it; anything else to the catalogue."""
+#: A host's deal on Opus 5.5: half the list price.
+DEAL: Final = ModelRates(
+    base_input=Decimal(2),
+    cache_write_5m=Decimal("2.5"),
+    cache_write_1h=Decimal(4),
+    cache_read=Decimal("0.1"),
+    output=Decimal(10),
+)
+
+
+# parity-with: threetears.evals.providers.Pricer
+class FakeHostPricer:
+    """A host's deal: Opus 5.5 at half the list price, named as the host names it; anything else to the default."""
 
     def __init__(self) -> None:
         self.asked: list[tuple[str, str]] = []
 
-    def rates_for(self, model: str, *, provider: Provider) -> ModelRates | None:
+    def rates_for(self, model: str, *, provider: Provider) -> HostRates | None:
         self.asked.append((model, provider))
-        if model != "claude-opus-5-5":
-            return None
-        return ModelRates(
-            base_input=Decimal(2),
-            cache_write_5m=Decimal("2.5"),
-            cache_write_1h=Decimal(4),
-            cache_read=Decimal("0.1"),
-            output=Decimal(10),
-            source="host-deal:2026",
-        )
+        return HostRates(DEAL, guaranteed=True) if model == "claude-opus-5-5" else None
+
+    def price(
+        self, model: str, *, provider: Provider, usage: Mapping[str, Any], served_provider: str | None
+    ) -> CallPrice:
+        counts = usage_counts(provider, usage)
+        assert counts.input_tokens is not None and counts.output_tokens is not None
+        dollars, _ = DEAL.cost(input_tokens=counts.input_tokens, output_tokens=counts.output_tokens)
+        assert dollars is not None
+        return CallPrice(usd=float(dollars), source="host-deal:2026")
 
 
 async def test_a_host_s_pricer_replaces_the_default_and_reads_no_catalogue() -> None:
-    host, catalogue = HostRates(), never_read()
+    host, catalogue = FakeHostPricer(), never_read()
     model = Model(
         "claude-opus-5-5",
         provider="anthropic",
@@ -343,7 +362,7 @@ async def test_a_derived_model_and_a_factory_s_roles_keep_the_host_s_pricer() ->
         "claude-opus-5-5",
         provider="anthropic",
         api_key="test-key",
-        pricer=HostRates(),
+        pricer=FakeHostPricer(),
         http=anthropic_reply("claude-opus-5-5", {"input_tokens": 1000, "output_tokens": 100}),
     )
     clients = Clients(default=template, catalogue=never_read())

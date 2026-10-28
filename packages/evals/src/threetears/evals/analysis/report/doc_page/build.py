@@ -18,7 +18,8 @@ the page has or their order.
 - *Options*: every arm, with its settings, served model and cost, the arms ``recommends`` names marked
   (:func:`~threetears.evals.analysis.report.plan_page.tables.arms_table`).
 - *Claims*: in the document's order, each with the labels of the caveats the document lands beside it (as the
-  confidence labels them), so a caveat landed on a claim is one its reader and the editor see. Each evidence block is
+  confidence labels them), each distinct label once, so a caveat landed on a claim is one its reader and the editor
+  see; a label several share says how many and the arms their records name. Each evidence block is
   completed and drawn by the code ``block_render`` uses:
   :func:`~threetears.evals.analysis.report.block_spec.complete_chart`, then
   :func:`~threetears.evals.analysis.report.plan_page.resolve.resolve_chart` under
@@ -61,6 +62,8 @@ from threetears.evals.analysis.report.doc_page.model import (
 )
 from threetears.evals.analysis.report.doc_page.words import (
     CAVEAT_LABELS,
+    CAVEAT_REPEATED,
+    CAVEAT_REPEATED_ON,
     CLAIM_WORD,
     DEGRADED_BLOCK,
     DEGRADED_PAGE,
@@ -73,7 +76,7 @@ from threetears.evals.analysis.report.doc_page.words import (
     SLOT_TITLES,
     UNRESOLVED,
 )
-from threetears.evals.analysis.report.figure_keys import NamedKind, format_figure, render, resolve
+from threetears.evals.analysis.report.figure_keys import ARM_TEMPLATE, Figure, NamedKind, format_figure, render, resolve
 from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.analysis.report.plan_page.full_results import every_table
 from threetears.evals.analysis.report.plan_page.look import PageLook
@@ -208,8 +211,38 @@ class _Labels:
         return own or UNRESOLVED
 
     def landed(self, caveat_ids: Sequence[str], path: str) -> list[str]:
-        """The labels of the caveats a claim or a Method item names, in its order."""
-        return [self.label(caveat_id, f"{path}[{index}]") for index, caveat_id in enumerate(caveat_ids)]
+        """The labels of the caveats a claim or a Method item names, in its order, each distinct label once.
+
+        A label several of them share (two short runs, which code labels alike) is said once, with how many carry it
+        and what tells them apart where their records say it: the arms they name, as the page writes each arm.
+        """
+        shared: dict[str, list[str]] = {}
+        for index, caveat_id in enumerate(caveat_ids):
+            shared.setdefault(self.label(caveat_id, f"{path}[{index}]"), []).append(caveat_id)
+        return [self._said(label, held) for label, held in shared.items()]
+
+    def _said(self, label: str, caveat_ids: Sequence[str]) -> str:
+        if len(caveat_ids) == 1:
+            return label
+        named = [arm for caveat_id in caveat_ids for arm in self._arms_named(caveat_id)]
+        arms = [self.look.arm(arm) for arm in dict.fromkeys(named) if arm in self.look.arms]
+        count = format_figure(
+            Figure(path="count", kind="number", value=float(len(caveat_ids)), scale="count"), ("words",)
+        )
+        if not arms:
+            return CAVEAT_REPEATED.format(label=label, count=count)
+        written = ", ".join(ARM_TEMPLATE.format(name=arm.name, tag=arm.tag) for arm in arms)
+        return CAVEAT_REPEATED_ON.format(label=label, count=count, arms=written)
+
+    def _arms_named(self, caveat_id: str) -> list[str]:
+        """The arms a code caveat's own record names: a short run's arm, an implied caveat's arms; none otherwise."""
+        assigned = self.code.get(caveat_id)
+        if isinstance(assigned, ImpliedCaveat):
+            return list(assigned.arms)
+        if assigned is not None and assigned.kind == "short_run":
+            runs = self.reader.report_input.caveats.short_runs
+            return [run.arm for run in runs if f"short_run:{run.run}" == caveat_id and run.arm is not None]
+        return []
 
 
 def _labels(doc: ReportDoc, reader: _Reader, look: PageLook) -> _Labels:

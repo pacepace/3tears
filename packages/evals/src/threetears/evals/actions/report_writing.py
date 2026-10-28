@@ -1,10 +1,11 @@
 """The report writer's entry point: from a campaign, an analysis or a frozen snapshot to a stored report document.
 
-:func:`write_report` mounts the ``evals_analyst`` tool twice from the engine's catalogue, as an MCP client would mount
+:func:`write_report` mounts the ``evals_analyst`` tool twice from the analyst's actions, as an MCP client would mount
 it: the analyst's cut read-only (``analyst_tools(writes=False)``) and the editor's (``analyst_tools(role="editor")``),
 each bound to the host and the caller its calls run as, each described by its own description and the catalogue's
 primer (:func:`~threetears.evals.actions.catalogue.catalogue_primer`), and each a read of the frozen snapshot, so a
-stored session may drop a result's body and call the tool again for it. The writing itself is the operation's
+stored session may drop a result's body and call the tool again for it. Both mount the gap note that stores nothing
+(``analyst_actions(gaps_kept_by="write")``): the write stores each gap its sessions noted when it ends. The writing itself is the operation's
 (:func:`~threetears.evals.ops.report_writer.write.report_write`): it freezes the evidence first unless handed a
 snapshot already frozen, so neither tool writes, runs the writing loop, and stores what its ending stores through the
 store gate. Its result and its refusal (``ReportWritten``, ``ReportNotStored``) are the operation's, named here too.
@@ -17,22 +18,22 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
-from threetears.evals.actions.analyst import analyst_tools
-from threetears.evals.actions.catalogue import DEFAULT_PREFIX, Caller, MountedTool, catalogue_primer
-from threetears.evals.actions.engine import eval_catalogue
+from threetears.evals.actions.analyst import analyst_actions, analyst_tools
+from threetears.evals.actions.catalogue import ActionCatalogue, DEFAULT_PREFIX, Caller, MountedTool, catalogue_primer
+from threetears.evals.ops.analysis import ReportWriter, ReportWriterCall
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.report_writer.loop import TurnModel, WriterLimits
 from threetears.evals.ops.report_writer.session import ToolOutcome
-from threetears.evals.ops.report_writer.tally import ReportBudget
+from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.ops.report_writer.write import ReportNotStored as ReportNotStored
 from threetears.evals.ops.report_writer.write import ReportWritten as ReportWritten
 from threetears.evals.ops.report_writer.write import report_write
 
-#: Empty until the report writer has a production caller outside this module: the analysis job of plan §9 (W4), which
-#: a host's job factory runs. ``tests/test_report_writer_exports.py`` lists the names awaiting it.
-__all__: list[str] = []
+#: What ``analysis_generate``'s action hands its job (actions/engine.py). ``write_report`` stays out until a caller
+#: outside this module imports it; ``tests/test_report_writer_exports.py`` lists it as awaiting one.
+__all__ = ["campaign_report_writer"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +69,11 @@ class _HostMount:
 def _mount(host: OpsHost, caller: Caller, *, prefix: str, role: Literal["analyst", "editor"]) -> _HostMount:
     """The ``evals_analyst`` tool on ``role``'s cut, read-only, bound to ``host`` and ``caller``."""
     (spec,) = analyst_tools(prefix, writes=False, role=role)
-    tool = eval_catalogue().mount(spec)
+    # The analyst's actions alone, which are every action its cut holds: the engine's catalogue adds actions no
+    # analyst tool mounts, and the action that starts a generation (actions/engine.py) hands its job this module's
+    # writer, so this module reads none of it. Its gap note stores nothing: the write stores every gap its sessions
+    # noted when it ends, with the session each came from (report_write), so each is stored once.
+    tool = ActionCatalogue(analyst_actions(gaps_kept_by="write")).mount(spec)
     if not tool.hints.read_only:
         raise ValueError(
             f"the {role}'s tool {tool.name!r} carries an action that writes; the report writer mounts reads"
@@ -88,6 +93,7 @@ async def write_report(
     withhold: Collection[str] = (),
     limits: WriterLimits | None = None,
     prefix: str = DEFAULT_PREFIX,
+    tally: Tally | None = None,
 ) -> ReportWritten:
     """Write a report over one frozen snapshot, and store what its ending stores (the module docstring).
 
@@ -97,7 +103,7 @@ async def write_report(
     :ptype caller: Caller
     :param model: The model every session runs on (``Model(id, provider="anthropic", api_key=...)``).
     :ptype model: TurnModel
-    :param budget: The report's dollar budget, which admits every turn.
+    :param budget: The report's budget (dollars, or tokens and turns), which admits every turn.
     :ptype budget: ReportBudget
     :param snapshot_id: A snapshot already frozen; exactly one of it, ``campaign_id`` and ``analysis_id``.
     :ptype snapshot_id: str | None
@@ -111,6 +117,8 @@ async def write_report(
     :ptype limits: WriterLimits | None
     :param prefix: The host's prefix for its eval tools.
     :ptype prefix: str
+    :param tally: The tally every turn is counted in, when the caller keeps it; a fresh one when ``None``.
+    :ptype tally: Tally | None
     :return: How it ended, the stored document if any, and the generation record.
     :rtype: ReportWritten
     :raises ValueError: Not exactly one of the sources named.
@@ -131,4 +139,43 @@ async def write_report(
         analysis_id=analysis_id,
         withhold=withhold,
         limits=limits,
+        tally=tally,
     )
+
+
+def campaign_report_writer(caller: Caller, *, prefix: str = DEFAULT_PREFIX) -> ReportWriter:
+    """The report writer ``analysis_generate``'s job runs, bound to the caller who started it: :func:`write_report` on
+    the campaign, which it freezes first.
+
+    :param caller: Who started the generation, and the scope it runs in: the tool calls of both sessions run as them,
+        and the stored document names them.
+    :ptype caller: Caller
+    :param prefix: The host's prefix for its eval tools.
+    :ptype prefix: str
+    :return: The writer.
+    :rtype: ReportWriter
+    """
+
+    async def write(
+        host: OpsHost,
+        *,
+        model: TurnModel,
+        budget: ReportBudget,
+        campaign_id: str,
+        limits: WriterLimits,
+        tally: Tally,
+    ) -> ReportWritten:
+        return await write_report(
+            host,
+            caller,
+            model=model,
+            budget=budget,
+            campaign_id=campaign_id,
+            limits=limits,
+            prefix=prefix,
+            tally=tally,
+        )
+
+    # Checked against the call the job makes, then handed over opaque (ReportWriter's docstring says why).
+    typed: ReportWriterCall = write
+    return cast("ReportWriter", typed)

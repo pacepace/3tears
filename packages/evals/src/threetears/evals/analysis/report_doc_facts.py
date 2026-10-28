@@ -47,6 +47,16 @@ tools already hold:
   (``four of five``, ``two of the three``). That is a count a reader reads as a number. A lone count word (``one
   arm``) reads as an article or a name, and is not one; nor is ``one`` before ``of``, which picks an item (``the only
   one of {n_candidates|words} configurations``).
+- ``caveat_not_carried``: code attaches a caveat to a contrast a claim's evidence reads (a confound the contrast
+  names, as ``caveats_list`` ids it: ``confound:<dimension>``, or ``apparatus:<dimension>`` where the apparatus
+  confound is that dimension), and neither the claim nor the confidence carries it. A claim's evidence reads a
+  contrast when one of its blocks reads the contrast's measure for its arm (the query names the measure, or reads the
+  ``contrasts`` source with no measure named; it names the arm or every arm; it names the contrast's aspect or none),
+  or a figure key in the claim's text or a caption names the contrast's arm and measure. A block reading every reading
+  of an aspect does not name a contrast's measure, so it reads none; the editor's rubric (a finding called immune while
+  a caveat on its evidence could move it is a must_fix) covers what this fact does not. A method-reach caveat landed
+  on a Method term is carried too (it may land in Method alone). One fact per claim, contrast and caveat. Whether the
+  caveat could move the claim, and which way, is the editor's.
 
 **What a fact is.** An :class:`EditorFact` is ``{kind, path, fact, figures}``. ``path`` is the document field the fact
 is about (``recommends[0]``, ``decision[2]``, ``claims[1].text``), or empty for the document as a whole. ``fact`` is the
@@ -83,13 +93,15 @@ from threetears.evals.analysis.analyst.analyses import (
     gate_reads,
 )
 from threetears.evals.analysis.analyst.cited import cite
+from threetears.evals.analysis.analyst.facts import confound_caveat_id, contrast_key
+from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import WEAKEST_PREFIX, Figure, format_figure, reader_name
-from threetears.evals.analysis.report_decision import control_arm, floors_not_held, shown_better
-from threetears.evals.analysis.report_input import Aspect, Criterion, Reading, ReportInput
+from threetears.evals.analysis.report_decision import control_arm, floors_not_held, report_caveats, shown_better
+from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, Reading, ReportInput
 from threetears.evals.analysis.report_margins import Margin, weakest_margin
 from threetears.evals.analysis.report_plan_checks import raised_warnings
-from threetears.evals.kernel.report_doc import ReportDoc, report_doc_prose
-from threetears.evals.kernel.report_plan import WarningRef
+from threetears.evals.kernel.report_doc import Claim, ReportDoc, report_doc_prose
+from threetears.evals.kernel.report_plan import ChartQuery, WarningRef
 
 #: The names with a caller outside this module: the writing loop's editor turn, whose user message carries the facts.
 #: ``EditorFactKind`` joins them with its first production caller outside this module.
@@ -105,6 +117,7 @@ EditorFactKind = Literal[
     "settled_loss_unasked",
     "undecided_implied",
     "count_in_words",
+    "caveat_not_carried",
 ]
 
 
@@ -147,6 +160,7 @@ def editor_facts(doc: ReportDoc, report_input: ReportInput) -> list[EditorFact]:
     facts += [fact for path, arm in recommended for fact in _settled_loss_facts(report_input, path, arm)]
     facts += _undecided_facts(doc, report_input, options, keys)
     facts += _count_facts(doc)
+    facts += _caveat_facts(doc, report_input)
     return facts
 
 
@@ -489,3 +503,79 @@ def _count_facts(doc: ReportDoc) -> Iterator[EditorFact]:
                 fact=f'The text writes the count "{written}" in words, with no figure key for it.',
                 figures=[],
             )
+
+
+# --- a caveat code attaches to a contrast a claim reads ------------------------------------------------------------
+
+
+def _block_reads(query: ChartQuery, contrast: Contrast) -> bool:
+    """Whether a block's query reads a contrast's measure for its arm, on its aspect or none."""
+    measure = contrast.measure in query.measures or (query.source == "contrasts" and not query.measures)
+    arm = not query.arms or contrast.arm in query.arms
+    aspect = not query.aspect or query.aspect == contrast.aspect
+    return measure and arm and aspect
+
+
+def _claim_reads(claim: Claim, contrast: Contrast) -> bool:
+    """Whether a claim's evidence reads a contrast: a block reading it, or a key in its text or a caption naming its
+    arm and measure."""
+    if any(_block_reads(evidence.query, contrast) for evidence in claim.evidence):
+        return True
+    texts = [claim.text, *(evidence.caption for evidence in claim.evidence)]
+    keys = [match.group(1) for text in texts for match in _KEY.finditer(text)]
+    return any(_bounded(contrast.arm, key) and _bounded(contrast.measure, key) for key in keys)
+
+
+def _measure_said(report_input: ReportInput, measure: str) -> str:
+    """A contrast's measure, for a sentence: its reader name where the input holds the measure or judged dimension,
+    else its key."""
+    if measure in report_input.measures:
+        return reader_name("measure", measure, report_input)
+    if measure in report_input.judged:
+        return reader_name("judged", measure, report_input)
+    return f"`{measure}`"
+
+
+def _resolves(path: str, report_input: ReportInput) -> bool:
+    """Whether a key the fact would cite reads on the input; one that does not is left out of the sentence."""
+    try:
+        cite(path, report_input)
+    except UnresolvableReference:
+        # NOSILENT: an expected condition, not a fault: a contrast's measure the key grammar cannot name (or a figure
+        # the input leaves unstated) is written in words, never as a key, so the fact still never refuses.
+        return False
+    return True
+
+
+def _contrast_said(report_input: ReportInput, contrast: Contrast) -> list[_Part]:
+    """A contrast as a sentence cites it: its arm and measure, then its change and interval by key where both read."""
+    said: list[_Part] = [_arm(contrast.arm), f"'s contrast on {_measure_said(report_input, contrast.measure)}"]
+    prefix = contrast_key(report_input, contrast)
+    delta, interval = _Key(f"{prefix}.delta"), _Key(f"{prefix}.interval")
+    if all(_resolves(key.path, report_input) for key in (delta, interval)):
+        said += [", ", delta, " (", interval, ")"]
+    return said
+
+
+def _caveat_facts(doc: ReportDoc, report_input: ReportInput) -> Iterator[EditorFact]:
+    assigned = report_caveats(report_input)
+    method_reach = {caveat.id for caveat in assigned if caveat.reach == "method"}
+    in_method = {caveat for item in doc.method for caveat in item.caveats if caveat in method_reach}
+    carried_anywhere = {caveat.id for caveat in doc.confidence.caveats} | in_method
+    ids = {caveat.id for caveat in assigned}
+    for index, claim in enumerate(doc.claims):
+        carried = carried_anywhere | set(claim.caveats)
+        for contrast in report_input.contrasts:
+            if not contrast.confounds or not _claim_reads(claim, contrast):
+                continue
+            for dimension in dict.fromkeys(contrast.confounds):
+                caveat = confound_caveat_id(assigned, dimension)
+                if caveat not in ids or caveat in carried:
+                    continue
+                parts: list[_Part] = [
+                    f"The evidence of claim {claim.id} reads ",
+                    *_contrast_said(report_input, contrast),
+                    f", and code attaches caveat `{caveat}` to that contrast; neither the claim nor the confidence "
+                    "carries it.",
+                ]
+                yield _fact("caveat_not_carried", f"claims[{index}].caveats", parts, report_input)

@@ -7,8 +7,10 @@ far. :meth:`ToolSession.send` appends a user message and runs turns until the mo
 or something stops it; each turn's tool calls are run on the mount and answered in the next user message.
 
 **Every limit is checked before anything is sent.** Before each turn the session asks the client for its price
-ceiling and the report's :class:`~threetears.evals.ops.report_writer.tally.ReportBudget` to admit it; a refusal sends
-nothing and stops the session ``over_budget``. A round has a call budget (:meth:`ToolSession.open_round`): a warning
+ceiling, bounds its tokens (:func:`~threetears.evals.kernel.capped_completion.turn_prompt_token_bound` and its output
+cap), and asks the report's :class:`~threetears.evals.ops.report_writer.tally.ReportBudget` to admit it, on the price
+for a dollar budget and on the tokens and turns for a token and turn budget; a refusal sends nothing and stops the
+session ``over_budget``. A round has a call budget (:meth:`ToolSession.open_round`): a warning
 rides on the tool results once ``warn_before`` calls are left, the results that spend the last call tell the model to
 submit now, any call past the budget is answered as not run, and a reply that calls a tool after the model was told to
 submit stops the session ``over_budget`` without another turn. A tool result's text is cut at ``result_chars``,
@@ -37,6 +39,12 @@ text or tool other than the stored ones, re-derives each dropped body by calling
 arguments, and refuses one that no longer reads the same; so the resumed session's next request is the uninterrupted
 session's, byte for byte.
 
+**Each message is stored as its JSON text, not as a nested object.** A tool call's input and a thinking block are
+sent back exactly as they were, and a store is free to hand an object's keys back in another order (a Postgres
+``jsonb`` column returns them shortest first): a nested message read back from such a store would rebuild a request
+whose bytes differ from the one sent, which misses the prompt cache. A string comes back as it was written, so the
+history a resume rebuilds is the one sent, byte for byte, whatever order the store keeps keys in.
+
 A reply cut at its output cap (``max_tokens``) is tallied and not kept (its thinking may stop short of its
 signature); it was never sent back, so leaving it out edits nothing, and the session's caller says what it needs as a
 new user message. A model refusal or a reply cut for another cause stops the session ``failed``.
@@ -44,12 +52,14 @@ new user message. A model refusal or a reply cut for another cause stops the ses
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, Literal, Protocol
 
 from threetears.evals.analysis.analyst.skill import SkillText
+from threetears.evals.kernel.capped_completion import turn_prompt_token_bound
 from threetears.evals.kernel.numbers import group_thousands
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally, TurnCost, WriterRole
 from threetears.evals.schema.hashing import canonical_digest
@@ -58,6 +68,7 @@ from threetears.evals.schema.turns import (
     ToolResultClearing,
     ToolTurnClient,
     TurnBlock,
+    TurnCeiling,
     TurnMessage,
     TurnReply,
     TurnReplyRefused,
@@ -78,7 +89,7 @@ __all__ = ["SessionLimits", "SessionStop", "ToolMount", "ToolOutcome", "ToolSess
 _APPEND_ONLY = ThinkingBinding(prefix_mismatch_behavior="error")
 
 #: The storage format :meth:`ToolSession.to_json` writes and :meth:`ToolSession.from_json` reads.
-_FORMAT: Final = 2
+_FORMAT: Final = 3
 
 
 class ToolOutcome(Protocol):
@@ -200,7 +211,7 @@ class SessionStop:
     """Why :meth:`ToolSession.send` stopped running turns.
 
     :ivar kind: ``answered``, a reply that calls no tool (the submission); ``cut``, a reply stopped at the output cap
-        and not kept; ``over_budget``, a turn the dollar budget refused (nothing sent) or a tool call after the
+        and not kept; ``over_budget``, a turn the budget refused (nothing sent) or a tool call after the
         model was told to submit; ``failed``, the model refused, or its reply stopped short for another cause.
     :ivar reply: The last reply, or ``None`` when no turn was sent.
     :ivar reason: Why, in a sentence; empty for ``answered``.
@@ -251,7 +262,7 @@ class ToolSession:
         :ptype system: SkillText
         :param tally: The report's tally, which every turn is counted in.
         :ptype tally: Tally
-        :param budget: The report's dollar budget, which admits every turn.
+        :param budget: The report's budget, which admits every turn.
         :ptype budget: ReportBudget
         :param limits: What every turn is held to; plan §4.3's defaults when ``None``.
         :ptype limits: SessionLimits | None
@@ -378,10 +389,11 @@ class ToolSession:
             ceiling = self._client.turn_price_ceiling(
                 system=self._system, messages=self._messages, tools=self.tools, max_tokens=self.limits.max_tokens
             )
-            refused = self._budget.admit(ceiling)
+            tokens = turn_prompt_token_bound(self._system, self._messages, self.tools) + self.limits.max_tokens
+            refused = self._budget.admit(ceiling, tokens=tokens)
             if refused is not None:
                 return SessionStop("over_budget", None, f"the report's budget refused the next turn: {refused}")
-            reply = await self._turn(ceiling)
+            reply = await self._turn(ceiling, tokens)
             if reply.stop_reason == "max_tokens":
                 return SessionStop(
                     "cut", reply, f"the reply reached the {self.limits.max_tokens}-token output cap before it ended"
@@ -403,10 +415,13 @@ class ToolSession:
                 )
             await self._answer(reply.tool_uses)
 
-    async def _turn(self, ceiling: float | None) -> TurnReply:
+    async def _turn(self, ceiling: TurnCeiling | None, tokens: int) -> TurnReply:
         """Send one turn, tally it and charge it, a reply refused after it was paid for included; a reply from
         another model than the session's is refused, after it is counted."""
         started, turn = time.monotonic(), self._sent
+        # Counted as sent before it is awaited: a turn whose reply never comes (the client fails, or the writing is
+        # cancelled or runs out of time) is still a turn sent, which may have been billed.
+        self._tally.record_sent()
         try:
             reply = await self._client.turn(
                 system=self._system,
@@ -418,10 +433,10 @@ class ToolSession:
             )
         except TurnReplyRefused as refused:
             self._sent += 1
-            self._count(refused.reply, turn, time.monotonic() - started, ceiling, refused=str(refused))
+            self._count(refused.reply, turn, time.monotonic() - started, ceiling, tokens, refused=str(refused))
             raise
         self._sent += 1
-        self._count(reply, turn, time.monotonic() - started, ceiling)
+        self._count(reply, turn, time.monotonic() - started, ceiling, tokens)
         if reply.model != self.model:
             raise ValueError(
                 f"session {self.name!r} runs on {self.model!r}, and its client sent the turn to {reply.model!r}: "
@@ -430,14 +445,28 @@ class ToolSession:
         return reply
 
     def _count(
-        self, reply: TurnReply, turn: int, wall_s: float, ceiling: float | None, *, refused: str | None = None
+        self,
+        reply: TurnReply,
+        turn: int,
+        wall_s: float,
+        ceiling: TurnCeiling | None,
+        tokens: int,
+        *,
+        refused: str | None = None,
     ) -> None:
         self._tally.record_turn(
             TurnCost.of(
-                reply, session=self.name, role=self.role, round=self._round, turn=turn, wall_s=wall_s, refused=refused
+                reply,
+                session=self.name,
+                role=self.role,
+                round=self._round,
+                turn=turn,
+                wall_s=wall_s,
+                refused=refused,
+                admitted_on_estimate=self._budget.admitted_on_estimate(ceiling),
             )
         )
-        self._budget.charge(reply.cost_usd, ceiling=ceiling)
+        self._budget.charge(reply, ceiling=ceiling, tokens=tokens)
 
     async def _answer(self, uses: Sequence[TurnToolUse]) -> None:
         """Run the reply's tool calls within the round's budget and answer each, with the round's notes after."""
@@ -504,18 +533,21 @@ class ToolSession:
         """The session as a stored value, which :meth:`from_json` resumes (the module docstring says what it holds).
 
         :return: ``{"format", "name", "role", "model", "skill_digest", "tools_digest", "limits", "messages",
-            "results", "state"}``.
+            "results", "state"}``; each of ``messages`` is that message's JSON text, so no store's key order reaches
+            what a resume sends again.
         :rtype: dict[str, Any]
         """
         dropped = set(self._answered) if self._mount.rederivable else set()
         messages = [
-            {
-                "role": message.role,
-                "content": [
-                    {**block.to_json(), "content": ""} if _answers(block, dropped) else block.to_json()
-                    for block in message.content
-                ],
-            }
+            _message_text(
+                {
+                    "role": message.role,
+                    "content": [
+                        {**block.to_json(), "content": ""} if _answers(block, dropped) else block.to_json()
+                        for block in message.content
+                    ],
+                }
+            )
             for message in self._messages
         ]
         return {
@@ -593,7 +625,7 @@ class ToolSession:
             stored_skill, stored_tools = record["skill_digest"], record["tools_digest"]
             messages = [
                 TurnMessage(message["role"], [block_from_json(block) for block in message["content"]])
-                for message in record["messages"]
+                for message in (_message_of(text) for text in record["messages"])
             ]
             results = [(item["tool_use_id"], item["sha256"], item["stored"]) for item in record["results"]]
             state = record["state"]
@@ -650,6 +682,27 @@ class ToolSession:
             session._closing,
         ) = counters
         return session
+
+
+def _message_text(message: Mapping[str, Any]) -> str:  # Any: a JSON object
+    """A message as the text it is stored as: its JSON, keys in the order they were sent (the module docstring)."""
+    return json.dumps(message, ensure_ascii=False, separators=(",", ":"))
+
+
+def _message_of(text: Any) -> dict[str, Any]:  # Any: a stored value, checked here; a JSON object
+    """A stored message read back from its text, keys in the order it was written; refused unless it is one.
+
+    :raises TypeError: The stored value is not the text of a JSON object.
+    """
+    if not isinstance(text, str):
+        raise TypeError(f"a stored message is its JSON text, not {type(text).__name__}")
+    try:
+        message = json.loads(text)
+    except json.JSONDecodeError as unread:
+        raise TypeError(f"a stored message is not JSON ({unread.msg})") from unread
+    if not isinstance(message, dict):
+        raise TypeError(f"a stored message is the text of a JSON object, not of {type(message).__name__}")
+    return message
 
 
 def _count_of(state: Mapping[str, Any], member: str) -> int:  # Any: a JSON object

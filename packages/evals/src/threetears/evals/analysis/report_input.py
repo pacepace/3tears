@@ -36,7 +36,9 @@ execution mode and each rubric dimension's scale. A run that recorded nothing pa
 nothing carries no entry, and an input none of whose runs recorded one carries no key. A scoreboard row's
 ``unanswered`` copies the arm's unanswered calls by usage role (``ArmScoreboard.unanswered``), beside its cost and
 never inside it; a row no role counted them for carries none, which reads as not counted, never as none. Both are
-left out of the document when unset, so an input built before they existed digests as it did.
+left out of the document when unset, so an input built before they existed digests as it did. So is a row's
+``pricing`` (:class:`Pricing`): the price sources, serving providers and priced share of the calls its cost counts,
+which the options table prints beside the cost.
 """
 
 from __future__ import annotations
@@ -183,6 +185,33 @@ class Unanswered(_Part):
     )
 
 
+class Pricing(_Part):
+    """How one arm's cost was priced: what priced its calls, who served them, and how many of them were priced.
+
+    As its producer states it for the calls the arm's cost counts, so a reader sees where each cost comes from beside
+    it: a cost is the provider routing's, never the model's alone. A partly priced arm (``priced_calls`` under
+    ``calls``) has a cost over part of its calls, which no page states as if it were whole. Copied from the bundle's
+    census (``ArmScoreboard.pricing``), which reads it off the arm's production usage rows.
+
+    It is part of a report input's content address (``report_input_digest``, a snapshot's id), so two inputs priced
+    differently are two snapshots; it is no part of any fingerprint (owner ruling, 2026-10-28).
+    """
+
+    sources: list[str] = Field(
+        default_factory=list, description="Each price source its priced calls name (RoleUsage.price_source), sorted."
+    )
+    providers: list[str] = Field(
+        default_factory=list,
+        description="Each provider its calls name as serving them (RoleUsage.provider), sorted; empty where none does.",
+    )
+    calls: int | None = Field(
+        default=None, description="The calls its cost counts; none where a row did not count its."
+    )
+    priced_calls: int | None = Field(
+        default=None, description="Those of them a price was observed for; none where a row did not count its calls."
+    )
+
+
 class ScoreboardRow(_Part):
     """How one arm's trials came out."""
 
@@ -200,6 +229,13 @@ class ScoreboardRow(_Part):
         exclude_if=lambda value: value is None,
         description="The arm's unanswered calls by usage role, for each role that counted them; none where no role "
         "did (not counted, never none).",
+    )
+    # Left out of the document when unset, so an input built before arms carried their pricing digests as it did.
+    pricing: Pricing | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="How the arm's cost was priced: its price sources, serving providers and priced calls; none where "
+        "the input does not say.",
     )
 
 
@@ -509,6 +545,16 @@ class RequestSettings(_Part):
     strict_output: bool = Field(default=False, description="Whether the request enforced every parameter it carried.")
 
 
+class Disclosure(_Part):
+    """What the launching host disclosed about one run's launch, as it stated it: values by its own names, and its
+    statements of how the run was measured. Shown, never compared: it splits no rig and names no confound."""
+
+    values: dict[str, str | int | float | bool] = Field(
+        default_factory=dict, description="Each disclosed value by the host's name for it."
+    )
+    statements: list[str] = Field(default_factory=list, description="What the host states, in its own words.")
+
+
 class RunRig(_Part):
     """The rig one run of one arm was measured with, as the run recorded it at launch."""
 
@@ -539,6 +585,12 @@ class RunRig(_Part):
     )
     rubric_scales: dict[str, Literal["ordinal", "pass_fail"]] = Field(
         default_factory=dict, description="The scale each rubric dimension was answered on."
+    )
+    # Left out of the document when unset, so an input whose runs' hosts disclosed nothing digests as it did.
+    disclosure: Disclosure | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="What the launching host disclosed about the launch; none where it disclosed nothing.",
     )
 
 

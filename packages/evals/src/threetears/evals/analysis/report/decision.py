@@ -59,7 +59,7 @@ from threetears.evals.analysis.bundle.schema import (
     FamilyComparison,
     FloorContrast,
 )
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.numbers import MoneyForm, format_number
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
     PROJECTION_CASE_CAP,
@@ -1140,9 +1140,11 @@ def projected_usd(value: float) -> str:
     return format_number(projected_usd_value(value), prefix="$")
 
 
-def projected_cell(projection: SampleProjection, need: CasesNeeded) -> str:
+def projected_cell(projection: SampleProjection, need: CasesNeeded, form: MoneyForm | None = None) -> str:
     """One side of a projection as a table cell says it, with its cost: ``107 cases, $2.7``, ``this run's 12 cases``,
-    ``re-run the lost trials``, ``more than 10000 cases`` or ``none would``."""
+    ``re-run the lost trials``, ``more than 10000 cases`` or ``none would``. Handed the form every projected cost the
+    table states reads in (#993), the cost, to two figures, is written in it (``107 cases, $2.70`` beside ``$27.00``).
+    """
     if need.kind == "never":
         return "none would"
     if need.kind == "lost":
@@ -1152,7 +1154,9 @@ def projected_cell(projection: SampleProjection, need: CasesNeeded) -> str:
     if need.kind == "beyond":
         return f"more than {format_number(need.cases)} cases"
     cost = projection.cost(need)
-    return f"{need.cases} cases" + ("" if cost is None else f", {projected_usd(cost)}")
+    if cost is None:
+        return f"{need.cases} cases"
+    return f"{need.cases} cases, " + (projected_usd(cost) if form is None else form.spell(projected_usd_value(cost)))
 
 
 def projection_note(projections: Sequence[SampleProjection], *, run_cases: int, cost_clause: bool = False) -> str:

@@ -304,9 +304,9 @@ PINNED: dict[str, str] = {
     "campaign_evidence_digest": "v2:1896767143a9454239aebb4a33710a0d4167bd4fced79c5fd236c217a8f1834b",
     "case content hash": "2427afda4a091bccfdeffbdc0ef058b06862b1c310f68df406edf30604604ae2",
     # The one entry that moves with the durable minor: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
-    # arm names 16.4, stratum names 16.5, plan reporter cases 16.6. It is no part of what a run, cell, pool, pairing,
-    # analysis or reporter case keys on.
-    "durable version": "16.6",
+    # arm names 16.4, stratum names 16.5, plan reporter cases 16.6, the analyst's gap notes 16.7. It is no part of what
+    # a run, cell, pool, pairing, analysis or reporter case keys on.
+    "durable version": "16.7",
     "measured_template_digest": "16e80e0cbd36ae4d39ca180c5f08bcb9d165afaab0e7e014ff42464f11e4f3df",
     "readings": "29f0e8ce68005f27cfc8ff7c76ef3623a174125af4a46b8e587bb7af7d88ebc9",
     "run-0-candidate case_set_fingerprint": "89df90840e5dc430494c9d36ab9ae0dff05c199d54ddf7027f3f339c44bcfe56",
@@ -327,9 +327,12 @@ PINNED: dict[str, str] = {
 #: What the writer is sent over the fixture, naming nothing and naming everything. No run, cell, pool, pairing or
 #: fingerprint keys on it, so it is pinned apart from :data:`PINNED`: it moves whenever the writer's view does, and
 #: the names reach it, since the writer names an aspect by its short name and a check by its display name.
+#: Re-pinned in W4 (ENGINE) when the bundle's census began reading each arm's pricing off its production usage rows
+#: (``ArmScoreboard.pricing``): the fixture's runs carry such rows, so the writer is sent each arm's price sources,
+#: providers and priced calls. Nothing a name moves; no fingerprint moves (the owner's ruling keeps pricing out of them).
 PINNED_WRITER_MESSAGES: dict[bool, str] = {
-    False: "a1f054d06768eafd96a8a121486511ebc60742bd3a1522bbc9ec81eb9a46b05e",
-    True: "637d16a2d12009bf465a6ce55d034c9db7b3d2c96d3ef25f001fab19234f8937",
+    False: "6a1bbe9f0579ecd673aa57c18e69df4199ea0d66c1f7a1091cfe5ec935db859d",
+    True: "7bf7a21b2370ef488d1bfb06d7dd173188a2214be2008394cb68c0cd553b79cf",
 }
 
 #: The fixture's stored documents naming nothing, as the tree at ``00107a5b7`` wrote them (:func:`documents`).
@@ -339,9 +342,11 @@ PINNED_WRITER_MESSAGES: dict[bool, str] = {
 #: differently, so its raw bytes differ between hosts while its identity does not. Its two values were computed by
 #: building this fixture on a checkout of ``00107a5b7``. The template and the campaign hold no computed figure and
 #: are pinned byte for byte.
+#: The two bundles were re-pinned in W4 (ENGINE) for the census's pricing alone: less ``scoreboard[].pricing`` each
+#: digests to the value ``00107a5b7`` wrote, so the names still move nothing.
 PINNED_DOCUMENTS: dict[str, str] = {
-    "Queue discipline under a full queue bundle": "288ea2bcd8e5712056b228e0b9d9f2ec7a06142980e05bbe7c3031ba3dbabe8e",
-    "Queue discipline under an empty queue bundle": "afacd41e1d17fed851434d220fede231de4dd800d96556371bf427585a490f20",
+    "Queue discipline under a full queue bundle": "2ab949ec0dd4ee2c362000ca8b90ccd5da0a2197874c1660452488a289aab561",
+    "Queue discipline under an empty queue bundle": "f645d767ce42d6cd087f2b9cf75761ce08095a766756ea4990987351c92ee0a7",
     "campaign": "6c2b383b36fc2664a2457021aac7d61d330ed17119760d15694105bb2a99c215",
     "template": "ebdd07699d7ce094a952d8f66505439368260a790589e08f69ae10ad3c10c755",
 }

@@ -52,6 +52,7 @@ arms (named and derived, :func:`~threetears.evals.analysis.campaigns.campaign_ar
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from statistics import NormalDist, variance
@@ -111,6 +112,9 @@ __all__ = [
     "campaign_kind",
     "campaign_readings",
 ]
+
+#: The fields of the readings that hold an arm's label, which :meth:`CampaignReadings.relabelled` prints by a name.
+_LABEL_FIELDS = frozenset({"arm_label", "control_label", "first_label", "second_label", "ahead_label"})
 
 #: What one aspect × candidate row shows against the control. ``better``: the gain is shown, its Holm-adjusted p
 #: under the campaign's α. ``worse``: a drop past the aspect's margin is shown, likewise. ``within_margin``: neither,
@@ -659,6 +663,39 @@ class CampaignReadings(EvalDocumentModel):
         labels.update({measure.arm: measure.arm_label for measure in self.measures})
         labels.update({status.arm: status.arm_label for status in self.bars})
         return labels
+
+    def relabelled(self, names: Mapping[str, str]) -> CampaignReadings:
+        """The readings as a page prints them, each arm ``names`` names by that name: in every label field and in every
+        reason sentence that names it, the label as read replaced, bounded, by the name. For print only: what was read,
+        and the readings a bundle freezes and fingerprints, keep the labels they were read under.
+
+        :param names: The name each arm is printed by, by variant key (:func:`~threetears.evals.analysis.report.words.
+            printed_arm_labels`); an arm it does not name keeps its label.
+        :ptype names: Mapping[str, str]
+        :return: The readings, relabelled; these very readings where no name differs from its label.
+        :rtype: CampaignReadings
+        """
+        held = self.arm_labels()
+        moved = {held[key]: name for key, name in names.items() if key in held and held[key] and held[key] != name}
+        if not moved:
+            return self
+        found = re.compile("|".join(rf"(?<!\w){re.escape(old)}(?!\w)" for old in sorted(moved, key=len, reverse=True)))
+
+        def walked(node: object) -> object:
+            if isinstance(node, dict):
+                return {
+                    key: moved.get(value, value)
+                    if key in _LABEL_FIELDS and isinstance(value, str)
+                    else found.sub(lambda match: moved[match.group(0)], value)
+                    if key == "reason" and isinstance(value, str)
+                    else walked(value)
+                    for key, value in node.items()
+                }
+            if isinstance(node, list):
+                return [walked(item) for item in node]
+            return node
+
+        return CampaignReadings.model_validate(walked(self.model_dump(mode="json")))
 
     def on_aspect(self, aspect: str) -> list[AspectReading]:
         """The rows read on one aspect, in candidate order.

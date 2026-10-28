@@ -44,6 +44,11 @@ corpus. Its number moves only when the cassette's own format changes, never with
 cheap to regenerate from the kept runs, but a corpus is re-captured by calling the third-party tools it exists to
 spare, so a new field on a finding must not refuse every corpus a host recorded.
 
+**A report document and its sessions have a version space of their own** (:data:`REPORT_DOC_SCHEMA_VERSION`). Both
+are derived and regenerable, but a report is written by a paid analyst loop, so a change to the stored report record
+refuses report documents and their sessions only, never the analyses, insights, judge profiles, plans and snapshots
+the shared regenerable version governs.
+
 The bundle (``schema_version``), the cell model and the identity keys (``IDENTITY_VERSION``) are separate version spaces with their own pins too; an upgrader never recomputes a key or a
 digest. A kept key is stored beside its pre-image and the identity version that computed
 it — a run's ``variant_levers`` beside the keys its results carry, a campaign arm's ``levers`` and
@@ -134,7 +139,8 @@ is refused as before, and the registry is that ``Literal``'s values. The open vo
 (``COST_CAP_ORIGINS``), ``MeteredCallOrigin`` (``METERED_CALL_ORIGINS``), ``CellTimeoutOrigin``
 (``CELL_TIMEOUT_ORIGINS``), ``ModelRoleOrigin`` (``MODEL_ROLE_ORIGINS``), ``RoleModelOrigin``
 (``ROLE_MODEL_ORIGINS``), ``ReasoningEffort`` (``REASONING_EFFORTS``), ``OutOfRunPurpose``
-(``OUT_OF_RUN_PURPOSES``) and ``RefusalKind`` (``REFUSAL_KINDS``).
+(``OUT_OF_RUN_PURPOSES``) and ``RefusalKind`` (``REFUSAL_KINDS``); on a durable shape, ``GapKind``
+(``GAP_KINDS``).
 
 Every other vocabulary on a core shape is *closed by design*: a new value changes how an older build must read
 the document, so extending one is a major. Each, and why:
@@ -347,7 +353,35 @@ CORE_SCHEMA_VERSION: int = 15
 #:   ``served_model``. Each is left out of the document when unset, so a row or an entry setting none is stored byte
 #:   for byte as before. None is in any identity, key or digest; the cost readings never read the counts.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 8
+#: - **v15.9** — a usage row says why its dollars are unknown: ``RoleUsage.unpriced_reasons`` (default None: no reason
+#:   given, the row priced, or stored before the field existed) holds each distinct reason the pricer gave for a call
+#:   it could not price, set only beside a ``cost_usd`` of None, which stays unknown and never reads as ``$0``. Left
+#:   out of the document when unset, so a row setting none is stored byte for byte as before. A run records when its
+#:   cap was checked against estimates: ``EvalRun.cap_checked_on_estimates`` (default None: not recorded, no cap, a
+#:   bound on guaranteed rates, or stored before the field existed), True when the arm's largest call was bounded on
+#:   rates the host's pricer does not guarantee, left out of the document when unset. Neither is in any identity, key
+#:   or digest, and no cost reading reads either.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.10** — an out-of-run ledger row may ledger several calls at once, saying how many and how they were
+#:   admitted: ``OutOfRunSpend.calls`` (the calls the row stands for; default None: one call),
+#:   ``OutOfRunSpend.unpriced_calls``, ``OutOfRunSpend.raised_calls`` and ``OutOfRunSpend.priced_usd`` (its unpriced
+#:   calls, those of them whose reply never came, and its priced share, set exactly with ``calls``; ``cost_usd`` is
+#:   None whenever a call is unpriced, and the priced share itself when none is) and ``OutOfRunSpend.admitted_by`` (what
+#:   admitted the calls in words, when not each one's ceiling under ``cap_usd``; default None). A report the report
+#:   writer wrote is one such row, every turn it sent counted. Each is left out of the document when unset, so a row
+#:   of one call is stored byte for byte as before; the ledger's readers read a row without them as one call.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.11** — a run says which build launched it, what its simulated user was told, and what its host disclosed:
+#:   ``EvalRun.package_version`` and ``EvalRun.package_rev`` (the installed 3tears-evals version, and the git commit its
+#:   installer recorded; each default None: no metadata, no recorded commit, or stored before the field existed),
+#:   ``EvalRun.simulator_prompt_digest`` (the content address of the simulated user's prompts, beside
+#:   ``simulator_asked_settings``; default None: no simulated user, or stored before the field existed) and
+#:   ``EvalRun.run_disclosure`` (a ``RunDisclosure``: the host's disclosed values and statements about the launch;
+#:   default None: none disclosed, or stored before the field existed). Each is left out of the document when unset,
+#:   so a run setting none is stored byte for byte as before. None is in any identity, context or variant key, cell or
+#:   confound; the disclosure is carried into the bundle, so a run setting one moves its bundle's fingerprint.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 11
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When
@@ -403,7 +437,8 @@ REGENERABLE_SCHEMA_VERSION: int = 13
 
 A bump is a drop: regenerable documents written under the old version are refused on read
 (:data:`~threetears.evals.schema.models.SchemaVersion`) and regenerated from the core, never migrated. It governs
-the analysis, the insight and the judge profile, never the cassette (:data:`CASSETTE_SCHEMA_VERSION`).
+the analysis, the insight, the judge profile, the report plan and the report snapshot, never the cassette
+(:data:`CASSETTE_SCHEMA_VERSION`) nor a report document or session (:data:`REPORT_DOC_SCHEMA_VERSION`).
 """
 
 #: The version every cassette is written under, and the only one a read of one accepts. It moves only when the
@@ -419,6 +454,32 @@ A bump is a drop: a cassette written under the old version is refused on read
 (:data:`~threetears.evals.schema.models.CassetteSchemaVersion`), and the corpus is re-captured (a new capture run,
 so a new corpus), never migrated. Bump it only for a change to the cassette's own format, since every bump spends
 the third-party quota of every corpus again.
+"""
+
+#: The version every stored report document and report session is written under, and the only one a read of one
+#: accepts: a space of its own, apart from :data:`REGENERABLE_SCHEMA_VERSION`, so a change to the report writer's
+#: stored record refuses report documents and their sessions and never an analysis, an insight, a judge profile, a
+#: report plan or a snapshot. A stored report document is read strictly (``kernel/report_doc.py``), so every change
+#: to its document, its generation record or its sessions moves this number, and a stale one is refused by its version
+#: alone, before its body is read, with the remedy to drop it (``EvalStorage.drop_derived(scopes)``) and write the
+#: report again.
+#:
+#: - **v13** — the first report documents (``eval_report_doc``), written under the shared regenerable version, with
+#:   every session the writing loop began held whole in ``generation["sessions"]``.
+#: - **v14** — the report's own version space, and sessions in their own documents: each session is stored as an
+#:   ``eval_report_session`` (one per session, keyed by its report and its name), and the generation record (format
+#:   2) names each by ``{digest, turns, ref}``, so a listing of report documents loads no session. The generation
+#:   record's tally says how each turn was admitted and why it went unpriced: every turn carries
+#:   ``admitted_on_estimate`` (its dollar budget checked it against a bound on rates the host does not guarantee, or a
+#:   catalogue row's), and every sum carries ``admitted_on_estimate`` (how many such turns) and ``unpriced_reasons``
+#:   (each distinct reason a pricer gave), which the made line reads. A v13 report document is refused on read by its
+#:   version; no host stores report documents yet, so the bump drops nothing in production.
+REPORT_DOC_SCHEMA_VERSION: int = 14
+"""The version every report document and report session is written under, and the only one a read of one accepts.
+
+A bump is a drop: a report document or session written under the old version is refused on read and the report is
+written again from a fresh snapshot, never migrated. It governs ``eval_report_doc`` and ``eval_report_session`` only,
+so :data:`REGENERABLE_SCHEMA_VERSION` does not move with it.
 """
 
 #: The kept documents, by ``doc_type``: the ``kept`` entries of
@@ -485,6 +546,8 @@ DURABLE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyTyp
         "judge_config_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
         "case_set": _ADDRESSED_EVERYWHERE | {"name", "version"},
         "eval_campaign": _ADDRESSED_EVERYWHERE | {"subject_id", "behavior", "archived", "created_at"},
+        # Listed newest first by its time, a bounded read (``EvalStorage.list_analyst_gaps``).
+        "eval_analyst_gap": _ADDRESSED_EVERYWHERE | {"created_at"},
     }
 )
 
@@ -694,7 +757,16 @@ DURABLE_SCHEMA_VERSION: int = 16
 #:   reads and its restores, until that build upgrades. So during a rolling deploy across 16.5 and 16.6, freeze no
 #:   plan case until every pod runs 16.6. A v16.5 build keeps the test case's payload verbatim on every write.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 6
+#: - **v16.7** — a new durable type, the analyst's gap notes: ``eval_analyst_gap`` (``EvalAnalystGap``), one record
+#:   per ``capability_gap`` call or code notice, with its kind (``GapKind``, an open vocabulary: ``missing``,
+#:   ``suspect``, ``unresolved_key``, ``editor_score``), what was needed and why, the reproducing keys and calls of a
+#:   ``suspect`` one, a notice's bounce or editor item, and its provenance (snapshot, report, role, session, model,
+#:   transcript digest, caller, time). Nothing makes a gap again, so it is durable and never swept by
+#:   ``drop_derived``. No other durable shape moves, so every document v16.6 stored is stored byte for byte as before.
+#:   An older build never reads the type (every read selects by ``doc_type``); its operator wipe of durable
+#:   documents leaves these in place, and its deletes never reach them (a new doc type's two disclosed costs, above).
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 7
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 
@@ -886,6 +958,7 @@ __all__ = [
     "DURABLE_VERSION_SPACE",
     "MINOR_ADDITIVITY_SENTENCE",
     "REGENERABLE_SCHEMA_VERSION",
+    "REPORT_DOC_SCHEMA_VERSION",
     "CoreUpgrader",
     "CoreVersionRefused",
     "VersionSpace",

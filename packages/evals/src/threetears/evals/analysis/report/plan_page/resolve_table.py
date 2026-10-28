@@ -49,20 +49,20 @@ holds, and so does a measure's column the query names: a dash there says the inp
 An arm is the kit's chip (its tag and name); every number is spelled by the package's number rule, an absent one a dash;
 a row an analysis computed (compare, settle, levers) prints each figure as its key reads it, so the table and prose
 citing the key read alike.
-A month's prices are whole dollars where every one on the axis is :data:`_WHOLE_DOLLARS_FROM` or more, as the
-``usd_whole`` figure key filter writes them: the cents of a monthly amount are noise, and under that whole dollars would
-round away too much, so every price keeps its cents. A query's arms keep the rows of those arms, on sources whose rows
-are of no one arm too.
+Money reads in one form per column (#993), chosen from every amount the column holds, its intervals' ends included
+(:func:`~threetears.evals.analysis.report.blocks.money_columns`, :func:`~threetears.evals.kernel.numbers.money_form`):
+whole dollars where every amount is $10 or more, else cents, with more decimals only where the least amount needs them,
+and per 1,000 where one is under a cent; a change column's set is its changes'. A query's arms keep the rows of those
+arms, on sources whose rows are of no one arm too.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 
-from threetears.evals.analysis.quantities import MONEY, with_unit
-from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn
+from threetears.evals.analysis.quantities import MONEY
+from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn, money_columns
 from threetears.evals.analysis.report.charts import OPEN_ABOVE
-from threetears.evals.analysis.report.cost_unit import per_count, per_noun
 from threetears.evals.analysis.report.plan_page.charting import (
     ChartContext,
     Drawn,
@@ -72,12 +72,15 @@ from threetears.evals.analysis.report.plan_page.charting import (
     contrast_words,
     figure_interval,
     figure_unit,
+    held_means,
     measure_words,
+    money_words,
     slice_name,
     stat_interval,
     stat_value,
 )
-from threetears.evals.analysis.report.plan_page.look import quantity
+from threetears.evals.analysis.report.figure_keys import cost_basis
+from threetears.evals.analysis.report.plan_page.look import Quantity, in_change_form, quantity, quantity_of
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
 from threetears.evals.analysis.report.plan_page.resolve_changes import compare_basis, lever_label, narrow_notes
 from threetears.evals.analysis.report.plan_page.resolve_magnitudes import price_notes, settle_label, settle_notes
@@ -94,6 +97,7 @@ from threetears.evals.analysis.report_input import (
     FloorRead,
     PreferenceRow,
     Reading,
+    ReportInput,
     ScoreboardRow,
     Stat,
     Stratum,
@@ -109,9 +113,9 @@ from threetears.evals.analysis.report.plan_page.words import (
     OVERALL_WORD,
     TABLE_HEADERS,
     TABLE_ORDER,
-    TABLE_PER_THOUSAND,
 )
 from threetears.evals.analysis.style import humanize
+from threetears.evals.kernel.numbers import MoneyForm
 
 __all__ = ["RESOLVERS"]
 
@@ -152,16 +156,16 @@ def _kept_arms(context: ChartContext, held: Iterator[str]) -> list[str]:
     return context.arm_order(arm for arm in held if arm in allowed)
 
 
-def _figure_cell(context: ChartContext, key: str, stat: Stat | None, arm: str = "") -> tuple[TableCell, str]:
-    """A figure's cell, and its measure's name as the table writes it (per 1,000 replies for money per reply); an
+def _figure_cell(
+    context: ChartContext, key: str, stat: Stat | None, drawn: Quantity, arm: str = ""
+) -> tuple[TableCell, str]:
+    """A figure's cell, drawn as its column's quantity (``drawn``: every figure the column holds, so its money reads in
+    one form), and its measure's name as the table writes it (per 1,000 replies for money per reply drawn so); an
     arm's overall figure carries the interval code computes where the table's level is computed here."""
     report_input = context.report_input
-    name = measure_words(report_input, key)
+    # The column's head names what its money is drawn per, replacing the label's own count (the one owner's words).
+    name = money_words(report_input, key, drawn)
     read = stat_value(report_input, key, stat) if stat is not None else None
-    drawn = quantity(figure_unit(report_input, key), [read[0]] if read is not None else [])
-    measure = report_input.measures.get(key)
-    if drawn.unit == MONEY and drawn.factor != 1 and measure is not None:
-        name = TABLE_PER_THOUSAND.format(name=name, per=per_count(per_noun(measure)))
     if stat is None or read is None:
         return TableCell(value=None), name
     if read[1] != "mean":
@@ -170,6 +174,12 @@ def _figure_cell(context: ChartContext, key: str, stat: Stat | None, arm: str = 
         interval = figure_interval(context, key, arm, stat) if arm else stat_interval(stat)
     shown = (interval[0] * drawn.factor, interval[1] * drawn.factor) if interval is not None else None
     return _number(read[0] * drawn.factor, drawn.unit, shown), name
+
+
+def _column_quantity(context: ChartContext, key: str, stats: Iterable[Stat | None]) -> Quantity:
+    """How one measure's column is drawn: from every figure its cells read, so its money reads in one form."""
+    reads = [stat_value(context.report_input, key, stat) for stat in stats if stat is not None]
+    return quantity_of(figure_unit(context.report_input, key), [read[0] for read in reads if read is not None])
 
 
 def _readings(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
@@ -194,13 +204,24 @@ def _contrasts(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     contrasts = [row.item for row in context.rows() if isinstance(row.item, Contrast)]
     for group in contrast_groups(context, contrasts):
         key = group.key
+        units = {arm: figure_unit(report_input, key, kind=contrast.kind) for arm, contrast in group.by_arm.items()}
+        # Each unit's changes on the ruler of the amounts they compare (the measure's means, by the one owner of
+        # money's scale), in the changes' own form capped by their widest interval (#993).
+        drawn_as = {
+            unit: _changes_drawn(report_input, key, unit, [c for arm, c in group.by_arm.items() if units[arm] == unit])
+            for unit in set(units.values())
+        }
         for arm in context.arm_order(group.by_arm):
             contrast = group.by_arm[arm]
-            drawn = quantity(figure_unit(report_input, key, kind=contrast.kind), change=True)
+            drawn = drawn_as[units[arm]]
             interval = contrast.interval
             yield {
                 "arm": _arm(context, arm),
-                "measure": _words(contrast_words(report_input, contrast, group.aspect if group.split else None)),
+                "measure": _words(
+                    contrast_words(report_input, contrast, group.aspect if group.split else None).replace(
+                        measure_words(report_input, key), money_words(report_input, key, drawn)
+                    )
+                ),
                 "change": _number(
                     float(contrast.delta) * drawn.factor if contrast.delta is not None else None,
                     drawn.unit,
@@ -212,6 +233,24 @@ def _contrasts(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
             }
 
 
+def _changes_drawn(report_input: ReportInput, key: str, unit: str, contrasts: Sequence[Contrast]) -> Quantity:
+    """How a measure's contrasts are drawn: on the ruler of the amounts they compare (every mean the input holds of
+    the measure, by the one owner of money's scale), in the changes' own form, capped by their widest interval; any
+    other unit's change quantity as it is."""
+    amounts = quantity_of(unit, held_means(report_input, key))
+    if amounts.unit != MONEY:
+        return quantity(unit, change=True)
+    return in_change_form(
+        amounts,
+        [float(c.delta) * amounts.factor for c in contrasts if c.delta is not None],
+        [
+            abs(float(c.interval[1]) - float(c.interval[0])) * amounts.factor
+            for c in contrasts
+            if c.interval is not None
+        ],
+    )
+
+
 def _wide(
     context: ChartContext, places: list[tuple[_Row, dict[str, Stat]]], laid: _Laid, arms: list[str] | None = None
 ) -> Iterator[_Row]:
@@ -219,12 +258,14 @@ def _wide(
     each measure's column added to ``laid`` once, in the order the places first hold it; ``arms`` names the arm each
     place is, where it is an arm's overall figures."""
     keys = list(dict.fromkeys(key for _, figures in places for key in figures))
+    columns = {key: _column_quantity(context, key, (figures.get(key) for _, figures in places)) for key in keys}
     named: dict[str, str] = {}
     built: list[_Row] = []
     for index, (own, figures) in enumerate(places):
         row = dict(own)
         for key in keys:
-            cell, name = _figure_cell(context, key, figures.get(key), arms[index] if arms is not None else "")
+            arm = arms[index] if arms is not None else ""
+            cell, name = _figure_cell(context, key, figures.get(key), columns[key], arm)
             named.setdefault(key, name)
             row[f"{_MEASURE_COLUMN}{key}"] = cell
         built.append(row)
@@ -363,14 +404,26 @@ def _human_pref(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
 
 
 def _bar_reads(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
-    for row in context.rows():
-        read = row.item
-        assert isinstance(read, BarRead)
-        drawn = quantity(figure_unit(context.report_input, read.measure))
+    reads = [row.item for row in context.rows() if isinstance(row.item, BarRead)]
+    by_measure = {
+        measure: quantity_of(
+            figure_unit(context.report_input, measure),
+            [
+                float(number)
+                for read in reads
+                if read.measure == measure
+                for number in (read.value, read.bar, *(read.interval or ()))
+                if number is not None
+            ],
+        )
+        for measure in dict.fromkeys(read.measure for read in reads)
+    }
+    for read in reads:
+        drawn = by_measure[read.measure]
         interval = read.interval
         yield {
             "aspect": _words(context.look.reader("aspect", read.aspect)),
-            "measure": _words(measure_words(context.report_input, read.measure)),
+            "measure": _words(money_words(context.report_input, read.measure, drawn)),
             "arm": _arm(context, read.arm),
             "value": _number(
                 float(read.value) * drawn.factor if read.value is not None else None,
@@ -472,23 +525,28 @@ def _levers(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
         }
 
 
-#: The least monthly price a table writes in whole dollars, as the ``usd_whole`` filter reads one.
-_WHOLE_DOLLARS_FROM = 10.0
+def _prices_drawn(context: ChartContext) -> Quantity:
+    """How a prices table's prices are drawn: by the one owner of money's scale over every price and open end it
+    holds, a month's price (a total) never scaled, a price per point per 1,000 moved per 1,000,000 where one is under a
+    cent."""
+    steps = [(row.item, row.interval) for row in context.rows() if isinstance(row.item, PriceStep)]
+    monthly = any(step.monthly for step, _ in steps)
+    amounts = [
+        value
+        for step, interval in steps
+        for value in (step.value, *(interval or ()), *((step.open_from,) if step.open_from is not None else ()))
+    ]
+    return quantity_of("dollars" if monthly else "usd_per_1k", amounts)
 
 
 def _prices(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     steps = [(row.item, row.interval) for row in context.rows() if isinstance(row.item, PriceStep)]
-    monthly = any(step.monthly for step, _ in steps)
-    drawn = quantity("dollars" if monthly else "usd_per_1k", [step.value for step, _ in steps])
-    amounts = [
-        abs(value)
-        for step, interval in steps
-        for value in (step.value, *(interval or ()), *((step.open_from,) if step.open_from is not None else ()))
-    ]
-    whole = monthly and min(amounts, default=0.0) * drawn.factor >= _WHOLE_DOLLARS_FROM
+    # One form for the column, its open ends included (#993): whole dollars where every price is $10 or more.
+    drawn = _prices_drawn(context)
+    form = drawn.money or MoneyForm()
 
     def dollars(value: float) -> float:
-        return float(round(value * drawn.factor)) if whole else value * drawn.factor
+        return value * drawn.factor
 
     def name(arm: str) -> str:
         return context.look.arm(arm).name if arm in context.look.arms else arm
@@ -500,11 +558,11 @@ def _prices(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
                 dollars(step.value),
                 drawn.unit,
                 (dollars(interval[0]), dollars(interval[1])) if interval is not None else None,
-            ),
+            ).model_copy(update={"decimals": form.decimals, "per_thousand": form.per_thousand}),
         }
         if step.open_from is not None and context.level:
             # An interval open above has one end, which no cell's two ends hold: its interval cell is laid out here.
-            low = with_unit(dollars(step.open_from), drawn.unit)
+            low = form.spell(dollars(step.open_from))
             row[f"per_point{_INTERVAL_COLUMN}"] = _words(OPEN_ABOVE.format(low=low))
         yield row
 
@@ -557,7 +615,7 @@ def _interval_text(cell: TableCell) -> TableCell:
     """A figure's interval as its own cell, its two ends in the figure's unit; a dash where it carries none."""
     if cell.low is None or cell.high is None:
         return TableCell(value=None)
-    return TableCell(value=f"{with_unit(cell.low, cell.unit)} to {with_unit(cell.high, cell.unit)}")
+    return TableCell(value=f"{cell.amount(cell.low)} to {cell.amount(cell.high)}")
 
 
 def _with_intervals(columns: list[TableColumn], rows: list[_Row], level: str) -> tuple[list[TableColumn], list[_Row]]:
@@ -609,8 +667,13 @@ def _table(context: ChartContext) -> Drawn:
         if key == _MEASURE_COLUMN:
             columns += [TableColumn(key=on, header=header) for on, header in measured]
         else:
-            columns.append(TableColumn(key=key, header=TABLE_HEADERS[key]))
-    columns, rows = _with_intervals(columns, rows, context.spec.level)
+            header = TABLE_HEADERS[key]
+            if key == "per_point" and context.query.source == "prices":
+                # The prices' head names what they are drawn per where the ruler moved (the one owner's words).
+                header = _prices_drawn(context).label(header, cost_basis(context.report_input).noun)
+            columns.append(TableColumn(key=key, header=header))
+    # Each money column's head names the count it is drawn per, so no amount carries the mark beside it.
+    columns, rows = _with_intervals(columns, money_columns(rows, marked=False), context.spec.level)
     columns, rows = _filled(columns, rows, keep={on for on, _header in measured})
     notes = (
         price_notes(context)

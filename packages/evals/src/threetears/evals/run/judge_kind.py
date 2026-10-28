@@ -49,7 +49,7 @@ from threetears.evals.kernel.candidate_kind import (
     CellSpanWindow,
     VariantConfig,
 )
-from threetears.evals.kernel.capped_completion import call_ceiling, refresh_prices
+from threetears.evals.kernel.capped_completion import call_ceiling, ceiling_is_estimate, refresh_prices
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.run_pages import iter_keyed_results
 from threetears.evals.kernel.judge_cases import (
@@ -823,6 +823,16 @@ class JudgeKind:
             self._built[sent] = self._clients("judge", self._model, temperature=sent)
         return self._built[sent]
 
+    def ceiling_is_estimate(self) -> bool:
+        """Whether the judge clients this kind has built bound their calls on estimates (rates the host's pricer does
+        not guarantee): asked once its cases are priced, for its largest call's
+        :attr:`~threetears.evals.run.CallCeiling.estimate`.
+
+        :return: Whether any of them does.
+        :rtype: bool
+        """
+        return any(ceiling_is_estimate(client) for client in self._built.values())
+
     async def aclose(self) -> None:
         """Release every client this kind built, the first failure re-raised after all were offered a release."""
         built = list(self._built.values())
@@ -1255,12 +1265,14 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         kind, cases = await run_blocking(launch_host().eval_host.blocking_executor, built, request)
         try:
             priced = [(ceiling, case.id) for case in cases if (ceiling := kind.price_case(case)) is not None]
+            estimate = kind.ceiling_is_estimate()
         finally:
             await kind.aclose()
         if not priced:
             return None
         usd, case_id = max(priced)
         return CallCeiling(
+            estimate=estimate,
             usd=usd,
             call=(
                 f"the judge call on case {case_id!r} ({JUDGE_CALL_ATTEMPTS} request(s): the first and its parse "

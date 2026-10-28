@@ -15,13 +15,18 @@ from functools import partial
 from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, ValidationError
+from datetime import datetime
+
+from pydantic import AwareDatetime, Field, ValidationError
 
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, SCHEMA_REMEDY
 from threetears.evals.actions import render
 from threetears.evals.actions.analyst import analyst_actions
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, ConformanceStage
 from threetears.evals.actions.params import AnalysisId, CampaignId, Limit, Offset
+from threetears.evals.actions.report_writing import campaign_report_writer
+from threetears.evals.kernel.analyst_gap import GapDigest
+from threetears.evals.ops.analyst import analyst_gaps_list
 from threetears.evals.schema import EvalRunStatus
 from threetears.evals.kernel import EvalStorage, ResultOutcome, ValidationFailedError
 from threetears.evals.schema.base import EvalBaseModel
@@ -580,6 +585,34 @@ class ReportReadParams(EvalBaseModel):
     format: Format = "markdown"
     trials: Trials = "table"
     static: Static = False
+    report_doc_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "A stored report document of the campaign, any version (analyses_list names each analysis's "
+            "report_doc_id): given, the report is that document's page in place of the campaign's report; omitted, "
+            "the campaign's report."
+        ),
+    )
+    include_sessions: bool = Field(
+        default=False,
+        description=(
+            "With json, add the full transcripts of the report document the page draws, as report_doc.sessions: "
+            "every session that wrote it, by name. Refused with markdown or html, which never hold a transcript."
+        ),
+    )
+
+
+class AnalystGapsListParams(EvalBaseModel):
+    """``analyst_gaps_list``."""
+
+    since: AwareDatetime | None = Field(
+        default=None,
+        description=(
+            "Read only the gaps stored at or after this time, ISO 8601 with its offset (2026-10-28T00:00:00Z), each "
+            "by its own time; omit for every gap."
+        ),
+    )
 
 
 class JudgeTemplateCreateParams(JudgeTemplateCreate):
@@ -1150,7 +1183,9 @@ async def _analyses_undescribable(
 
 
 async def _analysis_generate(host: OpsHost, caller: Caller, params: AnalysisGenerateParams) -> JobsStarted:
-    return await analysis_generate(host, params.campaign_id, caller.scope_id, model=params.model)
+    return await analysis_generate(
+        host, params.campaign_id, caller.scope_id, writer=campaign_report_writer(caller), model=params.model
+    )
 
 
 async def _analysis_estimate(
@@ -1181,7 +1216,14 @@ async def _report_read(host: OpsHost, caller: Caller, params: ReportReadParams) 
         format=params.format,
         trials=params.trials,
         static=params.static,
+        report_doc_id=params.report_doc_id,
+        include_sessions=params.include_sessions,
     )
+
+
+async def _analyst_gaps_list(host: OpsHost, caller: Caller, params: AnalystGapsListParams) -> GapDigest:
+    since: datetime | None = params.since
+    return await analyst_gaps_list(host, caller.scope_id, since=since)
 
 
 async def _bars_propose(host: OpsHost, caller: Caller, params: CampaignParams) -> BarProposals:
@@ -2085,7 +2127,7 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="analysis_generate",
-            summary="Generate a campaign's analysis with a paid model call, as a job to poll.",
+            summary="Write a campaign's report with the analyst and the report editor (paid model turns), as a job to poll.",
             workflow=ANALYSE,
             permission="spend",
             params=AnalysisGenerateParams,
@@ -2095,20 +2137,22 @@ def engine_actions() -> tuple[Action, ...]:
             example={"campaign_id": campaign_id},
             long_running=True,
             detail=(
-                "The report planner writes the analysis as a report plan, in two calls (its structure, then its "
-                "prose), each repaired at most once: up to four calls. "
-                "Refused before any spend when the campaign has no evidence or a generation of it is already "
-                "running. Every call is priced before it is sent against the host's out-of-run cap: the first here, "
-                "so one over the cap is refused with nothing spent; the prose call and any repair round-trip a refused "
-                "reply buys when its prompt exists, against what is left. analysis_estimate prices it first without "
-                "spending. "
-                "Each call is ledgered under purpose analysis, so scope_out_of_run_spend reads it; the job's record "
-                "is the generation attempt, written however it ends."
+                "The report writer writes the analysis: the campaign's evidence is frozen as a snapshot, the analyst "
+                "drafts a report document on it with the evals_analyst tool, the report editor reviews it, and the "
+                "analyst revises, up to two revisions. Every turn runs on the host's analyst model and is admitted "
+                "against the host's report budget, which no caller can raise; the job is bounded by the host's time "
+                "limit. Refused before any spend when the host set no report budget, its analyst model cannot be "
+                "priced, or a generation of the campaign is already running; refused before anything is sent when "
+                "the campaign has no evidence. A stored report is linked by an analysis (basis doc) with an insight "
+                "per durable claim; an ending that stores nothing ends the job failed with why. The spend is "
+                "ledgered under purpose analysis, so scope_out_of_run_spend reads it; the job's record is the "
+                "generation attempt, written however it ends. analysis_estimate states the budget first, without "
+                "spending."
             ),
         ),
         Action(
             name="analysis_estimate",
-            summary="Price a campaign's analysis generation against the host's out-of-run cap, without spending.",
+            summary="State the report budget a campaign's analysis generation would be held to, without spending.",
             workflow=ANALYSE,
             permission="read",
             params=AnalysisGenerateParams,
@@ -2117,8 +2161,10 @@ def engine_actions() -> tuple[Action, ...]:
             render=render.render_model,
             example={"campaign_id": campaign_id},
             detail=(
-                "The generation's own assembly and pricing rule, so would_start is analysis_generate's answer. "
-                "Makes no model call."
+                "The generation's own checks in its call, so would_start is analysis_generate's start: cap_usd is the "
+                "host's report budget in dollars (none for a token and turn budget; bound says it in words), the bound "
+                "on every turn, and max_calls the most turns the writer can send. It reads no run: the campaign's "
+                "evidence is checked when the job freezes it (unchecked). Makes no model call."
             ),
         ),
         Action(
@@ -2220,9 +2266,10 @@ def engine_actions() -> tuple[Action, ...]:
             render=render.render_model,
             example={"campaign_id": campaign_id},
             detail=(
-                "Each analysis says what wrote it (basis): memo, for one stored before the report planner, or plan, "
-                "for one the planner wrote, with its report plan's id; report_read carries the reported analysis's "
-                "plan."
+                "Each analysis says what wrote it (basis): doc, for one the report writer wrote, with its report "
+                "document's id (report_read reads it, any version by report_doc_id); memo, for one stored before the "
+                "report planner; or plan, for one the planner wrote, which report_read renders code-only with one line "
+                "to regenerate it. needs_regeneration says when an analysis no longer reads, and why."
             ),
         ),
         Action(
@@ -2284,10 +2331,38 @@ def engine_actions() -> tuple[Action, ...]:
                 "(read it with result_get), then its passed trials. trials='all' adds each failed or lost trial's full "
                 "record (what it asked, what the judge saw and said, and why): most of a large campaign's page, so "
                 "read it when you need the records, or read one trial with result_get. analysis_basis says what wrote "
-                "the analysis: memo (an analysis stored before the report planner) or plan, whose report plan is "
-                "plan (report-plan/1 JSON, figures by key); a plan analysis's markdown and html body is the page its "
-                "plan draws, each aspect's fold (and its trials) a closed appendix after Method. static=true makes the html page one a host can serve "
+                "the analysis: doc (the report writer, which analysis_generate runs), whose page is the one its stored "
+                "report document draws and whose document is doc (report-doc/1 JSON, figures by key); memo (an older "
+                "analysis), laid out as written; or plan (an older analysis written as a report plan), read "
+                "code-only. A plan, or a document this version no longer reads, is never refused: the page is the "
+                "code-only page with one line to regenerate it, which needs_regeneration repeats. report_doc_id reads "
+                "one stored report "
+                "document, any version; include_sessions=true with format json adds its transcripts "
+                "(report_doc.sessions), for an audit. static=true makes the html page one a host can serve "
                 "under a policy that runs and loads nothing: no script, no link, every chart its table."
+            ),
+        ),
+        Action(
+            name="analyst_gaps_list",
+            summary="List the capability gaps analysts noted, and code's notices, grouped and ranked as issue text.",
+            workflow=ANALYSE,
+            permission="read",
+            params=AnalystGapsListParams,
+            result=GapDigest,
+            handler=_analyst_gaps_list,
+            render=GapDigest.render,
+            example={"since": "2026-10-28T00:00:00Z"},
+            detail=(
+                "Every capability_gap call an analyst or editor made (missing: a capability no tool gave; suspect: a "
+                "result that looked wrong, with the keys and calls that reproduce it), and code's notices from report "
+                "writes (unresolved_key: a figure key that sent a draft back; editor_score: a rubric item scored 0 or "
+                "1). Gaps group by kind and need, the need compared with its case, spacing, punctuation, the ids the "
+                "engine mints and the figure keys it names set aside, and no model reads them. Groups rank suspect "
+                "first, then those a must_fix finding is about (a gap touching a claim it names), then the rest; "
+                "within each, the larger count, then the later last seen. Each group carries a title and a body to "
+                "file as an issue, with its evidence and never the caller's identity, every @ kept from mentioning "
+                "anyone; the needs are what a model wrote, so read them before filing on a public tracker. At most "
+                "1,000 gaps a digest: a window holding more is refused, naming a later since. Stores and posts nothing."
             ),
         ),
         Action(

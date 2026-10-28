@@ -1,6 +1,6 @@
 """What each stored document type is: where it comes from, whether it is kept, and what it suppresses.
 
-The engine stores twenty-seven document types through one :class:`~threetears.evals.schema.store_port.DocumentStore`,
+The engine stores twenty-nine document types through one :class:`~threetears.evals.schema.store_port.DocumentStore`,
 and three questions about each one decide how it may be kept: **where it comes from** (an input a run reads as given,
 a record of what happened, or a document computed from other stored documents), **whether a later release reads it**
 (kept, until a core baseline reset deletes it; durable, read forever and upgraded across durable versions; or
@@ -27,13 +27,16 @@ reading.
 **Lifecycle follows from whether the document can be made again, and from who made it**, not from its origin. A
 ``derived`` document is always regenerable. What a person authored — a template, a rubric dim, a judge config and
 their tombstones, a case set, a test case, a calibration rating, a campaign — is ``durable``: nothing can make it again, and it
-must outlive every core baseline reset, so its version space never resets
+must outlive every core baseline reset. So is an analyst's gap note (``eval_analyst_gap``), which a model said in a paid
+session or code saw during one, and which no later read can make again. Neither kind's version space ever resets
 (:mod:`threetears.evals.schema.versioning`). Every other input or record is kept unless the engine can make it
 again without loss: the one record that is regenerable is the cassette, whose replacement is a fresh capture under a
 new corpus. Because that capture calls the third-party tools again, the cassette's format has a version of its own
-(:data:`~threetears.evals.schema.versioning.CASSETTE_SCHEMA_VERSION`), and every other regenerable type is governed by
-:data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`: an analysis shape change refuses analyses,
-never a corpus. Both are the ``regenerable`` lifecycle, so a host routing by it places them together. A campaign's
+(:data:`~threetears.evals.schema.versioning.CASSETTE_SCHEMA_VERSION`); a report document and its sessions, written by a
+paid analyst loop, have theirs (:data:`~threetears.evals.schema.versioning.REPORT_DOC_SCHEMA_VERSION`); and every other
+regenerable type is governed by :data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`: an analysis
+shape change refuses analyses, never a corpus or a report. All three are the ``regenerable`` lifecycle, so a host
+routing by it places them together. A campaign's
 generation slot is kept though nothing is lost without it: a build that could not read it would either block every
 generation of the campaign or, reading it as free, start a second beside a live one (see
 :mod:`threetears.evals.schema.versioning`).
@@ -54,7 +57,8 @@ DocOrigin = Literal["input", "record", "derived"]
 #: and deleted by a core baseline reset; ``durable`` — what people author, read from the durable baseline forever,
 #: upgraded across durable versions and never touched by a core baseline reset; ``regenerable`` — refused on read
 #: after a change to its format, and made again (the cassette's format is
-#: :data:`~threetears.evals.schema.versioning.CASSETTE_SCHEMA_VERSION`, every other regenerable type's
+#: :data:`~threetears.evals.schema.versioning.CASSETTE_SCHEMA_VERSION`, a report document's and its sessions'
+#: :data:`~threetears.evals.schema.versioning.REPORT_DOC_SCHEMA_VERSION`, every other regenerable type's
 #: :data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`).
 DocLifecycle = Literal["kept", "durable", "regenerable"]
 
@@ -119,6 +123,9 @@ DOC_TYPE_FACTS: Final[Mapping[str, DocTypeFacts]] = MappingProxyType(
         "eval_second_judge_pass": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_judge_temperature_check": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_action_job": DocTypeFacts(origin="record", lifecycle="kept"),
+        # What an analyst said it lacked, or code noticed, while a report was written: nothing makes it again, so it
+        # outlives every reset and drop_derived never sweeps it.
+        "eval_analyst_gap": DocTypeFacts(origin="record", lifecycle="durable"),
         # Computed from the documents above.
         "eval_analysis": DocTypeFacts(origin="derived", lifecycle="regenerable"),
         "eval_insight": DocTypeFacts(origin="derived", lifecycle="regenerable"),
@@ -126,6 +133,8 @@ DOC_TYPE_FACTS: Final[Mapping[str, DocTypeFacts]] = MappingProxyType(
         "eval_report_snapshot": DocTypeFacts(origin="derived", lifecycle="regenerable"),
         # Written from a snapshot by the analyst loop; writing the report again makes another.
         "eval_report_doc": DocTypeFacts(origin="derived", lifecycle="regenerable"),
+        # One session of the loop that wrote a report document, stored beside it and swept with it.
+        "eval_report_session": DocTypeFacts(origin="derived", lifecycle="regenerable"),
         "eval_judge_profile": DocTypeFacts(origin="derived", lifecycle="regenerable"),
     }
 )

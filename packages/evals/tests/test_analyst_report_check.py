@@ -407,9 +407,20 @@ def _served(tool: MountedTool) -> list[str]:
 
 #: What the ``evals`` tool and the editor's cut of the analyst tool served before ``report_check``, as digested by
 #: :func:`_digest` over :func:`_served`. The ``evals`` digest moved once since, at the develop merge that brought in the
-#: read bounds (#1000: narrowed-read disclosures in pivot, history and frontier, and an export paged inside a run).
-_EVALS_BYTES = "44d67c2a8ef61eca2ac994629949ee1d003e233bba5f410190ce86d61970229e"
-_EDITOR_BYTES = "2a1e4201091bdd3a95e99774a668fa5c60cb22ca6674a73d1a1bc62d71351c27"
+#: read bounds (#1000: narrowed-read disclosures in pivot, history and frontier, and an export paged inside a run), and
+#: again when a run's summary gained ``cap_checked_on_estimates`` (W4 PRICE), the one field its help page now lists,
+#: and again when ``analysis_generate`` moved to the report writer (W4 GEN): its summary and detail, and
+#: ``analysis_estimate``'s, describe the report budget, and the estimate gains ``bound`` and ``unchecked``; and again
+#: when the report view read the stored report document (W4 VIEW): ``report_read`` takes ``report_doc_id`` and
+#: ``include_sessions``, its result carries ``doc`` and ``needs_regeneration``, and it and ``analyses_list`` drop the
+#: planner's wording.
+#: The editor's cut and the analyst tool moved at #993: the figure-key grammar they teach words its ``usd`` filter for
+#: money's one form per family (and its ``usd_per_1k`` filter its ruler moved per 1,000,000 under a cent), and its
+#: examples render money in it. All three moved again when the evals tool gained ``analyst_gaps_list`` (and its
+#: ``since``, its bounded read and its issue text's safeguards), and both analyst cuts' ``capability_gap`` gained
+#: ``kind``, ``figure_keys`` and ``calls``, their bounds, and says who stores the gap.
+_EVALS_BYTES = "8e46af149f6a39267ec3d88eae176f3b5b016e2020d79044116764ee26fb1529"
+_EDITOR_BYTES = "74a0b4a2107f7982b666866f15306b73a26dfbea76d3f62b83fc1a2dc6654e46"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's
 #: description and its topics.
@@ -433,7 +444,7 @@ _ANALYST_ACTIONS_BEFORE = [
     "block_render",
     "capability_gap",
 ]
-_ANALYST_BYTES = "2c5b842838dc0125e158b2982c541b5f59f73b916458421eca4a3eb32b08a87b"
+_ANALYST_BYTES = "dd6b851d39e60508cc69033af1d2ea09a7a08178818eafde1c7cccba3ccd5ac3"
 
 
 def test_the_evals_tool_serves_the_bytes_it_served_before() -> None:

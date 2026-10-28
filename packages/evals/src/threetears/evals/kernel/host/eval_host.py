@@ -70,8 +70,12 @@ if TYPE_CHECKING:
 #: its own, and a kind with no simulated user still generates. ``proposer`` drafts a rubric for operator
 #: review (:func:`~threetears.evals.gen.propose_draft`), outside any run, with its own output cap
 #: (``Ceilings().proposer_max_tokens``, :class:`~threetears.evals.run.Ceilings`) — a role of its own so a host does not borrow
-#: another role's model, cap or budget for it.
-CompletionRole = Literal["judge", "simulator", "analysis", "variation", "proposer"]
+#: another role's model, cap or budget for it. ``analyst`` writes a campaign's report document in
+#: ``analysis_generate`` (:func:`~threetears.evals.ops.analysis_generate`): both the analyst and the report editor run
+#: on its one client, which the host returns as a turn model (``model_name``, ``turn_session`` and
+#: ``turn_pricing_refusal``; ``threetears.evals.providers.Model`` is one), so a wrapper the host puts around it forwards
+#: those two methods as it forwards ``price_ceiling``.
+CompletionRole = Literal["judge", "simulator", "analysis", "variation", "proposer", "analyst"]
 
 
 class CompletionClients(Protocol):

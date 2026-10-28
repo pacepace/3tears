@@ -27,7 +27,7 @@ def test_each_field_is_the_ceiling_it_names() -> None:
     assert ceilings.judge_phase_ceiling_s is judge_phase_ceiling_s
 
 
-def test_the_fields_are_the_six_ceilings_and_none_is_set_by_the_caller() -> None:
+def test_the_fields_are_the_seven_ceilings_and_none_is_set_by_the_caller() -> None:
     fields = dataclasses.fields(Ceilings)
 
     assert [f.name for f in fields] == [
@@ -36,6 +36,7 @@ def test_the_fields_are_the_six_ceilings_and_none_is_set_by_the_caller() -> None
         "simulator_answer_budget_tokens",
         "proposer_max_tokens",
         "generation_ceiling_s",
+        "writer_ceiling_s",
         "judge_phase_ceiling_s",
     ]
     assert not any(f.init for f in fields)

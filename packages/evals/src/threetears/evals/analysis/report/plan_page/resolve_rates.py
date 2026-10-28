@@ -46,6 +46,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from threetears.evals.analysis.quantities import MONEY
+from threetears.evals.analysis.report.cost_unit import priced_in_part
 from threetears.evals.analysis.report.blocks import ChartBlock
 from threetears.evals.analysis.report.charts import (
     BarsChart,
@@ -68,7 +70,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     CriterionWhere,
     Drawn,
     KindResolver,
-    chart_block,
+    money_drawn,
     computed_notes,
     criterion_line,
     drawn_keys,
@@ -77,7 +79,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     figure_interval,
     figure_unit,
     interval_words,
-    measure_words,
+    money_words,
     misses_line,
     missing_note,
     point_labels,
@@ -98,6 +100,7 @@ from threetears.evals.analysis.report.plan_page.look import (
     log_spread,
     magnitude_domain,
     quantity,
+    quantity_of,
 )
 from threetears.evals.analysis.report.plan_page.words import (
     BAR_STRIP_NOTE,
@@ -165,6 +168,7 @@ class _Strip:
     dots: list[_Dot]
     line: ChartReference | None
     drawn: Quantity
+    key: str = ""
 
 
 def _declared_level(context: ChartContext, keys: Iterable[str]) -> str:
@@ -177,6 +181,13 @@ def _declared_level(context: ChartContext, keys: Iterable[str]) -> str:
         if key in table and (level := table[key].level)
     }
     return levels.pop() if len(levels) == 1 else ""
+
+
+def _priced_part(context: ChartContext, arm: str, drawn: Quantity) -> str:
+    """What a money figure of an arm whose cost counts only part of its calls says beside it: `` (850 of 897 calls
+    priced)``; empty for any other figure."""
+    share = priced_in_part(context.report_input, arm) if drawn.unit == MONEY and arm else None
+    return f" ({share})" if share is not None else ""
 
 
 def _dot(
@@ -195,6 +206,9 @@ def _dot(
     tip = [label, figure_text(value, drawn)]
     if interval is not None:
         tip[1] += f", {interval_words(*interval, drawn)}"
+    if drawn.unit == MONEY and arm and (share := priced_in_part(context.report_input, arm)) is not None:
+        # A cost over part of the arm's calls is a smaller total, never stated bare.
+        tip[1] += f" ({share})"
     strong = True if context.summary and arm and arm == context.look.recommended else None
     return _Dot(id=row_id, label=label, arm=arm, value=value, interval=interval, tip=tip, strong=strong)
 
@@ -271,7 +285,8 @@ def _figure_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str,
                 drawn=drawn,
             )
             dots.append(dataclasses.replace(dot, tip=_with_line(dot.tip, dot.value, line)))
-        strips.append(_Strip(title=measure_words(report_input, key), arm="", dots=dots, line=line, drawn=drawn))
+        title = money_words(report_input, key, drawn)
+        strips.append(_Strip(title=title, arm="", dots=dots, line=line, drawn=drawn, key=key))
     return strips, level, computed_notes(context), False
 
 
@@ -309,7 +324,7 @@ def _slice_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, 
 
     def place(item: Stratum | Task, key: str) -> str:
         name = slice_name(context, item)
-        return name if len(keys) == 1 else f"{name} · {measure_words(report_input, key)}"
+        return name if len(keys) == 1 else f"{name} · {money_words(report_input, key, quantities[key])}"
 
     strips: list[_Strip] = []
     if context.query.small_multiples_by == "arm":
@@ -334,7 +349,9 @@ def _slice_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, 
                     drawn=own,
                 )
                 dots.append(dataclasses.replace(dot, tip=_with_line(dot.tip, dot.value, line)))
-            strips.append(_Strip(title=_arm_name(context, arm), arm=arm, dots=dots, line=line, drawn=drawn))
+            strips.append(
+                _Strip(title=_arm_name(context, arm), arm=arm, dots=dots, line=line, drawn=drawn, key=keys[0])
+            )
         return strips, level, (), False
     for item in slices:
         for key in keys:
@@ -356,7 +373,7 @@ def _slice_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, 
                     drawn=drawn,
                 )
                 dots.append(dataclasses.replace(dot, tip=_with_line(dot.tip, dot.value, line)))
-            strips.append(_Strip(title=place(item, key), arm="", dots=dots, line=line, drawn=drawn))
+            strips.append(_Strip(title=place(item, key), arm="", dots=dots, line=line, drawn=drawn, key=key))
     return strips, level, (), False
 
 
@@ -414,7 +431,19 @@ def _bar_read_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[st
     several_aspects = len({aspect for aspect, *_ in groups}) > 1
     strips = []
     for (aspect, measure, bar, direction), held in groups.items():
-        drawn = quantity(figure_unit(report_input, measure))
+        # One form for the strip: its line and every read's value and interval ends (#993).
+        drawn = quantity_of(
+            figure_unit(report_input, measure),
+            [
+                bar,
+                *(
+                    float(number)
+                    for read in held
+                    for number in (read.value, *(read.interval or ()))
+                    if number is not None
+                ),
+            ],
+        )
         kind: Literal["floor", "budget"] = "floor" if direction == "higher_is_better" else "budget"
         line = ChartReference(
             value=bar * drawn.factor,
@@ -443,9 +472,9 @@ def _bar_read_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[st
             )
             words = [read.status, *([read.why] if read.why else [])]
             dots.append(dataclasses.replace(dot, tip=[*dot.tip, *words], hollow=read.status == "missed"))
-        name = measure_words(report_input, measure)
+        name = money_words(report_input, measure, drawn)
         title = f"{context.look.reader('aspect', aspect)} · {name}" if several_aspects else name
-        strips.append(_Strip(title=title, arm="", dots=dots, line=line, drawn=drawn))
+        strips.append(_Strip(title=title, arm="", dots=dots, line=line, drawn=drawn, key=measure))
     return strips, context.level, (BAR_STRIP_NOTE,), False
 
 
@@ -518,7 +547,7 @@ def _dot_interval(context: ChartContext) -> Drawn:
             reference=strip.line,
             emphasis=context.emphasis,
         )
-        return Drawn(chart_block(context, data, read_at=read_at), notes)
+        return money_drawn(context, data, notes, money=_strip_money(strips), read_at=read_at)
     panels = []
     for strip in strips:
         look = context.look.arm(strip.arm) if strip.arm in context.look.arms else None
@@ -534,7 +563,12 @@ def _dot_interval(context: ChartContext) -> Drawn:
             )
         )
     data = DotIntervalChart(domain=spans[first], fmt=first.fmt, level=level, emphasis=context.emphasis, panels=panels)
-    return Drawn(chart_block(context, data, read_at=read_at), notes)
+    return money_drawn(context, data, notes, money=_strip_money(strips), read_at=read_at)
+
+
+def _strip_money(strips: Sequence[_Strip]) -> list[tuple[str, Quantity]]:
+    """Each money figure a strip chart draws, by key, with the quantity its strip draws it as."""
+    return list(dict.fromkeys((strip.key, strip.drawn) for strip in strips if strip.key))
 
 
 # --- range_bars ---------------------------------------------------------------------------------------------------
@@ -563,14 +597,7 @@ def _range_bars(context: ChartContext) -> Drawn:
                 for row in rows
                 if row.key == key and isinstance(row.item, Stat) and (spread := _spread_stat(row.item))
             }
-            groups.append(
-                (
-                    measure_words(report_input, key),
-                    "overall",
-                    key,
-                    [(arm, spreads[arm]) for arm in context.arm_order(spreads)],
-                )
-            )
+            groups.append(("", "overall", key, [(arm, spreads[arm]) for arm in context.arm_order(spreads)]))
     elif source == "tasks":
         slices = [row.item for row in context.rows() if isinstance(row.item, Task)]
         keys = drawn_keys(context.spec.kind, context.query, report_input)
@@ -583,10 +610,13 @@ def _range_bars(context: ChartContext) -> Drawn:
                     if (spread := _spread_stat(item.per_arm.get(arm, {}).get(key))) is not None
                 }
                 if spreads:
-                    name = slice_name(context, item)
-                    label = name if len(keys) == 1 else f"{name} · {measure_words(report_input, key)}"
                     groups.append(
-                        (label, ("task", item.id), key, [(arm, spreads[arm]) for arm in context.arm_order(spreads)])
+                        (
+                            slice_name(context, item),
+                            ("task", item.id),
+                            key,
+                            [(arm, spreads[arm]) for arm in context.arm_order(spreads)],
+                        )
                     )
     else:
         raise context.refuse("range bars draw measures or tasks")
@@ -607,8 +637,13 @@ def _range_bars(context: ChartContext) -> Drawn:
         line = criterion_line(context, key, drawn, where=where, statistic="p95")
     drawn_groups = []
     no_median: list[str] = []
-    for label, _, key, bars in groups:
+    several = len({key for _, _, key, _ in groups}) > 1
+    for name, _, key, bars in groups:
         factor = quantities[key].factor
+        # A group's words name what its money is drawn per (the one owner of money's words), its measure's when
+        # it names one alone and after its slice where several share the chart.
+        measure = money_words(report_input, key, quantities[key])
+        label = measure if not name else f"{name} · {measure}" if several else name
         drawn_rows = []
         for arm, (p50, p95) in bars:
             high = p95 * factor
@@ -650,7 +685,8 @@ def _range_bars(context: ChartContext) -> Drawn:
         groups=drawn_groups, domain=(domain[0], domain[1]), fmt=drawn.fmt, reference=line, legend=legend or None
     )
     notes = (NO_MEDIAN_TEMPLATE.format(missing="; ".join(no_median)),) if no_median else ()
-    return Drawn(chart_block(context, data), notes)
+    money = [(key, quantities[key]) for key in dict.fromkeys(key for _, _, key, _ in groups)]
+    return money_drawn(context, data, notes, money=money)
 
 
 # --- scatter_frontier ---------------------------------------------------------------------------------------------
@@ -749,8 +785,8 @@ def _scatter(context: ChartContext) -> Drawn:
     points, x_key, y_key, x_unit, y_unit = _scatter_points(context)
     if not points:
         raise context.refuse("no arm holds both of its figures")
-    x_drawn = quantity(x_unit, [point.x for point in points])
-    y_drawn = quantity(y_unit, [point.y for point in points])
+    x_drawn = quantity_of(x_unit, [point.x for point in points])
+    y_drawn = quantity_of(y_unit, [point.y for point in points])
     xs = [point.x * x_drawn.factor for point in points]
     ys = [point.y * y_drawn.factor for point in points]
     tasks = list(dict.fromkeys(point.task for point in points))
@@ -798,8 +834,10 @@ def _scatter(context: ChartContext) -> Drawn:
                     muted=True if context.summary and point.arm not in context.look.survivors else None,
                     tip=[
                         _arm_name(context, point.arm),
-                        f"{measure_words(context.report_input, x_key)} {figure_text(x_value, x_drawn)}",
-                        f"{measure_words(context.report_input, y_key)} {figure_text(y_value, y_drawn)}",
+                        f"{money_words(context.report_input, x_key, x_drawn)} {figure_text(x_value, x_drawn)}"
+                        + _priced_part(context, point.arm, x_drawn),
+                        f"{money_words(context.report_input, y_key, y_drawn)} {figure_text(y_value, y_drawn)}"
+                        + _priced_part(context, point.arm, y_drawn),
                     ],
                 )
             )
@@ -820,8 +858,12 @@ def _scatter(context: ChartContext) -> Drawn:
                 "x_fmt": x_drawn.fmt,
                 "y_fmt": y_drawn.fmt,
                 "x_log": True if x_log else None,
-                "x_title": humanize("dimension", x_key) if scoreboard else measure_words(context.report_input, x_key),
-                "y_title": humanize("dimension", y_key) if scoreboard else measure_words(context.report_input, y_key),
+                "x_title": money_words(
+                    context.report_input, x_key, x_drawn, name=humanize("dimension", x_key) if scoreboard else ""
+                ),
+                "y_title": money_words(
+                    context.report_input, y_key, y_drawn, name=humanize("dimension", y_key) if scoreboard else ""
+                ),
                 "frontier": True,
                 "emphasis": context.emphasis,
                 "legend": factor_legend(context.report_input, (point.arm for point in points)) if configs else None,
@@ -833,13 +875,13 @@ def _scatter(context: ChartContext) -> Drawn:
     if len(tasks) == 1:
         y_line, x_line = lines(tasks[0])
         data = chart(points=drawn_points(tasks[0]), reference=y_line, x_reference=x_line)
-        return Drawn(chart_block(context, data), notes)
+        return money_drawn(context, data, notes, money=[(x_key, x_drawn), (y_key, y_drawn)])
     panels = []
     for task in tasks:
         y_line, x_line = lines(task)
         title = next((slice_name(context, item) for item in context.report_input.tasks if item.id == task), task or "")
         panels.append(ScatterPanel(title=title, points=drawn_points(task), reference=y_line, x_reference=x_line))
-    return Drawn(chart_block(context, chart(panels=panels)), notes)
+    return money_drawn(context, chart(panels=panels), notes, money=[(x_key, x_drawn), (y_key, y_drawn)])
 
 
 #: The kinds this module resolves.
