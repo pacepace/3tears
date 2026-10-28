@@ -44,6 +44,7 @@ from threetears.evals.analysis.report.doc_page.text import above_appendix_text, 
 from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
     CAVEAT_LABELS,
+    CAVEAT_REPEATED_ON,
     CAVEATS_TEMPLATE,
     DEGRADED_PAGE,
     FINDINGS_TITLE,
@@ -374,3 +375,26 @@ def test_a_caveat_landed_on_a_claim_or_a_method_term_is_printed_beside_it_by_its
         assert form.index(f"{METHOD_TITLE}") < form.index(on_term)
     assert on_claim in above_appendix_text(page) and on_term not in above_appendix_text(page)
     assert "confound:model" not in above_appendix_text(page)
+
+
+def test_a_label_two_caveats_share_is_printed_once_naming_what_tells_them_apart_in_every_form() -> None:
+    """Kairo's character claim lands two short runs, both of qwen3.8-flash, which code labels alike: the line beside it
+    says the label once, how many caveats carry it and the arm their records name, in HTML, Markdown and text alike.
+    A claim landing one of them prints its label alone."""
+    name = "prototype4/kairo"
+    doc = _doc(name)
+    runs = doc.claims[1].caveats
+    label = CAVEAT_LABELS["short_run"]
+    line = CAVEATS_TEMPLATE.format(
+        labels=CAVEAT_REPEATED_ON.format(label=label, count="2", arms="qwen3.8-flash (A)")
+    )
+    page = build(doc, _input(name), strict=True)
+    written, markdown, text = html.unescape(doc_page_html(page)), doc_page_markdown(page), doc_page_text(page)
+
+    assert len(runs) == 2 and all(run.startswith("short_run:") for run in runs)
+    assert page.claims[1].caveats == [CAVEAT_REPEATED_ON.format(label=label, count="2", arms="qwen3.8-flash (A)")]
+    for form in (written, markdown, text):
+        assert form.count(line) == 1
+        assert f"{label}; {label}" not in form
+    one = doc.model_copy(update={"claims": [doc.claims[0], doc.claims[1].model_copy(update={"caveats": runs[:1]})]})
+    assert build(one, _input(name), strict=True).claims[1].caveats == [label]
