@@ -20,10 +20,14 @@ written (a write that fails part way leaves only sessions no report names, which
 `EvalStorage.load_report_sessions(report_doc_id, scope_id, name=)` reads them back, all or one by name;
 `delete_report_doc` and `drop_derived` remove them with their report; `list_report_docs` reads none. The store gate
 `store_report_doc` takes `report_doc_id` (minted by `new_report_doc_id` before anything is written) and the
-`sessions`, and `generation_record` takes `report_doc_id` (`None` for a record held only in memory). A session
-reloaded from storage and resumed sends the request an uninterrupted one sends, byte for byte. A paid run that stores
-nothing, or whose store refuses, still keeps every session in memory: `ReportWritten.generation` holds each inline
-(`session`, `ref` None), as before. Report documents and their sessions get their own version,
+`sessions`, and `generation_record` takes `report_doc_id` (`None` for a record held only in memory). A stored
+session (format 3) keeps each message as its JSON text, so a store that hands object keys back in another order (a
+Postgres `jsonb` column, shortest key first) cannot change what a resume sends again: a session reloaded from any
+store and resumed sends the request an uninterrupted one sends, byte for byte, tool-call arguments in the order they
+were sent and every thinking block, signature included, as the reply carried it. A paid run that stores nothing, or
+whose store refuses, still keeps every session in memory: `ReportWritten.generation` holds each inline (`session`,
+`ref` None), as before. `ReportNotStored.report_doc_id` (new) names the id the report was minted under, so a host
+removes any session written before the store failed with `delete_report_doc(report_doc_id, scope_id)` alone. Report documents and their sessions get their own version,
 `REPORT_DOC_SCHEMA_VERSION` (14); a report document written before (version 13) is refused on read by its version,
 with the step to clear it (`EvalStorage.drop_derived`) and write the report again. The shared
 `REGENERABLE_SCHEMA_VERSION` stays at 13, so analyses, insights, judge profiles, plans and snapshots read as before.

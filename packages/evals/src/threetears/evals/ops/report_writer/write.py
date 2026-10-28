@@ -77,21 +77,28 @@ class ReportNotStored(Exception):
     """A report the writing loop ended with a document to store, and the store gate or the store refused.
 
     The run was paid for, so its record rides on the refusal: :attr:`written` is what :func:`report_write` would have
-    returned, with nothing stored. The cause is the exception this one was raised from.
+    returned, with nothing stored. The cause is the exception this one was raised from. A store that failed part way
+    may have written some of the report's sessions under :attr:`report_doc_id` before it failed; no stored document
+    names them, and ``EvalStorage.delete_report_doc(report_doc_id, scope_id)`` removes them without touching anything
+    else in the scope.
 
     :ivar written: The run's outcome and generation record, ``stored`` and ``page`` ``None``.
+    :ivar report_doc_id: The id minted for the report, which any session written before the failure is stored under.
     """
 
-    def __init__(self, message: str, *, written: ReportWritten) -> None:
-        """Say why the report was not stored, and carry the run's record.
+    def __init__(self, message: str, *, written: ReportWritten, report_doc_id: str) -> None:
+        """Say why the report was not stored, and carry the run's record and the id it would have been stored under.
 
         :param message: What failed.
         :ptype message: str
         :param written: The run's outcome and generation record.
         :ptype written: ReportWritten
+        :param report_doc_id: The id minted for the report.
+        :ptype report_doc_id: str
         """
         super().__init__(message)
         self.written = written
+        self.report_doc_id = report_doc_id
 
 
 def _checker(report_input: ReportInput) -> InvariantCheck:
@@ -241,8 +248,10 @@ async def report_write(
         # reach the caller beside the failure, never instead of it.
         raise ReportNotStored(
             f"the report ended {outcome.ending} and was not stored ({type(exc).__name__}: {exc}); its generation "
-            "record (tally, reviews, sessions) is this error's .written",
+            "record (tally, reviews, sessions) is this error's .written, and any session the store wrote before it "
+            f"failed is under report {report_doc_id}, which delete_report_doc removes",
             written=unstored,
+            report_doc_id=report_doc_id,
         ) from exc
     page = build(outcome.doc, report_input, strict=True, findings=outcome.findings, made=made_line(stored))
     return replace(unstored, stored=stored, page=page)

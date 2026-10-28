@@ -9,7 +9,8 @@ Contracts held here:
 - **a paid run never loses its sessions**: an ending that stores nothing, and a store that refuses, keep each session
   inline on the in-memory record;
 - **resume through storage is byte-identical**: an analyst session and an editor session reloaded from storage and
-  resumed send the request body an uninterrupted session sends, byte for byte;
+  resumed send the request body an uninterrupted session sends, byte for byte, on a store that hands keys back in
+  another order too (jsonb's, or reversed), with a tool call's arguments and every thinking block's signature intact;
 - **W3's elision is kept**: a re-derivable result body is stored elided and recorded so, and resuming re-derives it;
 - **a listing reads no session**: ``list_report_docs`` asks the store for report documents only;
 - **the sweep**: ``drop_derived`` and ``delete_report_doc`` remove the sessions with their report;
@@ -20,7 +21,7 @@ Contracts held here:
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
@@ -31,7 +32,7 @@ from pydantic import ValidationError
 from packages.evals.tests.factories import memory_storage
 from packages.evals.tests.fixtures.report_plans.analyst_cli import seeded_host
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER
+from packages.evals.tests.ops_support import CALLER, ops_fixture
 from packages.evals.tests.report_doc_support import snapshot_of
 from packages.evals.tests.report_writer_support import (
     DOC,
@@ -62,6 +63,7 @@ from threetears.evals.kernel.report_doc import (
     new_report_doc_id,
     report_session_id,
 )
+from threetears.evals.kernel import storage as storage_module
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.ops import OpsHost
 from threetears.evals.ops.report_writer.analyst import AnalystSession
@@ -69,7 +71,8 @@ from threetears.evals.ops.report_writer.loop import WriterLimits
 from threetears.evals.ops.report_writer.session import ToolOutcome, ToolSession
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS
-from threetears.evals.schema.turns import TurnText
+from threetears.evals.schema.store_port import DocumentStore
+from threetears.evals.schema.turns import TurnText, TurnThinking, TurnToolUse
 from threetears.evals.schema.versioning import REPORT_DOC_SCHEMA_VERSION
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -142,6 +145,15 @@ async def stored_run() -> tuple[OpsHost, Any, FakeToolTurnClient, FakeToolTurnCl
     result = await written(FakeTurnModel(analyst=analyst, editor_1=editor), host=host)
     assert result.ending == "stored", result.outcome.reason
     return host, result, analyst, editor
+
+
+def host_over(store: DocumentStore) -> OpsHost:
+    """The toy host over ``store``, holding Kairo round 2's snapshot as the seeded host does. Blocking."""
+    host = ops_fixture(generation=False, store=store).host
+    snapshot = seeded_host().eval_host.storage.load_report_snapshot(kairo_id(), CALLER.scope_id)
+    assert snapshot is not None
+    host.eval_host.storage.save_report_snapshot(snapshot)
+    return host
 
 
 def sessions_of(host: OpsHost, report_doc_id: str, **name: str) -> dict[str, EvalReportSession]:
@@ -278,6 +290,24 @@ async def test_a_store_that_refuses_the_document_keeps_every_session_inline_on_t
     assert all(entry["ref"] is None for entry in kept.generation["sessions"].values())
 
 
+async def test_a_refused_store_names_the_minted_id_so_its_orphaned_sessions_are_deleted_by_it_alone() -> None:
+    """The store wrote the sessions and refused the report: the refusal names the id they are under, and deleting
+    that report removes them and nothing else in the scope."""
+    host = off_loop(host_over, _RefusesReportDocs())
+    model = FakeTurnModel(analyst=FakeToolTurnClient(*analyst_script()), editor_1=FakeToolTurnClient(*editor_script()))
+
+    with pytest.raises(ReportNotStored) as refused:
+        await written(model, host=host)
+
+    report_doc_id = refused.value.report_doc_id
+    assert report_doc_id in str(refused.value)
+    assert set(sessions_of(host, report_doc_id)) == {"analyst", "editor-1"}, "the sessions were written first"
+    storage = host.eval_host.storage
+    assert off_loop(storage.delete_report_doc, report_doc_id, CALLER.scope_id) is False, "no report was stored"
+    assert sessions_of(host, report_doc_id) == {}
+    assert off_loop(storage.load_report_snapshot, kairo_id(), CALLER.scope_id) is not None, "nothing else is touched"
+
+
 # --- the store gate's order -----------------------------------------------------------------------------------------
 
 
@@ -367,6 +397,46 @@ def test_the_store_gate_refuses_a_record_that_names_other_sessions_than_it_is_ha
     assert storage.drop_derived([CALLER.scope_id]).counts["eval_report_session"] == 0
 
 
+def test_a_session_that_kept_no_reply_goes_through_the_gate_with_no_digest() -> None:
+    """A session the budget stopped before its first reply has no transcript digest: None on the record and the session.
+
+    Its turns are counted from the tally all the same, so a session refused before it sent counts 0.
+    """
+    storage, _ = memory_storage()
+    snapshot = snapshot_of("prototype3/kairo")
+    report_doc_id = new_report_doc_id()
+    tally: dict[str, Any] = {
+        "turns": [{"session": "analyst", "model": "m"}, {"session": "analyst", "model": "m"}],
+        "total": {"cost_usd": None, "unpriced_turns": 2},
+        "transcripts": {"analyst": "a" * 64},
+    }
+    generation = generation_record(
+        report_doc_id=report_doc_id, model="m", tally=tally, skill={"package": "f" * 64}, reviews=[], sessions=SESSIONS
+    )
+
+    record = store_report_doc(
+        storage,
+        report_doc_id=report_doc_id,
+        scope_id=CALLER.scope_id,
+        snapshot_id=snapshot.id,
+        campaign_id=snapshot.campaign_id,
+        doc=ReportDoc.model_validate(DOC),
+        report_input=ReportInput.model_validate(snapshot.report_input),
+        ending="over_budget",
+        findings=[],
+        generation=generation,
+        sessions=SESSIONS,
+        created_by=CALLER.identity,
+    )
+
+    entries = record.generation["sessions"]
+    assert entries["editor-1"] == {"digest": None, "turns": 0, "ref": report_session_id(report_doc_id, "editor-1")}
+    assert entries["analyst"]["digest"] == "a" * 64 and entries["analyst"]["turns"] == 2
+    loaded = storage.load_report_sessions(report_doc_id, CALLER.scope_id)
+    assert (loaded["editor-1"].digest, loaded["editor-1"].turns) == (None, 0)
+    assert loaded["editor-1"].session == SESSIONS["editor-1"]
+
+
 def test_a_session_of_another_report_is_never_stored_with_this_one() -> None:
     storage, _ = memory_storage()
     record = _gate(storage, SESSIONS, new_report_doc_id())
@@ -443,7 +513,9 @@ async def test_a_stored_session_keeps_w3_s_elision_and_resuming_re_derives_each_
     host, result, interrupted, _ = await stored_run()
     stored = sessions_of(host, result.stored.id, name="analyst")["analyst"].session["session"]
 
-    elided = [block for message in stored["messages"] for block in message["content"] if block["type"] == "tool_result"]
+    elided = [
+        block for text in stored["messages"] for block in json.loads(text)["content"] if block["type"] == "tool_result"
+    ]
     assert [item["stored"] for item in stored["results"]] == ["rederive"]
     assert [block["content"] for block in elided] == [""], "a re-derivable body is stored elided"
 
@@ -466,6 +538,107 @@ async def test_a_stored_session_keeps_w3_s_elision_and_resuming_re_derives_each_
     ]
     assert mount.calls[0] == {"action": "options_dominance", "snapshot_id": kairo_id()}, "the body is called again"
     assert rederived == sent_whole and rederived["content"], "and the request carries it whole, as it was sent"
+
+
+# --- resume across a store that keeps no key order ------------------------------------------------------------------
+
+KeyOrder = Callable[[list[str]], list[str]]
+
+
+def jsonb_order(keys: list[str]) -> list[str]:
+    """The order a Postgres ``jsonb`` value holds an object's keys in: shorter keys first, then bytewise."""
+    return sorted(keys, key=lambda key: (len(key.encode("utf-8")), key.encode("utf-8")))
+
+
+def reversed_order(keys: list[str]) -> list[str]:
+    """Every object's keys the other way round: what a store keeping no order may hand back."""
+    return keys[::-1]
+
+
+def reordered(node: Any, order: KeyOrder) -> Any:
+    """``node`` with every object's keys, at every depth, in ``order``; its values and every list's order kept."""
+    if isinstance(node, dict):
+        return {key: reordered(node[key], order) for key in order(list(node))}
+    if isinstance(node, list):
+        return [reordered(value, order) for value in node]
+    return node
+
+
+class _StoreKeepingNoKeyOrder(InMemoryDocumentStore):
+    """The reference store, holding every document with each object's keys, at every depth, in ``order``."""
+
+    def __init__(self, order: KeyOrder) -> None:
+        super().__init__()
+        self.order = order
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        held = reordered(json.loads(json.dumps(document)), self.order)
+        super().upsert(held, if_match=if_match, create_only=create_only)
+
+    def merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool:
+        return super().merge_fields(doc_id, scope_id, reordered(json.loads(json.dumps(fields)), self.order))
+
+
+#: A tool call whose arguments are in an order no reordering store keeps: neither sorted, nor jsonb's, nor reversed.
+UNORDERED_INPUT: Final = {"snapshot_id": "", "action": "options_dominance", "arms": ["September"]}
+
+
+def unordered_script() -> list[Any]:
+    """The analyst's draft with a signed thinking block, a redacted one ({type, data}, which jsonb turns round) and a
+    tool call whose arguments no reordering store keeps in order; then the Kairo document."""
+    arguments = {**UNORDERED_INPUT, "snapshot_id": kairo_id()}
+    return [
+        reply(
+            TurnThinking({"type": "thinking", "thinking": "the cost gap reads first", "signature": "sig-signed-once"}),
+            TurnThinking({"type": "redacted_thinking", "data": "opaque-redacted-payload"}),
+            TurnToolUse("toolu_001", "evals_analyst", arguments),
+        ),
+        reply(submitted()),
+    ]
+
+
+@pytest.mark.parametrize("order", [jsonb_order, reversed_order], ids=["jsonb", "reversed"])
+async def test_a_session_resumed_from_a_store_that_reorders_keys_sends_the_bytes_an_uninterrupted_one_sends(
+    order: KeyOrder,
+) -> None:
+    store = _StoreKeepingNoKeyOrder(order)
+    host = off_loop(host_over, store)
+    draft = FakeToolTurnClient(*unordered_script())
+    result = await written(FakeTurnModel(analyst=draft, editor_1=FakeToolTurnClient(*editor_script())), host=host)
+    assert result.ending == "stored", result.outcome.reason
+
+    uninterrupted = FakeToolTurnClient(*unordered_script(), reply(submitted()))
+    whole = AnalystSession.start(
+        client=uninterrupted,
+        snapshot=kairo_id(),
+        limits=WriterLimits().analyst,
+        **resume_options(host, mounted(host, "analyst")),
+    )
+    await whole.draft()
+    await whole.revise(REVISION)
+    stored = sessions_of(host, result.stored.id, name="analyst")["analyst"]
+    held = off_loop(store.get, stored.id, CALLER.scope_id)
+    fields = list(stored.to_dict())
+    assert held is not None and [key for key in held if key in fields] == order(fields) != fields, (
+        "the store hands the session back in its own key order"
+    )
+    later = FakeToolTurnClient(reply(submitted()))
+    resumed = await AnalystSession.resume(
+        stored.session, client=later, **resume_options(host, mounted(host, "analyst"))
+    )
+    await resumed.revise(REVISION)
+
+    (sent,) = later.requests
+    assert json.dumps(sent).encode() == json.dumps(uninterrupted.requests[len(draft.requests)]).encode()
+    blocks = [block for message in sent["messages"] for block in message["content"]]
+    (use,) = [block for block in blocks if block["type"] == "tool_use"]
+    assert list(use["input"]) == list(UNORDERED_INPUT), "the call's arguments are resent in the order they were sent"
+    assert [block for block in blocks if block["type"] in ("thinking", "redacted_thinking")] == [
+        {"type": "thinking", "thinking": "the cost gap reads first", "signature": "sig-signed-once"},
+        {"type": "redacted_thinking", "data": "opaque-redacted-payload"},
+    ]
+    assert [list(block) for block in blocks if block["type"] == "redacted_thinking"] == [["type", "data"]]
+    assert '"signature": "sig-signed-once"' in json.dumps(sent), "the thinking block's signature survives"
 
 
 # --- a listing reads no session --------------------------------------------------------------------------------------
@@ -603,6 +776,9 @@ def test_a_report_session_is_stored_under_the_id_its_report_and_name_give_and_no
 _REPO: Final = Path(__file__).resolve().parents[3]
 _SOURCES: Final = sorted([*_REPO.glob("packages/*/src"), *_REPO.glob("packages/agent/*/src")])
 
+#: The module that defines ``EvalStorage.load_report_sessions``, the one ``src`` file allowed to name it until VIEW.
+_DEFINED_IN: Final = Path(storage_module.__file__ or "").resolve()
+
 
 def test_loading_a_report_s_sessions_awaits_its_production_caller() -> None:
     """``EvalStorage.load_report_sessions`` is the audit read's (``report_read(include_sessions=true)``, wave 2's VIEW).
@@ -613,6 +789,6 @@ def test_loading_a_report_s_sessions_awaits_its_production_caller() -> None:
         str(path)
         for root in _SOURCES
         for path in root.rglob("*.py")
-        if "load_report_sessions" in path.read_text() and path.name != "storage.py"
+        if "load_report_sessions" in path.read_text() and path.resolve() != _DEFINED_IN
     )
     assert callers == [], f"load_report_sessions has a production caller now: drop this pin. Callers: {callers}"

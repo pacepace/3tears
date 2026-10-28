@@ -382,7 +382,9 @@ def test_a_cassette_refuses_a_document_from_another_cassette_version_naming_the_
 
 
 @pytest.mark.parametrize(
-    "version", [REPORT_DOC_SCHEMA_VERSION - 1, REPORT_DOC_SCHEMA_VERSION + 1, REGENERABLE_SCHEMA_VERSION], ids=str
+    "version",
+    sorted({REPORT_DOC_SCHEMA_VERSION - 1, REPORT_DOC_SCHEMA_VERSION + 1, REGENERABLE_SCHEMA_VERSION}),
+    ids=str,
 )
 @pytest.mark.parametrize("model", [EvalReportDoc, EvalReportSession], ids=lambda model: model.__name__)
 def test_a_report_document_or_session_refuses_another_report_version_naming_the_rewrite(

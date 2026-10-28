@@ -563,6 +563,11 @@ async def test_a_refusal_or_a_reply_stopped_short_fails_the_round(stop: TurnStop
 # --- stored and resumed ---------------------------------------------------------------------------------------------
 
 
+def stored_blocks(stored: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every block of a stored tool session's messages, each message read from the JSON text it is stored as."""
+    return [block for text in stored["messages"] for block in json.loads(text)["content"]]
+
+
 def _script() -> list[TurnReply]:
     return [
         reply(thinking(1), call(1)),
@@ -606,10 +611,10 @@ async def test_a_stored_session_resumes_with_the_request_an_uninterrupted_one_se
     assert later.requests == uninterrupted.requests[3:], "the resumed session sends what the uninterrupted one did"
     stored = record["session"]
     assert {result["stored"] for result in stored["results"]} == {"rederive"}
-    held = [block for message in stored["messages"] for block in message["content"] if block["type"] == "tool_result"]
+    held = [block for block in stored_blocks(stored) if block["type"] == "tool_result"]
     assert all(block["content"] == "" for block in held), "a re-derivable body is not stored"
     assert [call["n"] for call in mount.calls[:3]] == [1, 2, 3], "each dropped body is called again to resume"
-    thought = [block for message in stored["messages"] for block in message["content"] if block["type"] == "thinking"]
+    thought = [block for block in stored_blocks(stored) if block["type"] == "thinking"]
     assert thought == [thinking(n).to_json() for n in (1, 2, 3)], "thinking blocks are stored exactly"
     assert stored["skill_digest"] == SKILL.digest
 
@@ -621,7 +626,7 @@ async def test_a_mount_whose_results_cannot_be_rederived_stores_them_whole() -> 
 
     stored = session.to_json()["session"]
 
-    held = [block for message in stored["messages"] for block in message["content"] if block["type"] == "tool_result"]
+    held = [block for block in stored_blocks(stored) if block["type"] == "tool_result"]
     assert held[0]["content"].startswith("readings_list reads")
     assert stored["results"][0]["stored"] == "whole"
 
@@ -783,9 +788,11 @@ MALFORMED: Final = [
     pytest.param(_set("session.state.calls_used", "two"), id="count-of-the-wrong-type"),
     pytest.param(_set("session.state.warned", 1), id="flag-of-the-wrong-type"),
     pytest.param(_set("session.results", [{"tool_use_id": "toolu_001"}]), id="result-missing-its-digest"),
-    pytest.param(_set("session.messages", [{"role": "user"}]), id="message-missing-its-content"),
+    pytest.param(_set("session.messages", ['{"role": "user"}']), id="message-missing-its-content"),
+    pytest.param(_set("session.messages", [{"role": "user", "content": []}]), id="message-not-stored-as-text"),
+    pytest.param(_set("session.messages", ['{"role": "user", "content": ']), id="message-text-not-json"),
     pytest.param(_set("session.limits", {"max_tokens": 0}), id="limit-out-of-range"),
-    pytest.param(_set("session.format", 1), id="an-older-session-format"),
+    pytest.param(_set("session.format", 2), id="an-older-session-format"),
 ]
 
 
