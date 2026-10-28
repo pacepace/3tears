@@ -204,7 +204,7 @@ from threetears.agent.acl.evaluator import (
     evaluate_with_trail,
 )
 
-from threetears.agent.acl.loader import GrantLoader, HeldAssignmentsLoader, MembershipLoader
+from threetears.agent.acl.loader import GrantLoader, HeldAssignmentsLoader, MembershipLoader, ParentGroupsLoader
 from threetears.agent.acl.loaders import (
     CollectionGrantLoader,
     CollectionMembershipLoader,
@@ -227,7 +227,11 @@ from threetears.agent.acl.types import (
     Group,
     GroupMembership,
     LimitingSide,
+    DEFAULT_MAX_GROUP_MEMBERSHIP_DEPTH,
+    MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH,
     MAX_GROUP_MEMBERSHIP_DEPTH,
+    MAX_GROUP_MEMBERSHIP_DEPTH_ENV,
+    resolve_max_group_membership_depth,
     MemberType,
     Namespace,
     Role,
@@ -282,7 +286,11 @@ __all__ = [
     "ImpersonationGateEntity",
     "ImpersonationGateStatus",
     "LimitingSide",
+    "DEFAULT_MAX_GROUP_MEMBERSHIP_DEPTH",
+    "MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH",
     "MAX_GROUP_MEMBERSHIP_DEPTH",
+    "MAX_GROUP_MEMBERSHIP_DEPTH_ENV",
+    "resolve_max_group_membership_depth",
     "MemberType",
     "MembershipLoader",
     "Namespace",
@@ -292,6 +300,7 @@ __all__ = [
     "NamespaceRescope",
     "NamespaceRescopeNotAdvanced",
     "NamespaceRescopeRefused",
+    "ParentGroupsLoader",
     "PermissionCatalog",
     "PermissionEscalation",
     "PLATFORM_BUILTIN_PRE_CHECK_TOOL_NAMES",
