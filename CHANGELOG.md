@@ -53,7 +53,8 @@ not resolve on its snapshot and sent the draft back, with the key and the bounce
 `editor_score`, a rubric item the editor scored 0 or 1, with its score and reason and whether that review held a
 `must_fix` finding. `ReportWritten` gains `gaps` (every record the write made) and `gaps_not_stored` (why the store
 refused them, if it did, logged at error level; the report and its record stand either way). A write that crashes
-before its end loses its gaps, as it loses the write.
+before its end loses its gaps, as it loses the write. The analyst skill's tool table names `kind` and what a suspect
+gap carries, and the editor's tool list says it may note a gap, which is stored and never sent to the analyst.
 
 **Added:** `analyst_gaps_list` (a read action on the `evals` tool, `since=` an ISO 8601 time with its offset, read
 against each record's own time) returns the scope's gaps as a digest. Gaps group by kind and need, the need compared
