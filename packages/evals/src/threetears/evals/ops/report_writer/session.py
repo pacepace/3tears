@@ -54,6 +54,7 @@ from threetears.evals.kernel.numbers import group_thousands
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally, TurnCost, WriterRole
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.turns import (
+    ThinkingBinding,
     ToolResultClearing,
     ToolTurnClient,
     TurnBlock,
@@ -70,6 +71,11 @@ from threetears.evals.schema.turns import (
 #: The names the analyst's and the editor's sessions call, and ``ToolOutcome``, what the mount the report writer's
 #: entry point builds answers.
 __all__ = ["SessionLimits", "SessionStop", "ToolMount", "ToolOutcome", "ToolSession"]
+
+#: The check every turn asks the provider to run on the thinking blocks it replays, wherever the turn thinks (see
+#: :class:`ThinkingBinding`): the history is append-only, so a thinking block's conversation never changes under it,
+#: and a turn whose did is refused rather than answered without the reasoning.
+_APPEND_ONLY = ThinkingBinding(prefix_mismatch_behavior="error")
 
 #: The storage format :meth:`ToolSession.to_json` writes and :meth:`ToolSession.from_json` reads.
 _FORMAT: Final = 2
@@ -408,6 +414,7 @@ class ToolSession:
                 tools=self.tools,
                 max_tokens=self.limits.max_tokens,
                 clearing=self.limits.clearing(),
+                binding=_APPEND_ONLY,
             )
         except TurnReplyRefused as refused:
             self._sent += 1

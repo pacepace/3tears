@@ -38,6 +38,7 @@ from threetears.evals.schema import (
     TurnThinking,
     TurnToolResult,
     ToolResultClearing,
+    ThinkingBinding,
     TurnToolSpec,
     TurnToolUse,
     TurnBlock,
@@ -45,6 +46,9 @@ from threetears.evals.schema import (
     TurnStopReason,
     block_from_json,
 )
+from threetears.evals.schema.logs import get_logger
+
+log = get_logger(__name__)
 
 __all__ = [
     "BASE_URLS",
@@ -602,6 +606,7 @@ def turn_body(
     sent: WireSettings,
     facts: SettingFacts,
     clearing: ToolResultClearing | None = None,
+    binding: ThinkingBinding | None = None,
 ) -> dict[str, Any]:  # Any: a JSON body
     """The Messages API body of one tool turn.
 
@@ -628,6 +633,12 @@ def turn_body(
     :param clearing: Old tool results the provider clears itself, sent as ``context_management`` (its beta header
         is the sender's to add); ``None`` sends none.
     :ptype clearing: ToolResultClearing | None
+    :param binding: The check the provider runs on replayed thinking blocks, sent as ``thinking.block_binding`` (its
+        beta header is the sender's to add) where the body carries adaptive or budgeted thinking. A model that cannot
+        turn thinking off thinks adaptively when sent none, so it is sent adaptive thinking to carry the binding. A
+        body with thinking disabled sends none, nor does one with no thinking on a model that may then not think.
+        ``None`` sends none.
+    :ptype binding: ThinkingBinding | None
     :return: The JSON body.
     :rtype: dict[str, Any]
     :raises ValueError: No messages; a thinking block in a user message; a last message holding only thinking, where no
@@ -666,8 +677,13 @@ def turn_body(
     if tools:
         *first_tools, last_tool = (tool.to_json() for tool in tools)
         body["tools"] = [*first_tools, _breakpoint(last_tool)]
-    if (thinking := anthropic_thinking(sent, facts)) is not None:
-        body["thinking"] = thinking
+    thinking: dict[str, str | int] | None = anthropic_thinking(sent, facts)
+    if thinking is None and binding is not None and facts.reasoning_disable is False:
+        # It thinks adaptively whatever is sent, so its own default goes as what it is, to carry the binding.
+        thinking = {"type": "adaptive"}
+    if thinking is not None:
+        thinks = thinking["type"] in ("adaptive", "enabled")
+        body["thinking"] = {**thinking, "block_binding": binding.to_json()} if binding and thinks else thinking
     if sent.reasoning_effort not in (None, "none"):
         body["output_config"] = {"effort": sent.reasoning_effort}
     if clearing is not None:
@@ -684,6 +700,8 @@ class TurnRead:
     :ivar provider_stop_reason: The reason as the provider named it, or ``None``.
     :ivar cache_read_tokens: Prompt tokens read from the cache, or ``None`` when unreported.
     :ivar cache_write_tokens: Prompt tokens written to it, or ``None`` when unreported.
+    :ivar input_transformations: The response's ``input_transformations`` (a request under the thinking binding's beta
+        carries the array), or ``None`` when it carried none.
     """
 
     content: tuple[TurnBlock, ...]
@@ -691,6 +709,7 @@ class TurnRead:
     provider_stop_reason: str | None
     cache_read_tokens: int | None
     cache_write_tokens: int | None
+    input_transformations: tuple[dict[str, Any], ...] | None = None  # Any: the provider's JSON objects
 
 
 def read_turn(status: int, body: Mapping[str, Any]) -> TurnRead:  # Any: JSON
@@ -719,4 +738,16 @@ def read_turn(status: int, body: Mapping[str, Any]) -> TurnRead:  # Any: JSON
         provider_stop_reason=raw,
         cache_read_tokens=_count(usage.get("cache_read_input_tokens")),
         cache_write_tokens=_count(usage.get("cache_creation_input_tokens")),
+        input_transformations=_transformations(body.get("input_transformations")),
     )
+
+
+def _transformations(value: Any) -> tuple[dict[str, Any], ...] | None:  # Any: JSON
+    """The response's ``input_transformations``, each entry as it came; ``None`` for none, or for a value that is no
+    list of objects (logged, so an unread report is never read as nothing done)."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(entry, Mapping) for entry in value):
+        log.warning("eval.providers tool turn input_transformations unread: %r", value)
+        return None
+    return tuple(dict(entry) for entry in value)

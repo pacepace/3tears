@@ -513,8 +513,17 @@ The planned page's parts gain plan-free forms beside them, its own bytes unchang
 (every arm, `recommends` marked) and `plan_page.full_results.every_table` (every table the input holds a row of).
 `analysis.analyst.blocks.values_table`, the values table `block_render` returns, is public for the page text. From
 `kernel.report_doc`, `ReportDoc`, `Evidence`, `DocCaveat`, `ReportFinding` and `is_analyst_caveat` join `__all__` with
-the renderer as their caller. No kit, stylesheet or script changes: the page uses the kit's existing classes, and its
-one script is the kit's, so its content security policy is the planned page's.
+the renderer as their caller. The page uses the kit's existing classes, and its one script is the kit's, so its
+content security policy is the planned page's.
+
+**Changed:** the kit, for the 390 px render check on the acceptance pages. A reference line's label (a floor, budget
+or margin) is drawn to the right of its line where it fits, else to its left, else wrapped at its spaces to the wider
+side, on every kind that draws one; forest's narrow-width special case (the label at the plot's foot) gives way to it.
+A computed tick count steps down until no two tick labels touch. A lattice's tiles keep a 6.5rem floor and its row
+headers one line, and a lattice too wide scrolls in a `.tbl` frame, as a table does. `kit.js` and `kit.css` are
+inlined in every default-mode HTML page, planned and reference pages included, so their text (and the script's hash)
+changed: a host allowing the kit by a CSP hash it computed from an earlier wheel recomputes it from this one. A
+`static=True` page carries no script and is unaffected by the script's change.
 
 ### evals: tool turns over Anthropic's Messages API, recorded and replayed per session
 
@@ -584,6 +593,21 @@ sends it as `context_management: {"edits": [{"type": "clear_tool_uses_20250919",
 "input_tokens", ...}, "keep": {"type": "tool_uses", ...}, "clear_at_least": {"type": "input_tokens", ...}}]}` with
 `anthropic-beta: context-management-2025-06-27`; `RecordedTurns` passes it to the client it records through. A turn
 with no clearing sends the body it always did.
+
+**Added (provisional):** `threetears.evals.schema.ThinkingBinding(prefix_mismatch_behavior="error" | "drop_block")`,
+the provider's check that a replayed thinking block's conversation is unchanged. The tool-turn port's
+`turn(..., binding=)` takes it, and `Model.turn` sends it as `thinking.block_binding` with `anthropic-beta:
+thinking-binding-controls-2026-08-01` where the turn sends adaptive or budgeted thinking. A model that cannot turn
+thinking off (Claude Opus 5.5, say) is sent `{"type": "adaptive"}` to carry it when built with no effort, which is what
+it runs anyway; a turn with thinking disabled sends none, nor does one with no thinking on a model that may then not
+think. Setting it opts the turn into the check on any account. `RecordedTurns` passes it to the client it records
+through; a recording holds replies only, so recordings made before it replay unchanged. Every analyst and editor turn
+that thinks sends `"error"`: the history is append-only, so a turn whose history changed under a thinking block is the
+provider's 400, never answered without the reasoning. A turn with no binding sends the body it always did.
+`TurnReply` gains `sent_binding` (the behaviour the request carried, or `None`) and `input_transformations` (the
+response's report of blocks dropped or let through, as the provider wrote it, or `None` when it sent none), and the
+report writer's tally keeps both on every turn, so a stored report shows each turn was checked. A reply recorded
+before them reads both as `None`.
 
 **Changed:** `kernel.report_doc` now exports `ReportDoc`, `report_doc_validity` and `report_doc_json_schema`, and
 `analysis.analyst.skill` exports `SkillText`, each with its first production caller in the analyst session.

@@ -9,6 +9,7 @@ live API.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final
@@ -18,6 +19,8 @@ import pytest
 
 from threetears.evals.providers import Catalogue, Model, ProviderError
 from threetears.evals.schema import (
+    TurnReply,
+    ThinkingBinding,
     ToolResultClearing,
     TurnText,
     TurnThinking,
@@ -79,9 +82,11 @@ class Server:
         self._replies = list(replies)
         self.bodies: list[dict[str, Any]] = []
         self.urls: list[str] = []
+        self.headers: list[httpx.Headers] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.urls.append(str(request.url))
+        self.headers.append(request.headers)
         self.bodies.append(json.loads(request.content))
         return httpx.Response(200, json=self._replies.pop(0))
 
@@ -488,6 +493,134 @@ async def test_a_clearing_goes_as_context_management_under_its_beta_and_nothing_
     assert {key: value for key, value in cleared.items() if key != "context_management"} == plain
     assert plain == CASES["opening"]["body"], "a turn with no clearing sends the body it always did"
     assert "anthropic-beta" not in sent[1].headers
+
+
+async def test_a_binding_goes_as_thinking_block_binding_under_its_beta_beside_a_clearing_s() -> None:
+    """The check of every replayed thinking block's conversation: set, it opts the turn in whatever the account's age,
+    so an edit to the history is the provider's 400 and never a block quietly dropped."""
+    sent: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, json=CASES["opening"]["reply"])
+
+    model = Model(
+        MODEL,
+        provider="anthropic",
+        api_key="test-key",
+        catalogue=catalogue(),
+        effort="high",
+        http=httpx.AsyncClient(transport=httpx.MockTransport(answer)),
+    )
+    opening = [TurnMessage("user", OPENING)]
+
+    await model.turn(system=SYSTEM, messages=opening, tools=TOOLS, max_tokens=32000, binding=ThinkingBinding())
+    await model.turn(
+        system=SYSTEM,
+        messages=opening,
+        tools=TOOLS,
+        max_tokens=32000,
+        clearing=ToolResultClearing(),
+        binding=ThinkingBinding(prefix_mismatch_behavior="drop_block"),
+    )
+
+    bound, both = (json.loads(request.content) for request in sent)
+    assert bound["thinking"] == {"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "error"}}
+    assert sent[0].headers["anthropic-beta"] == "thinking-binding-controls-2026-08-01"
+    assert {**bound, "thinking": {"type": "adaptive"}} == CASES["opening"]["body"], "only the thinking gains it"
+    assert both["thinking"]["block_binding"] == {"prefix_mismatch_behavior": "drop_block"}
+    assert sent[1].headers["anthropic-beta"] == "context-management-2025-06-27,thinking-binding-controls-2026-08-01"
+
+
+async def test_a_binding_rides_a_thinking_budget_and_no_turn_that_sends_thinking_disabled() -> None:
+    budget, disabled = Server(CASES["opening"]["reply"]), Server(CASES["opening"]["reply"])
+
+    await claude("claude-sonnet-4-6", budget, effort=2048).turn(
+        system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=4096, binding=ThinkingBinding()
+    )
+    await claude("claude-opus-5", disabled, effort="none").turn(
+        system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=4096, binding=ThinkingBinding()
+    )
+
+    assert budget.bodies[0]["thinking"] == {
+        "type": "enabled",
+        "budget_tokens": 2048,
+        "block_binding": {"prefix_mismatch_behavior": "error"},
+    }
+    assert budget.headers[0]["anthropic-beta"] == "thinking-binding-controls-2026-08-01"
+    assert disabled.bodies[0]["thinking"] == {"type": "disabled"}, "thinking disabled replays no block to check"
+    assert "anthropic-beta" not in disabled.headers[0]
+
+
+async def test_a_binding_on_a_model_built_with_no_effort_goes_where_the_model_thinks_anyway() -> None:
+    """Claude Opus 5.5 cannot turn thinking off, so sent none it thinks adaptively and replays its blocks: it is sent
+    adaptive thinking to carry the check. A model that may not think when sent none is sent neither."""
+    always, maybe = Server(CASES["opening"]["reply"], CASES["opening"]["reply"]), Server(CASES["opening"]["reply"])
+    sent: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return always(request)
+
+    model = Model(
+        MODEL,
+        provider="anthropic",
+        api_key="test-key",
+        catalogue=catalogue(),
+        http=httpx.AsyncClient(transport=httpx.MockTransport(answer)),
+    )
+    await model.turn(
+        system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=4096, binding=ThinkingBinding()
+    )
+    await model.turn(system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=4096)
+    await claude("claude-opus-4-8", maybe).turn(
+        system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=4096, binding=ThinkingBinding()
+    )
+
+    assert always.bodies[0]["thinking"] == {"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "error"}}
+    assert sent[0].headers["anthropic-beta"] == "thinking-binding-controls-2026-08-01"
+    assert "thinking" not in always.bodies[1], "with no binding, no effort sends no thinking, as it always did"
+    assert "anthropic-beta" not in sent[1].headers
+    assert "thinking" not in maybe.bodies[0]
+    assert "anthropic-beta" not in maybe.headers[0]
+
+
+async def test_a_reply_says_which_binding_its_request_carried_and_what_the_provider_reported_doing() -> None:
+    """The evidence a run keeps of the check: the behaviour sent, and the response's ``input_transformations``."""
+    dropped = {"type": "thinking_dropped", "reason": "prefix_binding_mismatch", "path": "messages.3.content.0"}
+    server = Server(
+        {**CASES["opening"]["reply"], "input_transformations": []},
+        {**CASES["opening"]["reply"], "input_transformations": [dropped]},
+        CASES["opening"]["reply"],
+    )
+    model = opus(server)
+    opening = [TurnMessage("user", OPENING)]
+
+    checked = await model.turn(system=SYSTEM, messages=opening, tools=TOOLS, max_tokens=4096, binding=ThinkingBinding())
+    dropping = await model.turn(
+        system=SYSTEM,
+        messages=opening,
+        tools=TOOLS,
+        max_tokens=4096,
+        binding=ThinkingBinding(prefix_mismatch_behavior="drop_block"),
+    )
+    plain = await model.turn(system=SYSTEM, messages=opening, tools=TOOLS, max_tokens=4096)
+
+    assert (checked.sent_binding, checked.input_transformations) == ("error", ())
+    assert (dropping.sent_binding, dropping.input_transformations) == ("drop_block", (dropped,))
+    assert (plain.sent_binding, plain.input_transformations) == (None, None)
+    assert TurnReply.from_json(dropping.to_json()) == dropping
+    earlier = {
+        key: value for key, value in checked.to_json().items() if key not in {"sent_binding", "input_transformations"}
+    }
+    assert TurnReply.from_json(earlier) == replace(checked, sent_binding=None, input_transformations=None), (
+        "a reply recorded before the members reads them as none"
+    )
+
+
+def test_a_binding_refuses_a_behaviour_the_provider_does_not_take() -> None:
+    with pytest.raises(ValueError, match="'error' or 'drop_block', not 'warn'"):
+        ThinkingBinding(prefix_mismatch_behavior="warn")  # type: ignore[arg-type]
 
 
 def test_a_clearing_refuses_a_limit_that_is_not_a_count_above_0() -> None:

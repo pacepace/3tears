@@ -60,6 +60,9 @@ class TurnCost:
     :ivar stop_reason: Why the reply stopped, in a turn's words.
     :ivar wall_s: Seconds from sending the turn to its reply.
     :ivar refused: Why the client refused the reply after it was paid for, or ``None`` for a reply the session read.
+    :ivar sent_binding: The thinking binding's behaviour the request carried, or ``None`` when it carried none.
+    :ivar input_transformations: What the provider reported doing to the request's input, as it wrote it, or ``None``
+        when the response carried no report.
     """
 
     session: str
@@ -79,6 +82,8 @@ class TurnCost:
     stop_reason: str
     wall_s: float
     refused: str | None = None
+    sent_binding: str | None = None
+    input_transformations: tuple[dict[str, Any], ...] | None = None  # Any: the provider's JSON objects
 
     @classmethod
     def of(
@@ -129,6 +134,8 @@ class TurnCost:
             stop_reason=reply.stop_reason,
             wall_s=wall_s,
             refused=refused,
+            sent_binding=reply.sent_binding,
+            input_transformations=reply.input_transformations,
         )
 
     def to_json(self) -> dict[str, Any]:  # Any: a JSON object
@@ -155,6 +162,10 @@ class TurnCost:
             "stop_reason": self.stop_reason,
             "wall_s": self.wall_s,
             "refused": self.refused,
+            "sent_binding": self.sent_binding,
+            "input_transformations": (
+                None if self.input_transformations is None else [dict(entry) for entry in self.input_transformations]
+            ),
         }
 
 
