@@ -377,7 +377,8 @@ CORE_SCHEMA_VERSION: int = 15
 #:   ``simulator_asked_settings``; default None: no simulated user, or stored before the field existed) and
 #:   ``EvalRun.run_disclosure`` (a ``RunDisclosure``: the host's disclosed values and statements about the launch;
 #:   default None: none disclosed, or stored before the field existed). Each is left out of the document when unset,
-#:   so a run setting none is stored byte for byte as before. None is in any identity, key, digest, cell or confound.
+#:   so a run setting none is stored byte for byte as before. None is in any identity, context or variant key, cell or
+#:   confound; the disclosure is carried into the bundle, so a run setting one moves its bundle's fingerprint.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 CORE_SCHEMA_MINOR: int = 11
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""

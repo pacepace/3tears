@@ -19,7 +19,11 @@ import json
 from functools import cache
 from importlib.metadata import PackageNotFoundError, distribution
 
+from threetears.evals.schema.logs import get_logger
+
 __all__ = ["package_rev", "package_version"]
+
+log = get_logger(__name__)
 
 #: The distribution this package is installed as.
 _DISTRIBUTION = "3tears-evals"
@@ -47,8 +51,8 @@ def package_rev() -> str | None:
     """The git commit the installed distribution was built from, as its installer recorded it, or None.
 
     :return: ``vcs_info.commit_id`` of the distribution's ``direct_url.json`` when it was installed from git; None for
-        an install that recorded no commit (a wheel from an index, an editable or local-directory install) or a build
-        with no distribution metadata.
+        an install that recorded no commit (a wheel from an index, an editable or local-directory install), a build
+        with no distribution metadata, or a ``direct_url.json`` that does not parse, which is logged as a warning.
     :rtype: str | None
     """
     try:
@@ -60,8 +64,14 @@ def package_rev() -> str | None:
         return None
     try:
         direct_url = json.loads(recorded)
-    except json.JSONDecodeError:
-        # NOSILENT: an installer's record that does not parse names no commit; the stamp says not recorded
+    except json.JSONDecodeError as unreadable:
+        # The install is damaged, which an operator is told; the stamp names no commit rather than a guess.
+        log.warning(
+            "the installed %s's %s does not parse (%s): runs launched by this build record no git commit",
+            _DISTRIBUTION,
+            _DIRECT_URL,
+            unreadable,
+        )
         return None
     vcs = direct_url.get("vcs_info") if isinstance(direct_url, dict) else None
     commit = vcs.get("commit_id") if isinstance(vcs, dict) else None

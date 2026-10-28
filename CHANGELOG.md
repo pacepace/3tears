@@ -77,8 +77,8 @@ the memo writer's message over it, now carry the pricing.
 `EvalRun.package_rev` (the git commit its installer recorded in the distribution's `direct_url.json`, written for an
 install from a git URL; `None` for a wheel from an index, an editable or local-directory install, or no metadata, never
 a guess). A run that pins a simulated user records `EvalRun.simulator_prompt_digest`, the content address of what the
-simulated user is told, beside `simulator_asked_settings`: it moves with an actor's policy or intent, the scheduler or
-the engine's own framing text.
+simulated user is told, beside `simulator_asked_settings`: it moves with an actor's policy or intent, the scheduler, the
+round's cap or any of the engine's own words its calls carry (prompts, reply formats, the scheduler's repair).
 
 **Added:** a host may disclose what it knows about each launch (its machine, that machine's load, how it measures
 latency) by setting `LaunchHost.run_disclosure`, a callable returning a `RunDisclosure` (`values`, each by the host's
@@ -86,7 +86,9 @@ own name, and `statements`, in its own words). The launch stamps it on every run
 included, as `EvalRun.run_disclosure`; the bundle carries it on each run summary's `RunApparatus.run_disclosure`, the
 report input on its rig (`RunRig.disclosure`), and `campaign_overview` on the rig row, by run (`RigRow.disclosed`). It
 is a disclosure, never a coordinate: it is in no identity, context key, cell, confound or apparatus class, and runs
-that disclose different machines share one rig row. Every new field is left out of its document when unset, so a run,
+that disclose different machines share one rig row. It is evidence the bundle carries, so a run carrying one moves
+its bundle's fingerprint and a snapshot's id. A disclosure callable that fails, or returns no `RunDisclosure`, refuses
+the launch naming `LaunchHost.run_disclosure`. Every new field is left out of its document when unset, so a run,
 bundle or input with none stores and digests as before. Core schema v15.11.
 
 **Added:** an analyst's examples carry every judged dimension's reason (`Example.reasons` on the report input, by

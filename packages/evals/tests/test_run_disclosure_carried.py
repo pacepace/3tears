@@ -43,6 +43,7 @@ from threetears.evals.kernel import (
     EvalStorage,
     JudgeCase,
     JudgeCaseSource,
+    ValidationFailedError,
     judge_case_payload,
 )
 from threetears.evals.kernel.identity import derive_context_identity, derive_variant_identity
@@ -113,6 +114,33 @@ async def _toy_run(disclosure: RunDisclosure | None) -> EvalRun:
 async def test_a_launch_through_a_disclosing_host_stamps_its_disclosure_on_the_run() -> None:
     stored = await _toy_run(_STUDIO)
     assert stored.run_disclosure == _STUDIO
+
+
+def _failing() -> RunDisclosure:
+    raise OSError("load average unreadable")
+
+
+@pytest.mark.parametrize("disclose", [_failing, lambda: {"machine": "studio"}], ids=["raises", "not a disclosure"])
+async def test_a_failing_disclosure_is_refused_naming_the_hosts_disclosure_and_nothing_runs(disclose: Any) -> None:
+    def built() -> tuple[LaunchHost, EvalStorage]:
+        storage = EvalStorage(InMemoryDocumentStore())
+        storage.save_template(toyhost_template())
+        host, _client = toyhost_launch_host(storage=storage, run_disclosure=disclose)
+        return host, storage
+
+    host, storage = off_loop(built)
+    with pytest.raises(ValidationFailedError) as refused:
+        await start_run(
+            host,
+            template_id=toyhost_template().id,
+            scope_id=TOYHOST_SCOPE,
+            subject_id=TOYHOST_SUBJECT.subject_id,
+            models=[RUN_MODELS[0]],
+        )
+    assert "LaunchHost.run_disclosure" in refused.value.message
+    assert "invalid run parameters" not in refused.value.message
+    assert "LaunchHost.run_disclosure" in refused.value.remedy
+    assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
 
 
 async def test_a_launch_through_a_host_disclosing_nothing_stores_no_disclosure_and_no_key() -> None:

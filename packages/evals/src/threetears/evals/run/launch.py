@@ -1432,6 +1432,38 @@ class KindWiring:
             )
 
 
+def _host_disclosure(host: LaunchHost) -> RunDisclosure | None:
+    """What the host discloses about this launch (``LaunchHost.run_disclosure``), or None for a host that discloses
+    nothing; refused, naming the host's disclosure, where its callable fails or returns something else.
+
+    :param host: The launching host.
+    :ptype host: LaunchHost
+    :return: The disclosure, or None.
+    :rtype: RunDisclosure | None
+    :raises ValidationFailedError: The host's disclosure raised, or returned no ``RunDisclosure``; nothing is built.
+    """
+    if host.run_disclosure is None:
+        return None
+    remedy = (
+        "fix the host's LaunchHost.run_disclosure, a callable taking nothing and returning a RunDisclosure, or build "
+        "the host with run_disclosure=None to disclose nothing"
+    )
+    try:
+        disclosed = host.run_disclosure()
+    except Exception as failed:
+        raise ValidationFailedError(
+            f"the host's run disclosure (LaunchHost.run_disclosure) failed, so the run was not launched: {failed!r}",
+            remedy=remedy,
+        ) from failed
+    if not isinstance(disclosed, RunDisclosure):
+        raise ValidationFailedError(
+            f"the host's run disclosure (LaunchHost.run_disclosure) returned a {type(disclosed).__name__}, not a "
+            "RunDisclosure, so the run was not launched",
+            remedy=remedy,
+        )
+    return disclosed
+
+
 def no_launcher_for(template_id: str, candidate_kind: str, launchable: Mapping[str, Any]) -> ValidationFailedError:
     """The refusal for a template whose kind this host cannot launch — one wording, wherever it fires.
 
@@ -3977,6 +4009,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             if wiring.cell_timeout_s is not None
             else "default"
         )
+        disclosure = _host_disclosure(host)
         try:
             run = EvalRun(
                 scope_id=request.scope_id,
@@ -4065,7 +4098,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 package_version=package_version(),
                 package_rev=package_rev(),
                 # What the host discloses about this launch, for every kind alike; none from a host that discloses none.
-                run_disclosure=host.run_disclosure() if host.run_disclosure is not None else None,
+                run_disclosure=disclosure,
                 max_cost_usd=EvalRunCostCap.resolve_effective_ceiling(
                     max_cost_usd,
                     configured_max_cost_usd=configured_max_cost_usd,
