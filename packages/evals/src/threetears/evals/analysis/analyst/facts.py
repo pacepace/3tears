@@ -102,6 +102,8 @@ __all__ = [
     "ReadingsListing",
     "campaign_overview",
     "caveats_list",
+    "confound_caveat_id",
+    "contrast_key",
     "contrasts_list",
     "examples_list",
     "measure_read",
@@ -995,17 +997,37 @@ class ContrastListing(_Fact):
     next_offset: int | None = Field(description="The next page's offset; none on the last page.")
 
 
-def _contrast_prefix(report_input: ReportInput, contrast: Contrast) -> str:
+def contrast_key(report_input: ReportInput, contrast: Contrast) -> str:
     """The key a contrast's figures are read under: unqualified, or by its aspect where the input holds its arm and
-    measure more than once."""
+    measure more than once. ``contrasts_list`` cites a contrast's figures under it, and the editor's
+    ``caveat_not_carried`` fact (``analysis/report_doc_facts.py``) names them alike.
+
+    :param report_input: The snapshot's frozen report input.
+    :ptype report_input: ReportInput
+    :param contrast: One of its contrasts.
+    :ptype contrast: Contrast
+    :return: The key's path, before its statistic (``contrast.<arm>.<measure>``).
+    :rtype: str
+    """
     held = [c for c in report_input.contrasts if (c.arm, c.measure) == (contrast.arm, contrast.measure)]
     if len(held) > 1 and contrast.aspect is not None:
         return f"aspects.{contrast.aspect}.contrast.{contrast.arm}.{contrast.measure}"
     return f"contrast.{contrast.arm}.{contrast.measure}"
 
 
-def _caveat_id(caveats: Iterable[Caveat], dimension: str) -> str:
-    """A confound's caveat id: its apparatus or confound caveat where the input lists one, else the dimension."""
+def confound_caveat_id(caveats: Iterable[Caveat], dimension: str) -> str:
+    """A confound's caveat id: its apparatus or confound caveat where the input lists one, else the dimension.
+
+    ``contrasts_list`` names each contrast's confounds by it, and the editor's ``caveat_not_carried`` fact reads them
+    alike.
+
+    :param caveats: The caveats code assigns on the snapshot (``report_caveats``).
+    :ptype caveats: Iterable[Caveat]
+    :param dimension: The confound's dimension, as a contrast names it.
+    :ptype dimension: str
+    :return: ``apparatus:<dimension>`` or ``confound:<dimension>``, whichever the caveats hold, else the dimension.
+    :rtype: str
+    """
     ids = {caveat.id for caveat in caveats}
     return next((held for held in (f"apparatus:{dimension}", f"confound:{dimension}") if held in ids), dimension)
 
@@ -1057,9 +1079,9 @@ def contrasts_list(
             arm=cite(f"arm:{contrast.arm}", report_input),
             measure=contrast.measure,
             aspect=contrast.aspect,
-            confounds=[_caveat_id(caveats, dimension) for dimension in contrast.confounds],
+            confounds=[confound_caveat_id(caveats, dimension) for dimension in contrast.confounds],
             figures=_figures(
-                (f"{_contrast_prefix(report_input, contrast)}.{statistic}" for statistic in _CONTRAST), report_input
+                (f"{contrast_key(report_input, contrast)}.{statistic}" for statistic in _CONTRAST), report_input
             ),
         )
         for contrast in page

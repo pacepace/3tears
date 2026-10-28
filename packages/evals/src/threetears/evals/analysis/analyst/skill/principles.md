@@ -54,10 +54,10 @@ Say a caveat once, at the level it applies to. A caveat that touches the whole c
 Confidence is conditional on the caveats, never capped by them. There are three forms:
 
 - **`high`**: no open caveat that bears on the call remains.
-- **`high_if_immaterial`**: the evidence is strong and caveats remain open. Each one gets a `material_if` clause saying what would make it matter ("only if the judge misreads in-character replies"). Where the deciding finding doesn't rest on the caveat, the clause says so ("cost, the deciding finding, is measured"), but only when no caveat is attached to that finding's own evidence. A caveat that is attached to it is said beside it, with the way it would likely move it.
+- **`high_if_immaterial`**: the evidence is strong and caveats remain open. Each one gets a `material_if` clause saying what would make it matter ("only if the judge favours one arm's style"). Where the deciding finding doesn't rest on the caveat, the clause says so. That clause speaks for its own caveat only. Never write that no caveat can move the deciding finding while one attached to the finding's own evidence could: that one is said beside the finding, with the way it would likely move it.
 - **`low`**: the evidence is weak even if every caveat is immaterial. A pick that nothing separates is the usual case.
 
-Word each caveat by its condition. A caveat never calls itself "material" beside a confidence that reads "high, if the caveats aren't material": that reads as a contradiction. Say instead what would make it matter ("only if the owner's minimum sits above the pick's figure"). Where a caveat matters to the call whatever happens (nothing declared ranks the options), say what the confidence covers ("high in the measured figures; the choice among them waits on a declared price") rather than leaving a bare "high".
+Word each caveat by its condition. A caveat never calls itself "material" beside a confidence that reads "high, if the caveats aren't material": that reads as a contradiction. Say instead what would make it matter ("only if a stricter floor were declared"). Where a caveat matters to the call whatever happens, say which findings the high applies to and what it leaves open, rather than leaving a bare "high".
 
 The form reads the method and the variance of the evidence, never the result alone. A lead's wrong-side risk (how often a fresh run of today's size would read the other way) is stated beside the call, and doesn't lower the form by itself.
 

@@ -52,8 +52,11 @@ tools already hold:
   confound is that dimension), and neither the claim nor the confidence carries it. A claim's evidence reads a
   contrast when one of its blocks reads the contrast's measure for its arm (the query names the measure, or reads the
   ``contrasts`` source with no measure named; it names the arm or every arm; it names the contrast's aspect or none),
-  or a figure key in the claim's text or a caption names the contrast's arm and measure. One fact per claim, contrast
-  and caveat. Whether the caveat could move the claim, and which way, is the editor's.
+  or a figure key in the claim's text or a caption names the contrast's arm and measure. A block reading every reading
+  of an aspect does not name a contrast's measure, so it reads none; the editor's rubric (a finding called immune while
+  a caveat on its evidence could move it is a must_fix) covers what this fact does not. A method-reach caveat landed
+  on a Method term is carried too (it may land in Method alone). One fact per claim, contrast and caveat. Whether the
+  caveat could move the claim, and which way, is the editor's.
 
 **What a fact is.** An :class:`EditorFact` is ``{kind, path, fact, figures}``. ``path`` is the document field the fact
 is about (``recommends[0]``, ``decision[2]``, ``claims[1].text``), or empty for the document as a whole. ``fact`` is the
@@ -90,6 +93,7 @@ from threetears.evals.analysis.analyst.analyses import (
     gate_reads,
 )
 from threetears.evals.analysis.analyst.cited import cite
+from threetears.evals.analysis.analyst.facts import confound_caveat_id, contrast_key
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import WEAKEST_PREFIX, Figure, format_figure, reader_name
 from threetears.evals.analysis.report_decision import control_arm, floors_not_held, report_caveats, shown_better
@@ -504,13 +508,6 @@ def _count_facts(doc: ReportDoc) -> Iterator[EditorFact]:
 # --- a caveat code attaches to a contrast a claim reads ------------------------------------------------------------
 
 
-def _contrast_key(contrast: Contrast) -> str:
-    """A contrast's key, by its aspect where it states one (the form every aspect's contrast reads by)."""
-    if contrast.aspect is not None:
-        return f"aspects.{contrast.aspect}.contrast.{contrast.arm}.{contrast.measure}"
-    return f"contrast.{contrast.arm}.{contrast.measure}"
-
-
 def _block_reads(query: ChartQuery, contrast: Contrast) -> bool:
     """Whether a block's query reads a contrast's measure for its arm, on its aspect or none."""
     measure = contrast.measure in query.measures or (query.source == "contrasts" and not query.measures)
@@ -553,7 +550,7 @@ def _resolves(path: str, report_input: ReportInput) -> bool:
 def _contrast_said(report_input: ReportInput, contrast: Contrast) -> list[_Part]:
     """A contrast as a sentence cites it: its arm and measure, then its change and interval by key where both read."""
     said: list[_Part] = [_arm(contrast.arm), f"'s contrast on {_measure_said(report_input, contrast.measure)}"]
-    prefix = _contrast_key(contrast)
+    prefix = contrast_key(report_input, contrast)
     delta, interval = _Key(f"{prefix}.delta"), _Key(f"{prefix}.interval")
     if all(_resolves(key.path, report_input) for key in (delta, interval)):
         said += [", ", delta, " (", interval, ")"]
@@ -561,17 +558,19 @@ def _contrast_said(report_input: ReportInput, contrast: Contrast) -> list[_Part]
 
 
 def _caveat_facts(doc: ReportDoc, report_input: ReportInput) -> Iterator[EditorFact]:
-    assigned = {caveat.id for caveat in report_caveats(report_input)}
-    apparatus = {confound.dimension for confound in report_input.caveats.apparatus_confounds}
-    confidence = {caveat.id for caveat in doc.confidence.caveats}
+    assigned = report_caveats(report_input)
+    method_reach = {caveat.id for caveat in assigned if caveat.reach == "method"}
+    in_method = {caveat for item in doc.method for caveat in item.caveats if caveat in method_reach}
+    carried_anywhere = {caveat.id for caveat in doc.confidence.caveats} | in_method
+    ids = {caveat.id for caveat in assigned}
     for index, claim in enumerate(doc.claims):
-        carried = confidence | set(claim.caveats)
+        carried = carried_anywhere | set(claim.caveats)
         for contrast in report_input.contrasts:
             if not contrast.confounds or not _claim_reads(claim, contrast):
                 continue
             for dimension in dict.fromkeys(contrast.confounds):
-                caveat = f"apparatus:{dimension}" if dimension in apparatus else f"confound:{dimension}"
-                if caveat not in assigned or caveat in carried:
+                caveat = confound_caveat_id(assigned, dimension)
+                if caveat not in ids or caveat in carried:
                     continue
                 parts: list[_Part] = [
                     f"The evidence of claim {claim.id} reads ",

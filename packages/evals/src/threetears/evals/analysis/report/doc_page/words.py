@@ -84,11 +84,11 @@ CAVEAT_LABELS: Final[dict[str, str]] = {
 CAVEATS_TEMPLATE = "Caveats: {labels}."
 
 #: A label several of the caveats beside one claim or Method item share (two runs of one arm short of their usable
-#: measurements): said once, with how many caveats carry it and the arms their records name.
-CAVEAT_REPEATED_ON = "{label} ({count} of them, on {arms})"
+#: measurements): said once, with how many caveats carry it, as a count in words, and the arms their records name.
+CAVEAT_REPEATED_ON = "{label} — {count} of them, on {arms}"
 
 #: The same, where no record among them names an arm.
-CAVEAT_REPEATED = "{label} ({count} of them)"
+CAVEAT_REPEATED = "{label} — {count} of them"
 
 #: How a checked caveat's line is marked in Markdown and the page text: code's, not a caveat left open.
 CHECKED_MARK = "(checked)"
