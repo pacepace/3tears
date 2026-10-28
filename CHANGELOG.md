@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### iam: client-IP resolution can skip every trusted hop
+
+**Added:** `ForwardedForMode.RIGHTMOST_UNTRUSTED`, passed as `mode=` to `resolve_client_ip` and
+`resolve_request_client_ip`. It walks `X-Forwarded-For` from the right, skips every entry inside the trusted
+CIDRs, and returns the first one outside them (nginx's `real_ip_recursive`). The fixed hop count keyed every
+request that crossed one more internal proxy than configured on that proxy, so all its callers shared one rate-limit
+bucket. Entries left of the chosen one are never read, so forged leading entries change nothing. A chain that is all
+trusted resolves to its leftmost entry; a malformed entry resolves to the trusted hop that received it, never to the
+junk string. The trusted CIDRs must cover every internal hop, load balancers included. `HOPS` stays the default, so
+existing callers are unchanged.
+
 ## v0.81.0 -- 2026-10-28
 
 ### core: a DuckDB L1 table can be key-less, its key kept by the backend

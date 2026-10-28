@@ -21,6 +21,16 @@ exists for that. Getting the hop count wrong in the permissive direction hands
 the forgery back, so it is an explicit argument with a conservative default
 rather than something inferred.
 
+**Rightmost untrusted, any number of hops.** A fixed hop count breaks as soon as the
+path varies: a request through a site's own nginx carries one more internal hop than a
+request straight to the ingress, so no single count is right for both, and a count that
+is too small lands on an internal proxy -- every caller shares that proxy's bucket again.
+:attr:`ForwardedForMode.RIGHTMOST_UNTRUSTED` instead walks the entries from the right,
+skips every one inside the trusted CIDRs, and returns the first that is not (nginx's
+``real_ip_recursive`` semantics). Entries left of that one are never consulted, so a
+client that prepends forged addresses changes nothing. It is opt-in: the trusted CIDRs
+must then cover EVERY internal hop, or the first uncovered hop becomes everyone's key.
+
 **Duplicate header lines.** HTTP allows a header to arrive as several separate
 lines rather than one comma-joined value. An accessor that returns only the
 first line would hand back the client-controlled portion as though it were the
@@ -32,11 +42,13 @@ from __future__ import annotations
 
 import ipaddress
 from collections.abc import Sequence
+from enum import StrEnum
 from typing import Protocol
 
 from threetears.observe import get_logger
 
 __all__ = [
+    "ForwardedForMode",
     "ForwardedRequest",
     "TrustedProxyCidr",
     "is_trusted_peer",
@@ -50,6 +62,19 @@ log = get_logger(__name__)
 #: A parsed trusted-proxy network. Either IP version; both are matched by version before
 #: containment, since an IPv4 address is never inside an IPv6 network.
 type TrustedProxyCidr = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+class ForwardedForMode(StrEnum):
+    """How :func:`resolve_client_ip` picks an entry out of ``X-Forwarded-For``.
+
+    ``HOPS`` is the original behaviour and stays the default: the entry ``trusted_hops``
+    from the right. ``RIGHTMOST_UNTRUSTED`` walks from the right past every trusted entry
+    and returns the first untrusted one, so it holds however many internal proxies a given
+    request crossed (module docstring).
+    """
+
+    HOPS = "hops"
+    RIGHTMOST_UNTRUSTED = "rightmost_untrusted"
 
 
 def parse_trusted_cidrs(raw: str | Sequence[str] | None) -> tuple[TrustedProxyCidr, ...]:
@@ -92,11 +117,13 @@ def resolve_client_ip(
     forwarded_for: Sequence[str] = (),
     trusted: Sequence[TrustedProxyCidr] = (),
     trusted_hops: int = 1,
+    mode: ForwardedForMode = ForwardedForMode.HOPS,
 ) -> str | None:
     """Resolve the real client IP from the direct peer and any ``X-Forwarded-For`` values.
 
     Returns the direct peer unchanged unless that peer is a trusted proxy AND forwarded
-    values are present, in which case it returns the entry ``trusted_hops`` from the right.
+    values are present. Then, under ``HOPS``, it returns the entry ``trusted_hops`` from
+    the right; under ``RIGHTMOST_UNTRUSTED``, the rightmost entry outside ``trusted``.
 
     Deliberately framework-agnostic: it takes the peer address and the header values rather
     than a request object, so the same function serves an ASGI app, a relayed RPC carrying
@@ -111,8 +138,11 @@ def resolve_client_ip(
     :param trusted: the trusted-proxy networks. Empty means trust nothing and use the peer.
     :ptype trusted: Sequence[TrustedProxyCidr]
     :param trusted_hops: how many proxies sit in front of this app. The resolved address is
-        the ``trusted_hops``-th entry counting from the right.
+        the ``trusted_hops``-th entry counting from the right. Ignored under
+        ``RIGHTMOST_UNTRUSTED``.
     :ptype trusted_hops: int
+    :param mode: which entry to pick; see :class:`ForwardedForMode`.
+    :ptype mode: ForwardedForMode
     :return: the resolved client address, or ``None`` if there was no peer at all.
     :rtype: str | None
     """
@@ -129,11 +159,37 @@ def resolve_client_ip(
         )
         return peer
     candidates = [chunk.strip() for value in forwarded_for for chunk in value.split(",") if chunk.strip()]
+    if mode is ForwardedForMode.RIGHTMOST_UNTRUSTED:
+        return _rightmost_untrusted(peer, candidates, trusted)
     if len(candidates) < trusted_hops:
         # Fewer entries than hops means the chain is not what was configured. Fall back to
         # the peer rather than reaching past the end and picking a client-supplied value.
         return peer
     return candidates[-trusted_hops]
+
+
+def _rightmost_untrusted(peer: str, candidates: Sequence[str], trusted: Sequence[TrustedProxyCidr]) -> str:
+    """The rightmost entry outside ``trusted``, walking from the right.
+
+    ``nearest`` is the leftmost trusted address seen so far -- the peer to begin with, then
+    each trusted entry in turn. Two cases return it rather than an entry:
+
+    * every entry is trusted: the leftmost one is the real origin (an in-cluster caller),
+      exactly as nginx's ``real_ip_recursive`` resolves it;
+    * the first untrusted entry does not parse as an address: it cannot be a key, and
+      returning it would let a client rotate junk strings into fresh buckets. The trusted
+      hop that received it is the best address actually known.
+    """
+    nearest = peer
+    for entry in reversed(candidates):
+        try:
+            address = ipaddress.ip_address(entry)
+        except ValueError:
+            return nearest
+        if not any(address.version == network.version and address in network for network in trusted):
+            return entry
+        nearest = entry
+    return nearest
 
 
 class _HeaderValues(Protocol):
@@ -174,6 +230,7 @@ def resolve_request_client_ip(
     *,
     trusted: Sequence[TrustedProxyCidr] = (),
     trusted_hops: int = 1,
+    mode: ForwardedForMode = ForwardedForMode.HOPS,
 ) -> str | None:
     """Resolve the real client IP straight off an ASGI request.
 
@@ -189,8 +246,10 @@ def resolve_request_client_ip(
         trusted and the direct peer is used unchanged, so a deployment that has not opted in
         behaves exactly as it did before.
     :ptype trusted: Sequence[TrustedProxyCidr]
-    :param trusted_hops: how many proxies sit in front of this app.
+    :param trusted_hops: how many proxies sit in front of this app (``HOPS`` mode only).
     :ptype trusted_hops: int
+    :param mode: which ``X-Forwarded-For`` entry to pick; see :class:`ForwardedForMode`.
+    :ptype mode: ForwardedForMode
     :return: the resolved client address, or ``None`` when the transport exposes no peer at
         all -- an in-process test client, say. ``None`` means "cannot key by IP", which a
         caller must treat as skip-the-limiter rather than one shared bucket for everyone.
@@ -201,4 +260,5 @@ def resolve_request_client_ip(
         forwarded_for=request.headers.getlist("x-forwarded-for"),
         trusted=trusted,
         trusted_hops=trusted_hops,
+        mode=mode,
     )
