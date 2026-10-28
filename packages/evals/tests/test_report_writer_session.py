@@ -517,6 +517,9 @@ async def test_a_reply_holding_the_snapshot_placeholder_is_tallied_before_it_is_
     (paid,) = tally.turns
     assert paid.cost_usd == 0.42 and paid.refused is not None and "{snapshot}" in paid.refused
     assert budget.spent == pytest.approx(0.42)
+    assert inner.requests[0]["context_management"] == SessionLimits().clearing().to_json(), (
+        "the recording passes the clearing on to the client it records through"
+    )
 
 
 # --- tool results ---------------------------------------------------------------------------------------------------
@@ -865,3 +868,22 @@ async def test_any_client_refusing_a_paid_reply_keeps_the_turn_s_cost() -> None:
     assert refused.value.reply is paid
     assert [(turn.cost_usd, turn.refused) for turn in tally.turns] == [(0.3, "the reply named a forbidden id")]
     assert budget.spent == pytest.approx(0.3)
+
+
+async def test_a_call_left_open_by_the_hard_stop_is_answered_as_the_previous_round_s() -> None:
+    limits = AnalystLimits(draft_calls=1, session=SessionLimits(warn_before=0))
+    client = FakeToolTurnClient(reply(call(1)), reply(call(2)), reply(submitted()))
+    session = start(client, limits=limits)
+    assert (await session.draft()).ending == "over_budget"
+
+    await session.revise(REVISION)
+
+    (left_open, request) = last_user(client.requests[2])
+    assert left_open == {
+        "type": "tool_result",
+        "tool_use_id": "toolu_002",
+        "content": "not run: the previous round's tool calls were used up when this call was made; this round starts "
+        "with a fresh budget of 30 tool calls",
+        "is_error": True,
+    }
+    assert request["text"].startswith(REVISION)

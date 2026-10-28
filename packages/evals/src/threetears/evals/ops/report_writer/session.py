@@ -476,11 +476,21 @@ class ToolSession:
     def _append_user(self, blocks: list[TurnBlock]) -> None:
         """Append a user message, answering first any tool call the last reply left open. A user message the
         conversation already ends on (after a reply that was not kept, or a turn the budget refused) stays as it
-        was, and the new one follows it, which the provider reads as one turn: nothing sent is ever changed."""
+        was, and the new one follows it, which the provider reads as one turn: nothing sent is ever changed.
+
+        A call is left open only by the hard stop, after which the session is next sent to in a new round (whose
+        :meth:`open_round` ends the stop), so its answer names the round that ran out and this one's fresh budget."""
         if self._messages and self._messages[-1].role == "assistant":
             open_calls = [block.id for block in self._messages[-1].content if isinstance(block, TurnToolUse)]
-            blocks = [*(TurnToolResult(call, self._not_run(), is_error=True) for call in open_calls), *blocks]
+            answer = self._not_run() if self._closing else self._not_run_before()
+            blocks = [*(TurnToolResult(call, answer, is_error=True) for call in open_calls), *blocks]
         self._messages.append(TurnMessage("user", blocks))
+
+    def _not_run_before(self) -> str:
+        return (
+            "not run: the previous round's tool calls were used up when this call was made; this round starts with a "
+            f"fresh budget of {self._calls} tool calls"
+        )
 
     def to_json(self) -> dict[str, Any]:  # Any: a JSON object
         """The session as a stored value, which :meth:`from_json` resumes (the module docstring says what it holds).
