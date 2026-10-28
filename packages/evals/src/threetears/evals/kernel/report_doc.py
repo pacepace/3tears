@@ -14,7 +14,7 @@ the options table with ``recommends`` marked, the form words, each block's level
 appendix, the omitted list and the made line) is computed, never written here. ``recommends`` holds only the arms the
 report recommends: a tradeoff's lean stays in its prose, and an empty list (no call) is valid.
 
-**Where the prose is.** :data:`REPORT_DOC_PROSE_FIELDS` names every field a reader reads as prose, by path. Three of
+**Where the prose is.** :data:`_PROSE_FIELDS` names every field a reader reads as prose, by path. Three of
 them (``explore[].outcome``, ``next[].settles``, ``confidence.caveats[].label``) are not typed :data:`ModelProse`,
 because the prose scan reads by attribute name and other models read a structured ``outcome``, ``settles`` and
 ``label`` by value; so a check over a document's prose (the invariants' typed digits and internal ids, the editor's
@@ -121,8 +121,8 @@ class _Doc(BaseModel):
 
 #: Every field of a report document a reader reads as prose, by path (``[]`` marks a list's items), in document
 #: order. The module docstring says why a check over prose walks this rather than the :data:`ModelProse` type; a test
-#: holds it to every text field of :class:`ReportDoc` that is not an id.
-REPORT_DOC_PROSE_FIELDS: Final[tuple[str, ...]] = (
+#: holds :func:`report_doc_prose`, which walks it, to every text field of :class:`ReportDoc` that is not an id.
+_PROSE_FIELDS: Final[tuple[str, ...]] = (
     "headline",
     "lede",
     "flag",
@@ -144,7 +144,7 @@ REPORT_DOC_PROSE_FIELDS: Final[tuple[str, ...]] = (
 
 
 def report_doc_prose(doc: ReportDoc) -> Iterator[tuple[str, str]]:
-    """Every prose field a document holds, each by its concrete path, in :data:`REPORT_DOC_PROSE_FIELDS` order.
+    """Every prose field a document holds, each by its concrete path, in :data:`_PROSE_FIELDS` order.
 
     A path names each list item by its index (``claims[2].evidence[0].caption``); a field the document leaves out
     (``flag``) yields nothing. The invariants and the editor's facts both read a document's prose through this, so
@@ -155,7 +155,7 @@ def report_doc_prose(doc: ReportDoc) -> Iterator[tuple[str, str]]:
     :return: ``(path, text)`` for each prose field, a list field once per item.
     :rtype: Iterator[tuple[str, str]]
     """
-    for field in REPORT_DOC_PROSE_FIELDS:
+    for field in _PROSE_FIELDS:
         yield from _prose_at(doc, field.split("."), "")
 
 

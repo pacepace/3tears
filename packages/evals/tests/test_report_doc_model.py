@@ -10,6 +10,7 @@ prototypes nothing, on the first prototype the caveat ids its analyst made up, w
 from __future__ import annotations
 
 import json
+import re
 import types
 from collections.abc import Callable, Iterator
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
@@ -24,7 +25,7 @@ from packages.evals.tests.report_doc_support import (
     snapshot_arms,
     snapshot_caveats,
 )
-from threetears.evals.kernel.report_doc import REPORT_DOC_PROSE_FIELDS, ReportDoc, report_doc_validity
+from threetears.evals.kernel.report_doc import ReportDoc, report_doc_prose, report_doc_validity
 from threetears.evals.schema.prose import field_is_prose
 
 #: The Kairo document of the third prototype, which every refusal below starts from.
@@ -272,19 +273,58 @@ def _text_fields(model: type[BaseModel], prefix: str = "") -> Iterator[tuple[str
             assert get_origin(annotation) is Literal or annotation in (bool, int), (path, annotation)
 
 
-def test_the_prose_fields_are_every_text_field_a_reader_reads() -> None:
-    """REPORT_DOC_PROSE_FIELDS and the id fields split every text field once, and every typed prose field is prose.
+def _bare(annotation: Any) -> tuple[Any, int]:
+    """``annotation`` with its optional, list and ``Annotated`` wrappers taken off, and how many lists it sat in."""
+    lists = 0
+    while True:
+        origin = get_origin(annotation)
+        if origin in (Union, types.UnionType):
+            annotation = next(arg for arg in get_args(annotation) if arg is not type(None))
+        elif origin is list:
+            annotation, lists = get_args(annotation)[0], lists + 1
+        elif origin is Annotated:
+            annotation = get_args(annotation)[0]
+        else:
+            return annotation, lists
 
-    A text field added to the document goes red here until it is named one or the other, so a check over a
-    document's prose (invariants 1 and 5) walks every field a reader reads, typed model prose or not.
+
+def _filled[M: BaseModel](model: type[M]) -> M:
+    """``model`` built without validation with every field set: a text to a word, a list to one item, a model filled."""
+    values: dict[str, object] = {}
+    for name, field in model.model_fields.items():
+        annotation, lists = _bare(field.annotation)
+        value: object
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            value = _filled(annotation)
+        elif annotation is str:
+            value = "text"
+        elif get_origin(annotation) is Literal:
+            value = get_args(annotation)[0]
+        else:
+            value = annotation()
+        for _ in range(lists):
+            value = [value]
+        values[name] = value
+    return model.model_construct(**values)
+
+
+def test_the_prose_walk_reaches_every_text_field_a_reader_reads() -> None:
+    """``report_doc_prose`` and the id fields split every text field once, and every typed prose field is walked.
+
+    The walk runs on a document with every field filled and one item in each list, so each path it yields, its indices
+    read as ``[]``, is a field it reaches. A text field added to the document goes red here until it is walked as prose
+    or named an id, so a check over a document's prose (invariants 1 and 5, the editor's facts) reads every field a
+    reader reads, typed model prose or not.
     """
     fields = dict(_text_fields(ReportDoc))
+    walked = [re.sub(r"\[\d+\]", "[]", path) for path, _ in report_doc_prose(_filled(ReportDoc))]
+    prose = set(walked)
 
-    assert len(REPORT_DOC_PROSE_FIELDS) == len(set(REPORT_DOC_PROSE_FIELDS))
-    assert set(REPORT_DOC_PROSE_FIELDS).isdisjoint(_ID_FIELDS)
-    assert set(fields) == set(REPORT_DOC_PROSE_FIELDS) | _ID_FIELDS
-    assert {path for path, prose in fields.items() if prose} <= set(REPORT_DOC_PROSE_FIELDS)
-    assert {path for path in REPORT_DOC_PROSE_FIELDS if not fields[path]} == {
+    assert len(walked) == len(prose)
+    assert prose.isdisjoint(_ID_FIELDS)
+    assert set(fields) == prose | _ID_FIELDS
+    assert {path for path, typed in fields.items() if typed} <= prose
+    assert {path for path in prose if not fields[path]} == {
         "explore[].outcome",
         "next[].settles",
         "confidence.caveats[].label",

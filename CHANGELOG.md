@@ -192,7 +192,7 @@ holds an item. Nothing interpretive is a verdict, and no check reads `story`. Th
 callers land (the store, the `report_check` action, the writing loop); the names are pinned in
 `tests/test_report_doc_exports.py`, which now covers both report-document modules. `kernel.report_doc` exports
 `ReportDoc`, `DecisionSlotWord`, `is_analyst_caveat`, `report_doc_validity` and `report_doc_prose(doc)`, which yields
-each prose field's concrete path and text in `REPORT_DOC_PROSE_FIELDS` order: the one walk of a document's prose,
+each prose field's concrete path and text, in document order: the one walk of a document's prose,
 which the invariants and the editor's facts both read, so they scan the same text.
 
 **Changed:** the report plan's typed-digit, doubled-unit and internal-id checks moved to
@@ -215,8 +215,8 @@ assign is named `analyst:<slug>`, carries its own label, and is declared once in
 `report_doc_validity(doc, arms=, caveats=)` names what a well-shaped document cites that its snapshot does not hold,
 reading the caveat ids of `analysis.report_decision.every_caveat`, the stated and implied caveats in one list, which
 `caveats_list` now pages too. `report_doc_json_schema()` is the schema an analyst writes against, written out as
-`docs/eval-report-kit/schema/report-doc.schema.json`, and `REPORT_DOC_PROSE_FIELDS` names every prose field by path,
-the three not typed model prose among them, for a check over a document's prose to walk. The module exports only
+`docs/eval-report-kit/schema/report-doc.schema.json`, and `report_doc_prose(doc)` walks every prose field by path,
+the three not typed model prose among them, for a check over a document's prose to read. The module exports only
 `EvalReportDoc` until its other names gain production callers (the invariants, the claims renderer, the writing loop);
 `tests/test_report_doc_exports.py` lists them and goes red when one gains a caller unexported. `EvalReportDoc`
 (`threetears.evals.kernel`, doc type `eval_report_doc`, derived and regenerable) stores one document as JSON beside its

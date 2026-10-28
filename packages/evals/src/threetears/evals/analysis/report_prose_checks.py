@@ -3,8 +3,8 @@ key already prints, and internal ids a reader should not see.
 
 Each check reads prose as ``(field path, text)`` pairs, so it holds for whatever names its fields:
 :mod:`~threetears.evals.analysis.report_plan_checks` walks a plan's ``ModelProse`` fields and option labels,
-:mod:`~threetears.evals.analysis.report_doc_checks` walks
-:data:`~threetears.evals.kernel.report_doc.REPORT_DOC_PROSE_FIELDS`. A fault is ``(field path, why)``.
+:mod:`~threetears.evals.analysis.report_doc_checks` walks a document's prose through
+:func:`~threetears.evals.kernel.report_doc.report_doc_prose`. A fault is ``(field path, why)``.
 
 - :func:`literal_faults`: prose typing a number itself rather than through a figure key (GENERATOR §6.2's D3 rule,
   :func:`~threetears.evals.analysis.report.figure_keys.literal_numbers`), with an optional pattern of further phrases

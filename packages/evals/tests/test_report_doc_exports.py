@@ -34,7 +34,6 @@ _AWAITING_A_CALLER: dict[ModuleType, frozenset[str]] = {
     report_doc: frozenset(
         {
             "ANALYST_CAVEAT_PREFIX",
-            "REPORT_DOC_PROSE_FIELDS",
             "REPORT_DOC_SCHEMA",
             "Claim",
             "ClaimWeight",
