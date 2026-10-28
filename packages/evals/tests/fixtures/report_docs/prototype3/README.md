@@ -34,3 +34,9 @@ Each directory's `doc.json` is its `report.json` converted to `report-doc/1` as 
 This prototype's conversion also:
 - rewrites r4's headline (267 characters) and r3's lede (469) within the 240 and 420 the schema allows, each keeping every key it cited and its finding;
 - drops `point_estimate:overall` from r3: code no longer assigns it there, since an overall that is the plain mean of its cells now reads an interval derived from theirs. The analyst's notes logged that interval as a capability gap.
+
+## Mended for the invariants (`tests/test_report_doc_checks.py`)
+
+Each converted document of this prototype passes `check_report_doc` with no verdict. Two needed a mend, each a fault the invariants rightly find, made in `doc.json` alone:
+- r1 lists `borderline:trouble.resolves` in its confidence. Code now assigns that caveat on r1's snapshot (Atlas-M clears the troubleshooting resolve gate on its figure while the interval reaches below the line), and a report-wide caveat lands in the confidence. The analyst's notes wished for exactly this id and carried the risk under `best_of_n` and in Watch and the lede; the added `material_if` says it in the lede's own keys.
+- r3's decision no longer writes "times" after `{cost.gap.brisk-s.few.nano-xs.few.multiple|int}`, which now prints its own unit ("21 times").

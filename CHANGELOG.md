@@ -77,6 +77,32 @@ chart of readings, its values table and a reading's `level` key (`reading.<arm>.
 (`stats.INTERVAL_LEVEL`), and a hand-built input needs no gain fields for a reading's chart to draw. What reads the gain
 interval (a reading's spread, two arms apart on a pass rate, the campaign scorecard) keeps its own level.
 
+### evals: the report document's invariants, as code verdicts
+
+**Added (provisional):** `threetears.evals.analysis.report_doc_checks.check_report_doc(doc, report_input,
+page_text=())` returns every verdict code proves against a `report-doc/1` document on its snapshot, each a
+`DocVerdict` of `invariant` (0 for validity, which runs first, then 1 to 6), field `path`, `fault` and `remedy`.
+Numbers come through figure keys (every key renders; no typed digit outside keys but the snapshot's names, percentile
+labels, a cost's unit such as `per 1k`, and the document's own claim ids; no unit doubled after a key that prints it);
+every evidence block completes, passes the chart rules and draws as `block_render` draws it; every report-wide or
+scoped caveat code assigns, stated or implied, lands where its reach allows (a method-level one may land anywhere or
+not at all), each once in the confidence, checked immaterial only where `caveat_materiality` proves it; the
+confidence form matches its open caveats; no internal id (an aspect, measure, criterion, task or stratum id, an arm id
+printed by another name, a caveat id, a slot word, an example's trial or case id) is typed above the appendix, in the
+prose or in the rendered page's text when `page_text` is given (where an example card's trial and case ids are
+allowed); and Method holds an item. Nothing interpretive is a verdict, and no check reads `story`. The module
+exports nothing until its callers land (the store, the `report_check` action, the writing loop); the names are pinned
+in `tests/test_report_doc_exports.py`, which now covers both report-document modules. `kernel.report_doc` exports
+`ReportDoc`, `REPORT_DOC_PROSE_FIELDS`, `DecisionSlotWord`, `is_analyst_caveat` and `report_doc_validity`, which the
+invariants call.
+
+**Changed:** the report plan's typed-digit, doubled-unit and internal-id checks moved to
+`threetears.evals.analysis.report_prose_checks` (`literal_faults`, `unit_faults`, `internal_ids`, `typed_ids`,
+`reads_as_id`), shared by the plan's checks and the document's; the plan's refusals are unchanged. Three converted
+prototype documents were mended for faults the invariants find (r1 of the third prototype lists the borderline gate
+caveat code now assigns, r3 no longer doubles a multiple's unit, s1 no longer types its fixture name), each recorded
+in its prototype's README.
+
 ### evals: the report document, `report-doc/1`, and its stored form `eval_report_doc`
 
 **Added (provisional):** `threetears.evals.kernel.report_doc` holds the report document an analyst writes from a
