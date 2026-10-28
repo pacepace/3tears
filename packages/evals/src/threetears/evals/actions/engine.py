@@ -15,7 +15,9 @@ from functools import partial
 from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, ValidationError
+from datetime import datetime
+
+from pydantic import AwareDatetime, Field, ValidationError
 
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, SCHEMA_REMEDY
 from threetears.evals.actions import render
@@ -23,6 +25,8 @@ from threetears.evals.actions.analyst import analyst_actions
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, ConformanceStage
 from threetears.evals.actions.params import AnalysisId, CampaignId, Limit, Offset
 from threetears.evals.actions.report_writing import campaign_report_writer
+from threetears.evals.kernel.analyst_gap import GapDigest
+from threetears.evals.ops.analyst import analyst_gaps_list
 from threetears.evals.schema import EvalRunStatus
 from threetears.evals.kernel import EvalStorage, ResultOutcome, ValidationFailedError
 from threetears.evals.schema.base import EvalBaseModel
@@ -595,6 +599,18 @@ class ReportReadParams(EvalBaseModel):
         description=(
             "With json, add the full transcripts of the report document the page draws, as report_doc.sessions: "
             "every session that wrote it, by name. Refused with markdown or html, which never hold a transcript."
+        ),
+    )
+
+
+class AnalystGapsListParams(EvalBaseModel):
+    """``analyst_gaps_list``."""
+
+    since: AwareDatetime | None = Field(
+        default=None,
+        description=(
+            "Read only the gaps stored at or after this time, ISO 8601 with its offset (2026-10-28T00:00:00Z), each "
+            "by its own time; omit for every gap."
         ),
     )
 
@@ -1203,6 +1219,11 @@ async def _report_read(host: OpsHost, caller: Caller, params: ReportReadParams) 
         report_doc_id=params.report_doc_id,
         include_sessions=params.include_sessions,
     )
+
+
+async def _analyst_gaps_list(host: OpsHost, caller: Caller, params: AnalystGapsListParams) -> GapDigest:
+    since: datetime | None = params.since
+    return await analyst_gaps_list(host, caller.scope_id, since=since)
 
 
 async def _bars_propose(host: OpsHost, caller: Caller, params: CampaignParams) -> BarProposals:
@@ -2319,6 +2340,29 @@ def engine_actions() -> tuple[Action, ...]:
                 "document, any version; include_sessions=true with format json adds its transcripts "
                 "(report_doc.sessions), for an audit. static=true makes the html page one a host can serve "
                 "under a policy that runs and loads nothing: no script, no link, every chart its table."
+            ),
+        ),
+        Action(
+            name="analyst_gaps_list",
+            summary="List the capability gaps analysts noted, and code's notices, grouped and ranked as issue text.",
+            workflow=ANALYSE,
+            permission="read",
+            params=AnalystGapsListParams,
+            result=GapDigest,
+            handler=_analyst_gaps_list,
+            render=GapDigest.render,
+            example={"since": "2026-10-28T00:00:00Z"},
+            detail=(
+                "Every capability_gap call an analyst or editor made (missing: a capability no tool gave; suspect: a "
+                "result that looked wrong, with the keys and calls that reproduce it), and code's notices from report "
+                "writes (unresolved_key: a figure key that sent a draft back; editor_score: a rubric item scored 0 or "
+                "1). Gaps group by kind and need, the need compared with its case, spacing, punctuation, the ids the "
+                "engine mints and the figure keys it names set aside, and no model reads them. Groups rank suspect "
+                "first, then those a must_fix finding is about (a gap touching a claim it names), then the rest; "
+                "within each, the larger count, then the later last seen. Each group carries a title and a body to "
+                "file as an issue, with its evidence and never the caller's identity, every @ kept from mentioning "
+                "anyone; the needs are what a model wrote, so read them before filing on a public tracker. At most "
+                "1,000 gaps a digest: a window holding more is refused, naming a later since. Stores and posts nothing."
             ),
         ),
         Action(

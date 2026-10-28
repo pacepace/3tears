@@ -659,6 +659,31 @@ def _note_fault(store: LeaseStore, kind: LeasedJobKind[Any], record_id: str, sco
     )
 
 
+def note_job_fault(store: LeaseStore, kind: LeasedJobKind[Any], record_id: str, scope_id: str, entry: str) -> bool:
+    """Append ``entry`` to a job record's ``faults`` while it runs, touching nothing else; whether it was.
+
+    For what went wrong beside the job's work and does not end it: a report write whose gaps the store refused, which
+    the job notes on its attempt so ``job_poll`` shows it beside the ending. The ending written after keeps it
+    (:func:`write_held_record` keeps the stored faults).
+
+    :param store: The store holding the record.
+    :ptype store: LeaseStore
+    :param kind: The record's kind (``ANALYSIS_JOB``).
+    :ptype kind: LeasedJobKind[Any]
+    :param record_id: The record's id.
+    :ptype record_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param entry: What went wrong, where first; cut to the field's bound.
+    :ptype entry: str
+    :return: ``True`` when it was written; ``False`` for a record that is gone.
+    :rtype: bool
+    :raises ConflictError: Every attempt lost its race.
+    :raises StorageError: A read or write failed.
+    """
+    return _note_fault(store, kind, record_id, scope_id, entry)
+
+
 #: What one renewal of one held record found: renewed (and nothing asked of it), a cancel asked of it, the job
 #: ended by its own writes, the holder fenced off (its record ended by another, or its lease lapsed), or the
 #: write lost every race (tried again next interval).
@@ -1479,6 +1504,7 @@ __all__ = [
     "LeasedJobKind",
     "RenewalVerdict",
     "lease_lapsed",
+    "note_job_fault",
     "read_to_take_up",
     "reopened_job_fields",
     "request_job_cancel",

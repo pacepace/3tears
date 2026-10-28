@@ -339,6 +339,15 @@ from threetears.evals.kernel.remedies import (
     SEED_REMEDY,
     WRITER_REMEDY,
 )
+from threetears.evals.kernel.analyst_gap import (
+    EvalAnalystGap,
+    GapBounce,
+    GapDigest,
+    GapEditorItem,
+    GapGroup,
+    GapToolCall,
+    GapVerdict,
+)
 from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession
 from threetears.evals.kernel.report_snapshot import EvalReportSnapshot, SnapshotSource, report_snapshot_id
 from threetears.evals.kernel.result_condition import (
@@ -587,6 +596,13 @@ __all__ = [
     "DerivedContextIdentity",
     "DerivedVariantIdentity",
     "EvalAnalysis",
+    "EvalAnalystGap",
+    "GapBounce",
+    "GapDigest",
+    "GapEditorItem",
+    "GapGroup",
+    "GapToolCall",
+    "GapVerdict",
     "EvalAnalysisAttempt",
     "EvalCampaign",
     "EvalInsight",

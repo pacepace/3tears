@@ -139,7 +139,8 @@ is refused as before, and the registry is that ``Literal``'s values. The open vo
 (``COST_CAP_ORIGINS``), ``MeteredCallOrigin`` (``METERED_CALL_ORIGINS``), ``CellTimeoutOrigin``
 (``CELL_TIMEOUT_ORIGINS``), ``ModelRoleOrigin`` (``MODEL_ROLE_ORIGINS``), ``RoleModelOrigin``
 (``ROLE_MODEL_ORIGINS``), ``ReasoningEffort`` (``REASONING_EFFORTS``), ``OutOfRunPurpose``
-(``OUT_OF_RUN_PURPOSES``) and ``RefusalKind`` (``REFUSAL_KINDS``).
+(``OUT_OF_RUN_PURPOSES``) and ``RefusalKind`` (``REFUSAL_KINDS``); on a durable shape, ``GapKind``
+(``GAP_KINDS``).
 
 Every other vocabulary on a core shape is *closed by design*: a new value changes how an older build must read
 the document, so extending one is a major. Each, and why:
@@ -545,6 +546,8 @@ DURABLE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyTyp
         "judge_config_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
         "case_set": _ADDRESSED_EVERYWHERE | {"name", "version"},
         "eval_campaign": _ADDRESSED_EVERYWHERE | {"subject_id", "behavior", "archived", "created_at"},
+        # Listed newest first by its time, a bounded read (``EvalStorage.list_analyst_gaps``).
+        "eval_analyst_gap": _ADDRESSED_EVERYWHERE | {"created_at"},
     }
 )
 
@@ -754,7 +757,16 @@ DURABLE_SCHEMA_VERSION: int = 16
 #:   reads and its restores, until that build upgrades. So during a rolling deploy across 16.5 and 16.6, freeze no
 #:   plan case until every pod runs 16.6. A v16.5 build keeps the test case's payload verbatim on every write.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 6
+#: - **v16.7** — a new durable type, the analyst's gap notes: ``eval_analyst_gap`` (``EvalAnalystGap``), one record
+#:   per ``capability_gap`` call or code notice, with its kind (``GapKind``, an open vocabulary: ``missing``,
+#:   ``suspect``, ``unresolved_key``, ``editor_score``), what was needed and why, the reproducing keys and calls of a
+#:   ``suspect`` one, a notice's bounce or editor item, and its provenance (snapshot, report, role, session, model,
+#:   transcript digest, caller, time). Nothing makes a gap again, so it is durable and never swept by
+#:   ``drop_derived``. No other durable shape moves, so every document v16.6 stored is stored byte for byte as before.
+#:   An older build never reads the type (every read selects by ``doc_type``); its operator wipe of durable
+#:   documents leaves these in place, and its deletes never reach them (a new doc type's two disclosed costs, above).
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 7
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

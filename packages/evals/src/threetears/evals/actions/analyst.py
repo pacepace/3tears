@@ -15,15 +15,23 @@ so no file lists the actions' names.
 
 **The workflows.** ``Investigate: snapshot`` freezes the evidence; ``facts`` reads what it holds; ``analyses``
 computes over it; ``blocks`` shows the evidence a claim would carry, and the whole draft as the store and the editor
-read it (``report_check``, which stores nothing); ``gaps`` notes a capability the analyst reasoned around
-(``capability_gap``, which stores nothing).
+read it (``report_check``, which stores nothing); ``gaps`` notes a capability the analyst reasoned around, or a result
+that looks wrong with the keys and calls that reproduce it (``capability_gap``).
+
+**A gap is stored once, by whoever holds its provenance.** ``capability_gap`` is a read on every cut: it changes no
+evidence and nothing a reading reads, so a read-only mount carries it. Called through any mount but the report
+writer's, it stores the gap at once, naming its snapshot and caller. The report writer mounts the actions it builds
+with ``analyst_actions(gaps_kept_by="write")``, whose gap action stores nothing: the write stores every gap its
+sessions noted when it ends, with the session, model and transcript each came from. Which one runs is the mount's,
+never a parameter the model sets.
 """
 
 from __future__ import annotations
 
 import functools
+import json
 from dataclasses import replace
-from typing import Annotated, Literal, get_args
+from typing import Annotated, Any, Literal, get_args
 
 from pydantic import Field, model_validator
 
@@ -38,6 +46,8 @@ from threetears.evals.actions.catalogue import DEFAULT_PREFIX, Action, Caller, H
 from threetears.evals.actions.params import AnalysisId, CampaignId, SnapshotId
 from threetears.evals.actions.render import render_cited
 from threetears.evals.ops.analyst_blocks import figure_key_index, figure_key_pages
+from threetears.evals.kernel.numbers import group_thousands
+from threetears.evals.kernel.analyst_gap import GAP_LIST_MAX, GAP_NAME_MAX_CHARS, GAP_TEXT_MAX_CHARS, CallGapKind
 from threetears.evals.ops.analyst import GapNoted, SnapshotFrozen, capability_gap, report_snapshot_freeze
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
@@ -47,6 +57,9 @@ ANALYST_CUT = "analyst"
 
 #: The help index's group for the freeze.
 SNAPSHOT_WORKFLOW = "Investigate: snapshot"
+
+#: A gap's text bound, as its refusals spell it.
+_TEXT_MAX = group_thousands(str(GAP_TEXT_MAX_CHARS))
 
 #: The help index's group for a noted capability gap.
 GAPS_WORKFLOW = "Investigate: gaps"
@@ -122,15 +135,91 @@ class SnapshotFreezeParams(EvalBaseModel):
 
 
 class CapabilityGapParams(EvalBaseModel):
-    """``capability_gap``: what the analyst needed and no tool gave, why, and what it did instead."""
+    """``capability_gap``: what the analyst needed and no tool gave, or what looks wrong, why, and what it did instead."""
 
     snapshot_id: SnapshotId
-    need: Annotated[str, Field(min_length=1, description="What you needed and no tool gave, as one capability.")]
-    why: Annotated[str, Field(min_length=1, description="What you needed it for: the question it would answer.")]
-    workaround: Annotated[str, Field(min_length=1, description="What you did instead, and go on doing.")]
-    claim_ids: list[str] = Field(
-        default_factory=list, description="The claims of your report the workaround touches; empty for none yet."
+    kind: CallGapKind = Field(
+        default="missing",
+        description=(
+            "missing: a capability you needed and no tool gave; suspect: a result that looks wrong, which you name "
+            "with the figure_keys and calls that reproduce it."
+        ),
     )
+    need: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="What you needed and no tool gave, as one capability; or what looks wrong. At most 2,000 characters.",
+        ),
+    ]
+    why: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="What you needed it for: the question it would answer; or why it looks wrong. At most 2,000 characters.",
+        ),
+    ]
+    workaround: Annotated[
+        str, Field(min_length=1, description="What you did instead, and go on doing. At most 2,000 characters.")
+    ]
+    claim_ids: list[str] = Field(
+        default_factory=list,
+        description="The claims of your report the workaround touches, at most 20; empty for none yet.",
+    )
+    figure_keys: list[str] = Field(
+        default_factory=list,
+        description="suspect: the figure keys whose readings look wrong, as you cite them; at most 20.",
+    )
+    calls: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "suspect: the tool calls that return the result that looks wrong, each as you sent it: its action and its "
+            'other arguments ({"action": "measure_read", "measure_key": "cost"}); at most 20, each at most 2,000 '
+            "characters as JSON."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _suspect_reproduces(self) -> CapabilityGapParams:
+        """Refuse a suspect gap that names nothing to reproduce it by, a call that names no action, and a gap past its
+        bounds (the store keeps each gap for good, so it keeps a note, never a transcript).
+
+        :raises ValueError: ``kind`` is ``suspect`` and neither ``figure_keys`` nor ``calls`` is given; a call names no
+            action; a text runs past :data:`GAP_TEXT_MAX_CHARS`, a list past :data:`GAP_LIST_MAX`, a key or claim id
+            past :data:`GAP_NAME_MAX_CHARS`, or a call's JSON past :data:`GAP_TEXT_MAX_CHARS`.
+        """
+        if self.kind == "suspect" and not self.figure_keys and not self.calls:
+            raise ValueError(
+                "a suspect gap names what reproduces it: the figure_keys that read wrong, or the calls that return it"
+            )
+        unnamed = [index for index, call in enumerate(self.calls) if not str(call.get("action") or "").strip()]
+        if unnamed:
+            raise ValueError(f"each call names its action, as you sent it; calls {unnamed} name none")
+        for name in ("need", "why", "workaround"):
+            if len(getattr(self, name)) > GAP_TEXT_MAX_CHARS:
+                raise ValueError(
+                    f"{name} holds {len(getattr(self, name))} characters, past the {_TEXT_MAX} a gap keeps: "
+                    "say the one capability in a sentence or two, and leave the detail to the calls that show it"
+                )
+        for name in ("figure_keys", "calls", "claim_ids"):
+            if len(getattr(self, name)) > GAP_LIST_MAX:
+                raise ValueError(
+                    f"{name} names {len(getattr(self, name))}, past the {GAP_LIST_MAX} a gap keeps: name the few that "
+                    "show it, or note each gap on its own"
+                )
+        long = [text for text in (*self.figure_keys, *self.claim_ids) if len(text) > GAP_NAME_MAX_CHARS]
+        if long:
+            raise ValueError(
+                f"a figure key or claim id holds {len(long[0])} characters, past the {GAP_NAME_MAX_CHARS} a gap keeps: "
+                "name it as you cite it"
+            )
+        big = [index for index, call in enumerate(self.calls) if len(json.dumps(call)) > GAP_TEXT_MAX_CHARS]
+        if big:
+            raise ValueError(
+                f"calls {big} run past the {_TEXT_MAX} characters a gap keeps of each call as JSON: send "
+                "only the arguments that return the result"
+            )
+        return self
 
 
 async def _report_snapshot_freeze(host: OpsHost, caller: Caller, params: SnapshotFreezeParams) -> SnapshotFrozen:
@@ -143,7 +232,9 @@ async def _report_snapshot_freeze(host: OpsHost, caller: Caller, params: Snapsho
     )
 
 
-async def _capability_gap(host: OpsHost, caller: Caller, params: CapabilityGapParams) -> GapNoted:
+async def _noted(
+    host: OpsHost, caller: Caller, params: CapabilityGapParams, *, kept_by: Literal["call", "write"]
+) -> GapNoted:
     return await capability_gap(
         host,
         caller.scope_id,
@@ -152,10 +243,39 @@ async def _capability_gap(host: OpsHost, caller: Caller, params: CapabilityGapPa
         why=params.why,
         workaround=params.workaround,
         claim_ids=params.claim_ids,
+        created_by=caller.identity,
+        kind=params.kind,
+        figure_keys=params.figure_keys,
+        calls=[
+            (str(call["action"]).strip(), {key: value for key, value in call.items() if key != "action"})
+            for call in params.calls
+        ],
+        kept_by=kept_by,
     )
 
 
-def _snapshot_actions() -> tuple[Action, ...]:
+async def _capability_gap(host: OpsHost, caller: Caller, params: CapabilityGapParams) -> GapNoted:
+    return await _noted(host, caller, params, kept_by="call")
+
+
+async def _capability_gap_in_write(host: OpsHost, caller: Caller, params: CapabilityGapParams) -> GapNoted:
+    return await _noted(host, caller, params, kept_by="write")
+
+
+#: Each gap action's handler, by who keeps the gap: the call itself, or the report write that mounted it.
+_GAP_HANDLERS = {"call": _capability_gap, "write": _capability_gap_in_write}
+
+#: What the gap action says it does, by who keeps the gap.
+_GAP_KEPT = {
+    "call": "the gap is stored now, under an id that is the same for the same snapshot, kind, need and why",
+    "write": (
+        "the report write you are part of stores it when it ends, with this session, under an id that is the same for "
+        "the same snapshot, kind, need and why"
+    ),
+}
+
+
+def _snapshot_actions(gaps_kept_by: Literal["call", "write"]) -> tuple[Action, ...]:
     """The freeze and the gap note: the analyst's actions this module builds itself."""
     return (
         Action(
@@ -178,12 +298,16 @@ def _snapshot_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="capability_gap",
-            summary="Note a capability you needed and no tool gave, and the workaround you go on with; stores nothing.",
+            summary=(
+                "Note a capability you needed and no tool gave, or a result that looks wrong, and the workaround you "
+                "go on with."
+            ),
             workflow=GAPS_WORKFLOW,
             permission="read",
             params=CapabilityGapParams,
             result=GapNoted,
-            handler=_capability_gap,
+            handler=_GAP_HANDLERS[gaps_kept_by],
+            appends=gaps_kept_by == "call",
             render=render_cited,
             example={
                 "snapshot_id": _EXAMPLE_SNAPSHOT,
@@ -192,22 +316,26 @@ def _snapshot_actions() -> tuple[Action, ...]:
                 "workaround": "named the case count from the interval widths, in words",
             },
             detail=(
-                "Call it whenever you reason around a missing tool, at the moment you do. It computes nothing and "
-                "stores nothing: the call itself, in the transcript, is the record, and the gap id is the same for the "
-                "same snapshot, need and why."
+                "Call it whenever you reason around a missing tool, at the moment you do (kind missing, the default), "
+                "or when a result looks wrong (kind suspect, naming the figure_keys and the calls, each as you sent it, "
+                f"that return it). It computes nothing and changes no evidence: {_GAP_KEPT[gaps_kept_by]}."
             ),
         ),
     )
 
 
-def analyst_actions() -> tuple[Action, ...]:
+def analyst_actions(*, gaps_kept_by: Literal["call", "write"] = "call") -> tuple[Action, ...]:
     """Every analyst action, on the analyst's cut: the freeze, the facts, the analyses, the blocks (a draft's check
     among them) and the gap note.
 
+    :param gaps_kept_by: Who stores a gap the gap note notes: ``call``, the call itself, for every mount but one;
+        ``write``, the report write whose own mount this is, which stores every gap its sessions noted when it ends
+        (the module docstring).
+    :ptype gaps_kept_by: Literal["call", "write"]
     :return: The actions, in the order help lists them.
     :rtype: tuple[Action, ...]
     """
-    (freeze, gap) = _snapshot_actions()
+    (freeze, gap) = _snapshot_actions(gaps_kept_by)
     built = (
         freeze,
         *analyst_facts_actions(),

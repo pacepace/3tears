@@ -416,9 +416,11 @@ def _served(tool: MountedTool) -> list[str]:
 #: planner's wording.
 #: The editor's cut and the analyst tool moved at #993: the figure-key grammar they teach words its ``usd`` filter for
 #: money's one form per family (and its ``usd_per_1k`` filter its ruler moved per 1,000,000 under a cent), and its
-#: examples render money in it.
-_EVALS_BYTES = "b3be98568e8c4dddde7b167d7d23ee11229bc57f52fe158b09aa2e58190b6781"
-_EDITOR_BYTES = "d9dfd5d9e8e3785a9fc37d31c5a9711f14c6dd2e37d0f069c0198f89918dd4f0"
+#: examples render money in it. All three moved again when the evals tool gained ``analyst_gaps_list`` (and its
+#: ``since``, its bounded read and its issue text's safeguards), and both analyst cuts' ``capability_gap`` gained
+#: ``kind``, ``figure_keys`` and ``calls``, their bounds, and says who stores the gap.
+_EVALS_BYTES = "8e46af149f6a39267ec3d88eae176f3b5b016e2020d79044116764ee26fb1529"
+_EDITOR_BYTES = "74a0b4a2107f7982b666866f15306b73a26dfbea76d3f62b83fc1a2dc6654e46"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's
 #: description and its topics.
@@ -442,7 +444,7 @@ _ANALYST_ACTIONS_BEFORE = [
     "block_render",
     "capability_gap",
 ]
-_ANALYST_BYTES = "bba54d1bf30cdff448b91ba2d85354e7ceeb38e61ee7b086856d7fe068f1d4d5"
+_ANALYST_BYTES = "dd6b851d39e60508cc69033af1d2ea09a7a08178818eafde1c7cccba3ccd5ac3"
 
 
 def test_the_evals_tool_serves_the_bytes_it_served_before() -> None:
