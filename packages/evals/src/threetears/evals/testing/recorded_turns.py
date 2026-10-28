@@ -12,6 +12,9 @@ ending a replay must reach as the recording did. So each ceiling a recording ses
 turn it bounded (the session's next), the refused turn's included, and a replay answers that turn's recorded ceiling
 rather than a price of its own; a session that asks a ceiling for a turn it recorded none for is refused, naming the
 turn. A replayed reply's ``cost_usd`` is the recorded one, the historical fact of what the turn cost when it was made.
+A recording session forwards every pricing method of the port to the live client (``refresh_prices`` and
+``turn_price_ceiling``), so a recorded run is priced exactly as an unrecorded one; a replaying session's
+``refresh_prices`` reads nothing.
 
 **The snapshot id is a placeholder.** A loop's replies name the snapshot they read (a tool call's arguments, a
 submission), and a fixture's snapshot id moves whenever the fixture is frozen again. Each string of a recorded reply
@@ -277,6 +280,13 @@ class _Book:
         self.sessions.setdefault(name, _SessionLines()).ceilings[index] = ceiling
         return ceiling
 
+    async def refresh_prices(self) -> object:
+        """The live client's price refresh, recording; nothing to read, replaying, since a replay answers the
+        recorded ceilings."""
+        if self.inner is None:
+            return None
+        return await self.inner.refresh_prices()
+
     def _append(self, name: str, index: int, kind: str, value: object) -> None:
         line = {
             "recorder_version": RecordedTurns.FORMAT_VERSION,
@@ -334,6 +344,9 @@ class _Session:
         self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int
     ) -> float | None:
         return self._book.ceiling(self._name, system=system, messages=messages, tools=tools, max_tokens=max_tokens)
+
+    async def refresh_prices(self) -> object:
+        return await self._book.refresh_prices()
 
 
 def _held(value: Any, snapshot: str, path: Path) -> Any:  # Any: a JSON value

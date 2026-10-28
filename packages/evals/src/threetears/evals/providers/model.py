@@ -36,6 +36,7 @@ from threetears.evals.negotiation import (
 )
 from threetears.evals.providers.catalogue import Catalogue, PriceRefresh
 from threetears.evals.providers.failures import Provider, ProviderError, error_from_response
+from threetears.evals.providers.pricing import AnthropicPublishedRates, ModelRates, Pricer
 from threetears.evals.providers.retry import DeclinedRetry
 from threetears.evals.providers.wire import (
     BASE_URLS,
@@ -115,7 +116,8 @@ class Completion:
         ``openrouter:reported`` (OpenRouter's figure), ``openrouter:reported+upstream`` (its fee and a
         bring-your-own-key upstream's charge), or ``openrouter-catalogue:<id>`` (the reply's tokens priced by the
         catalogue row, ending ``;cache-approximate`` when a cache share was priced at a rate the row does not list for
-        it).
+        it); for a call the model's pricer priced, the source its rates name (``anthropic-published:<date>`` for the
+        default's).
     :ivar model: The model id the client was built for.
     :ivar served_model: The model the reply named; ``None`` when it named none, or named a requested alias back.
     :ivar temperature: The temperature the served request carried, or ``None``.
@@ -147,7 +149,8 @@ class Completion:
     pricing_stale_since: datetime | None
 
 
-#: What :meth:`Model.refresh_prices` answers while replaying: no catalogue is read, and none needs to be.
+#: What :meth:`Model.refresh_prices` answers while replaying, and for a model its pricer prices: no catalogue is read,
+#: and none needs to be.
 _NOTHING_READ: Final = PriceRefresh(refreshed=False, fetched_at=None, failure=None)
 
 
@@ -235,8 +238,10 @@ class _Live:
         headers: Mapping[str, str] | None,
         catalogue_fetch_timeout: float | None,
         retry: DeclinedRetry,
+        pricer: Pricer | None,
     ) -> None:
         self.model_name = model_name
+        self._pricer = pricer
         self._retry = retry
         self._catalogue_fetch_timeout = catalogue_fetch_timeout
         self.provider: Provider = provider
@@ -273,9 +278,16 @@ class _Live:
             self._opened = httpx.AsyncClient(timeout=self._timeout, headers=self._headers, transport=self._transport)
         return self._opened
 
+    def priced_rates(self) -> ModelRates | None:
+        """The rates the model's pricer bills its calls at, or ``None`` when it has none or leaves them to the
+        catalogue."""
+        return self._pricer.rates_for(self.model_name, provider=self.provider) if self._pricer is not None else None
+
     async def _read_for_call(self) -> PriceRefresh:
         """The catalogue read this call makes: the one ``refresh_prices`` made in this task, which the call consumes,
-        or a read of its own (:meth:`Catalogue.read`)."""
+        or a read of its own (:meth:`Catalogue.read`); none for a model its pricer prices."""
+        if self.priced_rates() is not None:
+            return _NOTHING_READ
         made = self._made_read.get()
         if made is not None and made.held():
             made.consumed = True
@@ -542,6 +554,11 @@ class _Live:
     ) -> float | None:
         """The most one tool turn can cost: its blocks and tool definitions bounded as a prompt's text, its cap as
         the output; ``None`` (logged once per reason) where :meth:`price_ceiling` would be."""
+        sent = json.dumps(
+            [message.to_json() for message in messages] + [tool.to_json() for tool in tools], ensure_ascii=False
+        )
+        if (rates := self.priced_rates()) is not None:
+            return float(rates.ceiling(prompt_tokens=prompt_token_bound(system, sent, None), output_tokens=max_tokens))
         matched = self._catalogue_id()
         if matched is None:
             if not self._catalogue.loaded:
@@ -551,9 +568,6 @@ class _Live:
                 return None
             self._unbounded_because(f"no single row of the price catalogue matches {self.model_name!r}")
             return None
-        sent = json.dumps(
-            [message.to_json() for message in messages] + [tool.to_json() for tool in tools], ensure_ascii=False
-        )
         ceiling, why = self._catalogue.ceiling(
             matched, prompt_tokens=prompt_token_bound(system, sent, None), output_tokens=max_tokens
         )
@@ -565,6 +579,8 @@ class _Live:
     def _price(self, reply: Reply, unread: str | None) -> tuple[float | None, str | None, str | None, datetime | None]:
         """The call's cost, its source, why it is unpriced, and when the catalogue rates pricing it went stale;
         ``unread`` is why the call's catalogue read failed, which unprices it while the catalogue holds no rows."""
+        if (priced := self.priced_rates()) is not None:
+            return (*self._priced_by(priced, reply), None)
         if self.provider == "openrouter":
             return (*reported_cost(reply.usage), None)
         if not self._catalogue.loaded:
@@ -590,7 +606,42 @@ class _Live:
         source = f"{PriceSource.OPENROUTER_CATALOGUE}:{matched}{marker}"
         return float(dollars), source, None, self._catalogue.stale_since
 
+    def _priced_by(self, rates: ModelRates, reply: Reply) -> tuple[float | None, str | None, str | None]:
+        """A call's cost, its source, and why it is unpriced, from the rates the model's pricer answered."""
+        if reply.input_tokens is None or reply.output_tokens is None:
+            return None, None, "the reply reported no input or output token count, so there is nothing to price"
+        dollars, why = rates.cost(
+            input_tokens=reply.input_tokens,
+            output_tokens=reply.output_tokens,
+            cache_read_tokens=reply.cache_read_tokens,
+            cache_write_tokens=reply.cache_write_tokens,
+            cache_write_1h_tokens=reply.cache_write_1h_tokens,
+        )
+        if dollars is None:
+            return None, None, f"{self.model_name!r} cannot be priced: {why}"
+        return float(dollars), rates.source, None
+
+    def unbounded_because(self) -> str | None:
+        """Why a call on the model cannot be bounded before it is sent, as things stand, or ``None`` when it can:
+        rates from its pricer, or a catalogue row read young enough that bounds it. Reads nothing."""
+        if self.priced_rates() is not None:
+            return None
+        matched = self._catalogue_id()
+        if matched is None:
+            if not self._catalogue.loaded:
+                return (
+                    self.last_refresh.failure
+                    if self.last_refresh and self.last_refresh.failure
+                    else ("the price catalogue has not been read")
+                )
+            return f"no single row of OpenRouter's price catalogue matches {self.model_name!r}"
+        _, why = self._catalogue.ceiling(matched, prompt_tokens=1, output_tokens=1)
+        return why
+
     async def refresh_prices(self) -> PriceRefresh:
+        if self.priced_rates() is not None:
+            self.last_refresh = _NOTHING_READ
+            return _NOTHING_READ
         read = await self._catalogue.read(timeout=self._catalogue_fetch_timeout)
         self.last_refresh = read
         self._made_read.set(
@@ -608,6 +659,9 @@ class _Live:
         if self._asked.max_tokens is None:
             self._unbounded_because("the request has no output cap")
             return None
+        if (rates := self.priced_rates()) is not None:
+            bound = prompt_token_bound(system, user, response_format)
+            return float(rates.ceiling(prompt_tokens=bound, output_tokens=self._asked.max_tokens))
         if matched is None:
             if not self._catalogue.loaded:
                 self._unbounded_because(
@@ -686,6 +740,13 @@ class Model:
     replayed, whatever ``RECORD`` says, and one that does not is recorded live; a turn recording is never recorded
     again. With one set, :meth:`turn` itself refuses and names :meth:`turn_session`.
 
+    **Pricing.** A model is priced by the :class:`~threetears.evals.providers.Pricer` it is handed (``pricer=``), the
+    host's own rates, and by OpenRouter's catalogue for any call the pricer leaves to it (as every call is without
+    one). A model handed neither a ``pricer`` nor a ``catalogue`` is given the default for standalone and development
+    use, :class:`~threetears.evals.providers.AnthropicPublishedRates`: a direct Anthropic call is priced and bounded
+    from Anthropic's published rates, which ship with the package, with no network read. A host that hands its models
+    a catalogue (``Clients`` does) is priced from it as before; one whose prices are its own hands each model its pricer.
+
     **HTTP.** A model sends through a client it opens itself on its first live call, set up by ``transport=``,
     ``timeout=`` and ``headers=``, or through one handed in with ``http=``. :meth:`aclose` closes the one it opened
     (and with it, as ``httpx`` does, the transport it was opened on), and one handed in only with ``own_http=True``.
@@ -693,6 +754,8 @@ class Model:
     :ivar model_name: The model id, which every completion is attributed to.
     :ivar provider: The provider it goes to.
     :ivar recording: The recording's path, or ``None``.
+    :ivar pricer: The pricer it was handed, which every model derived from it keeps; ``None`` when it was handed none
+        (it is then priced by the default, or by its catalogue: the class docstring says which).
     """
 
     def __init__(
@@ -715,6 +778,7 @@ class Model:
         headers: Mapping[str, str] | None = None,
         catalogue_fetch_timeout: float | None = None,
         retry: DeclinedRetry | None = None,
+        pricer: Pricer | None = None,
     ) -> None:
         """Build the client; nothing is sent until the first call.
 
@@ -773,6 +837,11 @@ class Model:
             ``None`` is :class:`~threetears.evals.providers.DeclinedRetry`'s defaults: three attempts, waiting the
             provider's ``retry-after`` or one then two seconds, any wait at most twenty.
         :ptype retry: DeclinedRetry | None
+        :param pricer: What the host pays for a call (:class:`~threetears.evals.providers.Pricer`), asked first; a call
+            it answers no rates for is priced by the catalogue. ``None`` with no ``catalogue`` either is the default for
+            standalone and development use, :class:`~threetears.evals.providers.AnthropicPublishedRates`; ``None``
+            beside a ``catalogue`` prices every call from that catalogue, as before.
+        :ptype pricer: Pricer | None
         :raises ValueError: A bare id with no provider, an unknown provider, no key for a live model (naming the
             variable), ``transport``, ``timeout`` or ``headers`` beside ``http``, ``own_http`` without it, or a
             setting that is the caller's error (an effort that is neither a word nor a budget, a budget not below
@@ -791,6 +860,7 @@ class Model:
         if own_http and http is None:
             raise ValueError("own_http=True says the model closes the client handed in with http=, and none was")
         self.model_name = id
+        self.pricer = pricer
         self.provider: Provider = _provider_of(id, provider, base_url)
         self.recording = beside_eval_file(recording) if recording is not None else None
         self.turn_recording = beside_eval_file(turn_recording) if turn_recording is not None else None
@@ -807,6 +877,7 @@ class Model:
             "headers": headers,
             "catalogue_fetch_timeout": catalogue_fetch_timeout,
             "retry": retry,
+            "pricer": pricer,
         }
         #: The client handed in that :meth:`aclose` closes, live or replaying: ``http`` when the model owns it.
         self._owned_http = http if own_http else None
@@ -822,6 +893,8 @@ class Model:
         self._live: _Live | None = None
         self._last_price_refresh: PriceRefresh | None = None
         self._turns: RecordedTurns | None = None
+        #: Whether the tool turns replay a recording: offline, free, and priced by nothing.
+        self._turns_replay = False
         if self.turn_recording is not None:
             self._refuse_turns_off_anthropic()
             if (refused := turn_settings_refusal(id, asked)) is not None:
@@ -829,6 +902,7 @@ class Model:
             # A turn recording that exists is only ever replayed, whatever RECORD says: it is never recorded again.
             if self.turn_recording.exists():
                 self._turns = RecordedTurns.replay(self.turn_recording)
+                self._turns_replay = True
             elif replaying:
                 raise ValueError(
                     f"turn_recording {self.turn_recording} is recorded live, and this model replays its completions "
@@ -864,6 +938,7 @@ class Model:
             headers=headers,
             catalogue_fetch_timeout=catalogue_fetch_timeout,
             retry=retry if retry is not None else DeclinedRetry(),
+            pricer=pricer if pricer is not None or catalogue is not None else AnthropicPublishedRates(),
         )
         self._live = live
         if self.turn_recording is not None and self._turns is None:
@@ -1041,8 +1116,9 @@ class Model:
         """The most one :meth:`turn` with this conversation can cost, or ``None`` when the client cannot say.
 
         Bounded as :meth:`price_ceiling` bounds a completion: every block and tool definition's JSON as the prompt's
-        text, and ``max_tokens`` as the output. ``None``, never a lower figure, until the catalogue is loaded and for
-        a model it does not price.
+        text, and ``max_tokens`` as the output, from the rates the model's pricer answers, else the catalogue's row.
+        ``None``, never a lower figure, for a model neither prices, and for a catalogue not yet loaded
+        (:meth:`turn_pricing_refusal` says which before a loop starts).
 
         :param system: The system prompt the turn would send.
         :ptype system: str
@@ -1059,6 +1135,34 @@ class Model:
         return self._turn_client().turn_price_ceiling(
             system=system, messages=messages, tools=tools, max_tokens=max_tokens
         )
+
+    async def turn_pricing_refusal(self) -> str | None:
+        """Why a tool turn on this model could not be bounded before it is sent, or ``None`` when every one can be.
+
+        A loop asks it before it starts, so a run whose turns its budget could not admit is refused before it spends
+        anything rather than stopped after. It brings the prices up to date first (:meth:`refresh_prices`: nothing is
+        read for a model its pricer prices; the catalogue is, otherwise), then answers ``None`` when the pricer's
+        rates or a catalogue row bound a turn, and for a model whose turns replay a recording, which costs nothing.
+
+        :return: ``None``, or the refusal, naming the model, why, and what to do.
+        :rtype: str | None
+        """
+        if self._turns_replay:
+            return None
+        try:
+            live = self._turn_client(session=True)
+        except ValueError as refused:
+            return str(refused)
+        await live.refresh_prices()
+        why = live.unbounded_because()
+        if why is None:
+            return None
+        remedy = (
+            AnthropicPublishedRates().unlisted(self.model_name)
+            if live.provider == "anthropic"
+            else "hand the model a pricer with the host's own rates (Model(..., pricer=...))"
+        )
+        return f"no turn on {self.model_name!r} can be bounded before it is sent ({why}); {remedy}"
 
     def turn_session(self, name: str, *, snapshot: str) -> ToolTurnClient:
         """The client one named session of tool turns goes through: this model, or its ``turn_recording``'s session.
@@ -1088,10 +1192,11 @@ class Model:
                 "build Model('<claude model id>', provider='anthropic', api_key=<the key the host holds for it>)"
             )
 
-    def _turn_client(self) -> _Live:
-        """The live client a tool turn goes through, or the refusal naming why this model sends none."""
+    def _turn_client(self, *, session: bool = False) -> _Live:
+        """The live client a tool turn goes through, or the refusal naming why this model sends none; ``session``
+        allows a model whose turns are recorded, which sends them through a named session."""
         self._refuse_turns_off_anthropic()
-        if self._turns is not None:
+        if self._turns is not None and not session:
             raise ValueError(
                 f"this model records or replays its tool turns in {self.turn_recording}, so a turn goes through a "
                 "named session: send it through model.turn_session(name, snapshot=...)"
@@ -1145,7 +1250,8 @@ class Model:
         tried again by the call it was made for. A call from any other task, a child that inherited the context
         included, reads for itself, as does any call once the read is older than ``Catalogue.ceiling_stale_after``.
         Never raises: a first read that fails leaves :meth:`price_ceiling` ``None`` and the call unpriced, and a refresh
-        that fails keeps the rows, stale, as a live call does; either is logged. Free while replaying.
+        that fails keeps the rows, stale, as a live call does; either is logged. Free while replaying, and for a
+        model its pricer prices, which reads nothing.
 
         :return: What the read found (:class:`~threetears.evals.providers.PriceRefresh`), also kept as
             :attr:`last_price_refresh`: whether it fetched the rows anew, when the rows held were fetched, and why the
@@ -1322,6 +1428,9 @@ class Clients:
     async def load_prices(self) -> dict[str, str]:
         """Read the catalogue, so every model's price ceiling can answer: the boot step.
 
+        A role given as a :class:`Model` handed a pricer that answers rates for it is priced by them (the models built
+        from it keep the pricer), and needs no row.
+
         :return: Model id -> why it is unpriced, for each model named in the factory the catalogue cannot price; empty
             when every one is priced.
         :rtype: dict[str, str]
@@ -1330,7 +1439,14 @@ class Clients:
             template if isinstance(template, str) else template.model_name: template
             for template in (self._default, *self._roles.values())
             if template is not None
+            and not (
+                isinstance(template, Model)
+                and template.pricer is not None
+                and template.pricer.rates_for(template.model_name, provider=template.provider) is not None
+            )
         }
+        if not named:
+            return {}
         read = await self.catalogue.read()
         if not self.catalogue.loaded:
             return dict.fromkeys(sorted(named), read.failure or "the price catalogue has not been read")

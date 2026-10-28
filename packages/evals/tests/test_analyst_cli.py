@@ -194,6 +194,9 @@ class ScriptedModel:
         self.model_name = id
         self._turns = RecordedTurns.record(script, turn_recording)
 
+    async def turn_pricing_refusal(self) -> str | None:
+        return None
+
     def turn_session(self, name: str, *, snapshot: str) -> ToolTurnClient:
         return self._turns.turn_session(name, snapshot=snapshot)
 

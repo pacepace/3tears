@@ -6,6 +6,46 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a model's pricing is a dependency the host injects; the report writer can no longer start unpriceable
+
+**Why.** The first live paid report run ended `over_budget` before it sent a turn: a model recording its turns
+(`turn_recording=`) handed the session a wrapper with no `refresh_prices`, the engine's `getattr`-based refresh
+skipped it in silence, OpenRouter's catalogue was never read, no turn had a price ceiling, and the budget refused the
+first one. The engine cannot know what a host pays (a deal, BYOK, a subscription, a local model), so the host
+supplies prices; the package ships a default only for standalone and development use (owner, 2026-10-28).
+
+**Added (provisional, `threetears.evals.providers`):** `Model(..., pricer=...)` takes a `Pricer`, whose
+`rates_for(model, provider=)` answers the `ModelRates` a call is billed at (base input, five-minute and one-hour cache
+writes, cache reads, output, an optional long-prompt tier, and the `price_source` to write), or `None` to leave the
+call to OpenRouter's catalogue. A call the pricer answers is priced and bounded from its rates and reads no catalogue;
+`Model.refresh_prices()` reads nothing for it. A derived model, and so every `Clients` role built from a template
+`Model`, keeps the template's pricer, and `Clients.load_prices()` asks no catalogue row for a role priced by one.
+`AnthropicPublishedRates` is the default: Anthropic's published rates for Fable 5.1 and 5, Mythos 5.1 and 5, Opus 5.5,
+5 and 4.5 to 4.8, Sonnet 5.5, 5, 4.6 and 4.5, Haiku 5.5 (with its long-prompt tier above 100,000 tokens) and Haiku 4.5,
+read from https://platform.claude.com/docs/en/about-claude/pricing on 2026-10-28, `price_source`
+`anthropic-published:2026-10-28`, for a direct Anthropic call; every other call it leaves to the catalogue. It is
+given only to a model handed neither a `pricer` nor a `catalogue`: a developer's
+`Model("claude-opus-5-5", provider="anthropic", api_key=...)`, such as `analyst_cli.py write` builds.
+
+**Unchanged: every existing run's pricing.** A model handed a catalogue and no pricer (every `Clients` model, and a
+host that builds its own with `catalogue=`, as Discodon does) is priced from that catalogue exactly as before, so no
+recorded cost, golden, digest or `price_source` value moves, and `PriceSource` is unchanged. A host replaces the
+default by handing each model its own pricer.
+
+**Changed (host-visible, port):** `ToolTurnClient` gains `async refresh_prices()`, which the report writer's session
+awaits through the port before each turn's price ceiling, so no wrapper can drop it; `RecordedTurns`' sessions
+forward it and `turn_price_ceiling` to the live client while recording, and read nothing while replaying. A host's
+own turn client adds it. `TurnModel` gains `async turn_pricing_refusal()`: `Model` brings its prices up to date and
+answers why a turn could not be bounded, or `None` (always `None` for a model whose turns replay).
+
+**Added:** `report_write` (and so `write_report`) asks before it freezes or sends anything, and refuses a model whose
+turns cannot be bounded, e.g. `ValueError("the report was not started, and nothing was frozen, sent or spent: its
+$20.00 budget admits each turn on its price ceiling, and no turn on 'claude-opus-9' can be bounded before it is sent
+(...); Anthropic's published rates as 3tears-evals ships them (read 2026-10-28 from ...) do not list 'claude-opus-9':
+use a model they list (...), or hand the model a pricer with the host's own rates (Model(..., pricer=...))")`.
+`ReportBudget`'s refusal of a turn it cannot bound stays as the backstop. `analyst_cli.py write` refuses such a model
+the same way before it writes anything under `--out`.
+
 ### evals: `report_check`, the analyst's check of a whole draft before it submits
 
 **Added (host-visible, on the `evals_analyst` tool):** a `report_check` action in the analyst's blocks workflow. Any

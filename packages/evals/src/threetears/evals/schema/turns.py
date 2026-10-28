@@ -3,7 +3,8 @@
 :class:`ToolTurnClient` is what a loop that lets a model call tools is handed: ``turn`` sends the conversation so far
 (a system prompt, the messages, the tool definitions and an output cap) and answers the model's next message as a
 :class:`TurnReply`; ``turn_price_ceiling`` bounds that turn's cost before it is sent, so a budget can refuse a turn
-that could overrun it and send nothing. The loop appends the reply's own message (:meth:`TurnReply.message`) to the
+that could overrun it and send nothing, and ``refresh_prices``, awaited first, brings the prices it bounds from up to
+date. The loop appends the reply's own message (:meth:`TurnReply.message`) to the
 conversation, runs each tool call it holds, and answers them in one user message of :class:`TurnToolResult`\\ s.
 
 **The blocks are Anthropic's content blocks.** Tool turns go to Anthropic's Messages API alone (the shipped client
@@ -480,8 +481,21 @@ class ToolTurnClient(Protocol):
 
     The shipped implementation is ``threetears.evals.providers.Model`` (``Model.turn``, and ``Model.turn_session``
     for a recorded session); a replay serves recorded replies through the same port
-    (``threetears.evals.testing.RecordedTurns``).
+    (``threetears.evals.testing.RecordedTurns``). A loop awaits :meth:`refresh_prices` before it asks each turn's
+    :meth:`turn_price_ceiling`, so every pricing method the port has reaches the client that prices, through any
+    wrapper: a wrapper that dropped one would leave a turn priced from nothing.
     """
+
+    async def refresh_prices(self) -> object:
+        """Bring the client's prices up to date before a turn is priced; what it found is the client's own to say.
+
+        A client whose rates do not go stale (one priced by rates it ships, a replay) reads nothing and returns at
+        once. Never raises for prices it cannot read: :meth:`turn_price_ceiling` answers ``None`` then.
+
+        :return: What the read found, in the client's own terms (the shipped client's ``PriceRefresh``), or ``None``.
+        :rtype: object
+        """
+        ...
 
     async def turn(
         self,

@@ -329,7 +329,13 @@ tokens it does not split out) the call is unpriced, never priced lower; its `pri
 when a cache share was priced at a rate the row does not list for it. The `price_source` words are `PriceSource`'s (host contract, from
 `threetears.evals.providers`, each member the string itself): `OPENROUTER_REPORTED`, `OPENROUTER_REPORTED_UPSTREAM`
 (the BYOK sum, `openrouter:reported+upstream`) and `OPENROUTER_CATALOGUE`, the prefix of
-`openrouter-catalogue:<id>`. Compare a stored `price_source` with them rather than spelling the words. Unpriced is `None` with `pricing_failure` saying why, never `0`. A
+`openrouter-catalogue:<id>`. Compare a stored `price_source` with them rather than spelling the words. What your host
+pays is yours to say: hand each model a `Pricer` (`Model(..., pricer=...)`), whose `rates_for(model, provider=)`
+answers the `ModelRates` you are billed (and the `price_source` to write), or `None` to leave the call to the
+catalogue; a call it answers is priced and bounded from those rates and reads no catalogue. A model handed neither a
+pricer nor a catalogue gets the package's default for standalone and development use, `AnthropicPublishedRates`
+(Anthropic's published rates for a direct Anthropic call); a model handed a catalogue and no pricer is priced from the
+catalogue, as before. Unpriced is `None` with `pricing_failure` saying why, never `0`. A
 model's `price_ceiling` answers once its catalogue is loaded. The engine awaits the model's `refresh_prices()`
 before it prices a call, which loads it; `await clients.load_prices()` at boot reads it early and says which models
 it cannot price. A long-lived process is not priced from its first

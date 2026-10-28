@@ -65,6 +65,7 @@ class FakeToolTurnClient:
         self.ceiling = ceiling if not isinstance(ceiling, Sequence) else None
         self.requests: list[Request] = []
         self.ceilings_asked = 0
+        self.refreshed = 0
 
     async def turn(
         self,
@@ -98,6 +99,9 @@ class FakeToolTurnClient:
         if self.ceilings is not None:
             return self.ceilings.pop(0)
         return self.ceiling
+
+    async def refresh_prices(self) -> None:
+        self.refreshed += 1
 
 
 @dataclass(frozen=True)

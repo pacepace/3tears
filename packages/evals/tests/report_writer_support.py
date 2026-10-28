@@ -95,6 +95,7 @@ class FakeToolTurnClient:
         self.ceiling = ceiling
         self.ceilings: dict[int, float | None] = {}
         self.requests: list[Request] = []
+        self.refreshed = 0
 
     async def turn(
         self,
@@ -126,6 +127,9 @@ class FakeToolTurnClient:
     ) -> float | None:
         return self.ceilings.get(len(self.requests), self.ceiling)
 
+    async def refresh_prices(self) -> None:
+        self.refreshed += 1
+
 
 # parity-with: threetears.evals.ops.report_writer.loop.TurnModel
 class FakeTurnModel:
@@ -133,10 +137,14 @@ class FakeTurnModel:
 
     model_name = MODEL
 
-    def __init__(self, **sessions: FakeToolTurnClient) -> None:
+    def __init__(self, *, unpriced: str | None = None, **sessions: FakeToolTurnClient) -> None:
         self.sessions = {name.replace("_", "-"): client for name, client in sessions.items()}
+        self.unpriced = unpriced
         self.asked: list[str] = []
         self.snapshots: list[str] = []
+
+    async def turn_pricing_refusal(self) -> str | None:
+        return self.unpriced
 
     def turn_session(self, name: str, *, snapshot: str) -> ToolTurnClient:
         self.asked.append(name)
@@ -152,6 +160,9 @@ class RecordedModel:
 
     recording: RecordedTurns
     model_name: str
+
+    async def turn_pricing_refusal(self) -> str | None:
+        return None  # a replay costs nothing
 
     def turn_session(self, name: str, *, snapshot: str) -> ToolTurnClient:
         return self.recording.turn_session(name, snapshot=snapshot)

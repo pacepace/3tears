@@ -295,7 +295,8 @@ class ReportBudget:
     """The host's dollar cap for one report, shared by every session that writes it.
 
     :meth:`admit` is asked before every turn with the client's price ceiling for it, and refuses a turn that could
-    take the spend past the cap, or one the client cannot bound; a refused turn is never sent. :meth:`charge` counts a
+    take the spend past the cap, or one the client cannot bound; a refused turn is never sent. ``report_write``
+    refuses a model whose turns cannot be bounded before it starts, so that refusal is a backstop. :meth:`charge` counts a
     sent turn at what it cost, or at its ceiling when nothing priced it.
 
     :ivar usd: The cap, in dollars.
@@ -329,7 +330,7 @@ class ReportBudget:
         if ceiling is None:
             return (
                 f"the client cannot bound the next turn's cost, so the report's {spell_dollars(self.usd)} budget cannot admit it "
-                "(load the price catalogue, or use a model it prices)"
+                "(load the price catalogue, hand the model a pricer, or use a model it prices)"
             )
         if self._spent + ceiling > self.usd:
             return (

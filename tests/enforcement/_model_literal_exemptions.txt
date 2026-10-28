@@ -55,6 +55,7 @@ packages/evals/tests/fixtures/generate_analysis/llm_analysis.py::generate_analys
 # temperature, a thinking budget or disabled thinking, matched against whatever id a caller passes; it selects a
 # request shape, never a default model.
 packages/evals/src/threetears/evals/providers/wire.py::per-model facts table for Claude ids that refuse a temperature, a thinking budget or disabled thinking; matches caller-supplied ids, picks no default model
+packages/evals/src/threetears/evals/providers/pricing.py::the default pricer's table of Anthropic's published per-token rates, keyed by the Claude ids it prices; prices caller-supplied ids, picks no default model
 # provider-shape tests: each id is the input whose request shape, routing or dated-suffix handling is under test.
 packages/evals/tests/test_providers_model.py::provider-shape tests naming real and malformed claude ids as the subject under test; not a default
 packages/evals/tests/test_providers_turns.py::tool-turn wire tests naming the Claude id whose request body and catalogue price are the subject under test; the client is handed the id, and picks no default
@@ -65,3 +66,5 @@ packages/evals/tests/test_providers_ceiling.py::price-ceiling and completion-pri
 # an identity those records pool by (dataset.pool_key), not a model any code calls; no threetears.models constant
 # names it, and a moved constant would silently relabel recorded calibration data.
 packages/evals/tests/fixtures/report_plans/dataset.py::scorer id recorded in committed calibration score records (an identity records pool by), not a model the code calls
+packages/evals/tests/test_providers_pricing.py::pins the default pricer's published rate per Claude id; the model id is the row under test, not a default
+packages/evals/tests/test_report_writer_pricing.py::drives the shipped client on the Claude id the report writer's default pricer prices; the model id is the subject under test, not a default
