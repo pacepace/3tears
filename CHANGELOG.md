@@ -22,7 +22,8 @@ counts no other subject's results; `comparison_sets` reads only the runs it grou
 status). `program_budget` and `orphaned_runs` take no filter, so past the budget they are refused. A read that
 returns more than the budget (a deleted run's results are in no listing) is not aggregated: a call for one subject
 reads that subject's runs instead, and any other call is refused, its `details` adding `results_returned`. Campaign
-reports read their runs by id and are unaffected. A narrowed pivot, frontier or history says what it did not count
+reports read their runs by id, so the scope's size never refuses them; a campaign's own runs past the budget are
+refused (see "a campaign's bundle past the read budget" below). A narrowed pivot, frontier or history says what it did not count
 in `narrowed_read_disclosure` (new on `PivotTable`, `HistoryResult` and `FrontierResult`, printed in each one's text,
 and left out of a dump while unset, so no stored bundle's fingerprint moves); a narrowed frontier's judge tiers are
 read on that subject's results alone, and it says that too. `RegressionWatch` now reads the history of the completed
@@ -159,16 +160,33 @@ did and which no figure reads.
 - **A host's reader** handed a run's results by a comparison, a bisection or `run_summary` (a sweepable's `read`, its
   `row_columns`, `production_footing`) now reads them without `world_events` and `kind_payload`: a host reads its
   kind's payload as the cell ends, into the measures it reports. Discodon's readers read neither.
-- **Not converted, and why:** a campaign's bundle (`assemble_context_bundle`, so every analysis and campaign
-  report) still reads its member runs' results in one batch (`query_eval_results_by_runs`): its port promises one
-  store call per read however large the campaign (`CampaignReadStore`, held by `test_bundle_store_reads`, after a
-  per-run read outran a host's call budget), and paging it is a call per page; that trade is the owner's to make.
-  The scope aggregates (bounded by the read budget, SQL pushdown #996) and the export of several runs a page
+- **Not converted, and why:** a campaign's bundle (`assemble_context_bundle`) is not paged (owner): its port promises
+  one store call per read however large the campaign (`CampaignReadStore`, `test_bundle_store_reads`). It is held to
+  the read budget instead (the next entry), until the store computes its aggregates (#996). The scope aggregates (bounded by the read budget, SQL pushdown #996) and the export of several runs a page
   (bounded by `EXPORT_PAGE_RESULTS`) are bounded already. Two readers #998 did not list still read runs whole:
   `detectable_effects` (a launch's planning block, every earlier run of its template) and `RegressionWatch`'s judged
   tiers over one subject's runs (`query_eval_results_by_runs`); both are reads over many runs, like the scope
   aggregates. `quick`'s calibration, labelling rows and arm variants read each arm's results through `list_results`,
   which pages its reads but returns every result; a `quick` run is the caller's own, in memory.
+
+### evals: a campaign's bundle past the read budget is refused before its results are read
+
+**Changed:** `assemble_context_bundle` (so every analysis generation and campaign report) read every result of the
+runs it assembles in one batch, however many: a campaign past what one process holds was read whole. It is held to
+`READ_TIER_ROW_BUDGET` (50,000) as the aggregates are (owner, 2026-10-28: the aggregates' "refuse now, SQL
+later"), and is not paged,
+since its port promises one store call per read. Before any result is read, the runs it reads (the aspect's
+unarchived member runs, and its archived ones when a declared control may be among them) are estimated as the
+aggregates estimate them, off the batch run read it already makes: each run's matrix (cases × k), or the cells it
+recorded persisting when those are more, with no further read. Past the budget it is refused
+(`VALIDATION_FAILED`, `details` `runs`, `results_estimated` and `result_budget`, one WARNING line `eval.read_tier
+lens=assemble_context_bundle ... refused`), and the remedy names how to narrow: one aspect that names fewer runs, or
+a campaign of fewer member runs. A read that returns more than the budget (results their runs' matrices did not
+promise) is refused too, `details` adding `results_returned`. A campaign at the budget or under assembles as
+before, in the same store calls. `hold_to_read_budget` (new, `threetears.evals.analysis.reads`) is that check, for a
+reader outside the aggregates that holds a set of runs' results whole. The store computing the bundle's aggregates
+and a bounded sample of its trials' evidence, so a campaign of any size assembles in flat calls, memory and reply
+size, is #996.
 
 ### langgraph: a checkpoint L2 entry that cannot be refreshed is deleted, not left holding an older checkpoint
 

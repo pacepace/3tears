@@ -690,13 +690,28 @@ class TestTheFrontierCommand:
 
 
 def test_a_campaign_report_reads_its_runs_by_id_past_the_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The scope past the budget never refuses a campaign whose own runs fit it: the bundle is held to its own runs'
+    estimate (``test_bundle_read_budget``), never the scope's."""
     fixture = off_loop(ops_fixture)
     host = fixture.host.eval_host
     before = off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE)
-    monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 1)
+    members = off_loop(host.storage.load_eval_runs, fixture.campaign.run_ids, TOYHOST_SCOPE)
+    # The campaign's own runs, by their matrices (cases × k), are the budget; one run outside it puts the scope past.
+    campaign_estimate = sum(len(run.test_case_ids) * run.k_runs for run in members)
+    outside = make_eval_run(
+        scope_id=TOYHOST_SCOPE, status="completed", k_runs=1, test_case_ids=[f"tc-{n}" for n in range(3)]
+    )
+    off_loop(host.storage.save_eval_run, outside)
+    for n in range(campaign_estimate + 1):
+        off_loop(
+            host.storage.save_eval_result,
+            make_eval_result(id=f"outside-{n}", scope_id=TOYHOST_SCOPE, eval_run_id=outside.id, test_case_id="tc-0"),
+        )
+    monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", campaign_estimate)
 
     after = off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE)
 
-    assert off_loop(host.storage.query_eval_results, TOYHOST_SCOPE), "the scope holds results past the budget"
+    scope_results = off_loop(host.storage.query_eval_results, TOYHOST_SCOPE)
+    assert len(scope_results) > campaign_estimate, "the scope holds results past the budget"
     assert after.basis == before.basis == "code_only"
     assert after.verdicts == before.verdicts

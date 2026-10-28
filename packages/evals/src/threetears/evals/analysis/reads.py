@@ -441,6 +441,37 @@ def _refuse_past_budget(
     )
 
 
+def hold_to_read_budget(
+    lens: str, scope_id: str, runs: Sequence[EvalRun], *, how: str, returned: int | None = None
+) -> None:
+    """Refuse a read-tier call that reads every result of ``runs`` at once, past :data:`READ_TIER_ROW_BUDGET`.
+
+    For a reader outside this module's aggregates that holds a set of runs' results whole, as they do (a campaign's
+    context bundle): before any result is read (``returned`` ``None``), the runs' estimate, each run's matrix (cases ×
+    k) or the cells it recorded persisting when those are more, read off the runs already loaded; after the read, what
+    it returned (``returned``), the safety net for results their runs' matrices did not promise. The refusal is the
+    aggregates' own: ``VALIDATION_FAILED``, ``details`` ``runs``, ``results_estimated`` and ``result_budget`` (and
+    ``results_returned`` after a read), one WARNING line, and a remedy that begins with ``how``.
+
+    :param lens: The operation, as the refusal and its log line name it.
+    :ptype lens: str
+    :param scope_id: The scope the runs live in.
+    :ptype scope_id: str
+    :param runs: The runs whose results the call reads.
+    :ptype runs: Sequence[EvalRun]
+    :param how: How the call narrows to fewer results.
+    :ptype how: str
+    :param returned: How many results the read returned; ``None`` before anything is read.
+    :ptype returned: int | None
+    :raises ValidationFailedError: The runs are estimated past the budget, or the read returned more than it.
+    """
+    estimate = sum(_results_estimate(run) for run in runs)
+    if returned is None and estimate > READ_TIER_ROW_BUDGET:
+        raise _refuse_past_budget(lens, scope_id, estimate=estimate, runs=len(runs), returned=None, how=how)
+    if returned is not None and returned > READ_TIER_ROW_BUDGET:
+        raise _refuse_past_budget(lens, scope_id, estimate=estimate, runs=len(runs), returned=returned, how=how)
+
+
 def narrowed_read_disclosure(subject_id: str, *, tiers: bool = False) -> str:
     """What an answer read for one subject alone, past :data:`READ_TIER_ROW_BUDGET`, did not count.
 
