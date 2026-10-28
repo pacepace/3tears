@@ -27,10 +27,12 @@ import asyncpg
 import pytest
 
 from threetears.agent.acl import (
-    MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH,
     MAX_GROUP_MEMBERSHIP_DEPTH,
-    MAX_GROUP_MEMBERSHIP_DEPTH_ENV,
     caller_visible_customer_clause,
+)
+from threetears.agent.acl.types import (
+    MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH,
+    MAX_GROUP_MEMBERSHIP_DEPTH_ENV,
 )
 
 pytestmark = pytest.mark.integration

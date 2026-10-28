@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.agent.acl import (
+from threetears.agent.acl.types import (
     DEFAULT_MAX_GROUP_MEMBERSHIP_DEPTH,
     MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH,
     MAX_GROUP_MEMBERSHIP_DEPTH_ENV,
