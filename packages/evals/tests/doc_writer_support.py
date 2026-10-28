@@ -18,6 +18,7 @@ from typing import Any, Final, Self
 
 from threetears.evals.schema.completion import CompletionResult
 from threetears.evals.schema.turns import (
+    ThinkingBinding,
     ToolResultClearing,
     TurnCeiling,
     ToolTurnClient,
@@ -181,6 +182,7 @@ class FakeSessionClient:
         tools: Sequence[TurnToolSpec],
         max_tokens: int,
         clearing: ToolResultClearing | None = None,
+        binding: ThinkingBinding | None = None,
     ) -> TurnReply:
         if self.gate is not None:
             await self.gate.wait()

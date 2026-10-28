@@ -29,7 +29,7 @@ Two runs replaced earlier ones. At a $4 cap, "r2 with its gates read in each tas
 
 ## Size of each acceptance record
 
-`record.json` is the stored `EvalReportDoc`. The analyst and editor sessions sit inline in its `generation`, and they are most of it, as the plan's L2 ruling accepted for W3. W4 moves them to transcript storage.
+`record.json` is the stored `EvalReportDoc`. The analyst and editor sessions sit inline in its `generation`, and they are most of it, as the plan's L2 ruling accepted for W3. W4 moves them to transcript storage. A W4 build refuses these records by their version (13), so `test_report_docs_accepted.py` holds the record W4 stores, each recording replayed, to the document, findings, ending and snapshot each `record.json` holds.
 
 | Run | record.json | Sessions in it | The document |
 |---|---|---|---|
