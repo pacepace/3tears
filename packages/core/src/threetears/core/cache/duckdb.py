@@ -16,7 +16,7 @@ import hashlib
 import json
 import threading
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -364,11 +364,27 @@ class DuckDBBackend:
 
     DuckDB is an optional dependency. If not installed, instantiation raises
     ImportError with installation instructions.
+
+    **Key-less tables.** DuckDB never reclaims a deleted row of a table with an index: its row ids are the
+    index's, so a keyed table whose rows are deleted as often as they are written grows by every row it
+    ever held, and the primary-key index itself is neither compressed nor freed. A table named in
+    ``keyless`` is created with no primary key (its key columns still ``NOT NULL``), and this backend keeps
+    its key instead: every write replaces the rows of the keys it names (:meth:`upsert_many`,
+    :meth:`replace_all`, a replacement's ``rows``), and rows added as Arrow (:meth:`replace_partitions`)
+    are refused when they name a key the table holds, or one key twice, as the key would refuse them.
+    Once checkpointed, such a table gives back what was deleted and holds what is kept compressed.
+    :meth:`load_parquet` refuses one (DuckDB's ``INSERT OR REPLACE`` needs the key).
+
+    :param keyless: the tables to create with no primary key, by name; each must declare one
+    :ptype keyless: Collection[str]
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, keyless: Collection[str] = ()) -> None:
         if not _HAS_DUCKDB:
             raise ImportError("DuckDB backend requires the 'duckdb' package. Install with: pip install 3tears[duckdb]")
+        self._keyless_names: frozenset[str] = frozenset(keyless)
+        #: every key-less table created, with the key this backend keeps for it
+        self._keyless: dict[str, tuple[str, ...]] = {}
         self._db: Any = None  # duckdb.DuckDBPyConnection
         self._initialized: bool = False
         self._schema_info: dict[str, dict[str, str]] = {}
@@ -402,6 +418,8 @@ class DuckDBBackend:
         for table in sa_metadata.tables.values():
             for column in table.columns:
                 self._column_code(table.name, column)
+            if table.name in self._keyless_names and not any(col.primary_key for col in table.columns):
+                raise ValueError(f"key-less table {table.name!r} declares no primary key for this backend to keep")
         new_tables = 0
         with self._db_lock:
             if not self._initialized:
@@ -412,6 +430,8 @@ class DuckDBBackend:
                     continue
                 self._db.execute(self._generate_create_table(table))
                 self._schema_info[table.name] = {col.name: self._column_code(table.name, col) for col in table.columns}
+                if table.name in self._keyless_names:
+                    self._keyless[table.name] = tuple(col.name for col in table.columns if col.primary_key)
                 new_tables += 1
                 log.debug(f"Created DuckDB table: {table.name}")
             if not self._initialized:
@@ -494,8 +514,31 @@ class DuckDBBackend:
         :raises ValueError: when the rows do not all name the same columns
         """
         with self._db_lock:
-            self._insert_rows(self._db, table, rows, primary_key)
+            if table in self._keyless:
+                # a key-less table's write is a delete and an insert: one transaction, so a reader never sees between
+                with self._transaction():
+                    self._insert_rows(self._db, table, rows, primary_key)
+            else:
+                self._insert_rows(self._db, table, rows, primary_key)
         return len(rows)
+
+    @contextmanager
+    def _transaction(self) -> Iterator[None]:
+        """one transaction on the write connection, committed when the block ends and rolled back when it raises;
+        the caller holds the lock.
+
+        :return: a context
+        :rtype: Iterator[None]
+        """
+        committed = False
+        self._db.execute("BEGIN TRANSACTION")
+        try:
+            yield
+            self._db.execute("COMMIT")
+            committed = True
+        finally:
+            if not committed:
+                self._db.execute("ROLLBACK")
 
     def _serialized(
         self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...]
@@ -546,13 +589,78 @@ class DuckDBBackend:
         :raises ValueError: when the rows do not all name the same columns
         """
         columns, lists = self._serialized(table, rows, primary_key)
-        if lists and lists[0]:
+        if lists and lists[0] and table in self._keyless:
+            self._replace_keyless_rows(connection, table, columns, lists)
+        elif lists and lists[0]:
             # values are already serialized to each column's storage form, so the insert's own
             # conversion types them; the registry's names are logical (VARCHAR_UUID), not SQL
             target = f"{quote_identifier(table)} ({', '.join(quote_identifier(c) for c in columns)})"
             if not _insert_through_arrow(connection, target, columns, lists):
                 select = ", ".join(f"unnest(${i}) AS {quote_identifier(c)}" for i, c in enumerate(columns, 1))
                 connection.execute(f"INSERT OR REPLACE INTO {target} SELECT {select}", lists)  # noqa: S608
+
+    def _replace_keyless_rows(
+        self, connection: Any, table: str, columns: Sequence[str], lists: Sequence[list[Any]]
+    ) -> None:
+        """write serialized rows to a key-less table: the rows of the keys they name deleted, then they inserted;
+        the caller holds the lock and the transaction.
+
+        :param connection: the connection to write on
+        :ptype connection: Any
+        :param table: a key-less table this backend created
+        :ptype table: str
+        :param columns: the columns, in order, every key column among them
+        :ptype columns: Sequence[str]
+        :param lists: each column's values, serialized to its storage form, one row per key
+        :ptype lists: Sequence[list[Any]]
+        :return: nothing
+        :rtype: None
+        """
+        quoted = quote_identifier(table)
+        position = {name: index for index, name in enumerate(columns)}
+        arrow = _as_arrow(quoted, lists)
+        source = "_bulk_rows"
+        bound: list[Any] = []
+        if arrow is None:
+            # values Arrow cannot type as one column: each list bound and unnested
+            source = "(SELECT " + ", ".join(f"unnest(?) AS c{index}" for index in range(len(lists))) + ")"
+            bound = list(lists)
+        joined = " AND ".join(f"held.{quote_identifier(k)} = given.c{position[k]}" for k in self._keyless[table])
+        names = ", ".join(quote_identifier(c) for c in columns)
+        given = ", ".join(f"c{index}" for index in range(len(columns)))
+        if arrow is not None:
+            connection.register(source, arrow)
+        try:
+            connection.execute(f"DELETE FROM {quoted} AS held USING {source} AS given WHERE {joined}", bound)  # noqa: S608
+            connection.execute(f"INSERT INTO {quoted} ({names}) SELECT {given} FROM {source}", bound)  # noqa: S608
+        finally:
+            if arrow is not None:
+                connection.unregister(source)
+
+    def _refuse_held_keys(self, table: str, chunk: str) -> None:
+        """refuse rows about to be added to a key-less table (registered as ``chunk``) that name a key the table
+        holds, or one key twice, as the table's key would; the caller holds the lock.
+
+        :param table: a key-less table this backend created
+        :ptype table: str
+        :param chunk: the registered name of the rows
+        :ptype chunk: str
+        :return: nothing
+        :rtype: None
+        :raises duckdb.ConstraintException: naming the table and how many rows repeat a key
+        """
+        key = self._keyless[table]
+        keys = ", ".join(quote_identifier(k) for k in key)
+        joined = " AND ".join(f"held.{quote_identifier(k)} = given.{quote_identifier(k)}" for k in key)
+        held = self._db.execute(
+            f"SELECT count(*) FROM {quote_identifier(table)} AS held JOIN {chunk} AS given ON {joined}"  # noqa: S608
+        ).fetchone()[0]
+        repeated = self._db.execute(f"SELECT count(*) - count(DISTINCT ({keys})) FROM {chunk}").fetchone()[0]  # noqa: S608
+        if held or repeated:
+            raise duckdb.ConstraintException(
+                f"Duplicate key in key-less table {table!r}: {held} row(s) name a key it holds, "
+                f"{repeated} repeat a key among themselves"
+            )
 
     def replace_all(self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...]) -> int:
         """make a table hold exactly ``rows``, in one transaction: what it held before is gone.
@@ -620,11 +728,13 @@ class DuckDBBackend:
         :ptype row_number_column: str | None
         :return: how many rows the file held
         :rtype: int
-        :raises ValueError: when the table is not one this backend created
+        :raises ValueError: when the table is not one this backend created, or is key-less
         """
         schema = self._schema_info.get(table)
         if schema is None:
             raise ValueError(f"unknown table {table!r}: load_parquet fills tables this backend created")
+        if table in self._keyless:
+            raise ValueError(f"key-less table {table!r}: load_parquet replaces rows by the table's own key")
         with self._db_lock:
             in_file = {
                 row[0] for row in self._db.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]).fetchall()
@@ -923,6 +1033,8 @@ class DuckDBBackend:
                     if replacement.arrow is not None and replacement.arrow.num_rows:
                         self._db.register("_partition_chunk", replacement.arrow)
                         try:
+                            if replacement.table in self._keyless:
+                                self._refuse_held_keys(replacement.table, "_partition_chunk")
                             self._db.execute(f"INSERT INTO {table} BY NAME SELECT * FROM _partition_chunk")  # noqa: S608
                         finally:
                             self._db.unregister("_partition_chunk")
@@ -1243,9 +1355,10 @@ class DuckDBBackend:
         return table in self._schema_info
 
     def _generate_create_table(self, table: Any) -> str:
-        """Generate DuckDB CREATE TABLE from SQLAlchemy table."""
+        """Generate DuckDB CREATE TABLE from SQLAlchemy table; a key-less one's has no primary key."""
+        keyless = table.name in self._keyless_names
         pk_cols = [col.name for col in table.columns if col.primary_key]
-        is_composite_pk = len(pk_cols) > 1
+        is_composite_pk = len(pk_cols) > 1 and not keyless
 
         columns = []
         for column in table.columns:
@@ -1256,7 +1369,7 @@ class DuckDBBackend:
             primary = ""
             if column.primary_key:
                 nullable = " NOT NULL"
-                if not is_composite_pk:
+                if not is_composite_pk and not keyless:
                     primary = " PRIMARY KEY"
             columns.append(f"{quote_identifier(column.name)} {ddl_type}{nullable}{primary}")
 
