@@ -134,8 +134,8 @@ did and which no figure reads.
 - **A run written lost** with no completeness of its own counts what it stored as it walks it, keeping nothing:
   `reconstruct_completeness` takes any iterable of results. A stored row whose key (id, case, `k`, model, when
   stored) cannot be read refuses the walk's key read with `UnreadableResultKey` (new, a `StorageError`,
-  exported from `threetears.evals.kernel` (provisional), so a host calling the key read catches it by name), and the run is still written lost, its completeness unknown and why written on it, as for a
-  result this build cannot reconstruct. A store that fails to answer is not caught: nothing is written, and the
+  exported from `threetears.evals.kernel` (provisional), so a host calling the key read catches it by name), and
+  the run is still written lost, its completeness unknown and why written on it, as for a result this build cannot reconstruct. A store that fails to answer is not caught: nothing is written, and the
   next read settles the run. `LeaseStore` now reads results through
   `RunResultsStore` (the key read and the read by id) in place of `query_eval_results_by_run`.
 - **The witnessed judge ceiling** keeps each saved cell's id and judge spend. **Changed:** `WitnessedJudging.spent`
