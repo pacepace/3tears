@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### scheduled-jobs: the undo of a fire cut off on close is a public function
+
+**Added:** `threetears.scheduled_jobs.bring_back_cut_off_fire(schedule_store, trigger, fire_id)`, the
+undo `BackgroundDispatch.aclose` runs for each fire it cancels, now callable by any dispatcher that
+hands fires off the tick. It calls `ClaimUndoStore.undo_claim` (the compare-and-swap on what the
+claim wrote), logs `EVENT_FIRE_DUE_AGAIN` when the job is due again and a WARNING when it is left as it
+is, returns whether it was undone, and never raises. `BackgroundDispatch` behaves as before; its log
+lines now start `scheduled_jobs:` rather than `scheduled_jobs background:`.
+
 ### agent-memory: automatic extraction, ambient recall and consolidation each have a switch
 
 **Added:** three fields on `MemoryConfig`, all default `True`, so a host that sets none sees no
