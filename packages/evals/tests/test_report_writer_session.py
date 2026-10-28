@@ -159,8 +159,8 @@ def reply(
         content=content,
         stop_reason=stop or ("tool_use" if calls else "end_turn"),
         provider_stop_reason=None,
-        model="claude-opus-5-5",
-        served_model="claude-opus-5-5-20261001",
+        model="analyst-model",
+        served_model="analyst-model-20261001",
         input_tokens=input_tokens,
         output_tokens=50,
         reasoning_tokens=20,
@@ -460,8 +460,8 @@ async def test_each_turn_is_tallied_with_its_role_round_model_and_tokens() -> No
         "role": "analyst",
         "round": 1,
         "turn": 0,
-        "model": "claude-opus-5-5",
-        "served_model": "claude-opus-5-5-20261001",
+        "model": "analyst-model",
+        "served_model": "analyst-model-20261001",
     }
     assert (first["input_tokens"], first["cache_read_tokens"], first["cache_write_tokens"]) == (1000, 800, 100)
     assert (first["output_tokens"], first["reasoning_tokens"]) == (50, 20)

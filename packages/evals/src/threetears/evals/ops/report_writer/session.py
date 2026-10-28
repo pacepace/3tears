@@ -65,10 +65,12 @@ from threetears.evals.schema.turns import (
     block_from_json,
 )
 
-__all__ = ["SessionLimits", "SessionStop", "ToolMount", "ToolOutcome", "ToolSession"]
+#: The names the analyst's session calls. ``ToolOutcome``, what a mount's call answers, joins them with the mount the
+#: report writer's entry point builds (``tests/test_report_writer_exports.py`` holds the list).
+__all__ = ["SessionLimits", "SessionStop", "ToolMount", "ToolSession"]
 
 #: What an elided tool result's body reads as.
-ELIDED: Final = "[elided; call again]"
+_ELIDED: Final = "[elided; call again]"
 
 #: The storage format :meth:`ToolSession.to_json` writes and :meth:`ToolSession.from_json` reads.
 _FORMAT: Final = 1
@@ -650,7 +652,7 @@ def _elided(block: TurnBlock) -> TurnBlock:
     """A tool result with its body elided; any other block unchanged."""
     if not isinstance(block, TurnToolResult):
         return block
-    return TurnToolResult(block.tool_use_id, ELIDED, is_error=block.is_error)
+    return TurnToolResult(block.tool_use_id, _ELIDED, is_error=block.is_error)
 
 
 def _with_body(block: TurnBlock, bodies: Mapping[str, str]) -> TurnBlock:
