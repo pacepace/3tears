@@ -581,6 +581,22 @@ class ReportReadParams(EvalBaseModel):
     format: Format = "markdown"
     trials: Trials = "table"
     static: Static = False
+    report_doc_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "A stored report document of the campaign, any version (analyses_list names each analysis's "
+            "report_doc_id): given, the report is that document's page in place of the campaign's report; omitted, "
+            "the campaign's report."
+        ),
+    )
+    include_sessions: bool = Field(
+        default=False,
+        description=(
+            "With json, add the full transcripts of the report document the page draws, as report_doc.sessions: "
+            "every session that wrote it, by name. Refused with markdown or html, which never hold a transcript."
+        ),
+    )
 
 
 class JudgeTemplateCreateParams(JudgeTemplateCreate):
@@ -1184,6 +1200,8 @@ async def _report_read(host: OpsHost, caller: Caller, params: ReportReadParams) 
         format=params.format,
         trials=params.trials,
         static=params.static,
+        report_doc_id=params.report_doc_id,
+        include_sessions=params.include_sessions,
     )
 
 
@@ -2227,9 +2245,10 @@ def engine_actions() -> tuple[Action, ...]:
             render=render.render_model,
             example={"campaign_id": campaign_id},
             detail=(
-                "Each analysis says what wrote it (basis): memo, for one stored before the report planner, or plan, "
-                "for one the planner wrote, with its report plan's id; report_read carries the reported analysis's "
-                "plan."
+                "Each analysis says what wrote it (basis): doc, for one the report writer wrote, with its report "
+                "document's id (report_read reads it, any version by report_doc_id); memo, for one stored before the "
+                "report planner; or plan, for one the planner wrote, which report_read renders code-only with one line "
+                "to regenerate it. needs_regeneration says when an analysis no longer reads, and why."
             ),
         ),
         Action(
@@ -2291,9 +2310,14 @@ def engine_actions() -> tuple[Action, ...]:
                 "(read it with result_get), then its passed trials. trials='all' adds each failed or lost trial's full "
                 "record (what it asked, what the judge saw and said, and why): most of a large campaign's page, so "
                 "read it when you need the records, or read one trial with result_get. analysis_basis says what wrote "
-                "the analysis: memo (an analysis stored before the report planner) or plan, whose report plan is "
-                "plan (report-plan/1 JSON, figures by key); a plan analysis's markdown and html body is the page its "
-                "plan draws, each aspect's fold (and its trials) a closed appendix after Method. static=true makes the html page one a host can serve "
+                "the analysis: doc (the report writer, which analysis_generate runs), whose page is the one its stored "
+                "report document draws and whose document is doc (report-doc/1 JSON, figures by key); memo (an older "
+                "analysis), laid out as written; or plan (an older analysis written as a report plan), read "
+                "code-only. A plan, or a document this version no longer reads, is never refused: the page is the "
+                "code-only page with one line to regenerate it, which needs_regeneration repeats. report_doc_id reads "
+                "one stored report "
+                "document, any version; include_sessions=true with format json adds its transcripts "
+                "(report_doc.sessions), for an audit. static=true makes the html page one a host can serve "
                 "under a policy that runs and loads nothing: no script, no link, every chart its table."
             ),
         ),

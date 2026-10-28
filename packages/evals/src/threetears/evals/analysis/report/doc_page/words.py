@@ -125,6 +125,10 @@ NEXT_TITLE = "Next steps"
 #: The appendix's divider: what follows it is the record, not the story.
 APPENDIX_TITLE = "Full results"
 
+#: The heading of the record code lays out after the document where every trial's record is asked for (the campaign's
+#: folds, as the code-only page draws them): code's, never the analyst's.
+EVIDENCE_TITLE = "Evidence record"
+
 #: The omitted list's heading (``report-doc/1``: ``omitted[]``).
 OMITTED_TITLE = "Left out, and why"
 

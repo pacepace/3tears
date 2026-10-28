@@ -127,6 +127,17 @@ from threetears.evals.analysis.report.verdict import MIN_CASES
 # which no public root exports.
 from threetears.evals.analysis.report.plan_page.html import planned_page_html
 from threetears.evals.analysis.report.plan_page.markdown import planned_page_markdown
+from threetears.evals.analysis.report.doc_page.model import (
+    DocCaveatLine,
+    DocClaim,
+    DocConfidence,
+    DocEvidence,
+    DocFinding,
+    DocNext,
+    DocOmitted,
+    DocPage,
+    DocTerm,
+)
 from threetears.evals.analysis.report.plan_page.model import (
     PageAnswer,
     PageArmsKey,
@@ -217,6 +228,15 @@ __all__ = [
     "PageSlot",
     "PageTerm",
     "PlannedPage",
+    "DocCaveatLine",
+    "DocClaim",
+    "DocConfidence",
+    "DocEvidence",
+    "DocFinding",
+    "DocNext",
+    "DocOmitted",
+    "DocPage",
+    "DocTerm",
     "PriceLine",
     "RangeBarsChart",
     "RangeGroup",

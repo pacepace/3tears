@@ -36,6 +36,7 @@ from threetears.evals.analysis.report.campaign.memo_blocks import (
     memo_summary_blocks,
     recommendation_blocks,
     report_doc_blocks,
+    unread_analysis_blocks,
 )
 from threetears.evals.analysis.report.campaign.names import AspectNames, check_legend_blocks
 from threetears.evals.analysis.report.campaign.provenance import (
@@ -80,6 +81,8 @@ def build_campaign_report(
     resolutions: Sequence[FindingResolution] = (),
     trial_ids: Mapping[str, tuple[str, str]] | None = None,
     report_doc_id: str | None = None,
+    unread_analysis_id: str | None = None,
+    unread_report_doc_id: str | None = None,
 ) -> CampaignReport:
     """Lay a campaign out as its page: under the title the question, the writer's summary and recommendation, what
     warns and the person's call; then the Scorecard, the findings and next steps, Design & provenance, then one fold
@@ -110,6 +113,15 @@ def build_campaign_report(
         (``EvalAnalysis.report_doc_id``): the first screen says the report is written and stored there, in place of
         "no analysis has been generated"; None for any other page.
     :ptype report_doc_id: str | None
+    :param unread_analysis_id: The campaign's analysis this version no longer reads, which this code-only page stands in
+        for: the first screen says so in the one regenerate line
+        (:data:`~threetears.evals.analysis.report.campaign.memo_blocks.NO_LONGER_READS`), in place of "no analysis has
+        been generated", and the page names it (``CampaignReport.unread_analysis_id``); None for any other page.
+    :ptype unread_analysis_id: str | None
+    :param unread_report_doc_id: The report document, read by its id, this version no longer reads, which this
+        code-only page stands in for: the first screen says so in the same line
+        (:data:`~threetears.evals.analysis.report.campaign.memo_blocks.NO_LONGER_READS`); None for any other page.
+    :ptype unread_report_doc_id: str | None
     :return: The page, ``basis="analysis"`` with a memo, ``code_only`` without one.
     :rtype: CampaignReport
     :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, the readings
@@ -130,10 +142,15 @@ def build_campaign_report(
     blocks: list[ReportBlock] = [
         *question_blocks(campaign),
         *report_doc_blocks(report_doc_id),
+        *unread_analysis_blocks(unread_analysis_id, unread_report_doc_id),
         *memo_summary_blocks(memo),
     ]
     if kind != "measurement":
-        blocks += recommendation_blocks(memo, kind, report_doc_id=report_doc_id)
+        blocks += recommendation_blocks(
+            memo,
+            kind,
+            noted=any(named is not None for named in (report_doc_id, unread_analysis_id, unread_report_doc_id)),
+        )
     if kind == "choice":
         blocks += behind_on_blocks(memo, names=names)
     blocks += [
@@ -187,6 +204,7 @@ def build_campaign_report(
         call=call,
         recommendation=recommendation,
         recommended_variant_key=recommended_variant_key if recommendation is not None else None,
+        unread_analysis_id=unread_analysis_id,
     )
 
 

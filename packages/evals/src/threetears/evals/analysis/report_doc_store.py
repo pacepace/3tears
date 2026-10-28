@@ -23,6 +23,14 @@ the review of it, from the session's own document. A record for a report that is
 each session inline (``session``) instead, so a paid run that stores nothing keeps every session in memory.
 :func:`made_line` writes the page's made line from it, the one place that line is written.
 
+**The read.** :func:`read_report_doc` reads a stored document back as its page, on its own snapshot, the way a
+stored document is read (``strict=False``: a key that no longer resolves prints ``—``, a block that no longer draws
+prints its values or its caption, and the page carries the one note to regenerate), with its made line and the
+editor's findings it was stored with. A document this version no longer reads at all is refused by what does not read:
+its record (its version, or a ``report-doc/1`` shape the model no longer accepts), its snapshot (gone, or no longer
+reading as this version's report input), or its generation record; the report read prints the one regenerate line in
+its place (``campaign_report``).
+
 **The store gate writes the sessions, then the document** (``EvalStorage.save_report_doc``): a stored document never
 names a session that was not written. A write that fails part way leaves the sessions written before it, which no
 document names and ``drop_derived`` sweeps, and no document; the writing loop raises it with the whole record.
@@ -31,14 +39,19 @@ document names and ``drop_derived`` sweeps, and no document; the writing loop ra
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, NamedTuple
 
+from pydantic import ValidationError
+
+from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.doc_page.text import above_appendix_text
+from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
 from threetears.evals.analysis.report_doc_checks import DocVerdict, InvariantNumber, check_report_doc
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.kernel.errors import NotFoundError, RefusedInput
 from threetears.evals.kernel.numbers import spell_dollars
 from threetears.evals.kernel.report_doc import (
     EvalReportDoc,
@@ -47,9 +60,18 @@ from threetears.evals.kernel.report_doc import (
     ReportFinding,
     report_session_id,
 )
+from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
 from threetears.evals.kernel.storage import EvalStorage
 
-__all__ = ["doc_verdicts", "doc_verdicts_and_page", "generation_record", "made_line", "store_report_doc"]
+__all__ = [
+    "StoredReportPage",
+    "doc_verdicts",
+    "doc_verdicts_and_page",
+    "generation_record",
+    "made_line",
+    "read_report_doc",
+    "store_report_doc",
+]
 
 #: The format of the generation record :func:`generation_record` writes and :func:`made_line` reads.
 _GENERATION_FORMAT: Final = 2
@@ -323,3 +345,100 @@ def _stored_sessions(
         )
         for name, session in sessions.items()
     ]
+
+
+class StoredReportPage(NamedTuple):
+    """A stored report document read back as its page (:func:`read_report_doc`).
+
+    :ivar record: The stored document.
+    :ivar page: The page it draws on its own snapshot, read as a stored document is (degrading, never refusing).
+    :ivar snapshot: The snapshot it was written from, whose bundle (``None`` for a bare report input) the campaign's
+        page reads its readings off.
+    :ivar made: The page's made line (:func:`made_line`).
+    """
+
+    record: EvalReportDoc
+    page: DocPage
+    snapshot: EvalReportSnapshot
+    made: str
+
+    def summary(self) -> dict[str, Any]:  # Any: a JSON object
+        """The stored document as the report's JSON form carries it: never a session's transcript.
+
+        :return: ``{"id", "snapshot_id", "created_at", "ending", "doc", "findings", "made", "generation"}``, the
+            generation record as stored (each session by ``{digest, turns, ref}``).
+        :rtype: dict[str, Any]
+        """
+        record = self.record
+        return {
+            "id": record.id,
+            "snapshot_id": record.snapshot_id,
+            "created_at": record.created_at,
+            "ending": record.ending,
+            "doc": dict(record.doc),
+            "findings": [dict(finding) for finding in record.findings],
+            "made": self.made,
+            "generation": dict(record.generation),
+        }
+
+
+def _unread(report_doc_id: str, why: str) -> RefusedInput:
+    """The refusal of a stored document this version no longer reads, by what does not read."""
+    return RefusedInput(f"report document {report_doc_id} {why}", remedy=NO_LONGER_READS)
+
+
+def read_report_doc(
+    storage: EvalStorage, report_doc_id: str, scope_id: str, *, campaign_id: str | None = None
+) -> StoredReportPage:
+    """A stored report document read back as its page, on its own snapshot (the module docstring's read). Blocking.
+
+    :param storage: Where the document and its snapshot are stored.
+    :ptype storage: EvalStorage
+    :param report_doc_id: The document's id.
+    :ptype report_doc_id: str
+    :param scope_id: The scope it is stored in.
+    :ptype scope_id: str
+    :param campaign_id: The campaign the document must have been written for, checked as soon as its record loads and
+        before anything else is read; ``None`` checks none. A record that does not validate cannot be attributed to a
+        campaign, so it is refused as unread whatever this names.
+    :ptype campaign_id: str | None
+    :return: The document, its page, its snapshot and its made line.
+    :rtype: StoredReportPage
+    :raises NotFoundError: No report document is stored under the id in the scope, or the one stored was written for
+        another campaign than ``campaign_id``.
+    :raises RefusedInput: The document is one this version no longer reads: its record does not validate (its version,
+        or its document or findings), its snapshot is gone or no longer reads as this version's report input, or its
+        generation record is not one the made line reads. Its remedy is the one regenerate line
+        (:data:`~threetears.evals.analysis.report.campaign.memo_blocks.NO_LONGER_READS`).
+    """
+    try:
+        record = storage.load_report_doc(report_doc_id, scope_id)
+    except ValidationError as unread:
+        raise _unread(report_doc_id, f"does not read under this version ({unread.error_count()} fault(s))") from unread
+    if record is None or (campaign_id is not None and record.campaign_id != campaign_id):
+        remedy = "analyses_list names each analysis's report document"
+        if campaign_id is not None:
+            remedy = f"analyses_list names the report document of each of campaign {campaign_id}'s analyses"
+        raise NotFoundError("report document", report_doc_id, remedy=remedy)
+    try:
+        snapshot = storage.load_report_snapshot(record.snapshot_id, scope_id)
+    except ValidationError as unread:
+        raise _unread(report_doc_id, f"was written from snapshot {record.snapshot_id}, which does not read") from unread
+    if snapshot is None:
+        raise _unread(report_doc_id, f"was written from snapshot {record.snapshot_id}, which is gone")
+    try:
+        report_input = frozen_input(snapshot)
+    except RefusedInput as refused:
+        raise _unread(report_doc_id, f"was written from a snapshot that no longer reads: {refused.fault}") from refused
+    try:
+        made = made_line(record)
+    except ValueError as unread:
+        raise _unread(report_doc_id, f"carries a generation record this version does not read: {unread}") from unread
+    page = build(
+        ReportDoc.model_validate(record.doc),
+        report_input,
+        strict=False,
+        findings=[ReportFinding.model_validate(finding) for finding in record.findings],
+        made=made,
+    )
+    return StoredReportPage(record=record, page=page, snapshot=snapshot, made=made)

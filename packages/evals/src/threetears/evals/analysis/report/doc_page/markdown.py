@@ -16,7 +16,7 @@ table cell on one line with its pipes escaped.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 
 from threetears.evals.analysis.analyst.blocks import values_table
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
@@ -24,6 +24,7 @@ from threetears.evals.analysis.report.doc_page.model import DocClaim, DocPage, c
 from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
     CHECKED_MARK,
+    EVIDENCE_TITLE,
     FINDINGS_TITLE,
     METHOD_TITLE,
     NEXT_TITLE,
@@ -33,11 +34,9 @@ from threetears.evals.analysis.report.md_parts import inert, markdown_table, one
 from threetears.evals.analysis.report.plan_page.model import PageMasthead
 from threetears.evals.analysis.report.plan_page.words import CONFIDENCE_LABEL, RUN_TEMPLATE, SYNTHETIC
 
-#: Empty until a production caller imports this module's entry point (``doc_page_markdown``): its callers are the
-#: writing loop's editor and ``report_check`` (the page text), and the report read (the page);
-#: ``tests/test_doc_page_exports.py`` lists the name as awaiting one, and goes red when it has one, so it joins this
-#: list then.
-__all__: list[str] = []
+#: The module's entry point, which the campaign page's serializer calls for a report document's page (the report
+#: read).
+__all__ = ["doc_page_markdown"]
 
 #: Each claim weight's heading level: its type size, and nothing else.
 _WEIGHT_HEADINGS = {"lead": "## ", "support": "### ", "detail": "#### "}
@@ -136,11 +135,14 @@ def _lines(page: DocPage) -> Iterator[list[str]]:
         yield [inert(f"_{one_line(page.made)}_")]
 
 
-def doc_page_markdown(page: DocPage) -> str:
+def doc_page_markdown(page: DocPage, *, record: Sequence[str] = ()) -> str:
     """Write a report document's page as Markdown (this module's account).
 
     :param page: The page.
     :ptype page: DocPage
+    :param record: Lines this package wrote (the campaign's folds, each failed or lost trial's record in them), laid
+        out after the document under their own heading, the document left as it is; none by default.
+    :ptype record: Sequence[str]
     :return: The Markdown, ending in a newline.
     :rtype: str
     """
@@ -149,4 +151,6 @@ def doc_page_markdown(page: DocPage) -> str:
         if out:
             out.append("")
         out += lines
+    if record:
+        out += ["", f"## {EVIDENCE_TITLE}", *record]
     return "\n".join(out) + "\n"

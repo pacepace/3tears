@@ -168,22 +168,22 @@ def scope_out_of_run_spend(
 
 
 def _totals_line(totals: OutOfRunSpendTotals) -> str:
-    """One line of totals, saying when the sum is a floor."""
+    """One line of totals, saying when the sum is a floor, then how the calls were admitted, each way counted.
+
+    The ceiling sum is said of the calls it was summed over alone (those admitted at a priced ceiling), and left out
+    where none was: a call a report budget admitted, each turn on a ceiling the ledger does not hold, and a call
+    admitted unbounded, are each counted, never read as a ceiling of $0.
+    """
     floor = f", {totals.n_unpriced} unpriced (so at least)" if totals.n_unpriced else ""
     raised = f", {totals.n_raised} raised" if totals.n_raised else ""
-    unbounded = f", {totals.n_unbounded} admitted unbounded" if totals.n_unbounded else ""
     reported = f"{totals.n_calls} call(s): ${totals.priced_usd:.4f} reported{floor}{raised}"
-    if not totals.n_budgeted:
-        return f"{reported}; admitted at up to ${totals.ceiling_usd:.4f}{unbounded}"
-    # A report budget admitted some calls, each turn on a ceiling the ledger does not hold: the ceiling sum is said of
-    # the calls it was summed over alone, and left out where every call was the budget's, never read as $0.
     ceilinged = totals.n_calls - totals.n_unbounded - totals.n_budgeted
-    admitted = [f"{totals.n_budgeted} admitted by a report budget"]
-    if ceilinged:
-        admitted.insert(0, f"{ceilinged} admitted at up to ${totals.ceiling_usd:.4f}")
-    if totals.n_unbounded:
-        admitted.append(f"{totals.n_unbounded} admitted unbounded")
-    return f"{reported}; {', '.join(admitted)}"
+    admitted = [
+        *([f"{ceilinged} admitted at up to ${totals.ceiling_usd:.4f}"] if ceilinged else []),
+        *([f"{totals.n_budgeted} admitted by a report budget"] if totals.n_budgeted else []),
+        *([f"{totals.n_unbounded} admitted unbounded"] if totals.n_unbounded else []),
+    ]
+    return f"{reported}; {', '.join(admitted)}" if admitted else reported
 
 
 def out_of_run_spend_text(report: OutOfRunSpendReport) -> str:
