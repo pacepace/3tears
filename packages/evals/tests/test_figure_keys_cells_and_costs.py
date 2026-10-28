@@ -144,7 +144,9 @@ def _price(text: str) -> float:
     """The dollars a spelled price reads, as a reader would take them off the page: ``$8/1000`` is $0.008 (#993)."""
     amount = text.split(" ", 1)[0].replace("$", "").replace(",", "")
     digits, mark, _ = amount.partition("/1000")
-    return float(digits) / (1000 if mark else 1)
+    # A price whose family is under a cent per 1,000 reads per 1,000,000 of what it counts (#993).
+    per_million = " per 1,000,000 " in f"{text} "
+    return float(digits) / (1000 if mark else 1) / (1000 if per_million else 1)
 
 
 #: The inputs declaring a monthly volume, which a monthly cost is read at.

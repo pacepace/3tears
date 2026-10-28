@@ -275,9 +275,7 @@ def _engine_tables(held: ReportInput) -> list[TableBlock]:
     tables = list(every_table(held, look))
     for key, measure in held.measures.items():
         if measure.unit in ("usd", "usd_per_1k", "usd_per_1m") and measure.per_arm:
-            spec, faults = complete_chart(
-                _planned("table", _query("measures", [key])), held, "block"
-            )
+            spec, faults = complete_chart(_planned("table", _query("measures", [key])), held, "block")
             assert not faults, faults
             drawn = resolve_chart(spec, held, look, title="", fallback_title="t")
             assert isinstance(drawn.chart, TableBlock)
@@ -621,9 +619,7 @@ def test_a_partly_priced_arms_cost_keys_say_so_beside_the_amount() -> None:
 
 def test_a_partly_priced_arms_bar_says_so_beside_its_cost() -> None:
     moved, control, _ = _part_priced_control()
-    spec, faults = complete_chart(
-        _planned("bars", _query("measures", ["production_replicating_cost"])), moved, "block"
-    )
+    spec, faults = complete_chart(_planned("bars", _query("measures", ["production_replicating_cost"])), moved, "block")
     assert not faults, faults
     drawn = resolve_chart(spec, moved, block_look(moved, fact_arms(moved)), title="", fallback_title="t")
     assert isinstance(drawn.chart, ChartBlock)

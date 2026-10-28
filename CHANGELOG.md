@@ -10,15 +10,18 @@ packages (bumped in lock-step).
 
 **Changed:** money is spelled one way per set, never per value (owner ruling of 2026-10-27, which supersedes the W2c
 rule of three significant figures from $0.10 to $1). A figure-key family (every arm's `cost_per_1k`, a measure's
-statistic across the arms), a chart and a column of a values table each choose one form from every amount they
-hold: when any amount is under a cent, the whole set reads per 1,000 (`$8/1000` for $0.008, and `$110/1000` beside
-it for $0.11); otherwise dollars and cents, with more decimals only where the least amount needs them for two
-significant figures (`$0.030` beside `$3.477`). A change or a gap reads in the form of the amounts it compares, to
-no more decimals than its interval's width supports: Kairo's production-cost contrast now reads `+$0.49 per 1,000
-replies`, where it read `+$0.492` on an interval $0.64 wide. A chart's notes and its axis ticks are written to the
-same decimals (the kit's `usd:<decimals>`); a chart whose money reads per 1,000 has its notes per 1,000 and its
-ticks by the kit's sizes. A values table moves a column per 1,000 by each amount's digits, never rounding one. An
-unknown amount reads `unpriced`, never `$0`. The single-value helpers `dollars_text`, `format_number` and
+statistic across the arms), a chart, and a column of every table the engine builds each choose one form from the
+amounts themselves: whole dollars where the least amount is $10 or more (`$7,560`); else cents, with more decimals
+only where the least amount needs them for two significant figures (`$0.030` beside `$3.477`, so r2's `$0.302` reads
+alike in prose and in its tables); and when any amount is under a cent, the whole set per 1,000 (`$8.00/1000` for
+$0.008, and `$110.00/1000` beside it for $0.11). One rule serves charts, keys and tables, so one amount reads alike
+on each. A `usd_per_1k` key whose family is under a cent per 1,000 moves its ruler instead of stacking a mark: r3's
+reads `$180.00 per 1,000,000 turns`. A chart whose amounts are under a cent draws them a thousand times over, per
+1,000 more of what they count, so its ticks and its notes read in dollars alike (the kit's `usd:<decimals>`). A
+change or a gap reads in the form of the amounts it compares, to no more decimals than its interval's width
+supports: Kairo's production-cost contrast now reads `+$0.49 per 1,000 replies`, where it read `+$0.492` on an
+interval $0.64 wide. A table an editor wrote moves a column per 1,000 by each amount's digits, never rounding one.
+An unknown amount reads `unpriced`, never `$0`. The single-value helpers `dollars_text`, `format_number` and
 `spell_dollars` read exactly as before, so a host printing one amount sees no change. `numbers.spell_price`, which
 never shipped, is removed.
 
@@ -27,13 +30,16 @@ usable trials), then its cost per run, or per 1,000 runs where the column reads 
 then what priced it. Beside the cost: the uplift on the control's, the priced share of the calls the cost counts
 (`all 897 calls priced`) and the unanswered calls, as before. An arm only part of whose calls were priced states
 `850 of 897 calls priced` in place of a cost, which would be a smaller total read as whole; an arm none of whose
-calls were priced reads `unpriced`. The new "Priced by" column names each arm's price sources and, beside them, the
-providers that served its calls. These come from a new optional `ScoreboardRow.pricing` on the report input (price
-sources, serving providers, calls and priced calls), filled from the campaign bundle's new `ArmScoreboard.pricing`,
-which the census reads off the usage rows of the roles a production deployment pays for. Both are left out of the
-document while unset, so a bundle or report input assembled before them fingerprints as it did; a stored bundle
-shows no pricing column until it is assembled again. Monthly figures still appear only where the campaign declares
-a volume.
+calls were priced reads `unpriced`; and no uplift is read against a partly priced control (`no uplift: the control
+has 850 of 897 calls priced`). Everywhere else such an amount is stated, its figure keys (`cost_per_1k`, a cost
+uplift or gap) and a chart's bars, dots and points say the priced share beside it. The new "Priced by" column names
+each arm's price sources and, beside them, the providers that served its calls. These come from a new optional
+`ScoreboardRow.pricing` on the report input (price sources, serving providers, calls and priced calls), filled from
+the campaign bundle's new `ArmScoreboard.pricing`, which the census reads off the usage rows of the roles a
+production deployment pays for. Both are left out of the document while unset, so a bundle or report input assembled
+before them fingerprints as it did; a stored bundle shows no pricing column until it is assembled again (#1011).
+Token-metered calls record no upstream serving provider yet (#1010). Monthly figures still appear only where the
+campaign declares a volume.
 
 ### evals: a report's sessions are stored as their own documents, so listing reports loads none
 

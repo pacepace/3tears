@@ -326,10 +326,11 @@ class TestFilters:
     def test_a_price_per_million_keeps_reading_whole_and_reads_per_thousand(self):
         counted = _counted("r3", "cost_per_1m")
         assert _figure("measure.cost_per_1m.atlas-m.zero.mean", "int", name="r3") == "180"
-        # Per 1,000 the family's least price is under a cent ($0.0013), so every member reads per 1,000 (#993).
+        # Per 1,000 the family's least price is under a cent ($0.0013), so its ruler moves to per 1,000,000 (#993),
+        # never a per-1,000 mark stacked on a per-1,000 ruler.
         assert (
             _figure("measure.cost_per_1m.atlas-m.zero.mean", "usd_per_1k", name="r3")
-            == f"$180.00/1000 per 1,000 {counted}"
+            == f"$180.00 per 1,000,000 {counted}"
         )
 
     def test_usd_whole_drops_a_large_amounts_cents_and_groups_its_thousands(self):

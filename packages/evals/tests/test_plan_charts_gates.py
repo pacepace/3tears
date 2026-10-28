@@ -506,10 +506,13 @@ def test_a_lattices_costs_are_the_pages_cost_and_per_what_it_counts(
     assert isinstance(data, LatticeChart)
     costs = [cell for row in data.rows for cell in row.cells if cell.cost is not None]
     assert costs, "the control: the lattice draws costs"
+    # Costs under a cent per 1,000 are drawn per 1,000,000 (#993: one form, in dollars), every tile alike.
+    scale = 1000 if data.cost_unit == per_count(cost_basis(report_input).noun, 1_000_000) else 1
     for cell in costs:
         figure = resolve(f"cost_per_1k.{cell.id}", report_input)
-        assert cell.cost == figure.value
-        assert data.cost_unit == per_count(figure.per)
+        assert isinstance(figure.value, float)
+        assert cell.cost == pytest.approx(figure.value * scale)
+        assert data.cost_unit == per_count(figure.per, 1000 * scale)
     assert per_noun(report_input.measures[cost_basis(report_input).source]) == cost_basis(report_input).noun
 
 
@@ -536,7 +539,9 @@ def test_a_lattice_tiles_the_first_factor_by_the_rest_with_each_configs_figures_
             arm = by_levels[(level.id, *(one.id for one in combination))]
             assert cell.id == arm
             assert cell.value == report_input.measures[key].per_arm[arm].mean
-            assert cell.cost == resolve(f"cost_per_1k.{arm}", report_input).value
+            # Drawn per 1,000,000 where a cost is under a cent per 1,000 (#993), every tile alike.
+            scale = 1000 if data.cost_unit and "1,000,000" in data.cost_unit else 1
+            assert cell.cost == pytest.approx(float(resolve(f"cost_per_1k.{arm}", report_input).value) * scale)
             assert cell.latency == report_input.measures[latency].per_arm[arm].p95
             check = gate_check(report_input, arm)
             assert (cell.status, cell.status_label) == (_STATUS_COLOUR[check.status], GATE_WORDS[check.status])
