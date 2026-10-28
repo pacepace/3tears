@@ -153,6 +153,7 @@ One domain tool, `evals_analyst`, with one action per capability (owner, 2026-10
 | | `levers_effects` | What one setting buys between arms that differ in it alone, and whether it reverses across another setting |
 | | `confound_check` | Deferred until a prototype run needs it |
 | Rendering | `block_render` | Values table and warnings for a block; no pixels |
+| | `report_check(doc)` | Every invariant's verdict on a draft, then the whole page as text, as the editor reads it; stores nothing. Analyst only |
 | | `render_report(doc)` | Not in MVP (owner, 2026-10-26): no browser at storage time; check.py runs in integration tests |
 | Reference | `block_catalog` | The block kinds, their sources and usage notes |
 | Gaps | `capability_gap` | Acknowledges a missing capability the analyst worked around (§8 of the program plan) |

@@ -14,8 +14,9 @@ workflow below, and the editor's (``role="editor"``) the facts, the analyses and
 so no file lists the actions' names.
 
 **The workflows.** ``Investigate: snapshot`` freezes the evidence; ``facts`` reads what it holds; ``analyses``
-computes over it; ``blocks`` shows the evidence a claim would carry; ``gaps`` notes a capability the analyst reasoned
-around (``capability_gap``, which stores nothing).
+computes over it; ``blocks`` shows the evidence a claim would carry, and the whole draft as the store and the editor
+read it (``report_check``, which stores nothing); ``gaps`` notes a capability the analyst reasoned around
+(``capability_gap``, which stores nothing).
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from threetears.evals.actions.analyst_keys import analyst_keys_actions
 from threetears.evals.actions.analyst_levers import analyst_levers_actions
 from threetears.evals.actions.analyst_price import analyst_price_actions
 from threetears.evals.actions.analyst_render import analyst_render_actions
+from threetears.evals.actions.analyst_write import analyst_write_actions
 from threetears.evals.actions.catalogue import DEFAULT_PREFIX, Action, Caller, HelpTopic, PermissionClass, ToolSpec
 from threetears.evals.actions.params import AnalysisId, CampaignId, SnapshotId
 from threetears.evals.actions.render import render_cited
@@ -199,7 +201,8 @@ def _snapshot_actions() -> tuple[Action, ...]:
 
 
 def analyst_actions() -> tuple[Action, ...]:
-    """Every analyst action, on the analyst's cut: the freeze, the facts, the analyses, the blocks and the gap note.
+    """Every analyst action, on the analyst's cut: the freeze, the facts, the analyses, the blocks (a draft's check
+    among them) and the gap note.
 
     :return: The actions, in the order help lists them.
     :rtype: tuple[Action, ...]
@@ -213,6 +216,7 @@ def analyst_actions() -> tuple[Action, ...]:
         *analyst_price_actions(),
         *analyst_levers_actions(),
         *analyst_render_actions(),
+        *analyst_write_actions(),
         gap,
     )
     return tuple(replace(action, cut=ANALYST_CUT) for action in built)

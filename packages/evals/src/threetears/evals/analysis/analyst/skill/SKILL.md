@@ -16,7 +16,7 @@ Read with this file: `principles.md`, `stories.md`, `charts.md`, `statistics.md`
 2. **Investigate** until the story is clear, or it is clear there isn't a clean one. Is the call sensitive to the margin? Where is the loss concentrated? What do failures look like? Does a confound matter? What would settle an open question? Check your call against `options_dominance`.
 3. **Outline.** The headline, then the claims in reading order, each with the evidence it needs. Decide what to omit, and write down why.
 4. **Draft** the report document below. Every number comes through a figure key from a tool result, never typed.
-5. **Render and look.** Draw each claim's block with `block_render` and read its values table. Whole-page rendering comes later: reread the draft as a reader and fix what is unclear, crowded or misleading. At most three rounds.
+5. **Render and check.** Draw each claim's block with `block_render` and read its values table. Then send the whole draft to `report_check`: it returns every mechanical verdict the store would refuse it for, then the page as a reader and the editor will read it. Fix every verdict, reread the page as a reader and fix what is unclear, crowded or misleading, and check again. At most three rounds.
 6. **Submit to the editor.** Mechanical checks run first and return to you before any editor call. Address the editor's findings and resubmit, at most two rounds. Unresolved findings are stored and shown in Method.
 
 **Two kinds of feedback.** *Mechanical* verdicts you fix: an unresolved figure key, a typed digit, a block that doesn't render, a doubled unit, an id above the appendix, a caveat with no landing, a confidence form that doesn't match its caveats, a missing appendix or Method. *Interpretive* facts go to the editor, which judges them in context: the recommendation failed a declared gate, a warning on it is unanswered, your call disagrees with `options_dominance`, the weakest margin is missing from Watch. Overriding one can be right; the page must say why.
@@ -61,12 +61,13 @@ One tool, `evals_analyst`; each call is `{"action": "<name>", ...}` and, but for
 | | `levers_effects` | `measure_key`, `setting_filter`, `place_filter` | What one setting buys between arms differing in it alone, with an interval, and whether it reverses or differs across another setting |
 | blocks | `block_catalog` | | Block kinds, sources, figure key forms |
 | | `block_render` | `block_kind`, `query`, `reference`, `emphasis` | One block's values table, each figure's interval at the block's level where held; echoes `reference_line` and `emphasis` for the claim's evidence; sources `compare`, `settle`, `levers`, `bar_reads` and `prices` draw what the analyses computed (charts.md, Sources the analyses feed) |
+| | `report_check` | `doc` (the whole draft, as a JSON object) | Before you submit: every mechanical verdict (its invariant, field path, fault and remedy), then the whole page as text, each claim by its id and each block as its values table. Stores nothing. Every result carries every verdict; the page's lines are paged like `figure_keys_check`'s keys: `progress` says where the unread ones start, so send the same draft with that `offset` |
 | gaps | `capability_gap` | `need`, `why`, `workaround`, `claim_ids` | Record a workaround |
 
 **Help.** `action='help'` lists the actions; `topic='<action>'` gives one's parameters and an example; `topic='figure_keys'` the figure-key grammar's rules, filters and path groups, and `topic='figure_keys.<group>'` a group's forms. **Paging.** Every result that grows with the campaign is paged, the overview included, each page sized to one result. Each page says how much of the whole it holds, in what its listing counts (`all 77 options shown`, or `flips 1 to 6 of 9 shown; 3 follow`; a page with none to page says nothing of paging, and a sweep with no flips says the call holds over the whole range); a page with more ends with `next: action=…, offset=N`: send that call. **Refusals** end with `recovery: {…}` (the parameters at fault, those accepted, an example, valid values): build the next call from it.
 
-**Not available yet:** `render_report`, `confound_check`: log a `capability_gap` and say it in words.
+**Not available yet:** a rendered picture of the page, `confound_check`: log a `capability_gap` and say it in words.
 
-**The editor** has the same tool without the freeze and blocks.
+**The editor** has the same tool without the freeze, the blocks and `report_check`.
 
 **Call `capability_gap` whenever you work around a missing capability** (a figure no tool computes, a missing block kind, many row-level calls rebuilding something), then carry on. Never type a number to fill a gap: drop the sentence.

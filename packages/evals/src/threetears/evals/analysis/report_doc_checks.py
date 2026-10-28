@@ -87,10 +87,10 @@ from threetears.evals.kernel.report_doc import (
 )
 from threetears.evals.kernel.report_plan import PlannedChart
 
-#: The names with a caller outside this module. :func:`check_report_doc` and :class:`DocVerdict` are this build's
-#: invariants surface; each joins this list with its first production caller (the store, the ``report_check`` action,
-#: the writing loop), never for a test alone.
-__all__: list[str] = []
+#: The names with a caller outside this module: :func:`check_report_doc` and :class:`DocVerdict`, the invariants
+#: surface, which the analyst's ``report_check`` (``ops/analyst.py``) calls; the store and the writing loop call it too.
+#: A name joins this list with its first production caller, never for a test alone.
+__all__ = ["DocVerdict", "check_report_doc"]
 
 #: Which check a verdict comes from: ``0`` validity, then the invariants 1 to 6 (7 is not checked at storage).
 InvariantNumber = Literal[0, 1, 2, 3, 4, 5, 6]
