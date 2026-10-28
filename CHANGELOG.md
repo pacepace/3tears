@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent-memory: automatic extraction, ambient recall and consolidation each have a switch
+
+**Added:** three fields on `MemoryConfig`, all default `True`, so a host that sets none sees no
+change. `extraction_enabled=False` makes `MemoryExtractor.extract` answer `SKIPPED` with the new
+`ExtractionGate.DISABLED` before any stage runs, so a turn writes no memory. `ambient_recall_enabled=False`
+makes `MemoryRetriever.retrieve` / `retrieve_with_candidates` answer an empty result, so
+`retrieve_memories` and `MemoryInjectionMiddleware` hand the model nothing. `consolidation_enabled=False`
+makes `DreamService.run_consolidation` answer an empty `ConsolidationResult` without loading a
+candidate. Each logs the reason once per call at INFO. The explicit memory tools do not read the
+switches: an agent with all three off still saves, searches, recalls and retires memories through them.
+
 ### langgraph: a checkpoint L2 entry that cannot be refreshed is deleted, not left holding an older checkpoint
 
 **Fixed:** `ThreeTierCheckpointSaver`'s L2 key is per thread and namespace, not per checkpoint, so a

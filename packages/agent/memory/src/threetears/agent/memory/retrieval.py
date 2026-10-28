@@ -597,6 +597,13 @@ class MemoryRetriever:
         :raises EmbeddingUnavailableError: when the query could not be embedded, so nothing was searched
         """
         empty = RetrievalResult()
+        if not self._config.ambient_recall_enabled:
+            # convert at border: log extra_data fields
+            log.info(
+                "ambient memory recall skipped: MemoryConfig.ambient_recall_enabled is off",
+                extra={"extra_data": {"agent_id": str(agent_id), "user_id": str(user_id)}},
+            )
+            return empty
         if not user_text.strip():
             return empty
 

@@ -154,13 +154,24 @@ add_tool = await load_memory_add_tool(
 from threetears.agent.memory import MemoryConfig
 
 config = MemoryConfig(
-    similarity_threshold=0.4,      # minimum cosine similarity for retrieval
-    detail_threshold=0.85,         # threshold for including full memory detail
-    context_budget=15,             # max memories in context
-    dedup_threshold=0.85,          # similarity threshold for deduplication
-    max_candidates=10,             # max candidates per extraction
+    similarity_threshold=0.4,       # cosine floor for admitting a candidate to retrieval
+    detail_threshold=0.85,          # hybrid score at which an item renders in full
+    context_budget=15,              # max memories in context
+    similar_memory_threshold=0.55,  # cosine floor for "already stored" during extraction
+    top_k=10,                       # memories retrieved per query
+    extraction_enabled=True,        # MemoryExtractor.extract writes memories from a turn
+    ambient_recall_enabled=True,    # MemoryRetriever hands memories to a turn unasked
+    consolidation_enabled=True,     # DreamService.run_consolidation merges near-duplicates
 )
 ```
+
+The three `*_enabled` switches turn the automatic paths off one at a time, and all
+default on. Off, the path does nothing and logs why once per call at INFO:
+`extract` answers `SKIPPED` with `ExtractionGate.DISABLED`, the retriever answers an
+empty result (so `MemoryInjectionMiddleware` injects nothing), and
+`run_consolidation` answers an empty `ConsolidationResult`. The explicit tools
+(`memory_add`, `memory_search`, `memory_recall`, `memory_forget` and the rest) do not
+read them, so an agent with all three off still saves and recalls what it is asked to.
 
 ## Database Schema
 
