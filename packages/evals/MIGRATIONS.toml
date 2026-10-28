@@ -58,7 +58,7 @@
 # callers.
 
 [[release]]
-version = "unreleased"
+version = "0.82.0"
 since = "v0.81.0"
 summary = """
 Client-IP resolution that skips every trusted hop: no 3tears-evals name has moved or been removed since 0.81.0, and

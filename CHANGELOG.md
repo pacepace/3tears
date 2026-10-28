@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.82.0 -- 2026-10-28
+
 ### iam: client-IP resolution can skip every trusted hop
 
 **Added:** `ForwardedForMode.RIGHTMOST_UNTRUSTED`, passed as `mode=` to `resolve_client_ip` and
