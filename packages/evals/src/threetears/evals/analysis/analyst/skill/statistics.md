@@ -7,6 +7,16 @@ The pipeline computes every statistic. Your job is to read them correctly and sa
 - An interval is over **cases, not attempts**. Repeats of one case are not independent draws, and the tools' intervals already account for that. Five cases run three times each is five cases.
 - Read the level on every interval you cite, and keep levels apart. A 95% interval on one confirmatory reading and a 99.69% interval on a corrected contrast answer different questions.
 - **Separated** means the interval excludes zero (or the line). **Overlapping intervals don't prove two options alike.** Two options are alike only when a reading or contrast says *equivalent*. An *unclear* reading is unresolved, never "no change". An established null and a comparison too weak to resolve are different findings. Say which one you have.
+- **Parity words need an equivalence.** "As good as", "as reliably", "matches", or calling a figure one option's strength over another, claims a difference the evidence must show. A difference whose interval crosses zero is "within noise of", with its interval, never parity and never a strength.
+- **A line found from the data is a band when it has an interval.** A flip point or a price step whose ends come from an interval (`decision_sensitivity`'s flips, a `price.*` step's low and high) is stated as its band, "anywhere from {low} to {high} a point", never as a sharp line ("any price under {point}"). Inside the band this run doesn't settle the call; say so where the reader would act on it.
+
+## Caveats on the evidence a claim rests on
+
+Code attaches caveats to the figures they touch: `contrasts_list` names each contrast's confounds by caveat id, and `caveats_list` says which arms, aspects and measures each caveat touches. Before a claim is final, read the caveats on every contrast and reading it rests on, the deciding one above all.
+
+- **Carry each one with the claim** (its `caveats`), or in the confidence when it bears on the whole call, and say its likely direction from the figures you have: would removing it widen the gap, narrow it, or could it reverse it? A direction that favours the call is still said; it is part of why the call holds.
+- **Nothing is immune while a caveat on its evidence could move it.** Never write that a finding "cannot be reversed" or is untouched by the caveats when one is attached to the figure it rests on. Measured telemetry is no exception: a setting that differed between arms changes what the cost or latency measures.
+- **State the deciding measure's coverage.** Say how many of the trials run the measure read, and whether the missing ones could flip the order. For cost, `cost.unreported.<arm>.missing` counts the trials with no cost, `free` is the least the arm's cost could be had each of them cost nothing, and `at_p95` a what-if at its own 95th percentile. If the order holds either way, one clause says so; if it doesn't, the measure does not settle the call.
 
 ## Margins and flip margins
 
@@ -25,7 +35,13 @@ A margin larger than any plausible result could fail is uninformative. If the ma
 
 ## Gates and borderline results
 
-A point estimate on the right side of a gate whose interval crosses the line is borderline. It passes for the call. Watch names it, with what would decide it: `settle_cases` sizes the run that would settle it and how often a run of today's size reads the other way. Its sizes against a line are one-sided; quote the two-sided size where the reader will compare it with a printed interval, and say whether it counts cases or trials. Decide which kind of "not settled" you have:
+A point estimate on the right side of a gate whose interval crosses the line is borderline. It passes for the call. Watch names it, with what would decide it: `settle_cases` sizes the run that would settle it and how often a run of today's size reads the other way. Its sizes against a line are one-sided; quote the two-sided size where the reader will compare it with a printed interval, and say whether it counts cases or trials.
+
+**Size a run to settle, not to toss a coin.** `settle_cases` gives two sizes. The plain one (`cases_needed`, `cases_needed_two_sided`) is the size at which a run settles the question half the time if today's estimate is the truth. The `_80` one (`cases_needed_two_sided_80`, `trials_needed_two_sided_80`) settles it four times in five. A next step sizes its run at the `_80` size, or says plainly that its size settles the question only half the time. Never call the plain size "enough".
+
+**Name every thin leg.** When the call, or a route or mix the page proposes, rests on several borderline readings (one per task, cell or leg), Watch names each of them with how often it reads the wrong way, not only the thinnest, and a rerun step sizes every leg it needs.
+
+Decide which kind of "not settled" you have:
 
 - **The interval crosses the line:** more cases can settle it. Name how many.
 - **The interval is clear of the line on the wrong side:** more cases won't help. The candidate has to change.
@@ -57,6 +73,7 @@ The snapshot keeps a few failures per slice. `examples_list` says how many it ke
 ## Small strata and zero counts
 
 - A stratum with few cases (under about ten) produces deltas dominated by noise. Keep it in the full table and out of the leads, even when its delta is the largest.
+- **A stratum with no traffic share is a probe.** Its rates say what an arm does when probed, not what live traffic meets. Where such a rate decides something (a floor, a lean, a gap the call cites), say it is a probe there, not only in Method.
 - **Zero of n is not zero.** With no events in n cases, the 95% upper bound is roughly 3/n. Twenty clean cases still allow a 15% failure rate.
 - A zero can also mean *not measured*. A cost of zero, or a rate with no trials behind it, is missing data, not a free or perfect arm. Check `n` before reading a zero.
 
