@@ -270,7 +270,9 @@ def _unresolved(
             submission=submission,
             path=path,
             key=key,
-            verdicts=[GapVerdict(invariant=verdict.invariant, path=verdict.path, fault=verdict.fault) for verdict in at],
+            verdicts=[
+                GapVerdict(invariant=verdict.invariant, path=verdict.path, fault=verdict.fault) for verdict in at
+            ],
         ),
         **provenance.of(ANALYST_SESSION, "analyst"),
     )

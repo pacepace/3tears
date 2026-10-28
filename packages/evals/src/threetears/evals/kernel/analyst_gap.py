@@ -112,7 +112,9 @@ class GapToolCall(EvalDocumentModel, CoreShapeModel):
 class GapVerdict(EvalDocumentModel, CoreShapeModel):
     """One verdict a bounce carried at a key's field: the check, its field path, and the fault in the check's words."""
 
-    invariant: int = Field(ge=0, description="The check: 0 validity, 1 to 6 the invariants (a strict build's under its field's).")
+    invariant: int = Field(
+        ge=0, description="The check: 0 validity, 1 to 6 the invariants (a strict build's under its field's)."
+    )
     path: str = Field(description="The field path it sits at.")
     fault: str = Field(min_length=1, description="What the check found there, as it said it.")
 
@@ -120,7 +122,10 @@ class GapVerdict(EvalDocumentModel, CoreShapeModel):
 class GapBounce(EvalDocumentModel, CoreShapeModel):
     """An ``unresolved_key`` notice's evidence: the key, where the draft wrote it, and what the bounce said there."""
 
-    submission: int = Field(ge=1, description="Which of the write's drafts that reached its checker it was, counted from 1 across its rounds.")
+    submission: int = Field(
+        ge=1,
+        description="Which of the write's drafts that reached its checker it was, counted from 1 across its rounds.",
+    )
     path: str = Field(min_length=1, description="The field the draft wrote the key in.")
     key: str = Field(min_length=1, description="The key as the draft wrote it, braces and filters included.")
     verdicts: list[GapVerdict] = Field(description="Every verdict the submission drew at that field.")
@@ -150,15 +155,21 @@ class EvalAnalystGap(DurableDocumentModel):
         min_length=1,
         description="What was needed and no tool gave, or what looked wrong; a notice's is code's words, naming its key or item.",
     )
-    why: str = Field(min_length=1, description="What it was needed for; a notice's is the verdict or the editor's reason.")
+    why: str = Field(
+        min_length=1, description="What it was needed for; a notice's is the verdict or the editor's reason."
+    )
     workaround: str | None = Field(default=None, description="What the caller did instead; None for a notice.")
     claim_ids: list[str] = Field(default_factory=list, description="The claims of the report it touches.")
     figure_keys: list[str] = Field(
         default_factory=list, description="The figure keys that show it: a suspect result's, or the unresolved key."
     )
-    calls: list[GapToolCall] = Field(default_factory=list, description="The tool calls that reproduce a suspect result.")
+    calls: list[GapToolCall] = Field(
+        default_factory=list, description="The tool calls that reproduce a suspect result."
+    )
     bounce: GapBounce | None = Field(default=None, description="An unresolved_key notice's evidence; None otherwise.")
-    editor_item: GapEditorItem | None = Field(default=None, description="An editor_score notice's evidence; None otherwise.")
+    editor_item: GapEditorItem | None = Field(
+        default=None, description="An editor_score notice's evidence; None otherwise."
+    )
     must_fix: bool = Field(
         default=False,
         description=(
@@ -171,8 +182,12 @@ class EvalAnalystGap(DurableDocumentModel):
     report_doc_id: str | None = Field(
         default=None, description="The report the write stored; None outside a write, or for a write that stored none."
     )
-    role: str | None = Field(default=None, description="The writer role of the session it came from; None outside a write.")
-    session: str | None = Field(default=None, description="The session's name (`analyst`, `editor-<round>`); None outside a write.")
+    role: str | None = Field(
+        default=None, description="The writer role of the session it came from; None outside a write."
+    )
+    session: str | None = Field(
+        default=None, description="The session's name (`analyst`, `editor-<round>`); None outside a write."
+    )
     model: str | None = Field(default=None, description="The model the session ran on; None outside a write.")
     transcript_digest: str | None = Field(
         default=None,
@@ -195,7 +210,9 @@ class GapGroup(EvalBaseModel):
 
     kind: str = Field(description="The records' kind (missing, suspect, unresolved_key, editor_score).")
     need: str = Field(description="The need as its first record wrote it.")
-    normalized: str = Field(description="The need as the digest normalizes it (``analysis/analyst_gaps.py``), which the group is keyed by.")
+    normalized: str = Field(
+        description="The need as the digest normalizes it (``analysis/analyst_gaps.py``), which the group is keyed by."
+    )
     count: int = Field(ge=1, description="How many records the group holds within the digest's window.")
     first_seen: str = Field(description="The first record's time.")
     last_seen: str = Field(description="The last record's time.")
@@ -212,7 +229,9 @@ class GapDigest(EvalBaseModel):
 
     since: str | None = Field(description="The time the records were read from, as given; None for every record.")
     records: int = Field(ge=0, description="How many records the digest read.")
-    groups: list[GapGroup] = Field(description="The groups, in rank order: suspect, then must_fix-linked, then the rest.")
+    groups: list[GapGroup] = Field(
+        description="The groups, in rank order: suspect, then must_fix-linked, then the rest."
+    )
 
     def render(self) -> str:
         """The digest as text: how many records it read, then each group's title and body, in rank order.

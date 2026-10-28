@@ -145,7 +145,8 @@ class CapabilityGapParams(EvalBaseModel):
         Field(min_length=1, description="What you needed and no tool gave, as one capability; or what looks wrong."),
     ]
     why: Annotated[
-        str, Field(min_length=1, description="What you needed it for: the question it would answer; or why it looks wrong.")
+        str,
+        Field(min_length=1, description="What you needed it for: the question it would answer; or why it looks wrong."),
     ]
     workaround: Annotated[str, Field(min_length=1, description="What you did instead, and go on doing.")]
     claim_ids: list[str] = Field(
@@ -158,7 +159,7 @@ class CapabilityGapParams(EvalBaseModel):
         default_factory=list,
         description=(
             "suspect: the tool calls that return the result that looks wrong, each as you sent it: its action and its "
-            "other arguments ({\"action\": \"measure_read\", \"measure_key\": \"cost\"})."
+            'other arguments ({"action": "measure_read", "measure_key": "cost"}).'
         ),
     )
 

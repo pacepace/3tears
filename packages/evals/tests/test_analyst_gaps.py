@@ -306,7 +306,9 @@ async def test_drop_derived_leaves_every_gap_in_place() -> None:
 # --- the digest ---------------------------------------------------------------------------------------------------
 
 
-def _record(n: int, need: str, *, kind: str = "missing", must_fix: bool = False, at: int = 0, **fields: Any) -> EvalAnalystGap:
+def _record(
+    n: int, need: str, *, kind: str = "missing", must_fix: bool = False, at: int = 0, **fields: Any
+) -> EvalAnalystGap:
     return EvalAnalystGap(
         id=f"gap:{n:016d}",
         scope_id=CALLER.scope_id,
@@ -325,7 +327,12 @@ def _record(n: int, need: str, *, kind: str = "missing", must_fix: bool = False,
 def test_needs_that_differ_only_in_case_spacing_punctuation_ids_and_keys_group_and_other_words_stay_apart() -> None:
     records = [
         _record(1, "The cases needed to separate `arm.a` from arm.b", at=0),
-        _record(2, "the  CASES needed to separate {compare.a.b.cost} from x.y!", at=1, snapshot_id="report-snapshot:bbbb2222"),
+        _record(
+            2,
+            "the  CASES needed to separate {compare.a.b.cost} from x.y!",
+            at=1,
+            snapshot_id="report-snapshot:bbbb2222",
+        ),
         _record(3, "the cases needed to separate report-snapshot:0193ab12 from arm.c", at=2),
         _record(4, "the trials needed to separate arm.a from arm.b", at=3),
         _record(5, "the cases needed to separate arm.a from arm.b", kind="suspect", figure_keys=["{k}"], at=4),
@@ -358,7 +365,13 @@ def test_suspect_groups_rank_first_then_must_fix_linked_then_the_rest_by_count_t
 
     ranked = [group.need for group in gap_digest(records).groups]
 
-    assert ranked == ["a wrong result", "a linked capability", "a capability", "a third capability", "another capability"]
+    assert ranked == [
+        "a wrong result",
+        "a linked capability",
+        "a capability",
+        "a third capability",
+        "another capability",
+    ]
 
 
 def test_a_suspect_groups_issue_text_carries_its_reproducing_keys_and_calls() -> None:
@@ -387,7 +400,11 @@ def test_a_suspect_groups_issue_text_carries_its_reproducing_keys_and_calls() ->
 
 async def test_the_digest_action_reads_the_store_since_a_time_by_each_records_own_time() -> None:
     host = off_loop(seeded_host)
-    for record in (_record(1, "an early need", at=0), _record(2, "a later need", at=5), _record(3, "an early need", at=6)):
+    for record in (
+        _record(1, "an early need", at=0),
+        _record(2, "a later need", at=5),
+        _record(3, "an early need", at=6),
+    ):
         off_loop(host.eval_host.storage.save_analyst_gap, record)
     tool = eval_catalogue().mount(_evals_spec())
 
