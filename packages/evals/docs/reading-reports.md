@@ -706,17 +706,17 @@ Top to bottom, simplest first:
 | Headline, lede, flag | the analyst's | the finding, in a sentence; the flag only for what a reader must know first |
 | Confidence | both | the form in code's words, then each caveat: the analyst's clause for what would make it matter, or code's line that it was checked and cannot change the call |
 | Decision | the analyst's | the call and its whys, or for a tradeoff the trade, where it flips, the lean and what would settle it |
-| Options | code's | every arm, with its settings, served model, quality and cost; the recommended arms marked |
+| Options | code's | every arm, with its settings, served model and cost (with its price source, the provider that served it and the share of calls priced); the recommended arms marked |
 | Claims | the analyst's words, code's blocks | the story in order, each with the evidence that shows it and the caveats that touch it |
 | Explore, next steps | the analyst's | what a reader could change and what it would do; each next step and what it would settle |
 | Appendix | code's | the arms key, every table the snapshot holds, what was left out and why, method, the editor's open findings, and the made line: the models, the served models, the cost, the skill's version and the date |
 
-**Confidence** says how sure the call is, from how the campaign was measured rather than how it came out
-([confidence](concepts.md#confidence)). `high` means nothing is open; `high, if the caveats below aren't material`
+**Confidence** says how sure the call is, read from the method and the variance of the evidence, never the result
+alone ([confidence](concepts.md#confidence)). `high` means nothing is open; `high, if the caveats below aren't material`
 lists each open caveat with its condition; `low` is always allowed. A lead's risk of reading the wrong way is stated
-beside the lead, and never lowers the form.
+beside the lead, and does not lower the form by itself.
 
-**Cost sits beside quality.** The options table gives each arm's cost per run, or per 1,000 runs where any arm's is
+**Cost is stated with where it came from.** The options table gives each arm's cost per run, or per 1,000 runs where any arm's is
 too small for cents, in one form down the column, with the price source, the provider that served it and the share of
 calls priced. A partly unpriced arm says how many calls were priced, and never shows a smaller total. Prices are the
 host's ([who sets the prices](cost-and-budgets.md#who-sets-the-prices)). Monthly figures appear only where the
@@ -752,7 +752,9 @@ fingerprints, and when they differ `mismatch_cause` names why: `package_shape` (
 `host_declarations` (the host added, removed or renamed a declaration), or `evidence` (the runs, results or insights
 did).
 
-**Insights.** A claim the analyst marks durable becomes an insight later campaigns read in their overview. Archiving
+**Insights.** A claim the analyst marks durable becomes an insight later campaigns read in their overview. Two claims
+stating one thing mint it once, and a later analysis restating a claim retires the earlier insight, so regenerating
+over unchanged evidence leaves the ledger its size. Archiving
 the analysis that minted an insight retracts it; each insight's `invalidation_trigger` states the rules. The
 `insights_list` and `insight_get` actions show the ledger and each insight's standing (live, retracted or orphaned);
 `insight_delete` removes one wrong insight.

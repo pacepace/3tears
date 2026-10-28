@@ -563,10 +563,10 @@ See [the analyst's report](reading-reports.md#the-analysts-report-written-over-f
 
 #### Confidence
 How sure a report's call is, in one of three forms: high, high if the caveats below aren't material, or low. It is
-read from how the campaign was measured (its design, criteria set after the results, the judge's standing,
-confounds, variance), not from how the result came out. Each open caveat says what would make it matter; one code
+read from the method and the variance of the evidence (its design, criteria set after the results, the judge's
+standing, confounds, how well the evidence separates the arms), never from the result alone. Each open caveat says what would make it matter; one code
 proves cannot change the call is printed as code's checked line instead. A lead's risk of reading the wrong way is
-stated beside the lead, and never lowers the form.
+stated beside the lead, and does not lower the form by itself.
 
 #### Trial
 One case run once on one arm — one stored result. It is passed, failed (the candidate's failure: its model, its
@@ -584,7 +584,7 @@ was generated, say, or that a stratum holds too few cases to read alone.
 #### Out-of-run spend
 Model calls the engine makes outside any run (generating cases, proposing a rubric, repeating judge scores):
 priced before they are made and ledgered as `OutOfRunSpend`. Writing a report is held to a budget of its own, which
-the host sets. See [cost and budgets](cost-and-budgets.md).
+the host sets, and its spend is ledgered once, under purpose `analysis`, when the job ends. See [cost and budgets](cost-and-budgets.md).
 
 ### Building a host
 

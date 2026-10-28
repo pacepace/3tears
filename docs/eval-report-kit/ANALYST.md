@@ -6,7 +6,7 @@ Every campaign report is written this way. The planned report in [GENERATOR.md](
 
 ## 1. The decision
 
-A campaign report is written by an **expert analyst**: an Opus agent with tools, a skill and a feedback loop. It reads the whole campaign, works out what it means, and writes the report as one story.
+A campaign report is written by an **expert analyst**: an agent on the host's analyst model (Opus in every run so far) with tools, a skill and a feedback loop. It reads the whole campaign, works out what it means, and writes the report as one story.
 
 - When the evidence supports a call, the story ends in a decision or a priced tradeoff.
 - When it doesn't, the report explains what is tangled and what would untangle it.
@@ -113,7 +113,7 @@ What the analyst writes, and what is stored: `report-doc/1`. It replaces the slo
 | `story` | one of five | The analyst's label for its story (§3). No code reads it: the page and the checks are the same whatever it says. |
 | `headline`, `lede`, `flag` | ≤240, ≤420, ≤300 characters; `flag` optional | The first screen. `flag` sits above the decision, for what a reader must know first. |
 | `recommends` | 0 or more arm ids, each once | The call as data. The options table marks these arms. Code reads the call; it never chooses it. It holds only arms the report recommends: a tradeoff's lean stays in its prose, and an empty list is valid. |
-| `confidence` | one form; each caveat once | How sure the call is, read from how the campaign was measured (its design, criteria set late, the judge's standing, confounds, variance), not from how it came out. Each caveat is open, with `material_if`, or `checked: "immaterial"`, never both. A lead's risk of reading the wrong way is stated beside the lead and never lowers the form. |
+| `confidence` | one form; each caveat once | How sure the call is, read from the method and the variance of the evidence (its design, criteria set late, the judge's standing, confounds, how well the evidence separates the arms), never from the result alone. Each caveat is open, with `material_if`, or `checked: "immaterial"`, never both. A lead's risk of reading the wrong way is stated beside the lead and does not lower the form by itself. |
 | `decision` | 1–8 entries; a slot may repeat | Titled by the slot word, in list order. The analyst picks the words that fit the story. A diagnosis uses *What is tangled*, *Known despite it*, *What settles it* and *Next*. |
 | `claims` | 1–12, unique ids | The story, in page order. `weight` sets type size and nothing else. `durable` marks a claim later campaigns should read as an insight. |
 | `claims[].evidence` | 1 or 2 blocks | A block kind over a query, as `block_render` draws it, with every query field filled. `reference` and `emphasis` sit beside the query. |
@@ -130,7 +130,7 @@ What the analyst writes, and what is stored: `report-doc/1`. It replaces the slo
 - **The renderer adds the rest:** the masthead, the arms key, the options table (every arm, with `recommends` marked), the form words and the checked lines, each block's level, unit, axis and reference key, the full-results appendix, the omitted list, unresolved editor findings in Method, and the made line.
 - **Stored** as `eval_report_doc`, beside the snapshot it reads, how the writing ended, the editor's unresolved findings, the cost tally per role, round and turn, and a reference to each session's transcript. It is derived and regenerable, like its snapshot. A stored document is never edited: regenerating writes a new one.
 - **Sessions are kept whole.** The analyst's session and each editor round are stored in transcript storage, apart from the record, so listing reports reads none of them. A session holds the skill's identity, every message in order, thinking exactly as returned, and every tool call with its result, so it can be read back for an audit and resumed with one more turn, sending exactly what an uninterrupted session would.
-- **Reads are strict.** A stored document is read whole or refused, never half-read. So every change to the document's shape ships with a regenerable schema bump: a document from before it is refused by its version, before its body is read, and is dropped and written again from a fresh snapshot.
+- **Reads are strict.** A stored document is read whole or refused, never half-read. Report documents and their sessions carry a version of their own, and every change to the document's shape moves it: the store refuses a document from before it by its version, before its body is read; the page shows the code-only page with the line to regenerate; and regenerating (`analysis_generate`, a deliberate act) writes a new one from a fresh snapshot.
 
 ## 6. Tools (MCP)
 
@@ -194,7 +194,7 @@ Each finding carries a severity, and a `must_fix` sends the report back whatever
 - **The model.** The `analyst` role's client, built from the host's key. It must take tool turns; one that cannot is refused before anything is spent, naming what it lacks.
 - **The budget.** The host sets it, in dollars, or in tokens and turns for a model it has no price for. No caller can raise it per call. Every turn is admitted on its price bound before it is sent, and a refusal sends nothing. A bound built on rates the host marks as not guaranteed admits the turn on the estimate, and the report says the cap was checked against estimates.
 - **The time limit.** The engine exports the worst-case writing time for its limits: every analyst round, revision, bounce and editor review, times the host's bound on one request. The host's job budget sits above it, with headroom, so a paid write is never cut short by a round number.
-- **The page.** `report_read` serves the newest report in Markdown, HTML, static HTML (no script, no link, no URL) or JSON. A host frames the static page in a sandboxed iframe. A stored report this version no longer reads, or one written by an older pipeline, is never refused: it gets the code-only page and one line saying it was written in a shape this version no longer reads, and to regenerate it.
+- **The page.** `report_read` serves the newest report in Markdown, HTML, static HTML (no script, no link, no URL) or JSON. A host frames the static page in a sandboxed iframe. A stored report this version no longer reads, or a planned report, is never refused by the page: it gets the code-only page and one line saying it was written in a shape this version no longer reads, and to regenerate it.
 
 How a write can end:
 
@@ -213,7 +213,7 @@ On a storing ending the job links the document to the campaign as its analysis, 
 
 ## 9. Open items
 
-- **Cost.** A report costs several Opus turns rather than one call. Kairo round 2 took one analyst round and one editor round, 19 turns, $1.60. The host's budget bounds it; a report the budget stops keeps its last reviewed draft.
+- **Cost.** A report costs many model turns rather than one call. Kairo round 2 took one analyst round and one editor round, 19 turns, $1.60. The host's budget bounds it; a report the budget stops keeps its last reviewed draft.
 - **Determinism.** Two runs can write different but equally good reports. Stored reports are what readers see; regenerating one is a deliberate act and keeps the previous version.
 - **When there's no good story.** The analyst may conclude the campaign can't support any reading. That is a valid report: a diagnosis or exploratory story whose next steps name what to declare or run. It is not a failure.
 - **Calibration.** The editor's thresholds (no 0, at least 11 of 14) are starting points. Stored reports scored on the rubric, against reports people labelled, set them. The analysis reporter's cases still judge the planned report, not this one.

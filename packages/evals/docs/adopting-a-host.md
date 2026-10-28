@@ -923,7 +923,7 @@ corpus); a replay that asks for a refused recording stops its cell with a `Casse
 **Each version space moves on its own.** Core documents (v15.7), durable documents (v16.3), regenerable documents
 (v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`), the cell model
 (`CELL_MODEL_VERSION`) and the identity keys (`IDENTITY_VERSION`, 25) carry separate versions. The code-only page has none: it is rendered from the bundle, which is the versioned machine
-form. A report document is regenerable: a change to its shape is a regenerable bump, and a report from before it reads as the code-only page with a line to regenerate it.
+form. Report documents and their sessions carry a version of their own, as cassettes do: a change to the report document's shape moves that version alone, the shared regenerable version stays where it is, and a report from before it reads as the code-only page with a line to regenerate it.
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
 each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of the engine's own judge prompt, or
 `<config id>@<sha12>`, your `JudgeConfig` and a fingerprint of the reply-format suffix the engine appends to its
@@ -1411,7 +1411,8 @@ in `threetears.evals.run`) carries them as one value: `Ceilings()` holds `schedu
 `simulator_max_tokens`, `simulator_answer_budget_tokens` and `proposer_max_tokens`, and the functions
 `generation_ceiling_s`, `judge_phase_ceiling_s` and `writer_ceiling_s`, which turn your own ceiling for one request
 into the ceiling of a generation, a judge phase, or the writing of a report (every analyst round, revision, bounce
-and editor review its limits allow). A report's job budget is `writer_ceiling_s` plus your headroom. Derive each outer budget from a field, never from a number you copied: a release that
+and editor review its limits allow). `writer_ceiling_s` also takes the writer's limits, the same ones the report is
+written under. A report's job budget is `writer_ceiling_s` plus your headroom. Derive each outer budget from a field, never from a number you copied: a release that
 raises an inner ceiling then raises your budget with it, so the budget cannot drift below it. The package exports
 no other name for them: the six separate constants and functions `.32` kept beside `Ceilings` were removed in `.33`.
 
@@ -1571,10 +1572,12 @@ document, linked to the campaign as its analysis. Your host supplies four things
 
 - **The model**, from your factory's `analyst` role, built on your own key. One model serves the analyst and the
   editor. Its client must take tool turns, or the job is refused before anything is spent, naming what to forward.
-- **The budget**, on your `AnalysisGeneration`, from your own config: dollars, or tokens and turns for a model you
-  have no price for. Callers cannot raise it.
-- **The time**, derived from `writer_ceiling_s` plus your headroom
-  ([deriving your budgets](#deriving-your-budgets-from-the-engines-ceilings)).
+- **The budget and the time**, on your `AnalysisGeneration`, each read on every generation so a value kept in your
+  config changes without a restart: the report budget (dollars, or tokens and turns for a model you have no price
+  for), which no caller can raise; `budget_s`, the job's time, `writer_ceiling_s` plus your headroom
+  ([deriving your budgets](#deriving-your-budgets-from-the-engines-ceilings)); and `preparation_budget_s`, the bound
+  on its preparation (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s). How the budget admits each turn is in
+  [Cost and budgets](cost-and-budgets.md#spend-outside-any-run).
 - **The page.** `report_read` serves the newest report in each format; serve the static HTML, or frame it as an
   iframe's `srcdoc` with an empty `sandbox` ([embedding](reading-reports.md#embedding-the-page-in-a-host)). A report
   this version no longer reads is never refused: it reads as the code-only page with one line to regenerate.
@@ -1589,29 +1592,21 @@ To let your own agents investigate a campaign the way the analyst does, mount th
 
 **The report writer reads a skill, not a prompt you hold.** A campaign report is written by the analyst and its
 editor from the skill the package ships as data (principles, story forms, charts, statistics, writing, reasoning
-notes, and the editor's rubric). It is not overridable: an improvement lands as a change to the package, checked
-against the acceptance campaigns and the editor's scores, so every host's reports are written by a version someone
-measured. Each report records the skill's digest as its provenance.
+notes, and the editor's rubric). It is not overridable today: an improvement lands as a change to the package, checked
+against the acceptance campaigns and the editor's scores. Each report records the skill's digest as its provenance.
 
 The engine steers its other LLM calls with a prompt: the capability proposer (`PROPOSER_PROMPT`), the boundary
-proposer (`BOUNDARY_GEN_PROMPT`), and the planner and memo writer the analysis reporter evaluates. **A new host does
-nothing here.** Each call runs the default the package ships (`EVAL_PROPOSER_TEMPLATE_DEFAULT` and
+proposer (`BOUNDARY_GEN_PROMPT`), and the memo writer the analysis reporter's candidates run (the planner's prompt is
+kept for the plan cases it recorded, and makes no call). **A new host does nothing here.** Each call runs the default the package ships (`EVAL_PROPOSER_TEMPLATE_DEFAULT` and
 `EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT` in `gen`) unless you hand it a prompt of your own: `plan_draft(axis=...,
 subject_feed=..., catalog_feed=...)` with no `system_prompt` (`default_system_prompt(axis)` is the text it sends).
 
 **An override is yours to keep.** If an operator tunes a prompt without a deploy, keep the copy in your own
 registry and hand it in: `plan_draft(..., system_prompt=..., reset=...)`. `SEED_PROMPTS` (from
-`threetears.evals.kernel`) lists them (the planner's, the retired memo writer's and the two proposers'), one `SeedPrompt` each: its id (`prompt_type`), its registry kind
+`threetears.evals.kernel`) lists them (the planner's, the memo writer's and the two proposers'), one `SeedPrompt` each: its id (`prompt_type`), its registry kind
 (`template` or `text`) and `seed_ref`, the `(module, constant)` its default is imported from. Seed an empty slot
 from each and never overwrite a stored one. The engine's ids start with `eval_`, so your own prompts can use any
 other name.
-
-**A report's budget and bounds are yours to set.** `AnalysisGeneration` carries three, each read on every
-generation, so a value kept in host config can change without a restart: the report budget (dollars, or tokens and
-turns for a model you have no price for), which no caller can raise; `budget_s`, the job's time, derived from
-`writer_ceiling_s` ([above](#deriving-your-budgets-from-the-engines-ceilings)); and `preparation_budget_s`, the
-bound on its preparation (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s). How the budget admits each turn is in
-[Cost and budgets](cost-and-budgets.md#spend-outside-any-run).
 
 **A proposer override states the draft shape it was written for, and the engine checks it.** Each shipped
 proposer default ends with its output-contract line, `eval-output-contract: rubric_proposal <fingerprint>`

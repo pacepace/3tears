@@ -304,8 +304,9 @@ second pricing of the same arm.
 ## Spend outside any run
 
 These engine calls have no run around them: a launch's case generation (an `llm` variation axis's writer),
-the rubric proposer (`propose_draft`), an analysis generation, a judge repeat, a second judge and a judge
-temperature comparison. Under enforcement, each is bounded in dollars before it spends; every one is ledgered
+the rubric proposer (`propose_draft`), a campaign report, a judge repeat, a second judge and a judge
+temperature comparison. Each is bounded before it spends: in dollars against the out-of-run cap under enforcement,
+or, for a report, against the report budget the host sets (dollars, or tokens and turns). Every one is ledgered
 either way.
 
 **Priced in the call, spent in the job.** No transport call waits on a model, so every one of these that an
@@ -345,10 +346,14 @@ releases the client. A client admitted and never made is the host's to release.
 **A campaign report.** Writing a report (`analysis_generate`) is held to the report budget the host sets, never to
 a figure a caller passes: an action caller cannot raise spend. The budget is dollars, or tokens and turns for a model
 the host has no price for, declared as one or the other. Every turn, the analyst's and the editor's, is admitted on
-its bound before it is sent, so the budget can refuse a turn but never overshoot on one, and a refusal sends nothing.
+its bound before it is sent, and a refusal sends nothing. On rates the host guarantees the budget can refuse a turn but
+never overshoot on one; on rates it does not, the bound is an estimate, and the report says its cap was checked
+against estimates.
 In dollar mode an unpriced turn is refused; in token and turn mode it is written, and the page says the report is
 unpriced. A budget that stops the writing keeps the last reviewed draft. `analysis_estimate` answers the budget as
-the bound. What each role, round and turn cost is on the stored report, and its made line prints the total.
+the bound. What each role, round and turn cost is on the stored report, and its made line prints the total. The spend is ledgered
+once, under purpose `analysis`, when the job ends, so `scope_out_of_run_spend` reads it; an unpriced share is
+ledgered as unpriced, never as `$0`.
 
 **Judge repeats.** A judge repeat (`judge_repeat`) is held to the same cap, every call — parse retries
 included — priced and admitted before the first is sent, and ledgered under purpose `judge` with the run's

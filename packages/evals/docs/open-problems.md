@@ -153,7 +153,8 @@ host has yet needed an unmetered candidate.
 Decided by the owner, 2026-10-27: refuse now, push the aggregation down later. The aggregating reads (a pivot, a frontier, a history, a budget view) work in Python over every record they read,
 so past `READ_TIER_ROW_BUDGET` they refuse, naming the filters that narrow the call. Answering such a scope in one
 call needs the aggregation pushed down into the store's SQL
-([#996](https://github.com/pacepace/3tears/issues/996)). Reads of one run are paged, so no run has a size limit.
+([#996](https://github.com/pacepace/3tears/issues/996)). No run has a size limit: its reads are paged, though a few
+readers still read a run whole (the CHANGELOG lists them).
 
 ## Worlds
 

@@ -174,7 +174,7 @@ fingerprint; the bundle itself is the wrapper's `bundle` field. Neither command 
 ### `spend`
 
 `spend` prints what the engine spent outside any run in the scope — case generations, rubric proposals,
-analysis generations, judge repeats and judge temperature comparisons
+campaign reports, judge repeats and judge temperature comparisons
 (`--purpose variation|proposer|analysis|judge|second_judge`) — narrowed by its flags.
 
 ### `frontier`
@@ -714,6 +714,7 @@ frozen case, never a generated one.
 
 The reporter kind evaluates memo writers and replays planned reports; the analyst's report is reviewed by its
 editor instead ([open problems](open-problems.md#reporter-cases-judge-memos-and-planned-reports-not-the-analysts-report)).
+
 The template then launches through `run_launch`, by the reporter kind the host registers. A run's calibration
 (`reporter_calibration`) reads memo cases and plan cases, and cases of different planner prompts, in separate
 `groups`, and never pools their agreement.

@@ -60,7 +60,7 @@ recorded as witnessed rather than left to chance. See [the world model](evaluati
 Code never grades a model's prose: a deterministic gate over free text never converges, because each
 generation finds a phrasing it does not parse. The verdict and every count on a report are code's, every number in
 its prose is a figure key code resolves, and code judges no sentence: whether a claim overstates its evidence is the
-editor's to catch, and the writer's eval's to measure
+editor's to catch
 ([the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence)).
 A judge never grades a count or order code can check, and a prompt never coaches toward a grader's words, which
 measures obedience.
@@ -129,7 +129,7 @@ quality, in the host's prices, and says so where a call went unpriced: unknown c
 
 ### Reports
 
-**Code computes and verifies; the analyst chooses the story; an editor reviews it; an eval grades the writer.**
+**Code computes and verifies; the analyst chooses the story; an editor reviews it.**
 A report is written by an analyst model that investigates the campaign through tools over a frozen snapshot, and it
 decides what the story is, what leads and what is left out. Code never chooses structure, emphasis or framing, and no
 code path branches on what kind of eval it is: an eval nobody anticipated is shown with the same tools, and a table
@@ -137,20 +137,21 @@ and prose are always available. What code does hold is mechanical: every number 
 block draws, every caveat that bears on the call is shown, the confidence form fits the caveats left open, and no
 internal id reaches the reader above the appendix
 ([the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence)). Whether the story is
-sound is judged, not checked: an editor in a fresh context reviews the page before it is stored, and the writer is
-measured as a subject of its own. "We could not answer this, because X, and fixing X costs Y" is a legitimate bottom
+sound is judged, not checked: an editor in a fresh context reviews the page before it is stored, and acceptance campaigns
+are re-run whenever the skill changes. Grading the analyst as a subject of its own eval is open
+([open problems](open-problems.md#reporter-cases-judge-memos-and-planned-reports-not-the-analysts-report)). "We could not answer this, because X, and fixing X costs Y" is a legitimate bottom
 line.
 
-**Confidence rests on how a campaign was measured, not on how it came out.**
+**Confidence rests on the method and the variance, never on the result alone.**
 A report's confidence is one of three closed forms, so no field holds a probability a model made up: high; high if
 the caveats below aren't material, each open caveat with what would make it matter; or low. Its basis is the method
-and the variance: the design, criteria set after the results, the judge's standing, confounds. A strong result does
-not raise it and a weak one does not lower it. A lead's risk of reading the wrong way is stated beside the lead, and
-never lowers the form.
+and the variance of the evidence: the design, criteria set after the results, the judge's standing, confounds, how
+well the evidence separates the arms. A striking result on weak evidence is still low; a pick nothing separates is the
+usual low. A lead's risk of reading the wrong way is stated beside the lead, and does not lower the form by itself.
 
 **The first screen carries the result and every fact that changes how it reads; the rest is one step down.**
 On the analyst's page: the headline and lede, a flag for what a reader must know first, the confidence with its open
-caveats, the decision and the options table, every arm's cost beside its quality; the claims follow, and the full
+caveats, the decision and the options table, with every arm's cost and its price source; the claims follow, and the full
 results, what was left out and why, and the method sit in the appendix. On the code-only page: a broken floor, then
 the title, the declared question quoted whole, the arms and the design, the verdict and the scoreboard; contrasts
 follow as one table, and cases, trials, what was not tested, the methods and the glossary start folded. A figure is stated in the reader's terms (a rate as a percent, its change in points) with its
@@ -500,7 +501,8 @@ note shows how it was reached.
 
 **The writer is graded by its own eval.** The reporter is a candidate kind: a case is a frozen campaign, and the
 judge reads what the writer read and what it wrote. Its cases still judge memos and planned reports; the analyst's
-report has the editor's rubric, and stored reports scored against people's labels calibrate it.
+report has the editor's rubric instead, whose thresholds stay starting points until stored reports scored against
+people's labels set them.
 
 The judge's noise exceeds the effects being ranked, so rubric criteria are removed before any are added.
 
@@ -608,7 +610,7 @@ The principle behind each is in [principles](#principles).
 - **Evidence tiers instead of "calibrate first":** every judged reading carries the tier its judge's measured
   agreement reached, so judged scores stay usable while their standing stays visible.
 - **A model writes the report, and code renders every number in it:** an analyst investigates frozen evidence
-  with tools, code verifies the draft mechanically, an editor reviews it, and an eval grades the writer
+  with tools, code verifies the draft mechanically, and an editor reviews it before it is stored
   ([the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence)).
 - **"Best" is never unqualified:** a quality–cost–latency frontier plus bars (satisficing thresholds); the
   cheapest contestant above the bar is named only when a test shows it cheaper than each other one, otherwise
