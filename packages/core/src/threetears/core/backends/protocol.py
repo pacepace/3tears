@@ -31,6 +31,7 @@ from typing import Any, Final, Protocol, runtime_checkable
 from uuid import UUID
 
 __all__ = [
+    "ArrowL3Reader",
     "L3_RAIL_ROW_CAP",
     "LOAD_FILES_MAX_WAIT_SECONDS",
     "BulkDeletingStore",
@@ -67,6 +68,20 @@ class L3Reader(Protocol):
 
     async def fetchrow(self, query: str, /, *params: Any) -> Any:
         """Run a SELECT and return the first row dict, or ``None``."""
+        ...
+
+
+@runtime_checkable
+class ArrowL3Reader(Protocol):
+    """an L3 that answers a SELECT's rows as one Arrow table, never one Python object a row: the rail's proxy
+    (:meth:`~threetears.core.backends.nats_proxy.NatsProxyL3Backend.fetch_arrow`).
+
+    What :func:`~threetears.core.collections.complete_copy.read_l3_arrow` and
+    :func:`~threetears.core.keyset.keyset_arrow_pages` read through; a reader holding some other L3 reads dict rows.
+    """
+
+    async def fetch_arrow(self, query: str, /, *params: Any, types: Mapping[str, Any]) -> Any:
+        """Run a SELECT and return its rows as one ``pyarrow.Table`` typed by ``types``."""
         ...
 
 
