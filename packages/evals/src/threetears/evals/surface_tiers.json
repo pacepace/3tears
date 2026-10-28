@@ -624,6 +624,7 @@
 "threetears.evals.kernel.UnportableSchema": "host-contract",
 "threetears.evals.kernel.UnreadableBarName": "provisional",
 "threetears.evals.kernel.UnreadableRecordError": "provisional",
+"threetears.evals.kernel.UnreadableResultKey": "provisional",
 "threetears.evals.kernel.UnreadableRunError": "host-contract",
 "threetears.evals.kernel.ValidationFailedError": "host-contract",
 "threetears.evals.kernel.VariantConfig": "host-contract",

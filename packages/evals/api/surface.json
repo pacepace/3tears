@@ -3116,6 +3116,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.UnreadableResultKey": {
+      "kind": "exception",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.UnreadableRunError": {
       "kind": "exception",
       "signature": "UnreadableRunError(message: str, *, run_ids: Sequence[str])",
