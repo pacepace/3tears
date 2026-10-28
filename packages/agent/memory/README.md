@@ -166,7 +166,7 @@ config = MemoryConfig(
 ```
 
 The three `*_enabled` switches turn the automatic paths off one at a time, and all
-default on. Off, the path does nothing and logs why once per call at INFO:
+default on. Off, the path does nothing and logs why once per call at DEBUG:
 `extract` answers `SKIPPED` with `ExtractionGate.DISABLED`, the retriever answers an
 empty result (so `MemoryInjectionMiddleware` injects nothing), and
 `run_consolidation` answers an empty `ConsolidationResult`. The explicit tools
