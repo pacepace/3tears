@@ -98,8 +98,9 @@ def writer_ceiling_s(limits: WriterLimits, *, request_s: RequestCeiling) -> floa
     wait the host's client spends on it. A job budget over a report (``AnalysisGeneration.budget_s``) must sit ABOVE
     this: one below it cancels a turn still writing inside its cap, after it was billed.
 
-    Not covered: the tool calls the turns make (reads of the frozen snapshot, in the host's process), freezing the
-    snapshot and storing the report. A host adds its headroom for them.
+    Not covered: the tool calls the turns make (reads of the frozen snapshot, in the host's process), the price refresh
+    each turn makes before it is priced (``refresh_prices()``, a catalogue read a host's ``request_s`` may not count),
+    freezing the snapshot and storing the report. A host adds its headroom for them.
 
     :param limits: What the writing loop is held to: the same object the host sets as ``AnalysisGeneration.limits``,
         which ``analysis_generate`` runs unchanged.

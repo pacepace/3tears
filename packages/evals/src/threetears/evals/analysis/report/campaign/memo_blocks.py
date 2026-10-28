@@ -57,10 +57,18 @@ __all__ = [
     "memo_blocks",
     "memo_summary_blocks",
     "recommendation_blocks",
+    "report_doc_blocks",
 ]
 
 #: The first screen's line where no memo was written over the campaign.
 NO_RECOMMENDATION = "No recommendation was written: no analysis has been generated over this campaign."
+
+#: The first screen's line where the analysis laid out is a report document's (``EvalAnalysis.report_doc_id``): the
+#: report is stored apart, and this page is code's over the same evidence.
+DOC_WRITTEN = (
+    "A report was written over this campaign's evidence and is stored as report document {report_doc_id}. This page "
+    "is the code-only page over the same evidence."
+)
 
 #: The first screen's line while no person has made the call.
 NO_CALL = "No call is recorded yet: a person decides, over code's readings."
@@ -80,7 +88,22 @@ def memo_summary_blocks(memo: AuthoredCampaignAnalysis | None) -> list[ReportBlo
     return [TextBlock(section="answer", role="summary", body=said)]
 
 
-def recommendation_blocks(memo: AuthoredCampaignAnalysis | None, kind: str) -> list[ReportBlock]:
+def report_doc_blocks(report_doc_id: str | None) -> list[ReportBlock]:
+    """The one line saying a report document was written and where it is stored; nothing for any other page.
+
+    :param report_doc_id: The report document the analysis laid out names (``EvalAnalysis.report_doc_id``), or None.
+    :ptype report_doc_id: str | None
+    :return: The line, or nothing.
+    :rtype: list[ReportBlock]
+    """
+    if report_doc_id is None:
+        return []
+    return [DisclosureBlock(section="answer", source="memo", text=DOC_WRITTEN.format(report_doc_id=report_doc_id))]
+
+
+def recommendation_blocks(
+    memo: AuthoredCampaignAnalysis | None, kind: str, *, report_doc_id: str | None = None
+) -> list[ReportBlock]:
     """The writer's recommendation, the arm and how sure, then each reason in its words, as written; one line with no
     memo, and one by the campaign's kind where the memo recommends nothing.
 
@@ -88,9 +111,14 @@ def recommendation_blocks(memo: AuthoredCampaignAnalysis | None, kind: str) -> l
     :ptype memo: AuthoredCampaignAnalysis | None
     :param kind: The campaign's kind, which words a memo recommending nothing.
     :ptype kind: str
-    :return: The recommendation and its reasons, or the one line.
+    :param report_doc_id: The report document the page's analysis names, whose line (:func:`report_doc_blocks`)
+        stands in for "no analysis has been generated"; None for any other page.
+    :ptype report_doc_id: str | None
+    :return: The recommendation and its reasons, or the one line, or nothing beside a report document's line.
     :rtype: list[ReportBlock]
     """
+    if memo is None and report_doc_id is not None:
+        return []
     if memo is None:
         return [DisclosureBlock(section="answer", source="memo", text=NO_RECOMMENDATION)]
     recommendation = memo.recommended()

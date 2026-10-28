@@ -352,7 +352,15 @@ CORE_SCHEMA_VERSION: int = 15
 #:   ``served_model``. Each is left out of the document when unset, so a row or an entry setting none is stored byte
 #:   for byte as before. None is in any identity, key or digest; the cost readings never read the counts.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 8
+#: - **v15.9** — an out-of-run ledger row may ledger several calls at once, saying how many and how they were
+#:   admitted: ``OutOfRunSpend.calls`` (the calls the row stands for; default None: one call),
+#:   ``OutOfRunSpend.unpriced_calls`` and ``OutOfRunSpend.priced_usd`` (its unpriced and priced shares, set exactly
+#:   with ``calls``; ``cost_usd`` is None whenever a call is unpriced) and ``OutOfRunSpend.admitted_by`` (what
+#:   admitted the calls in words, when not each one's ceiling under ``cap_usd``; default None). A report the report
+#:   writer wrote is one such row, every turn it sent counted. Each is left out of the document when unset, so a row
+#:   of one call is stored byte for byte as before; the ledger's readers read a row without them as one call.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 9
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

@@ -35,6 +35,7 @@ from threetears.evals.analysis.report.campaign.memo_blocks import (
     memo_blocks,
     memo_summary_blocks,
     recommendation_blocks,
+    report_doc_blocks,
 )
 from threetears.evals.analysis.report.campaign.names import AspectNames, check_legend_blocks
 from threetears.evals.analysis.report.campaign.provenance import (
@@ -78,6 +79,7 @@ def build_campaign_report(
     recommended_variant_key: str | None = None,
     resolutions: Sequence[FindingResolution] = (),
     trial_ids: Mapping[str, tuple[str, str]] | None = None,
+    report_doc_id: str | None = None,
 ) -> CampaignReport:
     """Lay a campaign out as its page: under the title the question, the writer's summary and recommendation, what
     warns and the person's call; then the Scorecard, the findings and next steps, Design & provenance, then one fold
@@ -104,6 +106,10 @@ def build_campaign_report(
     :param trial_ids: The ids the memo names trials by, each to its aspect and its id in that aspect's bundle
         (:meth:`~threetears.evals.analysis.campaign_bundle.CampaignBundle.trial_ids`); None traces no trial.
     :ptype trial_ids: Mapping[str, tuple[str, str]] | None
+    :param report_doc_id: The report document of the analysis the page is laid out for, when it is one
+        (``EvalAnalysis.report_doc_id``): the first screen says the report is written and stored there, in place of
+        "no analysis has been generated"; None for any other page.
+    :ptype report_doc_id: str | None
     :return: The page, ``basis="analysis"`` with a memo, ``code_only`` without one.
     :rtype: CampaignReport
     :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, the readings
@@ -121,9 +127,13 @@ def build_campaign_report(
     names = AspectNames.of(bundles)
     # The first screen is the decision: the question, then the writer's read across every aspect and what it
     # recommends, then what warns, one line per arm, and each report-wide caveat once.
-    blocks: list[ReportBlock] = [*question_blocks(campaign), *memo_summary_blocks(memo)]
+    blocks: list[ReportBlock] = [
+        *question_blocks(campaign),
+        *report_doc_blocks(report_doc_id),
+        *memo_summary_blocks(memo),
+    ]
     if kind != "measurement":
-        blocks += recommendation_blocks(memo, kind)
+        blocks += recommendation_blocks(memo, kind, report_doc_id=report_doc_id)
     if kind == "choice":
         blocks += behind_on_blocks(memo, names=names)
     blocks += [

@@ -408,6 +408,9 @@ class ToolSession:
         """Send one turn, tally it and charge it, a reply refused after it was paid for included; a reply from
         another model than the session's is refused, after it is counted."""
         started, turn = time.monotonic(), self._sent
+        # Counted as sent before it is awaited: a turn whose reply never comes (the client fails, or the writing is
+        # cancelled or runs out of time) is still a turn sent, which may have been billed.
+        self._tally.record_sent()
         try:
             reply = await self._client.turn(
                 system=self._system,

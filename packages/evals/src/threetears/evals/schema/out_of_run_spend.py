@@ -133,6 +133,44 @@ class OutOfRunSpend(CoreDocumentModel):
     run_id: str | None = Field(
         default=None, description="The finished run a judge repeat re-scored results of, when it was for one."
     )
+    calls: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The calls this row ledgers together, when it ledgers more than one: a report the report writer wrote "
+            "(purpose analysis), one row for every turn it sent, whether its reply came back or not. None = the row is "
+            "one call. Left out of the document when unset."
+        ),
+    )
+    unpriced_calls: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Of `calls`, those nothing priced: a reply that reported no cost, or a turn in flight when the writing "
+            "stopped, whose reply never came and which may have been billed. Set exactly when `calls` is."
+        ),
+    )
+    priced_usd: float | None = Field(
+        default=None,
+        ge=0.0,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What the priced ones of `calls` reported, together: the priced share, a floor whenever `unpriced_calls` "
+            "is not 0, when `cost_usd` is None (the total is unknown, never $0). Set exactly when `calls` is."
+        ),
+    )
+    admitted_by: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What admitted the row's calls when it was not each one's own ceiling under `cap_usd`: a report's "
+            "budget, in words ('the report budget of $10.00'), which admitted every turn before it was sent. None = "
+            "each call was admitted on `priced_ceiling_usd` under `cap_usd`."
+        ),
+    )
     created_at: str = Field(default_factory=utc_now_iso)
 
     @field_validator("doc_type")
@@ -167,6 +205,24 @@ class OutOfRunSpend(CoreDocumentModel):
                 raise ValueError("a raised call names the exception's class in failure")
         elif self.failure is not None:
             raise ValueError("a completed call carries no failure")
+        return self
+
+    @model_validator(mode="after")
+    def _a_row_of_several_calls_states_its_shares(self) -> Self:
+        """Refuse a row of several calls without its priced and unpriced shares, shares on a row of one, more unpriced
+        calls than calls, or a total cost that disagrees with its shares."""
+        if self.calls is None:
+            if self.unpriced_calls is not None or self.priced_usd is not None:
+                raise ValueError("unpriced_calls and priced_usd are a row of several calls' shares; set calls too")
+            return self
+        if self.unpriced_calls is None or self.priced_usd is None:
+            raise ValueError("a row of several calls states its unpriced_calls and its priced_usd")
+        if self.unpriced_calls > self.calls:
+            raise ValueError(f"{self.unpriced_calls} unpriced calls in a row of {self.calls}")
+        if self.unpriced_calls and self.cost_usd is not None:
+            raise ValueError("a row with an unpriced call has no total: cost_usd is None, and priced_usd its floor")
+        if not self.unpriced_calls and self.cost_usd != self.priced_usd:
+            raise ValueError("a row whose every call is priced costs its priced share: cost_usd is priced_usd")
         return self
 
 

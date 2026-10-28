@@ -71,7 +71,9 @@ class AnalysisGeneration:
         the store); a report that outruns it is recorded ``timed_out``. Derive it from the same :attr:`limits` object,
         ABOVE the writer's own ceiling (``Ceilings().writer_ceiling_s(limits, request_s=...)`` of
         :class:`~threetears.evals.run.Ceilings`, over the host's own ceiling for one request on its client) plus the
-        host's headroom: a budget below it cancels a turn still writing inside its cap, after it was billed.
+        host's headroom: a budget below it cancels a turn still writing inside its cap, after it was billed. The
+        snapshot's freeze (assembling the campaign's evidence) runs inside this budget, not the preparation's, so a
+        freeze that hangs reads ``running`` until this budget ends it ``timed_out``.
     :ivar preparation_budget_s: The job's wall-clock ceiling on its preparation (the client, the allowed-writer check
         and the pricing question), in seconds; a generation whose preparation outruns it ends refused before any
         turn. :data:`ANALYSIS_PREPARATION_BUDGET_S` unless the host sets it, and read on every call, so a host may set

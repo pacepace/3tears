@@ -18,17 +18,20 @@ admission on the report: no caller can raise it, and the out-of-run cap is not r
 its headroom. A stored report is linked by an analysis whose `basis` is `doc` and whose `report_doc_id` names the
 document; its recommended variant is set when the document recommends exactly one arm, and each claim marked durable
 becomes an insight that later campaigns read as a prior. A report that stores nothing ends the job failed or refused
-with its ending and reason, and the attempt keeps the turns' count and cost. The report's spend is ledgered once
-under `analysis`, unpriced when any turn was unpriced, never $0. Provenance is the analyst skill's digest, not the
+with its ending and reason, and the attempt keeps the turns' count and cost, a turn in flight when the writing stopped
+counted as sent and unpriced. The report's spend is ledgered once under `analysis`: one row stating every turn sent,
+its priced share and its unpriced turns apart, and that the report budget admitted them, its total unpriced when any
+turn was, never $0 (new optional `OutOfRunSpend` fields, core v15.9). Provenance is the analyst skill's digest, not the
 planner's prompt id. Until the report view lands, `report_read` of a `doc` analysis serves the code-only page over
-its frozen evidence, naming the analysis. The planner stays for the reporter kind.
+its frozen evidence, its first screen saying the report is stored as report document `<id>`. The planner stays for the reporter kind.
 
 **Hosts must change** (`packages/evals/MIGRATIONS.toml` has the port): `AnalysisGeneration` drops `prompt_id`,
 `resolve_prompt` and `max_output_tokens` and takes `report_budget`, `limits`, `budget_s` and `preparation_budget_s`;
 a host factory adds an `analyst` row, and a client wrapper forwards `turn_session` and `turn_pricing_refusal` (and
 wraps the session client `turn_session` returns). A client that is not a turn model, or a host with no report budget,
 is refused before anything is frozen or sent, saying what to set. `analysis_estimate` states the budget and the most
-turns the writer can send, and makes no call. The jobs conformance kit counts a turn model's turns as requests.
+turns the writer can send, makes no call, and says it does not check the campaign's evidence, which the job checks
+when it freezes it. The jobs conformance kit counts a turn model's turns as requests.
 
 ### evals: a report's sessions are stored as their own documents, so listing reports loads none
 

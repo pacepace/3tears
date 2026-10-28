@@ -515,7 +515,8 @@ class GenerationProvenance(EvalDocumentModel):
             "Soundness-repair round-trips this analysis needed: 0 when the generator's first output "
             "was accepted, 1 when it was refused and regenerated with the refusal fed back. Bounded "
             "at one attempt by the generator, deliberately NOT by this field — a stored analysis must "
-            "keep loading if that bound is ever revisited."
+            "keep loading if that bound is ever revisited. For a report document (basis doc), the analyst's "
+            "submissions sent back before one passed, every round's; the editor's asking again is not counted."
         ),
     )
     repaired_refusal: str | None = Field(
@@ -524,7 +525,9 @@ class GenerationProvenance(EvalDocumentModel):
             "payload or a missing required field alike; None when nothing was "
             "repaired. Stored as the message rather than a code because it names the offending "
             "finding and the rule it broke, which is what makes a repair rate diagnosable instead of "
-            "merely countable."
+            "merely countable. For a report document (basis doc), whose `repair_attempts` counts the analyst's "
+            "submissions sent back, it is a summary, not a refusal verbatim: each kind they were sent back for and how "
+            "many, in name order, since each bounce's own faults are in the stored analyst session."
         ),
     )
     cell_model_version: int = Field(
@@ -557,7 +560,8 @@ class GenerationProvenance(EvalDocumentModel):
         min_length=1,
         description=(
             "sha256 of the user message the generation's FIRST request sent — the bundle as the writer read it, "
-            "rendered by that build. A repair resends it with the refusal appended; that addition is "
+            "rendered by that build; for a report document (basis doc), the digest of the frozen snapshot's report "
+            "input the analyst and the editor read, since a session's first message is written from it. A repair resends it with the refusal appended; that addition is "
             "`repaired_refusal`, not part of this digest. It is what lets a later rendering of the same bundle be "
             "checked against what the writer was actually sent: a reporter case freezing a recorded memo's writer "
             "message compares against it."

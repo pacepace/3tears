@@ -2122,9 +2122,10 @@ def engine_actions() -> tuple[Action, ...]:
             render=render.render_model,
             example={"campaign_id": campaign_id},
             detail=(
-                "The generation's own checks, so would_start is analysis_generate's answer: cap_usd is the host's "
-                "report budget, the bound on every turn, and max_calls the most turns the writer can send. Makes no "
-                "model call."
+                "The generation's own checks in its call, so would_start is analysis_generate's start: cap_usd is the "
+                "host's report budget in dollars (none for a token and turn budget; bound says it in words), the bound "
+                "on every turn, and max_calls the most turns the writer can send. It reads no run: the campaign's "
+                "evidence is checked when the job freezes it (unchecked). Makes no model call."
             ),
         ),
         Action(

@@ -33,7 +33,7 @@ from threetears.evals.analysis.campaigns import (
     remove_runs_from_campaign,
     update_campaign,
 )
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.numbers import format_number, group_thousands, spell_dollars
 from threetears.evals.analysis.planned_analysis import report_plan_of
 from threetears.evals.analysis.report import ReportBasis, TrialDetail, analysis_verdict
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
@@ -874,6 +874,12 @@ _REPORT_BUDGET_REMEDY = (
     "report, read from the host's configuration as each generation starts) on the OpsHost its actions are mounted with"
 )
 
+#: What a report writer's estimate does not check, as it says so: its answer reads no run.
+_EVIDENCE_UNCHECKED: Final = (
+    "the campaign's evidence: it is checked when the job freezes it, and a campaign whose runs resolve none, or "
+    "cannot be read, ends the job refused before any turn"
+)
+
 #: What the host's ``analyst`` client forwards, beside ``model_name``, for the report writer to run on it.
 _TURN_MODEL_MEMBERS: Final = ("turn_session", "turn_pricing_refusal")
 
@@ -987,7 +993,8 @@ async def analysis_estimate(
 
     The start's own checks, in its call: the host generates analyses here, has set a report budget, the campaign
     exists, a writer the call names is one the host allows, and the host's ``analyst`` client is a turn model whose
-    turns can be bounded before they are sent; ``would_start`` is their answer. The bound is the budget's cap, which
+    turns can be bounded before they are sent; ``would_start`` is their answer. It reads no run, so the campaign's
+    evidence is not checked here but when the job freezes it, and the estimate says so (``unchecked``). The bound is the budget's cap, which
     every turn is admitted against, and ``max_calls`` the most turns the writer can send under the host's
     ``AnalysisGeneration.limits`` (:func:`~threetears.evals.kernel.inner_ceilings.writer_turns`). No turn is priced here: a turn's price
     depends on the conversation before it.
@@ -1025,6 +1032,8 @@ async def analysis_estimate(
             cap_usd=budget.usd,
             would_start=refusal is None,
             refusal=refusal,
+            bound=f"{_budget_words(budget)}, which admits every turn before it is sent",
+            unchecked=_EVIDENCE_UNCHECKED,
         )
     finally:
         await _release(client)
@@ -1203,43 +1212,47 @@ async def analysis_generate(
                 campaign_id,
             )
 
+    async def built() -> _Prepared:
+        # The client, the host's default writer, the turn model and its pricing. Whatever stops it, the client it
+        # built is released before the stop goes on: nothing will run on it.
+        client = await _analyst_client(eval_host, model)
+        try:
+            turn_model = _turn_model(client)
+            await resolved(client.model_name)
+            if (unpriced := await _pricing_refusal(turn_model)) is not None:
+                raise ValidationFailedError(
+                    f"the report was not started, and nothing was frozen, sent or spent: {unpriced}",
+                    remedy=(
+                        "hand the analyst role a model whose turns the client can price (load its price catalogue, "
+                        "give the model a pricer, or name a model it prices)"
+                    ),
+                )
+            return _Prepared(client=client, model=turn_model, budget=report_budget(), limits=generation.limits)
+        except BaseException:
+            await _release(client)
+            raise
+
     async def prepare() -> _Prepared | None:
-        # The client, the host's default writer, the turn model and its pricing: every refusal ends the attempt with
-        # nothing frozen or sent, and releases the client. A refusal is a designed ending, not a task failure: the
-        # attempt records it and this returns None, so the manager logs no error for it. What nobody designed for (a
-        # store that raised) is recorded the same way and raised on as itself.
-        client: BoundCompletionClient | None = None
+        # Every refusal ends the attempt with nothing frozen or sent. A refusal is a designed ending, not a task
+        # failure: the attempt records it and this returns None, so the manager logs no error for it. What nobody
+        # designed for (a store that raised) is recorded the same way and raised on as itself.
         try:
             async with manager.job_timeout_factory(generation.preparation_budget_s):
-                client = await _analyst_client(eval_host, model)
-                turn_model = _turn_model(client)
-                await resolved(client.model_name)
-                if (unpriced := await _pricing_refusal(turn_model)) is not None:
-                    raise ValidationFailedError(
-                        f"the report was not started, and nothing was frozen, sent or spent: {unpriced}",
-                        remedy=(
-                            "hand the analyst role a model whose turns the client can price (load its price "
-                            "catalogue, give the model a pricer, or name a model it prices)"
-                        ),
-                    )
-                return _Prepared(client=client, model=turn_model, budget=report_budget(), limits=generation.limits)
-        except BaseException as stopped:
-            if client is not None:
-                await _release(client)
-            if isinstance(stopped, JobFenced):
-                raise
-            if isinstance(stopped, asyncio.CancelledError):
-                await end_unrun(
-                    "cancelled before any call, while the generation was being prepared", outcome="cancelled"
-                )
-                raise
-            if isinstance(stopped, EvalJobTimeout):
-                await end_unrun(f"preparation did not finish in {format_number(stopped.budget_s)} s")
-                return None
-            if isinstance(stopped, EvalServiceError):
-                await end_unrun(str(stopped), refused_by=stopped)
-                return None
-            await end_unrun(f"the generation could not be prepared ({type(stopped).__name__}: {stopped})")
+                return await built()
+        except JobFenced:
+            raise
+        except asyncio.CancelledError:
+            await end_unrun("cancelled before any call, while the generation was being prepared", outcome="cancelled")
+            raise
+        except EvalJobTimeout as timed_out:
+            await end_unrun(f"preparation did not finish in {format_number(timed_out.budget_s)} s")
+            return None
+        except EvalServiceError as refused:
+            await end_unrun(str(refused), refused_by=refused)
+            return None
+        # prawduct:ok-broad-except — recorded on the attempt, then raised on as itself
+        except Exception as broke:
+            await end_unrun(f"the generation could not be prepared ({type(broke).__name__}: {broke})")
             raise
 
     async def work() -> None:
@@ -1289,11 +1302,12 @@ async def analysis_generate(
 
 
 def _attempt_tally(tally: Tally, *, prompt_version: str, refusals: Sequence[str] = ()) -> GenerationTally:
-    """What the attempt keeps of the turns sent: each turn a call, each unpriced turn an unpriced call, the priced
-    turns' cost (a floor whenever a turn is unpriced), and the model each reply named."""
+    """What the attempt keeps of the turns sent: each turn sent a call, its reply back or not; each turn whose reply
+    never came or reported no cost an unpriced call; the priced turns' cost (a floor whenever a turn is unpriced);
+    and the model each reply named."""
     turns = tally.turns
     return GenerationTally(
-        calls=len(turns),
+        calls=tally.sent,
         returned=len(turns),
         unreported_cost=sum(1 for turn in turns if turn.cost_usd is None),
         token_cost=math.fsum(turn.cost_usd for turn in turns if turn.cost_usd is not None),
@@ -1308,16 +1322,33 @@ def _summed(counts: Sequence[int | None]) -> int | None:
     return None if any(count is None for count in counts) else sum(count or 0 for count in counts)
 
 
-def _spend_row(tally: Tally, attempt: WrittenAttempt, campaign: EvalCampaign) -> OutOfRunSpend | None:
-    """The report's one out-of-run ledger row: every turn's tokens and cost together, ``None`` for a report that sent
-    no turn.
+def _budget_words(budget: ReportBudget) -> str:
+    """The report's budget in words, as its ledger row and its estimate say what admitted the turns."""
+    if budget.usd is not None:
+        return f"the report budget of {spell_dollars(budget.usd)}"
+    # A token and turn budget names no dollars: it is never read as a $0 cap.
+    caps = [
+        f"{group_thousands(str(cap))} {name}"
+        for name in ("tokens", "turns")
+        if (cap := getattr(budget, name, None)) is not None
+    ]
+    return f"the report budget of {' and '.join(caps)}, with no dollar cap"
 
-    Its cost is ``None`` when any turn was unpriced (``Tally.spent_usd``), which the ledger's readers count as unpriced:
-    never $0, and never a priced total that reads lower than what was spent.
+
+def _spend_row(
+    tally: Tally, attempt: WrittenAttempt, campaign: EvalCampaign, budget: ReportBudget
+) -> OutOfRunSpend | None:
+    """The report's one out-of-run ledger row, ``None`` for a report that sent no turn.
+
+    It states every turn sent (``calls``, a turn whose reply never came included), the priced share and the unpriced
+    turns apart (``priced_usd``, ``unpriced_calls``) and what admitted them (``admitted_by``, the report budget). Its
+    total, ``cost_usd``, is ``None`` whenever a turn is unpriced (``Tally.spent_usd``): never $0, and never the priced
+    share read as the whole. Its tokens are ``None`` when a turn's reply never came, since nothing reported them.
     """
-    turns = tally.turns
-    if not turns:
+    if not tally.sent:
         return None
+    turns = tally.turns
+    complete = tally.sent == len(turns)
     served = {turn.served_model for turn in turns}
     sources = sorted({turn.price_source for turn in turns if turn.price_source is not None})
     return OutOfRunSpend(
@@ -1326,19 +1357,25 @@ def _spend_row(tally: Tally, attempt: WrittenAttempt, campaign: EvalCampaign) ->
         model=attempt.generator_model,
         served_model=served.pop() if len(served) == 1 else None,
         outcome="completed",
-        prompt_tokens=_summed([turn.input_tokens for turn in turns]),
-        completion_tokens=_summed([turn.output_tokens for turn in turns]),
-        reasoning_tokens=_summed([turn.reasoning_tokens for turn in turns]),
+        prompt_tokens=_summed([turn.input_tokens for turn in turns]) if complete else None,
+        completion_tokens=_summed([turn.output_tokens for turn in turns]) if complete else None,
+        reasoning_tokens=_summed([turn.reasoning_tokens for turn in turns]) if complete else None,
         cost_usd=tally.spent_usd(),
         price_source=", ".join(sources) if sources else None,
         subject_id=campaign.subject_id,
         campaign_id=attempt.campaign_id,
+        calls=tally.sent,
+        unpriced_calls=tally.unpriced_turns(),
+        priced_usd=tally.priced_usd(),
+        admitted_by=_budget_words(budget),
     )
 
 
-async def _ledgered(host: EvalHost, tally: Tally, attempt: WrittenAttempt, campaign: EvalCampaign) -> None:
+async def _ledgered(
+    host: EvalHost, tally: Tally, attempt: WrittenAttempt, campaign: EvalCampaign, budget: ReportBudget
+) -> None:
     """Ledger a report's spend under purpose ``analysis``, once its writing has ended; a failed write is logged."""
-    row = _spend_row(tally, attempt, campaign)
+    row = _spend_row(tally, attempt, campaign, budget)
     if row is None:
         return
 
@@ -1354,7 +1391,7 @@ async def _ledgered(host: EvalHost, tally: Tally, attempt: WrittenAttempt, campa
             "what they cost",
             attempt.attempt_id,
             attempt.campaign_id,
-            len(tally.turns),
+            tally.sent,
         )
 
 
@@ -1384,7 +1421,7 @@ async def _write_doc_analysis(
     async def ended(
         outcome: AttemptOutcome, error: str, *, refused_by: EvalServiceError | None = None, refusals: Sequence[str] = ()
     ) -> None:
-        await _ledgered(eval_host, tally, attempt, campaign)
+        await _ledgered(eval_host, tally, attempt, campaign, prepared.budget)
         await record_written_generation(
             eval_host,
             attempt,
@@ -1415,26 +1452,35 @@ async def _write_doc_analysis(
     except asyncio.CancelledError:
         await ended(
             "cancelled",
-            "cancelled mid-flight by the caller's budget or disconnect, or a shutdown, after "
-            f"{len(tally.turns)} turn(s)",
+            f"cancelled mid-flight by the caller's budget or disconnect, or a shutdown, after {tally.sent} turn(s)",
         )
         raise
-    except EvalServiceError as refused:
-        # The freeze refused (the campaign resolves no runs): nothing was sent.
-        await ended("failed", f"the report was not written: {refused}", refused_by=refused)
-        return
-    except ValueError as refused:
-        # The writer's own refusal before anything was frozen or sent (a model it cannot bound, or one sending no turn).
-        unwritten = ValidationFailedError(f"the report was not written: {refused}", remedy="start the generation again")
-        await ended("failed", str(unwritten), refused_by=unwritten)
+    except (EvalServiceError, ValueError) as refused:
+        if tally.sent:
+            # Raised after turns were sent: no refusal of the start, and never recorded as one. Kept by its kind.
+            await ended("failed", f"the report writer failed after {tally.sent} turn(s) ({type(refused).__name__})")
+            raise
+        # Refused before any turn: the freeze (the campaign resolves no runs), or the writer's own check of the model
+        # (one it cannot bound, or one that sends no turn).
+        unsent = (
+            refused
+            if isinstance(refused, EvalServiceError)
+            else ValidationFailedError(str(refused), remedy="start the generation again")
+        )
+        await ended("failed", f"refused before any call: the report was not written: {refused}", refused_by=unsent)
         return
     # prawduct:ok-broad-except — recorded on the attempt by its kind alone (a provider's text may hold the account), then raised on as itself
     except Exception as broke:
-        await ended("failed", f"the report writer failed ({type(broke).__name__})")
+        await ended("failed", f"the report writer failed after {tally.sent} turn(s) ({type(broke).__name__})")
         raise
     outcome = written.outcome
     if not_stored is not None or written.stored is None:
-        reason = str(not_stored) if not_stored is not None else outcome.reason or "it stored nothing"
+        reason = (
+            f"{not_stored}; any session it wrote before the store failed is under report document "
+            f"{not_stored.report_doc_id}, which delete_report_doc removes"
+            if not_stored is not None
+            else outcome.reason or "it stored nothing"
+        )
         why: EvalServiceError
         if outcome.failure is not None:
             # The client's failure: its text may hold a provider's account, so the record keeps what the host's
@@ -1479,7 +1525,7 @@ async def _write_doc_analysis(
             skill_digest=attempt.prompt_id,
             bundle_assembled_at=snapshot.bundle_assembled_at,
             token_cost=tally.spent_usd(),
-            bounces=[kind for kind, count in kinds.items() for _ in range(count)],
+            bounces=kinds,
         )
     except (EvalServiceError, ValueError) as unminted:
         # A stored document whose analysis cannot be built is a defect, never the writer's: recorded, raised as itself.
@@ -1487,7 +1533,7 @@ async def _write_doc_analysis(
             "failed", f"the report document {stored.id} is stored, and its analysis could not be built ({unminted})"
         )
         raise
-    await _ledgered(eval_host, tally, attempt, campaign)
+    await _ledgered(eval_host, tally, attempt, campaign, prepared.budget)
     insights = await record_written_generation(
         eval_host,
         attempt,
@@ -1503,7 +1549,7 @@ async def _write_doc_analysis(
         stored.id,
         written.ending,
         len(insights),
-        len(tally.turns),
+        tally.sent,
         attempt.generator_model,
     )
 

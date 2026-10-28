@@ -22,6 +22,7 @@ Contracts held here (``threetears.evals.ops.analysis_generate``, ``analysis_esti
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import dataclasses
 from collections.abc import Mapping, Sequence
@@ -53,6 +54,7 @@ from packages.evals.tests.ops_support import (
 from threetears.evals.actions.report_writing import write_report
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
+from threetears.evals.analysis.out_of_run_spend import out_of_run_spend_text, scope_out_of_run_spend
 from threetears.evals.analysis.doc_analysis import doc_analysis
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.campaign import EvalAnalysis, EvalAnalysisAttempt
@@ -159,6 +161,10 @@ async def test_a_report_with_an_unpriced_turn_is_ledgered_once_unpriced_and_its_
     assert (attempt.calls, attempt.unpriced_calls) == (2, 1)
     (row,) = _ledger(fixture)
     assert row.cost_usd is None, "one row for the report, unpriced: never $0, never the priced share alone"
+    assert (row.calls, row.unpriced_calls, row.priced_usd) == (2, 1, pytest.approx(0.01))
+    text = out_of_run_spend_text(off_loop(scope_out_of_run_spend, fixture.host.eval_host, TOYHOST_SCOPE))
+    assert "purpose analysis: 2 call(s): $0.0100 reported, 1 unpriced (so at least)" in text, text
+    assert "2 calls: $0.0100 reported, 1 unpriced (so at least)" in text, text
     assert attempt.token_cost == pytest.approx(0.01), "the attempt keeps the priced floor beside its unpriced count"
 
 
@@ -170,6 +176,32 @@ async def test_a_durable_claim_mints_an_insight_and_others_do_not() -> None:
     (insight,) = [insight for insight in insights if insight.source_analysis_id == analysis.id]
     assert insight.statement == TOY_DOC["claims"][0]["text"]
     assert insight.confidence == "low", "a low-confidence document mints its durable claims low"
+
+
+async def test_the_reports_ledger_row_states_its_turns_its_shares_and_the_budget_that_admitted_them() -> None:
+    fixture = off_loop(ops_fixture)
+    await _generated(fixture)
+    (row,) = _ledger(fixture)
+    assert (row.calls, row.unpriced_calls, row.priced_usd, row.cost_usd) == (
+        2,
+        0,
+        pytest.approx(0.02),
+        pytest.approx(0.02),
+    )
+    assert row.admitted_by == "the report budget of $10.00"
+    report = off_loop(scope_out_of_run_spend, fixture.host.eval_host, TOYHOST_SCOPE)
+    assert (report.totals.n_calls, report.totals.n_unpriced, report.totals.n_unbounded, report.totals.n_budgeted) == (
+        2,
+        0,
+        0,
+        2,
+    )
+    text = out_of_run_spend_text(report)
+    assert (
+        "purpose analysis: 2 call(s): $0.0200 reported; admitted at up to $0.0000, 2 admitted by a report budget"
+        in (text)
+    ), text
+    assert "unbounded" not in text and "(admitted by the report budget of $10.00)" in text, text
 
 
 # -- the minting, over the toy snapshot -------------------------------------------------------------------------------
@@ -190,7 +222,14 @@ async def _toy_snapshot(fixture: OpsFixture) -> tuple[CampaignBundle, Any, str, 
     )
 
 
-def _minted(bundle: CampaignBundle, report_input: Any, snapshot_id: str, assembled_at: str, doc: dict[str, Any]) -> Any:
+def _minted(
+    bundle: CampaignBundle,
+    report_input: Any,
+    snapshot_id: str,
+    assembled_at: str,
+    doc: dict[str, Any],
+    bounces: Mapping[str, int] | None = None,
+) -> Any:
     stored = EvalReportDoc(
         scope_id=TOYHOST_SCOPE,
         snapshot_id=snapshot_id,
@@ -210,8 +249,60 @@ def _minted(bundle: CampaignBundle, report_input: Any, snapshot_id: str, assembl
         skill_digest="skill",
         bundle_assembled_at=assembled_at,
         token_cost=None,
-        bounces=[],
+        bounces=bounces or {},
     )
+
+
+def _caveat(caveat_id: str, *, checked: bool) -> dict[str, Any]:
+    if checked:
+        return {"id": caveat_id, "label": None, "material_if": None, "checked": "immaterial"}
+    return {"id": caveat_id, "label": None, "material_if": "only if it moves the call", "checked": None}
+
+
+@pytest.mark.parametrize(
+    ("form", "claim_caveat", "expected"),
+    [
+        ("high", None, "high"),
+        ("high_if_immaterial", None, "medium"),
+        ("low", None, "low"),
+        ("high", "open", "medium"),
+        ("high", "checked", "high"),
+        ("high_if_immaterial", "open", "medium"),
+        ("low", "open", "low"),
+    ],
+    ids=[
+        "high",
+        "high-if-immaterial",
+        "low",
+        "high-claim-open-caveat",
+        "high-claim-checked-caveat",
+        "conditional-claim-open-caveat",
+        "low-claim-open-caveat",
+    ],
+)
+async def test_a_durable_claim_is_minted_at_its_documents_form_held_to_medium_by_an_open_caveat_of_its_own(
+    form: str, claim_caveat: str | None, expected: str
+) -> None:
+    fixture = off_loop(ops_fixture)
+    bundle, report_input, snapshot_id, assembled_at = await _toy_snapshot(fixture)
+    doc = copy.deepcopy(TOY_DOC)
+    doc["confidence"]["form"] = form
+    if claim_caveat is not None:
+        doc["confidence"]["caveats"][0] = _caveat("judge_uncalibrated", checked=claim_caveat == "checked")
+        doc["claims"][0]["caveats"] = ["judge_uncalibrated"]
+    (insight,) = _minted(bundle, report_input, snapshot_id, assembled_at, doc).insights
+    assert insight.confidence == expected
+
+
+async def test_bounces_are_counted_as_repairs_and_summarised_by_kind() -> None:
+    fixture = off_loop(ops_fixture)
+    bundle, report_input, snapshot_id, assembled_at = await _toy_snapshot(fixture)
+    minted = _minted(bundle, report_input, snapshot_id, assembled_at, TOY_DOC, {"shape": 1, "invariant": 2})
+    generation = minted.analysis.generation
+    assert generation.repair_attempts == 3
+    assert generation.repaired_refusal == "submissions sent back, by kind: invariant x2, shape x1"
+    clean = _minted(bundle, report_input, snapshot_id, assembled_at, TOY_DOC).analysis.generation
+    assert (clean.repair_attempts, clean.repaired_refusal) == (0, None)
 
 
 @pytest.mark.parametrize(
@@ -300,13 +391,57 @@ async def test_a_failed_report_fails_the_job_with_its_ending_and_reason() -> Non
     assert (status.state, attempt.outcome) == ("failed", "failed")
     assert attempt.error is not None and attempt.error.startswith("the report writer ended failed: RuntimeError")
     assert "provider down" not in attempt.error, "the client's text is kept only as the host's describer allows"
-    assert attempt.calls == 1, "the one turn that came back"
+    assert (attempt.calls, attempt.unpriced_calls) == (2, 1), "the turn that came back, and the one that raised"
+    assert attempt.token_cost == pytest.approx(0.01), "the priced share, a floor beside the unpriced turn"
+    (row,) = _ledger(fixture)
+    assert (row.calls, row.unpriced_calls, row.priced_usd, row.cost_usd) == (2, 1, pytest.approx(0.01), None)
+    assert row.prompt_tokens is None, "nothing reported the raised turn's tokens"
+
+
+async def test_a_report_cut_off_by_its_time_limit_counts_the_turn_in_flight_as_sent_and_unpriced() -> None:
+    fixture = off_loop(ops_fixture, gate=asyncio.Event())  # never set: the first turn is in flight when time runs out
+    assert fixture.host.generation is not None
+    host = dataclasses.replace(fixture.host, generation=dataclasses.replace(fixture.host.generation, budget_s=0.5))
+    (job,) = (await generate(host, fixture.campaign.id)).jobs
+    status = await settled(host, job.job_id)
+    attempt = _attempt(fixture, status)
+    assert attempt.outcome == "timed_out"
+    assert (attempt.calls, attempt.unpriced_calls, attempt.token_cost) == (1, 1, 0.0)
+    (row,) = _ledger(fixture)
+    assert (row.calls, row.unpriced_calls, row.cost_usd) == (1, 1, None), "unpriced, never $0"
+
+
+async def test_a_value_error_after_turns_were_sent_is_no_refusal_of_the_start() -> None:
+    fixture = off_loop(ops_fixture)
+
+    async def breaks(host: OpsHost, *, tally: Tally, **_: Any) -> Any:
+        tally.record_sent()
+        raise ValueError("a defect after the first turn")
+
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE, writer=breaks)).jobs
+    status = await settled(fixture.host, job.job_id)
+    attempt = _attempt(fixture, status)
+    assert attempt.error == "the report writer failed after 1 turn(s) (ValueError)"
+    assert attempt.calls == 1 and attempt.unpriced_calls == 1
+
+
+async def test_a_value_error_before_any_turn_is_a_refusal_before_any_call() -> None:
+    fixture = off_loop(ops_fixture)
+
+    async def refuses(host: OpsHost, **_: Any) -> Any:
+        raise ValueError("the model sends no turn")
+
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE, writer=refuses)).jobs
+    status = await settled(fixture.host, job.job_id)
+    attempt = _attempt(fixture, status)
+    assert attempt.error is not None and attempt.error.startswith("refused before any call: the report was not written")
+    assert attempt.calls == 0 and _ledger(fixture) == []
 
 
 async def test_a_report_the_store_refuses_fails_the_job_with_its_record_kept(monkeypatch: pytest.MonkeyPatch) -> None:
     fixture = off_loop(ops_fixture)
 
-    def refuse(report: EvalReportDoc) -> None:
+    def refuse(report: EvalReportDoc, **_: Any) -> None:
         raise StorageError("the store is read-only")
 
     monkeypatch.setattr(fixture.host.eval_host.storage, "save_report_doc", refuse)
@@ -314,6 +449,8 @@ async def test_a_report_the_store_refuses_fails_the_job_with_its_record_kept(mon
     attempt = _attempt(fixture, status)
     assert (status.state, attempt.outcome) == ("failed", "failed")
     assert attempt.error is not None and "ended stored" in attempt.error and "was not stored" in attempt.error
+    assert "StorageError: the store is read-only" in attempt.error, "it failed for the store's reason"
+    assert "under report document" in attempt.error and "delete_report_doc" in attempt.error
     assert attempt.calls == 2
     assert (
         off_loop(analysis_service.list_analyses, fixture.host.eval_host.storage, fixture.campaign.id, TOYHOST_SCOPE)
@@ -374,6 +511,10 @@ async def test_the_estimate_states_the_report_budget_and_the_most_turns_making_n
     )
     assert estimate.first_call_ceiling_usd is None
     assert all(not analyst.sessions for analyst in fixture.analysts), "no session was opened"
+    assert estimate.bound == "the report budget of $10.00, which admits every turn before it is sent"
+    assert estimate.unchecked is not None and "checked when the job freezes it" in estimate.unchecked, (
+        "would_start is the start's checks, and says what it did not check"
+    )
 
 
 # -- the writer's ceiling ---------------------------------------------------------------------------------------------
@@ -467,6 +608,11 @@ async def test_a_doc_analysis_is_listed_read_as_the_campaign_page_and_its_insigh
     assert line.needs_regeneration is None
     page = off_loop(report_read, eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="json")
     assert page.analysis_id == status.analysis_id and page.analysis_basis == "doc"
+    markdown = off_loop(report_read, eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown").body
+    assert f"is stored as report document {line.report_doc_id}" in markdown, (
+        "the interim page says a report was written"
+    )
+    assert "no analysis has been generated" not in markdown
     frozen = await report_snapshot_freeze(
         fixture.host, TOYHOST_SCOPE, campaign_id=fixture.campaign.id, created_by=CALLER.identity
     )

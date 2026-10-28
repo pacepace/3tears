@@ -11,7 +11,8 @@ analysis is built (:mod:`~threetears.evals.analysis.planned_analysis`) in every 
   when ``recommends`` names exactly one; ``None`` when it names none, or two or more (a tie the document leaves to the
   reader);
 - **the insights**: one per claim the document marks ``durable``, its statement the claim with every figure key written
-  out, citing the runs behind the arms and aspects its keys name (the claim's text and its blocks' captions).
+  out, citing the runs behind the arms and aspects its keys name (the claim's text and its blocks' captions), at the
+  tier the document's confidence form gives it, held to ``medium`` when the claim carries an open caveat of its own.
 
 **Provenance** is the analyst skill's digest, never a prompt's registry key: the writer reads the skill the package
 ships, so the digest is what says which words wrote the report.
@@ -23,7 +24,7 @@ nothing: storing is the service's, which holds the attempt.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Final, NamedTuple
 
 from threetears.evals.analysis.bundle.insights import insight_restatement_key
@@ -39,13 +40,21 @@ from threetears.evals.kernel.report_doc import Claim, ConfidenceForm, EvalReport
 #: ``DocAnalysis`` is the return type alone; nothing outside binds it by name.
 __all__ = ["doc_analysis"]
 
-#: The insight tier each of the document's confidence forms mints its durable claims at: a call code finds sound
-#: is ``high``, one sound only if its open caveats prove immaterial ``medium``, and a low one ``low``.
+#: The insight tier each of the document's confidence forms mints its durable claims at: a call the analyst states
+#: ``high`` is ``high``, one sound only if its open caveats prove immaterial ``medium``, and a low one ``low``. A claim
+#: that carries an open caveat of its own is held to ``medium`` at most (:data:`_OPEN_CAVEAT_CEILING`), whatever the
+#: document's form: a claim's confidence reads its own methodology and variance, not only the call's.
 _INSIGHT_CONFIDENCE: Final[dict[ConfidenceForm, Confidence]] = {
     "high": "high",
     "high_if_immaterial": "medium",
     "low": "low",
 }
+
+#: The highest tier a durable claim stated beside an open caveat of its own is minted at.
+_OPEN_CAVEAT_CEILING: Final[Confidence] = "medium"
+
+#: The tiers, weakest first, for holding a claim's tier to a ceiling.
+_TIER_ORDER: Final[tuple[Confidence, ...]] = ("low", "medium", "high", "very_high")
 
 
 class DocAnalysis(NamedTuple):
@@ -69,7 +78,7 @@ def doc_analysis(
     skill_digest: str,
     bundle_assembled_at: str,
     token_cost: float | None,
-    bounces: Sequence[str],
+    bounces: Mapping[str, int],
 ) -> DocAnalysis:
     """Build the analysis a stored report document is linked by, and its insights (this module's account).
 
@@ -91,8 +100,9 @@ def doc_analysis(
     :ptype bundle_assembled_at: str
     :param token_cost: What every turn cost together; ``None`` when any turn was unpriced, never ``0``.
     :ptype token_cost: float | None
-    :param bounces: What each submission sent back was sent back for, in order (``invariant``, ``shape``, ...).
-    :ptype bounces: Sequence[str]
+    :param bounces: The analyst's submissions sent back, counted by what they were sent back for (``invariant``,
+        ``shape``, ...), as the tally sums them; the editor's ask-again is no bounce and is not counted.
+    :ptype bounces: Mapping[str, int]
     :return: The analysis and its insights.
     :rtype: DocAnalysis
     :raises UnresolvableReference: A durable claim's key does not resolve (a stored document's always do).
@@ -112,8 +122,8 @@ def doc_analysis(
         generated_at=stored.created_at,
         bundle_assembled_at=bundle_assembled_at,
         token_cost=token_cost,
-        repair_attempts=len(bounces),
-        repaired_refusal=f"submissions sent back for: {', '.join(bounces)}" if bounces else None,
+        repair_attempts=sum(bounces.values()),
+        repaired_refusal=_bounce_summary(bounces),
         user_message_digest=input_digest,
         cell_model_version=first.cell_model_version,
         bundle_schema_version=first.schema_version,
@@ -165,7 +175,8 @@ def _durable_insights(
         f"Retracted if analysis {analysis.id} is archived; replaced in place when a later analysis of this "
         "subject states the same claim."
     )
-    confidence = _INSIGHT_CONFIDENCE[doc.confidence.form]
+    form = _INSIGHT_CONFIDENCE[doc.confidence.form]
+    checked = {caveat.id for caveat in doc.confidence.caveats if caveat.checked is not None}
     insights: list[EvalInsight] = []
     stated: set[str] = set()
     for claim in doc.claims:
@@ -182,7 +193,7 @@ def _durable_insights(
                 subject_id=bundle.subject_id,
                 subject_kind=bundle.subject_kind,
                 statement=statement,
-                confidence=confidence,
+                confidence=_claim_confidence(form, claim, checked),
                 evidence_run_ids=sorted(_claim_runs(claim, bundle, report_input)),
                 model_versions=analysis.model_versions,
                 invalidation_trigger=trigger,
@@ -191,6 +202,22 @@ def _durable_insights(
             )
         )
     return insights
+
+
+def _bounce_summary(bounces: Mapping[str, int]) -> str | None:
+    """The analyst's bounces as the analysis's ``repaired_refusal`` keeps them: each kind and its count, the kinds in
+    name order; ``None`` for a report none of whose submissions was sent back. Each bounce's own faults are in the
+    stored analyst session."""
+    counted = [f"{kind} x{count}" for kind, count in sorted(bounces.items()) if count]
+    return f"submissions sent back, by kind: {', '.join(counted)}" if counted else None
+
+
+def _claim_confidence(form: Confidence, claim: Claim, checked: set[str]) -> Confidence:
+    """A durable claim's tier: the document's form's, held to :data:`_OPEN_CAVEAT_CEILING` when the claim names a
+    caveat of its own that is not checked immaterial."""
+    if not any(caveat not in checked for caveat in claim.caveats):
+        return form
+    return min(form, _OPEN_CAVEAT_CEILING, key=_TIER_ORDER.index)
 
 
 def _claim_runs(claim: Claim, bundle: CampaignBundle, report_input: ReportInput) -> set[str]:
