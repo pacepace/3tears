@@ -202,7 +202,8 @@ def _evidence(record: EvalAnalystGap) -> list[str]:
         bounce = record.bounce
         lines.append(f"  - bounced submission {bounce.submission} at `{bounce.path}` on key `{bounce.key}`:")
         lines += [
-            f"    - [invariant {verdict.invariant}] {verdict.path}: {one_line(verdict.fault)}" for verdict in bounce.verdicts
+            f"    - [invariant {verdict.invariant}] {verdict.path}: {one_line(verdict.fault)}"
+            for verdict in bounce.verdicts
         ]
     if record.editor_item is not None:
         item = record.editor_item
