@@ -1,6 +1,6 @@
 {
-  "ending": "over_budget",
-  "reason": "the report's budget refused the next turn: the next turn can cost up to $2.52, and $1.87 of the report's $4.00 budget is spent",
+  "ending": "stored",
+  "reason": "",
   "faults": [],
   "reviews": [
     {
@@ -9,86 +9,143 @@
         {
           "n": 1,
           "name": "First screen",
-          "score": 2,
-          "reason": "The headline, lede and Watch make it clear that nothing is decided. The page says why: the high-reasoning configurations meet the pass rate but run over the latency budget (Brisk-S high+retry's p95 is 870 ms against 600 ms), while Brisk-S low+retry stays fast but misses on multi-hop (95.6%) and ambiguous queries (96.4%). It names what would settle the call: a fix to low+retry, or the owner saying which gate gives. Watch names the main risk, the 0.3-point multi-hop clearance that a rerun would flip 37.4% of the time. The gates claim shows the per-task pass rates and the latency bars right away."
+          "score": 1,
+          "reason": "The headline, lede and decision block say clearly that nothing is shown to clear both gates. They also say why: only Atlas-M and Brisk-S with high reasoning and retry clear the pass-rate gate in every task, and both run over the latency budget across all cases (2551 ms and 870 ms against 600 ms). This also covers the computed fact about Atlas-M high with retry. But the lede says per-task latency is what could change the answer, and that leaves out a second risk of similar size. Brisk-S high with retry clears the pass-rate gate by thin margins, and the routed mix the page proposes leans on readings that sit at the line. Watch names only the multi-hop margin (37.4%)."
         },
         {
           "n": 2,
           "name": "Coherent story",
-          "score": 1,
-          "reason": "Two tensions are left unaddressed. First, the headline says high reasoning 'is what lifts every task to the pass rate'. But the reasoning claim shows high over low (with a retry) adds +0.8 points, an interval of -0.4 to +2.1 that is not separated from zero. The per-task lifts behind the headline have no intervals. Second, the appendix gate table prints 'Fails (no figure)' for latency for every arm in every task, including Brisk-S low+retry, whose p95 over all cases is 513 ms. The Method says the latency gate is 'unknown in every task, never failed', and options_dominance reads it as unknown. A reader of the appendix would conclude that fixing low+retry is pointless."
+          "score": 2,
+          "reason": "c1 (who clears the pass-rate gate), c2 (who stays inside the latency budget), c3 (the nearest miss inside the budget), c4 (why it misses) and c5 (the levers) build one story, and the no-call matches the dominance check: no option survives, and both high-reasoning-with-retry setups are undecided on latency. One slip: c5 says retry carries high reasoning over the line 'in every task', but Brisk-S high without retry already clears single lookup at 97.6%."
         },
         {
           "n": 3,
           "name": "Honest emphasis",
           "score": 1,
-          "reason": "Brisk-S high+retry is the option the lede leads with, and it 'holds the pass rate in every task' only on point estimates. Watch gives only the multi-hop risk (37.4% chance a rerun reads it below the line). At the same assumed counts, a rerun would put it below the line on ambiguous queries 29.9% of the time (0.6 points of clearance) and on date math 16.5% of the time. Taken together, it more likely than not fails somewhere on a rerun. Brisk-S low+retry's ambiguous miss is just as thin (-0.6 points, 33.3% chance a rerun reads it on the other side), yet the fast_miss claim presents it as a firm miss. The fast_miss claim also says the 'kept failures are planning errors' on the strength of one kept example each on multi-hop and ambiguous queries."
+          "reason": "c1's 'only two of 18' rests on per-task point estimates with no interval, several of them within a point of the line. The confidence line still says High. c5's 'by less as reasoning rises' states a trend that its own block does not support: all three interactions (-1.7, -2.2, -0.5) have intervals that cross zero, and the caption admits none is separated. The weak axis of Brisk-S high with retry, its tail latency of 870 ms, is shown plainly."
         },
         {
           "n": 4,
           "name": "Sound elision",
           "score": 2,
-          "reason": "Nothing omitted would change the call. The Nano-XS configurations all miss by wide margins. The other Atlas-M configurations and the no-retry high-reasoning ones miss on multi-hop (Atlas-M low+retry by 0.6 points, Atlas-M high without retry by 0.4, Brisk-S high without retry by 1.5) and run at 810 to 2430 ms over all cases. Calls per task and median latency have no gate on them."
+          "reason": "None of the omitted items would change the no-call. Nano-XS misses everywhere. Atlas-M low with retry misses multi-hop by 0.6 and has a tail latency of 1500 ms. The Atlas-M against Brisk-S model gap does not bear on the call. Calls per task has no gate. One oddity: the omitted list says the full gate grid was left out, yet the appendix prints it."
         },
         {
           "n": 5,
           "name": "Confounds handled",
           "score": 2,
-          "reason": "Each confound is handled. The missing per-task latency is carried into the headline caveat, the levers table and the first next step, and the inference from the overall p95 is stated correctly: if the tasks split the cases, an overall p95 over budget means some task is over too. Missing per-task case counts, no control and best-of-18 are each scoped to what they affect. The computed fact that Atlas-M high+retry is undecided on latency is covered in substance: its 2551 ms bar and the headline say it is over the budget overall."
+          "reason": "Four confounds are carried into the story and the next steps: latency recorded only over all cases, per-task pass rates with no case count, best of 18, and no control. Method explains why a tail over the budget across all cases means some task is over it too, as long as the tasks split the cases."
         },
         {
           "n": 6,
           "name": "Actionable next steps",
           "score": 1,
-          "reason": "Steps 1 and 3 name a measurement or a declaration and say what it settles. Step 2 sizes the wrong thing. It is a 'fix then re-run' step, but its 825 cases is the size that would confirm today's multi-hop miss, not the size that would show a fixed low+retry clears 97%. The ambiguous set would need about 3,704 cases even to confirm today's miss. The step's last sentence is also a fragment with no verb saying what it settles."
+          "reason": "Each step names an experiment or a declaration and what it would settle. But the rerun step sizes only multi-hop (about 11214 cases). Brisk-S high with retry is just as thin on ambiguous entity (+0.6, reads below the line 29.9% of the time) and date math (+0.9, 16.5%). And the routed mix gives date math to Brisk-S low with retry, which sits exactly on the line there (97.0%, 50% either way). No step sizes those legs."
         },
         {
           "n": 7,
           "name": "Evidence fits claims",
-          "score": 1,
-          "reason": "The gates dot chart, the latency bars and the Atlas-M vs Brisk-S table each fit their claim. The reasoning claim's block is about the 513 to 870 ms latency move as well, but it shows only pass-rate effects. It also repeats the same three interaction values twice (-1.7, -2.2, -0.5) under two labels, which hides the one row the claim rests on. The fast_miss caption says 'one kept failure per task', but three examples cover three of the four tasks. The gates chart calls Brisk-S low+retry the 'fastest near miss', though Brisk-S off+retry and low without retry are faster."
+          "score": 2,
+          "reason": "c1's table, c2's latency bars against the 600 ms line and c4's three kept failures (they match the snapshot's examples) each show their claim, and each claim would change if its values flipped. c3's block shows the gain from high over low reasoning rather than the nearest miss's gaps to the line, so it backs the second half of its claim better than the first."
         }
       ],
       "findings": [
         {
           "claim": "",
           "severity": "must_fix",
-          "finding": "The appendix gate table marks every arm 'Fails (no figure)' on the latency budget in every task. The Method says that gate is 'unknown in every task, never failed', and options_dominance reads it as unknown. As printed, the page says Brisk-S low+retry (513 ms over all cases) fails latency everywhere, which undercuts the 'fix low+retry' path the page recommends. Relabel those cells as unknown, or add a note at the table that 'Fails (no figure)' means no per-task figure was recorded."
+          "finding": "The page says per-task latency is what could change the answer and names only the multi-hop margin in Watch. Yet the route it proposes rests on quality readings at the line, sized here on traffic-share case counts. Brisk-S low with retry, given date math in the routed mix, sits exactly on the line at 97.0%: a run of today's size reads it either side half the time. Brisk-S high with retry clears ambiguous entity by +0.6, which reads below the line 29.9% of the time, and date math by +0.9, at 16.5%, on top of the 37.4% on multi-hop. Add these to Watch and to the lede's 'what could change the answer'. Also reconsider the High confidence for a lead claim (c1) whose set of two rests on these margins."
         },
         {
           "claim": "",
           "severity": "should_fix",
-          "finding": "Add Brisk-S high+retry's other thin clearances to Watch. At the assumed counts, a rerun reads its ambiguous-entity rate below 97% 29.9% of the time and its date-math rate 16.5% of the time, on top of the 37.4% on multi-hop. Say that together these make a rerun more likely than not to show it failing some task. That matters to an owner deciding to let the latency budget give and take this configuration. Also add that low+retry's ambiguous miss (-0.6 points) has a 33.3% chance of reading the other way."
+          "finding": "The rerun next step sizes only multi-hop for Brisk-S high with retry (about 11214 cases). Extend it to every leg the routed mix needs. That means ambiguous entity for Brisk-S high with retry (about 2500 cases, two-sided, at traffic share) and date math for Brisk-S low with retry. Date math is exactly on the line, so size that leg for an assumed true gap rather than today's estimate."
+        },
+        {
+          "claim": "c5",
+          "severity": "should_fix",
+          "finding": "Two fixes. First, 'it is what carries high reasoning over the line in every task' is wrong for single lookup, where Brisk-S high without retry already passes at 97.6%. Say three tasks. Second, 'by less as reasoning rises' is stated as a finding, but all three interactions have intervals that include zero (-4.2 to +0.9, -4.6 to +0.2, -2.5 to +1.5). Soften it to a descriptive pattern. The block also prints each interaction twice, once as a reasoning-across-retry row and once as a retry-across-reasoning row, with identical values. Drop one set."
+        },
+        {
+          "claim": "c3",
+          "severity": "should_fix",
+          "finding": "The claim names Brisk-S low with retry as the nearest miss inside the budget, but the block only shows the gain from high over low reasoning. Show that arm's per-task gaps to the 97% line instead: -1.4 on multi-hop, -0.6 on ambiguous entity, exactly on the line for date math. Or add them as a second panel. Also note that its 513 ms is a tail across all cases and does not show it is inside the budget in each task."
         },
         {
           "claim": "",
           "severity": "should_fix",
-          "finding": "Soften the headline's 'high reasoning is what lifts every task to the pass rate'. The reasoning claim shows the high-over-low effect with a retry is +0.8 points (-0.4 to +2.1), not separated from zero, and the per-task lifts have no intervals. Something like 'high reasoning is the setting under which Brisk-S and Atlas-M reach 97% in every task on point estimates' would match the evidence."
-        },
-        {
-          "claim": "reasoning",
-          "severity": "should_fix",
-          "finding": "Drop the three 'retry effect, across reasoning' rows; they repeat the three 'reasoning effect, across retry' values (-1.7, -2.2, -0.5) under a second label. Either add the latency half of the claim (p95 513 ms vs 870 ms) to this block or point to the gates claim's latency bars. Round '+0.03535' to the precision of the other bounds."
-        },
-        {
-          "claim": "fast_miss",
-          "severity": "should_fix",
-          "finding": "'Its kept failures are planning errors' rests on one kept example each on multi-hop (a missing call) and ambiguous queries (a wrong tool), with no stated share of all failures. Reword it as 'the kept examples show…'. Fix the caption: there are three examples for four tasks, none from single lookup. Say that the date-math example comes from a task low+retry passes, exactly on the line at 97.0%."
-        },
-        {
-          "claim": "",
-          "severity": "should_fix",
-          "finding": "Next step 2: size the rerun for what it is meant to settle, whether a fixed low+retry clears 97% on multi-hop and on ambiguous queries, not to 'confirm today's miss'. Note that the ambiguous set is the harder one (about 3,704 cases just to confirm today's -0.6-point miss). Finish the trailing fragment with what the step settles."
-        },
-        {
-          "claim": "atlas",
-          "severity": "should_fix",
-          "finding": "'Atlas-M high+retry is out on every axis but pass rate' overstates its latency standing. On the declared per-task gate it is undecided; the miss is inferred from its 2551 ms p95 over all cases, assuming the tasks split the cases. Say so in one clause. Also note that its per-task clearances are wider than Brisk-S high+retry's (for example +0.9 vs +0.3 points on multi-hop), which bears on the choice if the latency budget gives."
+          "finding": "The appendix gate grid marks every latency cell 'Fails (no figure)'. The body and 'What you could change' read these cells as undecided, and Method calls them unknown. Label them unknown or undecided so the appendix agrees with the page. Also remove 'A gate grid of every configuration and task' from the omitted list, since the appendix prints it."
         }
       ],
-      "total": 10,
-      "passes": false,
+      "total": 11,
+      "passes": true,
       "must_fix": true
+    },
+    {
+      "round": 2,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, lede and c1 give the answer: no configuration is shown to clear both gates. Brisk-S high reasoning with retry and Atlas-M high reasoning with retry are the only two that pass the 97% pass-rate gate in all four tasks. Both overrun the 600 ms budget over all cases (870 ms and 2551 ms). The lede now names both things that could change the answer: per-task latency, and per-task pass rates sitting at the line. The computed fact that Atlas-M high with retry is undecided on latency is handled. c2 and Method say the budget is read per task with no figure, and that an overall tail over 600 ms implies at least one task is over. That inference is sound for a p95 over cases split between tasks."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "The chain holds. c1 shows the two that pass on quality, c2 shows both over budget overall, c3 shows the nearest miss inside the budget (Brisk-S low with retry: 95.6% multi-hop, 96.4% ambiguous entity, exactly 97.0% on date math), c4 shows what its failures look like, and c5 shows what retry and reasoning buy. That leads to the routed mix and the owner's choice. options_dominance agrees: no option survives, and both high-reasoning-with-retry setups are undecided only on per-task latency."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 1,
+          "reason": "Last round's main finding is resolved. Confidence is now Low, and Watch carries every thin leg: 37.4% wrong-side on multi-hop, 29.9% on ambiguous entity, 16.5% on date math, and 50% for Brisk-S low with retry on date math, all verified. One framing still runs ahead of the numbers. The first confidence bullet says Brisk-S low with retry 'could yet clear both gates' and cites only its ambiguous-entity miss, read as a pass 33.3% of the time. It also misses multi-hop by 1.4 points, which a run of today's size reads as a pass only 11.9% of the time, and it sits exactly on the line in date math. So all three would have to go its way, as well as per-task latency."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "None of the omitted items would change the call. Atlas-M with low reasoning and retry, and Atlas-M with high reasoning and no retry, each miss only multi-hop (by 0.6 and 0.4 points), but their overall tails of 1500 ms and 2430 ms put them far over budget. Nano-XS misses everywhere. The pick between the two Brisk-S setups with retry is fairly held back as unresolved. The gate grid has been dropped from the omitted list, as asked."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "Each confound is carried into the confidence line, the story and the next steps: latency recorded only overall, per-task pass rates with no counts, best-of-18 selection, and no control. The appendix gate grid still prints 'Fails (no figure)', but Method now tells the reader to read those cells as unknown. That settles last round's mismatch well enough."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names a measurement or a declaration and what it settles: per-task tail latency for both Brisk-S setups with retry, sized reruns of every leg the routed mix needs, the routed mix as a measured option, a fix-then-rerun for low reasoning, and the owner declaring which line gives. The rerun sizes now cover all three thin legs: about 11214 cases (multi-hop), about 2500 (ambiguous entity) and about 1118 (date math, for a true rate one point clear). All three are verified. One gap remains: these are the sizes at which only half of runs settle (see findings)."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 2,
+          "reason": "c3 now shows Brisk-S low with retry by task against the 97% line, and notes that 513 ms is a tail over all cases. c5 now says 'three tasks', which is right because Brisk-S high without retry already passes single lookup at 97.6%. It also softens the interaction to a descriptive pattern. The counterfactual holds for c1 to c3: if the per-task values flipped across 97%, the set of two would change. c4's examples match the kept failures. One leftover: c5 still prints the single interaction twice. The caption admits it, but the duplicate row adds nothing."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "Rewrite the first confidence bullet so it gives every gap that stands between Brisk-S low reasoning with retry and a pass, not just one. Today it says this setup 'could yet clear both gates' and cites only its ambiguous-entity miss (-0.6, read as a pass 33.3% of the time). It also misses multi-hop by 1.4 points, which a run of today's size reads as a pass only 11.9% of the time. It sits exactly on the line in date math (50%), and its per-task latency is unknown. Say that clearing both gates would need all three pass-rate legs to go its way, plus per-task latency under 600 ms, so it is a long shot."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The rerun step calls its case counts 'enough to settle'. They are the two-sided sizes at which only half of runs settle, assuming the truth equals today's figure. The sizes at which four in five settle are about double: about 22911 for multi-hop, 5108 for ambiguous entity and 2285 for date math (at one point clear). Print those, or say a run of the stated size settles the question only half the time. Also say that the multi-hop leg alone would be roughly nine times the arm's whole 1200-case run. That cost makes the owner's declaration a realistic alternative, not only a fallback."
+        },
+        {
+          "claim": "c5",
+          "severity": "should_fix",
+          "finding": "The block still prints the one interaction twice: 'reasoning effect, across retry' and 'retry effect, across reasoning', both -0.5 (-2.5 to +1.5). The caption admits they are the same interaction. Drop one row so the block shows four effects and one interaction."
+        }
+      ],
+      "total": 13,
+      "passes": true,
+      "must_fix": false
     }
   ]
 }

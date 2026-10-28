@@ -1,6 +1,6 @@
 {
-  "ending": "over_budget",
-  "reason": "the report's budget refused the next turn: the next turn can cost up to $2.51, and $1.83 of the report's $4.00 budget is spent",
+  "ending": "stored",
+  "reason": "",
   "faults": [],
   "reviews": [
     {
@@ -10,75 +10,137 @@
           "n": 1,
           "name": "First screen",
           "score": 1,
-          "reason": "The headline and decision block make the call clear: route turns with Brisk-S few-shot, the only configuration that passes all three gates (options_dominance agrees). They also name the latency point estimate as a risk. But they name the wrong accuracy risk. The lede and Watch point to complex news, which clears by 2.9 points, as the thinnest clearance. The pick's real thinnest clearance is overall balanced accuracy: 90.7% against a 90% line, a gap of 0.7 points (criteria.overall.brisk-s.few.gap), with the interval's low end at 90.4%. A reader leaves the first screen thinking the accuracy margin is comfortable."
+          "reason": "The headline and decision block make the call clear: ship Brisk-S few-shot, the only one of the 9 configurations that passes all three gates, at $1,200 a month. The lede names the main risk, its 184 ms p95 latency, which has no interval. But the first claim, c1, is false: Nano-XS few-shot sits inside both the latency budget (80 ms) and the overall accuracy gate (90.1%) on the scatter c1 itself shows. Watch also names the wrong weakest margin. A reader who stops at the first screen comes away with the wrong reason the others are out."
         },
         {
           "n": 2,
           "name": "Coherent story",
           "score": 1,
-          "reason": "The claims build in a sensible order: c1 shows the pick is the only option inside the gates, c2 shows its weakest cell, c3 covers the cheap near-miss and c4 shows how prompt and model interact. But c2's 'its thinnest clearance is complex news' contradicts the page's own gate table, where overall accuracy clears by 0.7 points and complex news by 2.9. The tool's chance of a fresh run landing on the wrong side also puts overall first: 0.0004972% against 0.0001087% for complex news. The best-of-n confidence caveat quotes the overall interval (90.4–91%) yet calls complex news the thinnest clearance."
+          "reason": "c2 says Nano-XS few-shot fails only at Complex × News, which means it passes the other two gates. That contradicts c1's 'only Brisk-S few-shot lands inside both'. The headline (all three gates) and the decision block (Nano-XS few-shot misses one cell) are right. c1 is the claim out of line. c3's 'the prompt is the lever' also sits poorly with its own lattice, where the rubric prompt drops Nano-XS from 90.1% to 83.9%."
         },
         {
           "n": 3,
           "name": "Honest emphasis",
           "score": 1,
-          "reason": "The latency weakness is shown honestly: 184 ms against a 250 ms budget, a point estimate with no interval. The pick's other weak axis is underplayed. Its overall accuracy clears by only 0.7 points, and that is the margin a best-of-9 pick is most likely to lose on a rerun, yet no Watch entry names it. Nano-XS few-shot's overall accuracy is shown as 'Borderline' in the appendix (90.1%, interval 89.8–90.4%), but the decision block and the next steps present it as failing only the complex-news floor."
+          "reason": "Watch calls Complex × News (2.9 points over the floor) the pick's weakest margin. The overall accuracy gate is cleared by only 0.7 points (criteria.overall.brisk-s.few.gap). Measured in noise the two are about the same, roughly 2.3 to 2.4 half-widths each, but in points the overall gate is plainly the thinnest. The page states that 0.7 only in a caveat. c3 generalises 'the prompt is the lever' beyond what the data supports: the model effects are as large (Brisk-S to Nano-XS zero-shot is −7.8 points), and the prompt effect varies a lot by model (+2.3 on Atlas-M, +4.7 on Brisk-S, +11.9 on Nano-XS). The latency risk is shown fairly."
         },
         {
           "n": 4,
           "name": "Sound elision",
           "score": 2,
-          "reason": "Nothing omitted would change the decision. Traffic-weighted accuracy and macro F1 rank the same way and no gate reads them. The zero-shot configurations fail the gates. The snapshot keeps no failure examples. The per-axis tables are covered by the cell comparison in c3."
+          "reason": "Nothing left out changes the call. Traffic-weighted accuracy and macro F1 rank the configurations as balanced accuracy does; Nano-XS few-shot reads 92.0% against Brisk-S few-shot's 92.2% on traffic-weighted accuracy. No failure examples were kept. The lever-interaction table was left out as 'descriptive', but the interactions are clearly non-zero (prompt × model difference of +9.6, interval +8.9 to +10.3). That bears on c3's wording, not on the decision."
         },
         {
           "n": 5,
           "name": "Confounds handled",
           "score": 2,
-          "reason": "All three caveats are carried into the story. No control: the page notes that comparisons are unpaired and the call rests on fixed gates. Point-estimate latency: carried into Watch and the first next step, with production-like load. Best-of-9 optimism: carried into Watch and a rerun step, though that step targets the wrong clearance (see item 6)."
+          "reason": "All three caveats are carried into the story. The point-estimate latency is in the lede, Watch and the first next step. The best-of-9 selection effect has its own caveat and a fresh-holdout next step. The missing control is scoped correctly to claims that one configuration beats another, which the call doesn't rest on."
         },
         {
           "n": 6,
           "name": "Actionable next steps",
           "score": 1,
-          "reason": "Each step names an experiment and what it would settle. Two are aimed off target. The fresh-sample rerun covers only complex news, but the clearance most exposed to best-of-9 optimism is overall accuracy at 0.7 points. The Nano-XS step says that if the cell clears the floor, Nano-XS 'passes every gate'. That leaves out its borderline overall reading (interval 89.8–90.4%), which the rerun would also have to clear."
+          "reason": "Each step names an experiment and what it would settle: latency with an interval, a Nano-XS few-shot prompt fix with the $1,143-a-month stake, and a fresh holdout. But the holdout size of about 9,487 turns is the two-sided size at which only half of such runs would confirm the clearance if today's 90.7% is the truth. The size for four runs in five is 19,383. As written, the step is a coin flip."
         },
         {
           "n": 7,
           "name": "Evidence fits claims",
           "score": 1,
-          "reason": "c1's scatter and c3's per-cell differences fit their claims well. c2's heatmap shows only the pick's cells, so it cannot support 'thinnest clearance' against the overall line. If overall accuracy were added, the claim would flip. c3's caption says 'overall and in each place', but the table has no overall row."
+          "reason": "c1's scatter contradicts c1: the Nano-XS few-shot point at 80 ms and 90.1% falls inside both gate lines. If the claim were true, that point would have to sit outside. c2's heatmap fits its claim well: 82.9% (81.7% to 84.1%) for Brisk-S against 76.7% (75.3% to 78.1%) for Nano-XS, both with counts. c3's lattice supports the +4.7 on Brisk-S (interval +4.2 to +5.2) but not the general 'the prompt is the lever'."
         }
       ],
       "findings": [
         {
-          "claim": "c2",
+          "claim": "c1",
           "severity": "must_fix",
-          "finding": "c2 says the pick's thinnest clearance is complex news (82.9%, 2.9 points above the floor). The thinnest is actually overall balanced accuracy: 90.7% against 90%, a gap of 0.7 points (criteria.overall.brisk-s.few.gap), with the interval's low end at 90.4%. The chance of a fresh run reading it on the wrong side is also higher than for complex news (0.0004972% against 0.0001087%). Fix: say complex news is the weakest cell, and name overall accuracy as the thinnest gate clearance."
+          "finding": "c1 says only Brisk-S few-shot lands inside both the latency budget and the overall accuracy gate. But Nano-XS few-shot is at 80 ms and 90.1% (criteria.overall.nano-xs.few.value), inside both, and c1's own scatter shows it there. The gates are read on point estimates, as Method says, so it passes both. What separates the two few-shot configurations is the Complex × News cell floor (c2). Fix: restate c1 as 'only Brisk-S few-shot passes all three gates', or say both few-shot configurations clear latency and overall accuracy and Nano-XS few-shot falls out on the cell floor. The scatter can stay as is."
         },
         {
           "claim": "",
           "severity": "must_fix",
-          "finding": "Watch and the lede treat complex news as the accuracy risk and never mention the 0.7-point overall margin, the pick's weakest margin on any gate (the computed fact weakest_not_in_watch). Sweeping the overall line shows the call disappears above 90.7%, and a best-of-9 pick reads high by chance. Fix: add a Watch entry citing the overall value, line and gap (criteria.overall.brisk-s.few.value, .low, .gap), and name it in the lede next to the latency risk."
-        },
-        {
-          "claim": "",
-          "severity": "should_fix",
-          "finding": "The third next step reruns only complex news to test best-of-9 optimism. Extend it to a full fresh held-out run, so it also re-reads overall balanced accuracy, the clearance most at risk."
-        },
-        {
-          "claim": "",
-          "severity": "should_fix",
-          "finding": "Nano-XS few-shot's overall accuracy is borderline: 90.1%, interval 89.8–90.4% (criteria.overall.nano-xs.few.low/high). Yet 'Why not the others', the Nano-XS next step ('passes every gate') and the cell-floor row in 'What you could change' ('Nano-XS few-shot passes') treat it as clearing overall. Say it is borderline overall. Then make the Nano-XS next step settle both the complex-news floor and the overall line, perhaps noting that fixing complex news would also raise its balanced accuracy."
+          "finding": "Watch says 'Complex × News is the pick's weakest margin: 2.9 points'. The pick clears the overall accuracy gate by only 0.7 points (criteria.overall.brisk-s.few.gap, interval 90.4% to 91%), and the Overall accuracy gate sweep shows that 0.7-point margin is where the call ends: above 90.7%, nothing passes. Name the overall accuracy margin in Watch, with its interval. Optionally note that in half-widths it is about as safe as Complex × News: 0.7 against 0.3 there, 2.9 against 1.2 at Complex × News."
         },
         {
           "claim": "c3",
           "severity": "should_fix",
-          "finding": "The difference table's caption says each row is 'overall and in each place', but the table has no overall row. Add Brisk-S few-shot minus Nano-XS few-shot on balanced accuracy, or drop 'overall' from the caption."
+          "finding": "'The prompt is the lever' overgeneralises. The model is as large a lever: Brisk-S to Nano-XS zero-shot is −7.8 points, and the model is what decides the latency gate (every Atlas-M prompt fails it). The prompt effect also depends strongly on the model: few-shot adds +2.3 on Atlas-M, +4.7 on Brisk-S and +11.9 on Nano-XS, and the rubric prompt costs Nano-XS −6.2 against few-shot. Scope the claim to Brisk-S ('on Brisk-S, few-shot lifts accuracy +4.7, interval +4.2 to +5.2; the rubric adds +0.8 and breaks latency'), or say that the prompt's effect varies by model."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The fresh-holdout next step sizes the run at about 9,487 turns. That is the two-sided size at which only half of such runs would confirm the clearance of the overall accuracy gate if the truth equals today's 90.7%. Use the four-in-five size of 19,383 turns, or say plainly that 9,487 gives even odds."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The omitted list calls the lever-interaction table 'descriptive'. The prompt × model interactions are clearly non-zero; for example, the few-shot gain differs between Atlas-M and Nano-XS by +9.6, interval +8.9 to +10.3. Either note the interaction in c3 or reword the omission reason, so a reader doesn't take the prompt effect as the same across models."
         }
       ],
       "total": 9,
       "passes": false,
       "must_fix": true
+    },
+    {
+      "round": 2,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, lede and decision block give the action: ship Brisk-S with the few-shot prompt. They give the reason: it is the only one of nine configurations that passes all three gates, at $1,200 a month. They give the main risk: its p95 latency of 184 ms has no interval, and above 250 ms nothing passes. Watch now names the thinnest margin, overall accuracy 0.7 points above the gate with interval 90.4–91%. That resolves last round's Watch finding. c1 tells the reader at once which gate removes which configurations."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "The claims now build on each other. c1 says two configurations clear latency and overall accuracy, Brisk-S few-shot at 184 ms and 90.7%, and Nano-XS few-shot at 80 ms and 90.1%. c2 shows the cell floor separating them: Nano-XS few-shot is at 76.7% on Complex × News, against Brisk-S few-shot at 82.9%. c3 explains why few-shot is the prompt on Brisk-S. This resolves last round's must_fix on c1. The dominance check agrees: Brisk-S few-shot is the one survivor, and every other configuration fails exactly the gates the page names."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "The pick's weak points are all on the first screen: the 0.7-point overall margin with its interval, Complex × News 2.9 points above the floor, and latency headroom of 66 ms that rests on a point estimate. The best-of-nine caveat is quantified. c3 is now scoped to Brisk-S and says the prompt's effect depends on the model (+9.6 points more few-shot gain on Nano-XS than on Atlas-M). That resolves last round's overgeneralisation finding. Nano-XS few-shot's straddling overall interval, 89.8–90.4%, is stated in c1 and in Next steps."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "Nothing left out would change the call. Traffic-weighted accuracy and macro F1 rank all nine configurations exactly as balanced accuracy does, as the appendix shows. Atlas-M rubric is out on latency at 1302 ms. The reason for leaving out the interaction table no longer calls it descriptive and points to c3's interaction. That resolves last round's finding. No failure examples were kept, and the page says so."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "The latency point estimate is carried into the lede, Watch, the caveats and the first next step. Selection among nine is quantified and gets a sized fresh holdout. Having no control is scoped correctly: the call reads gates, not head-to-head wins. Method says the balanced-accuracy interval is derived from cells read as independent, and the derived 90.4–91% matches the cell half-widths."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an experiment and what it settles. Production p95 with an interval settles whether the one passer survives. The Nano-XS few-shot Complex × News prompt fix settles whether a configuration about $1,143 a month cheaper becomes eligible, and notes it must also clear the overall gate on its interval. The holdout is now sized at 19,383 turns, the four-in-five size. That resolves last round's sizing finding."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 2,
+          "reason": "c1's scatter places each configuration against both gates, and the claim would change if any point crossed a line. c2's heatmap shows Complex × News as the weakest cell for both few-shot configurations, with intervals: 82.9% (81.7–84.1%) against 76.7% (75.3–78.1%). Every other cell of Nano-XS few-shot clears 80%. c3's lattice carries the per-tile figures behind +4.7, +0.8 and the rubric's −6.2 on Nano-XS. The cell-floor row of the What-you-could-change table matches the sweep: below 76.7% Nano-XS few-shot is the pick, and above 82.9% nothing passes."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The latency budget row in What you could change says the call holds for any budget at or above 184 ms. That is right: the sweep keeps Brisk-S few-shot as the pick at every higher budget, because it is the cheapest passer. But at 483 ms Atlas-M few-shot also passes all gates (92.1%, $0.26 per 1,000 turns), and at 496 ms so does Brisk-S rubric (91.5%, $0.095). From those points the headline's 'only one inside all three gates' no longer holds, and the pick rests on cost. Add a clause such as: 'from 483 ms, Atlas-M few-shot also passes at +1.4 points and 6.5× the cost; the pick then rests on cost.' A reader weighing a looser budget for more accuracy would then see the trade."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "In the second next step, 'the monthly cost gap to Brisk-S few-shot is +$1,143.00' doesn't say which way the gap runs. Nano-XS few-shot costs $57 a month against $1,200 for Brisk-S few-shot. Say plainly that Nano-XS few-shot would save about $1,143 a month. The cell-floor row could also say that below 76.7%, Nano-XS few-shot would become the pick only on a point estimate: its overall interval, 89.8–90.4%, straddles the 90% gate."
+        }
+      ],
+      "total": 14,
+      "passes": true,
+      "must_fix": false
     }
   ]
 }
