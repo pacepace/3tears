@@ -21,12 +21,18 @@ import pytest
 
 from threetears.evals.analysis import READ_TIER_ROW_BUDGET
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
+from threetears.evals.analysis import reads
 from threetears.evals.analysis.reads import hold_to_read_budget
-from threetears.evals.kernel import ValidationFailedError
+from threetears.evals.kernel import CampaignArm, ValidationFailedError
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.factories import make_aspect_campaign, make_eval_result, make_eval_run
+from packages.evals.tests.factories import (
+    fixture_variant_key,
+    make_aspect_campaign,
+    make_eval_result,
+    make_eval_run,
+)
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 _SCOPE = "uni-1"
@@ -91,7 +97,7 @@ class TestABundlePastTheReadBudgetIsRefused:
         }
         assert "assemble_context_bundle would aggregate about 50001 results" in refused.value.message
         assert refused.value.remedy.startswith(
-            "assemble one aspect of the campaign that names fewer runs (aspect), or a campaign of fewer member runs"
+            "assemble a campaign of fewer member runs, or archive the members it need not read"
         )
 
     def test_the_refusal_reads_no_result(self) -> None:
@@ -127,4 +133,85 @@ class TestTheBudgetHoldsAReadThatReturnedMoreThanItsRunsPromised:
             "results_estimated": 1,
             "result_budget": READ_TIER_ROW_BUDGET,
             "results_returned": READ_TIER_ROW_BUDGET + 1,
+        }
+
+
+def _stored(storage: EvalStorage, run_id: str, *, cases: int, k: int, archived: bool = False) -> str:
+    """A completed run of ``cases`` × ``k``, every cell stored."""
+    run = make_eval_run(
+        id=run_id,
+        status="completed",
+        k_runs=k,
+        archived=archived,
+        test_case_ids=[f"tc-{case}" for case in range(cases)],
+    )
+    storage.save_eval_run(run)
+    for case in range(cases):
+        for iteration in range(1, k + 1):
+            storage.save_eval_result(
+                make_eval_result(
+                    id=f"{run_id}-{case}-{iteration}",
+                    eval_run_id=run_id,
+                    test_case_id=f"tc-{case}",
+                    k_iteration=iteration,
+                    scope_id=_SCOPE,
+                )
+            )
+    return run_id
+
+
+class TestTheBundleCountsWhatItReads:
+    def test_an_archived_member_read_for_a_declared_control_counts_and_one_not_read_does_not(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = _ResultReadCounter()
+        storage = EvalStorage(store)
+        member = _stored(storage, "run-member", cases=3, k=1)
+        curated = _stored(storage, "run-curated", cases=3, k=1, archived=True)
+        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 5)
+        control = CampaignArm(label="control", role="control", variant_key=fixture_variant_key("sonnet"))
+        store.result_reads.clear()
+
+        # A declared control may have been curated out, so the archived member is read too: 6 results, past 5.
+        with pytest.raises(ValidationFailedError) as refused:
+            assemble_context_bundle(
+                make_aspect_campaign(run_ids=[member, curated], control=control),
+                storage=storage,
+                profile=toyhost_profile(),
+            )
+        assert refused.value.details["runs"] == 2 and refused.value.details["results_estimated"] == 6
+        assert store.result_reads == Counter()
+
+        # With no declared control the archived member is not read, and the 3 the bundle reads are within 5.
+        bundle = assemble_context_bundle(
+            make_aspect_campaign(run_ids=[member, curated]), storage=storage, profile=toyhost_profile()
+        )
+        assert bundle.run_ids == [member]
+
+    def test_a_read_returning_more_than_its_runs_promised_past_the_budget_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        storage = EvalStorage(InMemoryDocumentStore())
+        # A matrix of one cell, which stored five: the estimate (1) is within the budget, the read (5) is not.
+        run_id = _stored(storage, "run-overran", cases=1, k=1)
+        for iteration in range(2, 6):
+            storage.save_eval_result(
+                make_eval_result(
+                    id=f"{run_id}-extra-{iteration}",
+                    eval_run_id=run_id,
+                    test_case_id="tc-0",
+                    k_iteration=iteration,
+                    scope_id=_SCOPE,
+                )
+            )
+        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 3)
+
+        with pytest.raises(ValidationFailedError) as refused:
+            assemble_context_bundle(make_aspect_campaign(run_ids=[run_id]), storage=storage, profile=toyhost_profile())
+
+        assert refused.value.details == {
+            "runs": 1,
+            "results_estimated": 1,
+            "result_budget": 3,
+            "results_returned": 5,
         }

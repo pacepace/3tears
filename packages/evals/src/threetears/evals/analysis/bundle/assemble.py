@@ -327,8 +327,9 @@ _BUNDLE_LENS = "assemble_context_bundle"
 
 #: How a bundle past the read budget narrows: the refusal's remedy begins with it.
 _NARROW_THE_BUNDLE = (
-    "assemble one aspect of the campaign that names fewer runs (aspect), or a campaign of fewer member runs; the "
-    "store computing the bundle's aggregates for a campaign of any size is #996"
+    "assemble a campaign of fewer member runs, or archive the members it need not read, or, where the call takes one, "
+    "name one aspect that reads fewer runs (aspect); the store computing the bundle's aggregates for a campaign of any "
+    "size is #996"
 )
 
 

@@ -758,8 +758,8 @@ pivot, a frontier or a history reads as the whole of it. They make the same esti
 
 Campaign reports read their member runs by id, so the scope's size never refuses them. A campaign's own runs are
 held to the same budget: `assemble_context_bundle` (every analysis and campaign report) estimates the runs it reads
-from the batch run read it already makes and refuses past the budget before reading a result, naming an aspect of
-fewer runs or a campaign of fewer member runs. Answering a scope past the
+from the batch run read it already makes and refuses past the budget before reading a result, naming a campaign
+of fewer member runs, archiving members it need not read, or an aspect that reads fewer runs. Answering a scope past the
 budget in one call needs the projection pushed down into SQL (#996).
 
 **A run is read a page at a time.** A run's summary (`summarize_run`, `run_get`), a take-up of it (`job_resume`, the
