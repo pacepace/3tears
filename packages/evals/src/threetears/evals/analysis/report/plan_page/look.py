@@ -397,17 +397,22 @@ _REPLY = "reply"
 #: Money's format: each amount by its size (this module's money).
 _MONEY_FORMAT = "usd"
 
+#: Money per 1,000 with its mark (``$8.00/1000``), which a set of totals under a cent reads in on its ticks too.
+_PER_THOUSAND_FORMAT = "usdpk"
+
 
 #: The most decimals the kit's format names (``usd:<digit>``).
 _MOST_KIT_DECIMALS = 9
 
 
 def _money_fmt(sign: str, form: MoneyForm | None) -> str:
-    """The kit's format for a chart's money: to the form's decimals (``usd:2``), so its ticks read as its notes; by the
-    kit's sizes (``usd``) where the chart's money has no form, or a set a million times over is still under a cent."""
-    if form is None or form.per_thousand:
+    """The kit's format for a chart's money: to the form's decimals (``usd:2``), so its ticks read as its notes; per
+    1,000 with the mark (``usdpk:2``, ``$8.00/1000``) where the form reads so, a set of totals under a cent; by the
+    kit's sizes (``usd``) where the chart's money has no form."""
+    if form is None:
         return f"{sign}{_MONEY_FORMAT}"
-    return f"{sign}{_MONEY_FORMAT}:{min(form.decimals, _MOST_KIT_DECIMALS)}"
+    name = _PER_THOUSAND_FORMAT if form.per_thousand else _MONEY_FORMAT
+    return f"{sign}{name}:{min(form.decimals, _MOST_KIT_DECIMALS)}"
 
 
 def _money_text(value: float, drawn: Quantity) -> str:
@@ -435,7 +440,8 @@ def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False) -
     :param values: The drawn values, in display units (after the factor ``quantity(unit).factor`` gives): money's one
         form on the chart is chosen from them (this module's money), and where one is under a cent the quantity draws
         every amount a thousand times over (its factor and ``counted`` say so) in dollars and cents, its ticks and its
-        notes alike, never per 1,000 with a mark the kit's ticks cannot draw. No other format reads them.
+        notes alike, never with the per-1,000 mark beside its count; a set of totals under a cent, which counts
+        nothing, reads per 1,000 with the mark instead. No other format reads them.
     :ptype values: Sequence[float]
     :param change: Whether the values are changes (an arm less the control), read signed.
     :ptype change: bool
@@ -475,8 +481,9 @@ def _in_one_form(drawn: Quantity, values: Iterable[float]) -> Quantity:
     """A money quantity stated by the one owner of money's scale (:func:`~threetears.evals.analysis.report.cost_unit.
     money_ruler`) over the amounts it draws: their one form for its notes and its ticks alike, and, where one is under a
     cent, every amount drawn a thousand times over, per a thousand times more of what it counts (its ``factor`` and
-    ``counted``), so ticks and notes read in dollars. A total (``counted`` 0) is never scaled. Any other quantity is
-    returned as it is.
+    ``counted``), so ticks and notes read in dollars. A total (``counted`` 0) is never scaled: a set of totals under a
+    cent reads per 1,000 with its mark (``$8.00/1000``), on its ticks (the kit's ``usdpk``) as in its notes and its
+    values table. Any other quantity is returned as it is.
 
     :param drawn: The quantity, as :func:`quantity` makes it without values.
     :ptype drawn: Quantity
@@ -488,10 +495,7 @@ def _in_one_form(drawn: Quantity, values: Iterable[float]) -> Quantity:
     if drawn.unit != MONEY:
         return drawn
     ruler = money_ruler(
-        (value / drawn.factor for value in values if math.isfinite(value)),
-        per=drawn.own,
-        start=drawn.counted,
-        marked=False,
+        (value / drawn.factor for value in values if math.isfinite(value)), per=drawn.own, start=drawn.counted
     )
     return replace(
         drawn,

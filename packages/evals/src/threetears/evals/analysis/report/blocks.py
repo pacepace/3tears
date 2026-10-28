@@ -1015,7 +1015,6 @@ class ChartBlock(_Block):
             (amount for point in self.points for amount in (point.cost, point.cost_low, point.cost_high)),
             per=1,
             start=_REPLIES_PER_COST_UNIT,
-            marked=False,
         )
         return ruler.spell, ruler.scale, ruler.words(REPLIES)
 

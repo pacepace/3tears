@@ -53,6 +53,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import re
 import sys
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -343,6 +344,16 @@ def prose_fields(plan: BaseModel, path: str = "") -> Iterator[tuple[str, str]]:
                     yield from prose_fields(item, f"{here}[{index}]")
 
 
+#: A thousands separator between digits, which the renderer of the day may or may not have written.
+_GROUPED = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
+
+
+def _ungrouped(text: str) -> str:
+    """``text`` with no thousands separator between digits: a quote a scorer recorded is read as recorded, whether the
+    renderer then grouped a count (``1190``) or now does (``1,190``)."""
+    return _GROUPED.sub("", text)
+
+
 def _readable(plan: ReportPlan, report_input: ReportInput) -> list[tuple[str, str, str]]:
     """Each prose field as written and as rendered."""
     return [(path, text, render(text, report_input, {})) for path, text in prose_fields(plan)]
@@ -355,7 +366,7 @@ def score_faults(scores: PlanScores, plan_path: Path, *, quotes: bool = True) ->
     dataset keeps (archived, or the input as it stands); its rubric version exists and its digest is that version's;
     every model-scored item of the version is scored exactly once and nothing else is; and every fail quotes what
     failed. With ``quotes``, every quote is also a substring of one of the plan's prose fields, as written or as
-    rendered against that input: checked when a record is written and for a current run, while a historical record is
+    rendered against that input, a thousands separator between digits set aside (:func:`_ungrouped`): checked when a record is written and for a current run, while a historical record is
     pinned instead (:func:`history_faults`).
     """
     faults: list[str] = []
@@ -392,7 +403,10 @@ def score_faults(scores: PlanScores, plan_path: Path, *, quotes: bool = True) ->
         return faults
     readable = _readable(load_plan(plan_path), scored_against)
     for item in scores.items:
-        if item.quote and not any(item.quote in text or item.quote in shown for _, text, shown in readable):
+        quote = _ungrouped(item.quote)
+        if item.quote and not any(
+            quote in _ungrouped(text) or quote in _ungrouped(shown) for _, text, shown in readable
+        ):
             faults.append(f"item {item.id} quotes {item.quote[:60]!r}, which no prose field of the plan holds")
     return faults
 

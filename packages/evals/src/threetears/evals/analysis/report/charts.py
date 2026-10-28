@@ -21,6 +21,7 @@ and what HTML keeps beside the chart for a screen reader and a page whose script
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable, Iterator, Sequence
 from functools import partial
@@ -38,7 +39,15 @@ from threetears.evals.kernel.numbers import (
     money_form,
     per_thousand_digits,
 )
-from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
+from threetears.evals.analysis.quantities import (
+    MONEY,
+    PERCENT,
+    POINTS,
+    UNSPACED_UNITS,
+    number_in,
+    signed_with_unit,
+    with_unit,
+)
 from threetears.evals.schema.base import EvalDocumentModel
 
 #: A colour as the kit takes one: the name of one of its tokens, never a literal colour.
@@ -48,8 +57,11 @@ Token = Annotated[str, Field(pattern=r"^--[a-z][a-z0-9-]*$", description='A kit 
 Fmt = Annotated[
     str,
     Field(
-        pattern=r"^\+?(num|int|pct|pts|usd|usdk|ms|s|dur|x|k)(:\d)?$",
-        description="A kit format: num, int, pct, pts, usd, usdk, ms, s, dur, x or k, as `name` or `name:digits`.",
+        pattern=r"^\+?(num|int|pct|pts|usd|usdk|usdpk|ms|s|dur|x|k)(:\d)?$",
+        description=(
+            "A kit format: num, int, pct, pts, usd, usdk, usdpk (dollars per 1,000, the mark written: `$8.00/1000`), "
+            "ms, s, dur, x or k, as `name` or `name:digits`."
+        ),
     ),
 ]
 
@@ -81,11 +93,15 @@ _FORMAT_UNITS: dict[str, str] = {
     "pts": POINTS,
     "usd": MONEY,
     "usdk": MONEY,
+    "usdpk": MONEY,
     "ms": "ms",
     "dur": "ms",
     "s": "s",
     "x": "×",
 }
+
+#: The kit's format for money per 1,000 with its mark (``$8.00/1000``): the one a chart of totals under a cent reads in.
+_PER_THOUSAND_FORMAT = "usdpk"
 
 #: A format spec's parts: the sign flag, the name and the digits. The digits are the axis's, not the table's, but for
 #: money's: a chart chooses money's one form from every amount it draws (#993), and its table writes it too.
@@ -118,6 +134,10 @@ def _formatted(spec: str, value: float, read_at: str = "") -> str:
     if match is None or match[2] not in _FORMAT_UNITS:
         raise ValueError(f"fmt {spec!r} is not one of {', '.join(_FORMAT_UNITS)}")
     unit = _FORMAT_UNITS[match[2]]
+    if match[2] == _PER_THOUSAND_FORMAT:
+        # Dollars per 1,000, the mark written, as the kit's ticks write them (a set of totals under a cent, #993).
+        form = MoneyForm(per_thousand=True, decimals=int(match[3]) if match[3] is not None else 2)
+        return form.spell(value, signed=bool(match[1]))
     if unit == MONEY and match[3] is not None:
         return MoneyForm(decimals=int(match[3])).spell(value, signed=bool(match[1]))
     if not unit and read_at:
@@ -404,6 +424,22 @@ def _interval(spec: str, low: float | None, high: float | None, read_at: str = "
     return f"{_formatted(spec, low, read_at)} to {_formatted(spec, high, read_at)}"
 
 
+def _restates(note: str | None, value: float | None, said: str, spec: str, read_at: str) -> bool:
+    """Whether a row's note only restates its value, the label a chart draws at the bar's end: the value as the table
+    writes it (``said``), or that value with the unit the row is read in beside it (the block's ``read_at`` or its
+    format's own: ``+0.8 pts`` beside ``+0.8`` read in points), so a values table never prints one figure twice, in two
+    columns. A note that says more (``worse``, ``-7.6 pts worse``), or names another unit, is kept. Only the code's own
+    spellings of the row's own number are compared: no word of the note is read."""
+    match = _FORMAT_SPEC.fullmatch(spec)
+    if note is None or value is None or not math.isfinite(value) or match is None:
+        return False
+    spellings = {said}
+    for unit in {read_at, _FORMAT_UNITS.get(match[2], "")} - {"", MONEY}:
+        spellings.add(signed_with_unit(value, unit) if match[1] else with_unit(value, unit))
+        spellings.add(f"{said}{unit}" if unit in UNSPACED_UNITS else f"{said} {unit}")
+    return note in spellings
+
+
 #: An interval open above, as a table cell or a tooltip writes it: its low end, and no upper bound.
 OPEN_ABOVE = "from {low} up, no upper bound"
 
@@ -516,7 +552,12 @@ class _BarsFields(_Kind):
         grouped = any(row.group is not None for row in rows)
         stacked = any(row.segments for row in rows)
         intervals = any(row.lo is not None for row in rows)
-        notes = any(row.note for row in rows)
+        said = [_formatted(self._format, row.total, read_at) for row in rows]
+        kept = [
+            None if _restates(row.note, row.total, text, self._format, read_at) else row.note
+            for row, text in zip(rows, said, strict=True)
+        ]
+        notes = any(kept)
         headers = [
             *(["Group"] if grouped else []),
             "Row",
@@ -526,7 +567,7 @@ class _BarsFields(_Kind):
             *(["Note"] if notes else []),
         ]
         body: list[list[str]] = []
-        for row in rows:
+        for row, text, note in zip(rows, said, kept, strict=True):
             parts = " · ".join(
                 (f"{names[seg.color, seg.pattern]} " if (seg.color, seg.pattern) in names else "")
                 + _formatted(self._format, seg.value)
@@ -536,10 +577,10 @@ class _BarsFields(_Kind):
                 [
                     *([row.group or ""] if grouped else []),
                     _tagged(row.tag, row.label),
-                    _formatted(self._format, row.total, read_at),
+                    text,
                     *([parts] if stacked else []),
                     *([_bar_interval(self._format, row.lo, row.hi, read_at)] if intervals else []),
-                    *([row.note or ""] if notes else []),
+                    *([note or ""] if notes else []),
                 ]
             )
         reference = _reference_row(self.reference, self._format, len(headers) - grouped)
@@ -594,7 +635,12 @@ class ForestChart(_Drawable):
 
     def table(self, legend: Sequence[LegendItem], read_at: str = "") -> tuple[list[str], list[list[str]]]:
         grouped = any(row.group is not None for row in self.rows)
-        notes = any(row.note for row in self.rows)
+        said = [_formatted(self.fmt, row.value, read_at) for row in self.rows]
+        kept = [
+            None if _restates(row.note, row.value, text, self.fmt, read_at) else row.note
+            for row, text in zip(self.rows, said, strict=True)
+        ]
+        notes = any(kept)
         headers = [
             *(["Group"] if grouped else []),
             "Row",
@@ -606,11 +652,11 @@ class ForestChart(_Drawable):
             [
                 *([row.group or ""] if grouped else []),
                 row.label,
-                _formatted(self.fmt, row.value, read_at),
+                text,
                 _interval(self.fmt, row.lo, row.hi, read_at),
-                *([row.note or ""] if notes else []),
+                *([note or ""] if notes else []),
             ]
-            for row in self.rows
+            for row, text, note in zip(self.rows, said, kept, strict=True)
         ]
         reference = _reference_row(self.reference, self.fmt, len(headers) - grouped)
         return headers, body + [[""] * grouped + line for line in reference]

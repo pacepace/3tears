@@ -43,6 +43,7 @@ is the gate check spelled out, never a second reading of it.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import replace
 
@@ -74,6 +75,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     COST_HEADER,
     FULL_RESULTS_HEADERS,
     FULL_RESULTS_TITLES,
+    GATE_UNKNOWN,
     GATE_WORDS,
     LINE_TEMPLATES,
     NO_FIGURE,
@@ -433,14 +435,18 @@ def _places(
 def _gate_cell(
     report_input: ReportInput, criterion: Criterion, arm: str, task: str | None, cell: str | None
 ) -> TableCell:
-    """One arm against one criterion at one place: the gate check's status in words, the figure beside it."""
-    checked: GateCheck = gate_check(report_input, arm, task=task, cell=cell, criterion=criterion.id)
+    """One arm against one criterion at one place: the gate check's status in words, the figure beside it; where the
+    input holds no figure there, ``Unknown (no figure)``, never a fail: the gate check counts an unknown figure among
+    an arm's fails, but a reader of the grid reads what is known at that place, as the rest of the page does."""
     figure = next(
         (held for held in criterion_figures(report_input, criterion, arm) if (held.task, held.cell) == (task, cell)),
         None,
     )
+    if figure is None or not math.isfinite(figure.value):
+        return TableCell(value=GATE_UNKNOWN, status="neutral", flag=NO_FIGURE)
+    checked: GateCheck = gate_check(report_input, arm, task=task, cell=cell, criterion=criterion.id)
     line = resolve(f"criteria.{criterion.id}.threshold", report_input)
-    said = format_figure(replace(line, value=figure.value)) if figure is not None else NO_FIGURE
+    said = format_figure(replace(line, value=figure.value))
     return TableCell(value=GATE_WORDS[checked.status], status=GATE_STATUS[checked.status], flag=said)
 
 

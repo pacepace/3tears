@@ -98,7 +98,7 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Unanswered,
 )
-from threetears.evals.analysis.report.words import declared_arm_names
+from threetears.evals.analysis.report.words import declared_arm_names, printed_arm_labels
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import VariantIndexEntry
@@ -294,12 +294,15 @@ class _Builder:
         seen: set[str] = set()
         roles = {key: arm.role for arm in bundle.arms for key in bundle.arm_keys(arm)}
         declared = declared_arm_names(bundle.arms)
+        # The name each arm is printed by: a label a person gave as written, one code computed by the display rule.
+        printed = printed_arm_labels(bundle)
         for key in [*(arm.variant_key for arm in bundle.arms), *entries]:
             label = self.arm(key)
             if label in seen:
                 continue
             seen.add(label)
             levers = self.levers(key, entries)
+            name = printed.get(key, label)
             model = served.get(label) or levers.pop(CANDIDATE_MODEL_LEVER, (None, None))[1]
             levers.pop(CANDIDATE_MODEL_LEVER, None)
             if roles.get(key) != "control" and control is not None:
@@ -314,7 +317,7 @@ class _Builder:
             arms.append(
                 Arm(
                     id=label,
-                    name=label,
+                    name=name,
                     role="control" if roles.get(key) == "control" else "challenger",
                     served_model=model,
                     variant_key=key,

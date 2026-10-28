@@ -227,7 +227,7 @@ class MoneyRuler:
         return MoneyRuler(form=form, scale=self.scale, counted=self.counted)
 
 
-def money_ruler(amounts: Iterable[float | None], *, per: int, start: int = 0, marked: bool = True) -> MoneyRuler:
+def money_ruler(amounts: Iterable[float | None], *, per: int, start: int = 0) -> MoneyRuler:
     """The one owner of how a set of money amounts is stated (:class:`MoneyRuler`): every chart, table and figure key
     reads its scale, its form and its count from here, so no surface chooses its own.
 
@@ -235,9 +235,9 @@ def money_ruler(amounts: Iterable[float | None], *, per: int, start: int = 0, ma
     ``start`` of it, and, where some amount is under a cent there, per a thousand times more, up to 1,000,000: the
     ruler moves, and the per-1,000 mark is never stacked on it. A set still under a cent per 1,000,000 moves no
     further: it reads at that count, in dollars to the decimals its least amount needs for two significant figures
-    (``$0.0030 per 1,000,000 replies``), never with the mark beside the count. A total (``per`` 0: a run's cost, a month's) counts
-    nothing and is never scaled: a set of totals under a cent reads per 1,000 with its mark (``$8.00/1000``) where the
-    surface can write one (``marked``), else in dollars to the decimals its least amount needs.
+    (``$0.0030 per 1,000,000 replies``), never with the mark beside the count. A total (``per`` 0: a run's cost, a
+    month's) counts nothing and is never scaled: a set of totals under a cent reads per 1,000 with its mark
+    (``$8.00/1000``) on every surface, a chart's ticks included (the kit's ``usdpk``), as a key and a table write it.
 
     :param amounts: Every amount the set holds, as stored.
     :ptype amounts: Iterable[float | None]
@@ -247,15 +247,12 @@ def money_ruler(amounts: Iterable[float | None], *, per: int, start: int = 0, ma
     :param start: The least count to state it per (a chart states money per reply per 1,000 replies); ``per`` where
         unset.
     :ptype start: int
-    :param marked: Whether the surface can write the per-1,000 mark (a key and a table can; a chart's ticks cannot):
-        read for a total only, since a counted set states its count instead.
-    :ptype marked: bool
     :return: The ruler.
     :rtype: MoneyRuler
     """
     held = [amount for amount in amounts if amount is not None]
     if per == 0:
-        return MoneyRuler(form=money_form(held, marked=marked), scale=1.0, counted=0)
+        return MoneyRuler(form=money_form(held), scale=1.0, counted=0)
     count = max(start, per)
     while money_form(amount * count / per for amount in held).per_thousand and count < _MOST_COUNTED:
         count *= 1000

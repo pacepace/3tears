@@ -54,6 +54,7 @@ __all__ = [
     "FULL_RESULTS_HEADERS",
     "FULL_RESULTS_TITLE",
     "FULL_RESULTS_TITLES",
+    "GATE_UNKNOWN",
     "GATE_WORDS",
     "HUMAN_PREF_NOTE",
     "INPUT_TERM",
@@ -316,6 +317,9 @@ CRITERION_LINE_WHERE = {
 
 #: What a gate matrix cell says beside its status where the input holds no figure there.
 NO_FIGURE = "no figure"
+
+#: A full gate grid's cell where the input holds no figure: unknown, never a fail, as the page reads it everywhere else.
+GATE_UNKNOWN = "Unknown"
 
 #: The explore part's flip table: its title (a screen reader and Markdown are given it) and its heads.
 EXPLORE_TITLE = "Where each reading flips"
