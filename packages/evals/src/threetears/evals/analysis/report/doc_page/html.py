@@ -39,10 +39,10 @@ from threetears.evals.analysis.report.doc_page.model import (
     DocOmitted,
     DocPage,
     DocTerm,
+    caveats_line,
 )
 from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
-    CAVEATS_TEMPLATE,
     FINDINGS_TITLE,
     METHOD_TITLE,
     NEXT_TITLE,
@@ -150,7 +150,7 @@ def _caveats(labels: Sequence[str]) -> str:
     """The caveats landed beside a claim or a Method term, by label, as code's line; nothing for none."""
     if not labels:
         return ""
-    return f'<p class="cap" data-part="caveats">{escape(CAVEATS_TEMPLATE.format(labels="; ".join(labels)))}</p>'
+    return f'<p class="cap" data-part="caveats">{escape(caveats_line(labels))}</p>'
 
 
 def _explore(explore: TableBlock) -> str:

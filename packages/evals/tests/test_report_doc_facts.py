@@ -309,6 +309,93 @@ def test_a_count_written_in_words_with_no_key_is_a_fact() -> None:
     ] == [True] * 3
 
 
+_STORED_KAIRO = "prototype4/kairo"
+
+#: The reasoning-ratio confound, which Kairo's snapshot attaches to 1017's contrasts.
+_REASONING = "confound:observed:reasoning_ratio"
+
+#: 1017's contrasts on character adherence (v2), by key.
+_ON_1017 = "aspects.character adherence (v2).contrast.1017"
+
+
+def test_a_caveat_on_a_contrast_a_claim_reads_that_nothing_carries_is_a_fact() -> None:
+    """The stored Kairo document: the cost claim's bars read every arm's production cost, and 1017's cost contrast
+    carries the reasoning-ratio confound, which neither the claim nor the confidence carries; the off-lane claim reads
+    1017's holds-character rate, whose contrast carries it too. The judged claim carries it, so it is no fact there."""
+    facts = _of(_facts(_STORED_KAIRO), "caveat_not_carried")
+
+    assert [(fact.path, fact.figures) for fact in facts] == [
+        (
+            "claims[0].caveats",
+            [
+                "arm:1017",
+                f"{_ON_1017}.production_replicating_cost.delta",
+                f"{_ON_1017}.production_replicating_cost.interval",
+            ],
+        ),
+        (
+            "claims[3].caveats",
+            ["arm:1017", f"{_ON_1017}.persona.holds_character.delta", f"{_ON_1017}.persona.holds_character.interval"],
+        ),
+    ]
+    assert facts[0].fact == (
+        "The evidence of claim cost reads 1017 (B)'s contrast on Production cost, +$0.49/1000 (+$0.17/1000 to "
+        f"+$0.81/1000), and code attaches caveat `{_REASONING}` to that contrast; neither the claim nor the confidence "
+        "carries it."
+    )
+
+
+def _carried(*where: str) -> Callable[[dict[str, Any]], None]:
+    def change(doc: dict[str, Any]) -> None:
+        for claim in doc["claims"]:
+            if claim["id"] in where:
+                claim["caveats"].append(_REASONING)
+
+    return change
+
+
+def test_a_claim_carrying_the_caveat_is_no_fact() -> None:
+    """The same document with the confound landed beside the cost claim: only the off-lane claim's fact is left."""
+    facts = _of(_facts(_STORED_KAIRO, doc_change=_carried("cost")), "caveat_not_carried")
+
+    assert [fact.path for fact in facts] == ["claims[3].caveats"]
+    assert not _of(_facts(_STORED_KAIRO, doc_change=_carried("cost", "offlane")), "caveat_not_carried")
+
+
+def test_a_caveat_the_confidence_carries_is_no_fact() -> None:
+    def confided(doc: dict[str, Any]) -> None:
+        doc["confidence"]["caveats"].append({"id": _REASONING, "material_if": "Only if 1017's budget moved its cost."})
+
+    assert not _of(_facts(_STORED_KAIRO, doc_change=confided), "caveat_not_carried")
+
+
+def test_a_key_naming_a_contrast_is_evidence_that_reads_it() -> None:
+    """A claim whose block reads no contrast but whose text cites 1017's cost contrast by key reads it."""
+
+    def cited(doc: dict[str, Any]) -> None:
+        examples = next(claim for claim in doc["claims"] if claim["id"] == "examples")
+        examples["text"] += f" It costs {{{_ON_1017}.production_replicating_cost.delta}} more."
+
+    facts = _of(_facts(_STORED_KAIRO, doc_change=cited), "caveat_not_carried")
+
+    assert [fact.path for fact in facts] == ["claims[0].caveats", "claims[3].caveats", "claims[4].caveats"]
+
+
+def test_a_contrast_the_input_leaves_untested_is_named_without_its_figures_and_never_refuses() -> None:
+    """1017's cost contrast untested, its change and interval unstated: the fact still names the contrast and its
+    caveat, cites no figure of it, and nothing raises."""
+
+    def untested(data: dict[str, Any]) -> None:
+        for contrast in data["contrasts"]:
+            if (contrast["arm"], contrast["measure"]) == ("1017", "production_replicating_cost"):
+                contrast.update(verdict="untested", delta=None, interval=None)
+
+    facts = _of(_facts(_STORED_KAIRO, input_change=untested), "caveat_not_carried")
+
+    assert [(fact.path, fact.figures) for fact in facts][0] == ("claims[0].caveats", ["arm:1017"])
+    assert facts[0].fact.startswith("The evidence of claim cost reads 1017 (B)'s contrast on Production cost, and code")
+
+
 # --- the converted documents ---------------------------------------------------------------------------------------
 
 #: The facts each later converted document triggers, by kind. Every one that fires is real:
@@ -370,7 +457,10 @@ def test_an_arm_the_snapshot_does_not_hold_is_written_as_the_document_wrote_it()
     assert facts[0].fact.endswith("the document recommends `ghost`.")
 
 
-@pytest.mark.parametrize(("name", "recommends"), [(_EACH_TASK, ["brisk-s.high.r1"]), (_S1, ["v3"]), (_KAIRO, None)])
+@pytest.mark.parametrize(
+    ("name", "recommends"),
+    [(_EACH_TASK, ["brisk-s.high.r1"]), (_S1, ["v3"]), (_KAIRO, None), (_STORED_KAIRO, None)],
+)
 def test_facts_are_byte_identical_when_only_the_story_changes(name: str, recommends: list[str] | None) -> None:
     def told_as(story: str) -> Callable[[dict[str, Any]], None]:
         def change(doc: dict[str, Any]) -> None:

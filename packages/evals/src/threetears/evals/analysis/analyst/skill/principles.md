@@ -9,7 +9,7 @@ A report is not a tour of the data. Each claim earns its place by changing or qu
 ## Honest emphasis
 
 - **Lead with the size of a change before its verdict against a line.** A candidate whose interval sits wholly below zero is worse, even when the margin allows that much loss. "Within the margin" said first makes a regression read as a pass. Say how much worse, then whether the margin allows it.
-- **Show the recommended option's weak axes.** A recommendation whose weak side is hidden reads as stronger than the evidence. The weakest margin, meaning the figure nearest the line it is read against, belongs in Watch.
+- **Show the recommended option's weak axes.** A recommendation whose weak side is hidden reads as stronger than the evidence. The weakest margin belongs in Watch. "Weakest" is code's measure, not yours: the gap smallest relative to its line (the gap over the line's value), which the `weakest.*` keys name. Cite those keys in Watch. If another margin matters more to the call (fewer points, or fewer half-widths), Watch still names the weakest and says why the other matters more, stating both in the same terms.
 - **Status follows the direction of the change, not the margin.** A worse result stays marked as worse even when it is within the margin. Approval colors on a regression read as approval.
 - **Frame nothing stronger than its interval supports.** A point estimate that clears a gate while its interval crosses it is *borderline*. It counts as passing for the call, but it goes in Watch with what would settle it: `settle_cases` sizes that run.
 - **State findings in the direction the evidence supports.** A refuted claim at low confidence is still a refutation. Don't let a weak tier blur which way the evidence points.
@@ -45,6 +45,8 @@ Gate reasoning that recurs:
 
 A confound qualifies a claim. It never names a cause by itself. Check apparatus confounds (a shared machine, a changed simulator, a short run) before model ones, because they touch everything. For each confound, either show that it doesn't matter from the figures you have (`confound_check` is not available; log a `capability_gap`) or carry it into the story and the next steps.
 
+A confound qualifies every finding whose evidence it is attached to, not only the one it was noticed on. `contrasts_list` names each contrast's confounds and `caveats_list` what each caveat touches. A setting that moved between arms (a reasoning budget, a retry) moves cost and latency as well as quality, so measured telemetry is not immune to it (`statistics.md`, Caveats on the evidence).
+
 Say a caveat once, at the level it applies to. A caveat that touches the whole comparison (late criteria, an uncalibrated judge, a shared-machine latency) belongs in the confidence. One that touches one arm or one finding (that arm's reasoning budget, one short run) sits beside that claim, usually in Watch.
 
 ## Confidence
@@ -52,8 +54,10 @@ Say a caveat once, at the level it applies to. A caveat that touches the whole c
 Confidence is conditional on the caveats, never capped by them. There are three forms:
 
 - **`high`**: no open caveat that bears on the call remains.
-- **`high_if_immaterial`**: the evidence is strong and caveats remain open. Each one gets a `material_if` clause saying what would make it matter ("only if the judge misreads in-character replies"). Where the deciding finding doesn't rest on the caveat, the clause says so ("cost, the deciding finding, is measured").
+- **`high_if_immaterial`**: the evidence is strong and caveats remain open. Each one gets a `material_if` clause saying what would make it matter ("only if the judge misreads in-character replies"). Where the deciding finding doesn't rest on the caveat, the clause says so ("cost, the deciding finding, is measured"), but only when no caveat is attached to that finding's own evidence. A caveat that is attached to it is said beside it, with the way it would likely move it.
 - **`low`**: the evidence is weak even if every caveat is immaterial. A pick that nothing separates is the usual case.
+
+Word each caveat by its condition. A caveat never calls itself "material" beside a confidence that reads "high, if the caveats aren't material": that reads as a contradiction. Say instead what would make it matter ("only if the owner's minimum sits above the pick's figure"). Where a caveat matters to the call whatever happens (nothing declared ranks the options), say what the confidence covers ("high in the measured figures; the choice among them waits on a declared price") rather than leaving a bare "high".
 
 The form reads the method and the variance of the evidence, never the result alone. A lead's wrong-side risk (how often a fresh run of today's size would read the other way) is stated beside the call, and doesn't lower the form by itself.
 

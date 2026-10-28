@@ -20,10 +20,9 @@ from collections.abc import Iterator
 
 from threetears.evals.analysis.analyst.blocks import values_table
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
-from threetears.evals.analysis.report.doc_page.model import DocClaim, DocPage
+from threetears.evals.analysis.report.doc_page.model import DocClaim, DocPage, caveats_line
 from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
-    CAVEATS_TEMPLATE,
     CHECKED_MARK,
     FINDINGS_TITLE,
     METHOD_TITLE,
@@ -61,8 +60,8 @@ def _values(block: ChartBlock | TableBlock) -> list[str]:
 
 
 def _caveats(labels: list[str]) -> str:
-    """The caveats landed beside a claim or a Method term, by label, as code's line."""
-    return CAVEATS_TEMPLATE.format(labels="; ".join(one_line(label) for label in labels))
+    """The caveats landed beside a claim or a Method term, by label, as code's line (:func:`caveats_line`)."""
+    return caveats_line(labels)
 
 
 def _claim(claim: DocClaim) -> list[str]:
