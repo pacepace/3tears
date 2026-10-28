@@ -535,7 +535,8 @@ def _declared_index_sql(table: str, index: IndexDef) -> str:
         opclass = ops.get(name)
         if opclass is not None and "." not in opclass:
             opclass = f"public.{opclass}"
-        parts.append(_quote(name) if opclass is None else f"{_quote(name)} {opclass}")
+        part = _quote(name) if opclass is None else f"{_quote(name)} {opclass}"
+        parts.append(f"{part} DESC" if name in index.desc else part)
     unique = "UNIQUE " if index.unique else ""
     using = f" USING {index.using}" if index.using else ""
     with_clause = ""

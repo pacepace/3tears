@@ -19,19 +19,26 @@ import uuid
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, LargeBinary, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Float, Integer, LargeBinary, String, Text, Time
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR, UUID
 from sqlalchemy.sql.sqltypes import ARRAY
 from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
 
 from threetears.core.backends.schema_sql import PGVECTOR_TYPES, json_default
-from threetears.core.cache.base import build_select_clause, bulk_columns, exact_decimal_type, stored_decimal
+from threetears.core.cache.base import (
+    build_select_clause,
+    bulk_columns,
+    exact_decimal_type,
+    stored_decimal,
+    stored_date,
+    stored_time,
+)
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import contain, get_logger
 
@@ -1265,7 +1272,13 @@ class DuckDBBackend:
             result = json.dumps(value, default=json_default)
         elif isinstance(value, _UUID_TYPES):
             result = str(value)
+        elif isinstance(value, date) and col_type.endswith("_DATE"):
+            result = stored_date(value)
         elif isinstance(value, datetime):
+            result = value.isoformat()
+        elif isinstance(value, time):
+            result = stored_time(value, zoned=col_type.endswith("_TIMETZ"))
+        elif isinstance(value, date):
             result = value.isoformat()
         elif isinstance(value, bool):
             result = value  # DuckDB has native BOOLEAN
@@ -1306,6 +1319,10 @@ class DuckDBBackend:
                 result = value
             else:
                 result = datetime.fromisoformat(str(value)) if value else None
+        elif col_type == "VARCHAR_DATE":
+            result = date.fromisoformat(str(value)) if value else None
+        elif col_type in ("VARCHAR_TIME", "VARCHAR_TIMETZ"):
+            result = time.fromisoformat(str(value)) if value else None
         elif col_type == "VARCHAR_BYTEA":
             result = bytes.fromhex(value) if value else None
         return result
@@ -1419,6 +1436,12 @@ class DuckDBBackend:
             return "BIGINT"
         if isinstance(sa_type, (DateTime, TIMESTAMP)):
             return "VARCHAR_DATETIME"
+        # a Date or Time column is its ISO text, as a DateTime column is
+        # (:func:`~threetears.core.cache.base.stored_time`)
+        if isinstance(sa_type, Date):
+            return "VARCHAR_DATE"
+        if isinstance(sa_type, Time):
+            return "VARCHAR_TIMETZ" if sa_type.timezone else "VARCHAR_TIME"
         if isinstance(sa_type, (String, Text)):
             return "VARCHAR"
         # Generic LargeBinary covers both sqlalchemy.LargeBinary and the

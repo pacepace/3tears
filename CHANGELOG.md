@@ -6,6 +6,56 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the SQLite and DuckDB caches keep `Date` and `Time` columns
+
+**Fixed:** a `sqlalchemy.Time` or `sqlalchemy.Date` column fell through both cache type mappers to plain
+text, logging `Unknown SQLAlchemy type ... defaulting to TEXT` / `VARCHAR` three times per column at every
+start (metallm's `users.config_sleep_from` / `config_sleep_until`) and reading a `time` or `date` back as a
+string. Both are now ISO text decoded on read (`TEXT_DATE` / `TEXT_TIME` / `TEXT_TIMETZ`, `VARCHAR_*` in
+DuckDB) and round-trip exactly, microseconds included. A `Time` column keeps the wall clock and drops a
+zone, as Postgres `time` does through asyncpg; a `Time(timezone=True)` column keeps a fixed offset and
+refuses a naive or `ZoneInfo` time, as asyncpg does. A `datetime` written to a `Date` column keeps its date,
+as asyncpg writes it to a Postgres `date`. **Added:** `threetears.core.cache.base.stored_time` and `stored_date`.
+After this no type in metallm's metadata or any 3tears schema reaches the mapper's default, so the warning
+fires only for a genuinely new type.
+
+### core: an index declaration can say a column sorts descending
+
+**Added:** `Index(..., desc="date_created")` (a name or a sequence; stored as `IndexDef.desc`, each name
+one of the index's columns). `TableSchema.to_sqlalchemy_table` emits it as `column.desc()`, so the
+declared index equals a migration's `(..., date_created DESC)` and Alembic auto-gen reports no
+remove/add pair for it; `embedding_width`'s rebuild from a declaration keeps the `DESC` too.
+**Fixed:** `idx_identity_variant_history` (agent-identity) and `idx_intentions_open_ranked`
+(agent-intention) now declare the `DESC` their migrations create; metallm's schema drift guard caught the
+identity one. **Changed:** `threetears.core.testing.sqla_parity.index_signature` compares an index's
+columns in order and with direction (it compared an unordered set of names, so neither drift could fail
+parity); a textual reference element such as `text("date_created DESC")` reads as that column descending.
+A column cannot be both `desc` and in `ops` (`ValueError`): SQLAlchemy drops a descending column's operator
+class. `coordination.tables.table_def_for` refuses an index that declares `desc`, `where`, `using`, `ops` or
+`pg_with` (`ValueError`), which its DDL definition cannot carry; it dropped them silently.
+
+### scheduled-jobs: the undo of a fire cut off on close is a public function
+
+**Added:** `threetears.scheduled_jobs.bring_back_cut_off_fire(schedule_store, trigger, fire_id)`, the
+undo `BackgroundDispatch.aclose` runs for each fire it cancels, now callable by any dispatcher that
+hands fires off the tick. It calls `ClaimUndoStore.undo_claim` (the compare-and-swap on what the
+claim wrote), logs `EVENT_FIRE_DUE_AGAIN` when the job is due again and a WARNING when it is left as it
+is, returns whether it was undone, and never raises. `BackgroundDispatch` behaves as before; its log
+lines now start `scheduled_jobs:` rather than `scheduled_jobs background:`.
+
+### agent-memory: automatic extraction, ambient recall and consolidation each have a switch
+
+**Added:** three fields on `MemoryConfig`, all default `True`, so a host that sets none sees no
+change. `extraction_enabled=False` makes `MemoryExtractor.extract` answer `SKIPPED` with the new
+`ExtractionGate.DISABLED` before any stage runs, so a turn writes no memory. `ambient_recall_enabled=False`
+makes `MemoryRetriever.retrieve` / `retrieve_with_candidates` answer an empty result, so
+`retrieve_memories` and `MemoryInjectionMiddleware` hand the model nothing. `consolidation_enabled=False`
+makes `DreamService.run_consolidation` answer an empty `ConsolidationResult` without loading a
+candidate. Each logs the reason once per call at DEBUG. The explicit memory tools do not read the
+switches: an agent with all three off still saves, searches, recalls and retires memories through them.
+`MemoryRetriever` is the ambient path: a host's own recall tool built on one gives it a config with
+`ambient_recall_enabled` on.
+
 ## v0.81.0 -- 2026-10-28
 
 ### core: a DuckDB L1 table can be key-less, its key kept by the backend

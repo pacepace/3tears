@@ -336,6 +336,19 @@ class DreamService:
         :return: a summary of the pass
         :rtype: ConsolidationResult
         """
+        if not self._config.consolidation_enabled:
+            # convert at border: log extra_data fields
+            log.debug(
+                "Dream consolidation skipped: MemoryConfig.consolidation_enabled is off",
+                extra={"extra_data": {"agent_id": str(agent_id)}},
+            )
+            return ConsolidationResult(
+                memories_considered=0,
+                clusters_formed=0,
+                gists_created=0,
+                sources_superseded=0,
+                gist_ids=[],
+            )
         candidates = await self._memories.find_active_for_consolidation(
             agent_id,
             customer_id=customer_id,

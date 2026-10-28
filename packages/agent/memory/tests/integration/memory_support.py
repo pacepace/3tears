@@ -91,6 +91,7 @@ def make_service(
     *,
     gist_vector: list[float],
     reflector_content: str = '{"gist": "merged gist", "rationale": "near-duplicates"}',
+    memory_config: MemoryConfig | None = None,
 ) -> DreamService:
     """wire a DreamService over real collections + stubbed embed/reflect."""
     registry = CollectionRegistry()
@@ -100,7 +101,7 @@ def make_service(
     memories = MemoriesCollection(registry=registry, config=config, authorizer=authorizer)
     edges = MemoryConsolidationsCollection(registry=registry, config=config, nats_client=None)
     return DreamService(
-        config=MemoryConfig(),
+        config=memory_config or MemoryConfig(),
         embedding_provider=StubEmbeddings(gist_vector),
         chat_model_factory=StubReflectorFactory(reflector_content),
         memories_collection=memories,

@@ -3,7 +3,7 @@
 Uses a named in-memory database (memdb VFS) so multiple connections can access
 the same data. The anchor connection keeps the database alive. Schema is derived
 from SQLAlchemy metadata, with type-aware serialization/deserialization for
-UUID, datetime, JSON, boolean, vector, bytea and exact NUMERIC columns.
+UUID, datetime, date, time, JSON, boolean, vector, bytea and exact NUMERIC columns.
 
 An exact ``NUMERIC(p, s)`` column is kept as an ``INTEGER``: its value scaled by ``10**s``
 (``9.50`` in ``NUMERIC(12, 2)`` is ``950``), and read back as the ``Decimal`` at scale ``s`` that L3
@@ -30,12 +30,12 @@ import sqlite3
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
+from datetime import date, datetime, time
 from decimal import MAX_EMAX, MIN_EMIN, ROUND_CEILING, ROUND_FLOOR, Context, Decimal
 from types import MappingProxyType
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, LargeBinary, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Float, Integer, LargeBinary, String, Text, Time
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR, UUID
 from sqlalchemy.sql.sqltypes import ARRAY
 from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
@@ -46,6 +46,8 @@ from threetears.core.cache.base import (
     bulk_columns,
     exact_decimal_type,
     stored_decimal,
+    stored_date,
+    stored_time,
 )
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import contain, get_logger
@@ -646,7 +648,13 @@ class SQLiteBackend:
             result = json.dumps(value, default=json_default)
         elif isinstance(value, _UUID_TYPES):
             result = str(value)
+        elif isinstance(value, date) and col_type.endswith("_DATE"):
+            result = stored_date(value)
         elif isinstance(value, datetime):
+            result = value.isoformat()
+        elif isinstance(value, time):
+            result = stored_time(value, zoned=col_type.endswith("_TIMETZ"))
+        elif isinstance(value, date):
             result = value.isoformat()
         elif isinstance(value, bool):
             result = int(value)
@@ -682,6 +690,10 @@ class SQLiteBackend:
             result = bool(value) if value is not None else None
         elif col_type == "TEXT_DATETIME":
             result = datetime.fromisoformat(value) if value else None
+        elif col_type == "TEXT_DATE":
+            result = date.fromisoformat(value) if value else None
+        elif col_type in ("TEXT_TIME", "TEXT_TIMETZ"):
+            result = time.fromisoformat(value) if value else None
         elif col_type == "TEXT_BYTEA":
             result = bytes.fromhex(value) if value else None
         return result
@@ -783,6 +795,12 @@ class SQLiteBackend:
             return "INTEGER"
         if isinstance(sa_type, (DateTime, TIMESTAMP)):
             return "TEXT_DATETIME"
+        # a Date or Time column is its ISO text, as a DateTime column is
+        # (:func:`~threetears.core.cache.base.stored_time`)
+        if isinstance(sa_type, Date):
+            return "TEXT_DATE"
+        if isinstance(sa_type, Time):
+            return "TEXT_TIMETZ" if sa_type.timezone else "TEXT_TIME"
         if isinstance(sa_type, (String, Text)):
             return "TEXT"
         # Generic LargeBinary covers both sqlalchemy.LargeBinary and the

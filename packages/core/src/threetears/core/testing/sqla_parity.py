@@ -41,9 +41,11 @@ Per-package parity tests typically wire up like:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import sqlalchemy as sa
+from sqlalchemy.sql import operators
 
 __all__ = [
     "assert_tables_equivalent",
@@ -117,11 +119,44 @@ def column_signature(
     )
 
 
+#: a textual index element that is one column, optionally with its direction.
+_TEXT_INDEX_ELEMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(?:\s+(ASC|DESC|asc|desc))?")
+
+
+def _index_element_signature(element: Any) -> tuple[str, str]:
+    """return ``(column name, direction)`` for one element of an index.
+
+    a bare column sorts ``"asc"``; ``column.desc()`` is ``"desc"``. a
+    textual element written as the DDL writes it (``text("x DESC")``,
+    ``text("x")``) reads the same way, so a hand-written reference can
+    mirror the migration's text and still equal ``column.desc()``. any
+    other expression is its text with direction ``"expr"``.
+
+    :param element: one entry of ``Index.expressions``
+    :ptype element: Any
+    :return: ``(name or text, "asc" | "desc" | "expr")``
+    :rtype: tuple[str, str]
+    """
+    if isinstance(element, sa.Column):
+        return (element.name, "asc")
+    modifier = getattr(element, "modifier", None)
+    inner = getattr(element, "element", None)
+    if isinstance(inner, sa.Column) and modifier is operators.desc_op:
+        return (inner.name, "desc")
+    if isinstance(inner, sa.Column) and modifier is operators.asc_op:
+        return (inner.name, "asc")
+    text = str(element).strip()
+    match = _TEXT_INDEX_ELEMENT.fullmatch(text)
+    if match is not None:
+        return (match.group(1), (match.group(2) or "asc").lower())
+    return (text, "expr")
+
+
 def index_signature(
     idx: sa.Index,
 ) -> tuple[
     str,
-    frozenset[str],
+    tuple[tuple[str, str], ...],
     bool,
     str | None,
     str | None,
@@ -142,9 +177,13 @@ def index_signature(
     opclass binding, or perturbed the ``m`` / ``ef_construction``
     parameters does not pass parity silently.
 
+    Columns are compared in order and with their direction, as
+    Postgres and Alembic auto-gen compare them: ``(a, b)`` is not
+    ``(b, a)``, and ``date_created`` is not ``date_created DESC``.
+
     :param idx: index to summarise
     :ptype idx: sqlalchemy.Index
-    :return: 7-tuple of (name, frozenset of column names, unique,
+    :return: 7-tuple of (name, ordered ``(column, direction)`` pairs, unique,
         compiled where-clause text or ``None``, access-method name or
         ``None``, tuple of sorted ``(column, opclass)`` pairs, tuple
         of sorted ``(key, value)`` pairs for the ``WITH`` clause)
@@ -160,7 +199,7 @@ def index_signature(
     # signature tuple is hashable + comparable across runs.
     return (
         str(idx.name) if idx.name is not None else "",
-        frozenset(c.name for c in idx.columns),
+        tuple(_index_element_signature(e) for e in idx.expressions),
         bool(idx.unique),
         str(where.compile(compile_kwargs={"literal_binds": True})) if where is not None else None,
         str(using) if using is not None else None,

@@ -37,6 +37,7 @@ from threetears.scheduled_jobs.background import (
     UNRECORDED_FIRES_NAMED,
     BackgroundDispatch,
     FireNotRecordedError,
+    bring_back_cut_off_fire,
     in_flight_lock_key,
 )
 from threetears.scheduled_jobs.config import DEFAULT_JOB_CONFIG
@@ -1168,6 +1169,41 @@ async def test_a_trigger_that_does_not_say_what_its_claim_wrote_is_not_undone(
         await dispatch.aclose()
     assert schedules.undo_calls == []
     assert any("the claim cannot be undone" in r.getMessage() for r in caplog.records)
+
+
+async def test_bring_back_cut_off_fire_is_the_undo_any_dispatcher_can_call() -> None:
+    """The public function another dispatcher calls for a fire it cut off: the job is due again, and it says so."""
+    schedules = _FakeScheduleStore()
+    trigger = _trigger(kind="once", schedule_type="one_shot_at")
+
+    assert await bring_back_cut_off_fire(schedules, trigger, uuid4()) is True
+    assert schedules.due_again == [(trigger.partition_key, trigger.job_id, trigger.scheduled_fire_at)]
+    [call] = schedules.undo_calls
+    assert (call["claimed_at"], call["claimed_status"], call["claimed_next_fire_at"]) == (
+        trigger.fired_at,
+        "expired",
+        None,
+    )
+
+
+@pytest.mark.parametrize(
+    "store, claimed_status",
+    [
+        (_FakeScheduleStore(moved_on=True), "expired"),
+        (_FakeScheduleStore(raises=True), "expired"),
+        (None, "expired"),
+        (_FakeScheduleStore(), None),
+    ],
+    ids=["moved_on", "store_raises", "no_store", "claim_unknown"],
+)
+async def test_bring_back_cut_off_fire_answers_false_and_never_raises_when_it_leaves_the_job(
+    store: _FakeScheduleStore | None, claimed_status: str | None
+) -> None:
+    trigger = dataclasses.replace(_trigger(kind="once", schedule_type="one_shot_at"), claimed_status=claimed_status)
+
+    assert await bring_back_cut_off_fire(store, trigger, uuid4()) is False
+    if store is not None:
+        assert store.due_again == []
 
 
 # ---------------------------------------------------------------------------

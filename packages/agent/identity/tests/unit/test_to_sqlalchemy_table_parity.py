@@ -92,7 +92,7 @@ def _reference_identity_versions_table(metadata: sa.MetaData) -> sa.Table:
             "user_id",
             "block_key",
             "variant",
-            "date_created",
+            sa_text("date_created DESC"),
         ),
         sa.Index(
             "idx_identity_pending",

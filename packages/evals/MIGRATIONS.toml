@@ -58,6 +58,14 @@
 # callers.
 
 [[release]]
+version = "unreleased"
+since = "v0.81.0"
+summary = """
+Memory switches, the public cut-off-fire undo, descending index declarations and Date/Time cache columns: no
+3tears-evals name has moved or been removed since 0.81.0, and no judge wording changed.
+"""
+
+[[release]]
 version = "0.81.0"
 since = "v0.80.0"
 summary = """
