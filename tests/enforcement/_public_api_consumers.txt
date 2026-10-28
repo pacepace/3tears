@@ -1,7 +1,6 @@
 # Public names whose callers live outside this repo, for tests/enforcement/test_public_api_has_a_caller.py.
 # One `<module path>:<name>  # <who calls it, and where>` per line. A name nothing calls belongs nowhere:
 # make it private and test it through the front door instead.
-packages/core/src/threetears/core/cache/duckdb.py:fetch_arrow  # bluelabsio/14-eng-ai-bot-agent-reports: RetainingDuckDB.export_rows (src/aibots_reports/pod/retention.py) sizes its own export through it
 packages/datasources/src/threetears/datasources/partitioned_export.py:CountedFile  # bluelabsio/14-eng-ai-bot-agent-reports: the element type of CountedPartitionedExport.files, which src/aibots_reports/pod/loader.py and lsf_export.py read
 packages/datasources/src/threetears/datasources/partitioned_export.py:CountedPartitionedExport  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/loader.py and lsf_export.py hold one per LSF export
 packages/datasources/src/threetears/datasources/partitioned_export.py:delete_counted_export  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/loader.py and lsf_export.py delete each export after its load
@@ -51,3 +50,7 @@ packages/core/src/threetears/core/http_cache.py:scope_qualifier  # bluelabsio/14
 packages/core/src/threetears/core/http_cache.py:qualified_scope  # bluelabsio/14-eng-ai-bot (hub) rest_ingress._token_scopes and bluelabsio/14-eng-ai-bot-agent-reports cache_urls.scope_name: one rule for a qualified scope on both sides
 packages/core/src/threetears/core/http_cache.py:SCOPE_QUALIFIER_SEPARATOR  # bluelabsio/14-eng-ai-bot-agent-reports: cache_urls.scope_states splits a qualified scope back into its states
 packages/langgraph/src/threetears/langgraph/nats_l2.py:NatsCheckpointL2Cache  # pacepace/metallm: api/src/graph/checkpoint.py passes it as ThreeTierCheckpointSaver's l2_cache in place of its own NATS adapter, after its re-pin to 0.81.0
+packages/core/src/threetears/core/cache/duckdb.py:arrow_rows  # bluelabsio/14-eng-ai-bot-agent-reports: the page computes' read (_HeldRead.execute_query, src/aibots_reports/pod/report_data.py) makes its rows from DuckDB's Arrow through it
+packages/core/src/threetears/core/cache/duckdb.py:query_arrow  # bluelabsio/14-eng-ai-bot-agent-reports: the page computes' read (_HeldRead.execute_arrow, src/aibots_reports/pod/report_data.py) answers a read transaction's cursor through it
+packages/core/src/threetears/core/collections/complete_copy.py:rail_arrow_types  # bluelabsio/14-eng-ai-bot-agent-reports: CollectionTableStore.held_in_arrow (src/aibots_reports/pod/storage.py) types its empty answer by it
+packages/core/src/threetears/core/collections/complete_copy.py:read_l3_arrow  # bluelabsio/14-eng-ai-bot-agent-reports: CollectionTableStore.held_arrow and held_in_arrow (src/aibots_reports/pod/storage.py) read a state's rows for a worker through it

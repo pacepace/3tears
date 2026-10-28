@@ -91,7 +91,17 @@ import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import ExitStack, aclosing, asynccontextmanager, contextmanager, nullcontext, suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -105,8 +115,11 @@ from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS, WRITE_CLA
 from threetears.observe import contain, get_logger
 
 from threetears.core.sql_fragments import quote_identifier
+from threetears.core.backends.arrow_reply import ReplyNotArrowError
+from threetears.core.backends.protocol import ArrowL3Reader
 from threetears.core.cache.duckdb import DuckDBBackend, PartitionReplacement
-from threetears.core.collections.complete_copy import Unsettled, l3_row_pages
+from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, l3_row_pages
+from threetears.core.keyset import keyset_arrow_pages
 from threetears.core.coordination.lease import HeldLease, KVLease, LeaseUnavailable
 
 if TYPE_CHECKING:
@@ -620,6 +633,46 @@ def decode_chunk(data: bytes) -> Any:
     """
     _require_snapshot_extra()
     return ipc.open_stream(data).read_all()
+
+
+#: the L1 type codes whose values the rail answers as text, as ``fetch`` hands them to a dict row
+_RAIL_TEXT_CODES: Final = frozenset({"VARCHAR", "VARCHAR_UUID", "VARCHAR_DATETIME"})
+
+
+def _rail_types(codes: Mapping[str, str]) -> dict[str, Any] | None:
+    """each column's Arrow type as the L3 rail's reply carries it, from this L1's type codes; None when a column has
+    none (``fetch`` answers it otherwise than its JSON: a JSON, array, vector or bytes column, or a ``date_`` column
+    that is not a timestamp), and the table is read as dict rows.
+
+    The same rule as :func:`~threetears.core.collections.complete_copy.rail_arrow_types`, read off the L1's codes:
+    text, a UUID, a ``NUMERIC`` and a timestamp are text; a ``date_`` timestamp an instant in UTC; an integer
+    ``int64``; a float ``float64``; a boolean ``bool``.
+
+    :param codes: column name -> its type code (:meth:`~threetears.core.cache.duckdb.DuckDBBackend.column_types`)
+    :ptype codes: Mapping[str, str]
+    :return: column name -> its Arrow type, in order, or None
+    :rtype: dict[str, pyarrow.DataType] | None
+    """
+    types: dict[str, Any] | None = {}
+    for name, code in codes.items():
+        if types is None:
+            break
+        if name.startswith("date_"):
+            if code == "VARCHAR_DATETIME":
+                types[name] = pa.timestamp("us", tz="UTC")
+            else:
+                types = None
+        elif code in _RAIL_TEXT_CODES or code.startswith("DECIMAL("):
+            types[name] = pa.string()
+        elif code == "BIGINT":
+            types[name] = pa.int64()
+        elif code == "DOUBLE":
+            types[name] = pa.float64()
+        elif code == "BOOLEAN":
+            types[name] = pa.bool_()
+        else:
+            types = None
+    return types
 
 
 def _concatenated(parts: Sequence[Any]) -> Any:
@@ -3638,13 +3691,19 @@ class ScopedSnapshot:
         """
         result: list[PartitionReplacement] = []
         for table in self._tables:
-            columns = tuple(self._backend.column_types(table.name))
-            parts: list[Any] = []
-            pages = l3_row_pages(self._l3, table.name, columns, table.key, where={table.scope_column: scope})
-            async with aclosing(pages):
-                async for page in pages:
-                    if page:
-                        parts.append(await self._export(table, scope, page))
+            parts: list[Any] | None = None
+            types = _rail_types(self._backend.column_types(table.name)) if isinstance(self._l3, ArrowL3Reader) else None
+            if types is not None:
+                try:
+                    parts = await self._read_table(table, scope, types)
+                except ReplyNotArrowError as exc:
+                    # NOSILENT: a value the rail answers otherwise than its column's Arrow type: read as dict rows
+                    log.info(
+                        "a scope's rows are read from L3 as dict rows: a value is not its column's Arrow type",
+                        extra={"extra_data": {"table": table.name, "scope": scope, "error": str(exc)}},
+                    )
+            if parts is None:
+                parts = await self._read_table(table, scope, None)
             result.append(
                 PartitionReplacement(
                     table=table.name,
@@ -3655,6 +3714,40 @@ class ScopedSnapshot:
                 )
             )
         return result
+
+    async def _read_table(self, table: SnapshotTable, scope: str, types: Mapping[str, Any] | None) -> list[Any]:
+        """one table's rows of a scope from L3, each page typed by this L1 as it arrives (:meth:`_read_scope`).
+
+        With ``types`` the rail's pages are read straight into Arrow (``fetch_arrow``: no row is a Python object
+        here) and typed by the L1 alike (:meth:`~threetears.core.cache.duckdb.DuckDBBackend.storage_arrow`); without,
+        they are dict rows.
+
+        :param table: the table
+        :ptype table: SnapshotTable
+        :param scope: the scope
+        :ptype scope: str
+        :param types: each column's Arrow type as the rail answers it (:func:`_rail_types`), or None for dict rows
+        :ptype types: Mapping[str, pyarrow.DataType] | None
+        :return: the scope's rows as the L1 keeps them, a part a page
+        :rtype: list[pyarrow.Table]
+        :raises ReplyNotArrowError: with ``types``, when a value is not its column's Arrow type
+        """
+        columns = tuple(self._backend.column_types(table.name))
+        where = {table.scope_column: scope}
+        pages: AsyncGenerator[Any, None]
+        if types is None:
+            pages = l3_row_pages(self._l3, table.name, columns, table.key, where=where)
+        else:
+            select = f"SELECT {', '.join(quote_identifier(c) for c in columns)} FROM {quote_identifier(table.name)}"  # noqa: S608
+            pages = keyset_arrow_pages(
+                self._l3, select, table.key, types=types, where=where, page_size=DEFAULT_PAGE_SIZE
+            )
+        parts: list[Any] = []
+        async with aclosing(pages):
+            async for page in pages:
+                if len(page):
+                    parts.append(await self._export(table, scope, page))
+        return parts
 
     def _claim(self) -> _RebuildClaim:
         """a fresh claim on the rebuild.
