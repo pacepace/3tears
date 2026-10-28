@@ -85,15 +85,22 @@ computed truth, its figures written as the page writes their keys, with those ke
 never blocks storage and never says what to conclude; the writing loop hands them to the report editor. The kinds:
 a recommended arm missing a declared gate or guardrail figure (`gate_failed`); a warning code raises on a recommended
 arm that no figure key in the document names (`warning_unanswered`); a call that differs from `options_dominance`'s
-reading of code's call (`call_vs_dominance`); a weakest margin no Watch entry cites a key naming
-(`weakest_not_in_watch`); a recommended candidate whose switch the evidence does not support as the report plan's
+reading of code's call (`call_vs_dominance`); a weakest margin no Watch entry cites a key naming, said to be on an
+arm the document recommends or not (`weakest_not_in_watch`); a recommended candidate whose switch the evidence does not support as the report plan's
 adoption check read it (`adoption`); a recommended candidate's loss settled past the margin on an aspect the campaign
 does not ask about, the other side of #980's `unsettled:<aspect>` (`settled_loss_unasked`); an undecided option's
-inferred miss, as `options_dominance` hands it to the analyst (`undecided_implied`); and a count written in words
+inferred miss, as `options_dominance` hands it to the analyst, where no key in the document names that read
+(`undecided_implied`); and a count written in words
 with no key, `four of five` but not `one arm` (`count_in_words`). Every condition reads the snapshot's figures and
 what the document names; none reads `story` or the eval's kind, so the facts are byte-identical when only `story`
-changes. The module's `__all__` stays empty until the writing loop's editor turn calls these names, and
-`tests/test_report_doc_facts_exports.py` lists them.
+changes. A sentence is built from its text and the keys code builds, each key written out on its own, so a brace in
+a label, a name or an id the snapshot holds is written as it is and never read as a key. The module's `__all__` stays
+empty until the writing loop's editor turn calls these names, and `tests/test_report_doc_facts_exports.py` lists them.
+
+**Fixed:** `analysis.analyst.cited.cite` and `cite_written` spell a figure from what its key resolved to rather than
+rendering `{key}` back through the prose parser, so a figure whose ids carry a brace (a floor's key, a cell's row) no
+longer refuses, and with it `options_dominance` and the gate reads on such a snapshot. Every other figure reads as
+before.
 
 ### evals: the report document, `report-doc/1`, and its stored form `eval_report_doc`
 

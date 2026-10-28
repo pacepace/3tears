@@ -24,7 +24,8 @@ tools already hold:
 - ``weakest_not_in_watch``: the snapshot has a weakest margin
   (:func:`~threetears.evals.analysis.report_margins.weakest_margin`) and no Watch entry of the decision block cites a
   key naming it: a ``weakest.`` key, or one whose path holds the margin's arm and its line (the criterion or its
-  measure, the aspect, or the floor). Whether Watch should say more about it is the editor's.
+  measure, the aspect, or the floor). The sentence says whether the margin's arm is one the document recommends;
+  whether Watch should say more about it is the editor's.
 - ``adoption``: a recommended arm is a candidate (the snapshot has a control and it is not that arm), and the
   evidence for switching to it is short, as the report plan's adoption check read it: the snapshot asks no question of
   any aspect; or a guardrail the pipeline read on it is breached
@@ -37,8 +38,10 @@ tools already hold:
   it): code's decision never reads an unasked aspect, so no caveat carries a settled loss there.
 - ``undecided_implied``: an option a gate has no figure for somewhere is undecided
   (:func:`~threetears.evals.analysis.report_margins.undecided_arms`), and its figure over every case misses the line,
-  so if the places split the cases between them at least one place misses too. ``options_dominance`` hands the same
-  inference to the analyst, labelled inferred; here it reaches the editor whatever the document says of that option.
+  so if the places split the cases between them at least one place misses too; and no figure key in the document
+  names that read (a key whose path holds the option's arm beside the criterion or the measure it reads).
+  ``options_dominance`` hands the same inference to the analyst, labelled inferred; a document that cites the read
+  answers it, as a cited key answers a warning.
 - ``count_in_words``: prose writes a count as words with no figure key: one count word (``zero`` to ``twenty``, as
   the ``words`` filter spells counts) or key, then ``of``, then another, where at least one of the two is a bare word
   (``four of five``, ``two of the three``). That is a count a reader reads as a number. A lone count word (``one
@@ -48,7 +51,9 @@ tools already hold:
 **What a fact is.** An :class:`EditorFact` is ``{kind, path, fact, figures}``. ``path`` is the document field the fact
 is about (``recommends[0]``, ``decision[2]``, ``claims[1].text``), or empty for the document as a whole. ``fact`` is the
 sentence, every figure in it written as the page writes its key; ``figures`` are those keys' paths, in the order the
-sentence cites them, so the editor can read each with its tools. The sentences are short, since the editor's user
+sentence cites them, so the editor can read each with its tools. A sentence is built from parts, text and the keys
+this module builds, and each key is written out on its own: a name the snapshot holds is text, never read for a key,
+so a brace in a label, a name or an id is written as it is and never raises. The sentences are short, since the editor's user
 message carries them all.
 
 **Every condition is on data.** Nothing here reads ``story``, a slot's word other than Watch's, a claim's weight or the
@@ -65,6 +70,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -76,9 +82,10 @@ from threetears.evals.analysis.analyst.analyses import (
     dominance,
     gate_reads,
 )
-from threetears.evals.analysis.report.figure_keys import WEAKEST_PREFIX, Figure, format_figure, reader_name, render
+from threetears.evals.analysis.analyst.cited import cite
+from threetears.evals.analysis.report.figure_keys import WEAKEST_PREFIX, Figure, format_figure, reader_name
 from threetears.evals.analysis.report_decision import control_arm, floors_not_held, shown_better
-from threetears.evals.analysis.report_input import Aspect, Reading, ReportInput
+from threetears.evals.analysis.report_input import Aspect, Criterion, Reading, ReportInput
 from threetears.evals.analysis.report_margins import Margin, weakest_margin
 from threetears.evals.analysis.report_plan_checks import raised_warnings
 from threetears.evals.kernel.report_doc import REPORT_DOC_PROSE_FIELDS, ReportDoc
@@ -138,7 +145,7 @@ def editor_facts(doc: ReportDoc, report_input: ReportInput) -> list[EditorFact]:
     facts += _weakest_facts(doc, report_input)
     facts += [fact for path, arm in recommended for fact in _adoption_facts(report_input, path, arm)]
     facts += [fact for path, arm in recommended for fact in _settled_loss_facts(report_input, path, arm)]
-    facts += _undecided_facts(doc, report_input, options)
+    facts += _undecided_facts(doc, report_input, options, keys)
     facts += _count_facts(doc)
     return facts
 
@@ -149,22 +156,41 @@ def editor_facts(doc: ReportDoc, report_input: ReportInput) -> list[EditorFact]:
 _KEY = re.compile(r"\{([^{}|]*)(?:\|[^{}]*)?\}")
 
 
-def _fact(kind: EditorFactKind, path: str, template: str, report_input: ReportInput) -> EditorFact:
-    """A fact from a sentence that names its figures by key: the keys written out, and listed by path.
+@dataclass(frozen=True)
+class _Key:
+    """A figure key a fact's sentence cites, built here from what the input holds: its path, with no filter."""
 
-    Every key in ``template`` is built here from what the input holds, so it resolves.
+    path: str
+
+
+#: One part of a fact's sentence: text written as it is, or a key written as the page writes it.
+_Part = str | _Key
+
+
+def _fact(kind: EditorFactKind, path: str, parts: Sequence[_Part], report_input: ReportInput) -> EditorFact:
+    """A fact from its sentence's parts: each text as it is, each key written out on its own and listed by path.
+
+    The text is never read for keys, so a name the input holds that carries a brace (a label, a task's or aspect's
+    name, a floor's key) is written as it is, and ``figures`` holds exactly the keys built here, each of which names
+    something the input holds.
     """
     return EditorFact(
         kind=kind,
         path=path,
-        fact=render(template, report_input, {}),
-        figures=[match.group(1) for match in _KEY.finditer(template)],
+        fact="".join(_written(part, report_input) if isinstance(part, _Key) else part for part in parts),
+        figures=[part.path for part in parts if isinstance(part, _Key)],
     )
 
 
-def _arm(arm: str) -> str:
-    """An arm as a fact's template names it: its key, which the page writes as its name and tag."""
-    return "{arm:" + arm + "}"
+def _written(key: _Key, report_input: ReportInput) -> str:
+    """A key as the page writes it, with no filter (:func:`~threetears.evals.analysis.analyst.cited.cite`'s
+    ``reads``): resolved by its path alone, never parsed out of braces, so an id that carries a brace reads too."""
+    return cite(key.path, report_input).reads
+
+
+def _arm(arm: str) -> _Key:
+    """An arm as a fact cites it: its key, which the page writes as its name and tag."""
+    return _Key(f"arm:{arm}")
 
 
 def _bounded(name: str, path: str) -> bool:
@@ -220,13 +246,16 @@ def _gate_facts(report_input: ReportInput, path: str, arm: str) -> Iterator[Edit
         threshold, figure = read.figures[0], read.figures[1]
         kind = next(criterion.kind for criterion in report_input.criteria if criterion.id == read.criterion)
         name = reader_name("criterion", read.criterion, report_input)
-        yield _fact(
-            "gate_failed",
-            path,
-            f"Recommended {_arm(arm)} misses the declared {kind} {name}{_place(report_input, read)}: "
-            f"{{{figure.key}}} against {{{threshold.key}}}.",
-            report_input,
-        )
+        parts: list[_Part] = [
+            "Recommended ",
+            _arm(arm),
+            f" misses the declared {kind} {name}{_place(report_input, read)}: ",
+            _Key(figure.key),
+            " against ",
+            _Key(threshold.key),
+            ".",
+        ]
+        yield _fact("gate_failed", path, parts, report_input)
 
 
 # --- a recommended arm and the warnings code raises on it -----------------------------------------------------------
@@ -238,27 +267,28 @@ def _names_warning(key: str, warning: WarningRef, arm: str) -> bool:
     return _bounded(arm, key) and _bounded(warning.name, key)
 
 
-_WARNING_SAID = {
-    "floor_broken": "floor {name} on {aspect} reads broken",
-    "floor_unclear": "floor {name} on {aspect} reads unclear",
-    "behind_on": "a pair reading on {aspect} shows {name} ahead of it",
-    "bar_missed": "it misses the bar on {name} on {aspect}",
-}
+def _warning_said(report_input: ReportInput, warning: WarningRef) -> list[_Part]:
+    """What a warning says, in a sentence's parts: its floor's key, the arm ahead or the bar's measure as written."""
+    aspect = _aspect_name(report_input, warning.aspect)
+    if warning.kind == "behind_on":
+        return [f"a pair reading on {aspect} shows ", _arm(warning.name), " ahead of it"]
+    if warning.kind == "bar_missed":
+        return [f"it misses the bar on {warning.name} on {aspect}"]
+    return [f"floor {warning.name} on {aspect} reads {warning.kind.removeprefix('floor_')}"]
 
 
 def _warning_facts(report_input: ReportInput, path: str, arm: str, keys: Sequence[str]) -> Iterator[EditorFact]:
     for warning in raised_warnings(report_input, arm):
         if any(_names_warning(key, warning, arm) for key in keys):
             continue
-        aspect = _aspect_name(report_input, warning.aspect)
-        name = _arm(warning.name) if warning.kind == "behind_on" else warning.name
-        said = _WARNING_SAID[warning.kind].format(name=name, aspect=aspect)
-        yield _fact(
-            "warning_unanswered",
-            path,
-            f"Code raises {warning.kind} on recommended {_arm(arm)}: {said}. No figure key in the document names it.",
-            report_input,
-        )
+        parts: list[_Part] = [
+            f"Code raises {warning.kind} on recommended ",
+            _arm(arm),
+            ": ",
+            *_warning_said(report_input, warning),
+            ". No figure key in the document names it.",
+        ]
+        yield _fact("warning_unanswered", path, parts, report_input)
 
 
 def _aspect_name(report_input: ReportInput, aspect: str) -> str:
@@ -274,33 +304,39 @@ def _aspect_name(report_input: ReportInput, aspect: str) -> str:
 _MODE_WORDS = {"decide": "a decision", "tradeoff": "a tradeoff", "no_call": "no call"}
 
 
-def _arms_said(arms: Sequence[str], held: set[str]) -> str:
+def _arms_said(arms: Sequence[str], held: set[str]) -> list[_Part]:
     """Arms as a sentence names them: each held one by its key, any other by its id as the document wrote it."""
     if not arms:
-        return "no arm"
-    return ", ".join(_arm(arm) if arm in held else f"`{arm}`" for arm in arms)
+        return ["no arm"]
+    parts: list[_Part] = []
+    for index, arm in enumerate(arms):
+        parts += [", "] if index else []
+        parts += [_arm(arm) if arm in held else f"`{arm}`"]
+    return parts
 
 
 def _call_facts(doc: ReportDoc, report_input: ReportInput, options: Dominance) -> Iterator[EditorFact]:
     call = options.code_call
     dominant = [arm.removeprefix("arm:") for arm in call.dominant]
     held = {arm.id for arm in report_input.arms}
-    recommends = _arms_said(doc.recommends, held)
+    code: list[_Part]
     if len(dominant) == 1:
         if list(doc.recommends) == dominant:
             return
-        code = f"{_arm(dominant[0])} as the one option dominating"
+        code = [_arm(dominant[0]), " as the one option dominating"]
     elif "decide" not in call.modes and doc.recommends:
         modes = " or ".join(_MODE_WORDS[mode] for mode in call.modes)
-        code = f"code's call as {modes}, with no option dominating"
+        code = [f"code's call as {modes}, with no option dominating"]
     else:
         return
-    yield _fact(
-        "call_vs_dominance",
-        "recommends",
-        f"options_dominance reads {code}; the document recommends {recommends}.",
-        report_input,
-    )
+    parts: list[_Part] = [
+        "options_dominance reads ",
+        *code,
+        "; the document recommends ",
+        *_arms_said(doc.recommends, held),
+        ".",
+    ]
+    yield _fact("call_vs_dominance", "recommends", parts, report_input)
 
 
 # --- the weakest margin and Watch ----------------------------------------------------------------------------------
@@ -317,8 +353,18 @@ def _names_weakest(key: str, margin: Margin) -> bool:
     return _bounded(margin.arm, key) and any(_bounded(name, key) for name in _line_names(margin))
 
 
-#: How the weakest margin reads in a sentence, its keys written out.
-_WEAKEST_SAID = "{weakest.arm}, {weakest.value} against {weakest.criterion} at {weakest.threshold}"
+#: How the weakest margin reads in a sentence, by its keys.
+_WEAKEST_SAID: tuple[_Part, ...] = (
+    _Key("weakest.arm"),
+    ", ",
+    _Key("weakest.value"),
+    " against ",
+    _Key("weakest.criterion"),
+    " at ",
+    _Key("weakest.threshold"),
+    ", a gap of ",
+    _Key("weakest.margin"),
+)
 
 
 def _weakest_facts(doc: ReportDoc, report_input: ReportInput) -> Iterator[EditorFact]:
@@ -330,12 +376,9 @@ def _weakest_facts(doc: ReportDoc, report_input: ReportInput) -> Iterator[Editor
     if any(_names_weakest(key, margin) for key in cited):
         return
     where = "no Watch entry cites a key naming it" if watch else "the decision block has no Watch entry"
-    yield _fact(
-        "weakest_not_in_watch",
-        watch[0][0] if watch else "decision",
-        f"The weakest margin is {_WEAKEST_SAID}, a gap of {{weakest.margin}}; {where}.",
-        report_input,
-    )
+    whose = "an arm the document recommends" if margin.arm in doc.recommends else "no arm the document recommends"
+    parts = ["The weakest margin is ", *_WEAKEST_SAID, f", on {whose}; {where}."]
+    yield _fact("weakest_not_in_watch", watch[0][0] if watch else "decision", parts, report_input)
 
 
 # --- switching to a candidate --------------------------------------------------------------------------------------
@@ -346,7 +389,7 @@ def _adoption_facts(report_input: ReportInput, path: str, arm: str) -> Iterator[
     if control is None or arm == control:
         return
     asked = [aspect for aspect in report_input.aspects if aspect.asked]
-    named = f"Recommended {_arm(arm)} is a candidate against {_arm(control)}"
+    named: list[_Part] = ["Recommended ", _arm(arm), " is a candidate against ", _arm(control)]
     if not asked:
         said = "the snapshot asks no question of any aspect, so no reading is confirmatory"
     elif breached := breached_guardrails(report_input, arm):
@@ -358,7 +401,7 @@ def _adoption_facts(report_input: ReportInput, path: str, arm: str) -> Iterator[
         )
     else:
         return
-    yield _fact("adoption", path, f"{named}; {said}.", report_input)
+    yield _fact("adoption", path, [*named, f"; {said}."], report_input)
 
 
 # --- a settled loss on an aspect nobody asked about ----------------------------------------------------------------
@@ -383,35 +426,50 @@ def _settled_loss_facts(report_input: ReportInput, path: str, arm: str) -> Itera
                 continue
             prefix = f"aspects.{aspect.id}"
             margin = f"{prefix}.reading.{arm}.margin" if reading.margin is not None else f"{prefix}.margin"
-            yield _fact(
-                "settled_loss_unasked",
-                path,
-                f"Recommended {_arm(arm)}'s reading on {reader_name('aspect', aspect.id, report_input)}, which the "
-                f"campaign does not ask about, is a loss settled past the margin: its interval, "
-                f"{{{prefix}.reading.{arm}.interval}} points, lies wholly at or below minus the margin of "
-                f"{{{margin}}} points.",
-                report_input,
-            )
+            parts: list[_Part] = [
+                "Recommended ",
+                _arm(arm),
+                f"'s reading on {reader_name('aspect', aspect.id, report_input)}, which the campaign does not ask "
+                "about, is a loss settled past the margin: its interval, ",
+                _Key(f"{prefix}.reading.{arm}.interval"),
+                " points, lies wholly at or below minus the margin of ",
+                _Key(margin),
+                " points.",
+            ]
+            yield _fact("settled_loss_unasked", path, parts, report_input)
 
 
 # --- options a gate has no figure for ------------------------------------------------------------------------------
 
 
-def _undecided_facts(doc: ReportDoc, report_input: ReportInput, options: Dominance) -> Iterator[EditorFact]:
+def _names_undecided(key: str, arm: str, criterion: Criterion) -> bool:
+    """Whether a cited key's path names an undecided read: the arm, beside the criterion or the measure it reads."""
+    return _bounded(arm, key) and (_bounded(criterion.id, key) or _bounded(criterion.measure, key))
+
+
+def _undecided_facts(
+    doc: ReportDoc, report_input: ReportInput, options: Dominance, keys: Sequence[str]
+) -> Iterator[EditorFact]:
     recommended = {arm: f"recommends[{index}]" for index, arm in enumerate(doc.recommends)}
+    criteria = {criterion.id: criterion for criterion in report_input.criteria}
     for row in options.undecided:
         arm = row.arm.removeprefix("arm:")
         for implied in row.implied:
+            if any(_names_undecided(key, arm, criteria[implied.criterion]) for key in keys):
+                continue
             threshold, figure = implied.figures[0], implied.figures[1]
             name = reader_name("criterion", implied.criterion, report_input)
-            yield _fact(
-                "undecided_implied",
-                recommended.get(arm, ""),
-                f"{_arm(arm)} is undecided on {name}, which has no figure for it at some place it reads; its figure "
-                f"over every case, {{{figure.key}}}, misses {{{threshold.key}}}, so if the places split the cases at "
-                "least one misses too (inferred, not stated).",
-                report_input,
-            )
+            parts: list[_Part] = [
+                _arm(arm),
+                f" is undecided on {name}, which has no figure for it at some place it reads; its figure over every "
+                "case, ",
+                _Key(figure.key),
+                ", misses ",
+                _Key(threshold.key),
+                ", so if the places split the cases at least one misses too (inferred, not stated). No figure key in "
+                "the document names it.",
+            ]
+            yield _fact("undecided_implied", recommended.get(arm, ""), parts, report_input)
 
 
 # --- counts written as words ---------------------------------------------------------------------------------------

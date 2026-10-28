@@ -9,6 +9,8 @@ facts are byte-identical when only ``story`` changes.
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -141,8 +143,21 @@ def test_a_watch_citing_no_key_naming_the_weakest_margin_is_a_fact() -> None:
     facts = _of(_facts(_R2, doc_change=_watch("Watch the pass rate.")), "weakest_not_in_watch")
 
     assert [fact.path for fact in facts] == ["decision[2]"]
-    assert facts[0].figures[0] == "weakest.arm"
-    assert facts[0].fact.endswith("no Watch entry cites a key naming it.")
+    assert facts[0].figures == [
+        "weakest.arm",
+        "weakest.value",
+        "weakest.criterion",
+        "weakest.threshold",
+        "weakest.margin",
+    ]
+    assert facts[0].fact.endswith(", on an arm the document recommends; no Watch entry cites a key naming it.")
+
+
+def test_the_weakest_margin_on_an_arm_the_call_does_not_pick_says_so() -> None:
+    """Kairo's weakest margin is qwen3.8-flash's, and the document recommends September."""
+    facts = _of(_facts(_KAIRO), "weakest_not_in_watch")
+
+    assert facts[0].fact.endswith(", on no arm the document recommends; no Watch entry cites a key naming it.")
 
 
 def test_a_decision_block_with_no_watch_entry_is_a_fact_about_the_block() -> None:
@@ -212,20 +227,49 @@ def test_an_unsettled_reading_on_an_unasked_aspect_is_no_settled_loss() -> None:
     assert not _of(_facts(_S1, recommends=["v4"], input_change=_unasked("tone")), "settled_loss_unasked")
 
 
-def test_an_undecided_options_implied_read_is_a_fact_whatever_the_document_recommends() -> None:
-    """r2 with its gates read in each task: two options have no p95 figure in some task, and their p95 over every case
-    misses the line."""
-    facts = _of(_facts(_EACH_TASK), "undecided_implied")
+def _uncite(*arms: str) -> Callable[[dict[str, Any]], None]:
+    """Every figure key naming one of the arms, in any string of the document, replaced by a word; ids and queries are
+    strings with no braces, so only keys change."""
+    named = re.compile(r"\{[^{}]*(?:" + "|".join(re.escape(arm) for arm in arms) + r")[^{}]*\}")
 
-    assert [(fact.path, fact.figures[0]) for fact in facts] == [
-        ("", "arm:atlas-m.high.r1"),
-        ("", "arm:brisk-s.high.r1"),
+    def uncited(node: Any) -> Any:
+        if isinstance(node, str):
+            return named.sub("it", node)
+        if isinstance(node, list):
+            return [uncited(item) for item in node]
+        if isinstance(node, dict):
+            return {key: uncited(value) for key, value in node.items()}
+        return node
+
+    def change(doc: dict[str, Any]) -> None:
+        doc.update(uncited(doc))
+
+    return change
+
+
+_UNDECIDED = ("atlas-m.high.r1", "brisk-s.high.r1")
+
+
+def test_an_undecided_options_implied_read_no_key_names_is_a_fact() -> None:
+    """r2 with its gates read in each task, its keys on the two options taken out: they have no p95 figure in some
+    task, and their p95 over every case misses the line."""
+    facts = _of(_facts(_EACH_TASK, doc_change=_uncite(*_UNDECIDED)), "undecided_implied")
+
+    assert [(fact.path, fact.figures) for fact in facts] == [
+        ("", [f"arm:{arm}", f"measure.latency_ms.{arm}.p95", "criteria.p95.threshold"]) for arm in _UNDECIDED
     ]
-    assert "(inferred, not stated)" in facts[0].fact
+    assert "(inferred, not stated). No figure key in the document names it." in facts[0].fact
+
+
+def test_an_undecided_read_the_document_cites_is_no_fact() -> None:
+    """The document as written cites each option's p95 over every case, the figure the inference rests on."""
+    assert not _of(_facts(_EACH_TASK), "undecided_implied")
 
 
 def test_an_undecided_option_the_document_recommends_is_named_at_its_place() -> None:
-    facts = _of(_facts(_EACH_TASK, recommends=["brisk-s.high.r1"]), "undecided_implied")
+    facts = _of(
+        _facts(_EACH_TASK, recommends=["brisk-s.high.r1"], doc_change=_uncite(*_UNDECIDED)), "undecided_implied"
+    )
 
     assert [fact.path for fact in facts] == ["", "recommends[0]"]
 
@@ -253,8 +297,8 @@ def test_a_count_written_in_words_with_no_key_is_a_fact() -> None:
 
 #: The facts each later converted document triggers, by kind. Every one that fires is real:
 #:
-#: - r2 with its gates read in each task: two options are undecided on the p95 gate read in each task, and their p95
-#:   over every case misses it. True, and the document recommends nothing; the editor weighs whether it says why.
+#: - r2 with its gates read in each task fires nothing: two options are undecided on the p95 gate read in each task,
+#:   their p95 over every case missing it, and the document cites that very figure for each, which answers it.
 #: - s1: the document keeps production where code reads a tradeoff (no option dominates), and the weakest margin, v2's
 #:   tone floor, is one Watch does not name (it discusses v2's billing floor). Both true; whether the call and Watch
 #:   are argued well is the editor's.
@@ -262,7 +306,7 @@ def test_a_count_written_in_words_with_no_key_is_a_fact() -> None:
 #: - Kairo: the weakest margin is qwen3.8-flash's reading against the margin, a candidate the call does not pick, and
 #:   Watch does not name it. True; the editor weighs whether it matters to keeping September.
 _EXPECTED: dict[str, list[str]] = {
-    "prototype2/r2-with-its-gates-read-in-each-task": ["undecided_implied", "undecided_implied"],
+    "prototype2/r2-with-its-gates-read-in-each-task": [],
     "prototype2/r2-with-one-gate": [],
     "prototype2/r3-without-its-configs": [],
     "prototype2/s1": ["call_vs_dominance", "weakest_not_in_watch"],
@@ -310,10 +354,17 @@ def test_an_arm_the_snapshot_does_not_hold_is_written_as_the_document_wrote_it()
     assert facts[0].fact.endswith("the document recommends `ghost`.")
 
 
-@pytest.mark.parametrize("name", [_EACH_TASK, _S1, _KAIRO])
-def test_facts_are_byte_identical_when_only_the_story_changes(name: str) -> None:
+@pytest.mark.parametrize(("name", "recommends"), [(_EACH_TASK, ["brisk-s.high.r1"]), (_S1, ["v3"]), (_KAIRO, None)])
+def test_facts_are_byte_identical_when_only_the_story_changes(name: str, recommends: list[str] | None) -> None:
+    def told_as(story: str) -> Callable[[dict[str, Any]], None]:
+        def change(doc: dict[str, Any]) -> None:
+            _uncite(*_UNDECIDED)(doc)
+            doc["story"] = story
+
+        return change
+
     written = [
-        [fact.model_dump_json() for fact in _facts(name, doc_change=lambda doc, story=story: doc.update(story=story))]
+        [fact.model_dump_json() for fact in _facts(name, recommends=recommends, doc_change=told_as(story))]
         for story in ("decision", "tradeoff", "diagnosis", "status", "exploratory")
     ]
 
@@ -328,9 +379,156 @@ def test_no_fact_tells_the_editor_what_to_conclude() -> None:
         *_facts(_S1, recommends=["v3"]),
         *_facts(_R4, recommends=["f64"]),
         *_facts(_S1, recommends=["v2"], input_change=_unasked("billing")),
-        *_facts(_EACH_TASK),
+        *_facts(_EACH_TASK, doc_change=_uncite(*_UNDECIDED)),
     ]
     advice = ("should", "must", "ought", "consider", "needs to")
 
     assert len({fact.kind for fact in facts}) == 7
     assert not [fact.fact for fact in facts if any(word in fact.fact.lower() for word in advice)]
+
+
+# --- a brace in a name the snapshot holds ---------------------------------------------------------------------------
+
+
+def _renamed(
+    path: tuple[str | int, ...], match: tuple[str, str] | None, value: str
+) -> Callable[[dict[str, Any]], None]:
+    """One name in the input set to ``value``: at ``path``, or in each item of the list there whose ``match`` field
+    holds the given value."""
+
+    def change(data: dict[str, Any]) -> None:
+        node: Any = data
+        for step in path[:-1]:
+            node = node[step]
+        if match is None:
+            node[path[-1]] = value
+            return
+        field, held = match
+        for item in node:
+            if item.get(field) == held:
+                item[path[-1]] = value
+
+    return change
+
+
+def _replaced(old: str, new: str) -> Callable[[dict[str, Any]], None]:
+    """Every whole JSON string ``old`` in the input, and every ``old|`` cell id, rewritten with ``new``."""
+
+    def change(data: dict[str, Any]) -> None:
+        text = json.dumps(data).replace(f'"{old}"', f'"{new}"').replace(f'"{old}|', f'"{new}|')
+        data.update(json.loads(text))
+
+    return change
+
+
+def test_a_brace_in_a_criterion_label_is_written_as_it_is() -> None:
+    facts = _of(
+        _facts(
+            _R1, recommends=["atlas-l"], input_change=_renamed(("criteria", "label"), ("id", "p95"), "Latency {p95}")
+        ),
+        "gate_failed",
+    )
+
+    assert ["misses the declared gate Latency {p95} in " in fact.fact for fact in facts] == [True] * 4
+    assert facts[0].figures == ["arm:atlas-l", "criteria.p95.atlas-l.billing.value", "criteria.p95.threshold"]
+
+
+def test_a_brace_in_a_task_name_is_written_as_it_is() -> None:
+    facts = _of(
+        _facts(
+            _R1, recommends=["atlas-l"], input_change=_renamed(("tasks", "name"), ("id", "billing"), "Billing {beta}")
+        ),
+        "gate_failed",
+    )
+
+    assert " in Billing {beta}: 3.6 s against 3 s." in facts[0].fact
+    assert facts[0].figures == ["arm:atlas-l", "criteria.p95.atlas-l.billing.value", "criteria.p95.threshold"]
+
+
+def test_a_brace_in_a_cell_id_is_written_as_it_is() -> None:
+    """r3 with its complex row's id braced: Nano-XS few-shot misses the cell floor in that row's news cell."""
+    facts = _of(
+        _facts("prototype3/r3", recommends=["nano-xs.few"], input_change=_replaced("complex", "{complex}")),
+        "gate_failed",
+    )
+
+    assert [fact.figures for fact in facts] == [
+        ["arm:nano-xs.few", "criteria.cell_floor.nano-xs.few.{complex}.news.value", "criteria.cell_floor.threshold"]
+    ]
+    assert " in cell {complex}.news: " in facts[0].fact
+
+
+def test_a_brace_in_an_aspect_name_and_a_floor_key_is_written_as_it_is() -> None:
+    def braced(data: dict[str, Any]) -> None:
+        _renamed(("aspects", "name"), ("id", "billing"), "Billing {x}")(data)
+        _replaced("tone/rate_drop/reply.cites_policy", "tone/{rate}")(data)
+
+    facts = _of(_facts(_S1, recommends=["v3"], input_change=braced), "warning_unanswered")
+
+    assert [fact.figures for fact in facts] == [["arm:v3"], ["arm:v3"]]
+    assert "floor billing/rate_drop/* on Billing {x} reads unclear" in facts[0].fact
+    assert "floor tone/{rate} on tone reads unclear" in facts[1].fact
+
+
+def test_a_brace_in_a_bar_measure_is_written_as_it_is() -> None:
+    def missed(data: dict[str, Any]) -> None:
+        data["bars"] = [
+            {
+                "aspect": "billing",
+                "arm": "v3",
+                "measure": "{m}",
+                "bar": 1.0,
+                "direction": "higher_is_better",
+                "status": "missed",
+            }
+        ]
+
+    facts = _of(_facts(_S1, recommends=["v3"], input_change=missed), "warning_unanswered")
+
+    assert [fact.figures for fact in facts][-1] == ["arm:v3"]
+    assert "it misses the bar on {m} on billing" in facts[-1].fact
+
+
+def test_a_brace_in_a_guardrail_name_is_written_as_it_is() -> None:
+    def breach(data: dict[str, Any]) -> None:
+        data["guardrails"] = [{"arm": "f64", "dimension": "{tone}", "decision": "breached"}]
+
+    facts = _of(_facts(_R4, recommends=["f64"], input_change=breach), "adoption")
+
+    assert [(fact.figures, "breached the guardrail on {tone}." in fact.fact) for fact in facts] == [
+        (["arm:f64", "arm:prod"], True)
+    ]
+
+
+def test_a_brace_in_an_arm_the_snapshot_does_not_hold_is_written_as_it_is() -> None:
+    facts = _of(_facts(_KAIRO, recommends=["gh{o}st"]), "call_vs_dominance")
+
+    assert [fact.figures for fact in facts] == [["arm:September"]]
+    assert facts[0].fact.endswith("the document recommends `gh{o}st`.")
+
+
+def test_a_brace_in_an_undecided_criterion_label_is_written_as_it_is() -> None:
+    def braced(data: dict[str, Any]) -> None:
+        _renamed(("criteria", "label"), ("id", "p95"), "Latency {p95}")(data)
+
+    facts = _of(_facts(_EACH_TASK, doc_change=_uncite(*_UNDECIDED), input_change=braced), "undecided_implied")
+
+    assert ["is undecided on Latency {p95}, which" in fact.fact for fact in facts] == [True, True]
+    assert facts[0].figures == [
+        "arm:atlas-m.high.r1",
+        "measure.latency_ms.atlas-m.high.r1.p95",
+        "criteria.p95.threshold",
+    ]
+
+
+def test_a_brace_in_an_unasked_aspect_name_is_written_as_it_is() -> None:
+    def braced(data: dict[str, Any]) -> None:
+        _unasked("billing")(data)
+        _renamed(("aspects", "name"), ("id", "billing"), "Billing {x}")(data)
+
+    facts = _of(_facts(_S1, recommends=["v2"], input_change=braced), "settled_loss_unasked")
+
+    assert [fact.figures for fact in facts] == [
+        ["arm:v2", "aspects.billing.reading.v2.interval", "aspects.billing.reading.v2.margin"]
+    ]
+    assert "reading on Billing {x}, which the campaign" in facts[0].fact
