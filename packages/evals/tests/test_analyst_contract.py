@@ -522,25 +522,30 @@ def test_the_number_walk_finds_a_bare_number_and_a_figure_that_does_not_resolve(
         _held_to_figures({"notes": ["the excerpt reads 408"]}, held)
 
 
-async def test_every_analyst_read_action_answers_alike_twice_within_its_budget_on_every_figure_by_its_key() -> None:
+@pytest.mark.parametrize("name", [*fixture_inputs(), KAIRO])
+async def test_every_analyst_read_action_answers_alike_twice_within_its_budget_on_every_figure_by_its_key(
+    name: str,
+) -> None:
+    """Every read action on one fixture snapshot: a case per snapshot, so no one case reads every snapshot."""
     fixture, snapshots = off_loop(_seeded)
     tool = _analyst_tool()
     actions = read_actions()
     assert {action.name for action in actions} >= {"capability_gap"}
-    for name, snapshot in snapshots.items():
-        held = frozen_input(snapshot)
-        for action in actions:
-            for arguments in action_calls(action, held, snapshot.id):
-                first = await _call(tool, fixture, arguments)
-                second = await _call(tool, fixture, arguments)
-                where = f"{action.name} on {name}"
-                assert first.ending == "ok", f"{where}: {first.text}"
-                assert (first.text, first.structured) == (second.text, second.structured), where
-                assert len(first.text) <= TEXT_BUDGET, f"{where}: {len(first.text)} characters"
-                assert first.structured is not None
-                # A block is returned as a page prints it: its cells, domain and notes are the chart's own print, held
-                # equal to the planned page's (test_analyst_render), so its text is not held to keys here.
-                _held_to_figures(first.structured, held, text=action.name != "block_render")
+    assert set(snapshots) == {*fixture_inputs(), KAIRO}, "the cases name every fixture snapshot, and only those"
+    snapshot = snapshots[name]
+    held = frozen_input(snapshot)
+    for action in actions:
+        for arguments in action_calls(action, held, snapshot.id):
+            first = await _call(tool, fixture, arguments)
+            second = await _call(tool, fixture, arguments)
+            where = f"{action.name} on {name}"
+            assert first.ending == "ok", f"{where}: {first.text}"
+            assert (first.text, first.structured) == (second.text, second.structured), where
+            assert len(first.text) <= TEXT_BUDGET, f"{where}: {len(first.text)} characters"
+            assert first.structured is not None
+            # A block is returned as a page prints it: its cells, domain and notes are the chart's own print, held
+            # equal to the planned page's (test_analyst_render), so its text is not held to keys here.
+            _held_to_figures(first.structured, held, text=action.name != "block_render")
 
 
 def test_the_walk_sweeps_a_range_that_names_an_unswept_side_on_either_end() -> None:

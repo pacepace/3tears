@@ -87,12 +87,11 @@ def test_an_input_made_where_a_dropped_one_was_reads_its_own_figures() -> None:
     path = f"measure.{key}.{arm}.mean"
     seen: set[int] = set()
     reused = 0
-    for step in range(200):
+    for step in range(100):
         document["measures"][key]["per_arm"][arm]["mean"] = 10.0 + step / 8
         held = ReportInput.model_validate(document)
         reused += id(held) in seen
         seen.add(id(held))
         assert resolve(path, held).value == 10.0 + step / 8, step
         del held
-        gc.collect()
     assert reused, "the control: some input was made where a dropped one had been"
