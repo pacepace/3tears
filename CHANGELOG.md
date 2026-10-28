@@ -77,6 +77,31 @@ chart of readings, its values table and a reading's `level` key (`reading.<arm>.
 (`stats.INTERVAL_LEVEL`), and a hand-built input needs no gain fields for a reading's chart to draw. What reads the gain
 interval (a reading's spread, two arms apart on a pass rate, the campaign scorecard) keeps its own level.
 
+### evals: the report editor's facts, what code computes about a report document for the editor to weigh
+
+**Added (provisional):** `threetears.evals.analysis.report_doc_facts` (new): `editor_facts(doc, report_input)` returns
+the interpretive findings of ruling 1 as `EditorFact`s, `{kind, path, fact, figures}`: one sentence stating a
+computed truth, its figures written as the page writes their keys, with those keys listed. A fact never refuses,
+never blocks storage and never says what to conclude; the writing loop hands them to the report editor. The kinds:
+a recommended arm missing a declared gate or guardrail figure (`gate_failed`); a warning code raises on a recommended
+arm that no figure key in the document names (`warning_unanswered`); a call that differs from `options_dominance`'s
+reading of code's call (`call_vs_dominance`); a weakest margin no Watch entry cites a key naming, said to be on an
+arm the document recommends or not (`weakest_not_in_watch`); a recommended candidate whose switch the evidence does not support as the report plan's
+adoption check read it (`adoption`); a recommended candidate's loss settled past the margin on an aspect the campaign
+does not ask about, the other side of #980's `unsettled:<aspect>` (`settled_loss_unasked`); an undecided option's
+inferred miss, as `options_dominance` hands it to the analyst, where no key in the document names that read
+(`undecided_implied`); and a count written in words
+with no key, `four of five` but not `one arm` (`count_in_words`). Every condition reads the snapshot's figures and
+what the document names; none reads `story` or the eval's kind, so the facts are byte-identical when only `story`
+changes. A sentence is built from its text and the keys code builds, each key written out on its own, so a brace in
+a label, a name or an id the snapshot holds is written as it is and never read as a key. The module's `__all__` stays
+empty until the writing loop's editor turn calls these names, and `tests/test_report_doc_facts_exports.py` lists them.
+
+**Fixed:** `analysis.analyst.cited.cite` and `cite_written` spell a figure from what its key resolved to rather than
+rendering `{key}` back through the prose parser, so a figure whose ids carry a brace (a floor's key, a cell's row) no
+longer refuses, and with it `options_dominance` and the gate reads on such a snapshot. Every other figure reads as
+before.
+
 ### evals: the report document, `report-doc/1`, and its stored form `eval_report_doc`
 
 **Added (provisional):** `threetears.evals.kernel.report_doc` holds the report document an analyst writes from a

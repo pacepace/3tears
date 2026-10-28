@@ -6,8 +6,9 @@ A tool never builds a number itself: it builds the key that names the figure (``
 cites the same key, and the renderer prints the same number.
 
 A :class:`CitedFigure` carries the key, the value, what kind of value it is and its scale, and ``reads``: the figure as
-the page writes it (``{key}`` rendered by :func:`~threetears.evals.analysis.report.figure_keys.render`), so the text a
-tool returns reads as the page will. What is not a figure is not cited: an arm is named ``arm:<id>``, a caveat by its
+the page writes it (``{key}`` as :func:`~threetears.evals.analysis.report.figure_keys.render` writes it), so the text a
+tool returns reads as the page will. It is spelled from the figure the key resolved to, never by parsing ``{key}`` back
+out of text, so a key whose ids carry a brace (a floor's key, a cell's row) reads as surely as any other. What is not a figure is not cited: an arm is named ``arm:<id>``, a caveat by its
 id, an example by its trial id, and reasons, excerpts and notes are text.
 """
 
@@ -16,7 +17,15 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.errors import UnstatedFigure
-from threetears.evals.analysis.report.figure_keys import Figure, FigureKind, Scale, format_figure, render, resolve
+from threetears.evals.analysis.report.figure_keys import (
+    ARM_TEMPLATE,
+    Figure,
+    FigureKind,
+    Scale,
+    format_figure,
+    resolve,
+)
+from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import ReportInput
 
 
@@ -80,6 +89,16 @@ def _whole(figure: Figure) -> int | float | tuple[float, float] | str:
     return value
 
 
+def _arm_written(report_input: ReportInput, arm_id: str) -> str:
+    """An arm as the page writes ``{arm:<id>}`` with no computed short names: its short name, else its alias, else its
+    id, then its letter tag."""
+    arms = report_input.arms
+    arm = next(held for held in arms if held.id == arm_id)
+    control = next((held.id for held in arms if held.role == "control"), None)
+    tag = arm_tags([held.id for held in arms], control)[arm_id]
+    return ARM_TEMPLATE.format(name=arm.short_name or arm.name or arm.id, tag=tag)
+
+
 def cite(key: str, report_input: ReportInput) -> CitedFigure:
     """The figure a key names on the report input, with the text the page writes it as.
 
@@ -95,7 +114,7 @@ def cite(key: str, report_input: ReportInput) -> CitedFigure:
     figure = resolve(key, report_input)
     return CitedFigure(
         key=key,
-        reads=render("{" + key + "}", report_input, {}),
+        reads=_arm_written(report_input, str(figure.value)) if figure.kind == "arm" else format_figure(figure),
         value=_whole(figure),
         kind=figure.kind,
         scale=figure.scale,
@@ -141,7 +160,7 @@ def cite_written(key: str, filters: tuple[str, ...], report_input: ReportInput) 
     :raises UnresolvableReference: The key does not resolve, or a filter does not suit its figure.
     """
     figure = resolve(key, report_input)
-    reads = render("{" + key + "}", report_input, {}) if figure.kind == "arm" else format_figure(figure, filters)
+    reads = _arm_written(report_input, str(figure.value)) if figure.kind == "arm" else format_figure(figure, filters)
     return WrittenFigure(
         key=key,
         reads=reads,
