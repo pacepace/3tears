@@ -72,9 +72,9 @@ from threetears.evals.schema.turns import (
 #: entry point builds answers.
 __all__ = ["SessionLimits", "SessionStop", "ToolMount", "ToolOutcome", "ToolSession"]
 
-#: The check every turn asks the provider to run on the thinking blocks it replays: the history is append-only, so a
-#: thinking block's conversation never changes under it, and a turn whose did is refused rather than answered without
-#: the reasoning.
+#: The check every turn asks the provider to run on the thinking blocks it replays, wherever the turn thinks (see
+#: :class:`ThinkingBinding`): the history is append-only, so a thinking block's conversation never changes under it,
+#: and a turn whose did is refused rather than answered without the reasoning.
 _APPEND_ONLY = ThinkingBinding(prefix_mismatch_behavior="error")
 
 #: The storage format :meth:`ToolSession.to_json` writes and :meth:`ToolSession.from_json` reads.

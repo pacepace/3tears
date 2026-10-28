@@ -487,7 +487,8 @@ class ThinkingBinding:
     ``error`` refuses a request whose history changed under a thinking block it replays (a 400 naming the block),
     ``drop_block`` drops that block and every later one and answers. An append-only loop sends ``error``, so an edit to
     its own history fails the turn instead of quietly costing it the reasoning. It rides on the request's thinking
-    (adaptive, or a budget), so a turn that sends no thinking sends no binding: it replays no block to check.
+    (adaptive, or a budget): a turn with thinking disabled sends none. A model that cannot turn thinking off is sent
+    adaptive thinking to carry it; one that may not think when sent none is sent none, and with it no binding.
 
     :ivar prefix_mismatch_behavior: ``error`` or ``drop_block``.
     """

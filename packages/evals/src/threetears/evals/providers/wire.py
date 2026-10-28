@@ -631,8 +631,10 @@ def turn_body(
         is the sender's to add); ``None`` sends none.
     :ptype clearing: ToolResultClearing | None
     :param binding: The check the provider runs on replayed thinking blocks, sent as ``thinking.block_binding`` (its
-        beta header is the sender's to add) where the body carries adaptive or budgeted thinking; a body with no
-        thinking, or with thinking disabled, replays no block and sends none. ``None`` sends none.
+        beta header is the sender's to add) where the body carries adaptive or budgeted thinking. A model that cannot
+        turn thinking off thinks adaptively when sent none, so it is sent adaptive thinking to carry the binding. A
+        body with thinking disabled sends none, nor does one with no thinking on a model that may then not think.
+        ``None`` sends none.
     :ptype binding: ThinkingBinding | None
     :return: The JSON body.
     :rtype: dict[str, Any]
@@ -672,7 +674,11 @@ def turn_body(
     if tools:
         *first_tools, last_tool = (tool.to_json() for tool in tools)
         body["tools"] = [*first_tools, _breakpoint(last_tool)]
-    if (thinking := anthropic_thinking(sent, facts)) is not None:
+    thinking: dict[str, str | int] | None = anthropic_thinking(sent, facts)
+    if thinking is None and binding is not None and facts.reasoning_disable is False:
+        # It thinks adaptively whatever is sent, so its own default goes as what it is, to carry the binding.
+        thinking = {"type": "adaptive"}
+    if thinking is not None:
         thinks = thinking["type"] in ("adaptive", "enabled")
         body["thinking"] = {**thinking, "block_binding": binding.to_json()} if binding and thinks else thinking
     if sent.reasoning_effort not in (None, "none"):

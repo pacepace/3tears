@@ -546,6 +546,37 @@ async def test_a_binding_rides_a_thinking_budget_and_no_turn_that_sends_thinking
     assert disabled.bodies[0]["thinking"] == {"type": "disabled"}, "thinking disabled replays no block to check"
 
 
+async def test_a_binding_on_a_model_built_with_no_effort_goes_where_the_model_thinks_anyway() -> None:
+    """Claude Opus 5.5 cannot turn thinking off, so sent none it thinks adaptively and replays its blocks: it is sent
+    adaptive thinking to carry the check. A model that may not think when sent none is sent neither."""
+    always, maybe = Server(CASES["opening"]["reply"], CASES["opening"]["reply"]), Server(CASES["opening"]["reply"])
+    sent: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return always(request)
+
+    model = Model(
+        MODEL,
+        provider="anthropic",
+        api_key="test-key",
+        catalogue=catalogue(),
+        http=httpx.AsyncClient(transport=httpx.MockTransport(answer)),
+    )
+    await model.turn(
+        system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=4096, binding=ThinkingBinding()
+    )
+    await model.turn(system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=4096)
+    await claude("claude-opus-4-8", maybe).turn(
+        system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=4096, binding=ThinkingBinding()
+    )
+
+    assert always.bodies[0]["thinking"] == {"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "error"}}
+    assert sent[0].headers["anthropic-beta"] == "thinking-binding-controls-2026-08-01"
+    assert "thinking" not in always.bodies[1], "with no binding, no effort sends no thinking, as it always did"
+    assert "thinking" not in maybe.bodies[0]
+
+
 def test_a_binding_refuses_a_behaviour_the_provider_does_not_take() -> None:
     with pytest.raises(ValueError, match="'error' or 'drop_block', not 'warn'"):
         ThinkingBinding(prefix_mismatch_behavior="warn")  # type: ignore[arg-type]
