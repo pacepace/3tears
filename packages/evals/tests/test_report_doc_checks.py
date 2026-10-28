@@ -408,15 +408,23 @@ def _r1_with_arm(old: str, new: str, words: str = "", **fields: str) -> list[Doc
     return check_report_doc(doc, report_input, above_appendix_text=_rendered_above_appendix_text(doc, report_input))
 
 
-def test_a_lever_arms_id_the_page_prints_by_another_name_is_refused_though_a_hyphen_alone_marks_it() -> None:
-    """A lever arm's id is the campaign's label (``fanout-1``): where the page prints the arm as "fanout 1", prose
-    typing the id is refused, its one id mark a hyphen, in the document and on the page it builds; its alias, which an
-    input built from a run sets to the id, does not hide it."""
-    assert _r1_with_arm("brisk-s", "fanout-1", short_name="fanout 1") == []
+#: Lever arms' ids beside the names the page prints for them: Discodon's (a hyphen and a digit), one a hyphen alone
+#: marks, and one a digit alone marks.
+_LEVER_ARMS = [("fanout-1", "fanout 1"), ("fan-wide", "fan wide"), ("fanout1", "fanout 1")]
 
-    verdicts = _r1_with_arm("brisk-s", "fanout-1", " Most fanout-1 answers still read well.", short_name="fanout 1")
 
-    said = "types the arm id 'fanout-1', which the page prints as 'fanout 1'"
+@pytest.mark.parametrize(("arm_id", "printed"), _LEVER_ARMS, ids=[arm_id for arm_id, _ in _LEVER_ARMS])
+def test_a_lever_arms_id_the_page_prints_by_another_name_is_refused_though_a_hyphen_or_digit_alone_marks_it(
+    arm_id: str, printed: str
+) -> None:
+    """A lever arm's id is the campaign's label (``fanout-1``): where the page prints the arm otherwise ("fanout 1"),
+    prose typing the id is refused, even where its one id mark is a hyphen or a digit, in the document and on the
+    page it builds; its alias, which an input built from a run sets to the id, does not hide it."""
+    assert _r1_with_arm("brisk-s", arm_id, short_name=printed) == []
+
+    verdicts = _r1_with_arm("brisk-s", arm_id, f" Most {arm_id} answers still read well.", short_name=printed)
+
+    said = f"types the arm id {arm_id!r}, which the page prints as {printed!r}"
     assert [(verdict.invariant, verdict.path, verdict.fault) for verdict in verdicts] == [
         (5, "decision[0].text", f"{said} above the appendix"),
         (5, "page", f"{said} on the page above the appendix"),

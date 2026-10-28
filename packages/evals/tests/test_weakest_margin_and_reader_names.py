@@ -239,20 +239,28 @@ def _plan_faults(plan: dict[str, Any], report_input: ReportInput) -> list[tuple[
     return []
 
 
-def test_a_lever_arms_id_the_page_prints_by_another_name_is_refused_though_a_hyphen_alone_marks_it() -> None:
-    """A lever arm's id is the campaign's label (``fanout-1``): where the page prints the arm as "fanout 1", prose
-    typing the id is refused, its one id mark a hyphen; its alias, which an input built from a run sets to the id,
-    does not hide it."""
-    plan, report_input = _r1_with_arm("brisk-s", "fanout-1", short_name="fanout 1")
+#: Lever arms' ids beside the names the page prints for them: Discodon's (a hyphen and a digit), one a hyphen alone
+#: marks, and one a digit alone marks.
+_LEVER_ARMS = [("fanout-1", "fanout 1"), ("fan-wide", "fan wide"), ("fanout1", "fanout 1")]
+
+
+@pytest.mark.parametrize(("arm_id", "printed"), _LEVER_ARMS, ids=[arm_id for arm_id, _ in _LEVER_ARMS])
+def test_a_lever_arms_id_the_page_prints_by_another_name_is_refused_though_a_hyphen_or_digit_alone_marks_it(
+    arm_id: str, printed: str
+) -> None:
+    """A lever arm's id is the campaign's label (``fanout-1``): where the page prints the arm otherwise ("fanout 1"),
+    prose typing the id is refused, even where its one id mark is a hyphen or a digit; its alias, which an input
+    built from a run sets to the id, does not hide it."""
+    plan, report_input = _r1_with_arm("brisk-s", arm_id, short_name=printed)
     assert _plan_faults(plan, report_input) == []
 
-    _slot(plan, "why_not")["text"] += " Most fanout-1 answers still read well."
+    _slot(plan, "why_not")["text"] += f" Most {arm_id} answers still read well."
 
     assert _plan_faults(plan, report_input) == [
         (
             "decision.slots[1].text",
-            "types the arm id 'fanout-1' above Full results: write the name the page prints for it, 'fanout 1', or its "
-            "key {arm:fanout-1}",
+            f"types the arm id {arm_id!r} above Full results: write the name the page prints for it, {printed!r}, or "
+            f"its key {{arm:{arm_id}}}",
         )
     ]
 

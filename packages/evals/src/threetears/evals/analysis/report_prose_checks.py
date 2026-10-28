@@ -227,8 +227,8 @@ def _internal_arm_ids(report_input: ReportInput) -> dict[str, str]:
     """Each arm's id a reader is never shown: one that differs, case-folded, from both the name the page prints for
     its arm (:func:`~threetears.evals.analysis.report.figure_keys.printed_arm_name`) and its served model, and holds
     an id mark, a hyphen or a digit. A model arm, whose id is its served model's name, is the reader's word; a lever
-    arm's id is not. Its alias is not a name the page prints, since an input built from a run names each arm by its
-    id."""
+    arm's id is not. The alias exempts nothing beyond the printed name it falls back to: an input built from a run
+    sets every arm's alias to its id."""
     found: dict[str, str] = {}
     for arm in report_input.arms:
         printed = printed_arm_name(arm)
