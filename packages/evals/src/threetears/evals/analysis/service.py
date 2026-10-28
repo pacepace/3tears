@@ -1375,7 +1375,7 @@ async def _commit_insights_then_ending(
             )
             raise JobFenced(
                 f"{lost}, and withdrawing what it stored failed part-way ({type(unwithdrawn).__name__}: "
-                f"{unwithdrawn}): {left_behind} may still be stored — delete it, and put back or delete insights "
+                f"{unwithdrawn}): {left_behind} may still be stored — delete whatever of it is, and put back or delete insights "
                 f"{[insight.id for insight in stored_insights]} by hand"
             ) from unwithdrawn
         raise JobFenced(f"{lost}; analysis '{analysis.id}' and its insights were withdrawn")

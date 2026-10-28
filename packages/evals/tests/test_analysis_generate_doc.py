@@ -25,6 +25,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import dataclasses
+import math
+import random
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -32,6 +34,7 @@ import pytest
 
 import threetears.evals.analysis.planned_analysis as planned_analysis
 import threetears.evals.analysis.service as analysis_service
+import threetears.evals.ops.analysis as analysis_ops
 from packages.evals.tests.doc_writer_support import (
     ANALYST_MODEL,
     TOY_DOC,
@@ -54,7 +57,12 @@ from packages.evals.tests.ops_support import (
 from threetears.evals.actions.report_writing import write_report
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
-from threetears.evals.analysis.out_of_run_spend import out_of_run_spend_text, scope_out_of_run_spend
+from threetears.evals.analysis.out_of_run_spend import (
+    OutOfRunSpendTotals,
+    out_of_run_spend_text,
+    scope_out_of_run_spend,
+)
+from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
 from threetears.evals.analysis.doc_analysis import doc_analysis
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.campaign import EvalAnalysis, EvalAnalysisAttempt
@@ -76,7 +84,7 @@ from threetears.evals.ops.analyst import report_snapshot_freeze, snapshot_input
 from threetears.evals.ops.analyst_facts import campaign_overview
 from threetears.evals.ops.report_writer.analyst import AnalystLimits
 from threetears.evals.ops.report_writer.editor import EditorLimits
-from threetears.evals.ops.report_writer.tally import Tally
+from threetears.evals.ops.report_writer.tally import Tally, TurnCost
 from threetears.evals.run import Ceilings
 from threetears.evals.schema.turns import TurnReply, TurnText, TurnToolUse
 
@@ -197,11 +205,141 @@ async def test_the_reports_ledger_row_states_its_turns_its_shares_and_the_budget
         2,
     )
     text = out_of_run_spend_text(report)
-    assert (
-        "purpose analysis: 2 call(s): $0.0200 reported; admitted at up to $0.0000, 2 admitted by a report budget"
-        in (text)
-    ), text
+    assert "purpose analysis: 2 call(s): $0.0200 reported; 2 admitted by a report budget" in text, text
+    assert "admitted at up to" not in text, "a budget-admitted call has no ceiling in the ledger, never read as $0"
     assert "unbounded" not in text and "(admitted by the report budget of $10.00)" in text, text
+
+
+def _priced_turn(cost: float | None, n: int) -> TurnCost:
+    return TurnCost(
+        session="analyst",
+        role="analyst",
+        round=1,
+        turn=n,
+        model=ANALYST_MODEL,
+        served_model=None,
+        input_tokens=10,
+        output_tokens=5,
+        reasoning_tokens=None,
+        cache_read_tokens=None,
+        cache_write_tokens=None,
+        cost_usd=cost,
+        price_source=None if cost is None else "catalogue",
+        pricing_failure=None if cost is not None else "no rate",
+        stop_reason="end_turn",
+        wall_s=0.1,
+    )
+
+
+def _tally_of(costs: Sequence[float | None], *, unreturned: int = 0) -> Tally:
+    tally = Tally()
+    for n, cost in enumerate(costs):
+        tally.record_sent()
+        tally.record_turn(_priced_turn(cost, n))
+    for _ in range(unreturned):
+        tally.record_sent()
+    return tally
+
+
+def _row_like_the_jobs(tally: Tally) -> OutOfRunSpend:
+    """The row the job writes from a tally: its total, its shares and its raised turns, as the tally gives them."""
+    return OutOfRunSpend(
+        scope_id=TOYHOST_SCOPE,
+        purpose="analysis",
+        model=ANALYST_MODEL,
+        outcome="completed",
+        cost_usd=tally.spent_usd(),
+        calls=tally.sent,
+        unpriced_calls=tally.unpriced_turns(),
+        raised_calls=tally.unreturned_turns(),
+        priced_usd=tally.priced_usd(),
+        admitted_by="the report budget of $10.00",
+    )
+
+
+async def test_a_report_whose_turn_costs_sum_apart_two_ways_is_still_ledgered_and_linked() -> None:
+    """0.1 + 0.2 + 0.3 sums to 0.6000000000000001 one way and 0.6 the other: the row holds one figure for both."""
+    fixture = off_loop(ops_fixture)
+    _scripted(
+        fixture,
+        {
+            "analyst": [
+                scripted_reply(TurnToolUse("toolu_1", "nope", {}), cost=0.1),
+                scripted_reply(submission(), cost=0.2),
+            ],
+            "editor-1": [scripted_reply(passing_review(), cost=0.3)],
+        },
+    )
+    status = await _generated(fixture)
+    assert status.status == "stored", status
+    (row,) = _ledger(fixture)
+    assert row.cost_usd == row.priced_usd == pytest.approx(0.6)
+    assert (row.calls, row.unpriced_calls, row.raised_calls) == (3, 0, 0)
+
+
+def test_every_fully_priced_tally_gives_one_figure_for_its_total_and_its_share() -> None:
+    chance = random.Random(20261028)
+    for _ in range(1000):
+        costs = [round(chance.uniform(0.001, 0.2), chance.choice((3, 6, 9))) for _ in range(chance.randint(2, 40))]
+        tally = _tally_of(costs)
+        assert tally.spent_usd() == tally.priced_usd() == pytest.approx(math.fsum(costs))
+        row = _row_like_the_jobs(tally)
+        assert row.cost_usd == row.priced_usd
+
+
+def test_a_rows_raised_turns_are_counted_raised_and_unpriced() -> None:
+    row = _row_like_the_jobs(_tally_of([0.1, None], unreturned=2))
+    assert (row.calls, row.unpriced_calls, row.raised_calls, row.cost_usd) == (4, 3, 2, None)
+    assert row.priced_usd == pytest.approx(0.1)
+    totals = OutOfRunSpendTotals.of([row])
+    assert (totals.n_calls, totals.n_raised, totals.n_unpriced) == (4, 2, 3)
+
+
+def test_a_host_row_whose_total_and_share_differ_in_the_last_place_reads_and_one_a_cent_apart_is_refused() -> None:
+    fields: dict[str, Any] = {
+        "scope_id": "s",
+        "purpose": "analysis",
+        "model": "m",
+        "outcome": "completed",
+        "calls": 3,
+        "unpriced_calls": 0,
+        "raised_calls": 0,
+    }
+    OutOfRunSpend(**fields, cost_usd=0.1 + 0.2 + 0.3, priced_usd=math.fsum([0.1, 0.2, 0.3]))
+    with pytest.raises(ValueError, match="costs its priced share"):
+        OutOfRunSpend(**fields, cost_usd=0.61, priced_usd=0.6)
+
+
+async def test_a_failure_after_the_document_is_stored_still_writes_the_ending(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixture = off_loop(ops_fixture)
+
+    def breaks(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("a defect minting the analysis")
+
+    monkeypatch.setattr(analysis_ops, "doc_analysis", breaks)
+    status = await _generated(fixture)
+    attempt = _attempt(fixture, status)
+    assert (status.state, attempt.outcome) == ("failed", "failed")
+    assert attempt.error is not None and "is stored, and its analysis could not be built or ledgered" in attempt.error
+    assert "RuntimeError: a defect minting the analysis" in attempt.error
+    assert attempt.calls == 2
+    (row,) = _ledger(fixture)
+    assert row.calls == 2, "the report's spend is ledgered whatever became of its analysis"
+
+
+async def test_a_ledger_write_that_breaks_after_the_document_is_stored_still_writes_the_ending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = off_loop(ops_fixture)
+
+    def breaks(row: Any) -> None:
+        raise RuntimeError("a defect in the ledger write")
+
+    monkeypatch.setattr(fixture.host.eval_host.storage, "save_out_of_run_spend", breaks)
+    status = await _generated(fixture)
+    attempt = _attempt(fixture, status)
+    assert attempt.outcome == "failed"
+    assert attempt.error is not None and "RuntimeError: a defect in the ledger write" in attempt.error
 
 
 # -- the minting, over the toy snapshot -------------------------------------------------------------------------------
@@ -395,6 +533,7 @@ async def test_a_failed_report_fails_the_job_with_its_ending_and_reason() -> Non
     assert attempt.token_cost == pytest.approx(0.01), "the priced share, a floor beside the unpriced turn"
     (row,) = _ledger(fixture)
     assert (row.calls, row.unpriced_calls, row.priced_usd, row.cost_usd) == (2, 1, pytest.approx(0.01), None)
+    assert row.raised_calls == 1, "the turn that raised is counted raised"
     assert row.prompt_tokens is None, "nothing reported the raised turn's tokens"
 
 

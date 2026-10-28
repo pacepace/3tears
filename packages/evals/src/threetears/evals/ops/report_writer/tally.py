@@ -253,7 +253,11 @@ class Tally:
         :return: The sum, or ``None``.
         :rtype: float | None
         """
-        return None if self.sent > len(self._turns) else _sum_cost(self._turns)
+        if self.unpriced_turns():
+            return None
+        # One sum for both: the total is the priced share when every turn is priced, never a second summation that
+        # could differ from it in the last place.
+        return self.priced_usd()
 
     def priced_usd(self) -> float:
         """What the turns that reported a cost cost together: the priced share, a floor whenever a sent turn is
@@ -263,6 +267,15 @@ class Tally:
         :rtype: float
         """
         return math.fsum(turn.cost_usd for turn in self._turns if turn.cost_usd is not None)
+
+    def unreturned_turns(self) -> int:
+        """The turns sent whose reply never came: the client raised, or the writing was cancelled or ran out of time
+        while they were in flight. Each is unpriced (:meth:`unpriced_turns` counts it too).
+
+        :return: The count.
+        :rtype: int
+        """
+        return self.sent - len(self._turns)
 
     def unpriced_turns(self) -> int:
         """The turns sent whose cost nothing reported: replies with no cost, and turns whose reply never came.

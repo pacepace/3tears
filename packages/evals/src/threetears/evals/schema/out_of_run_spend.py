@@ -14,6 +14,7 @@ unreadable, never a reason to drop the row of a call that was paid for.
 
 from __future__ import annotations
 
+import math
 import uuid
 from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, Self, get_args
 
@@ -25,6 +26,10 @@ from threetears.evals.schema.completion import StopReason
 
 if TYPE_CHECKING:
     pass
+
+#: How far apart a fully priced row's total and its priced share may read and still be one figure: a sum's last
+#: places, never a cent. The engine writes the one as the other; a host summing them apart is held to this.
+_SHARE_REL_TOL: Final = 1e-9
 
 
 #: What an out-of-run call was for: ``variation`` writes a launch's generated cases (an ``llm``
@@ -152,6 +157,16 @@ class OutOfRunSpend(CoreDocumentModel):
             "stopped, whose reply never came and which may have been billed. Set exactly when `calls` is."
         ),
     )
+    raised_calls: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Of `unpriced_calls`, the turns whose reply never came: the client raised, or the writing was cancelled "
+            "or ran out of time while they were in flight. The row's `outcome` is the row's (`completed`: it "
+            "ledgers what the report spent), so this is what counts its raised calls. Set exactly when `calls` is."
+        ),
+    )
     priced_usd: float | None = Field(
         default=None,
         ge=0.0,
@@ -211,17 +226,25 @@ class OutOfRunSpend(CoreDocumentModel):
     def _a_row_of_several_calls_states_its_shares(self) -> Self:
         """Refuse a row of several calls without its priced and unpriced shares, shares on a row of one, more unpriced
         calls than calls, or a total cost that disagrees with its shares."""
+        shares = (self.unpriced_calls, self.raised_calls, self.priced_usd)
         if self.calls is None:
-            if self.unpriced_calls is not None or self.priced_usd is not None:
-                raise ValueError("unpriced_calls and priced_usd are a row of several calls' shares; set calls too")
+            if any(share is not None for share in shares):
+                raise ValueError(
+                    "unpriced_calls, raised_calls and priced_usd are a row of several calls' shares; set calls too"
+                )
             return self
-        if self.unpriced_calls is None or self.priced_usd is None:
-            raise ValueError("a row of several calls states its unpriced_calls and its priced_usd")
-        if self.unpriced_calls > self.calls:
-            raise ValueError(f"{self.unpriced_calls} unpriced calls in a row of {self.calls}")
+        if self.unpriced_calls is None or self.raised_calls is None or self.priced_usd is None:
+            raise ValueError("a row of several calls states its unpriced_calls, its raised_calls and its priced_usd")
+        if not self.raised_calls <= self.unpriced_calls <= self.calls:
+            raise ValueError(
+                f"a row of {self.calls} calls with {self.unpriced_calls} unpriced and {self.raised_calls} raised: "
+                "raised calls are unpriced, and unpriced ones are calls"
+            )
         if self.unpriced_calls and self.cost_usd is not None:
             raise ValueError("a row with an unpriced call has no total: cost_usd is None, and priced_usd its floor")
-        if not self.unpriced_calls and self.cost_usd != self.priced_usd:
+        if not self.unpriced_calls and (
+            self.cost_usd is None or not math.isclose(self.cost_usd, self.priced_usd, rel_tol=_SHARE_REL_TOL)
+        ):
             raise ValueError("a row whose every call is priced costs its priced share: cost_usd is priced_usd")
         return self
 

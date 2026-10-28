@@ -904,8 +904,9 @@ class ReportWriter(Protocol):
         ...
 
 
-class _Writer(Protocol):
-    """:class:`ReportWriter`'s call, as the job makes it."""
+class ReportWriterCall(Protocol):
+    """:class:`ReportWriter`'s call, typed: as the job makes it and as the action's writer is checked against it, so a
+    keyword renamed on either side is caught by the type checker."""
 
     async def __call__(
         self,
@@ -1345,6 +1346,7 @@ def _spend_row(
         return None
     turns = tally.turns
     complete = tally.sent == len(turns)
+    priced, unpriced = tally.priced_usd(), tally.unpriced_turns()
     served = {turn.served_model for turn in turns}
     sources = sorted({turn.price_source for turn in turns if turn.price_source is not None})
     return OutOfRunSpend(
@@ -1356,13 +1358,15 @@ def _spend_row(
         prompt_tokens=_summed([turn.input_tokens for turn in turns]) if complete else None,
         completion_tokens=_summed([turn.output_tokens for turn in turns]) if complete else None,
         reasoning_tokens=_summed([turn.reasoning_tokens for turn in turns]) if complete else None,
-        cost_usd=tally.spent_usd(),
+        # The total is the priced share itself when every turn is priced: one figure, never two sums of it.
+        cost_usd=None if unpriced else priced,
         price_source=", ".join(sources) if sources else None,
         subject_id=campaign.subject_id,
         campaign_id=attempt.campaign_id,
         calls=tally.sent,
-        unpriced_calls=tally.unpriced_turns(),
-        priced_usd=tally.priced_usd(),
+        unpriced_calls=unpriced,
+        raised_calls=tally.unreturned_turns(),
+        priced_usd=priced,
         admitted_by=_budget_words(budget),
     )
 
@@ -1414,25 +1418,37 @@ async def _write_doc_analysis(
     written: ReportWritten | None = None
     not_stored: ReportNotStored | None = None
 
+    ledgered = False
+
+    async def ledger() -> None:
+        # Once per report, whichever ending writes it.
+        nonlocal ledgered
+        if not ledgered:
+            ledgered = True
+            await _ledgered(eval_host, tally, attempt, campaign, prepared.budget)
+
     async def ended(
         outcome: AttemptOutcome, error: str, *, refused_by: EvalServiceError | None = None, refusals: Sequence[str] = ()
     ) -> None:
-        await _ledgered(eval_host, tally, attempt, campaign, prepared.budget)
-        await record_written_generation(
-            eval_host,
-            attempt,
-            outcome=outcome,
-            tally=_attempt_tally(tally, prompt_version=attempt.prompt_id, refusals=refusals),
-            bundle_fingerprint="",
-            error=error,
-            refused_by=refused_by,
-        )
+        # The ending is written whatever the ledger's write does: a report is never left with no ending.
+        try:
+            await ledger()
+        finally:
+            await record_written_generation(
+                eval_host,
+                attempt,
+                outcome=outcome,
+                tally=_attempt_tally(tally, prompt_version=attempt.prompt_id, refusals=refusals),
+                bundle_fingerprint="",
+                error=error,
+                refused_by=refused_by,
+            )
 
     try:
         async with prepared.client, deadline:
             try:
-                # The public protocol is opaque (its docstring says why); the job calls it as :class:`_Writer`.
-                written = await cast("_Writer", writer)(
+                # The public protocol is opaque (its docstring says why); the job calls it as :class:`ReportWriterCall`.
+                written = await cast("ReportWriterCall", writer)(
                     host,
                     model=prepared.model,
                     budget=prepared.budget,
@@ -1504,15 +1520,15 @@ async def _write_doc_analysis(
         )
         return
     stored = written.stored
-    snapshot = await run_blocking(
-        eval_host.blocking_executor, eval_host.storage.load_report_snapshot, written.snapshot_id, attempt.scope_id
-    )
-    if snapshot is None or snapshot.bundle is None or snapshot.bundle_assembled_at is None:
-        error = f"the report document {stored.id} is stored, and its snapshot {written.snapshot_id} holds no bundle"
-        await ended("failed", error)
-        raise StorageError(error)
-    kinds = tally.to_json()["total"]["bounce_kinds"]
+    # Everything between the stored document and its attempt's ending: a failure here is recorded as the ending, so a
+    # stored document is never left with no attempt saying what became of it. From record_written_generation on, the
+    # ending is its own to write.
     try:
+        snapshot = await run_blocking(
+            eval_host.blocking_executor, eval_host.storage.load_report_snapshot, written.snapshot_id, attempt.scope_id
+        )
+        if snapshot is None or snapshot.bundle is None or snapshot.bundle_assembled_at is None:
+            raise StorageError(f"its snapshot {written.snapshot_id} holds no bundle")
         minted = doc_analysis(
             CampaignBundle.from_dict(snapshot.bundle, what=f"report snapshot {snapshot.id}"),
             await snapshot_input(host, attempt.scope_id, written.snapshot_id),
@@ -1522,15 +1538,20 @@ async def _write_doc_analysis(
             skill_digest=attempt.prompt_id,
             bundle_assembled_at=snapshot.bundle_assembled_at,
             token_cost=tally.spent_usd(),
-            bounces=kinds,
+            bounces=tally.to_json()["total"]["bounce_kinds"],
         )
-    except (EvalServiceError, ValueError) as unminted:
-        # A stored document whose analysis cannot be built is a defect, never the writer's: recorded, raised as itself.
+        await ledger()
+    except asyncio.CancelledError:
+        await ended("cancelled", f"cancelled after report document {stored.id} was stored, before its analysis was")
+        raise
+    # prawduct:ok-broad-except — a stored document's analysis failing is a defect, never the writer's: recorded as the ending, then raised on as itself
+    except Exception as unminted:
         await ended(
-            "failed", f"the report document {stored.id} is stored, and its analysis could not be built ({unminted})"
+            "failed",
+            f"the report document {stored.id} is stored, and its analysis could not be built or ledgered "
+            f"({type(unminted).__name__}: {unminted})",
         )
         raise
-    await _ledgered(eval_host, tally, attempt, campaign, prepared.budget)
     insights = await record_written_generation(
         eval_host,
         attempt,
@@ -1897,6 +1918,7 @@ def insight_delete(host: EvalHost, insight_id: str, scope_id: str, *, confirm: s
 
 
 __all__ = [
+    "ReportWriterCall",
     "AnalysisDeleted",
     "AnalysisGenerationEstimate",
     "AnalysisLine",

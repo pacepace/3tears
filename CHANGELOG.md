@@ -29,7 +29,10 @@ its frozen evidence, its first screen saying the report is stored as report docu
 `resolve_prompt` and `max_output_tokens` and takes `report_budget`, `limits`, `budget_s` and `preparation_budget_s`;
 a host factory adds an `analyst` row, and a client wrapper forwards `turn_session` and `turn_pricing_refusal` (and
 wraps the session client `turn_session` returns). A client that is not a turn model, or a host with no report budget,
-is refused before anything is frozen or sent, saying what to set. `analysis_estimate` states the budget and the most
+is refused before anything is frozen or sent, saying what to set. `threetears.evals.ops` exports, provisional,
+`ReportBudget`, `WriterLimits` and the limits it holds (`AnalystLimits`, `EditorLimits`, `SessionLimits`) for a host
+building its own, and `ReportWriter`, the opaque type of `analysis_generate`'s `writer` (the action hands its job one;
+a host calling the operation directly passes `actions.report_writing.campaign_report_writer(caller)`). `analysis_estimate` states the budget and the most
 turns the writer can send, makes no call, and says it does not check the campaign's evidence, which the job checks
 when it freezes it. The jobs conformance kit counts a turn model's turns as requests.
 

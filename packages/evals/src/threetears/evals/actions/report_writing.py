@@ -17,11 +17,11 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from threetears.evals.actions.analyst import analyst_actions, analyst_tools
 from threetears.evals.actions.catalogue import ActionCatalogue, DEFAULT_PREFIX, Caller, MountedTool, catalogue_primer
-from threetears.evals.ops.analysis import ReportWriter
+from threetears.evals.ops.analysis import ReportWriter, ReportWriterCall
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.report_writer.loop import TurnModel, WriterLimits
 from threetears.evals.ops.report_writer.session import ToolOutcome
@@ -154,7 +154,26 @@ def campaign_report_writer(caller: Caller, *, prefix: str = DEFAULT_PREFIX) -> R
     :rtype: ReportWriter
     """
 
-    async def write(host: OpsHost, **arguments: Any) -> ReportWritten:  # Any: the job's keywords (ReportWriter)
-        return await write_report(host, caller, prefix=prefix, **arguments)
+    async def write(
+        host: OpsHost,
+        *,
+        model: TurnModel,
+        budget: ReportBudget,
+        campaign_id: str,
+        limits: WriterLimits,
+        tally: Tally,
+    ) -> ReportWritten:
+        return await write_report(
+            host,
+            caller,
+            model=model,
+            budget=budget,
+            campaign_id=campaign_id,
+            limits=limits,
+            prefix=prefix,
+            tally=tally,
+        )
 
-    return write
+    # Checked against the call the job makes, then handed over opaque (ReportWriter's docstring says why).
+    typed: ReportWriterCall = write
+    return cast("ReportWriter", typed)

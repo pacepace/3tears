@@ -60,7 +60,7 @@ class OutOfRunSpendTotals(EvalBaseModel):
         """
         return cls(
             n_calls=sum(_calls(row) for row in rows),
-            n_raised=sum(1 for row in rows if row.outcome == "raised"),
+            n_raised=sum(_raised(row) for row in rows),
             n_unpriced=sum(_unpriced(row) for row in rows),
             priced_usd=math.fsum(_priced(row) for row in rows),
             ceiling_usd=math.fsum(row.priced_ceiling_usd for row in rows if row.priced_ceiling_usd is not None),
@@ -72,6 +72,13 @@ class OutOfRunSpendTotals(EvalBaseModel):
 def _calls(row: OutOfRunSpend) -> int:
     """The calls one row ledgers: its ``calls``, or one."""
     return row.calls if row.calls is not None else 1
+
+
+def _raised(row: OutOfRunSpend) -> int:
+    """The raised calls of one row: its ``raised_calls``, or one when its one call raised."""
+    if row.raised_calls is not None:
+        return row.raised_calls
+    return 1 if row.outcome == "raised" else 0
 
 
 def _unpriced(row: OutOfRunSpend) -> int:
@@ -165,11 +172,18 @@ def _totals_line(totals: OutOfRunSpendTotals) -> str:
     floor = f", {totals.n_unpriced} unpriced (so at least)" if totals.n_unpriced else ""
     raised = f", {totals.n_raised} raised" if totals.n_raised else ""
     unbounded = f", {totals.n_unbounded} admitted unbounded" if totals.n_unbounded else ""
-    budgeted = f", {totals.n_budgeted} admitted by a report budget" if totals.n_budgeted else ""
-    return (
-        f"{totals.n_calls} call(s): ${totals.priced_usd:.4f} reported{floor}{raised}; admitted at up to "
-        f"${totals.ceiling_usd:.4f}{unbounded}{budgeted}"
-    )
+    reported = f"{totals.n_calls} call(s): ${totals.priced_usd:.4f} reported{floor}{raised}"
+    if not totals.n_budgeted:
+        return f"{reported}; admitted at up to ${totals.ceiling_usd:.4f}{unbounded}"
+    # A report budget admitted some calls, each turn on a ceiling the ledger does not hold: the ceiling sum is said of
+    # the calls it was summed over alone, and left out where every call was the budget's, never read as $0.
+    ceilinged = totals.n_calls - totals.n_unbounded - totals.n_budgeted
+    admitted = [f"{totals.n_budgeted} admitted by a report budget"]
+    if ceilinged:
+        admitted.insert(0, f"{ceilinged} admitted at up to ${totals.ceiling_usd:.4f}")
+    if totals.n_unbounded:
+        admitted.append(f"{totals.n_unbounded} admitted unbounded")
+    return f"{reported}; {', '.join(admitted)}"
 
 
 def out_of_run_spend_text(report: OutOfRunSpendReport) -> str:
