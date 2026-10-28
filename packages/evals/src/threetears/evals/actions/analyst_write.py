@@ -6,10 +6,11 @@ sends its draft ``report-doc/1`` document and reads back what the store and the 
 the invariants find, and the page as text, each block as its values table, written by the function the editor's message
 is written by. It is a read: it stores nothing, and the same draft on the same snapshot returns the same result.
 
-**Its pages never send the draft back.** The verdicts come whole on every page; only the page's lines are sized to one
-result. Like ``figure_keys_check``, it is not ``paged``: a paged action's next call repeats every argument the caller
-sent, and this one's is the whole draft, which the caller holds. A result's ``progress`` says where the unread lines
-start instead.
+**Its pages never send the draft back, and never cut a verdict unsaid.** A result is sized to one result's budget:
+the verdicts first, grouped so each remedy is stated once, as many as fit from ``verdict_offset``; then, where every
+verdict from it fits, the page's lines from ``offset``. Like ``figure_keys_check``, it is not ``paged``: a paged
+action's next call repeats every argument the caller sent, and this one's is the whole draft, which the caller holds.
+A result's ``progress`` says where the unread verdicts or lines start instead.
 
 **On the analyst's tool alone.** It belongs to the blocks workflow, which the editor's cut of the tool leaves out: the
 editor reads the page it is given, and checks no draft. :func:`~threetears.evals.actions.analyst.analyst_actions`
@@ -23,14 +24,14 @@ checked, and that is a verdict (validity, ``0``).
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import Field, ValidationError, field_validator
 
 from threetears.evals.actions.analyst_render import BLOCKS_WORKFLOW
 from threetears.evals.actions.catalogue import Action, Caller
 from threetears.evals.actions.params import Offset, SizedLimit, SnapshotId
-from threetears.evals.actions.render import page_sizing, render_cited
+from threetears.evals.actions.render import page_fits, render_cited
 from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.ops.analyst import CHECK_LINES, DraftChecked, report_check
 from threetears.evals.ops.host import OpsHost
@@ -95,7 +96,7 @@ def _at(location: tuple[int | str, ...]) -> str:
 
 
 class ReportCheckParams(EvalBaseModel):
-    """``report_check``: the snapshot, the draft, and which lines of its page to read."""
+    """``report_check``: the snapshot, the draft, and which of its verdicts and its page's lines to read."""
 
     snapshot_id: SnapshotId
     doc: dict[str, Any] = Field(
@@ -104,6 +105,14 @@ class ReportCheckParams(EvalBaseModel):
     )
     limit: SizedLimit = None
     offset: Offset = 0
+    verdict_offset: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Skip this many verdicts; a result's verdicts_unread_from, where the verdicts run past "
+            "one result.",
+        ),
+    ] = 0
 
     @field_validator("doc", mode="before")
     @classmethod
@@ -137,15 +146,15 @@ class ReportCheckParams(EvalBaseModel):
 
 
 async def _report_check(host: OpsHost, caller: Caller, params: ReportCheckParams) -> DraftChecked:
-    limit, fits = page_sizing("report_check", params, CHECK_LINES)
     return await report_check(
         host,
         caller.scope_id,
         snapshot_id=params.snapshot_id,
         doc=ReportDoc.model_validate(params.doc),
-        limit=limit,
+        fits=page_fits("report_check", params),
+        limit=params.limit if params.limit is not None else CHECK_LINES,
         offset=params.offset,
-        fits=fits,
+        verdict_offset=params.verdict_offset,
     )
 
 
@@ -169,15 +178,19 @@ def analyst_write_actions() -> tuple[Action, ...]:
             detail=(
                 "Check the whole draft before you submit it, and again after each revision. The page is drawn strict, "
                 "as generation draws it, and every check the store runs is run on the draft and on the page's text "
-                "above the appendix: each verdict names its invariant (0 validity, then 1 to 6), the field path, the "
-                "fault and the remedy, and the store refuses a draft holding any. A page that does not build is one "
-                "more verdict, at path page, and there is then no page to read. Then the page as a reader and the "
-                "editor read it: each claim by its id and weight, each block by what code fixed about it (its level, "
-                "unit, axis and line) and its values table, then the appendix. The verdicts come whole on every "
-                "result; without a limit a result holds as many of the page's lines as fit one, and its progress line "
-                "says where the unread lines start: send the same draft again with offset=unread_from. A doc that is "
-                "not JSON, or not a report-doc/1 document, is refused naming every field at fault. Stores nothing, "
-                "makes no model call, and the same draft always reads the same."
+                "above the appendix. Each verdict names its invariant (0 validity, else 1 to 5: numbers through keys, "
+                "blocks that draw, caveat coverage, the confidence form, no id above the appendix), its field path "
+                "and its fault; verdicts sharing a remedy are grouped under it, stated once. The store refuses a "
+                "draft holding any. A page that does not build is one more verdict, at path page, and there is then "
+                "no page to read. A draft with no Method item (invariant 6) is no report-doc/1 document, so it is "
+                "refused as the call, as is a doc that is not JSON or any other field out of shape, naming every "
+                "field at fault. Then the page as a reader and the editor read it: each claim by its id and weight, "
+                "each block by what code fixed about it (its level, unit, axis and line) and its values table, then "
+                "the appendix. A result fits one result's budget: the verdicts first, as many as fit, then as many "
+                "of the page's lines as fit beside them. Its progress line says what is left and how to read it: "
+                "send the same draft again with verdict_offset=verdicts_unread_from for the verdicts that did not "
+                "fit (the page follows the last of them), or with offset=unread_from for the page's next lines. "
+                "Stores nothing, makes no model call, and the same draft always reads the same."
             ),
         ),
     )

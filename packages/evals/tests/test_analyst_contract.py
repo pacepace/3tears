@@ -91,8 +91,22 @@ ANALYST_MODULES = sorted(
 )
 
 #: The fields of a listing that page it, which are counts of rows and never figures, and the next page's call, whose
-#: arguments are the caller's own; a key check pages by where its unread keys start, and says so in its progress line.
-PAGING = frozenset({"total", "offset", "next_offset", "limit", "next", "unread_from", "progress"})
+#: arguments are the caller's own; a key check pages by where its unread keys start, and says so in its progress line,
+#: and a draft check by where its unread verdicts and lines start.
+PAGING = frozenset(
+    {
+        "total",
+        "offset",
+        "next_offset",
+        "limit",
+        "next",
+        "unread_from",
+        "progress",
+        "verdicts_total",
+        "verdict_offset",
+        "verdicts_unread_from",
+    }
+)
 
 #: The fields every cited figure carries, by which one is found in a result's JSON.
 FIGURE_FIELDS = frozenset({"key", "reads", "value", "kind", "scale", "unit"})

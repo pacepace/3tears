@@ -14,18 +14,21 @@ host mounting `analyst_tools()` serves it; the `evals` tool, the read-only tools
 draft `report-doc/1` document as a JSON object (or its JSON text), with `limit` and `offset` over the page's lines. It
 returns every verdict `check_report_doc` finds, on the draft and on its strict-built page's text above the appendix,
 with a page that does not build as one more verdict (invariant `0`, path `page`), then the page as text: the
-`doc_page_text` of `build(doc, input, strict=True)`, the same function the editor's message is written by. Every
-result carries every verdict; the page's lines are sized to one result's budget and paged by `offset`, a result's
-`progress` and `unread_from` naming where the unread lines start, so a next call never writes the draft back (as
-`figure_keys_check` pages its keys). A `doc` that is not JSON or not a `report-doc/1` document is refused as the call,
+`doc_page_text` of `build(doc, input, strict=True)`, the same function the editor's message is written by. A result
+always fits one result's budget. The verdicts come first, grouped by check and remedy so each remedy is stated once
+(`VerdictGroup`), as many as fit from `verdict_offset`; those that do not are named by `verdicts_unread_from`, and the
+result then holds no page line, so no verdict is ever cut unsaid. Where every verdict fits, the page's lines from
+`offset` fill the rest, `unread_from` naming where the unread ones start. A result's `progress` says which of each it
+holds and the call that reads on, so a next call never writes the draft back (as `figure_keys_check` pages its keys). A `doc` that is not JSON or not a `report-doc/1` document is refused as the call,
 naming every field at fault, with the recovery line's example a draft that validates. It is a read: it stores nothing,
 makes no model call, and the same draft on the same snapshot returns byte-identical results. The analyst skill's
 SKILL.md names it (step 5 and the tools table), so `load_skill().digest` moves.
 
 **Exported (provisional, not re-exported from a root), each with this action as its first production caller:**
 `analysis.report_doc_checks.check_report_doc` and `DocVerdict`; `analysis.report.doc_page.build.build`;
-`analysis.report.doc_page.text.doc_page_text` and `above_appendix_text`; and the new `ops.analyst.report_check`,
-`DraftChecked` and `CHECK_LINES`, and `actions.analyst_render.BLOCKS_WORKFLOW` (was `_BLOCKS_WORKFLOW`).
+`analysis.report.doc_page.text.doc_page_text` and `above_appendix_text`; `analysis.report_doc_checks.InvariantNumber`;
+and the new `ops.analyst.report_check`, `DraftChecked` and `CHECK_LINES`, and `actions.analyst_render.BLOCKS_WORKFLOW`
+(was `_BLOCKS_WORKFLOW`).
 
 ### evals: the claims renderer draws a report document's page
 

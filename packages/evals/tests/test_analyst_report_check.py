@@ -10,8 +10,9 @@ Contracts held here (``ops.analyst.report_check``, ``actions.analyst_write``):
   is the call's refusal;
 - **a draft that does not read** (not JSON, or not a document) is refused as the call, naming the field at fault,
   with a recovery line that carries a draft that validates;
-- **paging**: every result carries every verdict; the page's lines are paged by ``offset``, never by a next call that
-  writes the draft back, and a default result stays within one result's budget;
+- **paging**: a result stays within one result's budget whatever its verdicts: they come first, grouped so each remedy
+  is stated once, as many as fit, and those that do not are read by ``verdict_offset``, so every verdict is reachable
+  and none is cut unsaid; the page's lines are paged by ``offset``, never by a next call that writes the draft back;
 - **read-only and idempotent**: the same draft twice is byte-identical, a draft that differs only in ``story`` reads
   the same, and nothing is written to the store;
 - **the cut**: the action is the analyst tool's, in the blocks workflow; the editor's cut does not carry it, and the
@@ -44,7 +45,8 @@ from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.kernel.report_doc import ReportDoc
+from threetears.evals.analysis.report_doc_checks import check_report_doc
+from threetears.evals.kernel.report_doc import ReportDoc, report_doc_prose
 from threetears.evals.storage import InMemoryDocumentStore
 
 #: The scope the converted documents' snapshots are frozen in, and a caller in it.
@@ -122,6 +124,15 @@ async def _read_whole(fixture: OpsFixture, name: str, doc: Any, **more: Any) -> 
         count = (offset if offset is not None else structured["total"]) - structured["offset"]
         lines += structured["page"].split("\n") if count > 0 else []
     return results, lines
+
+
+def _flat(structured: dict[str, Any]) -> list[tuple[int, str, str, str]]:
+    """A result's verdicts, out of their groups: each as its invariant, path, fault and remedy, in order."""
+    return [
+        (group["invariant"], fault["path"], fault["fault"], group["remedy"])
+        for group in structured["verdicts"]
+        for fault in group["faults"]
+    ]
 
 
 def _change(doc: dict[str, Any], where: tuple[str | int, ...], value: Any) -> dict[str, Any]:
@@ -227,14 +238,16 @@ async def test_each_invariants_planted_negative_comes_back_as_its_verdict(
     outcome = await _check(fixture, _KAIRO, doc)
 
     assert outcome.ending == "ok" and outcome.structured is not None, outcome.text
-    verdicts = outcome.structured["verdicts"]
-    assert invariant in {verdict["invariant"] for verdict in verdicts}, outcome.text
+    verdicts = _flat(outcome.structured)
+    assert invariant in {verdict[0] for verdict in verdicts}, outcome.text
     assert outcome.structured["passes"] is False
-    unbuilt = [verdict for verdict in verdicts if verdict["path"] == "page" and verdict["invariant"] == 0]
+    assert outcome.structured["verdicts_total"] == len(verdicts)
+    assert outcome.structured["verdicts_unread_from"] is None
+    unbuilt = [verdict for verdict in verdicts if verdict[1] == "page" and verdict[0] == 0]
     if builds:
         assert not unbuilt and outcome.structured["page"] and outcome.structured["total"] > 0
     else:
-        assert len(unbuilt) == 1 and unbuilt[0]["fault"].startswith("the page does not build: ")
+        assert len(unbuilt) == 1 and unbuilt[0][2].startswith("the page does not build: ")
         assert verdicts[-1] == unbuilt[0], "the page's verdict follows the checks'"
         assert outcome.structured["page"] == "" and outcome.structured["total"] == 0
         assert outcome.structured["unread_from"] is None
@@ -281,7 +294,7 @@ async def test_a_draft_that_does_not_read_is_refused_naming_the_field_with_a_rec
     recovery = outcome.recovery.as_data()
     assert lines[-1] == "recovery: " + json.dumps(recovery, separators=(",", ":"), ensure_ascii=False)
     assert recovery["parameters"] == ["doc"]
-    assert recovery["accepted"] == ["snapshot_id", "doc", "limit", "offset"]
+    assert recovery["accepted"] == ["snapshot_id", "doc", "limit", "offset", "verdict_offset"]
     assert recovery["see"] == {"action": "help", "topic": "report_check"}
     example = recovery["example"]
     assert example["action"] == "report_check"
@@ -300,7 +313,9 @@ async def test_a_draft_sent_as_its_json_text_reads_as_the_object() -> None:
 # --- paging ------------------------------------------------------------------------------------------------------
 
 
-async def test_every_result_carries_every_verdict_and_the_pages_are_offsets_never_the_draft_written_back() -> None:
+async def test_every_result_of_a_few_verdicts_carries_them_all_and_pages_by_offset_never_the_draft_written_back() -> (
+    None
+):
     fixture = off_loop(_seeded)
     doc = _plain_high(converted_doc(_KAIRO))
     results, lines = await _read_whole(fixture, _KAIRO, doc, limit=5)
@@ -441,3 +456,114 @@ async def test_the_editor_calling_report_check_is_refused_as_an_action_its_cut_g
 
     assert outcome.ending == "refused"
     assert outcome.text.startswith("refused: report_check is not on tool evals_analyst: ")
+
+
+# --- many verdicts -----------------------------------------------------------------------------------------------
+
+
+def _steps(path: str) -> list[str | int]:
+    """A prose field's path as the steps into the document: ``claims[2].text`` is ``claims``, ``2``, ``text``."""
+    steps: list[str | int] = []
+    for part in path.split("."):
+        name, _, rest = part.partition("[")
+        steps.append(name)
+        steps += [int(index.rstrip("]")) for index in rest.split("[") if index] if rest else []
+    return steps
+
+
+#: The prose fields with a tight length bound, which a planted sentence could push out of shape.
+_BOUNDED = frozenset({"headline", "lede", "flag"})
+
+
+#: What is planted in every prose field: a typed number, and a key naming nothing, which also stops the page building.
+_UNBUILT_PLANT = " It is 12 percent off {scoreboard.no-such-arm.reply_cost_usd}."
+#: A typed number alone and a longer sentence, so the page still builds and follows the verdicts.
+_BUILT_PLANT = " It is 12 percent cheaper, and 3 of 4 tasks agree, by 7 points at the 95th percentile."
+
+
+def _faulted_everywhere(doc: dict[str, Any], plant: str = _UNBUILT_PLANT) -> dict[str, Any]:
+    """The draft with ``plant`` added to every prose field but the bounded ones."""
+    for path, _text in report_doc_prose(ReportDoc.model_validate(doc)):
+        steps = _steps(path)
+        if steps[0] in _BOUNDED:
+            continue
+        node: Any = doc
+        for step in steps[:-1]:
+            node = node[step]
+        node[steps[-1]] += plant
+    return doc
+
+
+async def test_many_verdicts_stay_within_the_budget_and_every_one_is_reached_by_verdict_offset() -> None:
+    """A draft faulted in every prose field: each result fits one result's budget, the verdicts are grouped under their
+    remedies, the ones that do not fit are read by ``verdict_offset`` until every one is read, and the page follows
+    the last of them."""
+    fixture = off_loop(_seeded)
+    doc = _faulted_everywhere(converted_doc(_KAIRO))
+    whole = check_report_doc(ReportDoc.model_validate(doc), _input(_KAIRO))
+    assert len(whole) >= 40, f"the control: {len(whole)} verdicts"
+
+    read: list[tuple[int, str, str, str]] = []
+    results: list[dict[str, Any]] = []
+    verdict_offset: int | None = 0
+    while verdict_offset is not None:
+        outcome = await _check(fixture, _KAIRO, doc, verdict_offset=verdict_offset)
+        assert outcome.ending == "ok" and outcome.structured is not None, outcome.text
+        assert len(outcome.text) <= TEXT_BUDGET, len(outcome.text)
+        structured = outcome.structured
+        results.append(structured)
+        flat = _flat(structured)
+        read += flat
+        remedies = [(group["invariant"], group["remedy"]) for group in structured["verdicts"]]
+        assert len(remedies) == len(set(remedies)), "each remedy is stated once in a result"
+        verdict_offset = structured["verdicts_unread_from"]
+        if verdict_offset is not None:
+            assert structured["page"] == "", "no line of the page while verdicts are unread"
+            assert f"unread: send the same draft again with verdict_offset={verdict_offset}" in structured["progress"]
+            assert outcome.text.index("verdicts (") < outcome.text.index("progress: ")
+
+    assert len(results) > 1, "the control: the verdicts run past one result"
+    # The checks' verdicts, in order, then the one a page that does not build adds: its keys name nothing.
+    assert [verdict[:3] for verdict in read[:-1]] == [(v.invariant, v.path, v.fault) for v in whole]
+    assert read[-1][:2] == (0, "page") and read[-1][2].startswith("the page does not build: ")
+    assert all(structured["verdicts_total"] == len(whole) + 1 for structured in results)
+    assert results[-1]["progress"].endswith(
+        "no page: the draft does not build, so there is none to read (the "
+        "verdict at path page says where it stopped); mend the verdicts and "
+        "check the draft again"
+    )
+    typed = [group for group in results[0]["verdicts"] if group["invariant"] == 1]
+    assert typed and len(typed[0]["faults"]) > 1, "the control: verdicts share a remedy"
+
+
+async def test_many_verdicts_on_a_page_that_builds_are_followed_by_the_page() -> None:
+    """Typed numbers in every prose field, the page still building: each result fits, every verdict is reached, and
+    the page's lines follow the last verdict, read from where the verdicts end."""
+    fixture = off_loop(_seeded)
+    doc = _faulted_everywhere(converted_doc(_KAIRO), _BUILT_PLANT)
+    whole = check_report_doc(ReportDoc.model_validate(doc), _input(_KAIRO))
+    assert len(whole) >= 40, f"the control: {len(whole)} verdicts"
+
+    read: list[tuple[int, str, str, str]] = []
+    verdict_offset: int | None = 0
+    last: dict[str, Any] = {}
+    while verdict_offset is not None:
+        outcome = await _check(fixture, _KAIRO, doc, verdict_offset=verdict_offset)
+        assert outcome.ending == "ok" and outcome.structured is not None, outcome.text
+        assert len(outcome.text) <= TEXT_BUDGET, len(outcome.text)
+        last = outcome.structured
+        read += _flat(last)
+        verdict_offset = last["verdicts_unread_from"]
+
+    assert [verdict[:3] for verdict in read] == [(v.invariant, v.path, v.fault) for v in whole]
+    expected = doc_page_text(build(ReportDoc.model_validate(doc), _input(_KAIRO), strict=True)).splitlines()
+    if not last["page"]:
+        assert "the page follows the last verdict" in last["progress"], last["progress"]
+    following = await _check(fixture, _KAIRO, doc, verdict_offset=len(whole))
+    assert following.structured is not None and len(following.text) <= TEXT_BUDGET
+    assert following.structured["verdicts"] == [] and following.structured["page"]
+    held = following.structured["unread_from"] or following.structured["total"]
+    assert following.structured["page"].split("\n") == expected[:held]
+    assert following.structured["progress"].startswith(
+        f"verdicts 1 to {len(whole)} of {len(whole)} passed over (verdict_offset={len(whole)})"
+    )
