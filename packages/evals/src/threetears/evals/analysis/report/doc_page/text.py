@@ -43,11 +43,10 @@ from threetears.evals.analysis.report.doc_page.words import (
 from threetears.evals.analysis.report.md_parts import markdown_table, one_line
 from threetears.evals.analysis.report.plan_page.words import CONFIDENCE_LABEL, OPTIONS_TITLE, RUN_TEMPLATE, SYNTHETIC
 
-#: Empty until a production caller imports this module's entry point (``doc_page_text``, ``above_appendix_text``): its
-#: callers are the writing loop's editor and ``report_check`` (the page text), and the report read (the page);
-#: ``tests/test_doc_page_exports.py`` lists the name as awaiting one, and goes red when it has one, so it joins this
-#: list then.
-__all__: list[str] = []
+#: The module's entry points, with their first production caller: the analyst's ``report_check`` (``ops/analyst.py``),
+#: which returns a draft's page text and checks its text above the appendix. The writing loop's editor reads the same
+#: page text.
+__all__ = ["above_appendix_text", "doc_page_text"]
 
 
 def _table(block: ChartBlock | TableBlock) -> list[str]:

@@ -91,8 +91,22 @@ ANALYST_MODULES = sorted(
 )
 
 #: The fields of a listing that page it, which are counts of rows and never figures, and the next page's call, whose
-#: arguments are the caller's own; a key check pages by where its unread keys start, and says so in its progress line.
-PAGING = frozenset({"total", "offset", "next_offset", "limit", "next", "unread_from", "progress"})
+#: arguments are the caller's own; a key check pages by where its unread keys start, and says so in its progress line,
+#: and a draft check by where its unread verdicts and lines start.
+PAGING = frozenset(
+    {
+        "total",
+        "offset",
+        "next_offset",
+        "limit",
+        "next",
+        "unread_from",
+        "progress",
+        "verdicts_total",
+        "verdict_offset",
+        "verdicts_unread_from",
+    }
+)
 
 #: The fields every cited figure carries, by which one is found in a result's JSON.
 FIGURE_FIELDS = frozenset({"key", "reads", "value", "kind", "scale", "unit"})
@@ -522,6 +536,10 @@ def test_the_number_walk_finds_a_bare_number_and_a_figure_that_does_not_resolve(
         _held_to_figures({"notes": ["the excerpt reads 408"]}, held)
 
 
+#: The actions whose text is a page's own print, which the page's tests hold, rather than figures by their keys.
+_PRINTED = frozenset({"block_render", "report_check"})
+
+
 @pytest.mark.parametrize("name", [*fixture_inputs(), KAIRO])
 async def test_every_analyst_read_action_answers_alike_twice_within_its_budget_on_every_figure_by_its_key(
     name: str,
@@ -543,9 +561,10 @@ async def test_every_analyst_read_action_answers_alike_twice_within_its_budget_o
             assert (first.text, first.structured) == (second.text, second.structured), where
             assert len(first.text) <= TEXT_BUDGET, f"{where}: {len(first.text)} characters"
             assert first.structured is not None
-            # A block is returned as a page prints it: its cells, domain and notes are the chart's own print, held
-            # equal to the planned page's (test_analyst_render), so its text is not held to keys here.
-            _held_to_figures(first.structured, held, text=action.name != "block_render")
+            # A block, and a draft's page, are returned as a page prints them: a block's cells, domain and notes are
+            # the chart's own print (test_analyst_render), and a page is the claims renderer's text
+            # (test_analyst_report_check), so their text is not held to keys here.
+            _held_to_figures(first.structured, held, text=action.name not in _PRINTED)
 
 
 def test_the_walk_sweeps_a_range_that_names_an_unswept_side_on_either_end() -> None:
@@ -580,7 +599,7 @@ async def test_every_analyst_read_action_keeps_its_default_page_within_the_budge
             where = f"{action.name} on {name}"
             assert outcome.ending == "ok" and outcome.structured is not None, f"{where}: {outcome.text}"
             assert len(outcome.text) <= TEXT_BUDGET, f"{where}: {len(outcome.text)} characters"
-            _held_to_figures(outcome.structured, held, text=action.name != "block_render")
+            _held_to_figures(outcome.structured, held, text=action.name not in _PRINTED)
 
 
 def test_the_wide_campaign_is_wider_than_one_result_holds_unpaged() -> None:

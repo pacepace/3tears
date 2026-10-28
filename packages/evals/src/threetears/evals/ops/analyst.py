@@ -4,29 +4,43 @@ Every analyst tool reads one frozen report input, by the id of the snapshot that
 (:class:`~threetears.evals.kernel.report_snapshot.EvalReportSnapshot`). :func:`report_snapshot_freeze` makes one from a
 campaign, assembling its evidence as it stands, or from a stored analysis, from the bundle frozen with it; it is the
 one write. :func:`snapshot_input` reads a snapshot's input back for a tool, refusing one whose input moved or no
-longer reads. :func:`capability_gap` stores nothing: it acknowledges a capability the analyst reasoned around, with a
-gap id derived from what it says, and writes one record on the ``threetears.evals.analyst`` logger, so the call sits in the
-transcript beside the calls that led to it and in the server's log.
+longer reads. :func:`report_check` reads a draft report document on its snapshot as the store and the editor would:
+every verdict code finds, and the page as text. :func:`capability_gap` stores nothing: it acknowledges a capability
+the analyst reasoned around, with a gap id derived from what it says, and writes one record on the
+``threetears.evals.analyst`` logger, so the call sits in the transcript beside the calls that led to it and in the
+server's log.
 
 **A freeze runs in its call**, not as a job: it assembles one campaign's bundle, as ``analysis_estimate`` does in its
 call, and makes no model call. The assembly and the report input it builds run on the host's blocking executor.
+
+**A draft check stores nothing.** It builds the draft's page strict, as generation does
+(:func:`~threetears.evals.analysis.report.doc_page.build.build`), runs the invariants over the draft and that page's
+text above the appendix (:func:`~threetears.evals.analysis.report_doc_checks.check_report_doc`), and returns the
+verdicts whole, then a page of the page's text (:func:`~threetears.evals.analysis.report.doc_page.text.doc_page_text`,
+the function the editor's message is written by). It reads the snapshot and nothing else, so the same draft on the
+same snapshot always returns the same result.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Literal
+from typing import ClassVar, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_input, report_snapshot
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
+from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
+from threetears.evals.analysis.report.doc_page.build import build
+from threetears.evals.analysis.report.doc_page.text import above_appendix_text, doc_page_text
+from threetears.evals.analysis.report_doc_checks import DocVerdict, InvariantNumber, check_report_doc
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.service import assemble_campaign_bundle, get_analysis, require_evidence
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, RefusedInput, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.kernel.report_snapshot import (
     FIND_SNAPSHOT,
     FREEZE_AGAIN_REMEDY,
@@ -319,6 +333,273 @@ def sized_page[T](compute: Callable[[int], T], limit: int, fits: Callable[[T], b
     return best
 
 
+#: The most lines of a draft's page one result holds unless the caller asks for fewer: as many as fit one result.
+CHECK_LINES = 200
+
+#: What every draft check says it is.
+_CHECK_READS_AS = (
+    "a draft report document read on its snapshot as the store and the editor read it: every verdict code finds, "
+    "each remedy stated once beside the faults it mends, then the page a reader and the editor read, every block as "
+    "its values table"
+)
+
+#: The path the verdict of a page that does not build sits at: the page, which names the field it refused.
+_PAGE = "page"
+
+#: What a draft whose page does not build is told to do.
+_UNBUILT_REMEDY = (
+    "the page is drawn strict, as generation draws it, and stops at the first field it cannot draw: mend the field "
+    "this names (the verdicts before it say how), then check the draft again to read its page"
+)
+
+
+class VerdictAt(BaseModel):
+    """One verdict's place and fault, under the remedy it shares with the others of its group."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(description="The field path it sits at, as `claims[2].evidence[0].query.arms`.")
+    fault: str = Field(description="What is wrong there.")
+
+
+class VerdictGroup(BaseModel):
+    """The verdicts of one check that share a remedy: the remedy stated once, then each place and its fault."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    invariant: InvariantNumber = Field(
+        description="The check: 0 validity (a page that does not build among it), else the invariant's number."
+    )
+    remedy: str = Field(description="How to mend every fault below, and which tool shows what to mend it with.")
+    faults: list[VerdictAt] = Field(description="Each verdict's field path and fault, in the order found.")
+
+
+class DraftChecked(BaseModel):
+    """A draft report document checked on its snapshot: its verdicts, then one page of the page it draws, as text.
+
+    A plain model, not the engine's base: the page's lines are kept as the page writes them, blank ones at either end
+    included, which the base's whitespace stripping would drop.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    reads_as: str = Field(description="What this is.")
+    passes: bool = Field(
+        description="True when code finds nothing wrong: no verdict, and the page builds. The editor still reads it."
+    )
+    verdicts_total: int = Field(description="How many verdicts code finds on the draft; none for a draft that passes.")
+    verdict_offset: int = Field(description="The first verdict this result holds.")
+    verdicts: list[VerdictGroup] = Field(
+        description="This result's verdicts in the order found: validity (0), then each invariant, a page that does "
+        "not build last, at path page. Those that share a remedy are grouped under it, so each remedy is stated once."
+    )
+    verdicts_unread_from: int | None = Field(
+        description="Where the verdicts this result could not hold start: send the same draft with this "
+        "verdict_offset. None when the result holds every verdict from verdict_offset."
+    )
+    progress: str = Field(
+        description="Which verdicts and which lines of the page this result holds, and how to read the rest: the same "
+        "draft again, from verdicts_unread_from or unread_from; or that every line is shown; or that there is no page, "
+        "since the draft does not build."
+    )
+    page: str = Field(
+        description="These lines of the page as a reader and the editor read it, joined by newlines: each claim by its "
+        "id and weight, each block by what code fixed about it and its values table; empty where the draft does not "
+        "build, or where verdicts are still unread."
+    )
+    #: What its total counts, one and many: a page is sized as the tool would write it, in this unit.
+    page_unit: ClassVar[tuple[str, str]] = ("line", "lines")
+    total: int = Field(description="The lines of the whole page; none where the draft does not build.")
+    offset: int = Field(description="The first line of the page this result holds.")
+    unread_from: int | None = Field(
+        description="Where the page's lines this call left unread start: send the same draft with this offset. None "
+        "when the result reads to the page's last line, or there is no page."
+    )
+
+
+def _grouped(verdicts: list[DocVerdict]) -> list[VerdictGroup]:
+    """The verdicts grouped by check and remedy, each group where its first verdict falls, each fault in its order."""
+    groups: dict[tuple[InvariantNumber, str], list[VerdictAt]] = {}
+    for verdict in verdicts:
+        groups.setdefault((verdict.invariant, verdict.remedy), []).append(
+            VerdictAt(path=verdict.path, fault=verdict.fault)
+        )
+    return [
+        VerdictGroup(invariant=invariant, remedy=remedy, faults=faults)
+        for (invariant, remedy), faults in groups.items()
+    ]
+
+
+def _again(verdict_offset: int, offset: int) -> str:
+    """The call that reads on: the same draft, with the offsets that name where."""
+    named = f"verdict_offset={verdict_offset} and offset={offset}" if verdict_offset else f"offset={offset}"
+    return f"send the same draft again with {named}"
+
+
+def _verdicts_said(verdict_offset: int, end: int, count: int) -> str:
+    """Which verdicts a result holds, where it does not hold them all from the first; empty where it does."""
+    if count == 0 or (verdict_offset == 0 and end == count):
+        return ""
+    if verdict_offset >= count:
+        return f"verdicts 1 to {count} of {count} passed over (verdict_offset={verdict_offset}); verdict_offset=0 reads them"
+    shown = f"verdicts {verdict_offset + 1} to {end} of {count} shown"
+    if end < count:
+        return (
+            f"{shown}; {count - end} unread: send the same draft again with verdict_offset={end}; the page follows the "
+            "last verdict"
+        )
+    return f"{shown}, the last of them"
+
+
+def _page_said(verdict_offset: int, offset: int, end: int, total: int, *, built: bool) -> str:
+    """Which lines of the page a result holds, and how to read the rest, without the draft written back."""
+    if not built:
+        return (
+            "no page: the draft does not build, so there is none to read (the verdict at path page says where it "
+            "stopped); mend the verdicts and check the draft again"
+        )
+    if offset >= total:
+        return f"no line from offset={offset}: the page has {total} lines, read from offset=0"
+    if offset == 0 and end == total:
+        return f"all {total} lines of the page shown"
+    shown = f"lines {offset + 1} to {end} of {total} of the page shown"
+    if end < total:
+        return f"{shown}; {total - end} unread: {_again(verdict_offset, end)}"
+    return f"{shown}, the last of them"
+
+
+def _draft_read(doc: ReportDoc, report_input: ReportInput) -> tuple[list[DocVerdict], list[str] | None]:
+    """Every verdict on a draft, and its page's lines; ``None`` for the lines of a page that does not build. Blocking.
+
+    The page is built strict, as generation builds it; its text above the appendix is what invariant 5 reads beside
+    the draft's prose. A page that refuses to build is one more verdict, after the checks', which read the draft's own
+    fields alone.
+    """
+    try:
+        page = build(doc, report_input, strict=True)
+    except UnresolvableReference as refused:
+        unbuilt = DocVerdict(
+            invariant=0, path=_PAGE, fault=f"the page does not build: {refused}", remedy=_UNBUILT_REMEDY
+        )
+        return [*check_report_doc(doc, report_input), unbuilt], None
+    verdicts = check_report_doc(doc, report_input, above_appendix_text=above_appendix_text(page))
+    return verdicts, doc_page_text(page).splitlines()
+
+
+def _checked_page(
+    verdicts: list[DocVerdict],
+    lines: list[str] | None,
+    *,
+    verdict_offset: int,
+    held: int,
+    offset: int,
+    limit: int,
+) -> DraftChecked:
+    """One result of a draft check: ``held`` verdicts from ``verdict_offset``, then, where every verdict from it is
+    held, up to ``limit`` of the page's lines from ``offset`` (none where ``limit`` is 0)."""
+    window = verdicts[verdict_offset : verdict_offset + held]
+    read_to = verdict_offset + len(window)
+    unread = read_to < len(verdicts)
+    page = lines if lines is not None else []
+    shown = [] if unread else page[offset : offset + limit]
+    end = offset + len(shown)
+    said = [_verdicts_said(verdict_offset, read_to, len(verdicts))]
+    if not unread:
+        if lines is not None and limit == 0 and offset < len(page):
+            said.append(f"the page follows the last verdict: {_again(len(verdicts), offset)}")
+        else:
+            said.append(_page_said(verdict_offset, offset, end, len(page), built=lines is not None))
+    return DraftChecked(
+        reads_as=_CHECK_READS_AS,
+        passes=not verdicts,
+        verdicts_total=len(verdicts),
+        verdict_offset=verdict_offset,
+        verdicts=_grouped(window),
+        verdicts_unread_from=read_to if unread else None,
+        progress="; ".join(part for part in said if part),
+        page="\n".join(shown),
+        total=len(page),
+        offset=offset,
+        unread_from=end if lines is not None and end < len(page) else None,
+    )
+
+
+def _draft_checked(
+    doc: ReportDoc,
+    report_input: ReportInput,
+    *,
+    verdict_offset: int,
+    limit: int,
+    offset: int,
+    fits: Callable[[DraftChecked], bool],
+) -> DraftChecked:
+    """The draft read once, then the result that fits: as many verdicts as fit from ``verdict_offset``, and, where
+    every one from it fits, as many of the page's lines as fit beside them. Blocking."""
+    verdicts, lines = _draft_read(doc, report_input)
+    left = max(len(verdicts) - verdict_offset, 0)
+
+    def result(held: int, rows: int) -> DraftChecked:
+        return _checked_page(verdicts, lines, verdict_offset=verdict_offset, held=held, offset=offset, limit=rows)
+
+    if left:
+        bare = sized_page(lambda held: result(held, 0), left, fits)
+        if bare.verdicts_unread_from is not None or lines is None or offset >= len(lines):
+            return bare
+        if not fits(result(left, 1)):
+            return bare
+    return sized_page(lambda rows: result(left, rows), limit, fits)
+
+
+async def report_check(
+    host: OpsHost,
+    scope_id: str,
+    *,
+    snapshot_id: str,
+    doc: ReportDoc,
+    fits: Callable[[DraftChecked], bool],
+    limit: int = CHECK_LINES,
+    offset: int = 0,
+    verdict_offset: int = 0,
+) -> DraftChecked:
+    """Read a draft report document on its snapshot as the store and the editor would; store nothing.
+
+    Every verdict the invariants find, on the draft and on its page's text above the appendix, with a page that does
+    not build as one more; then a page of the page's text as the editor reads it
+    (:func:`~threetears.evals.analysis.report.doc_page.text.doc_page_text`). A result always passes ``fits``: the
+    verdicts come first, grouped so each remedy is stated once, as many as fit from ``verdict_offset``; where some are
+    left over it holds no line of the page and names the ``verdict_offset`` that reads them, so no verdict is ever cut
+    unsaid. Where every verdict from it fits, the page's lines from ``offset`` fill what room is left. The same draft on
+    the same snapshot always returns the same result.
+
+    :param host: The host whose store holds the snapshot.
+    :ptype host: OpsHost
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param snapshot_id: The snapshot the draft was written from.
+    :ptype snapshot_id: str
+    :param doc: The draft.
+    :ptype doc: ReportDoc
+    :param fits: Whether a result's text is short enough; a result holds the most verdicts, then the most lines, that
+        pass, one at least.
+    :ptype fits: Callable[[DraftChecked], bool]
+    :param limit: The most lines of the page one result holds.
+    :ptype limit: int
+    :param offset: The first line it holds.
+    :ptype offset: int
+    :param verdict_offset: The first verdict it holds.
+    :ptype verdict_offset: int
+    :return: The verdicts and the page's lines.
+    :rtype: DraftChecked
+    :raises NotFoundError: No snapshot with that id in the scope.
+    :raises ValidationFailedError: The snapshot does not read; the remedy is to freeze again.
+    """
+    held = await snapshot_input(host, scope_id, snapshot_id)
+    return await run_blocking(
+        host.eval_host.blocking_executor,
+        lambda: _draft_checked(doc, held, verdict_offset=verdict_offset, limit=limit, offset=offset, fits=fits),
+    )
+
+
 def _gap_id(snapshot_id: str, need: str, why: str) -> str:
     """The id of one noted gap: the same snapshot, need and why always name the same gap.
 
@@ -390,10 +671,13 @@ async def capability_gap(
 
 
 __all__ = [
+    "CHECK_LINES",
     "CitedFigure",
+    "DraftChecked",
     "GapNoted",
     "SnapshotFrozen",
     "capability_gap",
+    "report_check",
     "report_snapshot_freeze",
     "sized_page",
     "snapshot_input",

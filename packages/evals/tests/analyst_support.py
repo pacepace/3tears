@@ -28,6 +28,7 @@ from threetears.evals.analysis.analyst.levers import lever_effects
 from threetears.evals.analysis.analyst.price import PriceTradeoff, price_tradeoff
 from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.analyst.snapshot import analyst_input, report_snapshot
+from threetears.evals.analysis.report_decision import every_caveat
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel import EvalReportSnapshot
 from threetears.evals.kernel.errors import RefusedInput
@@ -647,3 +648,54 @@ def _keys_calls(held: ReportInput) -> list[dict[str, Any]]:
 
 
 ANALYST_CALLS["figure_keys_check"] = _keys_calls
+
+
+def _plain_draft(held: ReportInput) -> dict[str, Any] | None:
+    """A draft any input reads cleanly: no call, a low confidence carrying every caveat code assigns open, and one claim
+    showing the first block the input draws whole; its prose names no figure and no id. None where nothing draws."""
+    blocks = _block_calls(held)
+    if not blocks:
+        return None
+    first = blocks[0]
+    return {
+        "schema": "report-doc/1",
+        "story": "status",
+        "headline": "The evidence supports no call yet.",
+        "lede": "Each block below shows what the campaign read.",
+        "recommends": [],
+        "confidence": {
+            "form": "low",
+            "caveats": [
+                {"id": caveat.id, "material_if": "It would move the call were one made."}
+                for caveat in every_caveat(held)
+            ],
+        },
+        "decision": [{"slot": "what_is_tangled", "text": "No arm stands apart on what was read."}],
+        "claims": [
+            {
+                "id": "c1",
+                "text": "The campaign's evidence is shown whole.",
+                "weight": "lead",
+                "evidence": [
+                    {
+                        "block": first["block_kind"],
+                        "query": {**_WHOLE, **first["query"]},
+                        "caption": "Every row the source holds.",
+                    }
+                ],
+            }
+        ],
+        "explore": [],
+        "omitted": [],
+        "next": [],
+        "method": [{"term": "Source", "text": "The snapshot the report was written from."}],
+    }
+
+
+def _check_calls(held: ReportInput) -> list[dict[str, Any]]:
+    """A plain draft checked whole, then its page's lines read three at a time from the sixth."""
+    draft = _plain_draft(held)
+    return [] if draft is None else [{"doc": draft}, {"doc": draft, "offset": 5, "limit": 3}]
+
+
+ANALYST_CALLS["report_check"] = _check_calls

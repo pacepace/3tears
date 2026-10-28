@@ -391,6 +391,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "actions/analyst_levers.py": {},
     "actions/analyst_price.py": {},
     "actions/analyst_render.py": {},
+    "actions/analyst_write.py": {},
     "actions/catalogue.py": {},
     "actions/definitions.py": {},
     "actions/engine.py": {},

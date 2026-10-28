@@ -77,7 +77,7 @@ Reports can mix forms: for example, a decision on cost with a diagnosis on the j
    - What would settle an open question?
 3. **Outline.** The headline, then the claims in reading order, each with the evidence it needs. Decide what to omit and why.
 4. **Draft.** Write the report document (§5) with figure keys, never typed numbers.
-5. **Render and look.** Render the page. Read the check results and the screenshots at desktop and phone width. Fix what's unclear, crowded or misleading. Repeat until clean, at most three rounds. Not in MVP (owner, 2026-10-26): no browser at storage time; check.py runs in integration tests.
+5. **Render and check.** Draw each claim's block with `block_render` and read its values table. Then send the whole draft to `report_check`: it returns every mechanical verdict the store would refuse it for, then the page as a reader and the editor will read it, as text. Fix every verdict, reread the page as a reader and fix what's unclear, crowded or misleading, and check again, at most three rounds. Screenshots at desktop and phone width are not in MVP (owner, 2026-10-26): no browser at storage time; check.py runs in integration tests.
 6. **Editor.** Submit the report. If the editor returns findings, address them and resubmit, at most two rounds. Unresolved findings are stored with the report and shown in Method.
 
 ## 5. The report document
@@ -153,6 +153,7 @@ One domain tool, `evals_analyst`, with one action per capability (owner, 2026-10
 | | `levers_effects` | What one setting buys between arms that differ in it alone, and whether it reverses across another setting |
 | | `confound_check` | Deferred until a prototype run needs it |
 | Rendering | `block_render` | Values table and warnings for a block; no pixels |
+| | `report_check(doc)` | Every invariant's verdict on a draft, then the whole page as text, as the editor reads it; stores nothing. Analyst only |
 | | `render_report(doc)` | Not in MVP (owner, 2026-10-26): no browser at storage time; check.py runs in integration tests |
 | Reference | `block_catalog` | The block kinds, their sources and usage notes |
 | Gaps | `capability_gap` | Acknowledges a missing capability the analyst worked around (§8 of the program plan) |

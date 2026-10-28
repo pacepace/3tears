@@ -25,8 +25,9 @@ from threetears.evals.ops.analyst_blocks import BLOCK_ROWS, BlockCatalog, Render
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
 
-#: The help index's group for these actions, which the editor's cut is read off.
-_BLOCKS_WORKFLOW = "Investigate: blocks"
+#: The help index's group for these actions and ``report_check`` (:mod:`~threetears.evals.actions.analyst_write`), which
+#: the editor's cut is read off: the editor reads the page it is given, so it draws no block and checks no draft.
+BLOCKS_WORKFLOW = "Investigate: blocks"
 
 #: An example snapshot id, as a freeze returns one.
 _EXAMPLE_SNAPSHOT = "report-snapshot:0193a1b2c3d4e5f60718293a4b5c6d7e"
@@ -141,7 +142,7 @@ def analyst_render_actions() -> tuple[Action, ...]:
         Action(
             name="block_catalog",
             summary="List every kind of evidence block, the sources each draws, and the sources this snapshot holds.",
-            workflow=_BLOCKS_WORKFLOW,
+            workflow=BLOCKS_WORKFLOW,
             permission="read",
             params=BlockCatalogParams,
             result=BlockCatalog,
@@ -160,7 +161,7 @@ def analyst_render_actions() -> tuple[Action, ...]:
         Action(
             name="block_render",
             summary="Draw one evidence block as a page would, and read its values table, level, unit and line.",
-            workflow=_BLOCKS_WORKFLOW,
+            workflow=BLOCKS_WORKFLOW,
             permission="read",
             params=BlockRenderParams,
             result=RenderedBlock,
@@ -182,4 +183,4 @@ def analyst_render_actions() -> tuple[Action, ...]:
     )
 
 
-__all__ = ["analyst_render_actions"]
+__all__ = ["BLOCKS_WORKFLOW", "analyst_render_actions"]
