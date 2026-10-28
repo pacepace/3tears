@@ -319,3 +319,32 @@ class TestThePlanningReadIsHeldToTheReadBudget:
 
         assert block.run_ids == ["run-model-a", "run-model-b"] and _reading(block)
         assert sum(rows for _, _, rows in store.typed_reads) == 24
+
+    def test_a_read_returning_more_than_its_runs_promised_past_the_budget_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store, host = self._host()
+        # Two cells past what run-model-a's matrix promises: 24 by the matrices, 26 stored.
+        for extra in (3, 4):
+            host.storage.save_eval_result(
+                make_eval_result(
+                    id=f"model-a-c0-{extra}",
+                    eval_run_id="run-model-a",
+                    scope_id=SCOPE,
+                    model="model-a",
+                    test_case_id="c0",
+                    k_iteration=extra,
+                    host_measures={READING: 1.0},
+                )
+            )
+        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 25)
+
+        with pytest.raises(ValidationFailedError) as refused:
+            detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
+
+        assert refused.value.details == {
+            "runs": 2,
+            "results_estimated": 24,
+            "result_budget": 25,
+            "results_returned": 26,
+        }

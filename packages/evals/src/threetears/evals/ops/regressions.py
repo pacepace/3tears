@@ -348,8 +348,7 @@ _JUDGED_TIERS = "regression_watch_judged_tiers"
 #: How that read narrows: nothing narrower than the run's subject exists for a watch.
 _NARROW_THE_JUDGED_TIERS = (
     "nothing narrower than the run's own subject exists for a regression watch (it reads every run of that subject, "
-    "archived ones too); delete that subject's runs it need not compare, or wait for the store to compute the read "
-    "tier (#996)"
+    "archived ones too); the store computing the read tier (#996) is what checks a subject this large"
 )
 
 

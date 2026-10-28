@@ -684,7 +684,7 @@ class TestTheRegressionWatchsJudgedTiersAreHeldToTheBudget:
 
         assert transcript.evidence_tier == "calibrated" and transcript.narrowed_read_disclosure is not None
         subject_reads = [rows for named, _, rows in store.typed_reads if set(named) == {"run-a", "run-b"}]
-        assert subject_reads and set(subject_reads) == {24}, "the history and the tiers read the subject's 24"
+        assert subject_reads == [24], "the tiers read the subject's 24 in one read of both its runs"
 
 
 class TestTheFrontierCommand:

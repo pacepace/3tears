@@ -187,9 +187,9 @@ read by key a page. Every other reader of a whole run (a comparison of two runs,
 listing, a delete, a calibration, the judge passes) walks it the same way in the store's order,
 so its figures are the whole read's, and one that keeps every result keeps it without its verbatim fields
 (`world_events`, `kind_payload`). `tests/test_run_reads_paged.py` and `tests/test_whole_run_reads_paged.py` record
-every read each makes; nothing yet measures the run loop's own peak. A campaign's bundle, a launch's planning block and a regression watch's judged
-tiers still read many runs' results whole, each refused past `READ_TIER_ROW_BUDGET` by its runs' matrices before any
-is read (#996 is the store computing them).
+every read each makes; nothing yet measures the run loop's own peak. A campaign's bundle, a launch's planning block
+and a regression watch's judged tiers still read many runs' results whole, each refused past `READ_TIER_ROW_BUDGET` by
+its runs' matrices before any is read (#996 is the store computing them).
 
 ## Rationale
 

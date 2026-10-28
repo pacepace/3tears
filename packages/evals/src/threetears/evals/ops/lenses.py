@@ -740,8 +740,9 @@ async def launch_estimate(
     :return: The estimate.
     :rtype: LaunchEstimate
     :raises NotFoundError: The template is not in the scope.
-    :raises ValidationFailedError: Any refusal the launch makes before pricing an arm, or an ``n_test_cases``
-        below one.
+    :raises ValidationFailedError: Any refusal the launch makes before pricing an arm, an ``n_test_cases``
+        below one, or the template's earlier runs past the read tier's budget, which the planning block reads whole
+        (:func:`detectable_effects`).
     """
     quote = await quote_launch(
         host.launch,
