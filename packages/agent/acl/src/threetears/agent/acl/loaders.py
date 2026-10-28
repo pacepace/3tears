@@ -121,6 +121,23 @@ class CollectionMembershipLoader:
         memberships = await self._collection.load_for_group(group_id)
         return tuple(memberships)
 
+    async def load_for_groups(
+        self,
+        group_ids: tuple[UUID, ...],
+    ) -> tuple[GroupMembership, ...]:
+        """return every membership row naming any of ``group_ids`` as a group member.
+
+        the :class:`~threetears.agent.acl.ParentGroupsLoader` read: a whole level of the
+        evaluator's parent walk in one round trip.
+
+        :param group_ids: child group UUIDs to resolve
+        :ptype group_ids: tuple[UUID, ...]
+        :return: tuple of memberships (possibly empty)
+        :rtype: tuple[GroupMembership, ...]
+        """
+        memberships = await self._collection.load_for_groups(group_ids)
+        return tuple(memberships)
+
 
 class CollectionGrantLoader:
     """:class:`GrantLoader` over the rbac Collections.

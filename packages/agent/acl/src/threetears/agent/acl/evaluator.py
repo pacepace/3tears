@@ -109,7 +109,7 @@ from threetears.agent.acl.cache import (
     ActorMembershipKey,
     GroupNamespaceKey,
 )
-from threetears.agent.acl.loader import HeldAssignmentsLoader
+from threetears.agent.acl.loader import HeldAssignmentsLoader, ParentGroupsLoader
 from threetears.agent.acl.types import (
     EvaluationContext,
     EvaluationResult,
@@ -833,7 +833,10 @@ async def _expand_group_parents(
     (``("group", group_id)``), never expanding into any actor's entry --
     changing one group's parents invalidates exactly one key and every
     actor entry beneath it stays valid, which is the invalidation
-    property the read-time walk exists to keep.
+    property the read-time walk exists to keep. a level's uncached groups
+    are read together when the loader can (:func:`_parent_rows`), so the
+    reads a walk costs grow with its depth, not with how many groups a
+    level reaches.
 
     every walked edge passes the same eligibility filter a direct
     membership does (the row must name the child as a GROUP member and
@@ -856,17 +859,10 @@ async def _expand_group_parents(
         if not frontier:
             break
         next_frontier: list[UUID] = []
+        parents_by_group = await _parent_rows(frontier, cache)
         for group_id in frontier:
-            membership_key = ActorMembershipKey(actor_kind="group", actor_id=group_id)
-            entry = cache.get_membership(membership_key)
-            if entry is not None:
-                parent_rows = entry.memberships
-            else:
-                fence = cache.read_fence()
-                parent_rows = await cache.membership_loader.load_for_group(group_id)
-                cache.put_membership(membership_key, parent_rows, fence=fence)
             eligible_parents = _filter_memberships(
-                memberships=tuple(parent_rows),
+                memberships=parents_by_group[group_id],
                 actor_id=group_id,
                 member_type=MemberType.GROUP,
                 namespace=namespace,
@@ -877,6 +873,52 @@ async def _expand_group_parents(
                     next_frontier.append(row.group_id)
         frontier = tuple(next_frontier)
     return tuple(seen)
+
+
+async def _parent_rows(
+    group_ids: tuple[UUID, ...],
+    cache: AclCache,
+) -> dict[UUID, tuple[GroupMembership, ...]]:
+    """each group's parent-edge rows: from the cache, else read and cached under the group's own key.
+
+    the groups the cache does not hold are read together when the membership loader is a
+    :class:`ParentGroupsLoader` -- one read for a whole level of the walk, so a bundle nested in
+    fifty state groups costs one round trip at the next level, not fifty -- and one at a time
+    through :meth:`MembershipLoader.load_for_group` otherwise. either way each group's rows are
+    stored under ``("group", group_id)`` with the fence taken before its read, so an un-nesting
+    that lands during the read keeps that entry out.
+
+    :param group_ids: the level's groups, distinct
+    :ptype group_ids: tuple[UUID, ...]
+    :param cache: shared :class:`AclCache` carrying loaders + layers
+    :ptype cache: AclCache
+    :return: every group's parent-edge rows, keyed by the child group
+    :rtype: dict[UUID, tuple[GroupMembership, ...]]
+    """
+    rows: dict[UUID, tuple[GroupMembership, ...]] = {}
+    missing: list[UUID] = []
+    for group_id in group_ids:
+        entry = cache.get_membership(ActorMembershipKey(actor_kind="group", actor_id=group_id))
+        if entry is not None:
+            rows[group_id] = entry.memberships
+        else:
+            missing.append(group_id)
+    loader = cache.membership_loader
+    if missing and isinstance(loader, ParentGroupsLoader):
+        fence = cache.read_fence()
+        loaded: dict[UUID, list[GroupMembership]] = {group_id: [] for group_id in missing}
+        for row in await loader.load_for_groups(tuple(missing)):
+            if row.member_id in loaded:
+                loaded[row.member_id].append(row)
+        for group_id, parent_rows in loaded.items():
+            rows[group_id] = tuple(parent_rows)
+            cache.put_membership(ActorMembershipKey(actor_kind="group", actor_id=group_id), rows[group_id], fence=fence)
+    else:
+        for group_id in missing:
+            fence = cache.read_fence()
+            rows[group_id] = tuple(await loader.load_for_group(group_id))
+            cache.put_membership(ActorMembershipKey(actor_kind="group", actor_id=group_id), rows[group_id], fence=fence)
+    return rows
 
 
 def _filter_memberships(

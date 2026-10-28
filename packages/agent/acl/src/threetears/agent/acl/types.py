@@ -27,6 +27,7 @@ vocabulary:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
@@ -92,12 +93,55 @@ class MemberType(StrEnum):
     GROUP = "group"
 
 
-#: how many membership levels resolution walks: an actor's DIRECT groups
-#: are depth 1, those groups' parent groups are depth 2. a deliberate
-#: named constant rather than a magic number -- raising it is expected
-#: (the shape it serves today is user -> org group -> state group), and
-#: a small cap keeps cycle handling cheap and evaluator cost predictable.
-MAX_GROUP_MEMBERSHIP_DEPTH: Final[int] = 2
+#: the environment variable that sets :data:`MAX_GROUP_MEMBERSHIP_DEPTH`, read once at import.
+MAX_GROUP_MEMBERSHIP_DEPTH_ENV: Final[str] = "THREETEARS_ACL_MAX_GROUP_MEMBERSHIP_DEPTH"
+
+#: the depth when :data:`MAX_GROUP_MEMBERSHIP_DEPTH_ENV` is unset: user -> org group -> state group.
+DEFAULT_MAX_GROUP_MEMBERSHIP_DEPTH: Final[int] = 2
+
+#: the deepest a deployment may configure. each level adds one nested ``EXISTS`` to the visibility
+#: SQL and one read per level to a cold evaluator walk; depth 3 already multiplied the visibility
+#: and discovery SQL's cost on YugabyteDB, so a value past this is a typo, not a decision.
+MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH: Final[int] = 4
+
+
+def resolve_max_group_membership_depth(environ: Mapping[str, str]) -> int:
+    """read the group-nesting depth from ``environ``, refusing a value the platform cannot honour.
+
+    unset means :data:`DEFAULT_MAX_GROUP_MEMBERSHIP_DEPTH`. anything else must be an integer from
+    1 to :data:`MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH`. an invalid value raises rather than
+    falling back: a deployment that asked for a depth and silently got another would show
+    memberships that grant nothing, which is the failure the depth cap's write-time refusal exists
+    to prevent.
+
+    :param environ: the environment to read, normally ``os.environ``
+    :ptype environ: Mapping[str, str]
+    :return: the depth every surface uses
+    :rtype: int
+    :raises ValueError: when the variable is set to anything but an integer in range
+    """
+    raw = environ.get(MAX_GROUP_MEMBERSHIP_DEPTH_ENV)
+    depth = DEFAULT_MAX_GROUP_MEMBERSHIP_DEPTH
+    if raw is not None:
+        try:
+            depth = int(raw.strip())
+        except ValueError:
+            raise ValueError(f"{MAX_GROUP_MEMBERSHIP_DEPTH_ENV}={raw!r} is not an integer") from None
+        if not 1 <= depth <= MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH:
+            raise ValueError(
+                f"{MAX_GROUP_MEMBERSHIP_DEPTH_ENV}={raw!r} is outside 1..{MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH}"
+            )
+    return depth
+
+
+#: how many membership levels resolution walks: an actor's DIRECT groups are depth 1, their parent
+#: groups depth 2, and so on. configured, not coded: :data:`MAX_GROUP_MEMBERSHIP_DEPTH_ENV` sets it
+#: at startup (default :data:`DEFAULT_MAX_GROUP_MEMBERSHIP_DEPTH`), read once here, and every
+#: surface reads this one value -- the evaluator's walk, the cycle check, the generated visibility
+#: SQL, and a consumer's own write-time cap and generated SQL -- so none can disagree within a
+#: process. every process that evaluates (the hub, agent pods, the registry) must be given the same
+#: value, or one of them grants what another refuses.
+MAX_GROUP_MEMBERSHIP_DEPTH: Final[int] = resolve_max_group_membership_depth(os.environ)
 
 
 class ScopeType(StrEnum):
