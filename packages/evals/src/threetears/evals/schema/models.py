@@ -3482,10 +3482,6 @@ def sent_settings_phrase(settings: ClientRequestSettings | None) -> str:
 DEFAULT_LAUNCH_K_RUNS = 3
 
 
-#: A value a host discloses about a launch: a word, a count or a reading, never a structure the engine would walk.
-_DisclosedValue = str | int | float | bool
-
-
 class RunDisclosure(EvalDocumentModel, CoreShapeModel):
     """What the launching host discloses about the launch a run came from: the machine, its load, how it measures.
 
@@ -3500,10 +3496,10 @@ class RunDisclosure(EvalDocumentModel, CoreShapeModel):
     Unlike ``host_payload``, which the engine never reads, this is read, and only to be shown.
     """
 
-    values: dict[str, _DisclosedValue] = Field(
+    values: dict[str, str | int | float | bool] = Field(
         default_factory=dict,
         description=(
-            "Each disclosed value by the host's own name for it: the machine the launch ran on, its one-minute load "
+            "Each disclosed value by the host's own name for it, a word, a count or a reading, never a structure: the machine the launch ran on, its one-minute load "
             "as the launch began, the host's build. Printed as given, never compared."
         ),
     )
@@ -3517,7 +3513,7 @@ class RunDisclosure(EvalDocumentModel, CoreShapeModel):
 
     @field_validator("values")
     @classmethod
-    def _named(cls, values: dict[str, _DisclosedValue]) -> dict[str, _DisclosedValue]:
+    def _named(cls, values: dict[str, str | int | float | bool]) -> dict[str, str | int | float | bool]:
         """Refuse a value disclosed under a blank name, which no reader could cite."""
         if blank := [name for name in values if not name.strip()]:
             raise ValueError(f"a disclosed value needs a name; {len(blank)} have a blank one")

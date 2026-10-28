@@ -4796,6 +4796,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.ArmPricing": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.ArmScoreboard": {
       "kind": "model",
       "signature": "",

@@ -960,6 +960,7 @@
 "threetears.evals.analysis.ArmExclusions": "provisional",
 "threetears.evals.analysis.ArmLevel": "provisional",
 "threetears.evals.analysis.ArmMechanismReading": "provisional",
+"threetears.evals.analysis.ArmPricing": "provisional",
 "threetears.evals.analysis.ArmScoreboard": "provisional",
 "threetears.evals.analysis.ArmServedModel": "provisional",
 "threetears.evals.analysis.AS_RECORDED_MODEL": "stable",

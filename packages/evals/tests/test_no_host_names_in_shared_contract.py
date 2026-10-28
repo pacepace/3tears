@@ -515,6 +515,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # where its price came from and the ledger stores that, so a provider name arriving here would
     # be one host's pricing claimed for every host's dollars.
     "kernel/usage_capture.py",
+    # Which build of the engine is installed, from its own distribution metadata: the engine's own name only.
+    "kernel/build_stamp.py",
     # A cell's world events and the session every world-bearing kind seeds, fires and reads back
     # through: dimension names and conditions are the host's words carried as data. A host noun here
     # would be one host's world written into every kind's cell.
