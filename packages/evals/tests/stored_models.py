@@ -326,7 +326,7 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
         report_doc_id="01a180c7-821a-73b1-88ea-98d87dc63523",
         role="analyst",
         session="analyst",
-        model="claude-opus-test",
+        model="report-writer-model",
         transcript_digest="8" * 64,
         created_by="agent:test",
     ),

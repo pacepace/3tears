@@ -37,6 +37,7 @@ import unicodedata
 from collections.abc import Iterable, Sequence
 from typing import Final
 
+from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.kernel.analyst_gap import EvalAnalystGap, GapDigest, GapGroup
 
 #: What each kind this build knows records, as the digest's body says it; a kind a newer build added reads as itself.
@@ -176,7 +177,7 @@ def _body(kind: str, members: list[EvalAnalystGap], *, must_fix: bool) -> str:
 
 
 def _bullets(values: Iterable[str]) -> list[str]:
-    return [f"- {value}" for value in _distinct(values)]
+    return [f"- {one_line(value)}" for value in _distinct(values)]
 
 
 def _evidence(record: EvalAnalystGap) -> list[str]:
@@ -201,14 +202,14 @@ def _evidence(record: EvalAnalystGap) -> list[str]:
         bounce = record.bounce
         lines.append(f"  - bounced submission {bounce.submission} at `{bounce.path}` on key `{bounce.key}`:")
         lines += [
-            f"    - [invariant {verdict.invariant}] {verdict.path}: {verdict.fault}" for verdict in bounce.verdicts
+            f"    - [invariant {verdict.invariant}] {verdict.path}: {one_line(verdict.fault)}" for verdict in bounce.verdicts
         ]
     if record.editor_item is not None:
         item = record.editor_item
         with_must_fix = "with" if item.must_fix else "without"
         lines.append(
             f"  - review round {item.round}, item {item.n} ({item.name}): {item.score} of 2, {with_must_fix} a must_fix "
-            f"finding in that review: {item.reason}"
+            f"finding in that review: {one_line(item.reason)}"
         )
     return lines
 

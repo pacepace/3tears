@@ -246,7 +246,8 @@ def _unresolved_keys(
             try:
                 keys = keys_in(text)
             except UnresolvableReference:
-                continue  # the field's braces name no key at all; its verdict says so, and there is no key to note
+                # NOSILENT: the field's braces name no key at all; its own verdict says so, and there is no key to note
+                continue
             for key in keys:
                 assert key.span is not None
                 written = text[key.span[0] : key.span[1]]
