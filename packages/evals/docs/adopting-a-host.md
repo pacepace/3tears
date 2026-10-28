@@ -771,7 +771,8 @@ operation (`data - text[]`). A store that applies `exclude` after fetching shoul
 the pass holds every row's text at once. Every other reader of a whole run reads it the same way, in the store's
 order: a comparison or bisection of two runs, a run written lost, the witnessed judge ceiling, `results_list`,
 `list_results`, `delete_run` (its ids only), a calibration and the judge passes. A campaign's bundle still reads its
-member runs' results in one batch call. A reader that keeps every result to fold into figures keeps it without
+member runs' results in one batch call, and a few readers over many runs still read them whole; the CHANGELOG lists
+them. A reader that keeps every result to fold into figures keeps it without
 `world_events` and `kind_payload`, so a host callable handed a run's results there (a sweepable's `read`,
 `row_columns`) reads them without those two fields; read what your kind reports into its measures as the cell ends.
 Aggregates over a scope are bounded by the read budget above instead.

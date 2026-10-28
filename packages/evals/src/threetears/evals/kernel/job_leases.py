@@ -171,7 +171,10 @@ def _run_lost(run: EvalRun, loss: JobLoss, store: LeaseStore) -> EvalRun:
         try:
             # Read a page at a time: the run is lost at its largest, and the count keeps nothing of a result.
             completeness = reconstruct_completeness(run, iter_stored_results(store, run.id, run.scope_id))
-        except ValidationError as refused:
+        # A result this build cannot reconstruct refuses as a ValidationError; one whose key (id, case, k, model, when
+        # stored) it cannot read refuses the paged read's pass over the run as a StorageError. Either leaves the run's
+        # completeness unknown, said on the run, and the run still settles.
+        except (ValidationError, StorageError) as refused:
             # NOSILENT: the completeness is written None, which every reader reads as unknown, and why is written
             # on the run itself as an error_details entry below.
             log.exception(

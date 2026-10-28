@@ -233,6 +233,25 @@ def test_a_lost_run_whose_completeness_is_unknown_says_why_on_its_own_record() -
     assert "completeness unknown" in detail and "turns_delivered" in detail, detail
 
 
+def test_a_lost_run_whose_result_carries_no_readable_key_still_settles_with_its_completeness_unknown() -> None:
+    """The count reads the run's result keys first; a row whose ``k`` is not a number refuses that read, not the run."""
+    store = InMemoryDocumentStore()
+    storage = EvalStorage(store)
+    run = make_eval_run(scope_id=_SCOPE, status="running")
+    storage.save_job_record(run.to_dict(), if_match=None)
+    readable = make_eval_result(id="res-ok", scope_id=_SCOPE, eval_run_id=run.id)
+    storage.save_eval_result(readable)
+    store.upsert(readable.to_dict() | {"id": "res-keyless", "k_iteration": "first"})
+
+    got = storage.load_eval_run(run.id, _SCOPE)
+
+    assert got is not None and got.status == "cancelled" and got.lost is not None and got.completeness is None
+    stored, _ = storage.load_job_record(EvalRun, run.id, _SCOPE)
+    assert stored is not None and stored.lost is not None, "the run was written lost, not merely read so"
+    (detail,) = stored.error_details
+    assert "completeness unknown" in detail and "res-keyless" in detail, detail
+
+
 class _ContestedStore(InMemoryDocumentStore):
     """Every conditional write of one record loses its race, as a record another writer keeps moving does."""
 

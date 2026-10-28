@@ -131,7 +131,9 @@ did and which no figure reads.
   and actions) hold each run's results without their verbatim fields. The pair disclosures' measurement window reads
   the runs' keys alone, which carry when each result was stored: `measurement_window` takes keys as well as results.
 - **A run written lost** with no completeness of its own counts what it stored as it walks it, keeping nothing:
-  `reconstruct_completeness` takes any iterable of results. `LeaseStore` now reads results through
+  `reconstruct_completeness` takes any iterable of results. A stored row whose key (id, case, `k`, model, when
+  stored) cannot be read refuses the walk's key read with a `StorageError`, and the run is still written lost, its
+  completeness unknown and why written on it, as for a result this build cannot reconstruct. `LeaseStore` now reads results through
   `RunResultsStore` (the key read and the read by id) in place of `query_eval_results_by_run`.
 - **The witnessed judge ceiling** keeps each saved cell's id and judge spend. **Changed:** `WitnessedJudging.spent`
   takes `(result id, judge spend)` pairs, where it took the run's results.
@@ -163,7 +165,8 @@ did and which no figure reads.
   (bounded by `EXPORT_PAGE_RESULTS`) are bounded already. Two readers #998 did not list still read runs whole:
   `detectable_effects` (a launch's planning block, every earlier run of its template) and `RegressionWatch`'s judged
   tiers over one subject's runs (`query_eval_results_by_runs`); both are reads over many runs, like the scope
-  aggregates.
+  aggregates. `quick`'s calibration, labelling rows and arm variants read each arm's results through `list_results`,
+  which pages its reads but returns every result; a `quick` run is the caller's own, in memory.
 
 ### langgraph: a checkpoint L2 entry that cannot be refreshed is deleted, not left holding an older checkpoint
 

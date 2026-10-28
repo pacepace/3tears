@@ -256,6 +256,20 @@ class TestADeleteReadsOnlyTheRunsIds:
         assert store.key_reads_of(run.id) == [CASES * K], "the ids read with what grows with a cell left out"
         assert host.storage.query_eval_results_by_run(run.id, SCOPE) == []
 
+    def test_a_result_this_build_cannot_reconstruct_is_deleted_with_its_readable_run(self) -> None:
+        """The ids are read off the rows, so a row the model has outlived no longer refuses its run's delete."""
+        store, host = _host()
+        run = _run(host.storage, "run-a")
+        (row,) = host.storage.load_eval_results([f"{run.id}-0-1"], SCOPE)
+        store.upsert(row.to_dict() | {"id": "res-outlived", "turns_delivered": "several"})
+
+        removed = delete_run(host.storage, run, SCOPE, confirm=run.id)
+
+        assert removed["results_deleted"] == CASES * K + 1
+        assert store.get("res-outlived", SCOPE) is None, "the unreadable row went with its run"
+        assert host.storage.query_eval_result_ids_by_run(run.id, SCOPE) == []
+        assert host.storage.load_eval_run(run.id, SCOPE) is None
+
 
 class TestTheRunSummaryLensReadsItsRunAPageAtATime:
     def test_it_is_the_summary_a_whole_read_gives(self, monkeypatch: pytest.MonkeyPatch) -> None:
