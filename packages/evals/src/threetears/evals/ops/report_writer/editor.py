@@ -23,6 +23,9 @@ each ``{claim, severity, finding}``. :class:`Review` adds the scores up and says
 scores 0 and the total is at least :data:`PASS_TOTAL`); a total or a verdict the editor writes is never read. An
 answer that cannot be read is asked for once more, saying what was wrong; a second ends the round ``review_failed``.
 
+**A session is kept.** Every round's session comes back on its outcome as a stored value
+(``ToolSession.to_json()``), whatever the ending, a client's failure included, so a later question can resume it.
+
 **Budgets.** A review has :attr:`EditorLimits.calls` tool calls, held by the session before anything is sent, and
 every turn is admitted by the report's dollar budget; a turn it refuses ends the round ``over_budget``.
 """
@@ -32,7 +35,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Final, Literal
 
 from threetears.evals.analysis.analyst.skill import SkillText
@@ -44,9 +47,12 @@ from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
 from threetears.evals.ops.report_writer.session import SessionLimits, SessionStop, ToolMount, ToolSession
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.turns import ToolTurnClient
 
 __all__ = ["EditorLimits", "EditorOutcome", "PASS_TOTAL", "Review", "RubricScore", "editor_session", "review_report"]
+
+log = get_logger(__name__)
 
 #: The rubric's items, in the order ``editor.md`` numbers them: item ``n`` is ``_RUBRIC[n - 1]``.
 _RUBRIC: Final = (
@@ -184,12 +190,15 @@ class EditorOutcome:
     """How one review round ended.
 
     :ivar ending: ``reviewed``, a review was read; ``review_failed``, the answer could not be read twice;
-        ``over_budget``, the report's dollar budget refused a turn; ``failed``, the model refused or its reply stopped
-        short for a cause other than the output cap.
+        ``over_budget``, the report's dollar budget refused a turn; ``failed``, the model refused, its reply stopped
+        short for a cause other than the output cap, or the client failed (the provider's failure, after its
+        retries, or a reply the client refused after it was paid for).
     :ivar round: The round reviewed.
     :ivar review: The review; ``None`` unless ``reviewed``.
     :ivar faults: What kept the last answer from being read; empty unless ``review_failed``.
     :ivar reason: Why a round ended other than ``reviewed``, in a sentence.
+    :ivar session: The round's session as a stored value (``ToolSession.to_json()``), whatever the ending: a session
+        is resumable, never thrown away.
     """
 
     ending: Literal["reviewed", "review_failed", "over_budget", "failed"]
@@ -197,6 +206,7 @@ class EditorOutcome:
     review: Review | None = None
     faults: tuple[str, ...] = ()
     reason: str = ""
+    session: dict[str, Any] = field(default_factory=dict)  # Any: a JSON object
 
 
 async def review_report(
@@ -242,9 +252,10 @@ async def review_report(
     :ptype budget: ReportBudget
     :param limits: What the round is held to; plan §4.3's defaults when ``None``.
     :ptype limits: EditorLimits | None
-    :return: How the round ended.
+    :return: How the round ended, with its session as a stored value. A failure of the client is the ``failed``
+        ending, contained and logged as an error, so the session that led to it is kept; every turn it paid for is in
+        the tally.
     :rtype: EditorOutcome
-    :raises TurnReplyRefused: The client refused a reply it was paid for; the turn is tallied first.
     """
     held = limits if limits is not None else EditorLimits()
     session = ToolSession(
@@ -259,15 +270,38 @@ async def review_report(
         limits=held.session,
     )
     session.open_round(round, calls=held.calls)
+    try:
+        ended = await _reviewed(
+            session, doc, report_input, round=round, snapshot=snapshot, earlier=earlier, limits=held
+        )
+    except Exception as exc:
+        # The client's failure (a provider's, after its retries; a reply refused after it was paid for), which the
+        # engine cannot name by type: reported as this round's `failed` ending, so the session is kept beside it.
+        contain(exc, log=log, what=f"the report editor's round {round} failed and ends failed", level="error")
+        ended = EditorOutcome(ending="failed", round=round, reason=f"{type(exc).__name__}: {exc}")
+    return replace(ended, session=session.to_json())
+
+
+async def _reviewed(
+    session: ToolSession,
+    doc: ReportDoc,
+    report_input: ReportInput,
+    *,
+    round: int,
+    snapshot: str,
+    earlier: Sequence[ReportFinding],
+    limits: EditorLimits,
+) -> EditorOutcome:
+    """The round run in its session: the request, the answer, and the one answer asked for again."""
     claims = frozenset(claim.id for claim in doc.claims)
-    stop = await session.send(_request(doc, report_input, snapshot=snapshot, earlier=earlier, calls=held.calls))
+    stop = await session.send(_request(doc, report_input, snapshot=snapshot, earlier=earlier, calls=limits.calls))
     faults: tuple[str, ...] = ()
     for answer in range(1, _ANSWERS + 1):
         if stop.kind == "over_budget" and stop.reply is None:
             return EditorOutcome(ending="over_budget", round=round, reason=stop.reason)
         if stop.kind == "failed":
             return EditorOutcome(ending="failed", round=round, reason=stop.reason)
-        read = _answer(stop, claims, round, held)
+        read = _answer(stop, claims, round, limits)
         if isinstance(read, Review):
             return EditorOutcome(ending="reviewed", round=round, review=read)
         faults = read

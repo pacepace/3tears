@@ -4,8 +4,10 @@ A recording (``turns.jsonl``, :class:`~threetears.evals.testing.RecordedTurns`) 
 order and nothing sent, the snapshot id written as ``{snapshot}``; ``replay.json`` beside it says how the run was made
 (the fixture snapshot, the model, the budget, the notes withheld) and what it came to. A replay runs ``write_report``
 over a host seeded with every fixture snapshot, every session's turns served from the recording and every tool call
-run live, and holds it to the record: the ending, the analyst's and the editor's round counts, the tally's turns, tool
-calls, bounces and cost, and every recorded turn and price ceiling consumed.
+run live, and holds it to the record: the ending, the analyst's and the editor's round counts, whether a document was
+stored, the tally's turns, tool calls, bounces and cost, and every recorded turn and price ceiling consumed. A run
+that ended ``failed`` is refused as a replay, naming why: its replay would end ``failed`` on the recording running out
+whatever failed live, so it would pass for the wrong cause.
 
 **Drift is a red that names its cause, and nothing is recorded again.** A replay that asks a turn the recording does
 not hold ends ``failed`` with the recording's refusal (the session and the turn) as its reason; one that leaves turns
@@ -29,7 +31,7 @@ import pytest
 
 from packages.evals.tests.fixtures.report_plans.analyst_cli import RECORDING, REPLAY, snapshot_ids
 from packages.evals.tests.report_writer_support import RecordedModel, replay_cases, written
-from threetears.evals.actions.report_writing import ReportWritten
+from threetears.evals.actions.report_writing import ReportNotStored, ReportWritten
 from threetears.evals.testing import RecordedTurns
 
 
@@ -46,22 +48,34 @@ async def replay(case: Path) -> Replayed:
     """Replay one recorded run (its directory) as ``replay.json`` says it was made."""
     expected: dict[str, Any] = json.loads((case / REPLAY).read_text())
     recording = RecordedTurns.replay(case / RECORDING)
-    result = await written(
-        RecordedModel(recording, expected["model"]),
-        snapshot=snapshot_ids()[expected["snapshot_of"]],
-        budget_usd=expected["budget_usd"],
-        withhold=expected["withhold"],
-    )
+    try:
+        result = await written(
+            RecordedModel(recording, expected["model"]),
+            snapshot=snapshot_ids()[expected["snapshot_of"]],
+            budget_usd=expected["budget_usd"],
+            withhold=expected["withhold"],
+        )
+    except ReportNotStored as refused:
+        # A store refused in the replay as in the run: the run's record rides on it, and drift reads it.
+        result = refused.written
     return Replayed(expected, result, recording.unconsumed())
 
 
 def drift(replayed: Replayed) -> list[str]:
     """How a replay differs from its record, each difference naming its cause; empty when it ran as recorded."""
     expected, result = replayed.expected, replayed.written
+    if expected["ending"] == "failed":
+        return [
+            f"the recorded run ended failed ({expected['reason'] or 'no reason recorded'}), so it is no replay: a "
+            "replay of it ends failed on the recording running out, whatever failed live, and would pass for the "
+            "wrong cause; record a run that reached an ending of its own"
+        ]
     outcome = result.outcome
     found: list[str] = []
     if result.ending != expected["ending"]:
         found.append(f"ended {result.ending} ({outcome.reason or 'no reason given'}), recorded {expected['ending']}")
+    if (result.stored is not None) != expected["stored"]:
+        found.append(f"stored is {result.stored is not None}, recorded {expected['stored']}")
     for name, now in (("analyst_rounds", outcome.analyst_rounds), ("editor_rounds", outcome.editor_rounds)):
         if now != expected[name]:
             found.append(f"{name} is {now}, recorded {expected[name]}")
@@ -140,3 +154,17 @@ async def test_a_replay_leaving_recorded_turns_unasked_is_a_red_naming_the_sessi
     found = drift(await replay(hand_revise))
 
     assert found == ["session 'editor-2' left 2 recorded lines unasked: the code now stops sooner than it did"], found
+
+
+async def test_a_recording_of_a_run_that_ended_failed_is_refused_as_a_replay(hand_revise: Path) -> None:
+    expected = json.loads((hand_revise / REPLAY).read_text())
+    expected.update(ending="failed", reason="ProviderError: anthropic 529 overloaded", stored=False)
+    (hand_revise / REPLAY).write_text(json.dumps(expected))
+
+    found = drift(await replay(hand_revise))
+
+    assert found == [
+        "the recorded run ended failed (ProviderError: anthropic 529 overloaded), so it is no replay: a replay of it "
+        "ends failed on the recording running out, whatever failed live, and would pass for the wrong cause; record a "
+        "run that reached an ending of its own"
+    ]

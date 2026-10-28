@@ -14,8 +14,8 @@ nothing that fails validity or an invariant is ever stored, whatever the loop th
 **The generation record** (:func:`generation_record`) is what the stored document's ``generation`` holds (plan
 §4.5): the model the report was written with, the skill texts' digests, the writing loop's tally (every turn, then
 the sums by role, by round and in all, tool calls, bounces, wall time, a transcript digest per session), every review
-as code scored it, and the analyst's session as a stored value, so a later question can resume the conversation that
-wrote the report. :func:`made_line` writes the page's made line from it, the one place that line is written.
+as code scored it, and every session as a stored value (the analyst's and each review round's), so a later question
+can resume the conversation that wrote the report, or the review of it. :func:`made_line` writes the page's made line from it, the one place that line is written.
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ def generation_record(
     :ptype skill: Mapping[str, str]
     :param reviews: Every review, in round order, as code scored it.
     :ptype reviews: Sequence[Mapping[str, Any]]
-    :param sessions: Each stored session, by name (the analyst's, which a later question resumes).
+    :param sessions: Each stored session, by name: the analyst's and each review round's.
     :ptype sessions: Mapping[str, Any]
     :return: ``{"format", "model", "skill", "tally", "reviews", "sessions"}``.
     :rtype: dict[str, Any]

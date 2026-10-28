@@ -22,16 +22,19 @@ from __future__ import annotations
 import copy
 import inspect
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Final
 
 import pytest
 
 from packages.evals.tests.fixtures.report_plans.analyst_cli import seeded_host
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER
+from packages.evals.tests.ops_support import CALLER, OpsFixture, ops_fixture, settled
 from packages.evals.tests.report_doc_support import snapshot_of
 from packages.evals.tests.report_writer_support import (
     DOC,
+    MODEL,
     FakeToolTurnClient,
     FakeTurnModel,
     answer,
@@ -43,14 +46,20 @@ from packages.evals.tests.report_writer_support import (
     thinking,
     written,
 )
+from threetears.evals.actions import Caller, MountedTool, analyst_tools, eval_catalogue
+from threetears.evals.actions.report_writing import ReportNotStored, write_report
+from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
-from threetears.evals.analysis.report_doc_store import doc_verdicts, generation_record, store_report_doc
+from threetears.evals.analysis.report_doc_store import doc_verdicts, generation_record, made_line, store_report_doc
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
-from threetears.evals.ops import OpsHost
-from threetears.evals.ops.report_writer.editor import Review, RubricScore, review_report
+from threetears.evals.kernel import StorageError
+from threetears.evals.kernel.report_doc import EvalReportDoc, ReportDoc, ReportFinding
+from threetears.evals.ops import OpsHost, analysis_generate
+from threetears.evals.ops.report_writer.editor import EditorLimits, Review, RubricScore, review_report
 from threetears.evals.ops.report_writer.loop import WriterLimits
+from threetears.evals.ops.report_writer.session import ToolOutcome, ToolSession
+from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.turns import TurnText
 
 #: A finding that sends a report back however it scored.
@@ -118,7 +127,10 @@ async def test_a_review_that_clears_in_round_one_stores_the_report_with_its_shou
     assert set(generation["tally"]["by_round"]) == {"analyst:1", "editor:1"}
     assert generation["tally"]["total"]["tool_calls"] == 2
     assert [item["total"] for item in generation["reviews"]] == [13]
+    assert set(generation["sessions"]) == {"analyst", "editor-1"}
     assert generation["sessions"]["analyst"]["session"]["name"] == "analyst"
+    assert generation["sessions"]["editor-1"]["name"] == "editor-1"
+    assert {result["stored"] for result in generation["sessions"]["editor-1"]["results"]} == {"rederive"}
     assert result.page is not None and result.page.made.startswith(f"Written by {model.model_name}")
     assert [finding.finding for finding in result.page.findings] == [SHOULD_FIX["finding"]]
 
@@ -140,6 +152,7 @@ async def test_a_review_that_fails_sends_the_analyst_back_and_a_review_of_the_re
     assert "does not pass" in asked and "3. Honest emphasis: 0 of 2" in asked and SHOULD_FIX["finding"] in asked
     assert "This revision has 30 tool calls" in asked
     assert SHOULD_FIX["finding"] in _texts(second.requests[0]), "round 2 is given its earlier findings"
+    assert set(result.generation["sessions"]) == {"analyst", "editor-1", "editor-2"}
 
 
 async def test_a_must_fix_sends_a_review_that_passes_on_its_scores_back() -> None:
@@ -257,6 +270,7 @@ async def test_a_client_failure_ends_failed_and_keeps_the_tally() -> None:
     assert "ConnectionError" in result.outcome.reason
     assert result.generation["tally"]["total"]["turns"] == 3
     assert result.generation["sessions"]["analyst"]["session"]["messages"]
+    assert result.generation["sessions"]["editor-1"]["messages"], "the failed round's session is kept"
 
 
 # --- the editor ---------------------------------------------------------------------------------------------------
@@ -424,3 +438,271 @@ def test_a_page_that_cannot_be_built_strict_is_a_verdict_not_a_crash() -> None:
     verdicts = doc_verdicts(ReportDoc.model_validate(unresolved), _kairo_input())
 
     assert verdicts and verdicts[-1].path == "lede" and "does not resolve" in verdicts[-1].fault
+
+
+# --- the editor's other endings, and its sessions stored and resumed -------------------------------------------------
+
+
+async def test_an_editor_reply_the_model_stopped_short_ends_failed_and_keeps_the_session() -> None:
+    first = editor(reply(TurnText("I will not review this."), stop="content_filter"))
+    model = FakeTurnModel(analyst=analyst(), editor_1=first)
+
+    result = await written(model)
+
+    assert result.ending == "failed" and result.stored is None
+    assert "content_filter" in result.outcome.reason
+    assert result.generation["sessions"]["editor-1"]["state"]["turns"] == 2
+
+
+async def test_an_editor_reply_cut_at_the_output_cap_is_asked_for_once_more() -> None:
+    first = editor(reply(TurnText('```json\n{"items": ['), stop="max_tokens"), reply(review()))
+    model = FakeTurnModel(analyst=analyst(), editor_1=first)
+
+    result = await written(model)
+
+    assert result.ending == "stored"
+    asked_again = _texts({"messages": [first.requests[-1]["messages"][-1]]})
+    assert "output cap" in asked_again and "could not be read" in asked_again
+
+
+async def test_the_editor_is_stopped_at_40_tool_calls_and_asked_for_its_review() -> None:
+    snap = kairo_id()
+    assert EditorLimits().calls == 40
+    first = FakeToolTurnClient(
+        reply(*(call(n, "help", snap) for n in range(1, 42))),
+        reply(call(99, "help", snap)),
+        reply(review()),
+    )
+    model = FakeTurnModel(analyst=analyst(), editor_1=first)
+
+    result = await written(model)
+
+    assert result.ending == "stored"
+    assert result.generation["tally"]["by_round"]["editor:1"]["tool_calls"] == 40
+    answered = first.requests[1]["messages"][-1]["content"]
+    assert answered[40]["content"].startswith("not run: this round's 40 tool calls are used up")
+    assert "Answer now" in answered[-1]["text"]
+    asked_again = _texts({"messages": [first.requests[2]["messages"][-1]]})
+    assert "this review's 40 tool calls are used up, and you called a tool again" in asked_again
+
+
+@dataclass(frozen=True)
+class BoundTool:
+    """The editor's tool bound to a host and caller, as ``write_report`` mounts it."""
+
+    tool: MountedTool
+    host: OpsHost
+    caller: Caller
+
+    @property
+    def name(self) -> str:
+        return self.tool.name
+
+    @property
+    def description(self) -> str:
+        return self.tool.description
+
+    @property
+    def rederivable(self) -> bool:
+        return True
+
+    def input_schema(self) -> dict[str, Any]:
+        return self.tool.input_schema()
+
+    async def call(self, arguments: Mapping[str, Any]) -> ToolOutcome:
+        return await self.tool.call(arguments, host=self.host, caller=self.caller)
+
+
+async def test_a_stored_editor_session_resumes_sending_what_the_uninterrupted_session_would() -> None:
+    (spec,) = analyst_tools(writes=False, role="editor")
+    mount = BoundTool(eval_catalogue().mount(spec), off_loop(seeded_host), CALLER)
+    skill, snap = load_skill().editor(), kairo_id()
+    final = reply(review(findings=[SHOULD_FIX]))
+    first = FakeToolTurnClient(reply(call(9, "options_dominance", snap)), final)
+
+    reviewed = await review_report(
+        ReportDoc.model_validate(DOC),
+        _kairo_input(),
+        round=1,
+        snapshot=snap,
+        earlier=(),
+        model=MODEL,
+        client=first,
+        mount=mount,
+        skill=skill,
+        tally=Tally(),
+        budget=ReportBudget(usd=10),
+    )
+
+    record = json.loads(json.dumps(reviewed.session))
+    assert reviewed.ending == "reviewed" and record["name"] == "editor-1"
+    assert [result["stored"] for result in record["results"]] == ["rederive"]
+    resumed_client = FakeToolTurnClient(reply(TurnText("Item 6 names no experiment.")))
+    resumed = await ToolSession.from_json(
+        record,
+        model=MODEL,
+        client=resumed_client,
+        mount=mount,
+        system=skill,
+        tally=Tally(),
+        budget=ReportBudget(usd=10),
+    )
+    resumed.open_round(2, calls=5)
+    await resumed.send("Why did item 6 score 1?")
+
+    (sent,) = resumed_client.requests
+    uninterrupted = [
+        *first.requests[-1]["messages"],
+        final.message().to_json(),
+        {"role": "user", "content": [{"type": "text", "text": "Why did item 6 score 1?"}]},
+    ]
+    assert sent["messages"] == uninterrupted
+    assert (sent["system"], sent["tools"]) == (first.requests[0]["system"], first.requests[0]["tools"])
+
+
+# --- the freeze path ------------------------------------------------------------------------------------------------
+
+
+def _unsubmitted() -> FakeToolTurnClient:
+    """An analyst that never submits a document: its round ends refused after its bounces, with no editor call."""
+    return FakeToolTurnClient(*(reply(TurnText("Still reading.")) for _ in range(4)))
+
+
+async def _written_from(fixture: OpsFixture, model: FakeTurnModel, **source: str) -> Any:
+    return await write_report(fixture.host, CALLER, model=model, budget=ReportBudget(usd=10), **source)
+
+
+def _assert_frozen_and_read_only(result: Any, model: FakeTurnModel, client: FakeToolTurnClient) -> None:
+    assert result.ending == "refused" and model.snapshots == [result.snapshot_id]
+    assert f"Write the report on snapshot {result.snapshot_id}" in _texts(client.requests[0])
+    actions = client.requests[0]["tools"][0]["input_schema"]["properties"]["action"]["enum"]
+    assert "campaign_overview" in actions and "report_snapshot_freeze" not in actions, "the mount carries no write"
+
+
+async def test_a_report_written_from_a_campaign_freezes_it_first_and_mounts_no_write() -> None:
+    fixture = off_loop(ops_fixture, generation=False)
+    client = _unsubmitted()
+    model = FakeTurnModel(analyst=client)
+
+    result = await _written_from(fixture, model, campaign_id=fixture.campaign.id)
+
+    snapshot = off_loop(fixture.host.eval_host.storage.load_report_snapshot, result.snapshot_id, CALLER.scope_id)
+    assert snapshot is not None and (snapshot.campaign_id, snapshot.analysis_id) == (fixture.campaign.id, None)
+    _assert_frozen_and_read_only(result, model, client)
+
+
+async def test_a_report_written_from_an_analysis_freezes_its_bundle_first_and_mounts_no_write() -> None:
+    fixture = off_loop(ops_fixture)
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, CALLER.scope_id)).jobs
+    assert (await settled(fixture.host, job.job_id)).state == "completed"
+    (analysis,) = off_loop(
+        fixture.host.eval_host.storage.list_analyses_by_campaign, fixture.campaign.id, CALLER.scope_id
+    )
+    client = _unsubmitted()
+    model = FakeTurnModel(analyst=client)
+
+    result = await _written_from(fixture, model, analysis_id=analysis.id)
+
+    snapshot = off_loop(fixture.host.eval_host.storage.load_report_snapshot, result.snapshot_id, CALLER.scope_id)
+    assert snapshot is not None and snapshot.analysis_id == analysis.id
+    _assert_frozen_and_read_only(result, model, client)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param({}, id="none"),
+        pytest.param({"snapshot_id": "report-snapshot:any", "campaign_id": "any-campaign"}, id="two"),
+        pytest.param({"campaign_id": "any-campaign", "analysis_id": "any-analysis"}, id="a campaign and an analysis"),
+    ],
+)
+async def test_a_report_is_written_from_exactly_one_source(source: dict[str, str]) -> None:
+    model = FakeTurnModel()
+
+    with pytest.raises(ValueError, match="a report is written from one source"):
+        await write_report(
+            off_loop(seeded_host),
+            CALLER,
+            model=model,
+            budget=ReportBudget(usd=10),
+            **source,  # type: ignore[arg-type]
+        )
+
+    assert model.asked == [], "nothing is frozen or sent"
+
+
+# --- the made line ------------------------------------------------------------------------------------------------
+
+
+def _record(generation: dict[str, Any]) -> EvalReportDoc:
+    snapshot = snapshot_of("prototype3/kairo")
+    return EvalReportDoc(
+        scope_id=CALLER.scope_id,
+        snapshot_id=snapshot.id,
+        campaign_id=snapshot.campaign_id,
+        doc=DOC,
+        ending="stored",
+        generation=generation,
+        created_by=CALLER.identity,
+        created_at="2026-10-28T09:30:00+00:00",
+    )
+
+
+def _generation(cost: float | None, unpriced: int) -> dict[str, Any]:
+    turns = [
+        {"model": "writer-a", "served_model": "writer-a-20261001"},
+        {"model": "writer-a", "served_model": None},
+        {"model": "writer-b", "served_model": "writer-b-20260901"},
+    ]
+    return generation_record(
+        model="writer-a",
+        tally={"turns": turns, "total": {"cost_usd": cost, "unpriced_turns": unpriced}},
+        skill={"analyst": "a" * 64, "editor": "e" * 64, "package": "0123456789abcdef" * 4},
+        reviews=[],
+        sessions={},
+    )
+
+
+def test_the_made_line_of_a_priced_report() -> None:
+    assert made_line(_record(_generation(1.234, 0))) == (
+        "Written by writer-a, writer-b, served as writer-a-20261001, writer-b-20260901, for $1.23, with analyst skill "
+        "0123456789ab, on 2026-10-28."
+    )
+
+
+def test_the_made_line_of_a_report_with_unpriced_turns() -> None:
+    assert made_line(_record(_generation(None, 2))) == (
+        "Written by writer-a, writer-b, served as writer-a-20261001, writer-b-20260901, at a cost not known (2 turns "
+        "unpriced), with analyst skill 0123456789ab, on 2026-10-28."
+    )
+
+
+def test_the_made_line_refuses_a_generation_record_of_another_format() -> None:
+    with pytest.raises(ValueError, match="this build reads format 1"):
+        made_line(_record({**_generation(1.0, 0), "format": 2}))
+
+
+# --- a paid run never loses its record ------------------------------------------------------------------------------
+
+
+async def test_a_store_that_fails_after_the_run_raises_with_the_runs_record_on_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host = off_loop(seeded_host)
+    failure = StorageError("the document is larger than the store takes")
+
+    def refuse(report: EvalReportDoc) -> None:
+        raise failure
+
+    monkeypatch.setattr(host.eval_host.storage, "save_report_doc", refuse)
+    model = FakeTurnModel(analyst=analyst(), editor_1=editor(reply(review(findings=[SHOULD_FIX]))))
+
+    with pytest.raises(ReportNotStored, match="the report ended stored and was not stored") as refused:
+        await written(model, host=host)
+
+    assert refused.value.__cause__ is failure
+    kept = refused.value.written
+    assert kept.ending == "stored" and kept.stored is None and kept.page is None
+    assert kept.generation["tally"]["total"]["turns"] == 4
+    assert set(kept.generation["sessions"]) == {"analyst", "editor-1"}
+    assert [review["total"] for review in kept.generation["reviews"]] == [13]

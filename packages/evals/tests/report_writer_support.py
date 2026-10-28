@@ -136,9 +136,11 @@ class FakeTurnModel:
     def __init__(self, **sessions: FakeToolTurnClient) -> None:
         self.sessions = {name.replace("_", "-"): client for name, client in sessions.items()}
         self.asked: list[str] = []
+        self.snapshots: list[str] = []
 
     def turn_session(self, name: str, *, snapshot: str) -> ToolTurnClient:
         self.asked.append(name)
+        self.snapshots.append(snapshot)
         if name not in self.sessions:
             raise AssertionError(f"session {name!r} was asked for, and the script holds none")
         return self.sessions[name]

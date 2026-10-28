@@ -4,6 +4,8 @@
   "budget_usd": 5.0,
   "withhold": [],
   "ending": "stored",
+  "reason": "",
+  "stored": true,
   "analyst_rounds": 2,
   "editor_rounds": 2,
   "tally": {

@@ -30,7 +30,8 @@ snapshot, recorded, the one route here that reads a key::
         [--withhold kairo-round2.md] [--effort high]
 
 It reads ``ANTHROPIC_API_KEY`` and nothing else, records every turn of every session into ``<out>/turns.jsonl``, and
-writes beside it ``replay.json`` (what a replay must reach: the ending, the rounds, the tally's sums;
+writes beside it, whether the report was stored or the store refused it, ``replay.json`` (what a replay must reach:
+the ending and why, whether it was stored, the rounds, the tally's sums;
 ``test_report_writer_replay.py`` replays every recording that has one), ``outcome.json`` (the ending, why, a refusal's
 faults, the reviews), ``generation.json`` (the tally, the reviews and the analyst's session) and, for a stored report,
 ``doc.json``, ``record.json``, ``page.html`` and ``page.md``. A recording is made once: an ``--out`` that holds one
@@ -67,7 +68,7 @@ from fastmcp import Client, FastMCP
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots, shape_snapshots
 from packages.evals.tests.ops_support import CALLER, ops_fixture
 from threetears.evals.actions import analyst_tools
-from threetears.evals.actions.report_writing import ReportWritten, write_report
+from threetears.evals.actions.report_writing import ReportNotStored, ReportWritten, write_report
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.kernel import EvalReportSnapshot
@@ -208,8 +209,9 @@ def replay_expectation(
     :ptype budget_usd: float
     :param withhold: The exemplar notes withheld.
     :ptype withhold: Sequence[str]
-    :return: ``{"snapshot_of", "model", "budget_usd", "withhold", "ending", "analyst_rounds", "editor_rounds",
-        "tally"}``; ``tally`` the total's turns, tool calls, bounces and cost.
+    :return: ``{"snapshot_of", "model", "budget_usd", "withhold", "ending", "reason", "stored", "analyst_rounds",
+        "editor_rounds", "tally"}``; ``reason`` why it ended other than ``stored``, ``stored`` whether a document was
+        stored, ``tally`` the total's turns, tool calls, bounces and cost.
     :rtype: dict[str, Any]
     """
     total = written.generation["tally"]["total"]
@@ -219,6 +221,8 @@ def replay_expectation(
         "budget_usd": budget_usd,
         "withhold": list(withhold),
         "ending": written.ending,
+        "reason": written.outcome.reason,
+        "stored": written.stored is not None,
         "analyst_rounds": written.outcome.analyst_rounds,
         "editor_rounds": written.outcome.editor_rounds,
         "tally": {name: total[name] for name in ("turns", "tool_calls", "bounces", "cost_usd")},
@@ -305,9 +309,14 @@ def _write(argv: Sequence[str]) -> int:
         return 2
     out.mkdir(parents=True, exist_ok=True)
     model = Model(options.model, provider="anthropic", api_key=key, effort=options.effort, turn_recording=recording)
-    written = asyncio.run(
-        _written(seeded_host(), model, ids[options.snapshot_of], options.budget_usd, options.withhold)
-    )
+    refused: ReportNotStored | None = None
+    try:
+        written = asyncio.run(
+            _written(seeded_host(), model, ids[options.snapshot_of], options.budget_usd, options.withhold)
+        )
+    except ReportNotStored as not_stored:
+        # The paid run's record rides on the refusal: write it beside the recording, then raise it.
+        written, refused = not_stored.written, not_stored
     expectation = replay_expectation(
         written,
         snapshot_of=options.snapshot_of,
@@ -317,6 +326,8 @@ def _write(argv: Sequence[str]) -> int:
     )
     for name, text in written_files(written, expectation).items():
         (out / name).write_text(text, encoding="utf-8")
+    if refused is not None:
+        raise refused
     print(f"{written.ending}: {written.outcome.reason or 'stored'}; written to {out}")
     return 0 if written.stored is not None else 1
 

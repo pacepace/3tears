@@ -133,7 +133,9 @@ class WritingOutcome:
     :ivar editor_rounds: The review rounds begun.
     :ivar faults: The faults of a submission that ended the loop ``refused``; empty otherwise.
     :ivar reason: Why the loop ended other than ``stored``, in a sentence.
-    :ivar session: The analyst's session as a stored value (``AnalystSession.to_json()``), whatever the ending.
+    :ivar sessions: Every session begun, by name, as a stored value, whatever the ending: the analyst's
+        (``AnalystSession.to_json()``, under ``analyst``) and each review round's (``ToolSession.to_json()``, under
+        ``editor-<round>``).
     """
 
     ending: WriterEnding
@@ -144,15 +146,16 @@ class WritingOutcome:
     editor_rounds: int = 0
     faults: tuple[SubmissionFault, ...] = ()
     reason: str = ""
-    session: dict[str, Any] = field(default_factory=dict)  # Any: a JSON object
+    sessions: dict[str, dict[str, Any]] = field(default_factory=dict)  # Any: JSON objects
 
 
 @dataclass
 class _Rounds:
-    """What the loop has seen so far: each review read, and the document each was of."""
+    """What the loop has seen so far: each review read, the document each was of, and each review round's session."""
 
     reviews: list[Review] = field(default_factory=list)
     reviewed: list[ReportDoc] = field(default_factory=list)
+    editors: dict[str, dict[str, Any]] = field(default_factory=dict)  # Any: each editor session's JSON
     analyst_rounds: int = 0
     editor_rounds: int = 0
 
@@ -235,6 +238,7 @@ async def write_rounds(
                 budget=budget,
                 limits=held.editor,
             )
+            seen.editors[editor_session(drafted.round)] = reviewed.session
             if reviewed.ending != "reviewed" or reviewed.review is None:
                 return _not_reviewed(reviewed, seen, analyst)
             review = reviewed.review
@@ -298,7 +302,7 @@ def _outcome(
         editor_rounds=seen.editor_rounds,
         faults=faults,
         reason=reason,
-        session=analyst.to_json(),
+        sessions={ANALYST_SESSION: analyst.to_json(), **seen.editors},
     )
 
 
