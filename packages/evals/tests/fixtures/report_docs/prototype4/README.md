@@ -16,7 +16,7 @@ The fourth prototype, and the first one the report writer made itself: `write_re
 
 The seven reports cost $14.87: $1.58 to $3.48 each, $2.12 on average. No draft bounced. The second round cost $1.46 on "r2 with its gates read in each task" and $0.56 on "r3 without its configs".
 
-Two runs replaced earlier ones. At a $4 cap, "r2 with its gates read in each task" and "r3 without its configs" each ended `over_budget` after round 1: they had spent $1.87 and $1.83, and the turn bound refused a revision turn priced at up to $2.52 and $2.51. The owner approved reruns at $8. Both ended `stored`, and they are the runs kept here. The two refused runs cost $3.70, and the confirming run below $2.17, so X spent $20.74 in all.
+Two runs replaced earlier ones. At a $4 cap, "r2 with its gates read in each task" and "r3 without its configs" each ended `over_budget` after round 1: they had spent $1.87 and $1.83, and the turn bound refused a revision turn priced at up to $2.52 and $2.51. The owner approved reruns at $8. Both ended `stored`, and they are the runs kept here. The two refused runs cost $3.70, and the two confirming runs below $2.17 and $3.43, so X spent $24.17 in all.
 
 **Against W2.** W2 recorded no dollar cost. Its prototypes ran as Claude Code subagents, and the plan's W2 status records "analyst ≈130–180k subagent tokens and 10–16 min per report; editor ≈100k and ~5 min; a revision ≈150–180k cumulative context". That measures something else: the tally here counts every turn's whole prompt again. Its nearest match is each session's largest prompt: 95k to 149k for the analyst and 30k to 67k for an editor. The comparable counts are below.
 
@@ -45,7 +45,18 @@ Two runs replaced earlier ones. At a $4 cap, "r2 with its gates read in each tas
 
 The plan's L1 note says "X runs with `prefix_mismatch_behavior: "error"` to confirm". The field is `thinking.block_binding.prefix_mismatch_behavior`, which takes `"error"` or `"drop_block"`, under the `thinking-binding-controls-2026-08-01` beta. Setting either value opts a request into the history-editing check, whatever the account's age. The writer now sends `"error"` on every analyst and editor turn that thinks (`ThinkingBinding`; `test_report_writer_session.py` asserts every turn carries it, `test_providers_turns.py` that it goes as `thinking.block_binding` under its beta). The seven runs above were made before it.
 
-**The confirming run.** After the change, one live run on "r2 with its gates read in each task" (its note withheld, effort high, a $4 cap), written outside this directory, since the acceptance set holds one run per snapshot. Every turn carried the check, and none tripped it: no turn was refused for a changed prefix. The run ended `over_budget` after round 1, having spent $2.17 on 25 turns and 47 tool calls (analyst $1.63, editor $0.54, 6.6 min). The budget refused the revision's first turn, priced at up to $2.61. Its document was stored with the editor's findings. Each of the 23 turns after a session's first replayed at least one earlier thinking block, under the check. The run did not reach the 150k clearing trigger (its largest prompt was 146k) and sent no revision turn, so the check was not exercised across a clearing or a revision.
+**The confirming runs.** After the change, two live runs on "r2 with its gates read in each task" (its note withheld, effort high), written outside this directory, since the acceptance set holds one run per snapshot. Every turn of both carried the check, and none tripped it: no turn was refused for a changed prefix.
+
+| | First, $4 cap | Second, $8 cap |
+|---|---|---|
+| Ending | `over_budget` after round 1 | `stored`, two rounds |
+| Cost | $2.17 | $3.43 |
+| Turns, tool calls | 25, 47 | 31, 60 |
+| Crossed the clearing trigger | no (largest prompt 146k) | yes, analyst turn 15 |
+| Revision turns | none (the budget refused the first, priced at up to $2.61) | 5 analyst turns, and the editor's second review |
+| Evidence stored | the check is implied by 25 accepted turns | each turn's tally: `sent_binding: "error"` and the response's `input_transformations` |
+
+The second run reached both paths the check guards, in one request: analyst turn 15 is the revision's first turn. The revision brief took the prompt past 150k, the server cleared old tool results (input 95,104 tokens, after 145,270 on the turn before; the cache was read up to the first cleared result, 25,200 tokens), and the request was accepted with its thinking blocks. Every one of its 31 turns recorded `sent_binding: "error"`, and every response returned `input_transformations: []`: no thinking block was dropped, and none failed the prefix check. It cost $3.43 (analyst $1.59 and $0.99 by round, editor $0.52 and $0.33), in 10.7 min.
 
 What X confirms besides:
 - `test_report_writer_session.py` asserts that consecutive request bodies share a byte-identical prefix across warnings, bounces and revisions, and that every turn carries the server-side `clear_tool_uses_20250919` edit.
