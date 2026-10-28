@@ -74,12 +74,28 @@ def test_every_judged_dimensions_reason_rides_on_the_example_the_primarys_among_
         assert example.reason in given.values(), "reason stays the primary dimension's"
 
 
-def test_the_analysts_example_row_shows_every_dimensions_reason() -> None:
+def test_the_analysts_example_row_shows_every_dimensions_reason_cut_as_the_excerpt_is() -> None:
+    long = "the reply narrates the booth in the third person, " * 20
+    bundle, trial = _planted(kairo_bundle(), "a short reply", long)
+    held = analyst_input(bundle)
+    example = _shown(bundle, held, trial)
+    (row,) = [row for row in examples_list(held, {}, limit=len(held.examples)).examples if row.trial == example.trial]
+    assert example.reasons and all(reason == long.strip() for reason in example.reasons.values()), "the input is whole"
+    assert set(row.reasons) == set(example.reasons)
+    for reason in row.reasons.values():
+        assert len(reason) == EXAMPLE_EXCERPT_CHARS and reason.endswith("…") and long.startswith(reason[:-1])
+
     held = analyst_input(kairo_bundle())
     rows = examples_list(held, {}, limit=len(held.examples)).examples
     assert rows and all(
-        row.reasons == (example.reasons or {}) for row, example in zip(rows, held.examples, strict=True)
+        row.reasons == {dim: _cut(reason) for dim, reason in (example.reasons or {}).items()}
+        for row, example in zip(rows, held.examples, strict=True)
     )
+
+
+def _cut(text: str) -> str:
+    """A reason as the example row shows it: whole up to the excerpt's length, else cut there and marked."""
+    return text if len(text) <= EXAMPLE_EXCERPT_CHARS else text[: EXAMPLE_EXCERPT_CHARS - 1] + "…"
 
 
 def test_the_cases_input_is_filled_where_the_trial_has_one_and_expected_stays_unset() -> None:
