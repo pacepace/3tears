@@ -32,6 +32,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from typing import Final, NamedTuple, Protocol
 
+from threetears.evals.kernel.errors import StorageError
 from threetears.evals.schema.models import EvalResult, EvalRun
 
 #: The most results a reader of a whole run holds at once.
@@ -46,6 +47,16 @@ RUN_RESULTS_PAGE: Final[int] = 200
 #: the engine's comparisons, counts and calibrations read the scores, outcomes, usage and measures beside them, and a
 #: host reads its kind's payload as the cell ends, into the measures it reports.
 _VERBATIM_RESULT_FIELDS: Final = ("world_events", "kind_payload")
+
+
+class UnreadableResultKey(StorageError):
+    """A stored result row whose key (id, case, ``k``, model, when stored) cannot be read, so its run cannot be walked a
+    page at a time (status 503, refused as a storage error).
+
+    Raised by the key read (:meth:`RunResultsStore.query_eval_result_keys_by_run`) for a row, never for a store that
+    failed to answer: a reader that tolerates a row this build cannot read (a lost run's count of what it stored)
+    catches this and lets every other storage failure through.
+    """
 
 
 class ResultKey(NamedTuple):
@@ -253,6 +264,7 @@ __all__ = [
     "RUN_RESULTS_PAGE",
     "ResultKey",
     "RunResultsStore",
+    "UnreadableResultKey",
     "iter_keyed_results",
     "iter_run_results",
     "iter_stored_results",

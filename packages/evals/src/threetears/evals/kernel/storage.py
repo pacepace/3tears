@@ -98,7 +98,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
 from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict, refuse_on_event_loop
 from threetears.evals.schema.logs import get_logger
-from threetears.evals.kernel.run_pages import ResultKey, RunResultsStore
+from threetears.evals.kernel.run_pages import ResultKey, RunResultsStore, UnreadableResultKey
 from threetears.evals.kernel.job_leases import RUN_LOST_STATUS, lease_lapsed, leased_kind_of, settle_tolerantly
 
 log = get_logger(__name__)
@@ -2498,7 +2498,8 @@ class EvalStorage:
         :ptype scope_id: str
         :return: Each result row's key, in the store's order.
         :rtype: list[ResultKey]
-        :raises StorageError: The store failed to answer, or a row matched carries no readable key.
+        :raises StorageError: The store failed to answer.
+        :raises UnreadableResultKey: A row matched carries no readable key.
         """
         store = self._store
         try:
@@ -2518,7 +2519,7 @@ class EvalStorage:
                 and isinstance(model, str)
                 and isinstance(scored_at, str)
             ):
-                raise StorageError(
+                raise UnreadableResultKey(
                     f"a stored result of eval run {run_id!r} ({result_id!r}) carries no readable id, case, k, model "
                     "or stored time, so the run cannot be read a page at a time"
                 )
