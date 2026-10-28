@@ -395,6 +395,7 @@
 "threetears.evals.kernel.EvalJudgeProfile": "stable",
 "threetears.evals.kernel.EvalReportDoc": "provisional",
 "threetears.evals.kernel.EvalReportPlan": "provisional",
+"threetears.evals.kernel.EvalReportSession": "provisional",
 "threetears.evals.kernel.EvalReportSnapshot": "provisional",
 "threetears.evals.kernel.EvalRunScan": "provisional",
 "threetears.evals.kernel.EvalServiceError": "host-contract",

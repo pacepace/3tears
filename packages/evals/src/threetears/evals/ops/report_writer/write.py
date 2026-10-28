@@ -249,7 +249,7 @@ async def report_write(
         raise ReportNotStored(
             f"the report ended {outcome.ending} and was not stored ({type(exc).__name__}: {exc}); its generation "
             "record (tally, reviews, sessions) is this error's .written, and any session the store wrote before it "
-            f"failed is under report {report_doc_id}, which delete_report_doc removes",
+            f"failed is stored under report {report_doc_id} (this error's .report_doc_id)",
             written=unstored,
             report_doc_id=report_doc_id,
         ) from exc
