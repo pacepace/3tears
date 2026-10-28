@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.81.0 -- 2026-10-28
+
 ### core: a DuckDB L1 table can be key-less, its key kept by the backend
 
 **Added:** `DuckDBBackend(keyless=[...])` names tables to create with no primary key, their key columns still
