@@ -64,7 +64,7 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_case_payload,
 )
 from threetears.evals.analysis.service import (
-    campaign_report,
+    analysis_report,
     get_report_plan,
     prepare_analysis_generation,
     run_analysis_generation,
@@ -555,13 +555,14 @@ async def test_a_two_aspect_campaign_planned_paged_read_and_frozen_agrees_on_eve
     assert stored is not None and stored.report_input_digest == report_input_digest(prepared.report_input)
     plan = report_plan_of(stored)
 
-    # The campaign's page, and its report_read, are that plan.
-    page = off_loop(campaign_report, host, campaign_id, TOYHOST_SCOPE)
+    # The analysis's page, read by its id, is that plan; the campaign's report_read reads it code-only (D1: the
+    # planner's page is the reporter kind's alone).
+    page = off_loop(analysis_report, host.storage, analysis.id, TOYHOST_SCOPE)
     assert (page.basis, page.analysis_id) == ("analysis", analysis.id)
     assert page.plan_page is not None
     page_text = {"answer": page.plan_page.headline, "summary": page.plan_page.lede}
     read = off_loop(report_read, host, campaign_id, TOYHOST_SCOPE, format="json")
-    assert (read.analysis_id, read.analysis_basis, read.plan) == (analysis.id, "plan", stored.plan)
+    assert (read.analysis_id, read.analysis_basis, read.basis, read.doc) == (analysis.id, "plan", "code_only", None)
 
     # Frozen through the operation Discodon calls, with a reader's verdict on the judged headline.
     judged_headline = render(plan.headline, prepared.report_input, {})

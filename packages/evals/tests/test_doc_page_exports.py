@@ -3,8 +3,8 @@
 ``analysis/report/doc_page``'s builder, its three writers and the page text are this build's report-document page.
 The builder and the page text are exported (:data:`_CALLED`): the store gate, the one checker, builds a draft's page
 strict and checks its text above the appendix, the analyst's ``report_check`` (``ops/analyst.py``) returns that page's
-text, the writing loop's editor reads it and the report writer builds the page it stores. The HTML and Markdown writers wait for the
-report read (the page). ``CLAUDE.md`` holds that no public API exists only
+text, the writing loop's editor reads it and the report writer builds the page it stores. The HTML and Markdown writers
+are the report read's (``report_read``, through the campaign page's serializers). ``CLAUDE.md`` holds that no public API exists only
 for a test, and the caller gate (``tests/enforcement/test_public_api_has_a_caller.py``) reads a module's surface from
 its ``__all__``, so each module's ``__all__`` stays empty until its caller lands. This test keeps that checkable, as
 ``test_report_doc_exports.py`` does for the document's own names: :data:`_AWAITING_A_CALLER` lists each entry point
@@ -19,14 +19,13 @@ import importlib
 from pathlib import Path
 
 #: Each entry point awaiting a production caller, by the module that defines it.
-_AWAITING_A_CALLER: dict[str, frozenset[str]] = {
-    "threetears.evals.analysis.report.doc_page.html": frozenset({"doc_page_html"}),
-    "threetears.evals.analysis.report.doc_page.markdown": frozenset({"doc_page_markdown"}),
-}
+_AWAITING_A_CALLER: dict[str, frozenset[str]] = {}
 
 #: Each entry point exported with its production caller, by the module that defines it.
 _CALLED: dict[str, frozenset[str]] = {
     "threetears.evals.analysis.report.doc_page.build": frozenset({"build"}),
+    "threetears.evals.analysis.report.doc_page.html": frozenset({"doc_page_html"}),
+    "threetears.evals.analysis.report.doc_page.markdown": frozenset({"doc_page_markdown"}),
     "threetears.evals.analysis.report.doc_page.text": frozenset({"above_appendix_text", "doc_page_text"}),
 }
 

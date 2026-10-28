@@ -99,14 +99,13 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
             client, "evals", {"action": "report_read", "campaign_id": fixture.campaign.id}
         )
         assert not is_error and document is not None and document["format"] == "markdown"
-        # The generation wrote a report document; until the report view reads it (wave 2), the campaign's page is the
-        # code-only page over the analysis's frozen evidence, naming the analysis.
+        # The generation wrote a report document, and the campaign's page is the one it draws.
         assert (document["basis"], document["analysis_id"], document["analysis_basis"]) == (
-            "code_only",
+            "analysis",
             analysis_status["analysis_id"],
             "doc",
         )
-        assert report.startswith(f"# {fixture.campaign.name}")
+        assert document["doc"] is not None and f"# {document['doc']['headline']}" in report
 
 
 async def test_a_report_s_body_is_sent_once_as_the_text_and_every_other_field_as_data() -> None:
@@ -126,7 +125,8 @@ async def test_a_report_s_body_is_sent_once_as_the_text_and_every_other_field_as
                 "basis": expected.basis,
                 "analysis_id": expected.analysis_id,
                 "analysis_basis": expected.analysis_basis,
-                "plan": expected.plan,
+                "doc": expected.doc,
+                "needs_regeneration": expected.needs_regeneration,
                 "format": form,
             }
         # A result whose text is composed from its fields keeps every field.

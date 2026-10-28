@@ -27,6 +27,7 @@ import copy
 import dataclasses
 import math
 import random
+import threading
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, Literal
@@ -79,6 +80,7 @@ from threetears.evals.ops import (
     analyses_list,
     analysis_estimate,
     analysis_generate,
+    job_cancel,
     report_read,
 )
 from threetears.evals.ops.analyst import report_snapshot_freeze, snapshot_input
@@ -333,14 +335,90 @@ async def test_a_ledger_write_that_breaks_after_the_document_is_stored_still_wri
 ) -> None:
     fixture = off_loop(ops_fixture)
 
+    writes = 0
+
     def breaks(row: Any) -> None:
+        nonlocal writes
+        writes += 1
         raise RuntimeError("a defect in the ledger write")
 
     monkeypatch.setattr(fixture.host.eval_host.storage, "save_out_of_run_spend", breaks)
     status = await _generated(fixture)
     attempt = _attempt(fixture, status)
-    assert attempt.outcome == "failed"
+    assert (status.state, attempt.outcome) == ("failed", "failed")
     assert attempt.error is not None and "RuntimeError: a defect in the ledger write" in attempt.error
+    assert writes == 1, "the ledger is written once, whichever ending writes it, even when the write breaks"
+
+
+async def test_a_failure_after_the_document_is_stored_names_it_and_what_removes_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = off_loop(ops_fixture)
+    storage = fixture.host.eval_host.storage
+
+    def no_snapshot(*_: Any) -> None:
+        return None
+
+    stored: list[str] = []
+    save = storage.save_report_doc
+
+    def saved(record: EvalReportDoc, **given: Any) -> None:
+        save(record, **given)
+        stored.append(record.id)
+        monkeypatch.setattr(storage, "load_report_snapshot", no_snapshot)
+
+    monkeypatch.setattr(storage, "save_report_doc", saved)
+    status = await _generated(fixture)
+    attempt = _attempt(fixture, status)
+    (report_doc_id,) = stored
+    assert (status.state, attempt.outcome) == ("failed", "failed")
+    assert attempt.error is not None
+    assert f"StorageError: the report document {report_doc_id} is stored, and its snapshot " in attempt.error, (
+        "the raised error names the stored document"
+    )
+    assert f"no analysis links report document {report_doc_id}, which delete_report_doc removes" in attempt.error
+
+
+async def test_a_cancel_after_the_document_is_stored_ends_cancelled_and_ledgers_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = off_loop(ops_fixture)
+    storage = fixture.host.eval_host.storage
+    entered, release = threading.Event(), threading.Event()
+    load = storage.load_report_snapshot
+    stored: list[str] = []
+    save = storage.save_report_doc
+
+    def blocks(snapshot_id: str, scope_id: str) -> Any:
+        if stored:
+            entered.set()
+            release.wait(10)
+        return load(snapshot_id, scope_id)
+
+    def saved(record: EvalReportDoc, **given: Any) -> None:
+        save(record, **given)
+        stored.append(record.id)
+
+    monkeypatch.setattr(storage, "load_report_snapshot", blocks)
+    monkeypatch.setattr(storage, "save_report_doc", saved)
+    (job,) = (await generate(fixture.host, fixture.campaign.id)).jobs
+    try:
+        async with asyncio.timeout(10):
+            while not entered.is_set():
+                await asyncio.sleep(0.01)
+        await job_cancel(fixture.host, job.job_id, TOYHOST_SCOPE)
+    finally:
+        release.set()
+    status = await settled(fixture.host, job.job_id)
+    attempt = _attempt(fixture, status)
+    (report_doc_id,) = stored
+    assert (status.state, attempt.outcome) == ("cancelled", "cancelled")
+    assert attempt.error == (
+        f"cancelled after report document {report_doc_id} was stored, before its analysis was; no analysis links "
+        f"report document {report_doc_id}, which delete_report_doc removes"
+    )
+    (row,) = _ledger(fixture)
+    assert row.calls == 2, "the report's spend is ledgered exactly once"
 
 
 # -- the minting, over the toy snapshot -------------------------------------------------------------------------------
@@ -821,9 +899,7 @@ async def test_a_doc_analysis_is_listed_read_as_the_campaign_page_and_its_insigh
     page = off_loop(report_read, eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="json")
     assert page.analysis_id == status.analysis_id and page.analysis_basis == "doc"
     markdown = off_loop(report_read, eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown").body
-    assert f"is stored as report document {line.report_doc_id}" in markdown, (
-        "the interim page says a report was written"
-    )
+    assert TOY_DOC["headline"] in markdown, "the campaign's page is the stored document's (test_report_read_doc.py)"
     assert "no analysis has been generated" not in markdown
     frozen = await report_snapshot_freeze(
         fixture.host, TOYHOST_SCOPE, campaign_id=fixture.campaign.id, created_by=CALLER.identity
