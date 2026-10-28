@@ -199,28 +199,100 @@ def test_counts_that_contradict_each_other_are_unpriced_never_guessed() -> None:
     assert cost is None and why is not None and "6 one-hour cache writes within 5" in why
 
 
-async def test_a_model_the_rates_do_not_list_is_refused_before_a_run_starts_saying_what_to_do() -> None:
-    def down(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(503, text="unavailable")
+def catalogue_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Serve OpenRouter's catalogue offline, down: every client opened from here on answers 503."""
+    real = httpx.AsyncClient
 
-    catalogue = Catalogue(http=httpx.AsyncClient(transport=httpx.MockTransport(down)))
+    def opened(**options: Any) -> httpx.AsyncClient:
+        options.pop("transport", None)
+        return real(transport=httpx.MockTransport(lambda _: httpx.Response(503, text="unavailable")), **options)
+
+    monkeypatch.setattr(httpx, "AsyncClient", opened)
+
+
+async def test_a_model_the_default_rates_do_not_list_is_refused_before_a_run_starts_saying_what_to_do(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http = anthropic_reply("claude-opus-9", {"input_tokens": 1, "output_tokens": 1})
+    catalogue_down(monkeypatch)
+    model = Model("claude-opus-9", provider="anthropic", api_key="test-key", http=http)  # the default pricer
+
+    why = await model.turn_pricing_refusal()
+
+    assert why is not None
+    assert why.startswith(
+        "no turn on 'claude-opus-9' can be bounded before it is sent: the default pricer answers no rates for it, "
+        "and the price catalogue it leaves the call to cannot bound it ("
+    )
+    assert "could not be read" in why, "the catalogue the default left it to was asked, and could not say"
+    assert "read 2026-10-28 from https://platform.claude.com/docs/en/about-claude/pricing" in why
+    assert "do not list 'claude-opus-9': use a model they list (claude-fable-5-1, " in why
+    assert "hand the model a pricer with the host's own rates" in why
+
+
+def _down_catalogue() -> Catalogue:
+    return Catalogue(
+        http=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(503, text="unavailable")))
+    )
+
+
+async def test_a_host_s_catalogue_that_cannot_be_read_is_named_and_another_model_is_not_suggested() -> None:
+    # The Clients and Discodon shape: a catalogue handed in, no pricer. Opus 5.5 is in the shipped rates, and they are
+    # not what prices this model, so they are not offered.
     model = Model(
-        "claude-opus-9",
+        "claude-opus-5-5",
         provider="anthropic",
         api_key="test-key",
-        pricer=AnthropicPublishedRates(),
-        catalogue=catalogue,
-        http=anthropic_reply("claude-opus-9", {"input_tokens": 1, "output_tokens": 1}),
+        catalogue=_down_catalogue(),
+        http=anthropic_reply("claude-opus-5-5", {"input_tokens": 1, "output_tokens": 1}),
     )
 
     why = await model.turn_pricing_refusal()
 
     assert why is not None
-    assert why.startswith("no turn on 'claude-opus-9' can be bounded before it is sent (")
-    assert "could not be read" in why, "the catalogue the default left it to was asked, and could not say"
-    assert "read 2026-10-28 from https://platform.claude.com/docs/en/about-claude/pricing" in why
-    assert "do not list 'claude-opus-9': use a model they list (claude-fable-5-1, " in why
-    assert "claude-opus-5-5" in why and "hand the model a pricer with the host's own rates" in why
+    assert why.startswith(
+        "no turn on 'claude-opus-5-5' can be bounded before it is sent: it is priced by the price catalogue it was "
+        "handed, which cannot bound it (the price catalogue could not be read (HTTPStatusError"
+    )
+    assert "the model is not at fault, so naming another will not help: retry once the catalogue reads" in why
+    assert "published rates" not in why and "use a model" not in why
+
+
+async def test_a_host_s_catalogue_with_no_row_for_the_model_says_another_model_could_be_priced() -> None:
+    rows = {
+        "data": [{"id": "anthropic/claude-haiku-5.5", "pricing": {"prompt": "0.0000001", "completion": "0.0000005"}}]
+    }
+    catalogue = Catalogue(
+        http=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=rows)))
+    )
+    model = Model("claude-opus-5-5", provider="anthropic", api_key="test-key", catalogue=catalogue)
+
+    why = await model.turn_pricing_refusal()
+
+    assert why is not None and "no single priced row of OpenRouter's catalogue matches 'claude-opus-5-5'" in why
+    assert "use a model the catalogue prices, or hand the model a pricer" in why
+    assert "published rates" not in why
+
+
+async def test_a_host_s_pricer_that_answers_no_rates_is_named_and_the_shipped_rates_are_not_offered() -> None:
+    model = Model(
+        "claude-sonnet-5-5",  # in the shipped rates, and not in the host's: the host's pricer is what prices it
+        provider="anthropic",
+        api_key="test-key",
+        pricer=HostRates(),
+        catalogue=_down_catalogue(),
+        http=anthropic_reply("claude-sonnet-5-5", {"input_tokens": 1, "output_tokens": 1}),
+    )
+
+    why = await model.turn_pricing_refusal()
+
+    assert why is not None
+    assert why.startswith(
+        "no turn on 'claude-sonnet-5-5' can be bounded before it is sent: the pricer it was handed answers no rates "
+        "for it, and the price catalogue it leaves the call to cannot bound it ("
+    )
+    assert why.endswith("have the host's pricer answer rates for 'claude-sonnet-5-5'")
+    assert "published rates" not in why
 
 
 # --- a host's own prices -------------------------------------------------------------------------------------------

@@ -148,8 +148,9 @@ async def report_write(
     :ptype limits: WriterLimits | None
     :return: How it ended, the stored document if any, and the generation record.
     :rtype: ReportWritten
-    :raises ValueError: Not exactly one of the sources named, or a model whose turns cannot be priced (naming it and
-        why), refused before anything is frozen or sent.
+    :raises ValueError: Not exactly one of the sources named; a model whose turns cannot be bounded, refused with the
+        budget's lead-in and the model's own pricing refusal; or one the model refuses for its route or settings,
+        raised as the model words it. Each before anything is frozen or sent.
     :raises ReportNotStored: The loop ended with a document to store, and the store gate or the store refused it;
         the run's record rides on it (:attr:`ReportNotStored.written`), raised from the cause.
     :raises EvalServiceError: The freeze or the snapshot's read refused (no such campaign, analysis or snapshot).

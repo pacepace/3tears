@@ -621,22 +621,20 @@ class _Live:
             return None, None, f"{self.model_name!r} cannot be priced: {why}"
         return float(dollars), rates.source, None
 
-    def unbounded_because(self) -> str | None:
-        """Why a call on the model cannot be bounded before it is sent, as things stand, or ``None`` when it can:
-        rates from its pricer, or a catalogue row read young enough that bounds it. Reads nothing."""
+    def unbounded_because(self) -> tuple[str, bool] | None:
+        """Why a call on the model cannot be bounded before it is sent, as things stand, and whether the model is at
+        fault (the catalogue was read and holds no row that prices it, so another model could be); ``None`` when it
+        can be: rates from its pricer, or a catalogue row read young enough that bounds it. Reads nothing."""
         if self.priced_rates() is not None:
             return None
+        if not self._catalogue.loaded:
+            failed = self.last_refresh.failure if self.last_refresh is not None else None
+            return failed or "the price catalogue has not been read", False
         matched = self._catalogue_id()
-        if matched is None:
-            if not self._catalogue.loaded:
-                return (
-                    self.last_refresh.failure
-                    if self.last_refresh and self.last_refresh.failure
-                    else ("the price catalogue has not been read")
-                )
-            return f"no single row of OpenRouter's price catalogue matches {self.model_name!r}"
+        if matched is None or self._catalogue.rates(matched) is None:
+            return f"no single priced row of OpenRouter's catalogue matches {self.model_name!r}", True
         _, why = self._catalogue.ceiling(matched, prompt_tokens=1, output_tokens=1)
-        return why
+        return (why, False) if why is not None else None
 
     async def refresh_prices(self) -> PriceRefresh:
         if self.priced_rates() is not None:
@@ -861,6 +859,8 @@ class Model:
             raise ValueError("own_http=True says the model closes the client handed in with http=, and none was")
         self.model_name = id
         self.pricer = pricer
+        #: Whether the model is priced by the default pricer, given when it is handed neither a pricer nor a catalogue.
+        self._default_pricing = pricer is None and catalogue is None
         self.provider: Provider = _provider_of(id, provider, base_url)
         self.recording = beside_eval_file(recording) if recording is not None else None
         self.turn_recording = beside_eval_file(turn_recording) if turn_recording is not None else None
@@ -1144,25 +1144,41 @@ class Model:
         read for a model its pricer prices; the catalogue is, otherwise), then answers ``None`` when the pricer's
         rates or a catalogue row bound a turn, and for a model whose turns replay a recording, which costs nothing.
 
-        :return: ``None``, or the refusal, naming the model, why, and what to do.
+        The refusal names what prices the model and what failed: the default pricer's rates not listing it (and only
+        then the shipped rates' remedy), the host's pricer answering no rates for it, or the catalogue a call falls to
+        not read, too old, or holding no row for it.
+
+        :return: ``None``, or the pricing refusal, naming the model, why, and what to do.
         :rtype: str | None
+        :raises ValueError: As :meth:`turn` refuses the model (a route other than Anthropic's, settings a tool turn
+            refuses, completions replayed with no live client): that is no pricing refusal, so it is not returned as one.
         """
         if self._turns_replay:
             return None
-        try:
-            live = self._turn_client(session=True)
-        except ValueError as refused:
-            return str(refused)
+        live = self._turn_client(session=True)
         await live.refresh_prices()
-        why = live.unbounded_because()
-        if why is None:
+        unbounded = live.unbounded_because()
+        if unbounded is None:
             return None
+        why, model_at_fault = unbounded
+        lead = f"no turn on {self.model_name!r} can be bounded before it is sent"
+        own = "hand the model a pricer with the host's own rates (Model(..., pricer=...))"
+        if self._default_pricing:
+            return (
+                f"{lead}: the default pricer answers no rates for it, and the price catalogue it leaves the call to "
+                f"cannot bound it ({why}). {AnthropicPublishedRates().unlisted(self.model_name)}"
+            )
+        if self.pricer is not None:
+            return (
+                f"{lead}: the pricer it was handed answers no rates for it, and the price catalogue it leaves the call "
+                f"to cannot bound it ({why}): have the host's pricer answer rates for {self.model_name!r}"
+            )
         remedy = (
-            AnthropicPublishedRates().unlisted(self.model_name)
-            if live.provider == "anthropic"
-            else "hand the model a pricer with the host's own rates (Model(..., pricer=...))"
+            f"use a model the catalogue prices, or {own}"
+            if model_at_fault
+            else f"the model is not at fault, so naming another will not help: retry once the catalogue reads, or {own}"
         )
-        return f"no turn on {self.model_name!r} can be bounded before it is sent ({why}); {remedy}"
+        return f"{lead}: it is priced by the price catalogue it was handed, which cannot bound it ({why}); {remedy}"
 
     def turn_session(self, name: str, *, snapshot: str) -> ToolTurnClient:
         """The client one named session of tool turns goes through: this model, or its ``turn_recording``'s session.

@@ -242,10 +242,27 @@ async def test_a_replay_of_a_model_the_rates_do_not_list_is_still_admitted_since
     assert await replayer.turn_pricing_refusal() is None
 
 
-async def test_a_route_other_than_anthropic_s_is_refused_by_name() -> None:
+async def test_a_route_other_than_anthropic_s_is_raised_as_itself_not_as_a_pricing_refusal() -> None:
     model = Model("anthropic/claude-opus-5.5", api_key="openrouter-key")
-    why = await model.turn_pricing_refusal() or ""
-    assert "goes to openrouter" in why and "provider='anthropic'" in why
+    with pytest.raises(ValueError, match="goes to openrouter") as refused:
+        await model.turn_pricing_refusal()
+    assert "provider='anthropic'" in str(refused.value)
+
+
+async def test_the_report_raises_a_route_refusal_as_the_model_words_it_without_the_budget_s_lead_in() -> None:
+    model = Model("anthropic/claude-opus-5.5", api_key="openrouter-key")
+
+    with pytest.raises(ValueError) as refused:
+        await write_report(
+            off_loop(seeded_host),
+            CALLER,
+            model=model,
+            budget=ReportBudget(usd=20.0),
+            campaign_id="no-such-campaign",
+        )
+
+    said = str(refused.value)
+    assert said.startswith("tool turns go to Anthropic's Messages API alone") and "budget" not in said
 
 
 async def test_the_report_is_refused_before_anything_is_frozen_sent_or_spent() -> None:

@@ -14,7 +14,8 @@ skipped it in silence, OpenRouter's catalogue was never read, no turn had a pric
 first one. The engine cannot know what a host pays (a deal, BYOK, a subscription, a local model), so the host
 supplies prices; the package ships a default only for standalone and development use (owner, 2026-10-28).
 
-**Added (provisional, `threetears.evals.providers`):** `Model(..., pricer=...)` takes a `Pricer`, whose
+**Added (provisional; W4 replaces it with the host pricing port; `threetears.evals.providers`):**
+`Model(..., pricer=...)` takes a `Pricer`, whose
 `rates_for(model, provider=)` answers the `ModelRates` a call is billed at (base input, five-minute and one-hour cache
 writes, cache reads, output, an optional long-prompt tier, and the `price_source` to write), or `None` to leave the
 call to OpenRouter's catalogue. A call the pricer answers is priced and bounded from its rates and reads no catalogue;
@@ -40,9 +41,15 @@ answers why a turn could not be bounded, or `None` (always `None` for a model wh
 
 **Added:** `report_write` (and so `write_report`) asks before it freezes or sends anything, and refuses a model whose
 turns cannot be bounded, e.g. `ValueError("the report was not started, and nothing was frozen, sent or spent: its
-$20.00 budget admits each turn on its price ceiling, and no turn on 'claude-opus-9' can be bounded before it is sent
-(...); Anthropic's published rates as 3tears-evals ships them (read 2026-10-28 from ...) do not list 'claude-opus-9':
-use a model they list (...), or hand the model a pricer with the host's own rates (Model(..., pricer=...))")`.
+$20.00 budget admits each turn on its price ceiling, and no turn on 'claude-opus-9' can be bounded before it is sent:
+the default pricer answers no rates for it, and the price catalogue it leaves the call to cannot bound it (...).
+Anthropic's published rates as 3tears-evals ships them (read 2026-10-28 from ...) do not list 'claude-opus-9': use a
+model they list (...), or hand the model a pricer with the host's own rates (Model(..., pricer=...))")`. The refusal
+names what prices the model: the shipped rates are offered only when the default pricer is the one in use; a host's
+pricer answering no rates, or a host's catalogue that could not be read, is too old, or holds no row for the model, is
+named as such (a catalogue that could not be read says naming another model will not help). A model that sends no
+turn at all (its route or settings) is raised as the model words it, before anything is frozen, without the budget's
+lead-in.
 `ReportBudget`'s refusal of a turn it cannot bound stays as the backstop. `analyst_cli.py write` refuses such a model
 the same way before it writes anything under `--out`.
 

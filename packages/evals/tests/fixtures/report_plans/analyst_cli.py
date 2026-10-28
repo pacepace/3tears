@@ -314,7 +314,11 @@ def _write(argv: Sequence[str]) -> int:
     # Built with no pricer and no catalogue, the model is priced by the default pricer, Anthropic's published rates
     # as the package ships them: a model they list is bounded with no OpenRouter fetch. write_report refuses a model
     # whose turns cannot be bounded too; refused here, nothing is written under --out either.
-    if (unpriced := asyncio.run(model.turn_pricing_refusal())) is not None:
+    try:
+        unpriced = asyncio.run(model.turn_pricing_refusal())
+    except ValueError as refused:  # the model sends no turn at all (its route or settings): said as it words it
+        unpriced = str(refused)
+    if unpriced is not None:
         print(f"analyst_cli.py write: not started, and nothing was frozen, sent or spent: {unpriced}", file=sys.stderr)
         return 2
     out.mkdir(parents=True, exist_ok=True)

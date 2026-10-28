@@ -90,8 +90,9 @@ class TurnModel(Protocol):
         Asked before the report is started, so a run its budget could not admit a turn of is refused before it
         freezes or spends anything. It may bring the client's prices up to date first.
 
-        :return: ``None``, or the refusal, naming the model and what to do.
+        :return: ``None``, or the pricing refusal, naming the model and what to do.
         :rtype: str | None
+        :raises ValueError: The model sends no turn at all (its route or settings), which is no pricing refusal.
         """
         ...
 
