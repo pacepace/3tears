@@ -25,7 +25,7 @@ from threetears.evals.actions.analyst import analyst_actions
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, ConformanceStage
 from threetears.evals.actions.params import AnalysisId, CampaignId, Limit, Offset
 from threetears.evals.actions.report_writing import campaign_report_writer
-from threetears.evals.analysis.analyst_gaps import GapDigest
+from threetears.evals.kernel.analyst_gap import GapDigest
 from threetears.evals.ops.analyst import analyst_gaps_list
 from threetears.evals.schema import EvalRunStatus
 from threetears.evals.kernel import EvalStorage, ResultOutcome, ValidationFailedError

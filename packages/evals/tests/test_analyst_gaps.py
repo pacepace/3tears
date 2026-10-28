@@ -35,6 +35,7 @@ from packages.evals.tests.report_writer_support import (
 from threetears.evals.actions import MountedTool, analyst_tools, eval_catalogue, standard_tools
 from threetears.evals.actions.report_writing import ReportNotStored
 from threetears.evals.analysis.analyst_gaps import gap_digest
+from threetears.evals.kernel import StorageError
 from threetears.evals.kernel.analyst_gap import EvalAnalystGap, GapToolCall
 from threetears.evals.ops import OpsHost
 from threetears.evals.ops.report_writer.analyst import AnalystLimits
@@ -166,6 +167,24 @@ async def test_a_store_that_refuses_the_report_still_stores_its_gaps_naming_no_r
 
     assert [gap.report_doc_id for gap in _gaps(host)] == [None, None]
     assert [gap.kind for gap in refused.value.written.gaps] == ["missing", "suspect"]
+
+
+async def test_a_store_that_refuses_the_gaps_fails_neither_the_report_nor_the_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host = off_loop(seeded_host)
+
+    def refuse(gap: EvalAnalystGap) -> bool:
+        raise StorageError("the gaps table is read-only")
+
+    monkeypatch.setattr(host.eval_host.storage, "save_analyst_gap", refuse)
+    model = FakeTurnModel(analyst=_analyst(), editor_1=_editor(reply(review(scores=(2, 2, 2, 2, 2, 2, 2)))))
+
+    result = await written(model, host=host)
+
+    assert result.ending == "stored" and result.stored is not None
+    assert result.gaps_not_stored is not None and "the gaps table is read-only" in result.gaps_not_stored
+    assert [gap.kind for gap in result.gaps] == ["missing", "suspect"], "the records ride on the result"
 
 
 async def test_a_replayed_write_stores_nothing_twice() -> None:

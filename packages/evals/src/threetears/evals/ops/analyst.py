@@ -34,7 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_input, report_snapshot
-from threetears.evals.analysis.analyst_gaps import GapDigest, gap_digest
+from threetears.evals.analysis.analyst_gaps import gap_digest
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
@@ -42,7 +42,7 @@ from threetears.evals.analysis.report_doc_checks import DocVerdict, InvariantNum
 from threetears.evals.analysis.report_doc_store import doc_verdicts_and_page
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.service import assemble_campaign_bundle, get_analysis, require_evidence
-from threetears.evals.kernel.analyst_gap import CallGapKind, EvalAnalystGap, GapToolCall, call_gap_id
+from threetears.evals.kernel.analyst_gap import CallGapKind, EvalAnalystGap, GapDigest, GapToolCall, call_gap_id
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, RefusedInput, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.report_doc import ReportDoc

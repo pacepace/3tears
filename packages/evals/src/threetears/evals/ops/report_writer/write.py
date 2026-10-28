@@ -79,8 +79,9 @@ class ReportWritten:
         its made line (:func:`~threetears.evals.analysis.report_doc_store.made_line`); ``None`` when nothing is stored.
     :ivar gaps: Every gap and notice the write noted (the module docstring), whatever the ending, each naming the
         stored report or none.
-    :ivar gaps_not_stored: Why the store refused the gaps, when it did; ``None`` when every one is stored. The records
-        are :attr:`gaps`, to store again (``EvalStorage.save_analyst_gap`` keeps one per id).
+    :ivar gaps_not_stored: Why the gaps were not stored, when they were not (the store refused them, or they could not
+        be read from the sessions, which :attr:`generation` still holds); ``None`` when every one is stored. The records
+        read are :attr:`gaps`, to store again (``EvalStorage.save_analyst_gap`` keeps one per id).
     """
 
     ending: WriterEnding
@@ -250,18 +251,23 @@ async def report_write(
     )
 
     async def noted(report_doc_id: str | None, written: ReportWritten) -> ReportWritten:
-        # The write's gaps, naming the report it stored or none, stored and carried on its result.
-        gaps = write_gaps(
-            scope_id=scope_id,
-            snapshot_id=written.snapshot_id,
-            report_doc_id=report_doc_id,
-            model=model.model_name,
-            created_by=created_by,
-            outcome=outcome,
-            tally=written.generation["tally"],
-            drafts=drafts,
-            report_input=report_input,
-        )
+        # The write's gaps, naming the report it stored or none, stored and carried on its result. Neither reading
+        # them nor storing them may cost the paid run its record, so a failure of either is recorded and returned.
+        try:
+            gaps = write_gaps(
+                scope_id=scope_id,
+                snapshot_id=written.snapshot_id,
+                report_doc_id=report_doc_id,
+                model=model.model_name,
+                created_by=created_by,
+                outcome=outcome,
+                tally=written.generation["tally"],
+                drafts=drafts,
+                report_input=report_input,
+            )
+        except Exception as exc:
+            contain(exc, log=log, what="the report write's gaps could not be read from its sessions", level="error")
+            return replace(written, gaps_not_stored=f"the gaps could not be read ({type(exc).__name__}: {exc})")
         refused = await _store_gaps(host, gaps)
         return replace(written, gaps=tuple(gaps), gaps_not_stored=refused)
 

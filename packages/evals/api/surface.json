@@ -1951,6 +1951,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.EvalAnalystGap": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.EvalCampaign": {
       "kind": "model",
       "signature": "EvalCampaign(schema_minor: DurableSchemaMinor = 7, id: str = <lambda>(), doc_type: Literal['eval_campaign'] = 'eval_campaign', schema_version: DurableSchemaVersion = 16, scope_id: str, name: str, description: str = '', subject_id: str, subject_kind: str = '', behavior: str, question: str = '', arms: list[CampaignArm] = list(), aspects: list[Aspect], floors: list[Floor] = list(), declared_at: str | None = None, declared_by: str = '', call: CampaignCall | None = None, archived: bool = False, created_at: str = utc_now_iso(), created_by: str)",
@@ -2148,6 +2153,36 @@
     },
     "threetears.evals.kernel.FRONTIER_RANKING_MEASURE": {
       "kind": "constant (str)",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.GapBounce": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.GapDigest": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.GapEditorItem": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.GapGroup": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.GapToolCall": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.GapVerdict": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },

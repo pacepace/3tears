@@ -21,6 +21,9 @@ and key, or the review round and item, it records.
 none), the session's role and name, the model, and the session's transcript digest as the write's tally holds it;
 outside a write (a caller over MCP, the dev CLI), the caller alone. ``created_by`` is who asked, as the host names
 them.
+
+**The digest's shape.** :class:`GapDigest` and :class:`GapGroup` are what ``analyst_gaps_list`` returns: the records
+grouped, ranked and written as issue text (``analysis/analyst_gaps.py`` says how).
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ from pydantic import Field, field_validator
 from threetears.evals.schema.base import (
     CoreShapeModel,
     DurableDocumentModel,
+    EvalBaseModel,
     EvalDocumentModel,
     VerbatimJsonObject,
     known_unless_newer_minor,
@@ -186,11 +190,48 @@ class EvalAnalystGap(DurableDocumentModel):
         return v
 
 
+class GapGroup(EvalBaseModel):
+    """One group of the digest: the records of one kind whose needs normalize alike, and their issue text."""
+
+    kind: str = Field(description="The records' kind (missing, suspect, unresolved_key, editor_score).")
+    need: str = Field(description="The need as its first record wrote it.")
+    normalized: str = Field(description="The need as the digest normalizes it (``analysis/analyst_gaps.py``), which the group is keyed by.")
+    count: int = Field(ge=1, description="How many records the group holds within the digest's window.")
+    first_seen: str = Field(description="The first record's time.")
+    last_seen: str = Field(description="The last record's time.")
+    must_fix: bool = Field(description="Whether any record came with a must_fix finding.")
+    snapshots: list[str] = Field(description="The snapshots its records were noted against, in first-seen order.")
+    reports: list[str] = Field(description="The stored reports its records came from, in first-seen order.")
+    gap_ids: list[str] = Field(description="Its records' ids, in first-seen order.")
+    title: str = Field(description="An issue title for the group.")
+    body: str = Field(description="An issue body for the group: what, why, and each record's evidence, in Markdown.")
+
+
+class GapDigest(EvalBaseModel):
+    """The scope's analyst gaps and notices, grouped and ranked, each group with its issue text."""
+
+    since: str | None = Field(description="The time the records were read from, as given; None for every record.")
+    records: int = Field(ge=0, description="How many records the digest read.")
+    groups: list[GapGroup] = Field(description="The groups, in rank order: suspect, then must_fix-linked, then the rest.")
+
+    def render(self) -> str:
+        """The digest as text: how many records it read, then each group's title and body, in rank order.
+
+        :return: The text.
+        :rtype: str
+        """
+        window = f"since {self.since}" if self.since is not None else "every record"
+        head = f"analyst gaps ({window}): {self.records} records in {len(self.groups)} groups"
+        return "\n\n".join([head, *(f"## {group.title}\n\n{group.body}" for group in self.groups)])
+
+
 __all__ = [
     "CallGapKind",
     "EvalAnalystGap",
     "GapBounce",
+    "GapDigest",
     "GapEditorItem",
+    "GapGroup",
     "GapToolCall",
     "GapVerdict",
     "analyst_gap_id",

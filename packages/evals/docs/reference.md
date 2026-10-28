@@ -205,7 +205,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`DURABLE_DOC_TYPES`** · constant (frozenset) · What people author, by `doc_type`: the `durable` entries of `DOC_TYPE_FACTS`, derived as `CORE_DOC_TYPES` is.
 - **`DURABLE_SCHEMA_MINOR`** · *host contract* · constant (int) · The durable minor this build writes within `DURABLE_SCHEMA_VERSION`, under the core's minor rules.
-  <br>`= 6`
+  <br>`= 7`
 - **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
   <br>`= 16`
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
@@ -1588,6 +1588,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `insight_get` | `read` | `insight_id` | Read one insight in full: its statement, evidence runs, provenance and standing. |
 | `analyses_undescribable` | `read` | — | List the scope's analyses holding an arm whose levels this build cannot describe. |
 | `report_read` | `read` | `campaign_id`, `format?`, `trials?`, `static?` | Read a campaign's report — its analysis, else its evidence alone — as Markdown, JSON or HTML. |
+| `analyst_gaps_list` | `read` | `since?` | List the capability gaps analysts noted, and code's notices, grouped and ranked as issue text. |
 | `bars_propose` | `read` | `campaign_id` | Propose bars from a single-cell baseline campaign's measured incumbent; registers nothing. |
 | `reporter_case_freeze` | `write` | `template_id`, `campaign_id`, `recorded_analysis_id?`, `labels?`, `supersedes?` | Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template. |
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
@@ -1748,6 +1749,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `selection` | `'borderline'` \| `'all'` | Which scored dims are re-judged: borderline (stored score inside the scale, or a recorded repeat or second judge disagreed) or all. |
 | `short_names` | `object` or `null` | An aspect's label to its short name, what a page prints for it in table cells and sentences (at most 32 characters, no other aspect's label or short name), or to null to print its label whole. An aspect not named keeps its own. Editable once runs have joined, since it changes nothing any run measures; refused beside aspects, whose own short_name says it. |
 | `simulator_model` | `string` or `null` | The simulated user's model, where the kind has one. |
+| `since` | `string` or `null` | Read only the gaps stored at or after this time, ISO 8601 with its offset (2026-10-28T00:00:00Z), each by its own time; omit for every gap. |
 | `static` | `boolean` | With html, the static page, for a host whose policy lets a page neither run nor load anything: no script and no link, the system's fonts, and every chart shown as its table of values. Markdown and json are the same either way. |
 | `status` | `'pending'` \| `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` \| `'budget_stopped'` \| `'exhausted'` or `null` | List only runs with this stored status. |
 | `subject` | `string` or `null` | Who or what produced the output, as the judge should know it; omitted for none. |
