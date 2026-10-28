@@ -42,7 +42,8 @@ refused, so a revision sees everything at once.
 5. **No internal id above the appendix.** The prose above it (everything but ``omitted`` and ``method``) types no id
    that reads as one (:func:`~threetears.evals.analysis.report_prose_checks.reads_as_id`) where a reader is shown a
    name: an aspect, measure, judged dimension, stratum, task or criterion id, an arm id the page prints by another
-   name, a caveat id, a decision slot's word, an example's trial or case id, or one of the document's own claim ids
+   name and that is not its served model (a hyphen or a digit marks an arm id too: ``fanout-1`` where the page prints
+   "fanout 1"; :func:`~threetears.evals.analysis.report_prose_checks.internal_ids`), a caveat id, a decision slot's word, an example's trial or case id, or one of the document's own claim ids
    (the page places claims and never shows their ids; an example or claim id is matched in its own case, so a case
    ``q3`` is not the word "Q3"). The rendered page's text above the
    appendix is checked the same way where the caller passes it (``above_appendix_text``, the renderer's
@@ -65,7 +66,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.block_spec import block_look, chart_faults, complete_chart, small_multiple_faults
-from threetears.evals.analysis.report.figure_keys import keys_in, reader_names, render
+from threetears.evals.analysis.report.figure_keys import keys_in, printed_arm_name, reader_names, render
 from threetears.evals.analysis.report.plan_page.look import PageLook
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report_decision import Caveat, ImpliedCaveat, caveat_materiality, every_caveat
@@ -371,17 +372,14 @@ def _id_verdicts(
     above_appendix_text: str,
 ) -> Iterator[DocVerdict]:
     said: dict[str, tuple[str, str]] = {
-        identifier: (f"the {kind} id {identifier!r}", _ID_REMEDY)
-        for identifier, (kind, _name) in internal_ids(report_input).items()
+        identifier: (
+            f"the arm id {identifier!r}, which the page prints as {name!r}"
+            if kind == "arm"
+            else f"the {kind} id {identifier!r}",
+            _ID_REMEDY,
+        )
+        for identifier, (kind, name) in internal_ids(report_input).items()
     }
-    arms = {arm.id: arm.name for arm in fact_arms(report_input)}
-    printed = {
-        arm.id: {name.casefold() for name in (arms[arm.id], arm.name, arm.short_name, arm.served_model) if name}
-        for arm in report_input.arms
-    }
-    for arm, names in printed.items():
-        if reads_as_id(arm) and arm.casefold() not in names:
-            said.setdefault(arm, (f"the arm id {arm!r}, which the page prints as {arms[arm]!r}", _ID_REMEDY))
     named = [caveat.id for caveat in caveats] + [caveat.id for caveat in doc.confidence.caveats]
     for caveat in named:
         if reads_as_id(caveat):
@@ -393,7 +391,7 @@ def _id_verdicts(
     shown |= {
         name for arm in report_input.arms for name in (arm.id, arm.name, arm.short_name, arm.served_model) if name
     }
-    shown |= set(arms.values())
+    shown |= {printed_arm_name(arm) for arm in report_input.arms}
     exact: dict[str, tuple[str, str]] = {}
     for example in report_input.examples:
         for kind, identifier in (("trial", example.trial), ("case", example.case)):

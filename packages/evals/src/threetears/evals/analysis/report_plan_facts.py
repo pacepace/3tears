@@ -65,6 +65,7 @@ from threetears.evals.analysis.errors import PlanRefusal, SoundnessRefusal, Unre
 from threetears.evals.analysis.report.block_spec import complete_chart
 from threetears.evals.analysis.report.figure_keys import (
     WEAKEST_PREFIX,
+    printed_arm_name,
     reader_names,
     render,
     resolve,
@@ -246,7 +247,7 @@ def fact_arms(report_input: ReportInput) -> tuple[FactArm, ...]:
         FactArm(
             id=arm.id,
             tag=tags[arm.id],
-            name=arm.short_name or arm.name or arm.id,
+            name=printed_arm_name(arm),
             role=arm.role,
             color_slot=-1 if arm.id == control else next(slots),
         )

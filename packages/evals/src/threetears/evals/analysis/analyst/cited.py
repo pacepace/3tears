@@ -23,6 +23,7 @@ from threetears.evals.analysis.report.figure_keys import (
     FigureKind,
     Scale,
     format_figure,
+    printed_arm_name,
     resolve,
 )
 from threetears.evals.analysis.report.words import arm_tags
@@ -96,7 +97,7 @@ def _arm_written(report_input: ReportInput, arm_id: str) -> str:
     arm = next(held for held in arms if held.id == arm_id)
     control = next((held.id for held in arms if held.role == "control"), None)
     tag = arm_tags([held.id for held in arms], control)[arm_id]
-    return ARM_TEMPLATE.format(name=arm.short_name or arm.name or arm.id, tag=tag)
+    return ARM_TEMPLATE.format(name=printed_arm_name(arm), tag=tag)
 
 
 def cite(key: str, report_input: ReportInput) -> CitedFigure:

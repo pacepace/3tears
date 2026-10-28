@@ -11,8 +11,9 @@ Each check reads prose as ``(field path, text)`` pairs, so it holds for whatever
   a caller allows.
 - :func:`unit_faults`: prose writing a unit right after a key that prints it, and money per reply under one cent keyed
   per reply on a page that states its costs per 1,000.
-- :func:`internal_ids` and :func:`typed_ids`: the ids that read as ids and differ from their reader names, and where
-  a text types one outside its keys and outside every name a reader is shown (:func:`reads_as_id` is the rule).
+- :func:`internal_ids` and :func:`typed_ids`: the ids that read as ids and differ from their reader names (an arm's
+  id where it differs from the name the page prints for the arm, a hyphen or a digit marking it too), and where a text
+  types one outside its keys and outside every name a reader is shown (:func:`reads_as_id` is the rule).
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from threetears.evals.analysis.report.figure_keys import (
     format_figure,
     keys_in,
     literal_numbers,
+    printed_arm_name,
     reader_names,
     resolve,
 )
@@ -214,16 +216,40 @@ def reads_as_id(identifier: str) -> bool:
     return _ID_MARKS.search(identifier) is not None
 
 
-def internal_ids(report_input: ReportInput) -> dict[str, tuple[str, str]]:
-    """Every id that reads as an id (:func:`reads_as_id`) and differs from its reader name: id, then its kind and
-    reader name.
+#: A character that marks an arm's id as an id where the page prints the arm by another name: every id mark, and a
+#: hyphen or a digit. Prose joins words with a hyphen ("cost-per-reply"), so a hyphen alone marks nothing in an
+#: aspect's or a measure's id; an arm's id is the campaign's label for a run (``fanout-1``), and where the page prints
+#: the arm otherwise (``fanout 1``), that label is never a reader's word.
+_ARM_ID_MARKS = re.compile(r"[-\d_.:/=()\[\]\"]")
 
-    The ids are those :func:`~threetears.evals.analysis.report.figure_keys.reader_names` names: aspects, measures,
-    judged dimensions, strata, tasks and criteria. A percentile's name (``p95``) is the reader's own.
+
+def _internal_arm_ids(report_input: ReportInput) -> dict[str, str]:
+    """Each arm's id a reader is never shown: one that differs, case-folded, from both the name the page prints for
+    its arm (:func:`~threetears.evals.analysis.report.figure_keys.printed_arm_name`) and its served model, and holds
+    an id mark, a hyphen or a digit. A model arm, whose id is its served model's name, is the reader's word; a lever
+    arm's id is not. Its alias is not a name the page prints, since an input built from a run names each arm by its
+    id."""
+    found: dict[str, str] = {}
+    for arm in report_input.arms:
+        printed = printed_arm_name(arm)
+        names = {name.casefold() for name in (printed, arm.served_model) if name}
+        if arm.id.casefold() not in names and _ARM_ID_MARKS.search(arm.id):
+            found[arm.id] = printed
+    return found
+
+
+def internal_ids(report_input: ReportInput) -> dict[str, tuple[str, str]]:
+    """Every id a reader is never shown: id, then its kind and the name a reader is shown for it.
+
+    The named kinds are those :func:`~threetears.evals.analysis.report.figure_keys.reader_names` names: aspects,
+    measures, judged dimensions, strata, tasks and criteria, each id that reads as an id (:func:`reads_as_id`) and
+    differs from its reader name. A percentile's name (``p95``) is the reader's own. Then the arms: each arm's id that
+    differs from the name the page prints for it and from its served model, and holds an id mark, a hyphen or a digit
+    (``fanout-1`` where the page prints "fanout 1"), as kind ``arm``.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
-    :return: Each such id, to ``(kind, reader name)``, the first kind that names it.
+    :return: Each such id, to ``(kind, name)``, the first kind that names it.
     :rtype: dict[str, tuple[str, str]]
     """
     found: dict[str, tuple[str, str]] = {}
@@ -233,6 +259,8 @@ def internal_ids(report_input: ReportInput) -> dict[str, tuple[str, str]]:
                 continue
             if reads_as_id(identifier):
                 found.setdefault(identifier, (kind, name))
+    for identifier, printed in _internal_arm_ids(report_input).items():
+        found.setdefault(identifier, ("arm", printed))
     return found
 
 
