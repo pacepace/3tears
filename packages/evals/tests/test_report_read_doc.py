@@ -465,7 +465,9 @@ async def test_trials_all_lays_the_folds_after_the_document_which_reads_as_it_wa
         assert table == document and marker not in table, "the table read lays the document out alone"
         assert everything.split(marker)[0] == document.split("</article>")[0], "the document above it, unchanged"
         record = everything.split(marker)[1]
-        assert 'id="aspect-' in record and record.count("<details") > 1, "each aspect's fold, its trials' records in it"
+        assert 'id="aspect-' in record and '<details class="trial"' in record, (
+            "each aspect's fold, its trials' records in it"
+        )
     markdown = _read(fixture, "markdown", trials="all").body
     assert markdown.startswith(doc_page_markdown(stored.page).rstrip("\n")) and "\n## Evidence record\n" in markdown
     assert _read(fixture, "json", trials="all").body == _read(fixture, "json").body, "JSON carries no records"

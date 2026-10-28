@@ -2173,7 +2173,7 @@ def _stands_in(
     """The code-only page standing in for an analysis or a report document this version no longer reads: its first
     screen says so in the one regenerate line, and its ``needs_regeneration`` is that line with why."""
     named = unread_analysis_id or unread_report_doc_id
-    log.warning("campaign %s's report %s reads code-only: %s", campaign.id, named, why)
+    log.info("campaign %s's report %s reads code-only: %s", campaign.id, named, why)
     page = _code_only_page(
         host,
         campaign,
