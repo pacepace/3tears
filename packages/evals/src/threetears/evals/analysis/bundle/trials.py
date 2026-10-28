@@ -316,9 +316,7 @@ def _pricing(results: Sequence[EvalResult]) -> ArmPricing | None:
     :rtype: ArmPricing | None
     """
     rows = [
-        row
-        for result in results
-        for row in production_rows(result.usage or [], candidate_kind=result.candidate_kind)
+        row for result in results for row in production_rows(result.usage or [], candidate_kind=result.candidate_kind)
     ]
     if not rows:
         return None

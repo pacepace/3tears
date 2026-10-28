@@ -414,4 +414,6 @@ def test_an_arms_pricing_reaches_the_report_input_and_an_arm_without_it_carries_
     ]
     priced = analyst_input(bundle.model_copy(update={"aspects": aspects}))
     for row in priced.scoreboard.values():
-        assert row.pricing == Pricing(sources=["openrouter:reported"], providers=["DeepInfra"], calls=10, priced_calls=9)
+        assert row.pricing == Pricing(
+            sources=["openrouter:reported"], providers=["DeepInfra"], calls=10, priced_calls=9
+        )

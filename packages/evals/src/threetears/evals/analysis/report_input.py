@@ -200,7 +200,9 @@ class Pricing(_Part):
         default_factory=list,
         description="Each provider its calls name as serving them (RoleUsage.provider), sorted; empty where none does.",
     )
-    calls: int | None = Field(default=None, description="The calls its cost counts; none where a row did not count its.")
+    calls: int | None = Field(
+        default=None, description="The calls its cost counts; none where a row did not count its."
+    )
     priced_calls: int | None = Field(
         default=None, description="Those of them a price was observed for; none where a row did not count its calls."
     )

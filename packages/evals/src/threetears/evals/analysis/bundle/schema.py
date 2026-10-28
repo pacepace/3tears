@@ -2554,7 +2554,8 @@ class ArmPricing(EvalDocumentModel):
 
     sources: list[str] = Field(default_factory=list, description="Each price source a priced row names, sorted.")
     providers: list[str] = Field(
-        default_factory=list, description="Each provider a row names as serving its calls, sorted; empty where none does."
+        default_factory=list,
+        description="Each provider a row names as serving its calls, sorted; empty where none does.",
     )
     calls: int | None = Field(
         default=None, ge=0, description="The calls the rows counted; None = some row did not count its calls."

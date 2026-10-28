@@ -57,7 +57,7 @@ from typing import Any, Literal
 
 from threetears.evals.analysis.arms import writer_arms
 from threetears.evals.analysis.bundle.caps import capped_text
-from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS, AnalysisContextBundle, TrialRow
+from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS, AnalysisContextBundle, ArmPricing, TrialRow
 from threetears.evals.analysis.campaign_bundle import CAMPAIGN_MESSAGE_CHARS_PER_ASPECT, KIND_MEANS, CampaignBundle
 from threetears.evals.analysis.campaign_readings import AspectReading, PairReading
 from threetears.evals.analysis.depth import REPEATS_FLOOR
@@ -545,19 +545,8 @@ class _Builder:
                     if row.unanswered
                     else {}
                 ),
-                # Only where the census read it, so an arm assembled before it did carries no key.
-                **(
-                    {
-                        "pricing": Pricing(
-                            sources=row.pricing.sources,
-                            providers=row.pricing.providers,
-                            calls=row.pricing.calls,
-                            priced_calls=row.pricing.priced_calls,
-                        )
-                    }
-                    if row.pricing is not None
-                    else {}
-                ),
+                # None where the census read none, which the row leaves out of its document.
+                pricing=_pricing(row.pricing),
             )
             for row in aspect.scoreboard
         }
@@ -1254,3 +1243,10 @@ def _rounded(node: Any) -> Any:
     if isinstance(node, float) and math.isfinite(node) and node != 0:
         return round(node, PLANNER_FIGURES - 1 - math.floor(math.log10(abs(node))))
     return node
+
+
+def _pricing(held: ArmPricing | None) -> Pricing | None:
+    """An arm's pricing as the bundle's census read it, copied into the report input; None where it read none."""
+    if held is None:
+        return None
+    return Pricing(sources=held.sources, providers=held.providers, calls=held.calls, priced_calls=held.priced_calls)

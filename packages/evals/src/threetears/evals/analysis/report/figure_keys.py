@@ -6451,7 +6451,9 @@ def _money_form(figure: Figure, factor: float) -> MoneyForm:
     """The one form a money figure's family is spelled in (#993), at ``factor`` times its scale: chosen from the
     family's whole set (:class:`Figure`'s ``amounts``), never from the figure alone, and for a change capped at the
     decimals its interval's width supports. A figure made without its set is a set of its own numbers."""
-    own = figure.value if isinstance(figure.value, tuple) else (figure.value,) if isinstance(figure.value, float) else ()
+    own = (
+        figure.value if isinstance(figure.value, tuple) else (figure.value,) if isinstance(figure.value, float) else ()
+    )
     form = money_form(amount * factor for amount in figure.amounts or own)
     return form.for_change(figure.spread * factor) if figure.change and figure.spread is not None else form
 

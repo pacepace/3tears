@@ -22,7 +22,6 @@ and what HTML keeps beside the chart for a screen reader and a page whose script
 from __future__ import annotations
 
 import re
-from decimal import Decimal
 from collections.abc import Callable, Iterator, Sequence
 from typing import Annotated, Any, ClassVar, Literal, Self
 
@@ -35,6 +34,7 @@ from threetears.evals.kernel.numbers import (
     format_number,
     group_thousands,
     money_form,
+    per_thousand_digits,
 )
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
 from threetears.evals.schema.base import EvalDocumentModel
@@ -353,7 +353,7 @@ def _respelled(found: re.Match[str], per_thousand: bool) -> str:
     """One amount in its column's form: moved per 1,000 by its digits where the column reads so, its thousands grouped."""
     sign, digits, mark = found.group(1), found.group(2).replace(",", ""), found.group(3) or ""
     if per_thousand and not mark:
-        digits, mark = format((Decimal(digits) * PER_THOUSAND).normalize(), "f"), PER_THOUSAND_MARK
+        digits, mark = per_thousand_digits(digits), PER_THOUSAND_MARK
     return f"{sign}${group_thousands(digits)}{mark}"
 
 
