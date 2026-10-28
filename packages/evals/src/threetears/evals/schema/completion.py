@@ -390,10 +390,11 @@ class PricedCompletion(Protocol):
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         """The most one :meth:`generate` with this prompt pair can cost, in dollars, or ``None`` when it cannot say.
 
-        A CEILING, not an estimate: the host's rate for :attr:`model_name` applied to a bound on the
-        prompt's tokens and to the output cap it built this client with, reasoning included, times
+        A ceiling on the rates it is built from: the host's rate for :attr:`model_name` applied to a bound on
+        the prompt's tokens and to the output cap it built this client with, reasoning included, times
         every attempt the client makes for one request (a re-sent severed body is billed twice). A
-        figure below what the call can cost lets a call past the cap it was admitted under.
+        figure below what the call can cost at those rates lets a call past the cap it was admitted under.
+        The shipped ``Model`` says when those rates are an estimate (``Model.ceiling_is_estimate``).
 
         ``None`` is "this client cannot bound the call" — no rate for its model — and an out-of-run
         call under an enforced cap is then refused rather than made, since unknown is not $0.

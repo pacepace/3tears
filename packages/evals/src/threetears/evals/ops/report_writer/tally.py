@@ -368,8 +368,9 @@ class ReportBudget:
 
     @property
     def spent(self) -> float:
-        """What the turns charged so far count for in dollars: each at its cost, or its ceiling when it was unpriced
-        (0 under a token and turn budget, which counts no dollars)."""
+        """What the turns charged so far count for in dollars, under either form: each at its cost, or its ceiling when
+        it was unpriced, and nothing for a turn with neither. A token and turn budget admits by tokens and turns alone
+        and never reads it."""
         return self._spent
 
     def admit(self, ceiling: TurnCeiling | None, *, tokens: int) -> str | None:

@@ -220,9 +220,10 @@ OPENAI_PIN: Final[tuple[float | None, float | None, str | None]] = (
 )
 
 
-def ceiling_usd(ceiling: TurnCeiling | None) -> float | None:
-    """A turn's ceiling as dollars: the bound as the client answered it, which on a default route is no estimate."""
-    assert ceiling is None or not ceiling.estimate, ceiling
+def ceiling_usd(ceiling: TurnCeiling | None, route: str) -> float | None:
+    """A turn's ceiling as dollars: the bound as the client answered it. Anthropic's published rates are what it bills
+    a direct call, so their bound is no estimate; a catalogue row is a third party's listing, so its bound is one."""
+    assert ceiling is None or ceiling.estimate is (route == "catalogue"), (route, ceiling)
     return ceiling.usd if ceiling is not None else None
 
 
@@ -236,7 +237,8 @@ async def test_the_default_prices_and_bounds_every_recorded_turn_as_before(route
     ceiling = model.turn_price_ceiling(system=SYSTEM, messages=asked, tools=TOOLS, max_tokens=32000)
     reply = await model.turn(system=SYSTEM, messages=asked, tools=TOOLS, max_tokens=32000)
 
-    assert (ceiling_usd(ceiling), reply.cost_usd, reply.price_source) == TURN_PINS[(case, route)]
+    assert (ceiling_usd(ceiling, route), reply.cost_usd, reply.price_source) == TURN_PINS[(case, route)]
+    assert model.ceiling_is_estimate() is (route == "catalogue")
 
 
 @pytest.mark.parametrize("route", ROUTES)
@@ -252,6 +254,7 @@ async def test_the_default_prices_and_bounds_every_recorded_anthropic_reply_as_a
     completion = await model.generate(system="s", user="u")
 
     assert (ceiling, completion.cost_usd, completion.price_source) == COMPLETION_PINS[(case, route)]
+    assert model.ceiling_is_estimate() is (route == "catalogue"), "the catalogue's bound is an estimate"
 
 
 @pytest.mark.parametrize("byok", [False, True])
@@ -271,6 +274,7 @@ async def test_the_default_prices_every_recorded_openrouter_completion_as_record
     completion = await model.generate(system="s", user="u")
 
     assert (ceiling, completion.cost_usd, completion.price_source) == ROUTER_PINS[(name, byok)]
+    assert model.ceiling_is_estimate(), "OpenRouter may route the call to an endpoint priced otherwise"
     if not byok:
         assert (completion.cost_usd, completion.price_source) == (
             recorded["result"]["cost_usd"],

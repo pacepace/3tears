@@ -20,7 +20,8 @@ halves.
   is billed at, and whether the host guarantees them. The model computes the bound from them with its own arithmetic
   (`price_ceiling`, `turn_price_ceiling`), so a host writes none. Rates that are not guaranteed (an OpenRouter route
   whose upstream may bill otherwise) still bound and admit the call, and a report's dollar budget says it was
-  checked against an estimate. `None` leaves the call to the default, its bound and its price both.
+  checked against an estimate. `None` leaves the call to the catalogue route, its bound and its price both:
+  OpenRouter's reported cost for an OpenRouter call, else the catalogue row.
 - **After a call**, `price(model, *, provider, usage, served_provider)` answers `CallPrice(usd, source,
   unpriced_reason)`. `usage` is the reply's raw usage block exactly as the wire returned it (OpenRouter's `cost`,
   `is_byok` and `cost_details.upstream_inference_cost`; Anthropic's `cache_creation` split by lifetime), and
@@ -31,7 +32,10 @@ A call no pricer answers rates for is priced as before: OpenRouter's reported fi
 catalogue's row, and `AnthropicPublishedRates` stays the default for a model handed neither a pricer nor a catalogue,
 now implementing both halves. The default reproduces every recorded completion's and turn's `cost_usd`,
 `price_source` and bound byte for byte. `ModelRates` no longer carries a `source`: the price's source is `CallPrice`'s.
-`PriceSource` and its two `OPENROUTER_REPORTED*` words are unchanged.
+`PriceSource` and its two `OPENROUTER_REPORTED*` words are unchanged. Only rates a pricer guarantees bound a call
+exactly: Anthropic's published rates for a direct call, and a host's `guaranteed=True`. A bound from OpenRouter's
+catalogue row is always an estimate, since OpenRouter may route a call to an endpoint priced otherwise and a
+bring-your-own-key upstream bills at its own rates, so a cap checked against one says so; no dollar figure moves.
 
 `ToolTurnClient.turn_price_ceiling` answers a `TurnCeiling(usd, estimate)` (new, `threetears.evals.schema`), so a
 wrapper forwarding it carries the estimate through; a turn recording writes `"estimate": true` beside a ceiling that is

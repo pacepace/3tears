@@ -365,14 +365,16 @@ class _Live:
         return self._pricer.rates_for(self.model_name, provider=self.provider) if self._pricer is not None else None
 
     def ceiling_is_estimate(self) -> bool:
-        """Whether a bound on the model's calls is built on rates its pricer does not guarantee."""
+        """Whether a bound on the model's calls is an estimate: built on rates its pricer does not guarantee, or on
+        OpenRouter's catalogue row, which is a third party's listing and not the host's bill (OpenRouter may route to
+        an endpoint priced otherwise, and under bring-your-own-key the upstream bills at its own rates)."""
         rated = self.rated()
-        return rated is not None and not rated.guaranteed
+        return rated is None or not rated.guaranteed
 
     def bound(self, *, prompt_tokens: int, output_tokens: int) -> TurnCeiling | None:
         """The one bound on a call, completion or turn: the engine's arithmetic on the rates the pricer answered,
-        disclosed as an estimate when the pricer does not guarantee them; else the catalogue row's. ``None`` (logged
-        once per reason) when neither bounds it."""
+        an estimate when the pricer does not guarantee them; else the catalogue row's, always an estimate
+        (:meth:`ceiling_is_estimate`). ``None`` (logged once per reason) when neither bounds it."""
         if (rated := self.rated()) is not None:
             dollars = rated.rates.ceiling(prompt_tokens=prompt_tokens, output_tokens=output_tokens)
             return TurnCeiling(usd=float(dollars), estimate=not rated.guaranteed)
@@ -380,7 +382,7 @@ class _Live:
         if usd is None:
             self._unbounded_because(why or "the catalogue gave no reason")
             return None
-        return TurnCeiling(usd=usd)
+        return TurnCeiling(usd=usd, estimate=True)
 
     def _price(self, reply: Reply, unread: str | None) -> CallPrice:
         """The one price of a call, completion or turn: the pricer's, from the raw usage block, when it answered rates
@@ -1276,7 +1278,10 @@ class Model:
         they are. A run's cap is then checked against estimates
         (:attr:`CallCeiling.estimate <threetears.evals.run.CallCeiling.estimate>`), which its summary says. A host
         wrapping a model forwards it beside ``price_ceiling``, or its runs read as checked against guaranteed rates.
-        ``False`` for a replay, which costs nothing, and for rates the pricer guarantees or the catalogue's row.
+        Only rates a pricer guarantees are no estimate: Anthropic's published rates for a direct call
+        (:class:`~threetears.evals.providers.AnthropicPublishedRates`) and a host's ``guaranteed=True``. A bound from
+        OpenRouter's catalogue row is one, since OpenRouter may route a call to an endpoint priced otherwise and a
+        bring-your-own-key upstream bills at its own rates. ``False`` for a replay, which costs nothing.
 
         :return: Whether the bound is an estimate.
         :rtype: bool

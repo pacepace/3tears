@@ -8,7 +8,9 @@ host owns the prices and the engine owns the arithmetic. A pricer has two halves
   :class:`HostRates`: the :class:`ModelRates` and whether the host guarantees them. The engine computes the call's
   bound from them (:meth:`ModelRates.ceiling`), so no host writes that arithmetic. A bound built on rates the host
   does not guarantee (an OpenRouter route whose upstream may bill otherwise) still admits the call, and is disclosed
-  as an estimate. ``None`` leaves the call to the default pricer, both its bound and its price.
+  as an estimate. ``None`` leaves the call to the catalogue route, both its bound and its price: OpenRouter's
+  reported cost for an OpenRouter call, else OpenRouter's catalogue row, whose bound is always an estimate (a third
+  party's listing, not the host's bill).
 * **After a call**, :meth:`Pricer.price` prices the reply from its raw ``usage`` block as the wire returned it
   (OpenRouter's reported cost and bring-your-own-key upstream charge included, Anthropic's cache writes split by
   lifetime under ``cache_creation``) and the upstream OpenRouter served it from, as a :class:`CallPrice`. A call it
@@ -241,8 +243,8 @@ class Pricer(Protocol):
         :ptype model: str
         :param provider: Where the call goes.
         :ptype provider: Provider
-        :return: The rates and whether they are guaranteed, or ``None``: the default pricer then bounds the call and
-            prices it.
+        :return: The rates and whether they are guaranteed, or ``None``: the catalogue route then bounds the call (an
+            estimate) and prices it (OpenRouter's reported cost, else the catalogue row).
         :rtype: HostRates | None
         """
         ...

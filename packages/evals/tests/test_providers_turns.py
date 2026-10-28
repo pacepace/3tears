@@ -409,7 +409,7 @@ async def test_the_turn_price_ceiling_bounds_the_turn_and_is_none_before_the_cat
     assert ceiling is not None and reply.cost_usd is not None
     assert ceiling.usd >= reply.cost_usd
     assert ceiling.usd >= 32000 * 0.00002, "the whole output cap at the output rate, at least"
-    assert not ceiling.estimate, "a catalogue row's bound is no estimate"
+    assert ceiling.estimate, "a catalogue row is a third party's listing, not the host's bill: its bound is an estimate"
     assert server.bodies, "a ceiling sends nothing; the turn after it sent one body"
     assert len(server.bodies) == 1
 
