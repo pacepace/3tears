@@ -828,7 +828,8 @@ async def _expand_group_parents(
 
     an actor's DIRECT groups are depth 1; each further round adds the
     PARENT groups those groups are members of, up to
-    :data:`MAX_GROUP_MEMBERSHIP_DEPTH` levels total. the walk reads
+    :data:`MAX_GROUP_MEMBERSHIP_DEPTH` groups deep (the configured
+    nesting levels minus the person). the walk reads
     through the membership cache under each child group's OWN key
     (``("group", group_id)``), never expanding into any actor's entry --
     changing one group's parents invalidates exactly one key and every

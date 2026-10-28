@@ -1,12 +1,12 @@
-"""at the depth this process was configured with, do the evaluator and the visibility clause agree?
+"""at the nesting this process was configured with, do the evaluator and the visibility clause agree?
 
-run by ``test_query_visibility_nesting.py`` once per depth, each in a fresh interpreter with
-``THREETEARS_ACL_MAX_GROUP_MEMBERSHIP_DEPTH`` set, because the depth is read once at import --
+run by ``test_query_visibility_nesting.py`` once per setting, each in a fresh interpreter with
+``THREETEARS_ACL_MAX_GROUP_NESTING_LEVELS`` set, because the nesting is read once at import --
 the way a deployment configures it. against the tables that module's fixture created, it seeds
-one chain per length from 1 to one past the configured depth (the caller in the bottom group,
+one chain per length from 1 group to one past the configured depth (levels - 1 groups; the caller in the bottom group,
 the grant on the top one), asks the evaluator through the production
 :class:`CollectionMembershipLoader` and the SQL through :func:`caller_visible_customer_clause`,
-and prints one JSON object: the depth this process resolved and, per chain length, both verdicts.
+and prints one JSON object: the levels and depth this process resolved and, per chain length, both verdicts.
 
 usage: python depth_agreement_probe.py DSN
 """
@@ -34,6 +34,7 @@ from threetears.agent.acl import (
     caller_visible_customer_clause,
     evaluate_decision,
 )
+from threetears.agent.acl.types import MAX_GROUP_NESTING_LEVELS
 from threetears.core.collections import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -198,7 +199,7 @@ async def main(dsn: str) -> None:
         chains = {groups: await _verdicts(pool, groups) for groups in range(1, MAX_GROUP_MEMBERSHIP_DEPTH + 2)}
     finally:
         await pool.close()
-    print(json.dumps({"depth": MAX_GROUP_MEMBERSHIP_DEPTH, "chains": chains}))
+    print(json.dumps({"levels": MAX_GROUP_NESTING_LEVELS, "depth": MAX_GROUP_MEMBERSHIP_DEPTH, "chains": chains}))
 
 
 if __name__ == "__main__":

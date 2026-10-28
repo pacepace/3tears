@@ -859,7 +859,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         a group inside itself is refused outright; beyond that, the
         check asks whether ``group_id`` is already reachable from
         ``member_group_id`` by walking group edges DOWNWARD (children of
-        children), out to :data:`MAX_GROUP_MEMBERSHIP_DEPTH` levels.
+        children), out to :data:`MAX_GROUP_MEMBERSHIP_DEPTH` hops.
         cheap by construction: the cap bounds the walk, and writers are
         expected to call this BEFORE inserting a ``member_type='group'``
         row -- an admin surface that skips it can still write a cycle,
