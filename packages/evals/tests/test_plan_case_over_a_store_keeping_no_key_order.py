@@ -50,7 +50,7 @@ from threetears.evals.analysis.service import get_report_plan
 from threetears.evals.kernel import AspectDesign, ControlDeclaration, EvalStorage, SweptAxis
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.ops import FrozenReporterCase, ReporterCaseFreeze, analysis_generate, reporter_case_freeze
+from threetears.evals.ops import FrozenReporterCase, ReporterCaseFreeze, reporter_case_freeze
 from threetears.evals.schema import IntervalScale, SweepableValue
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_aspect_campaign
@@ -60,7 +60,7 @@ from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import toyhost_batch, toyhost_measurements
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, settled
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, planned_generation, settled
 from packages.evals.tests.report_support import stored_memo_analysis, toy_campaign_host
 from packages.evals.tests.reporter_case_support import reporter_template
 
@@ -114,8 +114,7 @@ async def test_a_plan_generated_through_the_host_and_frozen_from_its_store_is_ve
     storage = fixture.host.eval_host.storage
     off_loop(storage.save_template, reporter_template())
 
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
-    assert (await settled(fixture.host, job.job_id)).state == "completed"
+    await planned_generation(fixture)
     (analysis,) = off_loop(storage.list_analyses_by_campaign, fixture.campaign.id, TOYHOST_SCOPE)
     assert analysis.report_plan_id is not None, "the generation is the report planner's"
 
@@ -225,8 +224,7 @@ async def test_a_plan_case_whose_planner_was_sent_another_message_states_the_pla
     fixture = off_loop(ops_fixture)
     storage = fixture.host.eval_host.storage
     off_loop(storage.save_template, reporter_template())
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
-    assert (await settled(fixture.host, job.job_id)).state == "completed"
+    await planned_generation(fixture)
     (analysis,) = off_loop(storage.list_analyses_by_campaign, fixture.campaign.id, TOYHOST_SCOPE)
     stored = off_loop(get_report_plan, storage, analysis)
     assert stored is not None

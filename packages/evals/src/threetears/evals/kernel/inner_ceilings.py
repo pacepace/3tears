@@ -1,7 +1,7 @@
 """The package's inner ceilings a host derives its outer budgets from, defined once below every package using them.
 
 Each is a bound the engine itself holds a call or a phase to: the proposer's output cap, the requests one generation
-may send and the wall-clock ceilings of a generation and of a cell's judge phase. They live in ``kernel`` so that
+may send and the wall-clock ceilings of a generation, of a report the writer writes and of a cell's judge phase. They live in ``kernel`` so that
 :class:`threetears.evals.run.Ceilings` can carry them beside the simulator's caps without ``run`` importing ``gen``
 or ``analysis``; ``gen`` and ``analysis`` export them from their roots as before, from here.
 """
@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from threetears.evals.ops.report_writer.loop import WriterLimits
     from threetears.evals.schema.completion import RequestCeiling
 
 #: Output-token ceiling for the capability/boundary proposer. It drafts a full
@@ -52,6 +53,66 @@ def generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int
     return MAX_GENERATION_CALLS * request_s(generator_max_tokens)
 
 
+#: The editor's answers one review reads: its first, and the one it is asked for again when the first cannot be read
+#: (``ops/report_writer/editor.py``). The review round reads it from here, so the writer's ceiling counts what it sends.
+EDITOR_ANSWERS = 2
+
+
+def writer_turns(limits: WriterLimits) -> int:
+    """The most turns one report can send under ``limits``, counted from how the writing loop sends them.
+
+    A round's tool calls are its call budget: each turn that calls the tool spends at least one, and a turn after the
+    last is answered as not run or ends the round, so a round sends at most its calls in tool turns. Every send of a
+    message (the brief or a revision request, each bounce, the editor's request and its one ask again) ends on one more
+    turn: the reply that calls no tool, one cut at its output cap, or one stopped short. The warnings and the "submit
+    now" note ride on tool results and send no turn of their own. So:
+
+    - the draft: ``analyst.draft_calls`` tool turns and ``1 + analyst.bounces`` closing turns;
+    - each of ``revisions`` revisions: ``analyst.revision_calls`` tool turns and ``1 + analyst.bounces`` closing turns;
+    - each review, one per analyst round (``1 + revisions``): ``editor.calls`` tool turns and :data:`EDITOR_ANSWERS`
+      closing turns.
+
+    :param limits: What the writing loop is held to.
+    :ptype limits: WriterLimits
+    :return: The worst-case turn count.
+    :rtype: int
+    """
+    return _analyst_turns(limits) + _editor_turns(limits)
+
+
+def _analyst_turns(limits: WriterLimits) -> int:
+    analyst, closing = limits.analyst, 1 + limits.analyst.bounces
+    return analyst.draft_calls + closing + limits.revisions * (analyst.revision_calls + closing)
+
+
+def _editor_turns(limits: WriterLimits) -> int:
+    return (1 + limits.revisions) * (limits.editor.calls + EDITOR_ANSWERS)
+
+
+def writer_ceiling_s(limits: WriterLimits, *, request_s: RequestCeiling) -> float:
+    """The wall-clock ceiling of one report the writer writes (``analysis_generate``'s job), from the ceilings it wraps.
+
+    Every turn the loop can send (:func:`writer_turns`) runs back to back, each bounded by the host's own answer for
+    one request at its session's output cap (``request_s(limits.analyst.session.max_tokens)`` for the analyst's turns,
+    ``request_s(limits.editor.session.max_tokens)`` for the editor's), which counts every provider call and retry
+    wait the host's client spends on it. A job budget over a report (``AnalysisGeneration.budget_s``) must sit ABOVE
+    this: one below it cancels a turn still writing inside its cap, after it was billed.
+
+    Not covered: the tool calls the turns make (reads of the frozen snapshot, in the host's process), freezing the
+    snapshot and storing the report. A host adds its headroom for them.
+
+    :param limits: What the writing loop is held to: the same object the host sets as ``AnalysisGeneration.limits``,
+        which ``analysis_generate`` runs unchanged.
+    :ptype limits: WriterLimits
+    :param request_s: The host's ceiling for one request on its client, by output cap.
+    :ptype request_s: RequestCeiling
+    :return: The ceiling in seconds.
+    :rtype: float
+    """
+    analyst = _analyst_turns(limits) * request_s(limits.analyst.session.max_tokens)
+    return analyst + _editor_turns(limits) * request_s(limits.editor.session.max_tokens)
+
+
 def judge_phase_ceiling_s(
     *,
     judge_dims: int,
@@ -87,8 +148,11 @@ def judge_phase_ceiling_s(
 
 
 __all__ = [
+    "EDITOR_ANSWERS",
     "MAX_GENERATION_CALLS",
     "PROPOSER_MAX_TOKENS",
     "generation_ceiling_s",
     "judge_phase_ceiling_s",
+    "writer_ceiling_s",
+    "writer_turns",
 ]

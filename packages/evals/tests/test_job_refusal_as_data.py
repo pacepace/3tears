@@ -15,11 +15,10 @@ from pydantic import Field
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.kernel import ProviderRefusedError, StorageError
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt
-from threetears.evals.ops import analysis_generate
 from threetears.evals.run import EvalActionJob, action_job_work, start_job_work
 from threetears.evals.schema import JobRefusal
 from threetears.evals.schema.base import EvalBaseModel
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture, settled
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, generate, ops_fixture, OpsFixture, settled
 from packages.evals.tests.off_loop import off_loop
 
 
@@ -73,13 +72,13 @@ async def test_a_job_broken_by_a_defect_carries_no_refusal() -> None:
 async def test_a_generation_its_provider_refused_keeps_the_refusal_on_its_attempt() -> None:
     gate = asyncio.Event()
     fixture = off_loop(ops_fixture, gate=gate)
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     async with asyncio.timeout(10):
-        while not fixture.writers:
-            # The job builds its client as it prepares, before it is held at its call.
+        while not (fixture.analysts and "analyst" in fixture.analysts[0].sessions):
+            # The job builds its client and opens the analyst's session, before it is held at its first turn.
             await asyncio.sleep(0.01)
-    (writer,) = fixture.writers
-    writer.raises = ConnectionResetError("status 529: overloaded, account acct-123")
+    (analyst,) = fixture.analysts
+    analyst.sessions["analyst"].replies[0] = ConnectionResetError("status 529: overloaded, account acct-123")
     gate.set()
 
     status = await settled(fixture.host, job.job_id)

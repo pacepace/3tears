@@ -3,21 +3,21 @@
 Every operation that reads takes the :class:`~threetears.evals.kernel.host.EvalHost`; every one that
 starts long work — a launch, an analysis generation — needs the process's job manager too, which the
 :class:`~threetears.evals.run.LaunchHost` builds. :class:`OpsHost` is the two together with the
-things neither carries: what a background generation is told (its prompt, its output cap and its
-wall-clock budget) — the host's configuration and never the engine's guess. How many cases a launch
+things neither carries: what a background generation is held to (the report's budget and its wall-clock budgets) —
+the host's configuration and never the engine's guess. How many cases a launch
 would run is its kinds' answer (``LaunchableKind.plan_arm``), which a launch estimate asks as the launch does.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 
-from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.job_timeout import default_job_timeout
-from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
+from threetears.evals.ops.report_writer.loop import WriterLimits
+from threetears.evals.ops.report_writer.tally import ReportBudget
 from threetears.evals.run.definition_seed import SeedCorpus
 from threetears.evals.run.launch import LaunchHost, LaunchSettings
 from threetears.evals.schema import EvalRun, WorldPlacement
@@ -44,67 +44,50 @@ def _reading_settings() -> LaunchSettings:
 
 
 #: The default wall-clock ceiling on a generation job's preparation, used when a host supplies none
-#: (``AnalysisGeneration.preparation_budget_s``, read on every call): assembling the bundle, the prompt, the client, the
-#: default-writer check and the first call's price — in seconds. The job starts with no budget of its own (its generator
-#: calls enter ``AnalysisGeneration.budget_s`` themselves), so without this a store call that hangs during assembly would
-#: leave the attempt ``running`` for as long as its lease kept renewing. Preparation makes no model call: a fixed handful
-#: of batched store reads and a catalogue fetch bounded by its own timeout, seconds on a large campaign. So the bound is
-#: tight, unlike a launch's (``LAUNCH_PREPARATION_BUDGET_S``), whose launchers call providers: a hang reads as refused
-#: within minutes rather than ``running`` for hours. A host that wants another bound sets it per call.
+#: (``AnalysisGeneration.preparation_budget_s``, read on every call): building the ``analyst`` client, holding it to the
+#: host's allowed writers and asking whether its turns can be priced — in seconds. The job starts with no budget of its
+#: own (the writing enters ``AnalysisGeneration.budget_s`` itself), so without this a client that hangs while it is
+#: built or refreshes its prices would leave the attempt ``running`` for as long as its lease kept renewing.
+#: Preparation makes no model call, so the bound is tight, unlike a launch's (``LAUNCH_PREPARATION_BUDGET_S``), whose
+#: launchers call providers: a hang reads as refused within minutes rather than ``running`` for hours. A host that
+#: wants another bound sets it per call.
 ANALYSIS_PREPARATION_BUDGET_S = 900.0
 
 
 @dataclass(frozen=True, kw_only=True)
 class AnalysisGeneration:
-    """How this host generates an analysis as a background job.
+    """How this host generates an analysis as a background job: the report writer, on the host's model and budget.
 
-    :ivar prompt_id: The registry key the report planner's prompt resolves under, recorded on every analysis and its
-        plan as their provenance; :data:`~threetears.evals.kernel.prompts.catalogue.REPORT_PLAN_PROMPT` unless the
-        host names its own. A generation is written by the report planner, so this is the planner's prompt, never
-        the memo writer's (``eval_analysis_gen``).
-    :ivar resolve_prompt: The host's override of the planner prompt, awaited once a generation's bundle has
-        evidence; ``None`` (the default) runs the shipped default,
-        :data:`~threetears.evals.analysis.plan_prompt.EVAL_REPORT_PLAN_DEFAULT`.
-    :ivar max_output_tokens: The output cap the host's generator clients are built with, for the
-        pre-spend disclosure.
-    :ivar budget_s: The job's wall-clock ceiling on its planner calls (up to
-        :data:`~threetears.evals.kernel.inner_ceilings.MAX_GENERATION_CALLS`); a generation that outruns it is recorded
-        ``timed_out``. Derive it ABOVE the generation's own ceiling
-        (``Ceilings().generation_ceiling_s`` of :class:`~threetears.evals.run.Ceilings`, over the host's own ceiling for
-        one request on its client): a budget below it cancels a repair round-trip still writing inside
-        its cap, after both calls were billed.
-    :ivar preparation_budget_s: The job's wall-clock ceiling on its preparation (the bundle, the prompt, the client, the
-        default-writer check and the first call's price), in seconds; a generation whose preparation outruns it ends
-        refused before any call. :data:`ANALYSIS_PREPARATION_BUDGET_S` unless the host sets it, and read on every
-        call, so a host may set it per call.
+    ``analysis_generate`` writes the campaign's report document with the analyst and the report editor on the client
+    the host returns for the ``analyst`` role, admitting every turn against :attr:`report_budget`. Nothing here names
+    a prompt: the writer's words are the analyst skill the package ships, whose digest is each analysis's provenance.
+
+    :ivar report_budget: The host's budget for one report (``ReportBudget``), read when each generation starts: the
+        only admission on its turns, which a caller of ``analysis_generate`` cannot raise. ``None`` for a host that has
+        not set one, whose generation start is refused saying where to set it, with nothing frozen or sent.
+    :ivar limits: What the writing loop is held to (its rounds' tool calls, bounces, reviews and revisions, every
+        turn's output cap), passed to the report writer exactly as set; ``WriterLimits()`` unless the host sets it.
+    :ivar budget_s: The job's wall-clock ceiling on the writing (the snapshot's freeze, every turn of every session,
+        the store); a report that outruns it is recorded ``timed_out``. Derive it from the same :attr:`limits` object,
+        ABOVE the writer's own ceiling (``Ceilings().writer_ceiling_s(limits, request_s=...)`` of
+        :class:`~threetears.evals.run.Ceilings`, over the host's own ceiling for one request on its client) plus the
+        host's headroom: a budget below it cancels a turn still writing inside its cap, after it was billed.
+    :ivar preparation_budget_s: The job's wall-clock ceiling on its preparation (the client, the allowed-writer check
+        and the pricing question), in seconds; a generation whose preparation outruns it ends refused before any
+        turn. :data:`ANALYSIS_PREPARATION_BUDGET_S` unless the host sets it, and read on every call, so a host may set
+        it per call.
     """
 
-    prompt_id: str = REPORT_PLAN_PROMPT
-    resolve_prompt: Callable[[], Awaitable[str]] | None = None
-    max_output_tokens: int
+    report_budget: Callable[[], ReportBudget] | None = None
+    limits: WriterLimits = field(default_factory=WriterLimits)
     budget_s: float
     preparation_budget_s: float = ANALYSIS_PREPARATION_BUDGET_S
 
-    async def prompt(self) -> str:
-        """The planner prompt a generation runs: the host's override when it registered one, else the shipped default.
-
-        :return: The prompt text.
-        :rtype: str
-        """
-        if self.resolve_prompt is None:
-            return EVAL_REPORT_PLAN_DEFAULT
-        return await self.resolve_prompt()
-
     def __post_init__(self) -> None:
-        """Refuse an empty prompt id, and a cap or budget that is not positive, and a preparation budget that is not positive and finite.
+        """Refuse a budget that is not positive, and a preparation budget that is not positive and finite.
 
-        :raises ValueError: ``prompt_id`` is blank, ``max_output_tokens`` or ``budget_s`` is not positive, or
-            ``preparation_budget_s`` is not a positive finite number.
+        :raises ValueError: ``budget_s`` is not positive, or ``preparation_budget_s`` is not a positive finite number.
         """
-        if not self.prompt_id.strip():
-            raise ValueError("AnalysisGeneration.prompt_id is blank; name the registry key the prompt resolves under")
-        if self.max_output_tokens <= 0:
-            raise ValueError(f"AnalysisGeneration.max_output_tokens must be positive; got {self.max_output_tokens}")
         if self.budget_s <= 0:
             raise ValueError(f"AnalysisGeneration.budget_s must be positive; got {self.budget_s}")
         if not (math.isfinite(self.preparation_budget_s) and self.preparation_budget_s > 0):

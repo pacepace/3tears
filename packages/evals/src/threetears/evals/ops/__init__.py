@@ -90,6 +90,8 @@ from threetears.evals.ops.analysis import (
 )
 from threetears.evals.ops.cases import CaseRenamed, case_rename
 from threetears.evals.ops.host import ANALYSIS_PREPARATION_BUDGET_S, AnalysisGeneration, OpsHost
+from threetears.evals.ops.report_writer.loop import WriterLimits
+from threetears.evals.ops.report_writer.tally import ReportBudget
 from threetears.evals.ops.jobs import (
     ACTION_JOB_PREFIX,
     JUDGE_TEMPERATURE_JOB_PREFIX,
@@ -314,6 +316,7 @@ __all__ = [
     "LaunchArguments",
     "LaunchEstimate",
     "OpsHost",
+    "ReportBudget",
     "OutOfRunSpendReport",
     "PivotTable",
     "ProposedBar",
@@ -361,6 +364,7 @@ __all__ = [
     "TraceState",
     "UndescribableArmsLine",
     "UndescribableArmsListing",
+    "WriterLimits",
     "UnreadableReporterCase",
     "analyses_list",
     "analyses_undescribable",

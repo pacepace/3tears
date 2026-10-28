@@ -30,7 +30,7 @@ import pytest
 
 from packages.evals.tests.fixtures.report_plans.analyst_cli import seeded_host
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, OpsFixture, ops_fixture, settled
+from packages.evals.tests.ops_support import CALLER, generate, ops_fixture, OpsFixture, planned_generation, settled
 from packages.evals.tests.report_doc_support import snapshot_of
 from packages.evals.tests.report_writer_support import (
     DOC,
@@ -55,7 +55,7 @@ from threetears.evals.analysis.report_doc_store import doc_verdicts, generation_
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel import StorageError
 from threetears.evals.kernel.report_doc import EvalReportDoc, ReportDoc, ReportFinding
-from threetears.evals.ops import OpsHost, analysis_generate
+from threetears.evals.ops import OpsHost
 from threetears.evals.ops.report_writer.editor import EditorLimits, Review, RubricScore, review_report
 from threetears.evals.ops.report_writer.loop import WriterLimits
 from threetears.evals.ops.report_writer.session import ToolOutcome, ToolSession
@@ -593,8 +593,7 @@ async def test_a_report_written_from_a_campaign_freezes_it_first_and_mounts_no_w
 
 async def test_a_report_written_from_an_analysis_freezes_its_bundle_first_and_mounts_no_write() -> None:
     fixture = off_loop(ops_fixture)
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, CALLER.scope_id)).jobs
-    assert (await settled(fixture.host, job.job_id)).state == "completed"
+    await planned_generation(fixture)
     (analysis,) = off_loop(
         fixture.host.eval_host.storage.list_analyses_by_campaign, fixture.campaign.id, CALLER.scope_id
     )

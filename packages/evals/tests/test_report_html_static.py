@@ -32,10 +32,10 @@ from threetears.evals.analysis import (
     report_html,
     serialize_report,
 )
-from threetears.evals.ops import analysis_generate, report_read
+from threetears.evals.ops import report_read
 from packages.evals.tests.hostile_page_support import HOSTILE, hostile_campaign_page, hostile_report
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, settled
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, planned_generation, settled
 from packages.evals.tests.page_contract_support import parsed, what_runs
 from packages.evals.tests.report_support import stored_memo_analysis, toy_report
 from packages.evals.tests.static_page_support import assert_static, less_what_static_leaves_out
@@ -125,8 +125,7 @@ async def test_report_read_returns_the_static_page_for_a_memo_analysis() -> None
 
 async def test_report_read_returns_the_static_page_for_a_planned_analysis() -> None:
     fixture = off_loop(ops_fixture)
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
-    planned = (await settled(fixture.host, job.job_id)).analysis_id
+    planned = (await planned_generation(fixture))[0].id
     read = _read(fixture, static=True)
 
     assert planned is not None and (read.analysis_id, read.analysis_basis) == (planned, "plan")

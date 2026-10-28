@@ -499,12 +499,14 @@ class GenerationProvenance(EvalDocumentModel):
             "would be in a rebuild cut there and was never in this generation's input."
         ),
     )
-    token_cost: float = Field(
+    token_cost: float | None = Field(
         ge=0.0,
         description=(
             "Generation token cost in dollars (Visible Costs). Where a repair round-trip ran this is "
             "the TOTAL across both calls, not the successful one alone — both were billed, and a "
-            "figure naming only the survivor would under-report what the analysis cost."
+            "figure naming only the survivor would under-report what the analysis cost. None for a report document "
+            "(`basis` `doc`) any of whose turns nothing priced: unknown, never $0. The document's own generation "
+            "record holds every turn."
         ),
     )
     repair_attempts: int = Field(
@@ -942,11 +944,12 @@ class EvalAnalysis(EvalDocumentModel):
     readings across aspects. Links inside the document are positions, and :meth:`check_positions` refuses one that
     points nowhere or makes the ``invalidates`` relation cycle.
 
-    **Memo or plan.** An analysis generated today is written by the report planner, not the memo writer: its
-    ``document`` is None and ``report_plan_id`` names its :class:`EvalReportPlan`, stored beside it, which the page
-    reads (:attr:`basis` is ``plan``). An analysis stored before the planner keeps its memo and reads exactly as it
-    was written (``basis`` ``memo``, ``report_plan_id`` None), until it is generated again. Either way
-    ``recommended_variant_key``, ``aspects``, ``campaign_bundle`` and the insights it minted mean the same thing.
+    **Memo, plan or report document.** An analysis ``analysis_generate`` writes today is a report document: the
+    analyst's ``report-doc/1`` (an ``eval_report_doc``, stored beside it), which ``report_doc_id`` names (:attr:`basis`
+    is ``doc``). One the report planner wrote names its :class:`EvalReportPlan` in ``report_plan_id`` (``basis``
+    ``plan``), and one stored before the planner keeps its memo (``basis`` ``memo``); each reads as it was written
+    until it is generated again. Exactly one of ``document``, ``report_plan_id`` and ``report_doc_id`` is set. Either
+    way ``recommended_variant_key``, ``aspects``, ``campaign_bundle`` and the insights it minted mean the same thing.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
@@ -986,23 +989,32 @@ class EvalAnalysis(EvalDocumentModel):
     document: AuthoredCampaignAnalysis | None = Field(
         description=(
             "What the memo writer authored, as written, with each figure reference in its prose rendered by code. None "
-            "for an analysis the report planner wrote, whose words are its plan (`report_plan_id`)."
+            "for an analysis the report planner wrote, whose words are its plan (`report_plan_id`), and for a report "
+            "document's (`report_doc_id`)."
         )
     )
     report_plan_id: str | None = Field(
         default=None,
         description=(
             "The id of the report plan this analysis was written as (`EvalReportPlan`, stored beside it; "
-            "`report_plan_id(<analysis id>)` when generated): set exactly when `document` is None. None for an "
-            "analysis the memo writer wrote, which every analysis stored before the planner is."
+            "`report_plan_id(<analysis id>)` when generated). None for an analysis the memo writer wrote, which every "
+            "analysis stored before the planner is, and for a report document's."
+        ),
+    )
+    report_doc_id: str | None = Field(
+        default=None,
+        description=(
+            "The id of the report document this analysis was written as (`EvalReportDoc`, stored beside it), which "
+            "`analysis_generate` writes with the analyst and the report editor. None for a memo's or a plan's."
         ),
     )
     recommended_variant_key: str | None = Field(
         description=(
-            "The variant key of the arm the memo or the plan recommends, resolved by code when the analysis was saved "
-            "(from the memo's recommendation label, or the plan's recommended option), so a person's call is matched "
-            "to the arm by its key whatever later relabels it. None where it recommends nothing (a measurement, a "
-            "choice with no clear winner, a plan's trade-off or no call)."
+            "The variant key of the arm the memo, the plan or the report document recommends, resolved by code when the "
+            "analysis was saved (from the memo's recommendation label, the plan's recommended option, or the one arm "
+            "the document's `recommends` names), so a person's call is matched to the arm by its key whatever later "
+            "relabels it. None where it recommends nothing (a measurement, a choice with no clear winner, a plan's "
+            "trade-off or no call, a document recommending no arm or more than one)."
         )
     )
     judged_tier_rule: JudgedTierRule = Field(
@@ -1052,10 +1064,12 @@ class EvalAnalysis(EvalDocumentModel):
         return v
 
     @property
-    def basis(self) -> Literal["memo", "plan"]:
-        """What wrote this analysis: ``memo`` (the memo writer, ``document``) or ``plan`` (the report planner, whose
-        plan ``report_plan_id`` names)."""
-        return "memo" if self.document is not None else "plan"
+    def basis(self) -> Literal["memo", "plan", "doc"]:
+        """What wrote this analysis: ``memo`` (the memo writer, ``document``), ``plan`` (the report planner, whose
+        plan ``report_plan_id`` names) or ``doc`` (the report writer, whose document ``report_doc_id`` names)."""
+        if self.document is not None:
+            return "memo"
+        return "doc" if self.report_doc_id is not None else "plan"
 
     def aspect(self, label: str) -> AspectAnalysis:
         """The aspect of this analysis with ``label``.
@@ -1087,14 +1101,15 @@ class EvalAnalysis(EvalDocumentModel):
         labels = [aspect.label for aspect in self.aspects]
         if repeated := sorted({label for label in labels if labels.count(label) > 1}):
             raise ValueError(f"aspects {repeated} appear more than once; one entry per aspect")
-        if (self.document is None) == (self.report_plan_id is None):
+        written = [self.document is not None, self.report_plan_id is not None, self.report_doc_id is not None]
+        if sum(written) != 1:
             raise ValueError(
-                "an analysis is written as a memo (`document`) or as a report plan (`report_plan_id`): exactly one is "
-                "set"
+                "an analysis is written as a memo (`document`), a report plan (`report_plan_id`) or a report document "
+                "(`report_doc_id`): exactly one is set"
             )
         if self.document is None:
             if self.resolutions:
-                raise ValueError("a planned analysis has no memo findings, so it holds no resolutions")
+                raise ValueError("a planned analysis or a report document has no memo findings, so it holds no resolutions")
             return self
         findings = self.document.findings
         count = len(findings)

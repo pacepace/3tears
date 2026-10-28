@@ -42,7 +42,7 @@ from packages.evals.tests.analyst_support import (
     read_actions,
 )
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture, settled
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, generate, ops_fixture, OpsFixture, planned_generation, settled
 from threetears.evals.actions import (
     ActionCatalogue,
     ActionOutcome,
@@ -76,7 +76,6 @@ from threetears.evals.analysis.report.figures import PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel import EvalReportSnapshot, report_snapshot_id
 from threetears.evals.kernel.campaign import EvalAnalysis
-from threetears.evals.ops import analysis_generate
 from threetears.evals.storage import InMemoryDocumentStore
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "threetears" / "evals"
@@ -154,8 +153,7 @@ def _seeded(store: InMemoryDocumentStore | None = None) -> tuple[OpsFixture, dic
 
 async def _generated(fixture: OpsFixture) -> EvalAnalysis:
     """The one analysis generated of the toy campaign."""
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
-    assert (await settled(fixture.host, job.job_id)).state == "completed"
+    await planned_generation(fixture)
     (analysis,) = off_loop(fixture.host.eval_host.storage.list_analyses_by_campaign, fixture.campaign.id, TOYHOST_SCOPE)
     return analysis
 

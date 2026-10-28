@@ -99,12 +99,14 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
             client, "evals", {"action": "report_read", "campaign_id": fixture.campaign.id}
         )
         assert not is_error and document is not None and document["format"] == "markdown"
-        assert (document["basis"], document["analysis_id"]) == ("analysis", analysis_status["analysis_id"])
-        # A planned analysis's page is the one its plan draws: the masthead line, then the headline as the page's
-        # heading, the decision with its recommendation, and each aspect's fold in the appendix after Method.
-        assert report.split("\n")[2].startswith("# ")
-        assert "**Recommendation.**" in report[: report.index("\n## ")]
-        assert "\n## Evidence record\n" in report and "none written" not in report
+        # The generation wrote a report document; until the report view reads it (wave 2), the campaign's page is the
+        # code-only page over the analysis's frozen evidence, naming the analysis.
+        assert (document["basis"], document["analysis_id"], document["analysis_basis"]) == (
+            "code_only",
+            analysis_status["analysis_id"],
+            "doc",
+        )
+        assert report.startswith(f"# {fixture.campaign.name}")
 
 
 async def test_a_report_s_body_is_sent_once_as_the_text_and_every_other_field_as_data() -> None:
