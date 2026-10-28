@@ -43,9 +43,9 @@ After a re-record makes the previous current runs historical, ``dataset.py pin``
 
 The brief holds the rubric, R1 as code scored it, the plan in page order with every prose field as written and as
 rendered, the input's facts and the planner's view of the input, and the reply's shape. It is blind: it names neither
-the plan's file nor its planner. ``record`` adds the run, the digests, the planner and the rubric to the reply, checks
-the record (:func:`score_faults`, quotes included), writes ``<run_id>.scores.json`` beside the plan and archives the
-input it was scored against.
+the plan's file nor its planner, and asks for no time, since a blind scorer reads no clock. ``record`` adds the run,
+the digests, the planner, the rubric and the time it is made to the reply, checks the record (:func:`score_faults`,
+quotes included), writes ``<run_id>.scores.json`` beside the plan and archives the input it was scored against.
 """
 
 from __future__ import annotations
@@ -323,7 +323,7 @@ class PlanScores(_Record):
     scorer: str = Field(description="The scorer: a model id (``claude-opus-5-5``) or ``owner``.")
     rubric: RubricRef
     items: list[ScoreItem]
-    scored_at: str = Field(description="When it was scored, ISO-8601.")
+    scored_at: str = Field(description="When code recorded the scorer's reply, ISO-8601, by code's clock.")
 
 
 def prose_fields(plan: BaseModel, path: str = "") -> Iterator[tuple[str, str]]:
@@ -630,10 +630,10 @@ def _page(plan: ReportPlan, report_input: ReportInput) -> Iterator[str]:
 
 
 class ScorerReply(_Record):
-    """What a scorer returns for one plan: its items, and when it scored them. Code adds everything else."""
+    """What a scorer returns for one plan: its items. Code adds everything else, the time included: a blind scorer
+    reads no clock, so a time it wrote would be a guess."""
 
     items: list[ScoreItem]
-    scored_at: str = Field(default="", description="When it was scored, ISO-8601; empty for now.")
 
 
 def scoring_brief(plan_path: Path, *, version: str | None = None) -> str:
@@ -653,8 +653,7 @@ def scoring_brief(plan_path: Path, *, version: str | None = None) -> str:
         "items": [
             {"id": item_id, "verdict": "pass | fail", "reason": "", "quote": "", "labeled_by": "model"}
             for item_id in model_items(version)
-        ],
-        "scored_at": "",
+        ]
     }
     parts = [
         f"# Score one report plan against rubric {version}",
@@ -662,7 +661,7 @@ def scoring_brief(plan_path: Path, *, version: str | None = None) -> str:
             "Score every model-scored item of the rubric below, each on its own, as a reviewer reads the page. Return "
             "ONLY a JSON object shaped like the reply at the end of this brief: for each item its verdict (pass or "
             "fail), a one-sentence reason, and a quote copied exactly from the plan's prose (as written or as "
-            "rendered; a fail always quotes what failed), and scored_at as an ISO-8601 time."
+            "rendered; a fail always quotes what failed)."
         ),
         f"R1 is code's and already scored: {verdict}, {reason}.",
         rubric_text,
@@ -698,7 +697,7 @@ def record(plan_path: Path, reply: str, *, scorer: str, version: str | None = No
     answered = ScorerReply.model_validate_json(text)
     skeleton = score_skeleton(plan_path, scorer=scorer, version=version)
     skeleton["items"] = [item.model_dump() for item in answered.items]
-    skeleton["scored_at"] = answered.scored_at or utc_now_iso()
+    skeleton["scored_at"] = utc_now_iso()
     scores = PlanScores.model_validate(skeleton)
     if faults := score_faults(scores, plan_path):
         raise ValueError(f"the score record of {plan_path.name} is unsound: {'; '.join(faults)}")

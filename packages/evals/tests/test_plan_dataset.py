@@ -22,7 +22,8 @@ Contracts held here:
   current run's quotes are text its plan holds, as written or rendered against the input it was scored against; a
   historical record is pinned instead, byte for byte (``history.json``), so editing, deleting or leaving one unpinned is
   red. A scorer's reply becomes a record only when it is sound, quotes included, its planner is the run's recorded
-  provenance, and records pool only by planner prompt digest, rubric digest and scorer.
+  provenance, and records pool only by planner prompt digest, rubric digest and scorer. The reply states no time: the
+  record's is code's, when it is made.
 - **The brief** carries the rubric, R1's verdict, the plan rendered and every item to score, and names neither the
   plan's file nor its planner.
 """
@@ -41,6 +42,7 @@ from threetears.evals.analysis.errors import PlanRefusal
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report_plan_checks import validate_plan
 from threetears.evals.kernel.report_plan import ReportPlan
+from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.schema.prose import field_is_prose
 
 HERE = dataset.HERE
@@ -395,11 +397,13 @@ def _reply(**changes: dict[str, Any]) -> str:
         for item_id in dataset.model_items()
     ]
     items = [{**item, **changes.get(item["id"], {})} for item in items]
-    return json.dumps({"items": items, "scored_at": "2026-10-25T00:00:00+00:00"})
+    return json.dumps({"items": items})
 
 
 def test_a_sound_reply_becomes_a_record_with_every_digest_set() -> None:
+    before = utc_now_iso()
     scores = dataset.record(R5_ANCHOR, "```json\n" + _reply() + "\n```", scorer="owner")
+    assert before <= scores.scored_at <= utc_now_iso(), "the time is code's, when the record is made"
     assert scores.run_id == "anchor" and scores.input == "r5" and scores.scorer == "owner"
     assert scores.plan_digest == dataset.sha256_file(R5_ANCHOR)
     assert scores.rubric == dataset.RubricRef(version="v2", digest=dataset.rubric_digest("v2"))
@@ -424,6 +428,15 @@ def test_a_reply_quoting_the_rendered_prose_is_sound() -> None:
 def test_an_unsound_reply_is_refused(changes: dict[str, Any], fault: str) -> None:
     with pytest.raises(ValueError, match=re.escape(fault)):
         dataset.record(R5_ANCHOR, _reply(**changes), scorer=dataset.OPUS_SCORER)
+
+
+def test_a_reply_states_no_time_and_the_brief_asks_for_none() -> None:
+    """A blind scorer reads no clock, so a time it writes is a guess: the reply carries none, and one that does is
+    refused rather than kept."""
+    timed = json.dumps({**json.loads(_reply()), "scored_at": "2026-10-25T00:00:00+00:00"})
+    with pytest.raises(ValueError, match="scored_at"):
+        dataset.record(R5_ANCHOR, timed, scorer=dataset.OPUS_SCORER)
+    assert "scored_at" not in dataset.scoring_brief(R5_ANCHOR)
 
 
 def test_a_record_of_a_changed_plan_or_rubric_is_unsound(tmp_path: Path) -> None:

@@ -12,7 +12,8 @@ committed plan draws yet. The expected side is always computed from the input, n
   every row; every (kind, source) pair the plan checks accept for these kinds draws on some input.
 - **Gate matrix over tasks** (r1): a cell per task and arm, its pill GENERATOR §3's colour for the task-narrowed
   check and its word, its reasons the failures else the borderline, its cost the task's own per 1,000 replies, the
-  routing pick marked; a cross-cutting task flagged. A task no gate is read in states no status.
+  routing pick marked; a cross-cutting task flagged. A task no gate is read in states no status (drawn
+  on each input that gates only the whole comparison, r2).
 - **Gate matrix over readings, floors, measures and configs**: §3's direction rule with the margin verdict in the
   words; a floor's status; each criterion checked alone.
 - **Gate scatter** (r2): each point at the figures the two gates read, both lines at the gates' thresholds, hollow
@@ -319,19 +320,43 @@ def test_r1s_matrix_marks_a_pick_on_every_routable_task_some_arm_can_take() -> N
     assert data.pick_label and data.cost_fmt
 
 
-def test_a_task_no_gate_reads_states_no_status_and_shows_its_figures() -> None:
-    """r2 gates the whole comparison only: its tasks carry figures, and no cell claims a pass."""
-    (param,) = _stored("gate_matrix", "tasks")[-1:]
-    name, spec, block, _ = param.values
+def _tasks_no_gate_reads() -> list[str]:
+    """The inputs that hold tasks and gate only the whole comparison: no gating criterion is read in a task."""
+    found = [
+        name
+        for name in ("r1", "r2", "r3", "r4", "r5")
+        if _input(name).tasks and not any(criterion_place(criterion) == "task" for criterion in _gating(_input(name)))
+    ]
+    assert found, "no input holds tasks that no gate reads: the test would hold nothing"
+    return found
+
+
+@pytest.mark.parametrize("name", _tasks_no_gate_reads())
+def test_a_task_no_gate_reads_states_no_status_and_shows_its_figures(name: str) -> None:
+    """An input that gates the whole comparison only (r2): its tasks carry figures, and no cell claims a pass.
+
+    Drawn on the input, over every arm and the measure its gates read, since whether a committed run draws a gate matrix
+    of tasks is the planner's choice."""
     report_input = _input(name)
-    assert not any(criterion_place(criterion) == "task" for criterion in _gating(report_input))
+    (measure,) = {criterion.measure for criterion in _gating(report_input) if criterion.statistic == "mean"}
+    tasks = [task for task in report_input.tasks if any(measure in figures for figures in task.per_arm.values())]
+    assert tasks, f"{name}: no task carries {measure}"
+    arms = [arm.id for arm in report_input.arms if any(measure in task.per_arm.get(arm.id, {}) for task in tasks)]
+    spec = _spec("gate_matrix", "tasks", measures=[measure], arms=arms)
+    block, _ = _draw(name, spec)
     data = block.data
     assert isinstance(data, GateMatrixChart)
-    tasks = [row.item for row in query_rows(spec.query, report_input) if isinstance(row.item, Task)]
-    for task, row in zip(tasks, data.rows, strict=True):
-        for arm, cell in zip(spec.query.arms, row.cells, strict=True):
+    selected = [row.item for row in query_rows(spec.query, report_input) if isinstance(row.item, Task)]
+    assert len(data.rows) == len(selected)
+    columns = [column.label for column in data.columns]
+    assert sorted(columns) == sorted(_arm_name(report_input, arm) for arm in arms)
+    for task, row in zip(selected, data.rows, strict=True):
+        for arm in arms:
+            cell = row.cells[columns.index(_arm_name(report_input, arm))]
             assert cell.status == "neutral" and cell.label not in GATE_WORDS.values()
-            figure = resolve(f"task.{task.id}.{arm}.{spec.query.measures[0]}.mean", report_input)
+            if measure not in task.per_arm.get(arm, {}):
+                continue
+            figure = resolve(f"task.{task.id}.{arm}.{measure}.mean", report_input)
             assert cell.reasons and format_figure(figure) in cell.reasons[0]
 
 
