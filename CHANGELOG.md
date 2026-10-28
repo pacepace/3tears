@@ -13,7 +13,15 @@ rule of three significant figures from $0.10 to $1), and one owner states every 
 every chart, table and figure key of the report document and the planned page reads its scale, form and count from,
 and the code-only report's money rulers, tables, means and intervals too (its ± spreads and margin lines keep the
 number rule; a cost there drawn per 1,000,000 replies is headed `($/1,000,000 replies)`, where it read
-`($/1,000 replies)`). A set's form is chosen from the amounts
+`($/1,000 replies)`). A set is every amount of one figure type a table or chart shows, across its rows and columns:
+a column of arms by measure, and in a table of slices by arm (Full results' strata, tasks and cells) each measure's
+every row across the arms, so r1's tasks read `$58.00 | $24.00 | $4.60 | $8.90`, where a row read `$58 | $24 | $4.60 |
+$8.90`; the code-only report's two arms' means in one row, a contrast's change and its interval's ends (`$0.47 |
+[$0.35, $0.60]`, where it read `$0.51 | [$0.4107, $0.606]`), and its projected costs (`$0.92` beside `$11.00`, where
+it read `$2.3` beside `$27`); and the campaign page's cost/quality chart, its tips and its table (`$4.00 [$3.60,
+$4.40] per 1,000 replies` beside `$0.80`, where a tip read `$4` beside `$0.8`, and a cost under a cent per reply is no
+longer spelled per reply). The code-only report's Methods row states a partly priced total as one (`cheaper candidate
+$0.063 (21 of 24 trials priced)`), as every other surface does. A set's form is chosen from the amounts
 themselves: whole dollars where the least is $10 or more (`$7,560`); else cents, with more decimals only where the
 least amount needs them for two significant figures (`$0.030` beside `$3.477`, so r2's `$0.302` reads alike in prose
 and in its tables). Where an amount is under a cent the ruler moves instead: money per reply is stated per 1,000
@@ -21,8 +29,10 @@ replies, and a set under a cent per 1,000 per 1,000,000 (r3's keys read `$180.00
 replacing the label's own count, never stacked beside it (`Cost per 1,000,000 calls`, never `Cost per 1k calls, per
 1,000,000 calls`). A chart says what its dollars are per in a line under it and in its titles, and draws its ticks
 and notes to the same decimals (the kit's `usd:<decimals>`), never with a per-1,000 mark its ticks cannot write. A
-bare key, and a table where the ruler cannot move, write the per-1,000 mark instead (`$8.00/1000` for $0.008). A total
-(a run's cost, a month's) counts nothing and is never scaled. One exception, a chart of totals under a cent: it has no
+set still under a cent per 1,000,000 moves no further: it reads at that count, to the decimals its least amount needs
+for two significant figures (`$0.0030` under `($/1,000,000 replies)`), never with the per-1,000 mark beside the count,
+so no amount carries two scales. A total (a run's cost, a month's) counts nothing and is never scaled; a bare key or a
+table of totals under a cent writes the per-1,000 mark instead (`$8.00/1000` for $0.008). One exception, a chart of totals under a cent: it has no
 ruler to move, and the chart kit's ticks can write neither the per-1,000 mark nor a bare count of thousandths that its
 values table would spell alike, so such a chart reads in dollars to the decimals its least total needs (`$0.00048`),
 where a key or a table writes the same total `$0.48/1000`. A gate's reason and a gate row's line state money on the

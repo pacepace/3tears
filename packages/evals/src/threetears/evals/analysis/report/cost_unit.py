@@ -38,6 +38,7 @@ from threetears.evals.analysis.report_input import Measure, ReportInput
 
 __all__ = [
     "PRICED_SHARE_TEMPLATE",
+    "PRICED_TRIALS_TEMPLATE",
     "MoneyRuler",
     "money_ruler",
     "REPLIES",
@@ -111,6 +112,9 @@ def per_noun(measure: Measure) -> str:
 #: smaller total, which no page states bare.
 PRICED_SHARE_TEMPLATE = "{priced} of {calls} calls priced"
 
+#: The words beside a run's total where only part of its trials' spend was priced, which counts trials, not calls.
+PRICED_TRIALS_TEMPLATE = "{priced} of {trials} trials priced"
+
 
 def priced_in_part(report_input: ReportInput, arm: str) -> str | None:
     """Whether an arm's cost counts only part of its calls, as its pricing says (``ScoreboardRow.pricing``): the words
@@ -136,7 +140,8 @@ def priced_in_part(report_input: ReportInput, arm: str) -> str | None:
     return PRICED_SHARE_TEMPLATE.format(priced=pricing.priced_calls, calls=pricing.calls)
 
 
-#: The most of what money counts a ruler states it per: a set under a cent even per 1,000,000 keeps the per-1,000 mark.
+#: The most of what money counts a ruler states it per: a set under a cent even per 1,000,000 reads there, to the
+#: decimals its least amount needs.
 _MOST_COUNTED = 1_000_000
 
 
@@ -228,7 +233,9 @@ def money_ruler(amounts: Iterable[float | None], *, per: int, start: int = 0, ma
 
     An amount that counts something (money per reply, per 1,000 or per 1,000,000 of what it counts) is drawn per
     ``start`` of it, and, where some amount is under a cent there, per a thousand times more, up to 1,000,000: the
-    ruler moves, and the per-1,000 mark is never stacked on it. A total (``per`` 0: a run's cost, a month's) counts
+    ruler moves, and the per-1,000 mark is never stacked on it. A set still under a cent per 1,000,000 moves no
+    further: it reads at that count, in dollars to the decimals its least amount needs for two significant figures
+    (``$0.0030 per 1,000,000 replies``), never with the mark beside the count. A total (``per`` 0: a run's cost, a month's) counts
     nothing and is never scaled: a set of totals under a cent reads per 1,000 with its mark (``$8.00/1000``) where the
     surface can write one (``marked``), else in dollars to the decimals its least amount needs.
 
@@ -240,7 +247,8 @@ def money_ruler(amounts: Iterable[float | None], *, per: int, start: int = 0, ma
     :param start: The least count to state it per (a chart states money per reply per 1,000 replies); ``per`` where
         unset.
     :ptype start: int
-    :param marked: Whether the surface can write the per-1,000 mark (a key and a table can; a chart's ticks cannot).
+    :param marked: Whether the surface can write the per-1,000 mark (a key and a table can; a chart's ticks cannot):
+        read for a total only, since a counted set states its count instead.
     :ptype marked: bool
     :return: The ruler.
     :rtype: MoneyRuler
@@ -249,10 +257,10 @@ def money_ruler(amounts: Iterable[float | None], *, per: int, start: int = 0, ma
     if per == 0:
         return MoneyRuler(form=money_form(held, marked=marked), scale=1.0, counted=0)
     count = max(start, per)
-    form = money_form((amount * count / per for amount in held), marked=marked)
     while money_form(amount * count / per for amount in held).per_thousand and count < _MOST_COUNTED:
         count *= 1000
-        form = money_form((amount * count / per for amount in held), marked=marked)
+    # A counted set states its count, so it never carries the per-1,000 mark beside it, at the cap included.
+    form = money_form((amount * count / per for amount in held), marked=False)
     return MoneyRuler(form=form, scale=count / per, counted=count)
 
 

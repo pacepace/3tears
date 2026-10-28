@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterator, Sequence
+from functools import partial
 from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
@@ -337,7 +338,9 @@ def _money_by_column(table: list[list[str]]) -> list[list[str]]:
     (``$8/1000``) throughout where any amount the column holds is under a cent
     (:func:`~threetears.evals.kernel.numbers.money_form`), else in dollars, and every amount's whole dollars grouped by
     thousands (``$1,239``). An amount is moved per 1,000 by its digits exactly, so it keeps every digit it was written
-    with and gains none it was never rounded to; a bound (``< $0.000001``) is left as it is.
+    with and gains none it was never rounded to; a bound (``< $0.000001``) is left as it is. A cell naming the count
+    its money is drawn per (``$0.0240 per 1,000,000 conversations``) already states its scale: its amounts neither
+    choose the mark nor take it, so no amount carries two scales.
 
     :param table: The table's rows of cell texts; changed in place.
     :ptype table: list[list[str]]
@@ -346,12 +349,17 @@ def _money_by_column(table: list[list[str]]) -> list[list[str]]:
     """
     width = max((len(row) for row in table), default=0)
     for column in range(width):
-        cells = [row[column] for row in table if column < len(row)]
+        cells = [row[column] for row in table if column < len(row) and not _COUNTED.search(row[column])]
         per_thousand = money_form(_money_amount(found) for cell in cells for found in _CELL_MONEY.finditer(cell))
         for row in table:
             if column < len(row):
-                row[column] = _CELL_MONEY.sub(lambda found: _respelled(found, per_thousand.per_thousand), row[column])
+                mark = per_thousand.per_thousand and not _COUNTED.search(row[column])
+                row[column] = _CELL_MONEY.sub(partial(_respelled, per_thousand=mark), row[column])
     return table
+
+
+#: Words naming the count money is drawn per: ``per 1,000,000 conversations``.
+_COUNTED = re.compile(r"\bper [\d,]+ ")
 
 
 def _respelled(found: re.Match[str], per_thousand: bool) -> str:

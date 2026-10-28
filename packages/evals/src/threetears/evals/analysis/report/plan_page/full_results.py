@@ -103,14 +103,24 @@ _Slice = tuple[str, int | None, Mapping[str, Mapping[str, Stat]]]
 _TableBuilder = Callable[[ReportInput, PageLook], list[TableBlock]]
 
 
-def _table(name: str, columns: Sequence[TableColumn], rows: list[dict[str, TableCell]], order: str) -> TableBlock:
-    """A Full results table, each column's money in one form chosen from the column's own values (#993)."""
+def _table(
+    name: str,
+    columns: Sequence[TableColumn],
+    rows: list[dict[str, TableCell]],
+    order: str,
+    *,
+    by_row: Sequence[str | None] | None = None,
+) -> TableBlock:
+    """A Full results table, each figure type's money in one form chosen from its own values (#993): a column's, or,
+    where ``by_row`` names each row's measure (a slice table, each row one measure across the arms), every row's on
+    that measure, across the table. Every column's head or row names the count its money is drawn per, so it never
+    carries the per-1,000 mark beside it."""
     return TableBlock(
         section=PLANNED_SECTION,
         name=name,
         title=FULL_RESULTS_TITLES[name],
         columns=list(columns),
-        rows=money_columns(rows),
+        rows=money_columns(rows, by_row=by_row, marked=False),
         order=order,
         total_rows=len(rows),
     )
@@ -358,6 +368,7 @@ def _slices_table(
     ]
     arms = [column.key.removeprefix("arm:") for column in columns if column.key.startswith("arm:")]
     rows = []
+    kinds: list[str | None] = []
     for label, cases, per_arm in slices:
         for key in measures:
             if not any(key in per_arm.get(arm, {}) for arm in arms):
@@ -369,7 +380,9 @@ def _slices_table(
             for arm in arms:
                 cells[f"arm:{arm}"] = _stated(report_input, key, per_arm.get(arm, {}).get(key), kind=kind)
             rows.append(cells)
-    return _table(name, columns, rows, "in the input's order, each slice's measures in the order it holds them")
+            kinds.append(key)
+    order = "in the input's order, each slice's measures in the order it holds them"
+    return _table(name, columns, rows, order, by_row=kinds)
 
 
 def _strata(report_input: ReportInput, look: PageLook) -> list[TableBlock]:

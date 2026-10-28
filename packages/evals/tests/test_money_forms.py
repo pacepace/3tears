@@ -238,12 +238,15 @@ def test_a_tables_money_column_reads_one_form_chosen_from_its_values() -> None:
 
 
 def _money_cells(table: TableBlock) -> dict[str, list[tuple[TableCell, str]]]:
-    """Each column's money cells, with the text a reader is shown, by column key."""
+    """Each figure type's money cells, with the text a reader is shown: a column's, by its key; in a table of arms
+    across (a slice per row, each row one measure across the arms), every row's on one measure, by the measure."""
+    across = any(column.key.startswith("arm:") for column in table.columns)
     cells: dict[str, list[tuple[TableCell, str]]] = {}
     for row in table.rows:
+        measure = row["measure"].text if "measure" in row else ""
         for key, cell in row.items():
             if cell.is_number and cell.unit == "usd":
-                cells.setdefault(key, []).append((cell, cell.text))
+                cells.setdefault(f"measure:{measure}" if across else key, []).append((cell, cell.text))
     return cells
 
 
@@ -289,7 +292,8 @@ def test_every_engine_tables_money_column_reads_one_form_from_its_values(name: s
         for key, cells in _money_cells(table).items():
             values = [float(cell.value) for cell, _ in cells if isinstance(cell.value, int | float)]
             ends = [float(end) for cell, _ in cells for end in (cell.low, cell.high) if end is not None]
-            form = money_form([*values, *ends])
+            # A table names the count its money is drawn per, so a set at the ruler's cap carries no mark beside it.
+            form = money_form([*values, *ends], marked=False)
             assert len(_forms(text for _, text in cells)) == 1, (table.name, key)
             for cell, text in cells:
                 assert isinstance(cell.value, int | float)
@@ -297,6 +301,27 @@ def test_every_engine_tables_money_column_reads_one_form_from_its_values(name: s
             checked += 1
     if not checked:
         pytest.skip(f"{name}'s tables state no money")
+
+
+def test_r1s_tasks_table_reads_each_tasks_cost_across_the_arms_in_one_form() -> None:
+    """One task's cost across the arms is one figure type with every other task's: the least, $3.30, needs cents, so
+    whole dollars beside it never read; never $58 | $24 | $4.60 | $8.90 in one row."""
+    held = INPUTS["r1"]
+    (tasks,) = [table for table in every_table(held, block_look(held, fact_arms(held))) if table.name == "tasks"]
+    rows = [[cell.text for cell in row.values()] for row in tasks.rows]
+    assert ["Billing & account Q&A", "400", "Cost per 1k conversations", "$58.00", "$24.00", "$4.60", "$8.90"] in rows
+
+
+def test_a_cost_still_under_a_cent_at_the_rulers_cap_reads_there_with_no_mark() -> None:
+    """r1 at a millionth of its cost stays under a cent even per 1,000,000 conversations: its Full results column reads
+    at that count, to the decimals its least cost needs, and never with the per-1,000 mark beside it."""
+    held = _measures_shrunk(INPUTS["r1"], frozenset({"cost_per_1k"}), 1e6)
+    (arms,) = [
+        table for table in every_table(held, block_look(held, fact_arms(held))) if table.name == "arms_by_measure"
+    ]
+    (column,) = [column for column in arms.columns if column.key == "cost_per_1k"]
+    assert column.header == "Cost per 1,000,000 conversations"
+    assert [row["cost_per_1k"].text for row in arms.rows] == ["$0.0750", "$0.0314", "$0.0060", "$0.0115"]
 
 
 def test_r2s_cost_reads_in_its_tables_as_its_key_reads_in_prose() -> None:
@@ -714,7 +739,15 @@ def _under_a_cent() -> dict[str, tuple[ReportInput, str, str, str]]:
     }
     two_rulers = two_rulers.model_copy(update={"scoreboard": per_reply})
     r1 = _measures_shrunk(INPUTS["r1"], frozenset({"cost_per_1k"}), 1000.0)
+    # Under a cent even per 1,000,000: the ruler's cap, where the set reads with no mark beside the count.
+    capped = _measures_shrunk(INPUTS["r1"], frozenset({"cost_per_1k"}), 1e6)
     return {
+        "r1 under a cent even per 1,000,000 conversations": (
+            capped,
+            "cost_per_1k",
+            "per 1k conversations",
+            "per 1,000,000 conversations",
+        ),
         "r1 under a cent per 1,000 conversations": (
             r1,
             "cost_per_1k",
@@ -1150,8 +1183,9 @@ def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(
 
 def _column_texts(page: PageChart) -> list[tuple[str, str, str]]:
     """Every text a chart or table shows a reader, each with the words naming its count (its row's or its column's
-    head, empty for none) and the table column it sits in (empty off a table): a table's cells and heads, a chart's
-    data, its values table and its lines."""
+    head, empty for none) and the figure type it is in a table (empty off a table): a column's, its interval's column
+    with it; where the arms are the columns, each row's measure across them. A table's cells and heads, a chart's data,
+    its values table and its lines."""
     if isinstance(page.chart, TableBlock):
         heads: dict[str, str] = {}
         before = ""
@@ -1163,8 +1197,10 @@ def _column_texts(page: PageChart) -> list[tuple[str, str, str]]:
         cells = []
         for row in page.chart.rows:
             words = " ".join(cell.text for cell in row.values() if "$" not in cell.text)
+            measure = row["measure"].text if "measure" in row else ""
             for key, cell in row.items():
-                cells.append((cell.text, words if _COUNT.findall(words) else heads[key], key))
+                kind = f"measure:{measure}" if key.startswith("arm:") else key.removesuffix(":interval")
+                cells.append((cell.text, words if _COUNT.findall(words) else heads[key], kind))
         named = [(column.header, "", "") for column in page.chart.columns]
         return [*cells, *named, *((note, "", "") for note in page.notes)]
     data = page.chart.data.model_dump(mode="json") if page.chart.data is not None else {}
@@ -1190,6 +1226,8 @@ def _amounts_reconcile(label: str, page: PageChart, owned: list[tuple[float, int
         count = int(named[0].replace(",", "")) if named and not totals else default
         for found in _AMOUNT.finditer(text):
             value = _amount(found.group(0))
+            # Never two scales on one amount: a count named over it, and the per-1,000 mark on it.
+            assert not (found.group(4) and (named or default)), (label, text, "stacked")
             places = len(found.group(3) or "") + (3 if found.group(4) else 0)
             rounding = 10.0**-places / 2 + abs(value) * 1e-9
             # A figure too small to show at the decimals written is no reading of a zero: a zero reads a zero.
@@ -1201,10 +1239,11 @@ def _amounts_reconcile(label: str, page: PageChart, owned: list[tuple[float, int
                 text,
                 count,
             )
-            if column:
+            if column and value != 0:
                 columns.setdefault(column, set()).add(len(found.group(3) or ""))
             read += 1
-    # A table's column of money reads to one form's decimals.
+    # One figure type in a table (a column, an interval's ends with its figures, a measure across the arms) reads to
+    # one form's decimals; a zero ($0) says nothing of a form.
     assert all(len(places) == 1 for places in columns.values()), (label, columns)
     return read
 
