@@ -93,8 +93,10 @@ group's forms).
 from __future__ import annotations
 
 import dataclasses
+import functools
 import math
 import re
+import weakref
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal, get_args
@@ -5853,6 +5855,67 @@ class _Stop:
     expected: tuple[str, ...] = ()
 
 
+@dataclass
+class _Memo:
+    """What one report input has read as (:func:`_memo`): each key's figure or the refusal it raised (kept with no frame,
+    :func:`_frameless`), and the ids each slot offered after the slots matched before it."""
+
+    figures: dict[str, Figure | UnresolvableReference]
+    offered: dict[tuple[Callable[[ReportInput, tuple[str, ...]], Iterable[str]], tuple[str, ...]], list[str]]
+
+
+@dataclass(frozen=True, eq=False)
+class _ByIdentity:
+    """A report input by its identity, held weakly: equal only to a handle on the same live input, so a memo never
+    outlives its input's identity (an input made later at the same address is another input) and never keeps it alive.
+    """
+
+    ident: int
+    ref: weakref.ref[ReportInput]
+
+    def __hash__(self) -> int:
+        return hash(self.ident)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _ByIdentity) or other.ident != self.ident:
+            return False
+        held = self.ref()
+        return held is not None and held is other.ref()
+
+
+#: The most report inputs whose memos are kept at once, the least recently read let go first: a sweep reads a copy of
+#: its input per value, each with a memo of a few keys, while the input it sweeps is read throughout.
+_MEMO_INPUTS = 256
+
+
+@functools.lru_cache(maxsize=_MEMO_INPUTS)
+def _memo_of(held: _ByIdentity) -> _Memo:
+    """A fresh memo for one input (:func:`_memo`)."""
+    return _Memo(figures={}, offered={})
+
+
+def _memo(report_input: ReportInput) -> _Memo:
+    """The memo of one report input, made empty on its first read.
+
+    A key's figure and a slot's ids are pure in the input, and a report input is frozen and never changed in place (an
+    input with a moved line is a copy, :meth:`~pydantic.BaseModel.model_copy`, with its own memo). So a key read twice
+    on one input, which a cited figure's text, a page sized by halving and a listing ordered by its figures all do,
+    walks the grammar once, and each family sharing a slot reads the slot's ids once (four lever families read a
+    setting's arm pairs, an O(arms squared) scan, alike).
+    """
+    return _memo_of(_ByIdentity(id(report_input), weakref.ref(report_input)))
+
+
+def _offered(slot: _Ids, report_input: ReportInput, values: tuple[str, ...]) -> list[str]:
+    """The ids an id slot offers on an input after the slots matched before it, read once per input."""
+    offered = _memo(report_input).offered
+    key = (slot.options, values)
+    found = offered.get(key)
+    if found is None:
+        found = offered[key] = list(slot.options(report_input, values))
+    return found
+
+
 def _walk(
     path: str,
     at: int,
@@ -5867,7 +5930,7 @@ def _walk(
     if isinstance(slot, _Word):
         options: Sequence[str] = (slot.spelling,)
     elif isinstance(slot, _Ids):
-        options = list(slot.options(report_input, values))
+        options = _offered(slot, report_input, values)
     elif isinstance(slot, _Number):
         options = _number_options(path, at)
     else:
@@ -5901,6 +5964,12 @@ def _readings(path: str, report_input: ReportInput) -> tuple[list[_Reading], _St
     found: list[_Reading] = []
     stop = _Stop()
     for family in _FAMILIES:
+        first = family.slots[0]
+        if isinstance(first, _Word) and not path.startswith(first.spelling):
+            # A family whose first word the path does not begin with stops at its start, where no refusal reads what
+            # it expected (:func:`_one_reading` names every beginning there), so it is passed over unwalked.
+            stop.at = max(stop.at, 0)
+            continue
         _walk(path, 0, family, family.slots, (), report_input, found, stop)
     return found, stop
 
@@ -5985,6 +6054,39 @@ def resolve(key: str, report_input: ReportInput) -> Figure:
     :raises UnresolvableReference: The path names nothing the input holds (the refusal lists what could come next
         where it stopped matching), reads two ways (naming both), or names a figure the input leaves unstated.
     """
+    figures = _memo(report_input).figures
+    held = figures.get(key)
+    if isinstance(held, UnresolvableReference):
+        raise _frameless(held)
+    if held is not None:
+        return held
+    try:
+        figure = _resolved(key, report_input)
+    except UnresolvableReference as refused:
+        figures[key] = _frameless(refused)
+        raise
+    figures[key] = figure
+    return figure
+
+
+def _frameless(refused: UnresolvableReference) -> UnresolvableReference:
+    """A copy of a refusal that holds no frame: its type and message, its cause copied the same way, and whether a
+    traceback shows its context, as a first raise has it.
+
+    A raised refusal's traceback, and its cause's, hold the frames it unwound through, each with the report input among
+    its locals, so the memo keeps this copy and raises a fresh one on each read: a refused key never keeps its input
+    alive, and no two reads share an exception.
+    """
+    twin = type(refused)(*refused.args)
+    cause = refused.__cause__
+    if cause is not None:
+        twin.__cause__ = type(cause)(*cause.args)
+    twin.__suppress_context__ = refused.__suppress_context__
+    return twin
+
+
+def _resolved(key: str, report_input: ReportInput) -> Figure:
+    """One key's figure, read from the input (:func:`resolve`, which keeps it)."""
     if key.startswith(_ARM_PREFIX):
         arm_id = key.removeprefix(_ARM_PREFIX)
         if arm_id not in {arm.id for arm in report_input.arms}:
