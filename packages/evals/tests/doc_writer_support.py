@@ -19,6 +19,7 @@ from typing import Any, Final, Self
 from threetears.evals.schema.completion import CompletionResult
 from threetears.evals.schema.turns import (
     ToolResultClearing,
+    TurnCeiling,
     ToolTurnClient,
     TurnMessage,
     TurnReply,
@@ -193,8 +194,8 @@ class FakeSessionClient:
 
     def turn_price_ceiling(
         self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int
-    ) -> float | None:
-        return self.ceiling
+    ) -> TurnCeiling | None:
+        return TurnCeiling(usd=self.ceiling) if self.ceiling is not None else None
 
     async def refresh_prices(self) -> None:
         return None

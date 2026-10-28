@@ -4176,6 +4176,17 @@ class EvalRun(CoreDocumentModel):
             "no ceiling (a run assembled without its launch, which is where the cascade resolves)."
         ),
     )
+    cap_checked_on_estimates: bool | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "True when max_cost_usd was checked against estimates: the arm's largest call was bounded on rates the "
+            "host's pricer does not guarantee (an OpenRouter route whose upstream may bill otherwise), so the run "
+            "was admitted on an estimate and its cap reads against one. None = not recorded: no cap, a bound on "
+            "guaranteed rates, or a run stored before the field existed. Left out of the document when unset, and "
+            "in no identity, key or digest."
+        ),
+    )
 
     max_metered_calls: int | None = Field(
         default=None,
@@ -5224,6 +5235,35 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
             "reason is counted there and not here. None = no reasons were counted."
         ),
     )
+
+    unpriced_reasons: list[str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Why this row's dollars are unknown: each distinct reason its pricer gave for a call it could not price "
+            "(a completion's pricing_failure), in the order first seen. Set only beside a cost_usd of None, which is "
+            "unknown and never $0. None = no reason was given (the row is priced, or its unpriced calls said "
+            "nothing)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _unpriced_reasons_explain_an_unknown_cost(self) -> RoleUsage:
+        """Refuse reasons beside a known cost, an empty list, or an empty reason.
+
+        :return: The row, unchanged.
+        :rtype: RoleUsage
+        :raises ValueError: ``unpriced_reasons`` is set beside a ``cost_usd``, is empty, or holds an empty reason.
+        """
+        if self.unpriced_reasons is None:
+            return self
+        if self.cost_usd is not None:
+            raise ValueError("unpriced_reasons says why a row's cost is unknown, and this row's cost_usd is known")
+        if not self.unpriced_reasons or not all(self.unpriced_reasons):
+            raise ValueError(
+                "unpriced_reasons holds at least one reason, none empty; leave it None when none was given"
+            )
+        return self
 
     @model_validator(mode="after")
     def _reasons_count_the_unanswered(self) -> RoleUsage:

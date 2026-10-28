@@ -33,7 +33,7 @@ from threetears.evals.analysis.campaigns import (
     remove_runs_from_campaign,
     update_campaign,
 )
-from threetears.evals.kernel.numbers import format_number, group_thousands, spell_dollars
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.planned_analysis import report_plan_of
 from threetears.evals.analysis.report import ReportBasis, TrialDetail, analysis_verdict
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
@@ -1021,7 +1021,9 @@ async def analysis_estimate(
     try:
         refusal: str | None = None
         try:
-            refusal = await _pricing_refusal(_turn_model(client))
+            turn_model = _turn_model(client)
+            # Priced only under a dollar budget, as the start prices it: a token and turn budget asks for no price.
+            refusal = await _pricing_refusal(turn_model) if budget.usd is not None else None
         except ValidationFailedError as refused:
             refusal = str(refused)
         return AnalysisGenerationEstimate(
@@ -1219,7 +1221,10 @@ async def analysis_generate(
         try:
             turn_model = _turn_model(client)
             await resolved(client.model_name)
-            if (unpriced := await _pricing_refusal(turn_model)) is not None:
+            budget = report_budget()
+            # A dollar budget admits each turn on its price, so a model whose turns cannot be priced is refused here; a
+            # token and turn budget asks for no price.
+            if budget.usd is not None and (unpriced := await _pricing_refusal(turn_model)) is not None:
                 raise ValidationFailedError(
                     f"the report was not started, and nothing was frozen, sent or spent: {unpriced}",
                     remedy=(
@@ -1227,7 +1232,7 @@ async def analysis_generate(
                         "give the model a pricer, or name a model it prices)"
                     ),
                 )
-            return _Prepared(client=client, model=turn_model, budget=report_budget(), limits=generation.limits)
+            return _Prepared(client=client, model=turn_model, budget=budget, limits=generation.limits)
         except BaseException:
             await _release(client)
             raise
@@ -1325,14 +1330,9 @@ def _summed(counts: Sequence[int | None]) -> int | None:
 def _budget_words(budget: ReportBudget) -> str:
     """The report's budget in words, as its ledger row and its estimate say what admitted the turns."""
     if budget.usd is not None:
-        return f"the report budget of {spell_dollars(budget.usd)}"
+        return f"the report budget of {budget.spelled}"
     # A token and turn budget names no dollars: it is never read as a $0 cap.
-    caps = [
-        f"{group_thousands(str(cap))} {name}"
-        for name in ("tokens", "turns")
-        if (cap := getattr(budget, name, None)) is not None
-    ]
-    return f"the report budget of {' and '.join(caps)}, with no dollar cap"
+    return f"the {budget.spelled} report budget, with no dollar cap"
 
 
 def _spend_row(

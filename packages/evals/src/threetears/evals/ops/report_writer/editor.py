@@ -27,7 +27,7 @@ answer that cannot be read is asked for once more, saying what was wrong; a seco
 (``ToolSession.to_json()``), whatever the ending, a client's failure included, so a later question can resume it.
 
 **Budgets.** A review has :attr:`EditorLimits.calls` tool calls, held by the session before anything is sent, and
-every turn is admitted by the report's dollar budget; a turn it refuses ends the round ``over_budget``.
+every turn is admitted by the report's budget; a turn it refuses ends the round ``over_budget``.
 """
 
 from __future__ import annotations
@@ -188,7 +188,7 @@ class EditorOutcome:
     """How one review round ended.
 
     :ivar ending: ``reviewed``, a review was read; ``review_failed``, the answer could not be read twice;
-        ``over_budget``, the report's dollar budget refused a turn; ``failed``, the model refused, its reply stopped
+        ``over_budget``, the report's budget refused a turn; ``failed``, the model refused, its reply stopped
         short for a cause other than the output cap, or the client failed (the provider's failure, after its
         retries, or a reply the client refused after it was paid for).
     :ivar round: The round reviewed.
@@ -249,7 +249,7 @@ async def review_report(
     :ptype skill: SkillText
     :param tally: The report's tally.
     :ptype tally: Tally
-    :param budget: The report's dollar budget.
+    :param budget: The report's budget (dollars, or tokens and turns).
     :ptype budget: ReportBudget
     :param limits: What the round is held to; plan §4.3's defaults when ``None``.
     :ptype limits: EditorLimits | None

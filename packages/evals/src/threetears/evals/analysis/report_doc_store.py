@@ -182,6 +182,10 @@ def _session_entry(
 def made_line(record: EvalReportDoc) -> str:
     """How a stored report was made, in one line, for its page's foot: models, served models, cost, skill, date.
 
+    The cost is the dollars spent, or ``unpriced`` when no turn was priced (a model nothing prices, written under a
+    token and turn budget), or not known when some turns were unpriced; never ``$0``. A report whose dollar budget
+    admitted turns on prices the host's pricer does not guarantee says its budget was checked against estimates.
+
     :param record: The stored document, its ``generation`` as :func:`generation_record` wrote it.
     :ptype record: EvalReportDoc
     :return: The line.
@@ -203,11 +207,17 @@ def made_line(record: EvalReportDoc) -> str:
     models = sorted({str(turn["model"]) for turn in turns} | {model})
     served = sorted({str(turn["served_model"]) for turn in turns if turn.get("served_model")})
     cost = total.get("cost_usd")
-    spent = (
-        f"for {spell_dollars(cost)}"
-        if isinstance(cost, int | float) and not isinstance(cost, bool)
-        else f"at a cost not known ({total.get('unpriced_turns')} turns unpriced)"
-    )
+    unpriced = total.get("unpriced_turns")
+    sent = total.get("turns") if isinstance(total.get("turns"), int) else len(turns)
+    if isinstance(cost, int | float) and not isinstance(cost, bool):
+        spent = f"for {spell_dollars(cost)}"
+    elif unpriced == sent and sent:
+        spent = f"unpriced ({sent} turns, none of them priced)"
+    else:
+        spent = f"at a cost not known ({unpriced} turns unpriced)"
+    estimated = total.get("admitted_on_estimate")
+    if isinstance(estimated, int) and not isinstance(estimated, bool) and estimated:
+        spent += f" (its budget checked against estimated rates on {estimated} of {sent} turns)"
     served_as = f", served as {', '.join(served)}" if served else ""
     return (
         f"Written by {', '.join(models)}{served_as}, {spent}, with analyst skill {skill[:_DIGEST_SHOWN]}, on "

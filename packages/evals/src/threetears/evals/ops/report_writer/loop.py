@@ -17,7 +17,7 @@
 
 - ``stored``: a review cleared the document, which is stored with the review's findings (``should_fix`` ones only);
 - ``stored_with_findings``: the revisions ran out; the last document is stored with its review's findings;
-- ``over_budget``: the report's dollar budget refused a turn, or the analyst called a tool after it was told to
+- ``over_budget``: the report's budget refused a turn, or the analyst called a tool after it was told to
   submit. The last document a review was read for is stored with that review's findings; with none, nothing;
 - ``refused``: a submission still had faults after its round's bounces; nothing is stored, the faults are returned;
 - ``review_failed``: the editor's answer could not be read twice; nothing is stored;
@@ -210,7 +210,7 @@ async def write_rounds(
     :ptype check: InvariantCheck
     :param tally: The report's tally, which every turn of every session is counted in.
     :ptype tally: Tally
-    :param budget: The report's dollar budget, which admits every turn.
+    :param budget: The report's budget (dollars, or tokens and turns), which admits every turn.
     :ptype budget: ReportBudget
     :param limits: What the loop is held to; plan §4.3's defaults when ``None``.
     :ptype limits: WriterLimits | None

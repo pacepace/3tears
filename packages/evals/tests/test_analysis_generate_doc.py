@@ -517,6 +517,26 @@ async def test_the_estimate_states_the_report_budget_and_the_most_turns_making_n
     )
 
 
+async def test_a_token_and_turn_budget_reads_as_no_dollar_cap_and_writes_a_report_nothing_prices() -> None:
+    fixture = off_loop(ops_fixture, analyst_unpriced="no rate for toy-analyst-model")
+    assert fixture.host.generation is not None
+    budget = dataclasses.replace(
+        fixture.host.generation, report_budget=lambda: ReportBudget(tokens=2_000_000, turns=60)
+    )
+    host = dataclasses.replace(fixture.host, generation=budget)
+
+    estimate = await analysis_estimate(host, fixture.campaign.id, TOYHOST_SCOPE)
+    assert (estimate.cap_usd, estimate.would_start) == (None, True), "no dollar cap, never $0, and no price asked"
+    assert estimate.bound == (
+        "the 2,000,000-token, 60-turn report budget, with no dollar cap, which admits every turn before it is sent"
+    )
+
+    (job,) = (await generate(host, fixture.campaign.id)).jobs
+    assert (await settled(host, job.job_id)).status == "stored"
+    (row,) = _ledger(fixture)
+    assert row.admitted_by == "the 2,000,000-token, 60-turn report budget, with no dollar cap"
+
+
 # -- the writer's ceiling ---------------------------------------------------------------------------------------------
 
 

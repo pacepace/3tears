@@ -9,8 +9,9 @@ whatever it is asked, so the loop runs as recorded for as long as the code asks 
 
 **Price ceilings replay too.** A loop admits each turn on its price ceiling, and a budget that refused a turn is an
 ending a replay must reach as the recording did. So each ceiling a recording session answered is kept against the
-turn it bounded (the session's next), the refused turn's included, and a replay answers that turn's recorded ceiling
-rather than a price of its own; a session that asks a ceiling for a turn it recorded none for is refused, naming the
+turn it bounded (the session's next), the refused turn's included, its dollars under ``ceiling`` and, for a bound
+built on rates the host does not guarantee, ``"estimate": true`` beside them; a replay answers that turn's recorded
+ceiling rather than a price of its own; a session that asks a ceiling for a turn it recorded none for is refused, naming the
 turn. A replayed reply's ``cost_usd`` is the recorded one, the historical fact of what the turn cost when it was made.
 A recording session forwards every pricing method of the port to the live client (``refresh_prices`` and
 ``turn_price_ceiling``), so a recorded run is priced exactly as an unrecorded one; a replaying session's
@@ -54,6 +55,7 @@ from typing import Any, ClassVar, Self
 from threetears.evals.schema.turns import (
     ToolResultClearing,
     ToolTurnClient,
+    TurnCeiling,
     TurnMessage,
     TurnReply,
     TurnReplyRefused,
@@ -78,6 +80,9 @@ _LINE_MEMBERS: Mapping[str, frozenset[str]] = {
     "ceiling": frozenset({"recorder_version", "recorded_at", "session", "index", "kind", "ceiling"}),
 }
 
+#: The members a kind of line may carry beside :data:`_LINE_MEMBERS`: a ceiling's ``estimate``, written only when true.
+_OPTIONAL_MEMBERS: Mapping[str, frozenset[str]] = {"ceiling": frozenset({"estimate"})}
+
 #: What a drifted replay's refusal tells its reader to do: a recording run that was cut short (interrupted, or a turn
 #: that failed) is the one case a recording is made again; any other drift is the code's.
 _DRIFT_REMEDY = (
@@ -98,7 +103,7 @@ class _SessionLines:
     """One session's lines as read: its replies' JSON in order, and the ceiling recorded for each turn that has one."""
 
     replies: list[dict[str, Any]] = field(default_factory=list)  # Any: JSON objects
-    ceilings: dict[int, float | None] = field(default_factory=dict)
+    ceilings: dict[int, TurnCeiling | None] = field(default_factory=dict)
 
 
 class RecordedTurns:
@@ -262,7 +267,7 @@ class _Book:
         messages: Sequence[TurnMessage],
         tools: Sequence[TurnToolSpec],
         max_tokens: int,
-    ) -> float | None:
+    ) -> TurnCeiling | None:
         """The session's next turn's ceiling: the one recorded for it, or the live client's, recorded."""
         index = self.served.get(name, 0)
         if self.inner is None:
@@ -276,7 +281,13 @@ class _Book:
             self.asked.setdefault(name, set()).add(index)
             return ceilings[index]
         ceiling = self.inner.turn_price_ceiling(system=system, messages=messages, tools=tools, max_tokens=max_tokens)
-        self._append(name, index, "ceiling", ceiling)
+        self._append(
+            name,
+            index,
+            "ceiling",
+            ceiling.usd if ceiling is not None else None,
+            **({"estimate": True} if ceiling is not None and ceiling.estimate else {}),
+        )
         self.sessions.setdefault(name, _SessionLines()).ceilings[index] = ceiling
         return ceiling
 
@@ -287,7 +298,7 @@ class _Book:
             return None
         return await self.inner.refresh_prices()
 
-    def _append(self, name: str, index: int, kind: str, value: object) -> None:
+    def _append(self, name: str, index: int, kind: str, value: object, **beside: object) -> None:
         line = {
             "recorder_version": RecordedTurns.FORMAT_VERSION,
             "recorded_at": datetime.now(UTC).isoformat(),
@@ -295,6 +306,7 @@ class _Book:
             "index": index,
             "kind": kind,
             kind: value,
+            **beside,
         }
         written = json.dumps(line, ensure_ascii=False, allow_nan=False)
         with _APPEND_LOCK:
@@ -342,7 +354,7 @@ class _Session:
 
     def turn_price_ceiling(
         self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int
-    ) -> float | None:
+    ) -> TurnCeiling | None:
         return self._book.ceiling(self._name, system=system, messages=messages, tools=tools, max_tokens=max_tokens)
 
     async def refresh_prices(self) -> object:
@@ -385,7 +397,13 @@ def _read_recording(path: Path) -> dict[str, _SessionLines]:
             except json.JSONDecodeError as unread:
                 raise _unreadable(path, f"line {number} is not JSON ({unread.msg})") from unread
             kind = line.get("kind") if isinstance(line, dict) else None
-            if not isinstance(kind, str) or kind not in _LINE_MEMBERS or set(line) != _LINE_MEMBERS[kind]:
+            if (
+                not isinstance(kind, str)
+                or kind not in _LINE_MEMBERS
+                or not _LINE_MEMBERS[kind]
+                <= set(line)
+                <= _LINE_MEMBERS[kind] | _OPTIONAL_MEMBERS.get(kind, frozenset())
+            ):
                 raise _unreadable(path, f"line {number} is not a line this recorder writes")
             version = line["recorder_version"]
             if version != RecordedTurns.FORMAT_VERSION:
@@ -405,7 +423,7 @@ def _read_recording(path: Path) -> dict[str, _SessionLines]:
                     f"{len(lines.replies)}",
                 )
             if kind == "ceiling":
-                lines.ceilings[index] = _read_ceiling(path, number, line["ceiling"])
+                lines.ceilings[index] = _read_ceiling(path, number, line["ceiling"], line.get("estimate", False))
                 continue
             reply = line["reply"]
             if not isinstance(reply, dict):
@@ -418,12 +436,16 @@ def _read_recording(path: Path) -> dict[str, _SessionLines]:
     return sessions
 
 
-def _read_ceiling(path: Path, number: int, value: object) -> float | None:
+def _read_ceiling(path: Path, number: int, value: object, estimate: object) -> TurnCeiling | None:
     if value is None:
+        if estimate is not False:
+            raise _unreadable(path, f"line {number} marks a ceiling it holds none of as an estimate")
         return None
     if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
         raise _unreadable(path, f"line {number}'s ceiling {value!r} is neither a finite number nor null")
-    return float(value)
+    if not isinstance(estimate, bool):
+        raise _unreadable(path, f"line {number}'s estimate {estimate!r} is not true or false")
+    return TurnCeiling(usd=float(value), estimate=estimate)
 
 
 def _unreadable(path: Path, problem: str) -> RecordingRefused:

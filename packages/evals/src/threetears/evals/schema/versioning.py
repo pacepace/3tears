@@ -352,7 +352,16 @@ CORE_SCHEMA_VERSION: int = 15
 #:   ``served_model``. Each is left out of the document when unset, so a row or an entry setting none is stored byte
 #:   for byte as before. None is in any identity, key or digest; the cost readings never read the counts.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-#: - **v15.9** — an out-of-run ledger row may ledger several calls at once, saying how many and how they were
+#: - **v15.9** — a usage row says why its dollars are unknown: ``RoleUsage.unpriced_reasons`` (default None: no reason
+#:   given, the row priced, or stored before the field existed) holds each distinct reason the pricer gave for a call
+#:   it could not price, set only beside a ``cost_usd`` of None, which stays unknown and never reads as ``$0``. Left
+#:   out of the document when unset, so a row setting none is stored byte for byte as before. A run records when its
+#:   cap was checked against estimates: ``EvalRun.cap_checked_on_estimates`` (default None: not recorded, no cap, a
+#:   bound on guaranteed rates, or stored before the field existed), True when the arm's largest call was bounded on
+#:   rates the host's pricer does not guarantee, left out of the document when unset. Neither is in any identity, key
+#:   or digest, and no cost reading reads either.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.10** — an out-of-run ledger row may ledger several calls at once, saying how many and how they were
 #:   admitted: ``OutOfRunSpend.calls`` (the calls the row stands for; default None: one call),
 #:   ``OutOfRunSpend.unpriced_calls`` and ``OutOfRunSpend.priced_usd`` (its unpriced and priced shares, set exactly
 #:   with ``calls``; ``cost_usd`` is None whenever a call is unpriced) and ``OutOfRunSpend.admitted_by`` (what
@@ -360,7 +369,7 @@ CORE_SCHEMA_VERSION: int = 15
 #:   writer wrote is one such row, every turn it sent counted. Each is left out of the document when unset, so a row
 #:   of one call is stored byte for byte as before; the ledger's readers read a row without them as one call.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 9
+CORE_SCHEMA_MINOR: int = 10
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When
@@ -447,9 +456,12 @@ the third-party quota of every corpus again.
 #:   every session the writing loop began held whole in ``generation["sessions"]``.
 #: - **v14** — the report's own version space, and sessions in their own documents: each session is stored as an
 #:   ``eval_report_session`` (one per session, keyed by its report and its name), and the generation record (format
-#:   2) names each by ``{digest, turns, ref}``, so a listing of report documents loads no session. A v13 report
-#:   document is refused on read by its version; no host stores report documents yet, so the bump drops nothing in
-#:   production.
+#:   2) names each by ``{digest, turns, ref}``, so a listing of report documents loads no session. The generation
+#:   record's tally says how each turn was admitted and why it went unpriced: every turn carries
+#:   ``admitted_on_estimate`` (its dollar budget checked it against a bound on rates the host does not guarantee, or a
+#:   catalogue row's), and every sum carries ``admitted_on_estimate`` (how many such turns) and ``unpriced_reasons``
+#:   (each distinct reason a pricer gave), which the made line reads. A v13 report document is refused on read by its
+#:   version; no host stores report documents yet, so the bump drops nothing in production.
 REPORT_DOC_SCHEMA_VERSION: int = 14
 """The version every report document and report session is written under, and the only one a read of one accepts.
 
