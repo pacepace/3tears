@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261028-7aaddf34a0e8",
+  "input": "r4",
+  "input_digest": "96d0986057f2da9a09c4bccebf74c51e8c2731a2aab3e4e833b09505ff1fd5a8",
+  "plan_digest": "41f2813470c5924f7d5d0610e0eec506a53425c60b8ddffc4607d012409ec7ce",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+    "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "The headline is a trade naming both sides and where the loss sits (character retention), and it matches both the options table's lean (f64) and the first chart's persona regression; its sign error and reversed phrasing are scored under R12 and R8.",
+      "quote": "Trade lower cost and latency for persona consistency: f64 (A) saves -$0.63 per 1,000 replies but drops 6.1 points on character retention.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The first sentence restates the headline's trade in general terms instead of giving the strongest supporting fact, and its speed claim is false because cor is slower than Production (p50 1.3s vs 1.1s).",
+      "quote": "Every candidate lowers cost and improves speed, but all regress on Stays in character.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "fail",
+      "reason": "The flag discloses the missing decision rule but never says what survives it: the measured differences and the guardrail results still hold.",
+      "quote": "Because acceptable loss on Stays in character was not defined beforehand, stakeholders must weigh the unit savings against dialogue degradation.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The first section headline says other measures stay stable across all candidates, but its forest chart shows f16 regressing on Music facts correct (-3.6) and cor regressing on Declines to speculate (-5.3).",
+      "quote": "All candidates show regressions on stays in character, while other measures remain largely stable.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results, every measure, stratum and arm appears under its reader name, and no internal id, hash, run id or measure key shows.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "The plan is in tradeoff mode, and Where the answer flips names the flip point as a per-point valuation of persona retention.",
+      "quote": "Production (P) remains preferable if persona retention is worth more than $0.103 per percentage point gained; below that valuation, f64 (A) is optimal.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure goes by many names (Stays in character, character retention, persona consistency, persona retention, character consistency), and hedges such as \"largely stable\" appear.",
+      "quote": "drops 6.1 points on character retention",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "Masthead through options table alone say what to do (lean f64), why (guardrails held at lower cost), and the main risk (persona loss in later turns).",
+      "quote": "Lean toward f64 (A): it preserves guardrails on Music facts correct and Declines to speculate while cutting monthly spend by -$7,560.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "What would settle it names a concrete experiment on long sessions; its decisive direction is clear from context, since harm to trust in later turns would favor Production.",
+      "quote": "A human evaluation of extended dialogue turns and user retention impact across long sessions would resolve whether degradation in later turns harms product trust.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence form is high and the plan has no confidence clauses, so the item passes.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "The saving renders as a negative number, so the figure does not measure the saving the sentence claims; the monthly cut repeats the error as -$7,560.",
+      "quote": "f64 (A) saves -$0.63 per 1,000 replies",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T12:00:00Z"
+}

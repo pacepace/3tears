@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261028-7aaddf34a0e8",
+  "input": "r5",
+  "input_digest": "72ed0db70b6206625e4d179b4062fc9c8f38c8b5af1b0803f12e288b4ccf4511",
+  "plan_digest": "32c5b9fdbdadd383388034c307514f96f5ccf772c7ec59236b38e1f236e1a99c",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+    "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "The headline is a decision with an instruction and a reason, it matches the options table's recommended row (September), and the first chart's negative point estimates for both candidates do not contradict it.",
+      "quote": "Keep September (P): both candidates increase production cost while regressing character adherence.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The first lede sentence restates the headline (neither candidate is better on adherence, both cost more) instead of giving the strongest supporting fact, such as qwen3.8-flash's 7.6-point drop or the cost differences.",
+      "quote": "Neither challenger improves character adherence, and both increase production replicating cost above $1.89 per 1,000 replies.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "There is no flag, the report-wide disclosures each appear once in the confidence clauses, scoped confounds appear once in Watch, and the judge-tier mention in Method is a required definition rather than a second statement.",
+      "quote": "The judge tier is undetermined with insufficient calibration; material only if comparative judge bias fails to cancel across arms.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The first section headline says both candidates fall behind September, but its forest chart shows 1017's interval running from -5.8 to +1.1, so the chart does not show 1017 behind.",
+      "quote": "Both candidates remain within margin but fall behind September (P)",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Every measure, stratum and arm above Full results uses reader words (persona holds character, off lane, production replicating cost, arm names with tags), with no run ids, hashes or measure keys.",
+      "quote": "Bars show candidate rate minus control rate on persona holds character across top strata.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin under the call (qwen3.8-flash at -10.8 against the -15 margin) and then gives the scoped reasoning-ratio confound and the harness exclusions.",
+      "quote": "Weakest margin sits on qwen3.8-flash (A) at -10.8 points against -15 points.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure carries two names above the fold: it is called \"reply cost\" here and \"production replicating cost\" in the headline, lede and the other decision slots.",
+      "quote": "1017 (B) increases reply cost to $2.41 per 1,000 replies with lower adherence",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "Read from masthead to options table alone, the page says what to do (keep September), why (both candidates cost more and lose adherence), and the main risk (qwen3.8-flash's weakest margin and the reasoning-ratio confound in Watch).",
+      "quote": "Retain September (P), which delivers the lowest production replicating cost at $1.89 per 1,000 replies and the highest pass rate at 85.3%.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Next proposes tuning reasoning budgets on September itself, which tests no candidate and could not change the keep-versus-switch call, and it states no decisive direction.",
+      "quote": "Run an eval sweeping reasoning budget constraints directly against September (P) to measure whether constrained generation preserves adherence while controlling cost.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "Each confidence clause names a condition under which its caveat would matter to the call: the aspect misrepresenting deployment priorities, another variant being the real baseline, or judge bias differing across arms.",
+      "quote": "The control assignment was designated on 25 Oct 2026; material only if another variant reflects baseline production.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Each figure measures what its sentence claims: arm costs are labeled as that arm's cost, the 7.6-point drop and its interval are qwen3.8-flash's reading, 85.3% is September's pass rate, and the reasoning ratios belong to the named arms.",
+      "quote": "qwen3.8-flash (A) costs $2.43 per 1,000 replies and drops pass rate by 7.6 points (-10.8 to -3.4)",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T18:00:00Z"
+}

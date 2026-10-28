@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261028-7aaddf34a0e8",
+  "input": "r2",
+  "input_digest": "3b825233f6120f9deb81f63c4a9c2849c6ba2d388a1db0be780cbe5395add19d",
+  "plan_digest": "9cf851dfd61a7e504ee51c90a69a100bf4d29a3149dc19af6725f2d6f63306fb",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+    "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "The headline is a decision with an instruction and a reason, matches headline_kind, names the table's recommended arm, and agrees with the gate scatter, where J is the only arm inside both gates.",
+      "quote": "Adopt Brisk-S · reasoning low · 1 retry (J): it meets both gates at $0.302 per 1,000 calls.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "The lede has two sentences: first the strongest fact (J is the only arm clearing both gates), then what would change the answer (a latency budget relaxed to L's 870 ms).",
+      "quote": "Relaxing Latency budget (p95) above 870 ms would unlock higher accuracy on Brisk-S · reasoning high · 1 retry (L).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "There is no flag and no report-wide disclosure is due in decide mode, and no caveat is stated twice outside Method's required entries.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The third section's headline claims errors cluster in three classes, but its chart is four example cards showing one failure each (including a malformed call from another arm), which cannot show a cluster.",
+      "quote": "Errors cluster in query planning, argument bounds, and tool selection",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Every arm, measure, criterion and task above Full results appears under its reader name, and no internal id, hash, run id or measure key is shown.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin under the call (J's Pass rate at 0.1 points over the 97% gate, much thinner than its 87 ms latency headroom), then a scoped risk in multi-hop slices.",
+      "quote": "Brisk-S · reasoning low · 1 retry (J) achieves 97.1% against Pass rate at 97%, a clearance margin of +0.1 points.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure goes by several names ('tail latency', 'Latency budget (p95)', 'tail Latency budget (p95)', 'p95 latency ceiling'), with the gate's label used as if it were the measured value.",
+      "quote": "while keeping tail Latency budget (p95) under 600 ms",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The first screen alone says what to do (adopt J), why (the only arm meeting both gates, at $0.302), and the main risk (a 0.1-point Pass rate margin in Watch).",
+      "quote": "Adopt Brisk-S · reasoning low · 1 retry (J): it meets both gates at $0.302 per 1,000 calls.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "Next names a concrete canary whose result could overturn the call: if production p95 exceeds 600 ms at peak, J fails its gate, and that direction is stated.",
+      "quote": "Run an online canary test for Brisk-S · reasoning low · 1 retry (J) to verify production tail latencies stay below 600 ms under peak concurrency.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence is given as high with no clauses, so the item passes by rule.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Each figure is the named arm's own value as the sentence claims (97.14% Pass rate, 513 ms p95, $0.302 cost, 870 and 2551 ms p95, 81.04%, a 0.14-point margin), and none is presented as a difference it does not measure.",
+      "quote": "It achieves 97.1% Pass rate and 513 ms tail latency at $0.302 per 1,000 calls.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-26T10:00:00Z"
+}
