@@ -22,6 +22,8 @@ import math
 import random
 from dataclasses import replace
 
+from typing import Any
+
 import pytest
 
 from threetears.evals.analysis.stats import (
@@ -348,3 +350,61 @@ class TestThePlanningReadIsHeldToTheReadBudget:
             "result_budget": 25,
             "results_returned": 26,
         }
+
+
+class TestALaunchEstimatePastTheBudgetIsPricedAndSaysWhyItCannotPlan:
+    """The price does not depend on the planning block, so a planning read past the budget is the block's disclosure,
+    never a refusal of the estimate: the toy template's earlier runs hold 24 results by their matrices."""
+
+    def _fixture(self) -> tuple[BatchRecordingStore, Any, LaunchArguments]:
+        store = BatchRecordingStore()
+        fixture = ops_fixture(store=store)
+        by_case = {f"case-{index}": [1.0 + index, 1.5 + index] for index in range(6)}
+        _store_history(
+            fixture.host.eval_host.storage,
+            {"m-0": by_case, "m-9": by_case},
+            template_id=toyhost_template().id,
+            scope=TOYHOST_SCOPE,
+        )
+        arguments = LaunchArguments(
+            template_id=toyhost_template().id, subject_id=TOYHOST_SUBJECT.subject_id, models=["m-1", "m-2"], k_runs=2
+        )
+        return store, fixture, arguments
+
+    def test_over_the_budget_it_is_priced_and_its_planning_block_says_why_reading_no_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store, fixture, arguments = self._fixture()
+        corpus = sum(
+            len(run.test_case_ids) * run.k_runs
+            for run in fixture.host.eval_host.storage.query_eval_runs(TOYHOST_SCOPE)
+            if run.template_id == toyhost_template().id and not run.archived
+        )
+        within = asyncio.run(launch_estimate(fixture.host, arguments, TOYHOST_SCOPE))
+        assert within.detectable_effect is not None and within.detectable_effect.run_ids, "it plans within the budget"
+        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", corpus - 1)
+        store.clear()
+
+        estimate = asyncio.run(launch_estimate(fixture.host, arguments, TOYHOST_SCOPE))
+
+        assert estimate.arms and estimate.arms == within.arms, "priced as within the budget"
+        assert estimate.total_predicted_usd == within.total_predicted_usd
+        assert estimate.would_launch == within.would_launch
+        block = estimate.detectable_effect
+        assert block is not None and block.effects == [] and block.run_ids == []
+        assert block.cannot_estimate is not None
+        assert f"hold about {corpus} results by their matrices, past the read tier's budget of {corpus - 1}" in (
+            block.cannot_estimate
+        )
+        assert "archive the template's earlier runs the plan need not read" in block.cannot_estimate
+        assert f"- cannot estimate: {block.cannot_estimate}" in estimate_text(estimate)
+        assert store.row_reads() == [], "no result of the template's earlier runs was read"
+
+    def test_a_direct_call_still_refuses(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _, fixture, _ = self._fixture()
+        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 1)
+
+        with pytest.raises(ValidationFailedError, match="detectable_effects would aggregate about"):
+            detectable_effects(
+                fixture.host.eval_host, TOYHOST_SCOPE, toyhost_template().id, n_cases=6, k_runs=2, n_arms=2
+            )

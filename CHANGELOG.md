@@ -191,7 +191,10 @@ memory and reply size, is #996.
 `detectable_effects`, the planning block a launch estimate (`launch_estimate`, the `launch_estimate` action) carries,
 read every earlier run of its template whole: it now estimates them off the run listing it already reads and refuses
 past the budget before reading a result, naming archiving the template's earlier runs it need not read (it leaves
-archived runs out), or a template with fewer; the refusal refuses the estimate with it, price included. A regression
+archived runs out), or a template with fewer. A launch estimate is not refused with it: the price does not depend on
+the block, so past the budget the block reads nothing and says why in its `cannot_estimate` (the budget, what the
+runs hold, and the same remedy), and the arms' prices, the total and the verdict are returned as within it.
+`detectable_effects` called on its own still refuses. A regression
 watch's judged tiers, read over the run's subject when its history read that subject alone, are held to the budget off
 the run listing they already read (the history it reads first refuses on the same runs and estimate, so this is the
 same bound held where the read is made); the watch's hook logs it at ERROR as it logs the history's refusal. Each
