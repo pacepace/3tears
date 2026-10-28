@@ -31,6 +31,7 @@ from threetears.agent.acl import (
     Group,
     GroupMembership,
     LimitingSide,
+    MAX_GROUP_MEMBERSHIP_DEPTH,
     MemberType,
     Namespace,
     Role,
@@ -44,7 +45,7 @@ from threetears.agent.acl.cache import ActorMembershipKey
 
 from threetears.core.namespaces import build_agent_namespace_name
 
-from .fake_loaders import FakeStore, make_cache
+from .fake_loaders import FakeBatchingStore, FakeStore, make_cache
 
 
 # ---------------------------------------------------------------------------
@@ -1500,6 +1501,32 @@ class TestOwnershipIsANamespace:
             assert await _owner_short_circuits(namespace, uuid4()) is False
 
 
+def _granted_chain(groups: int) -> tuple[FakeStore, Namespace, list[Group]]:
+    """a chain of ``groups`` groups, each a member of the next, the read grant on the last only.
+
+    :param groups: how many groups the chain holds
+    :ptype groups: int
+    :return: the store, the granted namespace, and the chain from the bottom group up
+    :rtype: tuple[FakeStore, Namespace, list[Group]]
+    """
+    customer = uuid4()
+    namespace = _ns(customer_id=customer, owner_agent_id=None)
+    reader = _role(name="Reader", permissions={"workspace": ["read"]})
+    chain = [_group(name=f"g{level}", customer_id=customer) for level in range(1, groups + 1)]
+    store = FakeStore()
+    store.add_role(reader)
+    for group in chain:
+        store.add_group(group)
+    for child, parent in zip(chain, chain[1:], strict=False):
+        store.add_membership(
+            GroupMembership(group_id=parent.id, member_type=MemberType.GROUP, member_id=child.id, customer_id=customer)
+        )
+    store.add_assignment(
+        _assignment(role=reader, group=chain[-1], scope_type=ScopeType.NAMESPACE, scope_namespace_id=namespace.id)
+    )
+    return store, namespace, chain
+
+
 class TestGroupInGroupMembership:
     """a group may be a member of a group, resolved at read, depth-capped.
 
@@ -1536,40 +1563,44 @@ class TestGroupInGroupMembership:
         result = await evaluate_with_trail(ctx, cache=make_cache(store))
         assert result.decision is True
 
-    async def test_the_depth_cap_stops_the_walk(self) -> None:
-        """user -> A -> B -> C with the grant on C only: beyond depth 2, denied."""
-        customer = uuid4()
+    @pytest.mark.parametrize(
+        ("groups", "reached"),
+        [
+            pytest.param(MAX_GROUP_MEMBERSHIP_DEPTH, True, id="a-chain-at-the-cap-resolves"),
+            pytest.param(MAX_GROUP_MEMBERSHIP_DEPTH + 1, False, id="one-group-past-the-cap-is-denied"),
+        ],
+    )
+    async def test_the_depth_cap_stops_the_walk(self, groups: int, reached: bool) -> None:
+        """user -> g1 -> ... -> gN with the grant on gN only: resolved up to the cap, denied past it."""
         user = uuid4()
-        namespace = _ns(customer_id=customer, owner_agent_id=None)
-
-        reader = _role(name="Reader", permissions={"workspace": ["read"]})
-        group_a = _group(name="A", customer_id=customer)
-        group_b = _group(name="B", customer_id=customer)
-        group_c = _group(name="C", customer_id=customer)
-        store = FakeStore()
-        store.add_role(reader)
-        for g in (group_a, group_b, group_c):
-            store.add_group(g)
-        store.add_membership(
-            GroupMembership(group_id=group_a.id, member_type=MemberType.USER, member_id=user, customer_id=customer)
-        )
+        store, namespace, chain = _granted_chain(groups)
         store.add_membership(
             GroupMembership(
-                group_id=group_b.id, member_type=MemberType.GROUP, member_id=group_a.id, customer_id=customer
+                group_id=chain[0].id, member_type=MemberType.USER, member_id=user, customer_id=namespace.customer_id
             )
-        )
-        store.add_membership(
-            GroupMembership(
-                group_id=group_c.id, member_type=MemberType.GROUP, member_id=group_b.id, customer_id=customer
-            )
-        )
-        store.add_assignment(
-            _assignment(role=reader, group=group_c, scope_type=ScopeType.NAMESPACE, scope_namespace_id=namespace.id)
         )
 
         ctx = EvaluationContext(namespace=namespace, action="read", user_id=user)
         result = await evaluate_with_trail(ctx, cache=make_cache(store))
-        assert result.decision is False
+        assert result.decision is reached
+
+    @pytest.mark.parametrize("groups", range(1, MAX_GROUP_MEMBERSHIP_DEPTH + 2))
+    async def test_the_batched_walk_answers_as_the_per_group_walk_does(self, groups: int) -> None:
+        """a loader that reads a level at once reaches exactly the groups a per-group loader reaches."""
+        user = uuid4()
+        plain, namespace, chain = _granted_chain(groups)
+        plain.add_membership(
+            GroupMembership(
+                group_id=chain[0].id, member_type=MemberType.USER, member_id=user, customer_id=namespace.customer_id
+            )
+        )
+        batching = FakeBatchingStore(
+            memberships=plain.memberships, groups=plain.groups, roles=plain.roles, assignments=plain.assignments
+        )
+        ctx = EvaluationContext(namespace=namespace, action="read", user_id=user)
+        per_group = await evaluate_with_trail(ctx, cache=make_cache(plain))
+        batched = await evaluate_with_trail(ctx, cache=make_cache(batching))
+        assert batched.decision is per_group.decision is (groups <= MAX_GROUP_MEMBERSHIP_DEPTH)
 
     async def test_a_parent_group_of_another_customer_does_not_leak(self) -> None:
         """the customer wall applies to the walked edge exactly as to a direct one."""
@@ -1733,33 +1764,15 @@ class TestAGroupMemberEvaluation:
         assert result.effective_actions == frozenset({"read", "write"})
 
     async def test_the_depth_cap_stops_the_walk_where_it_stops_a_user(self) -> None:
-        """a member of A reaches A and B; C is one hop further than a user would get."""
-        customer = uuid4()
-        namespace = _ns(customer_id=customer, owner_agent_id=None)
-        reader = _role(name="Reader", permissions={"workspace": ["read"]})
-        group_a = _group(name="A", customer_id=customer)
-        group_b = _group(name="B", customer_id=customer)
-        group_c = _group(name="C", customer_id=customer)
-        store = FakeStore()
-        store.add_role(reader)
-        for g in (group_a, group_b, group_c):
-            store.add_group(g)
-        for parent, child in ((group_b, group_a), (group_c, group_b)):
-            store.add_membership(
-                GroupMembership(
-                    group_id=parent.id, member_type=MemberType.GROUP, member_id=child.id, customer_id=customer
-                )
-            )
-        store.add_assignment(
-            _assignment(role=reader, group=group_c, scope_type=ScopeType.NAMESPACE, scope_namespace_id=namespace.id)
-        )
+        """a member of the bottom group is one hop past the cap; a member of the next group is at it."""
+        store, namespace, chain = _granted_chain(MAX_GROUP_MEMBERSHIP_DEPTH + 1)
         cache = make_cache(store)
 
-        of_a = EvaluationContext(namespace=namespace, action="read", group_id=group_a.id)
-        of_b = EvaluationContext(namespace=namespace, action="read", group_id=group_b.id)
+        of_bottom = EvaluationContext(namespace=namespace, action="read", group_id=chain[0].id)
+        of_next = EvaluationContext(namespace=namespace, action="read", group_id=chain[1].id)
 
-        assert (await evaluate_with_trail(of_a, cache=cache)).decision is False
-        assert (await evaluate_with_trail(of_b, cache=cache)).decision is True
+        assert (await evaluate_with_trail(of_bottom, cache=cache)).decision is False
+        assert (await evaluate_with_trail(of_next, cache=cache)).decision is True
 
     @pytest.mark.parametrize(
         "wall",

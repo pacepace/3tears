@@ -21,6 +21,29 @@ as does an id its printed name differs from only in case (`open-70b`, "Open-70B"
 hyphenated word ("cost-per-reply"), which is no arm's id. A plan refusal names the printed name and the `{arm:<id>}`
 key; a document verdict names the printed name, as before.
 
+### agent-acl: the visibility SQL's group nesting follows MAX_GROUP_MEMBERSHIP_DEPTH, and each level of the walk is one read
+
+**Changed:** `caller_visible_customer_clause` and `caller_visible_customers_query` generate their
+group nesting from `MAX_GROUP_MEMBERSHIP_DEPTH` (one nested `EXISTS` per group edge) instead of a
+hand-written single hop, so the SQL and the evaluator cannot disagree about depth. At depth 2 the
+generated SQL is the same predicate as before, with the same plan.
+
+**Added:** the depth is configuration. `THREETEARS_ACL_MAX_GROUP_MEMBERSHIP_DEPTH` (default 2,
+1 to `MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH` = 4) is read once at import into
+`MAX_GROUP_MEMBERSHIP_DEPTH`, which the evaluator's walk, the cycle check and the generated SQL all
+read; an invalid value raises at import rather than falling back. `resolve_max_group_membership_depth`,
+`MAX_GROUP_MEMBERSHIP_DEPTH_ENV` and `DEFAULT_MAX_GROUP_MEMBERSHIP_DEPTH` are exported. Every process
+that evaluates must be given the same value. Raising it costs real time on YugabyteDB: at 3 the
+hub's namespace discovery went from ~260 ms to ~820 ms p50 on a 10x dataset.
+
+**Added:** `threetears.agent.acl.ParentGroupsLoader`, an optional protocol beside `MembershipLoader`
+(the `HeldAssignmentsLoader` shape): `load_for_groups(group_ids)` returns every membership naming any
+of them as a group member. The evaluator reads each level of the parent walk's uncached groups in one
+call when the membership loader has it, so the reads a cold walk costs grow with its depth, not with
+how many groups a level reaches. `CollectionMembershipLoader` has it, over the new
+`GroupMemberCollection.load_for_groups`; a loader without it is still asked per group, with the same
+answers.
+
 ### evals: an aggregate refuses a scope past the read budget instead of reading it whole
 
 **Changed:** the aggregating lenses read their scope's results into Python, and an aggregate cannot be paged as `scope_export` is since v0.80.0

@@ -38,6 +38,7 @@ __all__ = [
     "GrantLoader",
     "HeldAssignmentsLoader",
     "MembershipLoader",
+    "ParentGroupsLoader",
 ]
 
 
@@ -169,6 +170,30 @@ class GrantLoader(Protocol):
         :return: mapping group_id -> object exposing the
             :class:`Group` shape
         :rtype: dict[UUID, object]
+        """
+
+
+@runtime_checkable
+class ParentGroupsLoader(Protocol):
+    """a :class:`MembershipLoader` that can also answer "the parent groups of all these groups".
+
+    optional. the evaluator's parent walk asks it once per level for every group that level
+    reached and the cache did not hold, so a level of fifty groups costs one read rather than
+    fifty. a membership loader without it is asked per group through
+    :meth:`MembershipLoader.load_for_group`, and the answers are the same.
+    """
+
+    async def load_for_groups(self, group_ids: tuple[UUID, ...]) -> tuple[GroupMembership, ...]:
+        """return every membership row naming any of ``group_ids`` as a GROUP member.
+
+        the union of :meth:`MembershipLoader.load_for_group` over ``group_ids``. may NOT
+        under-return: a parent edge missing here is a grant the walk never reaches, and the
+        evaluator caches each group's share of the answer as that group's whole parent set.
+
+        :param group_ids: child group UUIDs to resolve
+        :ptype group_ids: tuple[UUID, ...]
+        :return: every membership naming one of them as a group member
+        :rtype: tuple[GroupMembership, ...]
         """
 
 
