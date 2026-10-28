@@ -35,7 +35,10 @@ the ending and why, whether it was stored, the rounds, the tally's sums; ``test_
 every recording that has one), ``outcome.json`` (the ending, why, a refusal's faults, the reviews), ``generation.json``
 (the tally, the reviews and every session, the analyst's and each review round's) and, for a stored report,
 ``doc.json``, ``record.json``, ``page.html`` and ``page.md``. A recording is made once: an ``--out`` that holds one
-is refused, as is a run with no key, each saying what to do instead. A paid run is never made from a test.
+is refused, as is a run with no key, and a model whose turns cannot be bounded before they are sent, each saying what
+to do instead, before anything is sent or written. The model is priced by the default pricer, Anthropic's published
+rates as the package ships them (``providers.AnthropicPublishedRates``), so a model they list reads no OpenRouter
+catalogue. A paid run is never made from a test.
 
 The exit status is 0 for a call that succeeded, 1 for one the tool refused (the MCP error flag), 2 for a usage error.
 Every call is deterministic: one scope, one caller and one freeze instant, so a snapshot's id and every figure are the
@@ -307,8 +310,18 @@ def _write(argv: Sequence[str]) -> int:
             file=sys.stderr,
         )
         return 2
-    out.mkdir(parents=True, exist_ok=True)
     model = Model(options.model, provider="anthropic", api_key=key, effort=options.effort, turn_recording=recording)
+    # Built with no pricer and no catalogue, the model is priced by the default pricer, Anthropic's published rates
+    # as the package ships them: a model they list is bounded with no OpenRouter fetch. write_report refuses a model
+    # whose turns cannot be bounded too; refused here, nothing is written under --out either.
+    try:
+        unpriced = asyncio.run(model.turn_pricing_refusal())
+    except ValueError as refused:  # the model sends no turn at all (its route or settings): said as it words it
+        unpriced = str(refused)
+    if unpriced is not None:
+        print(f"analyst_cli.py write: not started, and nothing was frozen, sent or spent: {unpriced}", file=sys.stderr)
+        return 2
+    out.mkdir(parents=True, exist_ok=True)
     refused: ReportNotStored | None = None
     try:
         written = asyncio.run(

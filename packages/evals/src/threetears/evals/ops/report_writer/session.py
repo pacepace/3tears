@@ -50,7 +50,6 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal, Protocol
 
 from threetears.evals.analysis.analyst.skill import SkillText
-from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.numbers import group_thousands
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally, TurnCost, WriterRole
 from threetears.evals.schema.hashing import canonical_digest
@@ -368,7 +367,8 @@ class ToolSession:
             raise ValueError("open a round (open_round) before sending: a round's call budget holds every turn")
         self._append_user(list((TurnText(content),) if isinstance(content, str) else content))
         while True:
-            await refresh_prices(self._client)
+            # The port declares it, so no wrapper can drop it: a turn is never priced from prices never read.
+            await self._client.refresh_prices()
             ceiling = self._client.turn_price_ceiling(
                 system=self._system, messages=self._messages, tools=self.tools, max_tokens=self.limits.max_tokens
             )

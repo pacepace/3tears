@@ -23,6 +23,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots, shape_snapshots
@@ -180,6 +181,35 @@ def test_write_into_a_recording_already_made_is_refused_whatever_the_key(
     assert (tmp_path / "turns.jsonl").read_text() == ""
 
 
+def test_write_with_a_model_it_cannot_price_is_refused_before_anything_is_written(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The command line's own Model, as it builds it: the host's key, no pricer, no catalogue, so the default pricer.
+    # The shipped rates do not list the model, so the catalogue the default leaves it to is asked; it is served
+    # offline, down, so nothing reaches a network.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "a-key-never-sent")
+    real = httpx.AsyncClient
+
+    def offline(**options: Any) -> httpx.AsyncClient:
+        options.pop("transport", None)
+        return real(transport=httpx.MockTransport(lambda _: httpx.Response(503, text="unavailable")), **options)
+
+    monkeypatch.setattr(httpx, "AsyncClient", offline)
+    out = tmp_path / "run"
+    argv = _write_argv(out)
+    argv[argv.index("--model") + 1] = "unlisted-model-9"
+
+    assert main(argv) == 2
+
+    said = capsys.readouterr().err
+    assert said.startswith(
+        "analyst_cli.py write: not started, and nothing was frozen, sent or spent: no turn on 'unlisted-model-9' can be "
+        "bounded before it is sent: the default pricer answers no rates for it"
+    )
+    assert "do not list 'unlisted-model-9'" in said and "hand the model a pricer" in said
+    assert not out.exists(), "nothing is written under --out"
+
+
 class ScriptedModel:
     """Stands in for ``providers.Model`` in the command line: its turns are scripted, recorded through the recorder."""
 
@@ -193,6 +223,9 @@ class ScriptedModel:
         )
         self.model_name = id
         self._turns = RecordedTurns.record(script, turn_recording)
+
+    async def turn_pricing_refusal(self) -> str | None:
+        return None
 
     def turn_session(self, name: str, *, snapshot: str) -> ToolTurnClient:
         return self._turns.turn_session(name, snapshot=snapshot)
