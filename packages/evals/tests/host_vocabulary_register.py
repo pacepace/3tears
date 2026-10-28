@@ -94,6 +94,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "ops/report_writer/loop.py": {},
     "ops/report_writer/session.py": {},
     "ops/report_writer/tally.py": {},
+    "ops/report_writer/write.py": {},
     "quick/guardrails.py": {},
     "quick/measures.py": {},
     "run/case_sets.py": {},

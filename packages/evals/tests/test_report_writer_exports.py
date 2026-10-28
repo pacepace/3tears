@@ -28,7 +28,7 @@ _SOURCES = sorted([*_REPO.glob("packages/*/src"), *_REPO.glob("packages/agent/*/
 #: Per module, the public names it defines and leaves out of its ``__all__`` until a production caller imports them.
 _AWAITING_A_CALLER: dict[ModuleType, frozenset[str]] = {
     analyst: frozenset({"InvariantVerdict"}),
-    report_writing: frozenset({"ReportNotStored", "ReportWritten", "write_report"}),
+    report_writing: frozenset({"write_report"}),
 }
 
 

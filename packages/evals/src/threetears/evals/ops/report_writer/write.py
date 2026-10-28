@@ -1,0 +1,222 @@
+"""Writing a report: from a campaign, an analysis or a frozen snapshot to a stored report document.
+
+:func:`report_write` freezes the evidence first (``report_snapshot_freeze``), unless it is handed a snapshot already
+frozen, so neither tool it is handed writes: the ``evals_analyst`` tool on the analyst's cut and on the editor's, each
+bound to its host and caller by the action that calls this (``actions/report_writing.py``'s ``write_report``). It
+reads the snapshot's report input, loads the skill and runs the writing loop
+(:func:`~threetears.evals.ops.report_writer.loop.write_rounds`), whose submissions are checked by the one checker
+(:func:`~threetears.evals.analysis.report_doc_store.doc_verdicts`). It stores what the loop's ending stores through the
+store gate (:func:`~threetears.evals.analysis.report_doc_store.store_report_doc`), which checks it again, and builds
+the stored page with its made line (:func:`~threetears.evals.analysis.report_doc_store.made_line`).
+
+**A paid run never loses its record.** The generation record (the tally, the reviews, every session) is on the result
+whatever the ending, and on :class:`ReportNotStored` when the store gate or the store refuses the document.
+
+**Keys.** The caller passes the model (plan §4.6): a host builds ``Model(id, provider="anthropic", api_key=...)``
+from the key it holds. Nothing here reads an environment variable.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Collection
+from dataclasses import dataclass, replace
+from typing import Any, Literal
+
+from threetears.evals.analysis.analyst.skill import load_skill
+from threetears.evals.analysis.report.doc_page.build import build
+from threetears.evals.analysis.report.doc_page.model import DocPage
+from threetears.evals.analysis.report_doc_checks import DocVerdict
+from threetears.evals.analysis.report_doc_store import doc_verdicts, generation_record, made_line, store_report_doc
+from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.report_doc import EvalReportDoc, ReportDoc
+from threetears.evals.ops.analyst import report_snapshot_freeze, snapshot_input
+from threetears.evals.ops.host import OpsHost
+from threetears.evals.ops.report_writer.analyst import InvariantCheck
+from threetears.evals.ops.report_writer.loop import TurnModel, WriterEnding, WriterLimits, WritingOutcome, write_rounds
+from threetears.evals.ops.report_writer.session import ToolMount
+from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
+
+#: The names the report writer's entry point (``actions/report_writing.py``) calls and returns.
+__all__ = ["ReportNotStored", "ReportWritten", "report_write"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReportWritten:
+    """What writing a report came to.
+
+    :ivar ending: How the writing loop ended (plan §4.4).
+    :ivar snapshot_id: The snapshot it was written from.
+    :ivar stored: The stored document; ``None`` for an ending that stores nothing.
+    :ivar outcome: The loop's outcome: the reviews, the rounds, a refusal's faults, why it ended.
+    :ivar generation: The generation record (the tally, the reviews, every session), kept whatever the ending.
+    :ivar page: The stored document's page as a reader reads it, built strict with its open findings in Method and
+        its made line (:func:`~threetears.evals.analysis.report_doc_store.made_line`); ``None`` when nothing is stored.
+    """
+
+    ending: WriterEnding
+    snapshot_id: str
+    stored: EvalReportDoc | None
+    outcome: WritingOutcome
+    generation: dict[str, Any]  # Any: a JSON object
+    page: DocPage | None
+
+
+class ReportNotStored(Exception):
+    """A report the writing loop ended with a document to store, and the store gate or the store refused.
+
+    The run was paid for, so its record rides on the refusal: :attr:`written` is what :func:`report_write` would have
+    returned, with nothing stored. The cause is the exception this one was raised from.
+
+    :ivar written: The run's outcome and generation record, ``stored`` and ``page`` ``None``.
+    """
+
+    def __init__(self, message: str, *, written: ReportWritten) -> None:
+        """Say why the report was not stored, and carry the run's record.
+
+        :param message: What failed.
+        :ptype message: str
+        :param written: The run's outcome and generation record.
+        :ptype written: ReportWritten
+        """
+        super().__init__(message)
+        self.written = written
+
+
+def _checker(report_input: ReportInput) -> InvariantCheck:
+    """The analyst's checker on the snapshot: the one checker, the store gate's."""
+
+    def check(doc: ReportDoc) -> list[DocVerdict]:
+        return doc_verdicts(doc, report_input)
+
+    return check
+
+
+def _stored_as(ending: WriterEnding) -> Literal["stored", "stored_with_findings", "over_budget"] | None:
+    """The ending a stored document records, for an ending that stores one; ``None`` for one that stores nothing."""
+    if ending == "stored" or ending == "stored_with_findings" or ending == "over_budget":
+        return ending
+    return None
+
+
+async def report_write(
+    host: OpsHost,
+    scope_id: str,
+    *,
+    created_by: str,
+    model: TurnModel,
+    budget: ReportBudget,
+    analyst_mount: ToolMount,
+    editor_mount: ToolMount,
+    snapshot_id: str | None = None,
+    campaign_id: str | None = None,
+    analysis_id: str | None = None,
+    withhold: Collection[str] = (),
+    limits: WriterLimits | None = None,
+) -> ReportWritten:
+    """Write a report over one frozen snapshot, and store what its ending stores (the module docstring).
+
+    :param host: The host whose store holds the evidence, the snapshot and the report.
+    :ptype host: OpsHost
+    :param scope_id: The scope the report is written in.
+    :ptype scope_id: str
+    :param created_by: Who asks for the report, as the host names the caller.
+    :ptype created_by: str
+    :param model: The model every session runs on (``Model(id, provider="anthropic", api_key=...)``).
+    :ptype model: TurnModel
+    :param budget: The report's dollar budget, which admits every turn.
+    :ptype budget: ReportBudget
+    :param analyst_mount: The ``evals_analyst`` tool on the analyst's cut, read-only, bound to the host and caller.
+    :ptype analyst_mount: ToolMount
+    :param editor_mount: The tool on the editor's cut, bound the same way.
+    :ptype editor_mount: ToolMount
+    :param snapshot_id: A snapshot already frozen; exactly one of it, ``campaign_id`` and ``analysis_id``.
+    :ptype snapshot_id: str | None
+    :param campaign_id: A campaign to freeze and write the report on.
+    :ptype campaign_id: str | None
+    :param analysis_id: A stored analysis to freeze and write the report on.
+    :ptype analysis_id: str | None
+    :param withhold: Exemplar notes, by file name, the analyst is not given (a blind run's own campaign's note).
+    :ptype withhold: Collection[str]
+    :param limits: What the loop is held to; plan §4.3's defaults when ``None``.
+    :ptype limits: WriterLimits | None
+    :return: How it ended, the stored document if any, and the generation record.
+    :rtype: ReportWritten
+    :raises ValueError: Not exactly one of the sources named.
+    :raises ReportNotStored: The loop ended with a document to store, and the store gate or the store refused it;
+        the run's record rides on it (:attr:`ReportNotStored.written`), raised from the cause.
+    :raises EvalServiceError: The freeze or the snapshot's read refused (no such campaign, analysis or snapshot).
+    """
+    named = [
+        name
+        for name, given in (("snapshot_id", snapshot_id), ("campaign_id", campaign_id), ("analysis_id", analysis_id))
+        if given is not None
+    ]
+    if len(named) != 1:
+        raise ValueError(
+            f"a report is written from one source: name a snapshot_id, a campaign_id or an analysis_id, not {named or 'none'}"
+        )
+    if snapshot_id is None:
+        frozen = await report_snapshot_freeze(
+            host, scope_id, campaign_id=campaign_id, analysis_id=analysis_id, created_by=created_by
+        )
+        snapshot_id = frozen.snapshot_id
+    report_input = await snapshot_input(host, scope_id, snapshot_id)
+    eval_host = host.eval_host
+    snapshot = await run_blocking(
+        eval_host.blocking_executor, eval_host.storage.load_report_snapshot, snapshot_id, scope_id
+    )
+    skill = load_skill()
+    analyst_skill, editor_skill = skill.analyst(withhold=withhold), skill.editor()
+    tally = Tally()
+    outcome = await write_rounds(
+        model=model,
+        snapshot=snapshot_id,
+        report_input=report_input,
+        analyst_mount=analyst_mount,
+        editor_mount=editor_mount,
+        analyst_skill=analyst_skill,
+        editor_skill=editor_skill,
+        check=_checker(report_input),
+        tally=tally,
+        budget=budget,
+        limits=limits,
+    )
+    generation = generation_record(
+        model=model.model_name,
+        tally=tally.to_json(),
+        skill={"analyst": analyst_skill.digest, "editor": editor_skill.digest, "package": skill.digest},
+        reviews=[review.to_json() for review in outcome.reviews],
+        sessions=outcome.sessions,
+    )
+    unstored = ReportWritten(
+        ending=outcome.ending, snapshot_id=snapshot_id, stored=None, outcome=outcome, generation=generation, page=None
+    )
+    ending = _stored_as(outcome.ending)
+    if outcome.doc is None or ending is None:
+        return unstored
+    try:
+        stored = await run_blocking(
+            eval_host.blocking_executor,
+            store_report_doc,
+            eval_host.storage,
+            scope_id=scope_id,
+            snapshot_id=snapshot_id,
+            campaign_id=snapshot.campaign_id if snapshot is not None else None,
+            doc=outcome.doc,
+            report_input=report_input,
+            ending=ending,
+            findings=outcome.findings,
+            generation=generation,
+            created_by=created_by,
+        )
+    except Exception as exc:
+        # Re-raised with the run's record on it: every turn was paid for, so the tally, the reviews and the sessions
+        # reach the caller beside the failure, never instead of it.
+        raise ReportNotStored(
+            f"the report ended {outcome.ending} and was not stored ({type(exc).__name__}: {exc}); its generation "
+            "record (tally, reviews, sessions) is this error's .written",
+            written=unstored,
+        ) from exc
+    page = build(outcome.doc, report_input, strict=True, findings=outcome.findings, made=made_line(stored))
+    return replace(unstored, stored=stored, page=page)

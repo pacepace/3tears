@@ -41,8 +41,11 @@ re-derivable, so a stored session drops result bodies it can read again. The cal
 provider="anthropic", api_key=...)`); nothing reads an environment variable. It returns `ReportWritten`: the ending,
 the stored `EvalReportDoc`, the loop's outcome, the generation record and the stored page built strict. A paid run
 never loses its record: when the store gate or the store refuses the document, `ReportNotStored` is raised from the
-cause, carrying that `ReportWritten` (tally, reviews, sessions) with nothing stored. Its names stay out of `__all__`
-until the analysis job (W4) calls them (`tests/test_report_writer_exports.py`).
+cause, carrying that `ReportWritten` (tally, reviews, sessions) with nothing stored. `write_report` only mounts the
+tools and calls the operation, `ops.report_writer.write.report_write(host, scope_id, *, created_by, model, budget,
+analyst_mount, editor_mount, ...)`, which does the freezing, the writing and the storing (actions reach analysis only
+through ops), and which defines `ReportWritten` and `ReportNotStored`; `actions.report_writing` names both too.
+`write_report` stays out of `__all__` until the analysis job (W4) calls it (`tests/test_report_writer_exports.py`).
 
 - `ops.report_writer.editor`: `review_report` runs one review in a fresh session whose system text is `editor.md`.
   Its one user message is the page as a reader sees it (`doc_page_text` over a strict `build`), the document's
