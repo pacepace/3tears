@@ -1222,16 +1222,16 @@ async def analysis_generate(
                             "catalogue, give the model a pricer, or name a model it prices)"
                         ),
                     )
-                return _Prepared(
-                    client=client, model=turn_model, budget=report_budget(), limits=generation.limits
-                )
+                return _Prepared(client=client, model=turn_model, budget=report_budget(), limits=generation.limits)
         except BaseException as stopped:
             if client is not None:
                 await _release(client)
             if isinstance(stopped, JobFenced):
                 raise
             if isinstance(stopped, asyncio.CancelledError):
-                await end_unrun("cancelled before any call, while the generation was being prepared", outcome="cancelled")
+                await end_unrun(
+                    "cancelled before any call, while the generation was being prepared", outcome="cancelled"
+                )
                 raise
             if isinstance(stopped, EvalJobTimeout):
                 await end_unrun(f"preparation did not finish in {format_number(stopped.budget_s)} s")
@@ -1425,8 +1425,8 @@ async def _write_doc_analysis(
         return
     except ValueError as refused:
         # The writer's own refusal before anything was frozen or sent (a model it cannot bound, or one sending no turn).
-        why = ValidationFailedError(f"the report was not written: {refused}", remedy="start the generation again")
-        await ended("failed", str(why), refused_by=why)
+        unwritten = ValidationFailedError(f"the report was not written: {refused}", remedy="start the generation again")
+        await ended("failed", str(unwritten), refused_by=unwritten)
         return
     # prawduct:ok-broad-except — recorded on the attempt by its kind alone (a provider's text may hold the account), then raised on as itself
     except Exception as broke:
@@ -1450,7 +1450,9 @@ async def _write_doc_analysis(
             )
         else:
             error = f"the report writer ended {written.ending}: {reason}"
-            why = ValidationFailedError(error, remedy="start the generation again; the attempt keeps what its turns cost")
+            why = ValidationFailedError(
+                error, remedy="start the generation again; the attempt keeps what its turns cost"
+            )
         await ended(
             "refused" if outcome.ending == "refused" else "failed",
             error,
@@ -1481,7 +1483,9 @@ async def _write_doc_analysis(
         )
     except (EvalServiceError, ValueError) as unminted:
         # A stored document whose analysis cannot be built is a defect, never the writer's: recorded, raised as itself.
-        await ended("failed", f"the report document {stored.id} is stored, and its analysis could not be built ({unminted})")
+        await ended(
+            "failed", f"the report document {stored.id} is stored, and its analysis could not be built ({unminted})"
+        )
         raise
     await _ledgered(eval_host, tally, attempt, campaign)
     insights = await record_written_generation(

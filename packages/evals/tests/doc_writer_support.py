@@ -119,7 +119,9 @@ TOY_DOC: Final[dict[str, Any]] = {
 }
 
 
-def scripted_reply(*content: TurnText | TurnToolUse, cost: float | None = 0.01, model: str = ANALYST_MODEL) -> TurnReply:
+def scripted_reply(
+    *content: TurnText | TurnToolUse, cost: float | None = 0.01, model: str = ANALYST_MODEL
+) -> TurnReply:
     """A scripted reply: a tool-use stop when it calls a tool, else an end of turn."""
     calls = any(isinstance(block, TurnToolUse) for block in content)
     return TurnReply(
@@ -144,7 +146,9 @@ def submission(doc: Mapping[str, Any] = TOY_DOC) -> TurnText:
     return TurnText(f"Here is the report.\n```json\n{json.dumps(doc)}\n```")
 
 
-def passing_review(scores: Sequence[int] = (2, 2, 2, 2, 2, 1, 2), findings: Sequence[Mapping[str, str]] = ()) -> TurnText:
+def passing_review(
+    scores: Sequence[int] = (2, 2, 2, 2, 2, 1, 2), findings: Sequence[Mapping[str, str]] = ()
+) -> TurnText:
     """An editor's final message: a line of prose, then its review as one fenced JSON object."""
     review = {
         "items": [

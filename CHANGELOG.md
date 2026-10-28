@@ -6,6 +6,30 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: `analysis_generate` writes the report with the analyst and the report editor, on the host's model and budget
+
+**Changed:** a generation no longer runs the report planner. Its job freezes the campaign's evidence and runs the
+report writer (`write_report`) on the client the host returns for the new `analyst` completion role, which both the
+analyst and the report editor use. Every turn is admitted against the host's report budget
+(`AnalysisGeneration.report_budget`, a `ReportBudget` read from host config as each generation starts), the only
+admission on the report: no caller can raise it, and the out-of-run cap is not read. The loop is held to
+`AnalysisGeneration.limits` (`WriterLimits()` by default), passed through unchanged, and the job is bounded by
+`budget_s`, which a host derives from the same limits with `Ceilings().writer_ceiling_s(limits, request_s=...)` plus
+its headroom. A stored report is linked by an analysis whose `basis` is `doc` and whose `report_doc_id` names the
+document; its recommended variant is set when the document recommends exactly one arm, and each claim marked durable
+becomes an insight that later campaigns read as a prior. A report that stores nothing ends the job failed or refused
+with its ending and reason, and the attempt keeps the turns' count and cost. The report's spend is ledgered once
+under `analysis`, unpriced when any turn was unpriced, never $0. Provenance is the analyst skill's digest, not the
+planner's prompt id. Until the report view lands, `report_read` of a `doc` analysis serves the code-only page over
+its frozen evidence, naming the analysis. The planner stays for the reporter kind.
+
+**Hosts must change** (`packages/evals/MIGRATIONS.toml` has the port): `AnalysisGeneration` drops `prompt_id`,
+`resolve_prompt` and `max_output_tokens` and takes `report_budget`, `limits`, `budget_s` and `preparation_budget_s`;
+a host factory adds an `analyst` row, and a client wrapper forwards `turn_session` and `turn_pricing_refusal` (and
+wraps the session client `turn_session` returns). A client that is not a turn model, or a host with no report budget,
+is refused before anything is frozen or sent, saying what to set. `analysis_estimate` states the budget and the most
+turns the writer can send, and makes no call. The jobs conformance kit counts a turn model's turns as requests.
+
 ### evals: an aggregate refuses a scope past the read budget instead of reading it whole
 
 **Changed:** the aggregating lenses read their scope's results into Python, and an aggregate cannot be paged as `scope_export` is since v0.80.0

@@ -1109,7 +1109,9 @@ class EvalAnalysis(EvalDocumentModel):
             )
         if self.document is None:
             if self.resolutions:
-                raise ValueError("a planned analysis or a report document has no memo findings, so it holds no resolutions")
+                raise ValueError(
+                    "a planned analysis or a report document has no memo findings, so it holds no resolutions"
+                )
             return self
         findings = self.document.findings
         count = len(findings)

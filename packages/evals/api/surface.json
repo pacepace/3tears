@@ -1928,7 +1928,7 @@
     },
     "threetears.evals.kernel.EvalAnalysis": {
       "kind": "model",
-      "signature": "EvalAnalysis(id: str = <lambda>(), doc_type: Literal['eval_analysis'] = 'eval_analysis', schema_version: SchemaVersion = 13, scope_id: str, campaign_id: str, subject_id: str, subject_kind: str, behavior: str, observation_refs: list[str] = list(), model_versions: dict[str, str] = dict(), generation: GenerationProvenance, design_snapshot: CampaignDeclaration, document: AuthoredCampaignAnalysis | None, report_plan_id: str | None = None, recommended_variant_key: str | None, judged_tier_rule: JudgedTierRule = 'interval_lower_bound', resolutions: list[FindingResolution] = list(), aspects: list[AspectAnalysis], campaign_bundle: VerbatimJsonObject, archived: bool = False, archived_reason: str | None = None, created_at: str = utc_now_iso())",
+      "signature": "EvalAnalysis(id: str = <lambda>(), doc_type: Literal['eval_analysis'] = 'eval_analysis', schema_version: SchemaVersion = 13, scope_id: str, campaign_id: str, subject_id: str, subject_kind: str, behavior: str, observation_refs: list[str] = list(), model_versions: dict[str, str] = dict(), generation: GenerationProvenance, design_snapshot: CampaignDeclaration, document: AuthoredCampaignAnalysis | None, report_plan_id: str | None = None, report_doc_id: str | None = None, recommended_variant_key: str | None, judged_tier_rule: JudgedTierRule = 'interval_lower_bound', resolutions: list[FindingResolution] = list(), aspects: list[AspectAnalysis], campaign_bundle: VerbatimJsonObject, archived: bool = False, archived_reason: str | None = None, created_at: str = utc_now_iso())",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.EvalAnalysisAttempt": {
@@ -3243,7 +3243,7 @@
     },
     "threetears.evals.kernel.host.CompletionRole": {
       "kind": "literal",
-      "signature": "'judge'` | `'simulator'` | `'analysis'` | `'variation'` | `'proposer'",
+      "signature": "'judge'` | `'simulator'` | `'analysis'` | `'variation'` | `'proposer'` | `'analyst'",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.host.ConformanceResult": {
@@ -3688,7 +3688,7 @@
     },
     "threetears.evals.run.Ceilings": {
       "kind": "dataclass",
-      "signature": "Ceilings(scheduler_call_attempts: int (derived), simulator_max_tokens: int (derived), simulator_answer_budget_tokens: int (derived), proposer_max_tokens: int (derived), generation_ceiling_s: Callable[..., float] (derived), judge_phase_ceiling_s: Callable[..., float] (derived))",
+      "signature": "Ceilings(scheduler_call_attempts: int (derived), simulator_max_tokens: int (derived), simulator_answer_budget_tokens: int (derived), proposer_max_tokens: int (derived), generation_ceiling_s: Callable[..., float] (derived), writer_ceiling_s: Callable[..., float] (derived), judge_phase_ceiling_s: Callable[..., float] (derived))",
       "tier": "host-contract"
     },
     "threetears.evals.run.CellContext": {
@@ -7358,7 +7358,7 @@
     },
     "threetears.evals.ops.AnalysisGeneration": {
       "kind": "dataclass",
-      "signature": "AnalysisGeneration(prompt_id: str = 'eval_report_plan', resolve_prompt: Callable[[], Awaitable[str]] | None = None, max_output_tokens: int, budget_s: float, preparation_budget_s: float = 900.0)",
+      "signature": "AnalysisGeneration(report_budget: Callable[[], ReportBudget] | None = None, limits: WriterLimits = WriterLimits(), budget_s: float, preparation_budget_s: float = 900.0)",
       "tier": "stable"
     },
     "threetears.evals.ops.AnalysisGenerationEstimate": {
@@ -7871,6 +7871,11 @@
       "signature": "report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat, trials: TrialDetail = 'table', static: bool = False) -> ReportDocument",
       "tier": "stable"
     },
+    "threetears.evals.ops.ReportBudget": {
+      "kind": "class",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.ops.ReportDocument": {
       "kind": "model",
       "signature": "",
@@ -8213,6 +8218,11 @@
     },
     "threetears.evals.ops.UnreadableRunsListing": {
       "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.ops.WriterLimits": {
+      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },

@@ -104,9 +104,7 @@ async def _generated(fixture: OpsFixture) -> JobStatus:
 
 def _attempt(fixture: OpsFixture, status: JobStatus) -> EvalAnalysisAttempt:
     attempt_id = status.job_id.rsplit(":", 1)[1]
-    stored, _ = off_loop(
-        fixture.host.eval_host.storage.load_job_record, EvalAnalysisAttempt, attempt_id, TOYHOST_SCOPE
-    )
+    stored, _ = off_loop(fixture.host.eval_host.storage.load_job_record, EvalAnalysisAttempt, attempt_id, TOYHOST_SCOPE)
     assert stored is not None
     return stored
 
@@ -237,13 +235,23 @@ async def test_insights_come_from_durable_claims_only_each_citing_the_runs_its_k
     bundle, report_input, snapshot_id, assembled_at = await _toy_snapshot(fixture)
     doc = copy.deepcopy(TOY_DOC)
     durable = copy.deepcopy(doc["claims"][0]) | {"id": "c1", "text": "{arm:256tok} holds its own.", "durable": True}
-    passing = copy.deepcopy(doc["claims"][0]) | {"id": "c2", "text": "{arm:1024tok} is the other arm.", "durable": False}
+    passing = copy.deepcopy(doc["claims"][0]) | {
+        "id": "c2",
+        "text": "{arm:1024tok} is the other arm.",
+        "durable": False,
+    }
     doc["claims"] = [durable, passing]
     minted = _minted(bundle, report_input, snapshot_id, assembled_at, doc)
     (insight,) = minted.insights
     assert insight.source_analysis_id == minted.analysis.id
     variant = next(arm.variant_key for arm in report_input.arms if arm.id == "256tok")
-    runs = {run for aspect in bundle.aspects for cell in aspect.cell_measures if cell.variant_key == variant for run in cell.run_ids}
+    runs = {
+        run
+        for aspect in bundle.aspects
+        for cell in aspect.cell_measures
+        if cell.variant_key == variant
+        for run in cell.run_ids
+    }
     assert runs and set(insight.evidence_run_ids) == runs, "the runs of the one arm the claim's key names"
 
 
@@ -307,7 +315,10 @@ async def test_a_report_the_store_refuses_fails_the_job_with_its_record_kept(mon
     assert (status.state, attempt.outcome) == ("failed", "failed")
     assert attempt.error is not None and "ended stored" in attempt.error and "was not stored" in attempt.error
     assert attempt.calls == 2
-    assert off_loop(analysis_service.list_analyses, fixture.host.eval_host.storage, fixture.campaign.id, TOYHOST_SCOPE) == []
+    assert (
+        off_loop(analysis_service.list_analyses, fixture.host.eval_host.storage, fixture.campaign.id, TOYHOST_SCOPE)
+        == []
+    )
 
 
 # -- refusals before anything is sent ---------------------------------------------------------------------------------

@@ -30,7 +30,7 @@ import pytest
 
 from packages.evals.tests.fixtures.report_plans.analyst_cli import seeded_host
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, generate, ops_fixture, OpsFixture, planned_generation, settled
+from packages.evals.tests.ops_support import CALLER, ops_fixture, OpsFixture, planned_generation
 from packages.evals.tests.report_doc_support import snapshot_of
 from packages.evals.tests.report_writer_support import (
     DOC,

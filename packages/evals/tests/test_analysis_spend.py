@@ -33,7 +33,6 @@ import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import estimate_analysis_generation
-from threetears.evals.analysis import service as service_module
 from threetears.evals.analysis.service import APPROX_INPUT_TOKENS_BASIS, CHARS_PER_TOKEN
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.schema import JobLease, JobRefusal

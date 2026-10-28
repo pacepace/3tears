@@ -18,7 +18,7 @@ from threetears.evals.analysis import AnalysisContextBundle, campaign_report, re
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture, OpsFixture, planned_generation, settled
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture, OpsFixture, planned_generation
 from packages.evals.tests.off_loop import off_loop
 
 #: When every archived copy was written: before the generated analysis, so the live one is the newest.

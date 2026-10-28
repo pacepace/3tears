@@ -60,7 +60,7 @@ from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import toyhost_batch, toyhost_measurements
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, planned_generation, settled
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, planned_generation
 from packages.evals.tests.report_support import stored_memo_analysis, toy_campaign_host
 from packages.evals.tests.reporter_case_support import reporter_template
 

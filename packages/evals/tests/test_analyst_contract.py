@@ -42,7 +42,7 @@ from packages.evals.tests.analyst_support import (
     read_actions,
 )
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, generate, ops_fixture, OpsFixture, planned_generation, settled
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, OpsFixture, planned_generation
 from threetears.evals.actions import (
     ActionCatalogue,
     ActionOutcome,

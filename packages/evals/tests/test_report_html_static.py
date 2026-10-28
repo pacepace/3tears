@@ -35,7 +35,7 @@ from threetears.evals.analysis import (
 from threetears.evals.ops import report_read
 from packages.evals.tests.hostile_page_support import HOSTILE, hostile_campaign_page, hostile_report
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, planned_generation, settled
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, planned_generation
 from packages.evals.tests.page_contract_support import parsed, what_runs
 from packages.evals.tests.report_support import stored_memo_analysis, toy_report
 from packages.evals.tests.static_page_support import assert_static, less_what_static_leaves_out
