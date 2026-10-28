@@ -178,6 +178,30 @@ def _arm_names(report: Report) -> set[str]:
     return {str(row["arm"]).removeprefix("▸ ") for row in scoreboard.values()}
 
 
+async def test_a_money_interval_reads_its_ends_on_its_means_ruler() -> None:
+    """Every money figure the code-only pages state with its interval reads its ends where its mean is drawn: at the
+    same count and to the same decimals, the mean between them. The one-arm page's cost, $0.003 a reply every time,
+    reads $3.00 per 1,000 replies, and so does each end."""
+    pages = await _pages()
+    one_arm = report_markdown(pages[2])
+    assert "| Production cost ($/1,000 replies) | $3.00 [$3.00, $3.00] | 4 |" in one_arm
+    # Under a cent per 1,000 replies the ruler moves to per 1,000,000, and the heading names the count it moved to.
+    tiny = await Eval(CASES, {"production": answering(10, 0.000003)}, ["label"], k=3, name="queue").run(
+        store=":memory:"
+    )
+    assert "| Production cost ($/1,000,000 replies) | $3.00 [$3.00, $3.00] | 4 |" in report_markdown(tiny.report)
+    read = 0
+    for report in [*pages, tiny.report]:
+        for found in re.finditer(
+            r"\$(\d[\d,]*\.?\d*) \[\$(\d[\d,]*\.?\d*), \$(\d[\d,]*\.?\d*)\]", report_markdown(report)
+        ):
+            mean, low, high = (float(group.replace(",", "")) for group in found.groups())
+            assert low <= mean <= high, found.group(0)
+            assert len({len(group.partition(".")[2]) for group in found.groups()}) == 1, found.group(0)
+            read += 1
+    assert read, "the control: some page states a money interval"
+
+
 async def test_every_page_passes_the_style_lint() -> None:
     for report in await _pages():
         assert lint_page(report_markdown(report), names=_arm_names(report)) == [], report.title

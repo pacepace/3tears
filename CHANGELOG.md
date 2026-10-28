@@ -12,7 +12,8 @@ packages (bumped in lock-step).
 rule of three significant figures from $0.10 to $1), and one owner states every set: `cost_unit.money_ruler`, which
 every chart, table and figure key of the report document and the planned page reads its scale, form and count from,
 and the code-only report's money rulers, tables, means and intervals too (its ± spreads and margin lines keep the
-number rule). A set's form is chosen from the amounts
+number rule; a cost there drawn per 1,000,000 replies is headed `($/1,000,000 replies)`, where it read
+`($/1,000 replies)`). A set's form is chosen from the amounts
 themselves: whole dollars where the least is $10 or more (`$7,560`); else cents, with more decimals only where the
 least amount needs them for two significant figures (`$0.030` beside `$3.477`, so r2's `$0.302` reads alike in prose
 and in its tables). Where an amount is under a cent the ruler moves instead: money per reply is stated per 1,000

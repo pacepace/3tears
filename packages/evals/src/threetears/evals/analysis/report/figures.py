@@ -54,6 +54,9 @@ REPLY_COST_FLOOR = 0.01
 PER_THOUSAND_REPLIES = "per 1,000 replies"
 PER_THOUSAND_LABEL = "($/1,000 replies)"
 
+#: The heading's words for money drawn per 1,000,000 replies.
+PER_MILLION_LABEL = "($/1,000,000 replies)"
+
 #: The words a cost stated per 1,000,000 replies carries, as a measure in ``usd_per_1m`` declares it.
 PER_MILLION_REPLIES = "per 1,000,000 replies"
 
@@ -88,10 +91,13 @@ class MeasureRuler(NamedTuple):
     def scaled(self, heading: str) -> str:
         """``heading`` with the scale a reader needs to read its figures, where the figures do not carry it.
 
-        A cost stated per 1,000 replies says so beside its name, since ``$0.0459`` alone reads as a cost per reply;
-        every other ruler's figures carry their own unit, so the heading stands alone.
+        A cost stated per 1,000 replies (or per 1,000,000, where it is under a cent per 1,000) says so beside its
+        name, since ``$0.0459`` alone reads as a cost per reply; every other ruler's figures carry their own unit, so
+        the heading stands alone.
         """
-        return f"{heading} {PER_THOUSAND_LABEL}" if self.per else heading
+        if not self.per:
+            return heading
+        return f"{heading} {PER_MILLION_LABEL if self.per == PER_MILLION_REPLIES else PER_THOUSAND_LABEL}"
 
     def labelled(self, heading: str) -> str:
         """``heading`` with its unit, for a row whose figures are stated as bare numbers beside it.

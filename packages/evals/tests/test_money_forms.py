@@ -705,17 +705,22 @@ def _under_a_cent() -> dict[str, tuple[ReportInput, str, str, str]]:
     }
     r5 = r5.model_copy(update={"scoreboard": rows})
     # Two money measures on different rulers: the cost per reply under a cent per 1,000, the blended cost not.
-    two_rulers = _measures_shrunk(
-        _sliced(INPUTS["r5"], "production_replicating_cost", gate=False),
-        frozenset({"production_replicating_cost"}),
-        1000.0,
-    )
+    # Both money measures in every slice, so a slice's change chart draws two money measures on two rulers.
+    both = _sliced(_sliced(INPUTS["r5"], "production_replicating_cost", gate=False), "cost_usd", gate=False)
+    two_rulers = _measures_shrunk(both, frozenset({"production_replicating_cost"}), 1000.0)
     per_reply = {
         arm: row.model_copy(update={"reply_cost_usd": row.reply_cost_usd / 1000 if row.reply_cost_usd else None})
         for arm, row in two_rulers.scoreboard.items()
     }
     two_rulers = two_rulers.model_copy(update={"scoreboard": per_reply})
+    r1 = _measures_shrunk(INPUTS["r1"], frozenset({"cost_per_1k"}), 1000.0)
     return {
+        "r1 under a cent per 1,000 conversations": (
+            r1,
+            "cost_per_1k",
+            "per 1k conversations",
+            "per 1,000,000 conversations",
+        ),
         # Its blended cost reads per 1,000 replies, rightly; only the cost per reply's own words would be stale.
         "r5 with two money measures on different rulers": (
             two_rulers,
@@ -777,6 +782,11 @@ def _drawn_money(held: ReportInput, key: str) -> list[tuple[str, PageChart]]:
             if _draws_money(page) and label not in seen:
                 seen.add(label)
                 drawn.append((label, page))
+    # The Full results tables, every one the input holds, with the cost column of the page's one cost rule.
+    for table in every_table(held, look):
+        page = PageChart(title="", chart=table, notes=[])
+        if _draws_money(page):
+            drawn.append((f"full/{table.name}/all/0", page))
     return drawn
 
 
@@ -874,6 +884,12 @@ def _naming(node: Any) -> Iterator[str]:
 def _stored(held: ReportInput, keys: Iterable[str]) -> list[float]:
     """Every money figure the input states of some keys, as stored: each statistic wherever it sits, each contrast,
     each two arms' difference within a place, and each step's price along every frontier."""
+    return [*_stored_of(held, keys), *(value for value, _ in _tails(held))]
+
+
+def _stored_of(held: ReportInput, keys: Iterable[str]) -> list[float]:
+    """Every money figure the input states of some keys, as stored: each statistic wherever it sits, each contrast,
+    and each two arms' difference within a place."""
     data = held.model_dump(mode="json", by_alias=True)
     found: list[float] = []
     places: list[dict[str, float]] = []
@@ -892,6 +908,8 @@ def _stored(held: ReportInput, keys: Iterable[str]) -> list[float]:
                             means[name] = float(stat["mean"])
                 if node.get("measure") in keys and name in ("delta", "threshold") and isinstance(value, int | float):
                     found.append(float(value))
+                if node.get("measure") in keys and name == "interval" and isinstance(value, list):
+                    found.extend(float(end) for end in value if isinstance(end, int | float))
                 walk(value)
             if len(means) > 1:
                 places.append(means)
@@ -907,9 +925,24 @@ def _stored(held: ReportInput, keys: Iterable[str]) -> list[float]:
             for stat in stats:
                 found.extend(float(getattr(stat, f)) for f in _STAT_NUMBERS if getattr(stat, f) is not None)
                 found.extend(float(end) for end in stat.ci or ())
+                if stat.mean is not None and stat.half_width is not None:
+                    found.extend((float(stat.mean - stat.half_width), float(stat.mean + stat.half_width)))
             places.append({arm: float(stat.mean) for arm, stat in measure.per_arm.items() if stat.mean is not None})
     for means in places:
-        found.extend(first - second for first in means.values() for second in means.values())
+        found.extend(
+            first - second for at, first in enumerate(means.values()) for second in list(means.values())[at + 1 :]
+        )
+        found.extend(
+            second - first for at, first in enumerate(means.values()) for second in list(means.values())[at + 1 :]
+        )
+    return found
+
+
+def _tails(held: ReportInput) -> list[tuple[float, int]]:
+    """The money figures the input states of no one measure, each with the count it is stated per (0 for a total):
+    each step's price along every frontier, each arm's cost per reply and its run's total, and each arm's cost by the
+    package's one cost rule."""
+    found: list[tuple[float, int]] = []
     for gain in [*held.measures, *held.judged]:
         try:
             rows = query_rows(_query("prices", [gain]), held)
@@ -918,12 +951,48 @@ def _stored(held: ReportInput, keys: Iterable[str]) -> list[float]:
             continue
         for row in rows:
             if isinstance(row.item, PriceStep):
-                found.extend([float(row.item.value), *(float(end) for end in row.interval or ())])
+                opened = (row.item.open_from,) if row.item.open_from is not None else ()
+                # A price per point is per 1,000 of what the cost counts, whatever the measure's own unit.
+                ends = (*(row.interval or ()), *opened)
+                found.extend((value, 1000) for value in (float(row.item.value), *(float(end) for end in ends)))
     for arm in held.arms:
         row = held.scoreboard.get(arm.id)
         if row is not None:
-            found.extend(float(v) for v in (row.reply_cost_usd, row.test_cost_usd) if v is not None)
+            # A reply's cost is per reply; a run's total counts nothing per anything (0: never scaled).
+            found.extend(
+                (float(v), own) for v, own in ((row.reply_cost_usd, 1), (row.test_cost_usd, 0)) if v is not None
+            )
+        try:
+            # The arm's cost by the package's one cost rule, a figure the Full results table states.
+            figure = resolve(f"cost_per_1k.{arm.id}", held)
+        except UnresolvableReference:
+            # NOSILENT: an input that holds no cost for the arm states none.
+            continue
+        if isinstance(figure.value, float):
+            found.append((figure.value, 1000))
     return found
+
+
+#: The count each money unit states its figures per.
+_OWN = {"usd": 1, "usd_per_1k": 1000, "usd_per_1m": 1_000_000}
+
+
+def _owned(held: ReportInput) -> list[tuple[float, int]]:
+    """Every money figure and line the input states, each with the count it is stated per (0 for a total, which is
+    never scaled): a text's amount reads one of these at the count it names over the figure's own."""
+    found = [
+        (value, _OWN[measure.unit])
+        for key, measure in held.measures.items()
+        if measure.unit in _OWN
+        for value in _stored_of(held, {key})
+    ]
+    lines = [
+        (float(criterion.threshold), _OWN[str(figure.scale)])
+        for criterion in held.criteria
+        for figure in (resolve(f"criteria.{criterion.id}.threshold", held),)
+        if figure.scale in _OWN
+    ]
+    return [*found, *lines, *_tails(held)]
 
 
 def _reason_ruler(held: ReportInput, reason: str) -> tuple[Criterion, MoneyRuler] | None:
@@ -980,6 +1049,7 @@ def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(
     kinds = {label.split("/")[0] for label, _ in drawn}
     expected = {"bars", "table", "dot_interval", "diverging_bars", "scatter_frontier", "heatmap", "diff_heatmap"}
     expected |= {"gate_scatter", "gate_matrix", "lattice"} if name.startswith("r2") else set()
+    expected = {"full", "gate_matrix"} if name.startswith("r1") else expected
     assert expected <= kinds, sorted(expected - kinds)
     checked = 0
     for label, page in drawn:
@@ -987,8 +1057,10 @@ def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(
         joined = " | ".join(texts)
         if isinstance(page.chart, ChartBlock):
             assert "/1000" not in joined, (label, joined[:400])
-        if "/prices/" not in label:
-            # A price per point is per 1,000 of what the cost counts: its own count, which is no stale one.
+        spelled = [abs(_amount(found.group(0))) for text in texts for found in _AMOUNT.finditer(text)]
+        if "/prices/" not in label and any(0 < amount < 0.01 for amount in spelled):
+            # A price per point is per 1,000 of what the cost counts: its own count, which is no stale one. A chart of
+            # fewer points may hold no amount under a cent, so it keeps its own count, rightly.
             assert stale not in joined, (label, joined[:600])
         # No count stacked on another: one text states one count (said again for each item it lists, at most), and
         # never the same count twice in a row.
@@ -1008,7 +1080,8 @@ def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(
         ]
         assert not [text for text in words if re.search(r"\busd\b|\b\w+_usd\b", text, re.I)], (label, words)
         totals = "test_cost_usd" in label
-        if not totals and (key in label or label.split("/")[2] == "all" or "reply_cost_usd" in label):
+        under = any(0 < amount < 0.01 for amount in spelled) or moved in joined
+        if under and not totals and (key in label or label.split("/")[2] == "all" or "reply_cost_usd" in label):
             # A chart states the count it moved its ruler to; a table either does, or writes each amount with the
             # per-1,000 mark (a figure key's own spelling, which a computed table prints as prose citing it does).
             amounts = [text for text in texts if "$" in text]
@@ -1064,6 +1137,76 @@ def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(
             off = [value for value in values if not _reconciles(value, stored, here_scale)]
             assert not off, (label, field, here_scale, off[:4])
     assert checked, "the control: the one-form check reads some chart"
+    read = 0
+    owned = _owned(held)
+    for label, page in drawn:
+        levers = any(source in label for source in ("/levers/", "/settle/"))
+        if levers or ("/configs/" in label and label.startswith(("diverging", "forest", "dot_interval"))):
+            # A lever's effect is a mean over the configs it moves between, which no stored figure states one by one.
+            continue
+        read += _amounts_reconcile(label, page, owned, "test_cost_usd" in label)
+    assert read, "the control: the text check reads some amount"
+
+
+def _column_texts(page: PageChart) -> list[tuple[str, str, str]]:
+    """Every text a chart or table shows a reader, each with the words naming its count (its row's or its column's
+    head, empty for none) and the table column it sits in (empty off a table): a table's cells and heads, a chart's
+    data, its values table and its lines."""
+    if isinstance(page.chart, TableBlock):
+        heads: dict[str, str] = {}
+        before = ""
+        for column in page.chart.columns:
+            # An interval's column, headed by its level alone, reads on the figure's column beside it.
+            heads[column.key] = column.header if _COUNT.findall(column.header) or not before else before
+            before = heads[column.key]
+        # A row naming its measure in words (a slices table's measure cell) reads at the count those words name.
+        cells = []
+        for row in page.chart.rows:
+            words = " ".join(cell.text for cell in row.values() if "$" not in cell.text)
+            for key, cell in row.items():
+                cells.append((cell.text, words if _COUNT.findall(words) else heads[key], key))
+        named = [(column.header, "", "") for column in page.chart.columns]
+        return [*cells, *named, *((note, "", "") for note in page.notes)]
+    data = page.chart.data.model_dump(mode="json") if page.chart.data is not None else {}
+    headers, rows = page.chart.values_table()
+    table = [(cell, headers[at] if at < len(headers) else "", "") for row in rows for at, cell in enumerate(row)]
+    return [*((text, "", "") for text in _texts(data)), *table, *((note, "", "") for note in page.notes)]
+
+
+def _amounts_reconcile(label: str, page: PageChart, owned: list[tuple[float, int]], totals: bool) -> int:
+    """Every amount of money a chart or table shows, in any of its texts, read back by value: a figure the input
+    stores or a criterion's line, times the count its own text names (else its column's head or row, else the one the
+    chart or table names) over the count the figure is stated per, to the rounding of the decimals it is written to.
+    A text naming no count reads figures as stored. Returns how many it read."""
+    texts = _column_texts(page)
+    counts = [int(count.replace(",", "")) for text, _, _ in texts for count in _COUNT.findall(text)]
+    default = max(counts) if counts and not totals else None
+    read = 0
+    columns: dict[str, set[int]] = {}
+    for text, head, column in texts:
+        if "$" not in text:
+            continue
+        named = _COUNT.findall(text) or _COUNT.findall(head)
+        count = int(named[0].replace(",", "")) if named and not totals else default
+        for found in _AMOUNT.finditer(text):
+            value = _amount(found.group(0))
+            places = len(found.group(3) or "") + (3 if found.group(4) else 0)
+            rounding = 10.0**-places / 2 + abs(value) * 1e-9
+            # A figure too small to show at the decimals written is no reading of a zero: a zero reads a zero.
+            near = [
+                abs(one) * (count / per if count and per else 1.0) for one, per in owned if (one == 0) == (value == 0)
+            ]
+            assert any(abs(abs(value) - one) <= rounding and (value == 0 or one >= rounding) for one in near), (
+                label,
+                text,
+                count,
+            )
+            if column:
+                columns.setdefault(column, set()).add(len(found.group(3) or ""))
+            read += 1
+    # A table's column of money reads to one form's decimals.
+    assert all(len(places) == 1 for places in columns.values()), (label, columns)
+    return read
 
 
 def test_a_total_under_a_cent_is_never_scaled() -> None:
