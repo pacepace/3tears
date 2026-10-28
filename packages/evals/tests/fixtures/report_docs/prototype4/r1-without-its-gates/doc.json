@@ -1,0 +1,305 @@
+{
+  "schema": "report-doc/1",
+  "story": "tradeoff",
+  "headline": "No bar was set, so the pick is a price: Atlas-L leads on quality at {cost.gap.atlas-l.atlas-m.multiple} Atlas-M's cost, and Brisk-S is cheapest but slips on safety behaviours Atlas-M holds.",
+  "lede": "Moving from Brisk-S to Atlas-M buys overall quality at {price.brisk-s.atlas-m.overall.per_point} a point per thousand conversations; moving on to Atlas-L costs {price.atlas-m.atlas-l.overall.per_point} a point. A declared price per point, or a floor on the safety behaviours, would turn this into a decision.",
+  "flag": null,
+  "recommends": [],
+  "confidence": {
+    "form": "high_if_immaterial",
+    "caveats": [
+      {
+        "id": "nothing_declared",
+        "label": null,
+        "material_if": "Material to any call: no gate, floor, budget or price per point was declared, so which of Brisk-S, Atlas-M and Atlas-L to run is the concierge owner's choice; the price bands are measured, the choice among them is not.",
+        "checked": null
+      },
+      {
+        "id": "judge_unstated",
+        "label": null,
+        "material_if": "Material only if the unstated judge of the safety behaviours is harsher on Brisk-S and Open-70B than on the Atlas models; the price bands rest on overall quality, whose judge was calibrated on {judged.overall.calibration_ratings} human ratings at {judged.overall.agreement} agreement.",
+        "checked": null
+      },
+      {
+        "id": "no_control",
+        "label": null,
+        "material_if": "Material only where a difference is unresolved: every gap the trade rests on already excludes zero read as independent arms, and pairing on shared cases can only narrow it; Atlas-L against Atlas-M on speculation bait, and Open-70B against Atlas-M on persona small talk, are where pairing could change a reading.",
+        "checked": null
+      },
+      {
+        "id": "best_of_n",
+        "label": null,
+        "material_if": "Material if Atlas-L's lead, the top quality reading of four, reads lower on fresh cases: on billing, the busiest task, its lead's interval ({compare.atlas-l.atlas-m.overall.task.billing.interval}) nearly reaches zero.",
+        "checked": null
+      }
+    ]
+  },
+  "decision": [
+    {
+      "slot": "the_trade",
+      "text": "On traffic-weighted overall quality Atlas-L scores {pooled.overall.atlas-l.mean}, Atlas-M {pooled.overall.atlas-m.mean} and Brisk-S {pooled.overall.brisk-s.mean}. Their costs per thousand conversations are {cost_per_1k.atlas-l}, {cost_per_1k.atlas-m} and {cost_per_1k.brisk-s}. Open-70B is the best buy at no price."
+    },
+    {
+      "slot": "where_it_flips",
+      "text": "Below {price.brisk-s.atlas-m.overall.per_point} a point per thousand conversations Brisk-S is the best buy; between that and {price.atlas-m.atlas-l.overall.per_point}, Atlas-M; above it, Atlas-L. The upper edge is the less certain: its interval runs from {price.atlas-m.atlas-l.overall.per_point_low_unpaired} to {price.atlas-m.atlas-l.overall.per_point_high_unpaired}."
+    },
+    {
+      "slot": "our_lean",
+      "text": "Ours, not a declared rule: Atlas-M. It is not separated from Atlas-L on any safety behaviour checked, at less than half the cost, and it declines speculation bait more often than Brisk-S by {compare.atlas-m.brisk-s.declines.task.specul.difference} points. The lean holds for any price per point inside Atlas-M's band."
+    },
+    {
+      "slot": "what_settles_it",
+      "text": "The concierge owner declares a price per point of overall quality, or floors for the safety behaviours. Either decides it on today's figures, with no new run."
+    },
+    {
+      "slot": "watch",
+      "text": "Atlas-L's lead is thinnest on billing, the busiest task at {task.billing.share} of traffic, and as the best of four options its readings run high by chance; a fresh run would tend to shrink the gap that justifies its price."
+    }
+  ],
+  "claims": [
+    {
+      "id": "price_ladder",
+      "text": "Each step up in quality costs far more per point than the last: Atlas-M over Brisk-S at {price.brisk-s.atlas-m.overall.per_point}, Atlas-L over Atlas-M at {price.atlas-m.atlas-l.overall.per_point}.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "bars",
+          "query": {
+            "source": "prices",
+            "aspect": "",
+            "measures": [
+              "overall"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Price of one point of traffic-weighted overall quality, per thousand conversations, for each step along the frontier; Open-70B never lies on it."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "atlas_lead",
+      "text": "Atlas-L's quality lead over Atlas-M is small but clear of zero in every task that carries traffic, largest in multi-turn troubleshooting at {compare.atlas-l.atlas-m.overall.task.trouble.difference} points.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "diverging_bars",
+          "query": {
+            "source": "compare",
+            "aspect": "",
+            "measures": [
+              "overall"
+            ],
+            "arms": [
+              "atlas-l",
+              "atlas-m"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Atlas-L minus Atlas-M on overall quality per task, intervals combined as independent arms; only speculation bait is not separated."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "safety_slips",
+      "text": "Brisk-S and Open-70B slip on the safety behaviours where Atlas-M stays level with Atlas-L: Brisk-S declines speculation bait {task.specul.brisk-s.declines.mean} of the time, and Open-70B confirms before account changes {task.trouble.open-70b.confirms.mean} of the time.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "dot_interval",
+          "query": {
+            "source": "tasks",
+            "aspect": "",
+            "measures": [
+              "declines",
+              "confirms",
+              "unsupported"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Pass rate on each safety behaviour, in the task that tests it, with intervals; no floor was declared for any of them."
+        }
+      ],
+      "caveats": [
+        "judge_unstated"
+      ],
+      "durable": false
+    },
+    {
+      "id": "persona_seam",
+      "text": "Open-70B trails Atlas-M in every task except persona small talk, where the two are not separated and Open-70B costs {task.persona.open-70b.cost_per_1k.mean} per thousand conversations against {task.persona.atlas-m.cost_per_1k.mean}.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "diverging_bars",
+          "query": {
+            "source": "compare",
+            "aspect": "",
+            "measures": [
+              "overall"
+            ],
+            "arms": [
+              "open-70b",
+              "atlas-m"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "persona",
+          "caption": "Open-70B minus Atlas-M on overall quality per task, intervals combined as independent arms."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "latency",
+      "text": "Atlas-L is also the slowest in every task, with a research-question p95 of {task.research.atlas-l.latency_s.p95} against Atlas-M's {task.research.atlas-m.latency_s.p95}.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "range_bars",
+          "query": {
+            "source": "tasks",
+            "aspect": "",
+            "measures": [
+              "latency_s"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Latency from median to p95 per task; no latency budget was declared."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    }
+  ],
+  "explore": [
+    {
+      "control": "Price of one point of overall quality, per thousand conversations",
+      "binds": "Which of Brisk-S, Atlas-M and Atlas-L is the best buy",
+      "outcome": "Brisk-S below {price.brisk-s.atlas-m.overall.per_point}, Atlas-M up to {price.atlas-m.atlas-l.overall.per_point}, Atlas-L above it; Open-70B at no price."
+    },
+    {
+      "control": "A floor on declining speculation bait, read on the point estimate",
+      "binds": "Whether Brisk-S and Open-70B stay options",
+      "outcome": "A floor above Brisk-S's {task.specul.brisk-s.declines.mean} removes it, and Open-70B becomes the best buy up to {price.open-70b.atlas-m.overall.per_point} a point; a floor above Open-70B's {task.specul.open-70b.declines.mean} removes both, leaving Atlas-M against Atlas-L."
+    }
+  ],
+  "omitted": [
+    {
+      "what": "Resolves the issue, clear steps, escalation, citing the source and calling the research tool only when needed",
+      "why": "Same ordering as the safety behaviours: Atlas-M within a few points of Atlas-L, a cheap model lowest; they add no new seam. Full tables in the appendix."
+    },
+    {
+      "what": "Cost per task",
+      "why": "Every task keeps the same cost order; the overall cost carries the trade."
+    },
+    {
+      "what": "Stays in character in persona small talk",
+      "why": "Open-70B leads it, which only reinforces the persona seam; full table in the appendix."
+    },
+    {
+      "what": "Failure examples",
+      "why": "The evidence holds none for any arm."
+    },
+    {
+      "what": "Hypothetical floors on each behaviour read per task",
+      "why": "A floor read where a behaviour is not tested has no figure, so every option is undecided outside that one task; the explore control states the reading that matters."
+    }
+  ],
+  "next": [
+    {
+      "text": "The concierge owner declares a price per point of overall quality and the monthly volume.",
+      "settles": "Which of Brisk-S, Atlas-M and Atlas-L to run, and what it costs a month; no run is needed."
+    },
+    {
+      "text": "Declare floors for declining speculation, confirming before account changes and avoiding unsupported claims.",
+      "settles": "Whether Brisk-S and Open-70B are options at all, which narrows the trade to Atlas-M against Atlas-L if both miss."
+    },
+    {
+      "text": "State or calibrate the judge behind the safety behaviours with human ratings, as the overall-quality judge was.",
+      "settles": "Whether the safety gaps that rule out the cheap models are real, turning the judge caveat into evidence."
+    },
+    {
+      "text": "Run a routed mix, persona small talk to Open-70B and the rest to Atlas-M, on the same cases including speculation bait.",
+      "settles": "What routing keeps of Atlas-M's quality at what cost, and whether Open-70B's weaker declining of speculation shows up inside persona traffic."
+    }
+  ],
+  "method": [
+    {
+      "term": "Cases",
+      "text": "Each arm ran {scoreboard.atlas-m.cases} cases across five tasks, none lost or failed; no repeats are stated.",
+      "caveats": []
+    },
+    {
+      "term": "Traffic shares",
+      "text": "Billing {task.billing.share}, persona small talk {task.persona.share}, troubleshooting {task.trouble.share}, research questions {task.research.share}; speculation bait carries {task.specul.share}, so it enters no pooled figure and is read as a probe.",
+      "caveats": []
+    },
+    {
+      "term": "Overall quality",
+      "text": "A judged ordinal score; the judge was calibrated on {judged.overall.calibration_ratings} human ratings with {judged.overall.agreement} agreement. Its model is not stated. Pooled quality is the traffic-weighted mean of the task scores, with an interval of about plus or minus {pooled.overall.atlas-m.half_width}.",
+      "caveats": []
+    },
+    {
+      "term": "Safety and task behaviours",
+      "text": "Pass or fail per trial, judged, each in the one task that tests it; nothing states whose judge scored them or how it was checked.",
+      "caveats": []
+    },
+    {
+      "term": "Intervals",
+      "text": "At the level each table prints, uncorrected for the number of comparisons. With no control and no paired contrasts, a difference between two arms combines each arm's own spread as if they ran different cases, which reads wider than a paired interval would.",
+      "caveats": []
+    },
+    {
+      "term": "Cost",
+      "text": "Dollars per thousand conversations, measured per task and overall. No monthly volume was declared, so no monthly figure is stated.",
+      "caveats": []
+    },
+    {
+      "term": "Latency",
+      "text": "Median and p95 seconds per task; no budget was declared.",
+      "caveats": []
+    },
+    {
+      "term": "Not compared",
+      "text": "No production or control arm; no gate, floor, budget or exchange rate was declared before or after the run; no routed mix was run.",
+      "caveats": []
+    },
+    {
+      "term": "Source",
+      "text": "{meta.provenance}, run {meta.run_date}.",
+      "caveats": []
+    }
+  ]
+}

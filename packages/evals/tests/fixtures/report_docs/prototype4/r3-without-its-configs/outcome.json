@@ -1,0 +1,84 @@
+{
+  "ending": "over_budget",
+  "reason": "the report's budget refused the next turn: the next turn can cost up to $2.51, and $1.83 of the report's $4.00 budget is spent",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 1,
+          "reason": "The headline and decision block make the call clear: route turns with Brisk-S few-shot, the only configuration that passes all three gates (options_dominance agrees). They also name the latency point estimate as a risk. But they name the wrong accuracy risk. The lede and Watch point to complex news, which clears by 2.9 points, as the thinnest clearance. The pick's real thinnest clearance is overall balanced accuracy: 90.7% against a 90% line, a gap of 0.7 points (criteria.overall.brisk-s.few.gap), with the interval's low end at 90.4%. A reader leaves the first screen thinking the accuracy margin is comfortable."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 1,
+          "reason": "The claims build in a sensible order: c1 shows the pick is the only option inside the gates, c2 shows its weakest cell, c3 covers the cheap near-miss and c4 shows how prompt and model interact. But c2's 'its thinnest clearance is complex news' contradicts the page's own gate table, where overall accuracy clears by 0.7 points and complex news by 2.9. The tool's chance of a fresh run landing on the wrong side also puts overall first: 0.0004972% against 0.0001087% for complex news. The best-of-n confidence caveat quotes the overall interval (90.4–91%) yet calls complex news the thinnest clearance."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 1,
+          "reason": "The latency weakness is shown honestly: 184 ms against a 250 ms budget, a point estimate with no interval. The pick's other weak axis is underplayed. Its overall accuracy clears by only 0.7 points, and that is the margin a best-of-9 pick is most likely to lose on a rerun, yet no Watch entry names it. Nano-XS few-shot's overall accuracy is shown as 'Borderline' in the appendix (90.1%, interval 89.8–90.4%), but the decision block and the next steps present it as failing only the complex-news floor."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "Nothing omitted would change the decision. Traffic-weighted accuracy and macro F1 rank the same way and no gate reads them. The zero-shot configurations fail the gates. The snapshot keeps no failure examples. The per-axis tables are covered by the cell comparison in c3."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "All three caveats are carried into the story. No control: the page notes that comparisons are unpaired and the call rests on fixed gates. Point-estimate latency: carried into Watch and the first next step, with production-like load. Best-of-9 optimism: carried into Watch and a rerun step, though that step targets the wrong clearance (see item 6)."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 1,
+          "reason": "Each step names an experiment and what it would settle. Two are aimed off target. The fresh-sample rerun covers only complex news, but the clearance most exposed to best-of-9 optimism is overall accuracy at 0.7 points. The Nano-XS step says that if the cell clears the floor, Nano-XS 'passes every gate'. That leaves out its borderline overall reading (interval 89.8–90.4%), which the rerun would also have to clear."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "c1's scatter and c3's per-cell differences fit their claims well. c2's heatmap shows only the pick's cells, so it cannot support 'thinnest clearance' against the overall line. If overall accuracy were added, the claim would flip. c3's caption says 'overall and in each place', but the table has no overall row."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "c2",
+          "severity": "must_fix",
+          "finding": "c2 says the pick's thinnest clearance is complex news (82.9%, 2.9 points above the floor). The thinnest is actually overall balanced accuracy: 90.7% against 90%, a gap of 0.7 points (criteria.overall.brisk-s.few.gap), with the interval's low end at 90.4%. The chance of a fresh run reading it on the wrong side is also higher than for complex news (0.0004972% against 0.0001087%). Fix: say complex news is the weakest cell, and name overall accuracy as the thinnest gate clearance."
+        },
+        {
+          "claim": "",
+          "severity": "must_fix",
+          "finding": "Watch and the lede treat complex news as the accuracy risk and never mention the 0.7-point overall margin, the pick's weakest margin on any gate (the computed fact weakest_not_in_watch). Sweeping the overall line shows the call disappears above 90.7%, and a best-of-9 pick reads high by chance. Fix: add a Watch entry citing the overall value, line and gap (criteria.overall.brisk-s.few.value, .low, .gap), and name it in the lede next to the latency risk."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The third next step reruns only complex news to test best-of-9 optimism. Extend it to a full fresh held-out run, so it also re-reads overall balanced accuracy, the clearance most at risk."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "Nano-XS few-shot's overall accuracy is borderline: 90.1%, interval 89.8–90.4% (criteria.overall.nano-xs.few.low/high). Yet 'Why not the others', the Nano-XS next step ('passes every gate') and the cell-floor row in 'What you could change' ('Nano-XS few-shot passes') treat it as clearing overall. Say it is borderline overall. Then make the Nano-XS next step settle both the complex-news floor and the overall line, perhaps noting that fixing complex news would also raise its balanced accuracy."
+        },
+        {
+          "claim": "c3",
+          "severity": "should_fix",
+          "finding": "The difference table's caption says each row is 'overall and in each place', but the table has no overall row. Add Brisk-S few-shot minus Nano-XS few-shot on balanced accuracy, or drop 'overall' from the caption."
+        }
+      ],
+      "total": 9,
+      "passes": false,
+      "must_fix": true
+    }
+  ]
+}
