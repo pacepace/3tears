@@ -882,26 +882,32 @@ def _sweep(input_key: str) -> _Swept:
     return _Swept(accepted=accepted, refused_by_page=refused_by_page, misdrawn=misdrawn)
 
 
-def _sweep_params() -> Iterator[Any]:
-    for input_key in _VARIANTS:
-        for kind, source in itertools.product(_KINDS, _SOURCES):
-            yield pytest.param(input_key, kind, source, id=f"{input_key}-{kind}-{source}")
+# One case per input, each over every kind and source: the sweep is one probe of the plan checks over every chart on
+# the input, so a case per (kind, source) made every process its cases landed in sweep the input again, and spread
+# over the pool's batches they swept it hundreds of times. Every pair is still held, and a failure names each pair as
+# its own case's id did (``<input>-<kind>-<source>``), all of them at once.
 
 
-@pytest.mark.parametrize(("input_key", "kind", "source"), list(_sweep_params()))
-def test_every_chart_the_plan_checks_accept_draws_each_figure_in_its_keys_unit(
-    input_key: str, kind: str, source: str
-) -> None:
+@pytest.mark.parametrize("input_key", _VARIANTS)
+def test_every_chart_the_plan_checks_accept_draws_each_figure_in_its_keys_unit(input_key: str) -> None:
     swept = _sweep(input_key)
-    misdrawn = swept.misdrawn.get((kind, source), [])
-    assert not misdrawn, misdrawn
-    refused = swept.refused_by_page.get((kind, source), [])
-    assert not refused, refused
+    faults: list[str] = []
+    for kind, source in itertools.product(_KINDS, _SOURCES):
+        where = f"{input_key}-{kind}-{source}"
+        misdrawn = swept.misdrawn.get((kind, source), [])
+        if misdrawn:
+            faults.append(f"{where}: misdrawn: {misdrawn}")
+        refused = swept.refused_by_page.get((kind, source), [])
+        if refused:
+            faults.append(f"{where}: refused by the page: {refused}")
+    assert not faults, "\n".join(faults)
 
 
-def test_the_sweep_reaches_charts_in_several_units_on_every_input_and_the_cases_it_names() -> None:
-    for input_key in _VARIANTS:
-        assert _sweep(input_key).accepted, f"the checks accept some probe on {input_key}"
+@pytest.mark.parametrize("input_key", _VARIANTS)
+def test_the_sweep_reaches_charts_in_several_units_on_every_input_and_the_cases_it_names(input_key: str) -> None:
+    assert _sweep(input_key).accepted, f"the checks accept some probe on {input_key}"
+    if input_key != "r1":
+        return
     mixed = [
         spec
         for kind, source, spec in _sweep("r1").accepted
@@ -916,16 +922,14 @@ def test_the_sweep_reaches_charts_in_several_units_on_every_input_and_the_cases_
 _FLOOR = dataset.HERE / "sweep_floor.json"
 
 
-def test_every_pair_the_floor_pins_is_still_accepted_and_drawn_on_its_input() -> None:
+@pytest.mark.parametrize("input_key", _VARIANTS)
+def test_every_pair_the_floor_pins_is_still_accepted_and_drawn_on_its_input(input_key: str) -> None:
     pinned: dict[str, list[str]] = json.loads(_FLOOR.read_text(encoding="utf-8"))["pairs"]
     assert set(pinned) == set(_VARIANTS), "the floor pins every input the sweep probes, and only those"
-    lost: dict[str, list[str]] = {}
-    for input_key, pairs in pinned.items():
-        swept = _sweep(input_key)
-        broken = set(swept.refused_by_page) | set(swept.misdrawn)
-        drawn = {f"{kind}/{source}" for kind, source, _ in swept.accepted if (kind, source) not in broken}
-        if missing := sorted(set(pairs) - drawn):
-            lost[input_key] = missing
+    swept = _sweep(input_key)
+    broken = set(swept.refused_by_page) | set(swept.misdrawn)
+    drawn = {f"{kind}/{source}" for kind, source, _ in swept.accepted if (kind, source) not in broken}
+    lost = {input_key: missing} if (missing := sorted(set(pinned[input_key]) - drawn)) else {}
     assert not lost, (
         f"pairs the checks accepted and the page drew are no longer accepted and drawn: {lost}. A deliberate "
         f"narrowing removes them from {_FLOOR.name} in the same change"
