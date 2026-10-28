@@ -1971,6 +1971,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.EvalReportSession": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.EvalReportSnapshot": {
       "kind": "model",
       "signature": "",

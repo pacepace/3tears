@@ -333,7 +333,7 @@ from threetears.evals.kernel.remedies import (
     SEED_REMEDY,
     WRITER_REMEDY,
 )
-from threetears.evals.kernel.report_doc import EvalReportDoc
+from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession
 from threetears.evals.kernel.report_snapshot import EvalReportSnapshot, SnapshotSource, report_snapshot_id
 from threetears.evals.kernel.result_condition import (
     DIFFERENTIAL_EXCLUSION_SHARE,
@@ -586,6 +586,7 @@ __all__ = [
     "EvalInsight",
     "EvalReportDoc",
     "EvalReportPlan",
+    "EvalReportSession",
     "EvalReportSnapshot",
     "SnapshotSource",
     "report_snapshot_id",
