@@ -856,7 +856,10 @@ def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(
             stated = [
                 text
                 for text in amounts
-                if any(float(f"{found.group(2).replace(',', '')}.{found.group(3) or 0}") for found in _AMOUNT.finditer(text))
+                if any(
+                    float(f"{found.group(2).replace(',', '')}.{found.group(3) or 0}")
+                    for found in _AMOUNT.finditer(text)
+                )
             ]
             marked = bool(stated) and all("/1000" in text for text in stated)
             assert moved in joined or (isinstance(page.chart, TableBlock) and marked), (label, joined[:600])
