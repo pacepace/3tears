@@ -57,6 +57,13 @@ def _sweeps() -> list[tuple[str, str]]:
     return [(name, parameter) for name, held in _inputs().items() for parameter in _parameters(held)]
 
 
+@cache
+def _swept(name: str, parameter: str) -> Sensitivity:
+    """One sweep over its default range, every flip listed: read once, since the cuts below are made on it and each
+    test reads it (and never changes it) beside the ranged sweep it holds to it."""
+    return sensitivity(_inputs()[name], parameter, limit=WHOLE)
+
+
 def _values(result: Sensitivity) -> list[float]:
     return sorted({float(flip.at.value) for flip in result.flips if isinstance(flip.at.value, int | float)})
 
@@ -71,11 +78,7 @@ def test_a_sweep_with_no_range_walks_every_flip_and_names_no_unswept_side(name: 
 
 def _cut_sweeps() -> list[tuple[str, str]]:
     """The sweeps with two flip values or more, between which a range can be cut."""
-    return [
-        (name, parameter)
-        for name, parameter in _sweeps()
-        if len(_values(sensitivity(_inputs()[name], parameter, limit=WHOLE))) >= 2
-    ]
+    return [(name, parameter) for name, parameter in _sweeps() if len(_values(_swept(name, parameter))) >= 2]
 
 
 def test_the_fixtures_hold_ranges_cut_short_of_a_change_on_either_side() -> None:
@@ -83,7 +86,7 @@ def test_the_fixtures_hold_ranges_cut_short_of_a_change_on_either_side() -> None
     sides = set()
     for name, parameter in _cut_sweeps():
         held = _inputs()[name]
-        values = _values(sensitivity(held, parameter, limit=WHOLE))
+        values = _values(_swept(name, parameter))
         middle = (values[len(values) // 2 - 1] + values[len(values) // 2]) / 2
         for given in ({"range_low": middle}, {"range_high": middle}):
             sides |= {unswept.side for unswept in sensitivity(held, parameter, limit=WHOLE, **given).unswept}  # type: ignore[arg-type]
@@ -93,7 +96,7 @@ def test_the_fixtures_hold_ranges_cut_short_of_a_change_on_either_side() -> None
 @pytest.mark.parametrize(("name", "parameter"), _cut_sweeps(), ids=lambda value: str(value))
 def test_a_range_stopping_short_of_a_change_names_that_side_and_its_nearest_flip(name: str, parameter: str) -> None:
     held = _inputs()[name]
-    whole = sensitivity(held, parameter, limit=WHOLE)
+    whole = _swept(name, parameter)
     values = _values(whole)
     middle = (values[len(values) // 2 - 1] + values[len(values) // 2]) / 2
     moving = [flip for flip in whole.flips if flip.call_changes or flip.picks_change]
@@ -138,7 +141,7 @@ def _at_flip_cuts() -> list[tuple[str, str, float, str]]:
     """Every sweep with a flip, and each value it flips at, cut there at either end."""
     cuts = []
     for name, parameter in _sweeps():
-        for value in _values(sensitivity(_inputs()[name], parameter, limit=WHOLE)):
+        for value in _values(_swept(name, parameter)):
             cuts += [(name, parameter, value, "range_low"), (name, parameter, value, "range_high")]
     return cuts
 
@@ -149,8 +152,7 @@ def test_the_fixtures_hold_ranges_cut_at_a_flip_whose_change_lies_just_past_on_b
     above. Both occur, so the strict reading of an end (the W2c miss) fails the test below."""
     seen = set()
     for name, parameter, value, end in _at_flip_cuts():
-        held = _inputs()[name]
-        whole = sensitivity(held, parameter, limit=WHOLE)
+        whole = _swept(name, parameter)
         side = "below_range_low" if end == "range_low" else "above_range_high"
         moving = any(
             (flip.call_changes or flip.picks_change) and float(flip.at.value) == value  # type: ignore[arg-type]
@@ -166,7 +168,7 @@ def test_a_range_cut_exactly_at_a_flip_names_the_change_just_past_its_end(
     name: str, parameter: str, value: float, end: str
 ) -> None:
     held = _inputs()[name]
-    whole = sensitivity(held, parameter, limit=WHOLE)
+    whole = _swept(name, parameter)
     if parameter.partition(":")[0] in ("margin", "floor") and value < 0:
         return
     ranged = sensitivity(held, parameter, limit=WHOLE, **{end: value})  # type: ignore[arg-type]
