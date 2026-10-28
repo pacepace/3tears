@@ -1396,6 +1396,13 @@ class ExampleRow(_Fact):
     )
     input: str | None = Field(description="The input the case gave.")
     expected: str | None = Field(description="What the case expected.")
+    # Left out when empty, so an example frozen without every dimension's reason reads as it did.
+    reasons: dict[str, str] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description="Each judged dimension's reason, by dimension, the primary's among them, whole; empty where the "
+        "snapshot froze none.",
+    )
     result_id: str | None = Field(description="The stored result the trial records, where the bundle named it.")
 
 
@@ -1450,6 +1457,7 @@ def _example_row(report_input: ReportInput, example: Example, results: Mapping[s
         excerpt=_clipped(example.excerpt),
         input=_clipped(example.input),
         expected=_clipped(example.expected),
+        reasons=dict(example.reasons or {}),
         result_id=results.get(example.trial) if example.trial is not None else None,
     )
 

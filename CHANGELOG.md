@@ -89,6 +89,13 @@ is a disclosure, never a coordinate: it is in no identity, context key, cell, co
 that disclose different machines share one rig row. Every new field is left out of its document when unset, so a run,
 bundle or input with none stores and digests as before. Core schema v15.11.
 
+**Added:** an analyst's examples carry every judged dimension's reason (`Example.reasons` on the report input, by
+dimension, the primary's among them, and `reasons` on `examples_list`'s rows), where `reason` is the primary
+dimension's alone. Only the analyst's input (`analyst_input`, what a snapshot is frozen from) carries them: a
+planner's input and every stored input read and digest as before. A snapshot frozen from a campaign whose trials were
+judged on any dimension now has another content address, so it is a new snapshot. `Example.expected` stays unset: no
+trial the bundle holds carries an expected answer.
+
 ### evals: `analysis_generate` writes the report with the analyst and the report editor, on the host's model and budget
 
 **Changed:** a generation no longer runs the report planner. Its job freezes the campaign's evidence and runs the

@@ -18,7 +18,8 @@ the judge's reason quotes that the text holds, else the text's end, where the re
 
 **Counted.** An analyst's input (``counted``) also carries tallies of the bundle's trials, never statistics: each
 slice's failed trials (aspect, arm and stratum, a failure as the examples count one), so a page of examples can say
-how many it was kept from; each example's case input; and, for each two aspects, the cases both ran and those only
+how many it was kept from; each example's case input and every judged dimension's reason (``Example.reasons``),
+where an example's ``reason`` is the primary dimension's alone; and, for each two aspects, the cases both ran and those only
 one ran, by stored case id. A tally is left out where the bundle's trials cannot give it whole: an aspect the bundle
 capped before every failure was kept, a pair of aspects either of which left trials out. Left out reads as not
 counted, never as none.
@@ -856,7 +857,7 @@ class _Builder:
         self, aspect: AnalysisContextBundle, trial: TrialRow, primary: str | None, at: ExcerptAt, *, inputs: bool
     ) -> Example:
         """One failed trial as an example, its excerpt cut where ``at`` says; with ``inputs``, the start of what its
-        case asked."""
+        case asked and every judged dimension's reason."""
         reason = _reason(trial, primary)
         text = _unescaped(trial.excerpt)
         cut = text[:EXAMPLE_EXCERPT_CHARS] if at == "start" else _failure_excerpt(text, reason, EXAMPLE_EXCERPT_CHARS)
@@ -872,6 +873,9 @@ class _Builder:
             excerpt=cut or None,
             outcome=trial.cause,
             input=_started(asked, EXAMPLE_EXCERPT_CHARS) or None,
+            # Every judged dimension's reason, the primary's among them, for an analyst; none where the trial was judged
+            # on none, or for a planner, whose input carries the primary's alone.
+            reasons=_reasons(trial) if inputs else None,
         )
 
     # ------------------------------------------------------------------ counted off the trials
@@ -1098,6 +1102,13 @@ def _reason(trial: TrialRow, primary: str | None) -> str | None:
     if trial.failed_checks:
         return "; ".join(check.name for check in trial.failed_checks)
     return trial.error_words
+
+
+def _reasons(trial: TrialRow) -> dict[str, str] | None:
+    """Each judged dimension's reason on a shown trial, by dimension in the order the judge gave them, each whole as
+    the bundle capped it; None where no dimension gave one."""
+    held = {judged.dim: reason for judged in trial.judge if (reason := judged.reason.strip())}
+    return held or None
 
 
 def _run_arms(aspect: AnalysisContextBundle) -> dict[str, str]:
