@@ -12,11 +12,20 @@ never a crash.
 editor's findings left unresolved in Method, the made line at its foot), and refuses a document with any verdict, so
 nothing that fails validity or an invariant is ever stored, whatever the loop that wrote it believed.
 
-**The generation record** (:func:`generation_record`) is what the stored document's ``generation`` holds (plan
-§4.5): the model the report was written with, the skill texts' digests, the writing loop's tally (every turn, then
-the sums by role, by round and in all, tool calls, bounces, wall time, a transcript digest per session), every review
-as code scored it, and every session as a stored value (the analyst's and each review round's), so a later question
-can resume the conversation that wrote the report, or the review of it. :func:`made_line` writes the page's made line from it, the one place that line is written.
+**The generation record** (:func:`generation_record`, format 2) is what the stored document's ``generation`` holds
+(plan §4.5): the model the report was written with, the skill texts' digests, the writing loop's tally (every turn,
+then the sums by role, by round and in all, tool calls, bounces, wall time, a transcript digest per session), every
+review as code scored it, and each session (the analyst's and each review round's) by ``{digest, turns, ref}``: its
+transcript digest, the turns it sent, and the id of the ``eval_report_session`` document that holds it
+(:func:`~threetears.evals.kernel.report_doc.report_session_id`). It holds digests and refs, never a message, so a
+listing of report documents loads no session, and a later question resumes the conversation that wrote the report, or
+the review of it, from the session's own document. A record for a report that is not stored names no ref, and holds
+each session inline (``session``) instead, so a paid run that stores nothing keeps every session in memory.
+:func:`made_line` writes the page's made line from it, the one place that line is written.
+
+**The store gate writes the sessions, then the document** (``EvalStorage.save_report_doc``): a stored document never
+names a session that was not written. A write that fails part way leaves the sessions written before it, which no
+document names and ``drop_derived`` sweeps, and no document; the writing loop raises it with the whole record.
 """
 
 from __future__ import annotations
@@ -31,13 +40,19 @@ from threetears.evals.analysis.report.doc_page.text import above_appendix_text
 from threetears.evals.analysis.report_doc_checks import DocVerdict, InvariantNumber, check_report_doc
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.numbers import spell_dollars
-from threetears.evals.kernel.report_doc import EvalReportDoc, ReportDoc, ReportFinding
+from threetears.evals.kernel.report_doc import (
+    EvalReportDoc,
+    EvalReportSession,
+    ReportDoc,
+    ReportFinding,
+    report_session_id,
+)
 from threetears.evals.kernel.storage import EvalStorage
 
 __all__ = ["doc_verdicts", "doc_verdicts_and_page", "generation_record", "made_line", "store_report_doc"]
 
 #: The format of the generation record :func:`generation_record` writes and :func:`made_line` reads.
-_GENERATION_FORMAT: Final = 1
+_GENERATION_FORMAT: Final = 2
 
 #: Which check a strict build's refusal is reported under, by the field it names: the first prefix it starts with.
 _REFUSED_UNDER: Final[tuple[tuple[str, InvariantNumber], ...]] = (
@@ -110,25 +125,30 @@ def _refusal(said: str) -> DocVerdict:
 
 def generation_record(
     *,
+    report_doc_id: str | None,
     model: str,
     tally: Mapping[str, Any],  # Any: the tally's JSON
     skill: Mapping[str, str],
     reviews: Sequence[Mapping[str, Any]],  # Any: each review's JSON
-    sessions: Mapping[str, Any],  # Any: each stored session's JSON
+    sessions: Mapping[str, Mapping[str, Any]],  # Any: each session's JSON
 ) -> dict[str, Any]:  # Any: a JSON object
     """The stored document's ``generation``: how the report was written and what it cost (the module docstring).
 
+    :param report_doc_id: The id the report is stored under, which names each session's document; ``None`` for a
+        report that is not stored, whose record holds each session inline.
+    :ptype report_doc_id: str | None
     :param model: The model id the report was written with.
     :ptype model: str
-    :param tally: The writing loop's tally (``Tally.to_json()``).
+    :param tally: The writing loop's tally (``Tally.to_json()``), whose transcript digests and turns are each session's.
     :ptype tally: Mapping[str, Any]
     :param skill: The digest of each system text the sessions started from, by role, and the skill's own.
     :ptype skill: Mapping[str, str]
     :param reviews: Every review, in round order, as code scored it.
     :ptype reviews: Sequence[Mapping[str, Any]]
-    :param sessions: Each stored session, by name: the analyst's and each review round's.
-    :ptype sessions: Mapping[str, Any]
-    :return: ``{"format", "model", "skill", "tally", "reviews", "sessions"}``.
+    :param sessions: Each session's JSON (its ``to_json()``), by name: the analyst's and each review round's.
+    :ptype sessions: Mapping[str, Mapping[str, Any]]
+    :return: ``{"format", "model", "skill", "tally", "reviews", "sessions"}``, ``sessions`` by name ``{"digest",
+        "turns", "ref"}``; with no ``report_doc_id``, ``ref`` is ``None`` and the session is held under ``session``.
     :rtype: dict[str, Any]
     """
     return {
@@ -137,8 +157,26 @@ def generation_record(
         "skill": dict(skill),
         "tally": dict(tally),
         "reviews": [dict(review) for review in reviews],
-        "sessions": dict(sessions),
+        "sessions": {name: _session_entry(name, session, tally, report_doc_id) for name, session in sessions.items()},
     }
+
+
+def _session_entry(
+    name: str,
+    session: Mapping[str, Any],  # Any: the session's JSON
+    tally: Mapping[str, Any],  # Any: the tally's JSON
+    report_doc_id: str | None,
+) -> dict[str, Any]:  # Any: a JSON object
+    """One session's entry in the generation record: its digest and turns from the tally, then its ref or itself."""
+    turns: Sequence[Mapping[str, Any]] = tally.get("turns", [])
+    transcripts: Mapping[str, str] = tally.get("transcripts", {})
+    entry: dict[str, Any] = {
+        "digest": transcripts.get(name),
+        "turns": sum(1 for turn in turns if turn.get("session") == name),
+    }
+    if report_doc_id is None:
+        return entry | {"ref": None, "session": dict(session)}
+    return entry | {"ref": report_session_id(report_doc_id, name)}
 
 
 def made_line(record: EvalReportDoc) -> str:
@@ -179,7 +217,7 @@ def made_line(record: EvalReportDoc) -> str:
         spent = f"at a cost not known ({unpriced} turns unpriced)"
     estimated = total.get("admitted_on_estimate")
     if isinstance(estimated, int) and not isinstance(estimated, bool) and estimated:
-        spent += f" (its budget checked against estimated prices on {estimated} of {sent} turns)"
+        spent += f" (its budget checked against estimated rates on {estimated} of {sent} turns)"
     served_as = f", served as {', '.join(served)}" if served else ""
     return (
         f"Written by {', '.join(models)}{served_as}, {spent}, with analyst skill {skill[:_DIGEST_SHOWN]}, on "
@@ -190,6 +228,7 @@ def made_line(record: EvalReportDoc) -> str:
 def store_report_doc(
     storage: EvalStorage,
     *,
+    report_doc_id: str,
     scope_id: str,
     snapshot_id: str,
     campaign_id: str | None,
@@ -198,12 +237,15 @@ def store_report_doc(
     ending: Literal["stored", "stored_with_findings", "over_budget"],
     findings: Sequence[ReportFinding],
     generation: Mapping[str, Any],  # Any: the generation record's JSON
+    sessions: Mapping[str, Mapping[str, Any]],  # Any: each session's JSON
     created_by: str,
 ) -> EvalReportDoc:
-    """Store a report document, after checking it again on the page as it will be read. Blocking.
+    """Store a report document and its sessions, after checking it again on the page as it will be read. Blocking.
 
     :param storage: Where it is stored.
     :ptype storage: EvalStorage
+    :param report_doc_id: The id it is stored under, which the generation record's refs name.
+    :ptype report_doc_id: str
     :param scope_id: The scope it is stored in.
     :ptype scope_id: str
     :param snapshot_id: The snapshot it was written from.
@@ -218,15 +260,22 @@ def store_report_doc(
     :ptype ending: Literal["stored", "stored_with_findings", "over_budget"]
     :param findings: The editor's findings left unresolved, which the page prints in Method.
     :ptype findings: Sequence[ReportFinding]
-    :param generation: The generation record (:func:`generation_record`).
+    :param generation: The generation record (:func:`generation_record` with ``report_doc_id``), naming each session
+        by ref.
     :ptype generation: Mapping[str, Any]
+    :param sessions: Each session's JSON, by name: exactly the sessions the record names.
+    :ptype sessions: Mapping[str, Mapping[str, Any]]
     :param created_by: Who asked for the report, as the host named the caller.
     :ptype created_by: str
     :return: The stored record.
     :rtype: EvalReportDoc
-    :raises ValueError: The document has a verdict on its page as it will be read, each listed; nothing is stored.
+    :raises ValueError: The document has a verdict on its page as it will be read, each listed; or the record's
+        sessions are not the ones handed in, each by the ref this report gives it. Nothing is stored.
+    :raises ConflictError: A document or session is already stored under its id (see ``EvalStorage.save_report_doc``).
+    :raises StorageError: Any other write failure, which leaves only sessions no document names.
     """
     record = EvalReportDoc(
+        id=report_doc_id,
         scope_id=scope_id,
         snapshot_id=snapshot_id,
         campaign_id=campaign_id,
@@ -236,6 +285,7 @@ def store_report_doc(
         generation=dict(generation),
         created_by=created_by,
     )
+    stored = _stored_sessions(record, generation, sessions)
     verdicts = doc_verdicts(doc, report_input, findings=findings, made=made_line(record))
     if verdicts:
         listed = "\n".join(f"- [{verdict.invariant}] {verdict.path}: {verdict.fault}" for verdict in verdicts)
@@ -243,5 +293,33 @@ def store_report_doc(
             f"the report document is not stored: it has {len(verdicts)} verdicts on snapshot {snapshot_id}, and "
             f"a stored document has none\n{listed}"
         )
-    storage.save_report_doc(record)
+    storage.save_report_doc(record, sessions=stored)
     return record
+
+
+def _stored_sessions(
+    record: EvalReportDoc,
+    generation: Mapping[str, Any],  # Any: the generation record's JSON
+    sessions: Mapping[str, Mapping[str, Any]],  # Any: each session's JSON
+) -> list[EvalReportSession]:
+    """Each session as its own document, refusing a record whose entries do not name exactly these, by this report."""
+    entries: Mapping[str, Mapping[str, Any]] = generation.get("sessions", {})
+    refs = {name: entry.get("ref") for name, entry in entries.items()}
+    expected = {name: report_session_id(record.id, name) for name in sessions}
+    if refs != expected:
+        raise ValueError(
+            f"the report document is not stored: its generation record names the sessions {refs}, and the sessions "
+            f"handed in are stored as {expected}"
+        )
+    return [
+        EvalReportSession(
+            id=expected[name],
+            scope_id=record.scope_id,
+            report_doc_id=record.id,
+            name=name,
+            digest=entries[name]["digest"],
+            turns=entries[name]["turns"],
+            session=dict(session),
+        )
+        for name, session in sessions.items()
+    ]

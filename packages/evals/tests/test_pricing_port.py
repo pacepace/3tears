@@ -559,7 +559,7 @@ async def test_a_bound_on_rates_the_host_does_not_guarantee_admits_the_turn_and_
     assert total["admitted_on_estimate"] == 1
     line = made_line(record(generation(tally)))
     # 1,200 fresh x $2 + 5,000 five-minute writes x $2.50 + 300 output x $10, a million tokens: $0.0179.
-    assert "for $0.0179 (its budget checked against estimated prices on 1 of 1 turns)" in line, line
+    assert "for $0.0179 (its budget checked against estimated rates on 1 of 1 turns)" in line, line
 
 
 def test_a_guaranteed_bound_and_a_token_budget_are_never_disclosed_as_estimates() -> None:
@@ -672,6 +672,7 @@ class RecordingLedger:
 def generation(tally: Tally) -> dict[str, Any]:
     """A generation record over ``tally``, as ``report_write`` stores one."""
     return generation_record(
+        report_doc_id=None,
         model=MODEL,
         tally=tally.to_json(),
         skill={"analyst": "a" * 64, "editor": "e" * 64, "package": "0123456789abcdef" * 4},

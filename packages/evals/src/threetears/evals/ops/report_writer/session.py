@@ -39,6 +39,12 @@ text or tool other than the stored ones, re-derives each dropped body by calling
 arguments, and refuses one that no longer reads the same; so the resumed session's next request is the uninterrupted
 session's, byte for byte.
 
+**Each message is stored as its JSON text, not as a nested object.** A tool call's input and a thinking block are
+sent back exactly as they were, and a store is free to hand an object's keys back in another order (a Postgres
+``jsonb`` column returns them shortest first): a nested message read back from such a store would rebuild a request
+whose bytes differ from the one sent, which misses the prompt cache. A string comes back as it was written, so the
+history a resume rebuilds is the one sent, byte for byte, whatever order the store keeps keys in.
+
 A reply cut at its output cap (``max_tokens``) is tallied and not kept (its thinking may stop short of its
 signature); it was never sent back, so leaving it out edits nothing, and the session's caller says what it needs as a
 new user message. A model refusal or a reply cut for another cause stops the session ``failed``.
@@ -46,6 +52,7 @@ new user message. A model refusal or a reply cut for another cause stops the ses
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -76,7 +83,7 @@ from threetears.evals.schema.turns import (
 __all__ = ["SessionLimits", "SessionStop", "ToolMount", "ToolOutcome", "ToolSession"]
 
 #: The storage format :meth:`ToolSession.to_json` writes and :meth:`ToolSession.from_json` reads.
-_FORMAT: Final = 2
+_FORMAT: Final = 3
 
 
 class ToolOutcome(Protocol):
@@ -516,18 +523,21 @@ class ToolSession:
         """The session as a stored value, which :meth:`from_json` resumes (the module docstring says what it holds).
 
         :return: ``{"format", "name", "role", "model", "skill_digest", "tools_digest", "limits", "messages",
-            "results", "state"}``.
+            "results", "state"}``; each of ``messages`` is that message's JSON text, so no store's key order reaches
+            what a resume sends again.
         :rtype: dict[str, Any]
         """
         dropped = set(self._answered) if self._mount.rederivable else set()
         messages = [
-            {
-                "role": message.role,
-                "content": [
-                    {**block.to_json(), "content": ""} if _answers(block, dropped) else block.to_json()
-                    for block in message.content
-                ],
-            }
+            _message_text(
+                {
+                    "role": message.role,
+                    "content": [
+                        {**block.to_json(), "content": ""} if _answers(block, dropped) else block.to_json()
+                        for block in message.content
+                    ],
+                }
+            )
             for message in self._messages
         ]
         return {
@@ -605,7 +615,7 @@ class ToolSession:
             stored_skill, stored_tools = record["skill_digest"], record["tools_digest"]
             messages = [
                 TurnMessage(message["role"], [block_from_json(block) for block in message["content"]])
-                for message in record["messages"]
+                for message in (_message_of(text) for text in record["messages"])
             ]
             results = [(item["tool_use_id"], item["sha256"], item["stored"]) for item in record["results"]]
             state = record["state"]
@@ -662,6 +672,27 @@ class ToolSession:
             session._closing,
         ) = counters
         return session
+
+
+def _message_text(message: Mapping[str, Any]) -> str:  # Any: a JSON object
+    """A message as the text it is stored as: its JSON, keys in the order they were sent (the module docstring)."""
+    return json.dumps(message, ensure_ascii=False, separators=(",", ":"))
+
+
+def _message_of(text: Any) -> dict[str, Any]:  # Any: a stored value, checked here; a JSON object
+    """A stored message read back from its text, keys in the order it was written; refused unless it is one.
+
+    :raises TypeError: The stored value is not the text of a JSON object.
+    """
+    if not isinstance(text, str):
+        raise TypeError(f"a stored message is its JSON text, not {type(text).__name__}")
+    try:
+        message = json.loads(text)
+    except json.JSONDecodeError as unread:
+        raise TypeError(f"a stored message is not JSON ({unread.msg})") from unread
+    if not isinstance(message, dict):
+        raise TypeError(f"a stored message is the text of a JSON object, not of {type(message).__name__}")
+    return message
 
 
 def _count_of(state: Mapping[str, Any], member: str) -> int:  # Any: a JSON object
