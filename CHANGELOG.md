@@ -56,13 +56,20 @@ group nesting from `MAX_GROUP_MEMBERSHIP_DEPTH` (one nested `EXISTS` per group e
 hand-written single hop, so the SQL and the evaluator cannot disagree about depth. At depth 2 the
 generated SQL is the same predicate as before, with the same plan.
 
-**Added:** the depth is configuration. `THREETEARS_ACL_MAX_GROUP_MEMBERSHIP_DEPTH` (default 2,
-1 to `MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH` = 4) is read once at import into
-`MAX_GROUP_MEMBERSHIP_DEPTH`, which the evaluator's walk, the cycle check and the generated SQL all
-read; an invalid value raises at import rather than falling back. `resolve_max_group_membership_depth`,
-`MAX_GROUP_MEMBERSHIP_DEPTH_ENV` and `DEFAULT_MAX_GROUP_MEMBERSHIP_DEPTH` are exported. Every process
-that evaluates must be given the same value. Raising it costs real time on YugabyteDB: at 3 the
+**Added:** the nesting is configuration, counted in levels the way a reader counts the chain on
+screen: the person plus each group, so `person -> customer-users:14th -> reports-report:all` is 3
+levels. `THREETEARS_ACL_MAX_GROUP_NESTING_LEVELS` (default 3, allowed 2 to 5) is read once at import;
+`MAX_GROUP_MEMBERSHIP_DEPTH` (the hops the platform walks) is that value minus 1, so the default is
+the same depth 2 as before, and the evaluator's walk, the cycle check and the generated SQL all read
+it. An invalid value raises at import rather than falling back. The resolver and its constants stay
+internal to `threetears.agent.acl.types`; only `MAX_GROUP_MEMBERSHIP_DEPTH` is exported. Every process
+that evaluates must be given the same value. Raising it costs real time on YugabyteDB: at 4 levels the
 hub's namespace discovery went from ~260 ms to ~820 ms p50 on a 10x dataset.
+
+**Upgrade:** `THREETEARS_ACL_MAX_GROUP_MEMBERSHIP_DEPTH`, the hop-counted name this setting had on
+develop before this release, is refused at import if set at all, with a message naming the new
+variable and its value (levels = old value + 1). Unset it and set
+`THREETEARS_ACL_MAX_GROUP_NESTING_LEVELS`.
 
 **Added:** `threetears.agent.acl.ParentGroupsLoader`, an optional protocol beside `MembershipLoader`
 (the `HeldAssignmentsLoader` shape): `load_for_groups(group_ids)` returns every membership naming any

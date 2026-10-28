@@ -8,7 +8,7 @@ sees nothing. the unit tests pin the fragment's text; these prove the
 fragment's SEMANTICS against real Postgres, both directions, and prove the
 evaluator -- reading the same rows through the production membership loader
 -- reaches the same verdict at every chain length up to one past the cap, at
-every depth a deployment may configure, so
+every nesting a deployment may configure, so
 a future edit that drops a hop or widens past the cap fails as a measurement
 rather than a diff.
 """
@@ -31,8 +31,10 @@ from threetears.agent.acl import (
     caller_visible_customer_clause,
 )
 from threetears.agent.acl.types import (
-    MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH,
-    MAX_GROUP_MEMBERSHIP_DEPTH_ENV,
+    MAX_CONFIGURABLE_GROUP_NESTING_LEVELS,
+    MAX_GROUP_NESTING_LEVELS_ENV,
+    MIN_CONFIGURABLE_GROUP_NESTING_LEVELS,
+    RETIRED_MAX_GROUP_MEMBERSHIP_DEPTH_ENV,
 )
 
 pytestmark = pytest.mark.integration
@@ -208,21 +210,25 @@ async def test_the_walk_stops_at_the_cap(pg_pool: asyncpg.Pool) -> None:
 _PROBE = Path(__file__).with_name("depth_agreement_probe.py")
 
 
-@pytest.mark.parametrize("depth", range(1, MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH + 1))
-async def test_the_evaluator_and_the_clause_agree_at_every_configured_depth(
-    pg_pool: asyncpg.Pool, db_container: str, depth: int
+@pytest.mark.parametrize(
+    "levels", range(MIN_CONFIGURABLE_GROUP_NESTING_LEVELS, MAX_CONFIGURABLE_GROUP_NESTING_LEVELS + 1)
+)
+async def test_the_evaluator_and_the_clause_agree_at_every_configured_nesting(
+    pg_pool: asyncpg.Pool, db_container: str, levels: int
 ) -> None:
-    """configured to any depth, the visibility clause admits a chain exactly when the evaluator grants through it.
+    """configured to any nesting, the visibility clause admits a chain exactly when the evaluator grants through it.
 
-    the depth is read once at import from ``THREETEARS_ACL_MAX_GROUP_MEMBERSHIP_DEPTH``, the way a
-    deployment sets it, so each depth runs in a fresh interpreter (:mod:`depth_agreement_probe`):
-    for every chain from one group to one past the depth, the evaluator -- reading the same
-    ``group_members`` rows through the production :class:`CollectionMembershipLoader`, its
-    batched parent read included -- and the clause must agree, and both must stop exactly at
-    the configured depth.
+    the nesting is read once at import from ``THREETEARS_ACL_MAX_GROUP_NESTING_LEVELS``, in levels
+    (the person plus each group), the way a deployment sets it, so each setting runs in a fresh
+    interpreter (:mod:`depth_agreement_probe`): for every chain from one group to one past the
+    setting, the evaluator -- reading the same ``group_members`` rows through the production
+    :class:`CollectionMembershipLoader`, its batched parent read included -- and the clause must
+    agree, and both must stop exactly at ``levels - 1`` groups.
     """
     _ = pg_pool  # the fixture creates the tables the probe seeds
-    env = {**os.environ, MAX_GROUP_MEMBERSHIP_DEPTH_ENV: str(depth)}
+    depth = levels - 1
+    env = {key: value for key, value in os.environ.items() if key != RETIRED_MAX_GROUP_MEMBERSHIP_DEPTH_ENV}
+    env[MAX_GROUP_NESTING_LEVELS_ENV] = str(levels)
     probe = await asyncio.create_subprocess_exec(
         sys.executable,
         str(_PROBE),
@@ -234,6 +240,7 @@ async def test_the_evaluator_and_the_clause_agree_at_every_configured_depth(
     out, err = await probe.communicate()
     assert probe.returncode == 0, err.decode()
     report = json.loads(out.decode().strip().splitlines()[-1])
+    assert report["levels"] == levels
     assert report["depth"] == depth
     verdicts = {int(groups): verdict for groups, verdict in report["chains"].items()}
     assert set(verdicts) == set(range(1, depth + 2))

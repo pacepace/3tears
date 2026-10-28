@@ -93,55 +93,83 @@ class MemberType(StrEnum):
     GROUP = "group"
 
 
-#: the environment variable that sets :data:`MAX_GROUP_MEMBERSHIP_DEPTH`, read once at import.
-MAX_GROUP_MEMBERSHIP_DEPTH_ENV: Final[str] = "THREETEARS_ACL_MAX_GROUP_MEMBERSHIP_DEPTH"
+#: the environment variable that sets the group nesting, read once at import. it counts LEVELS the way
+#: a reader counts the chain on screen: the person plus each group in it, so
+#: ``person -> customer-users:14th -> reports-report:all`` is 3 levels.
+MAX_GROUP_NESTING_LEVELS_ENV: Final[str] = "THREETEARS_ACL_MAX_GROUP_NESTING_LEVELS"
 
-#: the depth when :data:`MAX_GROUP_MEMBERSHIP_DEPTH_ENV` is unset: user -> org group -> state group.
-DEFAULT_MAX_GROUP_MEMBERSHIP_DEPTH: Final[int] = 2
+#: the variable's earlier name, which counted membership HOPS (one fewer than levels). it never
+#: shipped in a release; setting it refuses at import, naming the conversion, so a deployment that
+#: still sets it cannot quietly get a nesting one level shallower than it meant.
+RETIRED_MAX_GROUP_MEMBERSHIP_DEPTH_ENV: Final[str] = "THREETEARS_ACL_MAX_GROUP_MEMBERSHIP_DEPTH"
+
+#: the levels when :data:`MAX_GROUP_NESTING_LEVELS_ENV` is unset: a person plus two groups
+#: (person -> org group -> state group).
+DEFAULT_MAX_GROUP_NESTING_LEVELS: Final[int] = 3
+
+#: the shallowest a deployment may configure: a person plus the one group they are directly in.
+MIN_CONFIGURABLE_GROUP_NESTING_LEVELS: Final[int] = 2
 
 #: the deepest a deployment may configure. each level adds one nested ``EXISTS`` to the visibility
-#: SQL and one read per level to a cold evaluator walk; depth 3 already multiplied the visibility
-#: and discovery SQL's cost on YugabyteDB, so a value past this is a typo, not a decision.
-MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH: Final[int] = 4
+#: SQL and one read to a cold evaluator walk; 4 levels already multiplied the visibility and
+#: discovery SQL's cost on YugabyteDB, so a value past this is a typo, not a decision.
+MAX_CONFIGURABLE_GROUP_NESTING_LEVELS: Final[int] = 5
 
 
-def resolve_max_group_membership_depth(environ: Mapping[str, str]) -> int:
-    """read the group-nesting depth from ``environ``, refusing a value the platform cannot honour.
+def resolve_max_group_nesting_levels(environ: Mapping[str, str]) -> int:
+    """read the group nesting, in levels, from ``environ``, refusing a value the platform cannot honour.
 
-    unset means :data:`DEFAULT_MAX_GROUP_MEMBERSHIP_DEPTH`. anything else must be an integer from
-    1 to :data:`MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH`. an invalid value raises rather than
-    falling back: a deployment that asked for a depth and silently got another would show
-    memberships that grant nothing, which is the failure the depth cap's write-time refusal exists
-    to prevent.
+    unset means :data:`DEFAULT_MAX_GROUP_NESTING_LEVELS`. anything else must be an integer from
+    :data:`MIN_CONFIGURABLE_GROUP_NESTING_LEVELS` to :data:`MAX_CONFIGURABLE_GROUP_NESTING_LEVELS`.
+    an invalid value raises rather than falling back: a deployment that asked for a nesting and
+    silently got another would show memberships that grant nothing, which is the failure the depth
+    cap's write-time refusal exists to prevent. so does
+    :data:`RETIRED_MAX_GROUP_MEMBERSHIP_DEPTH_ENV` set at all, because it counted hops and read as
+    levels it would be one short.
 
     :param environ: the environment to read, normally ``os.environ``
     :ptype environ: Mapping[str, str]
-    :return: the depth every surface uses
+    :return: the levels: the person plus each group in the longest chain that resolves
     :rtype: int
-    :raises ValueError: when the variable is set to anything but an integer in range
+    :raises ValueError: when the retired variable is set, or the variable is set to anything but an
+        integer in range
     """
-    raw = environ.get(MAX_GROUP_MEMBERSHIP_DEPTH_ENV)
-    depth = DEFAULT_MAX_GROUP_MEMBERSHIP_DEPTH
+    retired = environ.get(RETIRED_MAX_GROUP_MEMBERSHIP_DEPTH_ENV)
+    if retired is not None:
+        hops = retired.strip()
+        converted = str(int(hops) + 1) if hops.lstrip("-").isdigit() else "<old value + 1>"
+        raise ValueError(
+            f"{RETIRED_MAX_GROUP_MEMBERSHIP_DEPTH_ENV} is retired: it counted membership hops. unset it and set "
+            f"{MAX_GROUP_NESTING_LEVELS_ENV}, which counts levels (the person plus each group): levels = old value + 1, "
+            f"so {RETIRED_MAX_GROUP_MEMBERSHIP_DEPTH_ENV}={hops} becomes {MAX_GROUP_NESTING_LEVELS_ENV}={converted}"
+        )
+    raw = environ.get(MAX_GROUP_NESTING_LEVELS_ENV)
+    levels = DEFAULT_MAX_GROUP_NESTING_LEVELS
     if raw is not None:
         try:
-            depth = int(raw.strip())
+            levels = int(raw.strip())
         except ValueError:
-            raise ValueError(f"{MAX_GROUP_MEMBERSHIP_DEPTH_ENV}={raw!r} is not an integer") from None
-        if not 1 <= depth <= MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH:
+            raise ValueError(f"{MAX_GROUP_NESTING_LEVELS_ENV}={raw!r} is not an integer") from None
+        if not MIN_CONFIGURABLE_GROUP_NESTING_LEVELS <= levels <= MAX_CONFIGURABLE_GROUP_NESTING_LEVELS:
             raise ValueError(
-                f"{MAX_GROUP_MEMBERSHIP_DEPTH_ENV}={raw!r} is outside 1..{MAX_CONFIGURABLE_GROUP_MEMBERSHIP_DEPTH}"
+                f"{MAX_GROUP_NESTING_LEVELS_ENV}={raw!r} is outside "
+                f"{MIN_CONFIGURABLE_GROUP_NESTING_LEVELS}..{MAX_CONFIGURABLE_GROUP_NESTING_LEVELS}"
             )
-    return depth
+    return levels
 
 
-#: how many membership levels resolution walks: an actor's DIRECT groups are depth 1, their parent
-#: groups depth 2, and so on. configured, not coded: :data:`MAX_GROUP_MEMBERSHIP_DEPTH_ENV` sets it
-#: at startup (default :data:`DEFAULT_MAX_GROUP_MEMBERSHIP_DEPTH`), read once here, and every
-#: surface reads this one value -- the evaluator's walk, the cycle check, the generated visibility
-#: SQL, and a consumer's own write-time cap and generated SQL -- so none can disagree within a
-#: process. every process that evaluates (the hub, agent pods, the registry) must be given the same
-#: value, or one of them grants what another refuses.
-MAX_GROUP_MEMBERSHIP_DEPTH: Final[int] = resolve_max_group_membership_depth(os.environ)
+#: the configured nesting in levels -- the person plus each group in the longest chain that
+#: resolves -- read once here from :data:`MAX_GROUP_NESTING_LEVELS_ENV` (default
+#: :data:`DEFAULT_MAX_GROUP_NESTING_LEVELS`).
+MAX_GROUP_NESTING_LEVELS: Final[int] = resolve_max_group_nesting_levels(os.environ)
+
+#: how many membership hops resolution walks: an actor's DIRECT groups are depth 1, their parent
+#: groups depth 2, and so on -- :data:`MAX_GROUP_NESTING_LEVELS` minus the person. configured, not
+#: coded: every surface reads this one value -- the evaluator's walk, the cycle check, the generated
+#: visibility SQL, and a consumer's own write-time cap and generated SQL -- so none can disagree
+#: within a process. every process that evaluates (the hub, agent pods, the registry) must be given
+#: the same setting, or one of them grants what another refuses.
+MAX_GROUP_MEMBERSHIP_DEPTH: Final[int] = MAX_GROUP_NESTING_LEVELS - 1
 
 
 class ScopeType(StrEnum):
