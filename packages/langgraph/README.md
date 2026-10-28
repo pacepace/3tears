@@ -10,7 +10,24 @@ L3 failures reach the caller, with one channel-scoped carve-out: `aput_writes` i
 
 ```bash
 pip install 3tears-langgraph
+pip install "3tears-langgraph[nats]"   # for NatsCheckpointL2Cache, the L2 tier over NATS KV
 ```
+
+### The L2 cache
+
+`l2_cache=` takes anything satisfying `CheckpointL2Cache`. Use
+`threetears.langgraph.nats_l2.NatsCheckpointL2Cache(nats_client)`, which needs the `[nats]` extra
+and is not imported by `threetears.langgraph` itself. It satisfies every optional L2 protocol the
+saver reads:
+
+- `CheckpointL2RevisionCache`: a read that misses L1 refills L2 at the revision it read before
+  asking Postgres, so a newer checkpoint written meanwhile is never replaced by an older one.
+- `CheckpointL2ValueLimit`: a checkpoint over the server's `max_payload` is not attempted; the
+  key is deleted instead.
+- `CheckpointL2PrefixCache`: a purge clears a thread's namespaced entries too.
+
+A cache of your own that lacks `CheckpointL2RevisionCache` stays correct but is never refilled
+from a read, only by the next write; the saver logs that once, at INFO, when it is built.
 
 ## Usage
 

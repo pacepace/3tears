@@ -8,7 +8,8 @@ pivot also carries for a cell not yet run.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
@@ -35,6 +36,34 @@ if TYPE_CHECKING:
 #: The ``method_id`` of the cost estimator's predictions: a planned cell priced from the corpus's
 #: own per-observation usage history (:func:`compute_estimate_cost`).
 COST_PREDICTION_METHOD = "usage-history"
+
+
+@dataclass(frozen=True, slots=True)
+class CostObservation:
+    """What the cost estimate reads of one past result, kept in its place by a reader that walks a run's results a page
+    at a time (:mod:`~threetears.evals.kernel.run_pages`) rather than holding them: its run, its model, what it cost
+    and which roles that cost sums (``EvalResult.cost_roles``)."""
+
+    eval_run_id: str
+    model: str
+    cost_usd: float | None
+    cost_roles: tuple[str, ...]
+
+    @classmethod
+    def of(cls, result: EvalResult) -> CostObservation:
+        """Keep what the cost estimate reads of ``result``.
+
+        :param result: A past result.
+        :ptype result: EvalResult
+        :return: Its cost observation.
+        :rtype: CostObservation
+        """
+        return cls(
+            eval_run_id=result.eval_run_id,
+            model=result.model,
+            cost_usd=result.cost_usd,
+            cost_roles=tuple(result.cost_roles),
+        )
 
 
 class PredictedValue(EvalBaseModel):
@@ -426,7 +455,7 @@ class CostEstimate(EvalBaseModel):
 
 def compute_estimate_cost(
     runs: list[EvalRun],
-    results: list[EvalResult],
+    results: Iterable[EvalResult] | Iterable[CostObservation],
     *,
     models: list[str],
     k_runs: int,
@@ -488,8 +517,9 @@ def compute_estimate_cost(
 
     :param runs: The corpus runs, supplying each result's cassette mode and subject.
     :ptype runs: list[EvalRun]
-    :param results: The corpus results, supplying per-observation ``cost_usd``.
-    :ptype results: list[EvalResult]
+    :param results: The corpus results, supplying per-observation ``cost_usd``, or what the estimate reads of each
+        (:class:`CostObservation`), for a reader that did not hold them. Read once, in order.
+    :ptype results: Iterable[EvalResult] | Iterable[CostObservation]
     :param models: The candidate models the proposed sweep would run.
     :ptype models: list[str]
     :param k_runs: Proposed iterations per test case.
@@ -536,7 +566,7 @@ def compute_estimate_cost(
     run_by_id = {run.id: run for run in runs}
     stamp = computed_at if computed_at is not None else utc_now_iso()
 
-    def _eligible(result: EvalResult) -> bool:
+    def _eligible(result: EvalResult | CostObservation) -> bool:
         run = run_by_id.get(result.eval_run_id)
         if run is None or run.cassette_mode != cassette_mode:
             return False
@@ -549,7 +579,7 @@ def compute_estimate_cost(
     # The basis results themselves, kept beside their costs so each cell can disclose what
     # its mean was drawn across — the estimate pools history from either side of a
     # composition change and the pooled mean cannot show it.
-    basis_by_model: dict[str, list[EvalResult]] = {}
+    basis_by_model: dict[str, list[EvalResult | CostObservation]] = {}
     for result in results:
         if not _eligible(result):
             continue
@@ -668,6 +698,7 @@ __all__ = [
     "COST_ESTIMATE_MIN_BASIS",
     "COST_PREDICTION_METHOD",
     "CostEstimate",
+    "CostObservation",
     "CostEstimateCell",
     "CostEstimateError",
     "PlannedCost",

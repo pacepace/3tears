@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-langgraph"
-version = "0.80.0+analyst.2"
+version = "0.81.0"
 description = "Three-tier LangGraph checkpoint saver: L1 SQLite -> L2 NATS KV -> L3 PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,9 +22,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.80.0,<0.81.0",
-    "3tears-media-contracts>=0.80.0,<0.81.0",
-    "3tears-observe>=0.80.0,<0.81.0",
+    "3tears>=0.81.0,<0.82.0",
+    "3tears-media-contracts>=0.81.0,<0.82.0",
+    "3tears-observe>=0.81.0,<0.82.0",
     "langchain>=1.0",
     "langchain-core>=1.0",
     "langgraph>=1.0",
@@ -33,6 +33,11 @@ dependencies = [
     "uuid-utils",
     "pydantic>=2.0",
 ]
+
+[project.optional-dependencies]
+# threetears.langgraph.nats_l2: the checkpoint L2 cache over NATS KV. Optional because a saver
+# with no L2, or another L2, never needs a NATS client.
+nats = ["3tears-nats>=0.81.0,<0.82.0"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
@@ -43,6 +48,7 @@ packages = ["src/threetears"]
 [tool.uv.sources]
 3tears = { workspace = true }
 3tears-media-contracts = { workspace = true }
+3tears-nats = { workspace = true }
 3tears-observe = { workspace = true }
 
 [tool.mypy]

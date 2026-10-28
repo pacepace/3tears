@@ -212,11 +212,35 @@ def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) ->
     :return: The movement per (dimension, scale, first judge, second judge), tested as one family.
     :rtype: JudgeDrift
     """
-    pairs: dict[SecondJudgeGroup, dict[str, list[tuple[int, int]]]] = {}
-    unanswered: dict[SecondJudgeGroup, int] = {}
+    tally = JudgeDriftTally(pass_id=pass_id)
     for result in results:
+        tally.add(result)
+    return tally.drift()
+
+
+class JudgeDriftTally:
+    """:func:`judge_drift` read one result at a time, for a reader that walks results it does not hold: each pair of
+    scores by its case, never the result; the paired test reads every case at once, so this grows with the pairs."""
+
+    def __init__(self, *, pass_id: str | None = None) -> None:
+        """Start a tally reading every pass's pairs, or only ``pass_id``'s.
+
+        :param pass_id: Read only this pass's pairs; ``None`` for every pass.
+        :ptype pass_id: str | None
+        """
+        self._pass_id = pass_id
+        self._pairs: dict[SecondJudgeGroup, dict[str, list[tuple[int, int]]]] = {}
+        self._unanswered: dict[SecondJudgeGroup, int] = {}
+
+    def add(self, result: EvalResult) -> None:
+        """Read one result's second-judge scores.
+
+        :param result: The result.
+        :ptype result: EvalResult
+        """
+        pairs, unanswered = self._pairs, self._unanswered
         for judging in result.judge_seconds:
-            if pass_id is not None and judging.pass_id != pass_id:
+            if self._pass_id is not None and judging.pass_id != self._pass_id:
                 continue
             for entry in judging.scores:
                 first = JudgeKey(
@@ -233,58 +257,77 @@ def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) ->
                     unanswered[key] = unanswered.get(key, 0) + 1
                     continue
                 cases.setdefault(result.test_case_id, []).append((entry.first_score, entry.second.score))
-    keys = sorted(pairs, key=second_judge_group_sort_key)
-    samples: dict[SecondJudgeGroup, tuple[list[Fraction], list[Fraction]]] = {}
-    for key in keys:
-        # Each case one draw: its repeats' scores averaged on each side, exactly, in one case order.
-        by_case = pairs[key]
-        samples[key] = (
-            [Fraction(sum(first for first, _ in by_case[case]), len(by_case[case])) for case in sorted(by_case)],
-            [Fraction(sum(second for _, second in by_case[case]), len(by_case[case])) for case in sorted(by_case)],
-        )
-    # The family is every dimension a test can read (two cases or more); its size sets every test's level.
-    tested = [key for key in keys if len(samples[key][0]) >= 2]
-    level = 1.0 - SIGNIFICANCE_ALPHA / len(tested) if tested else None
-    dimensions = []
-    for key in keys:
-        first, model, config_id, temperature, second_sent = key
-        a, b = samples[key]
-        low, high = SCALES[first.scale].scores
-        test = _paired_test(a, b, level, (float(low), float(high))) if level is not None else None
-        interval = None if test is None else test[0]
-        # Bonferroni: the p times the family's size, so `p_adjusted < α` is exactly the interval at 1 − α/m
-        # excluding zero, and the verdict below reads the interval — one test, never two that could disagree.
-        p_adjusted = None if test is None else min(1.0, test[1] * len(tested))
-        verdict: DriftVerdict = (
-            "untested" if interval is None else "separated" if interval[0] > 0 or interval[1] < 0 else "not_separated"
-        )
-        first_mean = float(sum(a) / len(a)) if a else None
-        second_mean = float(sum(b) / len(b)) if b else None
-        dimensions.append(
-            JudgeDriftDimension(
-                rubric_dim=first.rubric_dim,
-                scale=first.scale,
-                judge_model=first.judge_model,
-                judge_config_id=first.judge_config_id,
-                judge_temperature=first.judge_temperature,
-                judge_sent_settings=sent_settings_from_key(first.judge_sent_settings),
-                second_model=model,
-                second_judge_config_id=config_id,
-                second_temperature=temperature,
-                second_sent_settings=sent_settings_from_level(second_sent),
-                n_pairs=sum(len(values) for values in pairs[key].values()),
-                n_cases=len(a),
-                n_unanswered=unanswered.get(key, 0),
-                first_mean=first_mean,
-                second_mean=second_mean,
-                delta=float(sum(b) / len(b) - sum(a) / len(a)) if a else None,
-                interval=interval,
-                interval_level=level if interval is not None else None,
-                p_adjusted=p_adjusted,
-                verdict=verdict,
+
+    def drift(self) -> JudgeDrift:
+        """The movement over every result read so far.
+
+        :return: As :func:`judge_drift` returns it.
+        :rtype: JudgeDrift
+        """
+        pairs, unanswered = self._pairs, self._unanswered
+        keys = sorted(pairs, key=second_judge_group_sort_key)
+        samples: dict[SecondJudgeGroup, tuple[list[Fraction], list[Fraction]]] = {}
+        for key in keys:
+            # Each case one draw: its repeats' scores averaged on each side, exactly, in one case order.
+            by_case = pairs[key]
+            samples[key] = (
+                [Fraction(sum(first for first, _ in by_case[case]), len(by_case[case])) for case in sorted(by_case)],
+                [Fraction(sum(second for _, second in by_case[case]), len(by_case[case])) for case in sorted(by_case)],
             )
-        )
-    return JudgeDrift(dimensions=dimensions, family_size=len(tested))
+        # The family is every dimension a test can read (two cases or more); its size sets every test's level.
+        tested = [key for key in keys if len(samples[key][0]) >= 2]
+        level = 1.0 - SIGNIFICANCE_ALPHA / len(tested) if tested else None
+        dimensions = []
+        for key in keys:
+            first, model, config_id, temperature, second_sent = key
+            a, b = samples[key]
+            low, high = SCALES[first.scale].scores
+            test = _paired_test(a, b, level, (float(low), float(high))) if level is not None else None
+            interval = None if test is None else test[0]
+            # Bonferroni: the p times the family's size, so `p_adjusted < α` is exactly the interval at 1 − α/m
+            # excluding zero, and the verdict below reads the interval — one test, never two that could disagree.
+            p_adjusted = None if test is None else min(1.0, test[1] * len(tested))
+            verdict: DriftVerdict = (
+                "untested"
+                if interval is None
+                else "separated"
+                if interval[0] > 0 or interval[1] < 0
+                else "not_separated"
+            )
+            first_mean = float(sum(a) / len(a)) if a else None
+            second_mean = float(sum(b) / len(b)) if b else None
+            dimensions.append(
+                JudgeDriftDimension(
+                    rubric_dim=first.rubric_dim,
+                    scale=first.scale,
+                    judge_model=first.judge_model,
+                    judge_config_id=first.judge_config_id,
+                    judge_temperature=first.judge_temperature,
+                    judge_sent_settings=sent_settings_from_key(first.judge_sent_settings),
+                    second_model=model,
+                    second_judge_config_id=config_id,
+                    second_temperature=temperature,
+                    second_sent_settings=sent_settings_from_level(second_sent),
+                    n_pairs=sum(len(values) for values in pairs[key].values()),
+                    n_cases=len(a),
+                    n_unanswered=unanswered.get(key, 0),
+                    first_mean=first_mean,
+                    second_mean=second_mean,
+                    delta=float(sum(b) / len(b) - sum(a) / len(a)) if a else None,
+                    interval=interval,
+                    interval_level=level if interval is not None else None,
+                    p_adjusted=p_adjusted,
+                    verdict=verdict,
+                )
+            )
+        return JudgeDrift(dimensions=dimensions, family_size=len(tested))
 
 
-__all__ = ["DRIFT_DETECTS_MOVEMENT", "DriftVerdict", "JudgeDrift", "JudgeDriftDimension", "judge_drift"]
+__all__ = [
+    "DRIFT_DETECTS_MOVEMENT",
+    "DriftVerdict",
+    "JudgeDrift",
+    "JudgeDriftDimension",
+    "JudgeDriftTally",
+    "judge_drift",
+]

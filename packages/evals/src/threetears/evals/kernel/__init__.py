@@ -382,6 +382,7 @@ from threetears.evals.kernel.storage import (
     UnreadableRecordError,
     UnreadableRunError,
 )
+from threetears.evals.kernel.run_pages import ResultKey
 from threetears.evals.kernel.surface import (
     STRATUM_MIN_CASES,
     ArmGuardrails,
@@ -705,6 +706,7 @@ __all__ = [
     "ReplayedDelivery",
     "ResolvedControl",
     "ResolvedUsage",
+    "ResultKey",
     "ResultStore",
     "ResultCondition",
     "ResultOutcome",

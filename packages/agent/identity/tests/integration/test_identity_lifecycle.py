@@ -13,17 +13,16 @@ import uuid
 from typing import Any
 
 import pytest
-from threetears.agent.acl import AclCache
 from threetears.core.collections import CallerTransaction
 
 from threetears.agent.identity import lifecycle
-from threetears.agent.identity.authorize import IdentityAuthorizerDependencies
 
 from .conftest import (
     InMemoryNatsBus,
     apply_migrations,
     build_collection,
     make_pool,
+    owner_authorizer,
 )
 
 pytestmark = pytest.mark.integration
@@ -32,43 +31,6 @@ _AGENT = uuid.UUID("00000000-0000-0000-0000-000000000001")
 _USER = uuid.UUID("00000000-0000-0000-0000-00000000000b")
 _CUST = _USER
 _BLOCK = "personality"
-
-
-def _authorizer() -> IdentityAuthorizerDependencies:
-    """owner-only authorizer with empty ACL loaders (short-circuit path)."""
-
-    class _EmptyMembershipLoader:
-        async def load_for_user(self, user_id: uuid.UUID) -> tuple[Any, ...]:
-            _ = user_id
-            return ()
-
-        async def load_for_agent(self, agent_id: uuid.UUID) -> tuple[Any, ...]:
-            _ = agent_id
-            return ()
-
-        async def load_for_group(self, group_id: uuid.UUID) -> tuple[Any, ...]:
-            _ = group_id
-            return ()
-
-    class _EmptyGrantLoader:
-        async def load_assignments_for_groups(self, group_ids: Any, namespace: Any) -> tuple[Any, ...]:
-            _ = group_ids, namespace
-            return ()
-
-        async def load_roles(self, role_ids: Any) -> dict[Any, Any]:
-            _ = role_ids
-            return {}
-
-        async def load_groups(self, group_ids: Any) -> dict[Any, Any]:
-            _ = group_ids
-            return {}
-
-    return IdentityAuthorizerDependencies(
-        acl_cache=AclCache(
-            membership_loader=_EmptyMembershipLoader(),
-            grant_loader=_EmptyGrantLoader(),
-        ),
-    )
 
 
 async def _stack(pg_schema: tuple[str, str]) -> tuple[Any, Any]:
@@ -94,7 +56,7 @@ async def _count_active(pool: Any, block: str) -> int:
 
 async def test_full_lifecycle(pg_schema: tuple[str, str]) -> None:
     coll, pool = await _stack(pg_schema)
-    authz = _authorizer()
+    authz = owner_authorizer()
     try:
         # tier-1 propose -> proposed; pending queue shows it; no active yet
         v1 = await lifecycle.propose(
@@ -175,7 +137,7 @@ async def test_conn_binds_apply_to_caller_transaction(pg_schema: tuple[str, str]
     cache atomic with the apply.
     """
     coll, pool = await _stack(pg_schema)
-    authz = _authorizer()
+    authz = owner_authorizer()
     block = "self_improvement"  # tier-2: propose auto-applies (no consent step)
 
     class _Rollback(Exception):
@@ -221,7 +183,7 @@ async def test_conn_binds_apply_to_caller_transaction(pg_schema: tuple[str, str]
 
 async def test_seed_active_imports_root_then_proposes_over_it(pg_schema: tuple[str, str]) -> None:
     coll, pool = await _stack(pg_schema)
-    authz = _authorizer()
+    authz = owner_authorizer()
     try:
         # seed the pre-existing content as the active root
         root = await lifecycle.seed_active(
@@ -267,7 +229,7 @@ async def test_seed_active_imports_root_then_proposes_over_it(pg_schema: tuple[s
 
 async def test_reject_leaves_active_untouched(pg_schema: tuple[str, str]) -> None:
     coll, pool = await _stack(pg_schema)
-    authz = _authorizer()
+    authz = owner_authorizer()
     try:
         proposed = await lifecycle.propose(
             coll,
@@ -290,7 +252,7 @@ async def test_reject_leaves_active_untouched(pg_schema: tuple[str, str]) -> Non
 async def test_consent_refuses_a_sibling_made_against_a_superseded_head(pg_schema: tuple[str, str]) -> None:
     """Two proposals made from the same version: once one is consented, the other would undo it."""
     coll, pool = await _stack(pg_schema)
-    authz = _authorizer()
+    authz = owner_authorizer()
     try:
         await lifecycle.seed_active(
             coll, authz, agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=_BLOCK, content="as written"

@@ -64,18 +64,18 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, JsonValue, computed_field, model_validator
 
-from threetears.evals.analysis.agreement import InterJudgeDimension, inter_judge_agreement
+from threetears.evals.analysis.agreement import InterJudgeDimension, InterJudgeTally
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
 from threetears.evals.kernel.numbers import format_number, spell_dollars
 from threetears.evals.analysis.reporting import (
+    ModelIdentityTally,
     RequestSettingsReading,
+    RequestSettingsTally,
+    SelfJudgingTally,
     UnconfirmedModelIdentity,
     model_identity_disclosure,
     request_settings_disclosure,
-    request_settings_readings,
-    self_judging_models,
     self_judging_text,
-    unconfirmed_model_identities,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.report.figures import NO_SUCCESSFUL_RESULTS
@@ -117,6 +117,7 @@ from threetears.evals.kernel.surface import STRATUM_MIN_CASES
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
 from threetears.evals.kernel.remedies import FIND_RUN
+from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
 
 
 #: What an amount no client could price reads as. Never ``$0``: an unpriced call may have been billed.
@@ -1301,7 +1302,17 @@ def _label_line(statistics: LabelStatistics) -> str:
 def summarize_run(
     host: EvalHost, run_id: str, scope_id: str, *, case_names: Mapping[str, str] | None = None
 ) -> EvalSummary:
-    """Summarise one stored run and its results.
+    """Summarise one stored run and its results, reading its results a page at a time.
+
+    The results are read a page at a time (:func:`~threetears.evals.kernel.run_pages.iter_run_results`,
+    :data:`~threetears.evals.kernel.run_pages.RUN_RESULTS_PAGE` at a time, by id after one pass over the run's keys),
+    and each is folded into the summary's
+    tallies as it is read, so a summary of a large run never holds its results whole. Every count, minimum, maximum
+    and sum is kept as it streams, each sum exactly (rounded once, at the end, as ``math.fsum`` rounds), so the
+    summary is the same at any page size and in any order the store hands rows back. Three readings need every value
+    at once and keep one small record per value instead of the result: the label statistics (each classification
+    and its case, for an interval clustered by case), the second judges' agreement (each pair of scores, for kappa
+    and its interval) and the errors the summary lists — O(n) scalars, never O(n) results.
 
     :param host: The host whose store holds the run, and whose measures are summarised.
     :ptype host: EvalHost
@@ -1319,28 +1330,10 @@ def summarize_run(
     run = host.storage.load_eval_run(run_id, scope_id)
     if run is None:
         raise NotFoundError("run", run_id, remedy=FIND_RUN)
-    results = host.storage.query_eval_results_by_run(run_id, scope_id)
-    outcomes = [classify_result(result) for result in results]
-    measures = _measure_summaries(host, results)
-    names = case_names or {}
-    errors = [
-        f"case {names.get(result.test_case_id, result.test_case_id)}: {error}"
-        for result, outcome in zip(results, outcomes, strict=True)
-        if outcome is not ResultOutcome.OK
-        for error in (result.runner_error, None if result.judge_error is None else f"judge: {result.judge_error}")
-        if error
-    ]
-    errors.extend(run.error_details)
-    cells = Counter(
-        cell for result in results if isinstance(cell := result.host_measures.get(CONFUSION_CELL_MEASURE), str)
-    )
-    confusion = confusion_matrix(cells)
-    # Each observation beside its case, so a label's interval counts a case classified k times as one draw.
-    classifications = [
-        (cell, result.test_case_id)
-        for result in results
-        if isinstance(cell := result.host_measures.get(CONFUSION_CELL_MEASURE), str)
-    ]
+    tally = _RunTally(host, run, case_names or {})
+    for result in iter_run_results(host.storage, run, page_results=RUN_RESULTS_PAGE):
+        tally.add(result)
+    errors = [*tally.errors, *run.error_details]
     template = None
     if run.judge_model is not None and run.template_id is not None:
         template = host.storage.load_template(run.template_id, scope_id)
@@ -1349,6 +1342,7 @@ def summarize_run(
         row for row in host.storage.query_out_of_run_spend(scope_id, purpose="second_judge") if row.run_id == run.id
     ]
     second_costs = [row.cost_usd for row in second_rows]
+    outcomes = tally.outcomes
     return EvalSummary(
         run_id=run.id,
         scope_id=scope_id,
@@ -1357,24 +1351,24 @@ def summarize_run(
         status=run.status,
         k_runs=run.k_runs,
         n_cases=len(run.test_case_ids),
-        n_results=len(results),
-        n_scored=outcomes.count(ResultOutcome.OK),
-        n_candidate_failed=outcomes.count(ResultOutcome.CANDIDATE_FAIL),
-        n_excluded=outcomes.count(ResultOutcome.INFRA_EXCLUDE),
-        measures=measures,
-        confusion=confusion,
-        labels=label_statistics(classifications),
-        judged=_judged_dimensions(results),
-        strata=_strata(host, run, results),
-        spend=_role_spend(results),
-        total_cost_usd=_total_cost(results),
+        n_results=tally.n_results,
+        n_scored=outcomes[ResultOutcome.OK],
+        n_candidate_failed=outcomes[ResultOutcome.CANDIDATE_FAIL],
+        n_excluded=outcomes[ResultOutcome.INFRA_EXCLUDE],
+        measures=tally.measures.summaries(),
+        confusion=confusion_matrix(tally.cells),
+        labels=label_statistics(tally.classifications),
+        judged=tally.judged.dimensions(),
+        strata=tally.strata.summaries(),
+        spend=tally.spend.roles(),
+        total_cost_usd=tally.spend.total(),
         second_judge_calls=len(second_rows),
         second_judge_cost_usd=(
             math.fsum(cost for cost in second_costs if cost is not None)
             if second_rows and None not in second_costs
             else None
         ),
-        goal_checks=_goal_checks(results, run),
+        goal_checks=tally.goal_checks(run),
         # Templates are edited in place: one edited since the launch no longer holds what the judge read.
         intent=template.intent if template is not None and template.updated_at <= run.created_at else None,
         errors=errors,
@@ -1383,77 +1377,224 @@ def summarize_run(
         arm_schedule=run.arm_schedule,
         max_cost_usd=run.max_cost_usd,
         max_cost_usd_origin=run.max_cost_usd_origin,
-        judge_shares_candidate_model=self_judging_models(run, results),
-        unconfirmed_models=unconfirmed_model_identities([run], results),
-        request_settings=request_settings_readings([run], results),
+        judge_shares_candidate_model=tally.self_judging.models(),
+        unconfirmed_models=tally.identities.identities(),
+        request_settings=tally.settings.readings(),
     )
 
 
-def _measure_summaries(host: EvalHost, results: list[EvalResult]) -> list[RunMeasureSummary]:
-    """Each measure the host declares over the results carrying it, then ``match`` and ``confusion_cell`` where carried."""
-    declared = host.profile.measures.names
-    classified = [
-        name
-        for name in (MATCH_MEASURE, CONFUSION_CELL_MEASURE)
-        if name not in declared and any(name in result.host_measures for result in results)
-    ]
-    measures = []
-    for name in (*declared, *classified):
-        carrying = [result for result in results if name in result.host_measures]
+class _ExactSum:
+    """A sum of floats kept exactly as values stream in, read rounded once, as ``math.fsum`` rounds the same values.
+
+    The partials are Shewchuk's (the algorithm ``math.fsum`` runs over a list), so the sum needs no list of the values
+    and does not depend on their order. A value that is not finite is summed apart, as plain addition sums it.
+    """
+
+    __slots__ = ("_partials", "_special")
+
+    def __init__(self) -> None:
+        self._partials: list[float] = []
+        self._special = 0.0
+
+    def add(self, value: float) -> None:
+        if not math.isfinite(value):
+            self._special += value
+            return
+        partials = self._partials
+        kept = 0
+        for partial in partials:
+            if abs(value) < abs(partial):
+                value, partial = partial, value
+            high = value + partial
+            low = partial - (high - value)
+            if low:
+                partials[kept] = low
+                kept += 1
+            value = high
+        partials[kept:] = [value]
+
+    def value(self) -> float:
+        return self._special if self._special != 0.0 else math.fsum(self._partials)
+
+
+class _Values:
+    """The count, exact sum, minimum and maximum of numbers read one at a time: a mean and its range, streamed."""
+
+    __slots__ = ("count", "maximum", "minimum", "total")
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.total = _ExactSum()
+        self.minimum: float | None = None
+        self.maximum: float | None = None
+
+    def add(self, value: float) -> None:
+        self.count += 1
+        self.total.add(value)
+        if self.minimum is None or value < self.minimum:
+            self.minimum = value
+        if self.maximum is None or value > self.maximum:
+            self.maximum = value
+
+    def mean(self) -> float | None:
+        return self.total.value() / self.count if self.count else None
+
+
+class _MeasureTally:
+    """One measure over results read one at a time, counted as :class:`RunMeasureSummary` reports it."""
+
+    __slots__ = ("carrying", "descriptor", "faulted", "n", "name", "no_turn", "turns_only", "values")
+
+    def __init__(self, name: str, descriptor: MetricDescriptor) -> None:
+        self.name = name
+        self.descriptor = descriptor
         # A cost or latency reading is a turn's: a call that took none carries a round trip and an empty spend,
         # and a faulted one measured the rig. `delivered_a_turn` is the one predicate every surface reads.
-        turns_only = summary_population(describe_measure(name, host.profile.measures), "all_observed") == "delivered"
-        left = [result for result in carrying if turns_only and not delivered_a_turn(result)]
-        carried = [result.host_measures[name] for result in carrying if not turns_only or delivered_a_turn(result)]
+        self.turns_only = summary_population(descriptor, "all_observed") == "delivered"
+        self.carrying = self.n = self.no_turn = self.faulted = 0
+        self.values = _Values()
+
+    def add(self, result: EvalResult, outcome: ResultOutcome, delivered: bool) -> None:
+        if self.name not in result.host_measures:
+            return
+        self.carrying += 1
+        if self.turns_only and not delivered:
+            if outcome is ResultOutcome.CANDIDATE_FAIL:
+                self.no_turn += 1
+            elif outcome is ResultOutcome.INFRA_EXCLUDE:
+                self.faulted += 1
+            return
+        self.n += 1
+        value = result.host_measures[self.name]
         # A text observation is words, never a number; a boolean counts as 1 or 0, so its mean is its rate.
-        values = [float(value) for value in carried if not isinstance(value, str)]
-        measures.append(
-            RunMeasureSummary(
-                name=name,
-                n=len(carried),
-                mean=sum(values) / len(values) if values else None,
-                minimum=min(values) if values else None,
-                maximum=max(values) if values else None,
-                n_no_turn=sum(1 for result in left if classify_result(result) is ResultOutcome.CANDIDATE_FAIL),
-                n_faulted=sum(1 for result in left if classify_result(result) is ResultOutcome.INFRA_EXCLUDE),
-                guardrail=describe_measure(name, host.profile.measures).guardrail,
-                unit=describe_measure(name, host.profile.measures).unit or "",
-            )
+        if not isinstance(value, str):
+            self.values.add(float(value))
+
+    def summary(self) -> RunMeasureSummary:
+        return RunMeasureSummary(
+            name=self.name,
+            n=self.n,
+            mean=self.values.mean(),
+            minimum=self.values.minimum,
+            maximum=self.values.maximum,
+            n_no_turn=self.no_turn,
+            n_faulted=self.faulted,
+            guardrail=self.descriptor.guardrail,
+            unit=self.descriptor.unit or "",
         )
-    return measures
 
 
-def _strata(host: EvalHost, run: EvalRun, results: list[EvalResult]) -> list[StratumSummary]:
+class _MeasureTallies:
+    """Each measure the host declares over the results carrying it, then ``match`` and ``confusion_cell`` where
+    carried, over results read one at a time."""
+
+    def __init__(self, host: EvalHost, *, leave_out: frozenset[str] = frozenset()) -> None:
+        measures = host.profile.measures
+        declared = tuple(measures.names)
+        self._declared = frozenset(declared)
+        self._leave_out = leave_out
+        classified = tuple(name for name in (MATCH_MEASURE, CONFUSION_CELL_MEASURE) if name not in self._declared)
+        self._tallies = [_MeasureTally(name, describe_measure(name, measures)) for name in (*declared, *classified)]
+
+    def add(self, result: EvalResult, outcome: ResultOutcome, delivered: bool) -> None:
+        for tally in self._tallies:
+            tally.add(result, outcome, delivered)
+
+    def summaries(self) -> list[RunMeasureSummary]:
+        return [
+            tally.summary()
+            for tally in self._tallies
+            if (tally.name in self._declared or tally.carrying) and tally.name not in self._leave_out
+        ]
+
+
+class _StrataTally:
     """The run read again per stratum of its cases — or nothing, when none of its cases declares one.
 
     The strata partition the run: the cases declaring none are their own stratum, last, so they add up to it.
     """
-    declared = {case.id: case.stratum for case in host.storage.load_case_strata(list(run.test_case_ids), run.scope_id)}
-    if not any(stratum is not None for stratum in declared.values()):
-        return []
-    cases: dict[str | None, list[str]] = {}
-    for case_id in run.test_case_ids:
-        cases.setdefault(declared.get(case_id), []).append(case_id)
-    strata = []
-    for stratum in sorted(cases, key=lambda name: (name is None, name or "")):
-        members = set(cases[stratum])
-        carried = [result for result in results if result.test_case_id in members]
-        strata.append(
-            StratumSummary(
-                stratum=stratum,
-                n_cases=len(members),
-                n_results=len(carried),
-                measures=[
-                    measure for measure in _measure_summaries(host, carried) if measure.name != CONFUSION_CELL_MEASURE
-                ],
+
+    def __init__(self, host: EvalHost, run: EvalRun) -> None:
+        declared = {
+            case.id: case.stratum for case in host.storage.load_case_strata(list(run.test_case_ids), run.scope_id)
+        }
+        self._strata: dict[str | None, tuple[set[str], list[int], _MeasureTallies]] = {}
+        self._of_case: dict[str, str | None] = {}
+        if not any(stratum is not None for stratum in declared.values()):
+            return
+        cases: dict[str | None, list[str]] = {}
+        for case_id in run.test_case_ids:
+            cases.setdefault(declared.get(case_id), []).append(case_id)
+        for stratum in sorted(cases, key=lambda name: (name is None, name or "")):
+            members = set(cases[stratum])
+            self._strata[stratum] = (members, [0], _MeasureTallies(host, leave_out=frozenset({CONFUSION_CELL_MEASURE})))
+            self._of_case.update((case_id, stratum) for case_id in members)
+
+    def add(self, result: EvalResult, outcome: ResultOutcome, delivered: bool) -> None:
+        if not self._strata or result.test_case_id not in self._of_case:
+            return
+        _, counted, measures = self._strata[self._of_case[result.test_case_id]]
+        counted[0] += 1
+        measures.add(result, outcome, delivered)
+
+    def summaries(self) -> list[StratumSummary]:
+        return [
+            StratumSummary(stratum=stratum, n_cases=len(members), n_results=counted[0], measures=measures.summaries())
+            for stratum, (members, counted, measures) in self._strata.items()
+        ]
+
+
+class _JudgedTally:
+    """Each rubric dimension the results carry a judge's score or a judge's "cannot tell" on, in the order first met,
+    with the second judges' agreement on it."""
+
+    def __init__(self) -> None:
+        self._scores: dict[str, _Values] = {}
+        self._scales: dict[str, RubricScale] = {}
+        self._cannot_tell: Counter[str] = Counter()
+        self._agreement = InterJudgeTally()
+
+    def add(self, result: EvalResult) -> None:
+        for score in result.rubric_scores:
+            self._scores.setdefault(score.dim, _Values()).add(float(score.score))
+            self._scales.setdefault(score.dim, score.scale)
+        for dim in result.judge_cannot_tell:
+            self._scores.setdefault(dim, _Values())
+            self._cannot_tell[dim] += 1
+        self._agreement.add(result)
+
+    def dimensions(self) -> list[DimensionSummary]:
+        agreement = self._agreement.agreement()
+        return [
+            DimensionSummary(
+                name=name,
+                scale=self._scales.get(name),
+                n=values.count,
+                mean=values.mean(),
+                minimum=values.minimum,
+                maximum=values.maximum,
+                cannot_tell=self._cannot_tell[name],
+                second_judges=[row for row in agreement.dimensions if row.rubric_dim == name],
             )
-        )
-    return strata
+            for name, values in self._scores.items()
+        ]
 
 
-def _role_spend(results: list[EvalResult]) -> list[RoleSpend]:
-    """What each role the results' usage rows name spent: the roles this build knows in
-    :data:`~threetears.evals.schema.USAGE_ROLES`' order, then each role a newer build recorded, by name.
+class _RoleTally:
+    """One role's usage rows, summed as :class:`RoleSpend` reports them."""
+
+    __slots__ = ("calls", "counted", "n_priced", "priced", "uncounted_rows", "unpriced_calls", "units")
+
+    def __init__(self) -> None:
+        self.calls = self.n_priced = self.unpriced_calls = self.uncounted_rows = 0
+        self.priced = _ExactSum()
+        self.counted = True
+        self.units: dict[tuple[str | None, str], int] = {}
+
+
+class _SpendTally:
+    """What each role the results' usage rows name spent, and the results' cost summed, over results read one at a
+    time.
 
     A role's dollars are its priced rows' costs summed, and its unpriced calls are counted beside them, so a role
     partly priced states what was priced rather than reading wholly unknown: the run's total
@@ -1464,103 +1605,135 @@ def _role_spend(results: list[EvalResult]) -> list[RoleSpend]:
     line of its own: dropping it would leave the role lines short of the run's total, which counts it wherever the
     build that recorded it did.
     """
-    spent: list[RoleSpend] = []
-    recorded = {row.role for result in results for row in result.usage}
-    for role in [*USAGE_ROLES, *sorted(recorded - set(USAGE_ROLES))]:
-        carrying = [result for result in results if any(row.role == role for row in result.usage)]
-        rows = [row for result in carrying for row in result.usage if row.role == role]
-        if not rows:
-            continue
-        priced = [row.cost_usd for row in rows if row.cost_usd is not None]
-        metered: dict[tuple[str | None, str], int] = {}
-        for row in rows:
+
+    def __init__(self) -> None:
+        self._roles: dict[str, _RoleTally] = {}
+        self._any_priced_row = False
+        self._unknown_cost = False
+        self._cost = _ExactSum()
+
+    def add(self, result: EvalResult) -> None:
+        for row in result.usage:
+            role = self._roles.setdefault(row.role, _RoleTally())
+            role.calls += row.call_count or 0
+            if row.call_count is None:
+                role.uncounted_rows += 1
+            if row.cost_usd is None:
+                role.unpriced_calls += row.call_count or 0
+            else:
+                self._any_priced_row = True
+                role.n_priced += 1
+                role.priced.add(row.cost_usd)
             if row.provider_unit is not None and row.provider_units is not None:
                 key = (row.provider, row.provider_unit)
-                metered[key] = metered.get(key, 0) + row.provider_units
-        spent.append(
+                role.units[key] = role.units.get(key, 0) + row.provider_units
+        for name in {row.role for row in result.usage}:
+            self._roles[name].counted &= name in result.cost_roles
+        if result.cost_usd is None:
+            self._unknown_cost = True
+        else:
+            self._cost.add(result.cost_usd)
+
+    def roles(self) -> list[RoleSpend]:
+        """The roles this build knows in :data:`~threetears.evals.schema.USAGE_ROLES`' order, then each role a newer
+        build recorded, by name."""
+        order = [*USAGE_ROLES, *sorted(set(self._roles) - set(USAGE_ROLES))]
+        return [
             RoleSpend(
-                role=role,
-                calls=sum(row.call_count or 0 for row in rows),
-                cost_usd=math.fsum(priced) if priced else None,
-                unpriced_calls=sum(row.call_count or 0 for row in rows if row.cost_usd is None),
-                uncounted_rows=sum(1 for row in rows if row.call_count is None),
-                counted=all(role in result.cost_roles for result in carrying),
+                role=name,
+                calls=role.calls,
+                cost_usd=role.priced.value() if role.n_priced else None,
+                unpriced_calls=role.unpriced_calls,
+                uncounted_rows=role.uncounted_rows,
+                counted=role.counted,
                 units=[
                     ProviderUnits(provider=provider, unit=unit, units=units)
                     for (provider, unit), units in sorted(
-                        metered.items(), key=lambda item: (item[0][0] or "", item[0][1])
+                        role.units.items(), key=lambda item: (item[0][0] or "", item[0][1])
                     )
                 ],
             )
-        )
-    return spent
+            for name in order
+            if (role := self._roles.get(name)) is not None
+        ]
+
+    def total(self) -> float | None:
+        """The results' cost summed, or ``None`` when any result's is unknown or no result's rows observed spend."""
+        if not self._any_priced_row or self._unknown_cost:
+            return None
+        return self._cost.value()
 
 
-def _total_cost(results: list[EvalResult]) -> float | None:
-    """The results' cost summed, or ``None`` when any result's is unknown or no result's rows observed spend."""
-    if not any(row.cost_usd is not None for result in results for row in result.usage):
-        return None
-    costs = [result.cost_usd for result in results]
-    return None if None in costs else math.fsum(cost for cost in costs if cost is not None)
+class _RunTally:
+    """Everything :func:`summarize_run` reads off a run's results, folded in one result at a time."""
 
+    def __init__(self, host: EvalHost, run: EvalRun, names: Mapping[str, str]) -> None:
+        self._names = names
+        self.n_results = 0
+        self.outcomes: Counter[ResultOutcome] = Counter()
+        self.errors: list[str] = []
+        self.measures = _MeasureTallies(host)
+        self.strata = _StrataTally(host, run)
+        self.cells: Counter[str] = Counter()
+        # Each observation beside its case, so a label's interval counts a case classified k times as one draw.
+        self.classifications: list[tuple[str, str]] = []
+        self.judged = _JudgedTally()
+        self.spend = _SpendTally()
+        self._verdicts: dict[str, list[int]] = {}
+        self.self_judging = SelfJudgingTally(run)
+        self.identities = ModelIdentityTally([run])
+        self.settings = RequestSettingsTally([run])
 
-def _judged_dimensions(results: list[EvalResult]) -> list[DimensionSummary]:
-    """Each rubric dimension the results carry a judge's score or a judge's "cannot tell" on, in the order first met."""
-    scores: dict[str, list[float]] = {}
-    scales: dict[str, RubricScale] = {}
-    cannot_tell: Counter[str] = Counter()
-    for result in results:
-        for score in result.rubric_scores:
-            scores.setdefault(score.dim, []).append(float(score.score))
-            scales.setdefault(score.dim, score.scale)
-        for dim in result.judge_cannot_tell:
-            scores.setdefault(dim, [])
-            cannot_tell[dim] += 1
-    agreement = inter_judge_agreement(results)
-    return [
-        DimensionSummary(
-            name=name,
-            scale=scales.get(name),
-            n=len(values),
-            mean=sum(values) / len(values) if values else None,
-            minimum=min(values) if values else None,
-            maximum=max(values) if values else None,
-            cannot_tell=cannot_tell[name],
-            second_judges=[row for row in agreement.dimensions if row.rubric_dim == name],
-        )
-        for name, values in scores.items()
-    ]
+    def add(self, result: EvalResult) -> None:
+        outcome = classify_result(result)
+        delivered = delivered_a_turn(result)
+        self.n_results += 1
+        self.outcomes[outcome] += 1
+        if outcome is not ResultOutcome.OK:
+            case = self._names.get(result.test_case_id, result.test_case_id)
+            for error in (result.runner_error, None if result.judge_error is None else f"judge: {result.judge_error}"):
+                if error:
+                    self.errors.append(f"case {case}: {error}")
+        self.measures.add(result, outcome, delivered)
+        self.strata.add(result, outcome, delivered)
+        if isinstance(cell := result.host_measures.get(CONFUSION_CELL_MEASURE), str):
+            self.cells[cell] += 1
+            self.classifications.append((cell, result.test_case_id))
+        self.judged.add(result)
+        self.spend.add(result)
+        for check, passed in counted_goal_verdicts(result) or []:
+            counted = self._verdicts.setdefault(check.expression, [0, 0])
+            counted[0] += 1 if passed else 0
+            counted[1] += 1
+        self.self_judging.add(result)
+        self.identities.add(result)
+        self.settings.add(result)
 
+    def goal_checks(self, run: EvalRun) -> list[GoalCheckSummary]:
+        """Each goal-state check the results carry, counted as every per-check rate counts it, in the order first met.
 
-def _goal_checks(results: list[EvalResult], run: EvalRun) -> list[GoalCheckSummary]:
-    """Each goal-state check the results carry, counted as every per-check rate counts it, in the order first met.
-
-    Each carries the proof its run froze at launch, as read under the current proof rules
-    (:func:`~threetears.evals.schema.models.goal_check_proofs_as_read`); a check the run recorded none for is
-    unproven. Each check the grammar refused at launch follows, graded on no result and counted as excluded.
-    """
-    proofs = goal_check_proofs_as_read(run)
-    stale = set(stale_goal_check_proofs(run))
-    counted: dict[str, list[bool]] = {}
-    for result in results:
-        for outcome, passed in counted_goal_verdicts(result) or []:
-            counted.setdefault(outcome.expression, []).append(passed)
-    graded = [
-        GoalCheckSummary(
-            check=check,
-            passed=sum(verdicts),
-            n=len(verdicts),
-            proof=None if proofs is None else proofs.get(check, "unproven"),
-            stale_proof=check in stale,
-        )
-        for check, verdicts in counted.items()
-    ]
-    refused = [
-        GoalCheckSummary(check=check, passed=0, n=0, proof="refuted", refused=reason, excluded=len(results))
-        for check, reason in (run.refused_goal_checks or {}).items()
-        if check not in counted
-    ]
-    return graded + refused
+        Each carries the proof its run froze at launch, as read under the current proof rules
+        (:func:`~threetears.evals.schema.models.goal_check_proofs_as_read`); a check the run recorded none for is
+        unproven. Each check the grammar refused at launch follows, graded on no result and counted as excluded.
+        """
+        proofs = goal_check_proofs_as_read(run)
+        stale = set(stale_goal_check_proofs(run))
+        graded = [
+            GoalCheckSummary(
+                check=check,
+                passed=passed,
+                n=n,
+                proof=None if proofs is None else proofs.get(check, "unproven"),
+                stale_proof=check in stale,
+            )
+            for check, (passed, n) in self._verdicts.items()
+        ]
+        refused = [
+            GoalCheckSummary(check=check, passed=0, n=0, proof="refuted", refused=reason, excluded=self.n_results)
+            for check, reason in (run.refused_goal_checks or {}).items()
+            if check not in self._verdicts
+        ]
+        return graded + refused
 
 
 __all__ = [

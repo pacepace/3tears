@@ -58,6 +58,7 @@ from threetears.evals.analysis.cassette_mode import cassette_mode_disclosure
 from threetears.evals.analysis.lenses.cost_estimate import (
     COST_BAND_SAFETY_MARGIN,
     COST_ESTIMATE_MIN_BASIS,
+    CostObservation,
     compute_estimate_cost,
 )
 from threetears.evals.analysis.significance import format_significance
@@ -94,6 +95,7 @@ from threetears.evals.run.reads import list_runs
 
 from threetears.evals.analysis.lens_text import exclusion_lines
 from threetears.evals.kernel.remedies import FIND_RUN, FIND_TEMPLATE
+from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
 
 
 def _lister(host: EvalHost) -> RunLister:
@@ -148,7 +150,8 @@ def scope_pivot(
     :return: The table.
     :rtype: PivotTable
     :raises ValidationFailedError: The pivot cannot be answered honestly — see
-        :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate.
+        :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate, or the scope is past
+        :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
     """
     plan: list[PlannedCost] | None = None
     if predicted_cost is not None:
@@ -213,7 +216,8 @@ def scope_history(
     :ptype status: str | None
     :return: The series.
     :rtype: HistoryResult
-    :raises ValidationFailedError: The metric cannot be seriesed, or the status is no run's.
+    :raises ValidationFailedError: The metric cannot be seriesed, or the status is no run's, or the scope is past
+        :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
     """
     return history(
         host.storage,
@@ -248,13 +252,16 @@ def scope_frontier(
     :ptype scope_id: str
     :param bar: The pass^k each variant must clear, in ``[0, 1]``; ``None`` or blank ranks without a verdict.
     :ptype bar: float | str | None
-    :param subject_id: Only this subject's variants; others are counted as filtered out.
+    :param subject_id: Only this subject's variants; what the others count as is
+        :func:`~threetears.evals.analysis.frontier`'s ``subject_id`` (filtered out, or, past the read budget, unread).
     :ptype subject_id: str | None
     :param status: Only runs with this status; ``"all"`` ranks every run.
     :ptype status: str | None
     :return: The frontier.
     :rtype: FrontierResult
-    :raises ValidationFailedError: The bar is not a number in ``[0, 1]``, or the status is no run's.
+    :raises ValidationFailedError: The bar is not a number in ``[0, 1]``, or the status is no run's, or the scope is
+        past :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs
+        that fit.
     """
     return FrontierResult.model_validate(
         frontier(
@@ -277,12 +284,14 @@ def scope_export(
     status: str | None = "completed",
     run_ids: list[str] | None = None,
     after_run_id: str | None = None,
+    after_case_id: str | None = None,
 ) -> ScoreExport:
     """The scope's observations as flat rows, in CSV or JSON, for analysis elsewhere, a page at a time when large.
 
     A scope whose runs' matrices hold more than :data:`~threetears.evals.analysis.EXPORT_PAGE_RESULTS` results is
-    exported in pages of whole runs, oldest first: each page's ``page.next_after_run_id`` is the ``after_run_id`` of
-    the next (:func:`~threetears.evals.analysis.export_results`).
+    exported in pages of whole runs, oldest first, and a run past it in pages of its cases: each page's
+    ``page.next_after_run_id`` is the ``after_run_id`` of the next, and its ``page.next_after_case_id`` the
+    ``after_case_id`` (:func:`~threetears.evals.analysis.export_results`).
 
     :param host: The host whose store and vocabulary are read.
     :ptype host: EvalHost
@@ -292,15 +301,19 @@ def scope_export(
     :ptype format: str | None
     :param status: Only runs with this status; ``"all"`` exports every run.
     :ptype status: str | None
-    :param run_ids: Only these runs — archived ones included, since they were named. Never paged: two or more
-        whose results would pass the ceiling are refused.
+    :param run_ids: Only these runs — archived ones included, since they were named. Two or more whose results
+        would pass the ceiling are refused; one past it is paged by its cases.
     :ptype run_ids: list[str] | None
     :param after_run_id: The previous page's ``page.next_after_run_id``; ``None`` reads the first page.
     :ptype after_run_id: str | None
+    :param after_case_id: The previous page's ``page.next_after_case_id``; ``None`` starts at the run after
+        ``after_run_id``.
+    :ptype after_case_id: str | None
     :return: The export.
     :rtype: ScoreExport
     :raises ValidationFailedError: The format is not one there is, the status is no run's, the named runs would pass
-        the ceiling, or ``after_run_id`` is given with ``run_ids`` or is no run in the scope.
+        the ceiling, ``after_run_id`` is no run in the scope or is given with ``run_ids`` other than inside the one
+        run they name, or ``after_case_id`` is given alone or is no case of that run.
     """
     return export_results(
         host.storage,
@@ -310,6 +323,7 @@ def scope_export(
         status=status,
         run_ids=run_ids,
         after_run_id=after_run_id,
+        after_case_id=after_case_id,
         profile=host.profile,
     )
 
@@ -1028,10 +1042,17 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
             for run in list_runs(host, quote.scope_id, include_archived=True)
             if run.template_id == template_id and not _launch_differences(run, quote)
         ]
-        results = [result for run in runs for result in host.storage.query_eval_results_by_run(run.id, quote.scope_id)]
+        # Each run read a page at a time, and of each of the arm's model's results only what the estimate reads: a
+        # template's history is every result of every run of it, which no launch, nor a take-up's replay, holds whole.
+        observations = [
+            CostObservation.of(result)
+            for run in runs
+            for result in iter_run_results(host.storage, run, page_results=RUN_RESULTS_PAGE)
+            if result.model == quote.candidate_model
+        ]
         estimate = compute_estimate_cost(
             runs,
-            results,
+            observations,
             models=[quote.candidate_model],
             k_runs=quote.k_runs,
             n_test_cases=quote.case_count,
@@ -1200,7 +1221,9 @@ def _closest_priced_differences(host: EvalHost, quote: ArmQuote, template: EvalT
     for run in list_runs(host, quote.scope_id, include_archived=True):
         if run.template_id != template.id:
             continue
-        if not any(r.cost_usd is not None for r in host.storage.query_eval_results_by_run(run.id, quote.scope_id)):
+        # Read a page at a time, and only until a priced result is met.
+        pages = iter_run_results(host.storage, run, page_results=RUN_RESULTS_PAGE)
+        if not any(result.cost_usd is not None for result in pages):
             continue
         differences = _launch_differences(run, quote)
         if closest is None or len(differences) < len(closest):
@@ -1265,6 +1288,8 @@ def pivot_text(table: PivotTable) -> str:
         f"{table.weighting}: {table.n_observations} observation(s), {table.n_filtered_out} filtered out",
         f"formula: {table.formula}",
     ]
+    if table.narrowed_read_disclosure:
+        lines.append(table.narrowed_read_disclosure)
     for cell in table.cells:
         spread = f", sem {format_number(cell.sem)}" if cell.sem is not None else ""
         unmeasured = f", {cell.n_unmeasured} unmeasured" if cell.n_unmeasured else ""
@@ -1347,6 +1372,8 @@ def history_text(result: HistoryResult) -> str:
             "materiality threshold); a step reads equivalent only when shown inside it"
         ),
     ]
+    if result.narrowed_read_disclosure:
+        lines.append(result.narrowed_read_disclosure)
     if result.attribution_disclosure:
         lines.append(result.attribution_disclosure)
     if result.identity_span_disclosure:
@@ -1488,6 +1515,12 @@ def export_text(export: ScoreExport, *, next_call: str | None = None) -> str:
             if page.run_ids
             else f"no runs, of {total}"
         )
+        if page.case_ids is not None:
+            cases = page.cases_before + len(page.case_ids) + page.cases_after
+            held = (
+                f"run {page.runs_before + 1} of {total}, its cases "
+                f"{page.cases_before + 1}-{page.cases_before + len(page.case_ids)} of {cases}"
+            )
         lines.append(f"page: {held}, oldest first; at most {page.result_ceiling} results a page")
         unread = [
             f"{count} {what}"

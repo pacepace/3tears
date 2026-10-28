@@ -406,8 +406,9 @@ def _served(tool: MountedTool) -> list[str]:
 
 
 #: What the ``evals`` tool and the editor's cut of the analyst tool served before ``report_check``, as digested by
-#: :func:`_digest` over :func:`_served`.
-_EVALS_BYTES = "d6d2d5673a55de52169ee41802aa64632ce2c44dada693af404c71bee0f8be37"
+#: :func:`_digest` over :func:`_served`. The ``evals`` digest moved once since, at the develop merge that brought in the
+#: read bounds (#1000: narrowed-read disclosures in pivot, history and frontier, and an export paged inside a run).
+_EVALS_BYTES = "44d67c2a8ef61eca2ac994629949ee1d003e233bba5f410190ce86d61970229e"
 _EDITOR_BYTES = "2a1e4201091bdd3a95e99774a668fa5c60cb22ca6674a73d1a1bc62d71351c27"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's
