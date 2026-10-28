@@ -23,6 +23,7 @@ from threetears.evals.ops.report_writer.analyst import AnalystLimits, AnalystSes
 from threetears.evals.ops.report_writer.session import SessionLimits
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.turns import (
+    ThinkingBinding,
     ToolResultClearing,
     TurnBlock,
     TurnMessage,
@@ -75,6 +76,7 @@ class FakeToolTurnClient:
         tools: Sequence[TurnToolSpec],
         max_tokens: int,
         clearing: ToolResultClearing | None = None,
+        binding: ThinkingBinding | None = None,
     ) -> TurnReply:
         self.requests.append(
             {
@@ -83,6 +85,7 @@ class FakeToolTurnClient:
                 "tools": [tool.to_json() for tool in tools],
                 "max_tokens": max_tokens,
                 "context_management": clearing.to_json() if clearing is not None else None,
+                "block_binding": binding.to_json() if binding is not None else None,
             }
         )
         if not self.replies:
@@ -848,6 +851,23 @@ async def test_every_turn_asks_the_provider_to_clear_old_tool_results() -> None:
             ]
         }
     ] * 2
+
+
+async def test_every_turn_asks_the_provider_to_refuse_a_history_edited_under_a_thinking_block() -> None:
+    """The append-only history, checked by the provider on every turn: in the draft, after a bounce and in a
+    revision, a changed prefix under a replayed thinking block is refused, never answered without it."""
+    client = FakeToolTurnClient(
+        reply(thinking(1), call(1)),
+        reply(thinking(2), submitted(_unknown_arm())),
+        reply(thinking(3), submitted()),
+        reply(thinking(4), submitted()),
+    )
+    session = start(client)
+
+    assert (await session.draft()).ending == "submitted"
+    assert (await session.revise(REVISION)).ending == "submitted"
+
+    assert [request["block_binding"] for request in client.requests] == [{"prefix_mismatch_behavior": "error"}] * 4
 
 
 async def test_the_brief_holds_the_overview_to_the_result_limit() -> None:

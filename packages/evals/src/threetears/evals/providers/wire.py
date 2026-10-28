@@ -38,6 +38,7 @@ from threetears.evals.schema import (
     TurnThinking,
     TurnToolResult,
     ToolResultClearing,
+    ThinkingBinding,
     TurnToolSpec,
     TurnToolUse,
     TurnBlock,
@@ -602,6 +603,7 @@ def turn_body(
     sent: WireSettings,
     facts: SettingFacts,
     clearing: ToolResultClearing | None = None,
+    binding: ThinkingBinding | None = None,
 ) -> dict[str, Any]:  # Any: a JSON body
     """The Messages API body of one tool turn.
 
@@ -628,6 +630,10 @@ def turn_body(
     :param clearing: Old tool results the provider clears itself, sent as ``context_management`` (its beta header
         is the sender's to add); ``None`` sends none.
     :ptype clearing: ToolResultClearing | None
+    :param binding: The check the provider runs on replayed thinking blocks, sent as ``thinking.block_binding`` (its
+        beta header is the sender's to add) where the body carries adaptive or budgeted thinking; a body with no
+        thinking, or with thinking disabled, replays no block and sends none. ``None`` sends none.
+    :ptype binding: ThinkingBinding | None
     :return: The JSON body.
     :rtype: dict[str, Any]
     :raises ValueError: No messages; a thinking block in a user message; a last message holding only thinking, where no
@@ -667,7 +673,8 @@ def turn_body(
         *first_tools, last_tool = (tool.to_json() for tool in tools)
         body["tools"] = [*first_tools, _breakpoint(last_tool)]
     if (thinking := anthropic_thinking(sent, facts)) is not None:
-        body["thinking"] = thinking
+        thinks = thinking["type"] in ("adaptive", "enabled")
+        body["thinking"] = {**thinking, "block_binding": binding.to_json()} if binding and thinks else thinking
     if sent.reasoning_effort not in (None, "none"):
         body["output_config"] = {"effort": sent.reasoning_effort}
     if clearing is not None:

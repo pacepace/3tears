@@ -1186,6 +1186,11 @@
       "signature": "SweepableValue(content_hash: str, display: str, scale: Scale, raw: Any | None = None)",
       "tier": "host-contract"
     },
+    "threetears.evals.schema.ThinkingBinding": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.ToolResultClearing": {
       "kind": "dataclass",
       "signature": "",

@@ -53,6 +53,7 @@ from typing import Any, ClassVar, Self
 
 from threetears.evals.schema.turns import (
     ToolResultClearing,
+    ThinkingBinding,
     ToolTurnClient,
     TurnMessage,
     TurnReply,
@@ -229,6 +230,7 @@ class _Book:
         tools: Sequence[TurnToolSpec],
         max_tokens: int,
         clearing: ToolResultClearing | None,
+        binding: ThinkingBinding | None,
     ) -> TurnReply:
         """The session's next reply: the recorded one, or the live client's, recorded before it is handed back."""
         index = self.served.get(name, 0)
@@ -242,7 +244,12 @@ class _Book:
             self.served[name] = index + 1
             return TurnReply.from_json(_restored(replies[index], snapshot))
         reply = await self.inner.turn(
-            system=system, messages=messages, tools=tools, max_tokens=max_tokens, clearing=clearing
+            system=system,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            clearing=clearing,
+            binding=binding,
         )
         try:
             kept = _held(reply.to_json(), snapshot, self.path)
@@ -329,6 +336,7 @@ class _Session:
         tools: Sequence[TurnToolSpec],
         max_tokens: int,
         clearing: ToolResultClearing | None = None,
+        binding: ThinkingBinding | None = None,
     ) -> TurnReply:
         return await self._book.turn(
             self._name,
@@ -338,6 +346,7 @@ class _Session:
             tools=tools,
             max_tokens=max_tokens,
             clearing=clearing,
+            binding=binding,
         )
 
     def turn_price_ceiling(

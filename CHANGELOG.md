@@ -240,6 +240,16 @@ sends it as `context_management: {"edits": [{"type": "clear_tool_uses_20250919",
 `anthropic-beta: context-management-2025-06-27`; `RecordedTurns` passes it to the client it records through. A turn
 with no clearing sends the body it always did.
 
+**Added (provisional):** `threetears.evals.schema.ThinkingBinding(prefix_mismatch_behavior="error" | "drop_block")`,
+the provider's check that a replayed thinking block's conversation is unchanged. The tool-turn port's
+`turn(..., binding=)` takes it, and `Model.turn` sends it as `thinking.block_binding` with `anthropic-beta:
+thinking-binding-controls-2026-08-01` where the turn sends adaptive or budgeted thinking (a turn with thinking disabled
+replays no block and sends none). Setting it opts the turn into the check on any account. `RecordedTurns` passes it to
+the client it records through; a recording holds replies only, so recordings made before it replay unchanged. Every
+analyst and editor turn sends `"error"`: the history is append-only, so a turn whose history changed under a thinking
+block is the provider's 400, never answered without the reasoning. A turn with no binding sends the body it always
+did.
+
 **Changed:** `kernel.report_doc` now exports `ReportDoc`, `report_doc_validity` and `report_doc_json_schema`, and
 `analysis.analyst.skill` exports `SkillText`, each with its first production caller in the analyst session.
 

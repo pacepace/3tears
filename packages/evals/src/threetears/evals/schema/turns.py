@@ -34,6 +34,7 @@ __all__ = [
     "TurnReply",
     "TurnReplyRefused",
     "ToolResultClearing",
+    "ThinkingBinding",
     "TurnStopReason",
     "block_from_json",
 ]
@@ -476,6 +477,46 @@ class ToolResultClearing:
         }
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ThinkingBinding:
+    """The provider checking that a replayed thinking block's conversation is unchanged: the Messages API's
+    ``thinking.block_binding``, under the ``thinking-binding-controls-2026-08-01`` beta.
+
+    A thinking block is bound to everything sent before it: the system prompt, the tools and every earlier message.
+    Setting the behaviour opts the request into the provider's check of that binding, whatever the account's age:
+    ``error`` refuses a request whose history changed under a thinking block it replays (a 400 naming the block),
+    ``drop_block`` drops that block and every later one and answers. An append-only loop sends ``error``, so an edit to
+    its own history fails the turn instead of quietly costing it the reasoning. It rides on the request's thinking
+    (adaptive, or a budget), so a turn that sends no thinking sends no binding: it replays no block to check.
+
+    :ivar prefix_mismatch_behavior: ``error`` or ``drop_block``.
+    """
+
+    prefix_mismatch_behavior: Literal["error", "drop_block"] = "error"
+
+    #: The beta that carries the setting.
+    BETA: ClassVar[str] = "thinking-binding-controls-2026-08-01"
+
+    def __post_init__(self) -> None:
+        """Refuse a behaviour the provider does not take.
+
+        :raises ValueError: The behaviour, and the ones it takes.
+        """
+        if self.prefix_mismatch_behavior not in ("error", "drop_block"):
+            raise ValueError(
+                f"a thinking binding's prefix_mismatch_behavior is 'error' or 'drop_block', not "
+                f"{self.prefix_mismatch_behavior!r}"
+            )
+
+    def to_json(self) -> dict[str, str]:
+        """The request's ``thinking.block_binding`` member.
+
+        :return: ``{"prefix_mismatch_behavior": ...}``.
+        :rtype: dict[str, str]
+        """
+        return {"prefix_mismatch_behavior": self.prefix_mismatch_behavior}
+
+
 class ToolTurnClient(Protocol):
     """The client a tool-calling loop is handed: one turn at a time, priced before it is sent.
 
@@ -505,6 +546,7 @@ class ToolTurnClient(Protocol):
         tools: Sequence[TurnToolSpec],
         max_tokens: int,
         clearing: ToolResultClearing | None = None,
+        binding: ThinkingBinding | None = None,
     ) -> TurnReply:
         """Send the conversation so far and answer the model's next message.
 
@@ -519,6 +561,9 @@ class ToolTurnClient(Protocol):
         :param clearing: Old tool results the provider clears itself once the input grows past its trigger; ``None``
             clears nothing. A turn's price ceiling ignores it: clearing only ever sends less.
         :ptype clearing: ToolResultClearing | None
+        :param binding: The check the provider runs on the thinking blocks the conversation replays; ``None`` asks
+            for none. It goes only where the turn sends thinking, and a turn's price ceiling ignores it.
+        :ptype binding: ThinkingBinding | None
         :return: The model's reply.
         :rtype: TurnReply
         """
