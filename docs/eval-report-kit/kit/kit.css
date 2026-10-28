@@ -181,6 +181,9 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 .gate .task span.xc{font-weight:600;color:var(--warn);text-transform:uppercase;letter-spacing:.05em;display:block;margin-top:.25rem}
 /* lattice of tiles for two crossed factors; columns set inline from the data */
 .lattice{display:grid;gap:2px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+/* in its .tbl frame, which draws the border: never narrower than its tiles' floor, so it scrolls instead */
+.tbl>.lattice{border:0;border-radius:0;min-width:min-content}
+.lattice>.rh{min-width:auto;white-space:nowrap}
 .lattice>div{background:var(--surface);padding:.7rem .8rem;min-width:0}
 .lattice .hd{background:var(--sunk);font-size:var(--t-xs);font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:flex;align-items:end}
 .lattice .rh{background:var(--sunk);font-family:var(--f-display);font-weight:600;display:flex;align-items:center}
