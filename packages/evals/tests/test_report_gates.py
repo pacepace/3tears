@@ -242,7 +242,8 @@ class TestTheCheck:
         # The measure's money reads per 1,000 (#993): its amounts are under a cent.
         assert (check.status, check.borders) == (
             "borderline",
-            ("Cost per reply $5.41/1000, interval $5.21/1000–$5.59/1000",),
+            # Money on the criterion's ruler, its count named once in its name (#993), never a per-1,000 mark.
+            ("Cost per 1,000 replies $5.41, interval $5.21–$5.59",),
         )
 
     def test_a_cell_check_reads_the_cell_floor_in_that_cell(self):

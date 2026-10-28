@@ -77,7 +77,8 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
         "",
         "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Cost per 1,000 replies |",
     ]
-    assert lines[13] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
+    # The scoreboard's cost in its column's one form (#993): cents, two figures on the least.
+    assert lines[13] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.09 |"
     first = report_markdown(report).split("\n## ", 1)[0]
     # The case floor's caveat says what is withheld under four cases and why, in the reader's terms. Nothing else is
     # under the scoreboard: the design is on the arms line.

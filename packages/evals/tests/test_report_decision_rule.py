@@ -295,7 +295,8 @@ async def test_on_four_cases_no_floor_is_broken_and_the_verdict_decides_nothing(
         ),
     ]
     # Under a cent per reply on every arm, the cost row reads per 1,000 replies, as the scoreboard does.
-    assert {"reading": "cost per 1,000 replies", "control": "$3.092", "candidate": "$3.301"}.items() <= next(
+    # The code-only report spells money in its ruler's one form (#993): cents, two figures on the least.
+    assert {"reading": "cost per 1,000 replies", "control": "$3.09", "candidate": "$3.30"}.items() <= next(
         row for row in table.values() if row["reading"] == "cost per 1,000 replies"
     ).items()
 
