@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the SQLite and DuckDB caches keep `Date` and `Time` columns
+
+**Fixed:** a `sqlalchemy.Time` or `sqlalchemy.Date` column fell through both cache type mappers to plain
+text, logging `Unknown SQLAlchemy type ... defaulting to TEXT` / `VARCHAR` three times per column at every
+start (metallm's `users.config_sleep_from` / `config_sleep_until`) and reading a `time` or `date` back as a
+string. Both are now ISO text decoded on read (`TEXT_DATE` / `TEXT_TIME` / `TEXT_TIMETZ`, `VARCHAR_*` in
+DuckDB) and round-trip exactly, microseconds included. A `Time` column keeps the wall clock and drops a
+zone, as Postgres `time` does through asyncpg; a `Time(timezone=True)` column keeps a fixed offset and
+refuses a naive or `ZoneInfo` time, as asyncpg does. **Added:** `threetears.core.cache.base.stored_time`.
+After this no type in metallm's metadata or any 3tears schema reaches the mapper's default, so the warning
+fires only for a genuinely new type.
+
 ### core: an index declaration can say a column sorts descending
 
 **Added:** `Index(..., desc="date_created")` (a name or a sequence; stored as `IndexDef.desc`, each name
