@@ -22,6 +22,7 @@ from threetears.evals.actions import render
 from threetears.evals.actions.analyst import analyst_actions
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, ConformanceStage
 from threetears.evals.actions.params import AnalysisId, CampaignId, Limit, Offset
+from threetears.evals.actions.report_writing import campaign_report_writer
 from threetears.evals.schema import EvalRunStatus
 from threetears.evals.kernel import EvalStorage, ResultOutcome, ValidationFailedError
 from threetears.evals.schema.base import EvalBaseModel
@@ -1150,7 +1151,9 @@ async def _analyses_undescribable(
 
 
 async def _analysis_generate(host: OpsHost, caller: Caller, params: AnalysisGenerateParams) -> JobsStarted:
-    return await analysis_generate(host, params.campaign_id, caller.scope_id, model=params.model)
+    return await analysis_generate(
+        host, params.campaign_id, caller.scope_id, writer=campaign_report_writer(caller), model=params.model
+    )
 
 
 async def _analysis_estimate(
@@ -1611,8 +1614,8 @@ def _cancelled_before_its_cells(storage: EvalStorage, run_id: str, scope_id: str
     after the last of them leaves nothing to resume — so the sample's finished run is written as that cancel leaves a
     run instead: its rows gone, and its record ``cancelled`` with nothing persisted. Only the host's store is touched.
     """
-    for row in storage.query_eval_results_by_run(run_id, scope_id):
-        storage.delete_eval_result(row.id, scope_id)
+    for result_id in storage.query_eval_result_ids_by_run(run_id, scope_id):
+        storage.delete_eval_result(result_id, scope_id)
     run, etag = storage.load_eval_run_with_etag(run_id, scope_id)
     assert run is not None  # the stage's run finished, so its record is stored
     cancelled = run.model_copy(
@@ -2085,7 +2088,7 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="analysis_generate",
-            summary="Generate a campaign's analysis with a paid model call, as a job to poll.",
+            summary="Write a campaign's report with the analyst and the report editor (paid model turns), as a job to poll.",
             workflow=ANALYSE,
             permission="spend",
             params=AnalysisGenerateParams,
@@ -2095,20 +2098,22 @@ def engine_actions() -> tuple[Action, ...]:
             example={"campaign_id": campaign_id},
             long_running=True,
             detail=(
-                "The report planner writes the analysis as a report plan, in two calls (its structure, then its "
-                "prose), each repaired at most once: up to four calls. "
-                "Refused before any spend when the campaign has no evidence or a generation of it is already "
-                "running. Every call is priced before it is sent against the host's out-of-run cap: the first here, "
-                "so one over the cap is refused with nothing spent; the prose call and any repair round-trip a refused "
-                "reply buys when its prompt exists, against what is left. analysis_estimate prices it first without "
-                "spending. "
-                "Each call is ledgered under purpose analysis, so scope_out_of_run_spend reads it; the job's record "
-                "is the generation attempt, written however it ends."
+                "The report writer writes the analysis: the campaign's evidence is frozen as a snapshot, the analyst "
+                "drafts a report document on it with the evals_analyst tool, the report editor reviews it, and the "
+                "analyst revises, up to two revisions. Every turn runs on the host's analyst model and is admitted "
+                "against the host's report budget, which no caller can raise; the job is bounded by the host's time "
+                "limit. Refused before any spend when the host set no report budget, its analyst model cannot be "
+                "priced, or a generation of the campaign is already running; refused before anything is sent when "
+                "the campaign has no evidence. A stored report is linked by an analysis (basis doc) with an insight "
+                "per durable claim; an ending that stores nothing ends the job failed with why. The spend is "
+                "ledgered under purpose analysis, so scope_out_of_run_spend reads it; the job's record is the "
+                "generation attempt, written however it ends. analysis_estimate states the budget first, without "
+                "spending."
             ),
         ),
         Action(
             name="analysis_estimate",
-            summary="Price a campaign's analysis generation against the host's out-of-run cap, without spending.",
+            summary="State the report budget a campaign's analysis generation would be held to, without spending.",
             workflow=ANALYSE,
             permission="read",
             params=AnalysisGenerateParams,
@@ -2117,8 +2122,10 @@ def engine_actions() -> tuple[Action, ...]:
             render=render.render_model,
             example={"campaign_id": campaign_id},
             detail=(
-                "The generation's own assembly and pricing rule, so would_start is analysis_generate's answer. "
-                "Makes no model call."
+                "The generation's own checks in its call, so would_start is analysis_generate's start: cap_usd is the "
+                "host's report budget in dollars (none for a token and turn budget; bound says it in words), the bound "
+                "on every turn, and max_calls the most turns the writer can send. It reads no run: the campaign's "
+                "evidence is checked when the job freezes it (unchecked). Makes no model call."
             ),
         ),
         Action(

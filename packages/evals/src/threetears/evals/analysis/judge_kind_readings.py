@@ -46,6 +46,7 @@ from threetears.evals.analysis.agreement import (
     sent_settings_from_key,
     sent_settings_key,
 )
+from threetears.evals.kernel.run_pages import without_payloads
 from threetears.evals.kernel.judge_cases import JudgeTrial, judge_trial_of
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.hashing import canonical_digest
@@ -302,8 +303,9 @@ def judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings:
     """Pool a judge campaign's trials into agreement with the labels, self-agreement and parse validity, per judge and
     criterion.
 
-    :param results: The judge campaign's results — every result of its runs. A result carrying no judge trial is listed
-        as unread, never guessed at.
+    :param results: The judge campaign's results — every result of its runs, walked once, so they can be read a page
+        at a time; each is kept without its verbatim fields once its trial is read. A result carrying no judge trial is
+        listed as unread, never guessed at.
     :ptype results: Iterable[EvalResult]
     :return: The readings, and every result left out with why.
     :rtype: JudgeKindReadings
@@ -327,7 +329,9 @@ def judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings:
                 UnreadJudgeTrial(result_id=result.id, reason=f"the judge's call failed: {trial.error or 'no reply'}")
             )
             continue
-        groups.setdefault((_key_of(trial), trial.criterion_digest), []).append((result, trial))
+        # Kept without its verbatim fields once its trial is read off them, so results walked a page at a time are
+        # not held whole.
+        groups.setdefault((_key_of(trial), trial.criterion_digest), []).append((without_payloads(result), trial))
     readings: list[JudgeKindReading] = []
     for (key, criterion), entries in groups.items():
         by_case: dict[str, list[tuple[EvalResult, JudgeTrial]]] = {}

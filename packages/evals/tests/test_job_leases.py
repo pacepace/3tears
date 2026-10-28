@@ -57,7 +57,7 @@ from threetears.evals.kernel import (
     settle_job_record,
 )
 from threetears.evals.kernel import job_leases
-from threetears.evals.ops import OpsHost, analyses_list, analysis_generate, job_cancel, job_poll, run_job_id, run_launch
+from threetears.evals.ops import OpsHost, analyses_list, job_cancel, job_poll, run_job_id, run_launch
 from threetears.evals.ops import LaunchArguments, SweepArguments, generation_key, sweep_launch
 from threetears.evals.ops import sweeps
 from threetears.evals.run import sweep_abandoned_runs
@@ -67,7 +67,7 @@ from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.kind import TOY_SCRIPTS, ScriptedExtractionClient
 from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT, ops_fixture, settled
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT, generate, ops_fixture, settled
 from packages.evals.tests.lease_support import (
     T0,
     ClockedStore,
@@ -155,7 +155,7 @@ async def test_a_generation_another_process_runs_reads_running_and_is_cancelled_
     gate = asyncio.Event()
     holder = off_loop(ops_fixture, gate=gate, job_lease_s=0.3)
     elsewhere = other_process(holder.host)
-    (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
     await asyncio.sleep(0)
 
     polled = await job_poll(elsewhere, job.job_id, TOYHOST_SCOPE)
@@ -200,7 +200,7 @@ async def test_a_holder_that_stops_renewing_reads_lost_after_its_lease_and_the_l
     store = ClockedStore()
     holder = off_loop(ops_fixture, gate=gate, store=store)  # a 60s lease: no renewal comes due while the test runs
     elsewhere = other_process(holder.host)
-    (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
     await asyncio.sleep(0)
     assert (await job_poll(elsewhere, job.job_id, TOYHOST_SCOPE)).state == "running"
 
@@ -270,14 +270,14 @@ async def test_a_generation_whose_attempt_is_lost_while_it_stores_withdraws_what
     store = LostOnStoreStore()
     fixture = off_loop(ops_fixture, store=store)
     storage = fixture.host.eval_host.storage
-    (first,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (first,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     assert (await settled(fixture.host, first.job_id)).state == "completed"
     (kept,) = off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
     ledger = off_loop(storage.query_insights, TOYHOST_SCOPE)
     assert ledger and all(insight.source_analysis_id == kept.id for insight in ledger)
 
     store.lose_next = True
-    (second,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (second,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     attempt_id = second.job_id.rsplit(":", 1)[1]
     await until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id))
 
@@ -305,7 +305,7 @@ async def test_a_withdrawal_that_fails_is_not_reported_as_done(caplog: pytest.Lo
     store = UnwithdrawableStore()
     fixture = off_loop(ops_fixture, store=store)
     store.lose_next = True
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     attempt_id = job.job_id.rsplit(":", 1)[1]
     with caplog.at_level("WARNING"):
         await until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id))
@@ -322,7 +322,7 @@ async def test_a_holder_whose_own_lease_lapsed_writes_itself_lost_at_renewal_and
     gate = asyncio.Event()
     store = ClockedStore()
     holder = off_loop(ops_fixture, gate=gate, store=store, job_lease_s=0.3)
-    (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
     attempt_id = job.job_id.rsplit(":", 1)[1]
     await asyncio.sleep(0)
 
@@ -541,7 +541,7 @@ async def test_a_generation_whose_renewals_fail_for_a_whole_lease_is_stopped_bef
     gate = asyncio.Event()
     store = RenewalRefusingStore()
     fixture = off_loop(ops_fixture, gate=gate, store=store, job_lease_s=0.3)
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     attempt_id = job.job_id.rsplit(":", 1)[1]
     await asyncio.sleep(0)
     store.at = T0 + timedelta(seconds=0.1)
@@ -627,7 +627,7 @@ async def test_a_start_whose_slot_claim_fails_ends_its_attempt_and_releases_its_
     fixture = off_loop(ops_fixture, store=SlotClaimFailingStore())
 
     with pytest.raises(RuntimeError, match="dropped the connection"):
-        await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+        await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
 
     (attempt,) = off_loop(
         fixture.host.eval_host.storage.list_analysis_attempts_by_campaign, fixture.campaign.id, TOYHOST_SCOPE
@@ -651,7 +651,7 @@ async def test_a_start_whose_attempt_cannot_be_written_starts_nothing() -> None:
     fixture = off_loop(ops_fixture, store=AttemptRefusingStore())
 
     with pytest.raises(StorageError, match="refused the attempt"):
-        await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+        await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
 
     assert fixture.writers == [], "no client was built"
     assert fixture.host.launch.job_manager.active_task_ids(generation_key(fixture.campaign.id, TOYHOST_SCOPE)) == []
@@ -669,7 +669,7 @@ async def test_a_graceful_shutdown_writes_every_held_job_lost_at_once(monkeypatc
     fixture = off_loop(ops_fixture, gate=gate, store=store)
     holder, heard = _heard(fixture.host)
     elsewhere = other_process(holder)
-    (generation,) = (await analysis_generate(holder, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (generation,) = (await generate(holder, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     launch_id, run_id = await _running_launch(holder)
     heard.broadcasts.clear()
 
@@ -700,7 +700,7 @@ async def test_a_graceful_shutdown_writes_every_held_job_lost_at_once(monkeypatc
 async def test_a_store_offering_a_clock_stamps_every_lease_in_its_time() -> None:
     gate = asyncio.Event()
     holder = off_loop(ops_fixture, gate=gate, store=ClockedStore())
-    (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
 
     lease = off_loop(_attempt, holder.host, job.job_id).lease
     assert lease == JobLease(
@@ -777,7 +777,7 @@ async def test_a_sweep_reading_running_with_no_lease_reads_lost() -> None:
 async def test_another_scopes_job_reads_absent_and_its_cancel_is_refused() -> None:
     gate = asyncio.Event()
     fixture = off_loop(ops_fixture, gate=gate)
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     await asyncio.sleep(0)
 
     with pytest.raises(NotFoundError):
@@ -1041,8 +1041,8 @@ async def test_two_processes_racing_a_generation_start_one_wins_and_the_other_is
     second = other_process(first.host)
 
     outcomes = await asyncio.gather(
-        analysis_generate(first.host, first.campaign.id, TOYHOST_SCOPE),
-        analysis_generate(second, first.campaign.id, TOYHOST_SCOPE),
+        generate(first.host, first.campaign.id, TOYHOST_SCOPE),
+        generate(second, first.campaign.id, TOYHOST_SCOPE),
         return_exceptions=True,
     )
 
@@ -1073,13 +1073,13 @@ async def test_a_generation_slot_is_taken_over_once_its_attempt_has_ended_or_lap
     store = ClockedStore()
     holder = off_loop(ops_fixture, gate=gate, store=store)
     elsewhere = other_process(holder.host)
-    (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
 
     with pytest.raises(ConflictError, match=f"job {job.job_id}"):
-        await analysis_generate(elsewhere, holder.campaign.id, TOYHOST_SCOPE)
+        await generate(elsewhere, holder.campaign.id, TOYHOST_SCOPE)
 
     store.at = T0 + timedelta(seconds=61)  # the holder's process went away
-    (taken,) = (await analysis_generate(elsewhere, holder.campaign.id, TOYHOST_SCOPE)).jobs
+    (taken,) = (await generate(elsewhere, holder.campaign.id, TOYHOST_SCOPE)).jobs
     assert taken.job_id != job.job_id
     assert (await job_poll(elsewhere, job.job_id, TOYHOST_SCOPE)).state == "lost"
     slot, _ = off_loop(elsewhere.eval_host.storage.load_generation_slot_with_etag, holder.campaign.id, TOYHOST_SCOPE)

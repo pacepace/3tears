@@ -9,7 +9,9 @@ the gate check), never typed in.
 - **The pin.** Every (kind, source) pair the plan checks accept (read through ``validate_plan``, which refuses a kind
   over a source it cannot draw) resolves on some r1–r5 input: a chart of that kind over that source draws.
 - **Each kind** draws what its query selects, every value the input's, validated as its kit chart model; small
-  multiples a panel per arm, per axis or per slice; every line its criterion's.
+  multiples a panel per arm, per axis or per slice; every line the stored one, else its criterion's; a dot strip's
+  intervals its figures' own, else, where its stored level says ``computed``, the binomial one their ``spread`` key
+  reads, named as code's.
 - **Checks and renderer agree** on a chart drawn as each arm less the control: both refuse it on an input with no
   control, and both take it on one with a control, or a difference heatmap naming its two arms.
 - **Markup** in input names is text on the page.
@@ -44,13 +46,15 @@ from threetears.evals.analysis.report.charts import (
     ScatterChart,
 )
 from threetears.evals.analysis.report.plan_page.build import plan_page
-from threetears.evals.analysis.report.plan_page.charting import misses_line
-from threetears.evals.analysis.report.plan_page.look import PageLook, page_look
+from threetears.evals.analysis.report.figure_keys import resolve
+from threetears.evals.analysis.report.plan_page.charting import COMPUTED, figure_unit, misses_line
+from threetears.evals.analysis.report.plan_page.look import PageLook, page_look, quantity
 from threetears.evals.analysis.report.plan_page.model import PageChart
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
+from threetears.evals.analysis.report.plan_page.words import COMPUTED_NOTE
 from threetears.evals.analysis.report_decision import control_arm, surviving_options
 from threetears.evals.analysis.report_gates import gate_check
-from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stratum, Task
+from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stat, Stratum, Task
 from threetears.evals.analysis.report_plan_checks import validate_plan
 from threetears.evals.analysis.report_plan_facts import plan_facts
 from threetears.evals.analysis.report.block_spec import block_look
@@ -387,30 +391,103 @@ def test_a_confusion_matrix_is_the_axis_table_of_each_arm_labelled_by_level_name
 def test_a_dot_strip_marks_each_figure_against_its_criterions_line_hollow_where_it_misses(
     name: str, path: Path, spec: ChartSpec
 ) -> None:
+    """A strip per task the query selects (one strip drawn alone, several as panels titled by task), or one strip of
+    the arms' overall figures; each figure's interval is its own, else, where the stored level says ``computed``, the
+    binomial interval its ``spread`` figure key reads, and none where neither holds."""
     report_input = _input(name)
-    data = _data(_draw(name, spec))
+    drawn = _draw(name, spec)
+    data = _data(drawn)
     assert isinstance(data, DotIntervalChart)
     (key,) = spec.query.measures
-    rows = data.rows or []
+    strips: dict[str, tuple[dict[str, Stat], float | None]] = {}
     if spec.query.source == "tasks":
-        (task,) = spec.query.strata
-        (item,) = [held for held in report_input.tasks if held.id == task]
-        stats = {arm: item.per_arm[arm][key] for arm in spec.query.arms if key in item.per_arm.get(arm, {})}
-        line = _criterion(report_input, key, "each_task", task)
+        assert spec.query.small_multiples_by != "arm", "a strip per arm is not read here: hold it before storing one"
+        for row in query_rows(spec.query, report_input):
+            task = row.item
+            assert isinstance(task, Task)
+            stats = {arm: task.per_arm[arm][key] for arm in spec.query.arms if key in task.per_arm.get(arm, {})}
+            if stats:
+                strips[task.name or _look(name).reader("task", task.id)] = (
+                    stats,
+                    _criterion(report_input, key, "each_task", task.id),
+                )
     else:
         table = report_input.measures if spec.query.source == "measures" else report_input.judged
         stats = {arm: stat for arm, stat in table[key].per_arm.items() if arm in spec.query.arms}
-        line = _criterion(report_input, key, "overall")
-    assert {row.id for row in rows} == set(stats)
+        strips[""] = (stats, _criterion(report_input, key, "overall"))
+    if data.panels is None:
+        assert len(strips) == 1, "one strip is drawn alone"
+        drawn_strips = [(next(iter(strips)), data.rows or [], data.reference)]
+    else:
+        drawn_strips = [(panel.title or "", panel.rows or [], panel.reference) for panel in data.panels]
+        assert [title for title, *_ in drawn_strips] == list(strips), "a panel per task, titled by it, in query order"
     declared = {table[key].level for table in (report_input.measures, report_input.judged) if key in table}
     level = spec.level or next(iter(declared)) or ""
     assert data.level == level, "the stored level, else the level its figures declare"
-    assert (data.reference.value if data.reference is not None else None) == line
-    for row in rows:
-        stat = stats[row.id or ""]
-        assert row.value == stat.mean
-        assert (row.lo is not None) == bool(level and (stat.ci is not None or stat.half_width is not None))
-        assert bool(row.hollow) == (line is not None and row.value < line)
+    stored = _stored_line(report_input, spec)
+    # A rate's interval is drawn within 0 to 100, where a rate lies.
+    rate = quantity(figure_unit(report_input, key)).rate
+    computed_here = level.endswith(COMPUTED) and spec.query.source in ("measures", "judged")
+    computed_rows = 0
+    for title, rows, reference in drawn_strips:
+        stats, line = strips[title]
+        assert {row.id for row in rows} == set(stats)
+        expected_line = stored if spec.reference else line
+        assert (reference.value if reference is not None else None) == expected_line, (
+            "the stored line, else its criterion's"
+        )
+        for row in rows:
+            arm = row.id or ""
+            stat = stats[arm]
+            assert row.value == stat.mean
+            own = (
+                stat.ci
+                if stat.ci is not None
+                else (stat.mean - stat.half_width, stat.mean + stat.half_width)
+                if stat.mean is not None and stat.half_width is not None
+                else None
+            )
+            expected = own if level else None
+            if expected is None and computed_here and stat.sem is None:
+                expected = _binomial_interval(report_input, arm, key)
+                computed_rows += expected is not None
+            if expected is None:
+                assert row.lo is None and row.hi is None, f"{title or 'overall'}, {arm}: no interval to draw"
+            else:
+                low, high = (max(expected[0], 0.0), min(expected[1], 100.0)) if rate else expected
+                assert (row.lo, row.hi) == pytest.approx((low, high)), f"{title or 'overall'}, {arm}"
+            assert bool(row.hollow) == (expected_line is not None and row.value < expected_line)
+    assert (COMPUTED_NOTE in drawn.notes) == (computed_rows > 0), "a computed interval is named as code's"
+
+
+def _stored_line(report_input: ReportInput, spec: ChartSpec) -> float | None:
+    """The stored reference line's value, read off its figure key: a margin below zero, any other line at its figure;
+    None where the plan stores none."""
+    if not spec.reference:
+        return None
+    stored = spec.reference[0]
+    value = resolve(stored.key, report_input).value
+    assert isinstance(value, float)
+    return -value if stored.kind == "margin" else value
+
+
+def _binomial_interval(report_input: ReportInput, arm: str, key: str) -> tuple[float, float] | None:
+    """The interval code computes on an arm's overall rate that states none: its ``spread`` key's, unless the overall
+    is the plain mean of its target-matrix cells (its ``overall_interval`` key resolves), whose spread is theirs."""
+
+    def read(figure_key: str) -> object | None:
+        try:
+            return resolve(figure_key, report_input).value
+        except UnresolvableReference:
+            return None  # NOSILENT: the key reads nothing on this figure, which is what None tells the caller
+
+    if read(f"overall_interval.{key}.{arm}.interval") is not None:
+        return None
+    value = read(f"spread.{arm}.{key}.overall.interval")
+    if value is None:
+        return None
+    assert isinstance(value, tuple)
+    return float(value[0]), float(value[1])
 
 
 # --- kinds no stored plan draws ------------------------------------------------------------------------------------

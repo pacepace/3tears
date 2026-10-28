@@ -22,6 +22,7 @@ from threetears.evals.ops import OpsHost
 from threetears.evals.ops.report_writer.loop import WriterLimits
 from threetears.evals.ops.report_writer.tally import ReportBudget
 from threetears.evals.schema.turns import (
+    ThinkingBinding,
     ToolResultClearing,
     ToolTurnClient,
     TurnBlock,
@@ -112,6 +113,7 @@ class FakeToolTurnClient:
         tools: Sequence[TurnToolSpec],
         max_tokens: int,
         clearing: ToolResultClearing | None = None,
+        binding: ThinkingBinding | None = None,
     ) -> TurnReply:
         self.requests.append(
             {
@@ -120,6 +122,7 @@ class FakeToolTurnClient:
                 "tools": [tool.to_json() for tool in tools],
                 "max_tokens": max_tokens,
                 "context_management": clearing.to_json() if clearing is not None else None,
+                "block_binding": binding.to_json() if binding is not None else None,
             }
         )
         if not self.replies:

@@ -27,7 +27,9 @@ class OutOfRunSpendTotals(EvalBaseModel):
 
     **Missing is not zero.** A call that reported no cost, and every call that raised (which reports
     nothing, and may have been billed), are counted in ``n_unpriced`` and left out of ``priced_usd``,
-    so ``priced_usd`` is a floor whenever ``n_unpriced`` is not 0.
+    so ``priced_usd`` is a floor whenever ``n_unpriced`` is not 0. A row that ledgers several calls (a report's
+    turns, ``OutOfRunSpend.calls``) counts each of them, its priced share in ``priced_usd`` and its unpriced calls in
+    ``n_unpriced``.
 
     :ivar n_calls: The calls.
     :ivar n_raised: Those that raised rather than returning.
@@ -35,6 +37,8 @@ class OutOfRunSpendTotals(EvalBaseModel):
     :ivar priced_usd: The reported cost of the priced calls, summed.
     :ivar ceiling_usd: The ceilings the calls were admitted at, summed over those the client could price.
     :ivar n_unbounded: Those admitted with no ceiling (the client could not price them and no cap was enforced).
+    :ivar n_budgeted: Those a report's budget admitted (``OutOfRunSpend.admitted_by``), each turn on its own price
+        ceiling, which the ledger does not hold.
     """
 
     n_calls: int
@@ -43,6 +47,7 @@ class OutOfRunSpendTotals(EvalBaseModel):
     priced_usd: float
     ceiling_usd: float
     n_unbounded: int
+    n_budgeted: int = 0
 
     @classmethod
     def of(cls, rows: Sequence[OutOfRunSpend]) -> OutOfRunSpendTotals:
@@ -54,13 +59,40 @@ class OutOfRunSpendTotals(EvalBaseModel):
         :rtype: OutOfRunSpendTotals
         """
         return cls(
-            n_calls=len(rows),
-            n_raised=sum(1 for row in rows if row.outcome == "raised"),
-            n_unpriced=sum(1 for row in rows if row.cost_usd is None),
-            priced_usd=math.fsum(row.cost_usd for row in rows if row.cost_usd is not None),
+            n_calls=sum(_calls(row) for row in rows),
+            n_raised=sum(_raised(row) for row in rows),
+            n_unpriced=sum(_unpriced(row) for row in rows),
+            priced_usd=math.fsum(_priced(row) for row in rows),
             ceiling_usd=math.fsum(row.priced_ceiling_usd for row in rows if row.priced_ceiling_usd is not None),
-            n_unbounded=sum(1 for row in rows if row.priced_ceiling_usd is None),
+            n_unbounded=sum(_calls(row) for row in rows if row.priced_ceiling_usd is None and row.admitted_by is None),
+            n_budgeted=sum(_calls(row) for row in rows if row.admitted_by is not None),
         )
+
+
+def _calls(row: OutOfRunSpend) -> int:
+    """The calls one row ledgers: its ``calls``, or one."""
+    return row.calls if row.calls is not None else 1
+
+
+def _raised(row: OutOfRunSpend) -> int:
+    """The raised calls of one row: its ``raised_calls``, or one when its one call raised."""
+    if row.raised_calls is not None:
+        return row.raised_calls
+    return 1 if row.outcome == "raised" else 0
+
+
+def _unpriced(row: OutOfRunSpend) -> int:
+    """The unpriced calls of one row: its ``unpriced_calls``, or one when its one call has no cost."""
+    if row.unpriced_calls is not None:
+        return row.unpriced_calls
+    return 1 if row.cost_usd is None else 0
+
+
+def _priced(row: OutOfRunSpend) -> float:
+    """What the priced calls of one row reported: its ``priced_usd``, or its one call's cost."""
+    if row.priced_usd is not None:
+        return row.priced_usd
+    return row.cost_usd if row.cost_usd is not None else 0.0
 
 
 class OutOfRunSpendReport(EvalBaseModel):
@@ -140,10 +172,18 @@ def _totals_line(totals: OutOfRunSpendTotals) -> str:
     floor = f", {totals.n_unpriced} unpriced (so at least)" if totals.n_unpriced else ""
     raised = f", {totals.n_raised} raised" if totals.n_raised else ""
     unbounded = f", {totals.n_unbounded} admitted unbounded" if totals.n_unbounded else ""
-    return (
-        f"{totals.n_calls} call(s): ${totals.priced_usd:.4f} reported{floor}{raised}; admitted at up to "
-        f"${totals.ceiling_usd:.4f}{unbounded}"
-    )
+    reported = f"{totals.n_calls} call(s): ${totals.priced_usd:.4f} reported{floor}{raised}"
+    if not totals.n_budgeted:
+        return f"{reported}; admitted at up to ${totals.ceiling_usd:.4f}{unbounded}"
+    # A report budget admitted some calls, each turn on a ceiling the ledger does not hold: the ceiling sum is said of
+    # the calls it was summed over alone, and left out where every call was the budget's, never read as $0.
+    ceilinged = totals.n_calls - totals.n_unbounded - totals.n_budgeted
+    admitted = [f"{totals.n_budgeted} admitted by a report budget"]
+    if ceilinged:
+        admitted.insert(0, f"{ceilinged} admitted at up to ${totals.ceiling_usd:.4f}")
+    if totals.n_unbounded:
+        admitted.append(f"{totals.n_unbounded} admitted unbounded")
+    return f"{reported}; {', '.join(admitted)}"
 
 
 def out_of_run_spend_text(report: OutOfRunSpendReport) -> str:
@@ -173,9 +213,14 @@ def out_of_run_spend_text(report: OutOfRunSpendReport) -> str:
     for row in report.rows:
         cost = f"${row.cost_usd:.4f}" if row.cost_usd is not None else "unpriced"
         ceiling = f"${row.priced_ceiling_usd:.4f}" if row.priced_ceiling_usd is not None else "unbounded"
+        admitted = f"admitted by {row.admitted_by}" if row.admitted_by is not None else f"ceiling {ceiling}"
+        if row.calls is not None:
+            # A row of several calls: how many, and the priced share beside the unpriced, never one figure for both.
+            unpriced = f", {row.unpriced_calls} unpriced (so at least)" if row.unpriced_calls else ""
+            cost = f"{row.calls} calls: ${_priced(row):.4f} reported{unpriced}"
         failed = f" {row.failure}" if row.failure else ""
         lines.append(
-            f"  {row.created_at}  {row.purpose}  {row.model}  {row.outcome}{failed}  {cost} (ceiling {ceiling})"
+            f"  {row.created_at}  {row.purpose}  {row.model}  {row.outcome}{failed}  {cost} ({admitted})"
             f"  template {row.template_id}  launch {row.launch_group_id}"
             + (f"  campaign {row.campaign_id}" if row.campaign_id is not None else "")
         )

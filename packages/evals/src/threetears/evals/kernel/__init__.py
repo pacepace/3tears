@@ -388,7 +388,7 @@ from threetears.evals.kernel.storage import (
     UnreadableRecordError,
     UnreadableRunError,
 )
-from threetears.evals.kernel.run_pages import ResultKey
+from threetears.evals.kernel.run_pages import ResultKey, UnreadableResultKey
 from threetears.evals.kernel.surface import (
     STRATUM_MIN_CASES,
     ArmGuardrails,
@@ -669,6 +669,7 @@ __all__ = [
     "RefusedRow",
     "RunsRead",
     "UnreadableRecordError",
+    "UnreadableResultKey",
     "UnreadableRunError",
     "NotFoundError",
     "AdmittedCall",

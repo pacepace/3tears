@@ -23,8 +23,9 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.judge_cases import JUDGE_KIND
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
 from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, EvalResult
+from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, EvalRun
 from threetears.evals.kernel.remedies import FIND_RUN
+from threetears.evals.kernel.run_pages import iter_stored_results
 
 __all__ = [
     "JudgeProfileEntry",
@@ -98,7 +99,7 @@ def judge_profiles_record(host: EvalHost, record: JudgeProfilesRecord, scope_id:
     :raises ValidationFailedError: A run is not of the judge kind, or is still running; or no profile could be recorded.
     :raises StorageError: A profile could not be persisted.
     """
-    results: list[EvalResult] = []
+    runs: list[EvalRun] = []
     for run_id in dict.fromkeys(record.judge_run_ids):
         run = host.storage.load_eval_run(run_id, scope_id)
         if run is None:
@@ -114,8 +115,11 @@ def judge_profiles_record(host: EvalHost, record: JudgeProfilesRecord, scope_id:
                 f"run {run_id!r} is {run.status} — its trials are still being written",
                 remedy=f"wait for it to end (job_poll run:{run_id}), then record",
             )
-        results.extend(host.storage.query_eval_results_by_run(run.id, scope_id))
-    readings = judge_kind_readings(results)
+        runs.append(run)
+    # Every run checked before any is read, then each read a page at a time as the readout walks it.
+    readings = judge_kind_readings(
+        result for run in runs for result in iter_stored_results(host.storage, run.id, scope_id)
+    )
     drafts = judge_profiles_of(readings, scope_id=scope_id)
     if not drafts.profiles:
         why = "; ".join(

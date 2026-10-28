@@ -41,7 +41,7 @@ from threetears.evals.schema import (
     RubricScore,
     omit_paths,
 )
-from threetears.evals.kernel import EvalAnalysis, EvalInsight, EvalJudgeProfile, resolve_variant_identity
+from threetears.evals.kernel import EvalAnalysis, EvalInsight, EvalJudgeProfile, ResultKey, resolve_variant_identity
 from threetears.evals.kernel.host import HostProfile
 from threetears.evals.schema import SubjectSnapshot, SweepableValue
 from threetears.evals.schema import WorldPlacement
@@ -322,6 +322,23 @@ class ToyhostStorage:
         """Every observation of these batches in this scope, in one read."""
         return [
             result for run_id in dict.fromkeys(run_ids) for result in self.query_eval_results_by_run(run_id, scope_id)
+        ]
+
+    def query_eval_result_keys_by_run(self, run_id: str, scope_id: str) -> list[ResultKey]:
+        """The key of every observation of this batch in this scope, in one read — a paged reader's pass over it."""
+        return [
+            ResultKey(result.id, result.test_case_id, result.k_iteration, result.model, result.scored_at)
+            for result in self.query_eval_results_by_run(run_id, scope_id)
+        ]
+
+    def load_eval_results(self, result_ids: Sequence[str], scope_id: str) -> list[EvalResult]:
+        """The observations with these ids in this scope, in one read by id — a page of a paged reader's."""
+        wanted = set(result_ids)
+        return [
+            result
+            for results in self._results_by_run.values()
+            for result in results
+            if result.id in wanted and result.scope_id == scope_id
         ]
 
     def load_case_strata(self, test_case_ids: Sequence[str], scope_id: str) -> list[EvalCaseStratum]:

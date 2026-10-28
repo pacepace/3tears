@@ -43,6 +43,7 @@ from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.analysis.revisions import refuse_pooled_revisions
 from threetears.evals.kernel.authoring_fields import edited_core_document, reject_unknown_authoring_fields
 from threetears.evals.kernel.campaign import EvalCampaign, VariantIndexEntry
+from threetears.evals.kernel.run_pages import ResultKey, read_results
 from threetears.evals.schema.campaign_upgrade import QUESTION_SEPARATOR, UPGRADED_CONTROL_LABEL
 from threetears.evals.kernel.declaration import (
     Aspect,
@@ -127,8 +128,12 @@ class CampaignStore(Protocol):
         """Load one run within a scope, or ``None``."""
         ...
 
-    def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
-        """Every result belonging to one run within a scope."""
+    def query_eval_result_keys_by_run(self, run_id: str, scope_id: str, /) -> list[ResultKey]:
+        """The key of every result of one run within a scope, in one read that ships no other field."""
+        ...
+
+    def load_eval_results(self, result_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
+        """The named results within a scope, in one read by id."""
         ...
 
 
@@ -1979,7 +1984,9 @@ def _address_arm(storage: CampaignStore, scope_id: str, run_id: str, *, profile:
             remedy=f"name a run of this scope ({FIND_RUN})",
         )
     identity = resolve_variant_identity(run=run, profile=profile)
-    results = storage.query_eval_results_by_run(run_id, scope_id)
+    # The key is the first result's (`variant_key_of_run`), so the run's keys are read and that one result by id: never
+    # the run's results.
+    results = read_results(storage, scope_id, storage.query_eval_result_keys_by_run(run_id, scope_id)[:1])
     key = variant_key_of_run(results)
     if key is None:
         # A run launched a moment ago has no observation yet, and a designation made AT launch

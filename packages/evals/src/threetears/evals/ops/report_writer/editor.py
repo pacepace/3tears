@@ -44,6 +44,7 @@ from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.analysis.report_doc_facts import EditorFact, editor_facts
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.kernel.inner_ceilings import EDITOR_ANSWERS
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
 from threetears.evals.ops.report_writer.session import SessionLimits, SessionStop, ToolMount, ToolSession
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
@@ -76,9 +77,6 @@ _REPORT: Final = "report"
 
 #: A fenced block: three backticks, an optional language word, the body, three backticks.
 _FENCE = re.compile(r"```[A-Za-z]*[ \t]*\n(?P<body>.*?)\n?```", re.DOTALL)
-
-#: How many answers a round reads before it ends ``review_failed``: the first, and the one asked for again.
-_ANSWERS: Final = 2
 
 
 def editor_session(round: int) -> str:
@@ -199,6 +197,8 @@ class EditorOutcome:
     :ivar reason: Why a round ended other than ``reviewed``, in a sentence.
     :ivar session: The round's session as a stored value (``ToolSession.to_json()``), whatever the ending: a session
         is resumable, never thrown away.
+    :ivar failure: The client's failure a ``failed`` round ended on, when one did, so a caller that records it can
+        ask the host what of it is safe to keep (its text may carry a provider's account); never stored.
     """
 
     ending: Literal["reviewed", "review_failed", "over_budget", "failed"]
@@ -207,6 +207,7 @@ class EditorOutcome:
     faults: tuple[str, ...] = ()
     reason: str = ""
     session: dict[str, Any] = field(default_factory=dict)  # Any: a JSON object
+    failure: Exception | None = field(default=None, compare=False, repr=False)
 
 
 async def review_report(
@@ -278,7 +279,7 @@ async def review_report(
         # The client's failure (a provider's, after its retries; a reply refused after it was paid for), which the
         # engine cannot name by type: reported as this round's `failed` ending, so the session is kept beside it.
         contain(exc, log=log, what=f"the report editor's round {round} failed and ends failed", level="error")
-        ended = EditorOutcome(ending="failed", round=round, reason=f"{type(exc).__name__}: {exc}")
+        ended = EditorOutcome(ending="failed", round=round, reason=f"{type(exc).__name__}: {exc}", failure=exc)
     return replace(ended, session=session.to_json())
 
 
@@ -296,7 +297,7 @@ async def _reviewed(
     claims = frozenset(claim.id for claim in doc.claims)
     stop = await session.send(_request(doc, report_input, snapshot=snapshot, earlier=earlier, calls=limits.calls))
     faults: tuple[str, ...] = ()
-    for answer in range(1, _ANSWERS + 1):
+    for answer in range(1, EDITOR_ANSWERS + 1):
         if stop.kind == "over_budget" and stop.reply is None:
             return EditorOutcome(ending="over_budget", round=round, reason=stop.reason)
         if stop.kind == "failed":
@@ -305,13 +306,13 @@ async def _reviewed(
         if isinstance(read, Review):
             return EditorOutcome(ending="reviewed", round=round, review=read)
         faults = read
-        if answer < _ANSWERS:
+        if answer < EDITOR_ANSWERS:
             stop = await session.send(_ask_again(faults))
     return EditorOutcome(
         ending="review_failed",
         round=round,
         faults=faults,
-        reason=f"the editor's answer could not be read after it was asked {_ANSWERS} times",
+        reason=f"the editor's answer could not be read after it was asked {EDITOR_ANSWERS} times",
     )
 
 

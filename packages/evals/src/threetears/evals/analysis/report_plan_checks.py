@@ -1183,7 +1183,9 @@ def _above_full_results(plan: ReportPlan) -> Iterator[tuple[str, str]]:
 
 def _reader_id_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
     """No prose above Full results types an internal id (GENERATOR §8 item 9), matched as D3 matches a name, nor quotes
-    the campaign's question, which the campaign wrote in its own ids."""
+    the campaign's question, which the campaign wrote in its own ids. An arm's id is internal where the page prints the
+    arm by another name and the id is not its served model (:func:`internal_ids`); every name the page prints for an
+    arm, and its alias, hide what they hold."""
     ids = internal_ids(report_input)
     shown = {name for names in reader_names(report_input).values() for name in names.values()}
     shown |= {
@@ -1203,4 +1205,11 @@ def _reader_id_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_
             )
         for identifier in typed_ids(text, ids, shown):
             kind, name = ids[identifier]
-            yield path, f"types the {kind} id {identifier!r} above Full results: write its reader name, {name!r}"
+            if kind == "arm":
+                yield (
+                    path,
+                    f"types the arm id {identifier!r} above Full results: write the name the page prints for it, "
+                    f"{name!r}, or its key {{arm:{identifier}}}",
+                )
+            else:
+                yield path, f"types the {kind} id {identifier!r} above Full results: write its reader name, {name!r}"

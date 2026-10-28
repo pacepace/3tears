@@ -1,0 +1,84 @@
+{
+  "ending": "stored",
+  "reason": "",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, decision block and claim frontier together tell a reader what to do: lean to Brisk-S with low reasoning and one retry, at $1,208.00 a month and a 97.1% pass rate. They say why: it is the knee of the cost curve, with a lead of +2.4 points (+0.8 to +4) over the best Nano-XS setup. They name the main risk too. Nobody has declared a minimum pass rate or a price per point, and Watch names the weakest margin: Brisk-S with high reasoning reads +0.8 points higher, not separated (-0.4 to +2.1), with a 9.4% wrong-side rate. All of these match the snapshot."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "The claims build in order. Claim frontier shows the knee and claim prices puts a price on each step ($319.67, then $1,595.18, then $17,236.36, all checked). Claim retry explains why every setup on the curve uses a retry. Claim top shows that neither step above the lean is separated. Claims tasks and latency add the detail. One small friction: the confidence line reads 'High, if the caveats below aren't material', and the first caveat then opens with 'Material for the pick itself'. The caveat goes on to say when it matters, so the friction is in the wording."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "The lean's weak spots are all on the page: the unseparated gain from high reasoning, multi-hop as its weakest task (95.6% against 97.3%), and Atlas-M's top reading of 98.6%. The lean is plainly labelled as ours, not a declared rule. Two phrasings lean slightly strong, and both appear under findings: the trade line's '$13,908.00 a month', and claim retry's 'at least as high', which sits on gaps of 0.2 to 1.4 points shown without intervals."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "Nothing that was left out would change the pick. Cost per 1,000 calls already includes the retry calls (1.539 against 1.492 calls per task for Brisk-S low). The Atlas-M setups that were left out are all beaten on cost and pass rate by another setup. The retry-by-model interaction (+7.5 points on Nano-XS against +2.4 on Atlas-M, both with reasoning off) changes no setup on the curve. The extra-calls and outcome measures hold no figures."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "The report does not say whether every setup ran the same cases. It carries that into the caveats (intervals read as independent, which errs wide) and into a next step: a paired re-run on 5432 cases, a figure that matches the snapshot's 80% sizing. The best-of-18 optimism goes into the caveats and the same re-run. Two gaps stay in Method only: the pass criterion is undefined and latency run conditions are not stated. Both apply to every setup alike, so neither moves the comparison."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an action and says what it settles. The owner declares a minimum or a price, and the curve then names one setup. The paired re-run says whether high reasoning's +0.8 points is real. The routed multi-hop mix is plainly marked as not run and not priced. Recording per-task case counts gives the task gaps intervals."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "Claims frontier, prices, top and latency show exactly what they say, and their numbers check out. Claim retry argues that a retry is the cheapest lever, but its block is a lattice of point estimates. The retry effects have intervals (for example +1.9, +0.3 to +3.4, on Brisk-S low), and those would show the claim better. The 'What you could change' table's minimum-pass-rate row names the wrong setup for minimums from 94.8% to 95.3%. In claim tasks, one example's reason says '9 of 17' while the caption says the failure counts are not stated."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The minimum-pass-rate row in 'What you could change' says Brisk-S low with retry is the cheapest setup that clears any minimum up to 97.1%. For a minimum above 94.8% and up to 95.3%, Brisk-S with low reasoning and no retry is cheaper: 95.3% at $0.288 per 1,000 calls (about $1,152 a month, against $1,208). The hypothetical pass-rate sweep in decision_sensitivity confirms it. This row is the tool the owner will use once they declare a minimum, so it should be exact. Add that band, naming Brisk-S low without retry, or say that the row lists only setups on the cost curve."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The trade line says the top step, to Atlas-M with high reasoning and retry, 'costs $13,908.00 a month'. That is Atlas-M's total monthly cost (cost_per_month.atlas-m.high.r1). The step itself adds $11,376.00 a month over Brisk-S high with retry (price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_cost_gap). Read as the price of the step, the sentence overstates it. Either cite the step cost or write 'brings the monthly cost to $13,908.00'."
+        },
+        {
+          "claim": "retry",
+          "severity": "should_fix",
+          "finding": "The claim rests on effect sizes ('the cheapest lever', '+7.5 points' against '+0.9'), but its block is a lattice of point estimates. The retry lever effects have intervals: +1.9 (+0.3 to +3.4) on Brisk-S low, +7.5 (+4.6 to +10.4) on Nano-XS with reasoning off, and +0.9 (-0.2 to +2) on Atlas-M high, which is not separated. Show them as a diverging bars block, or add them to the claim. Also say that the 'low with retry reads at least as high as high without' gaps (0.2, 0.5 and 1.4 points) are readings, not separated differences."
+        },
+        {
+          "claim": "tasks",
+          "severity": "should_fix",
+          "finding": "The caption says 'how many failed of each kind is not stated', but example TQ-0772's reason says off-by-one is 'the most common wrong-args pattern (9 of 17)'. The snapshot keeps no count of how many examples came from how many failures, so 9 of 17 is not anchored to any arm or base. Either say what 9 of 17 counts (which arm, out of what), or drop it, so that the caption and the example agree."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The confidence line reads 'High, if the caveats below aren't material', and the first caveat begins 'Material for the pick itself'. A reader sees High confidence next to a caveat that calls itself material. Reword the caveat so it says it is material only if the owner's minimum sits above 97.1% or their price per point sits outside $319.67 to $1,595.18, which is what the rest of the caveat already says."
+        }
+      ],
+      "total": 13,
+      "passes": true,
+      "must_fix": false
+    }
+  ]
+}

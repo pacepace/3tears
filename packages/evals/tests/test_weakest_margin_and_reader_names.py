@@ -221,6 +221,73 @@ def test_a_shown_name_that_is_a_bounded_prefix_of_an_id_does_not_hide_it() -> No
     ]
 
 
+def _r1_with_arm(old: str, new: str, **fields: str) -> tuple[dict[str, Any], ReportInput]:
+    """r1's anchor plan and input with the arm ``old`` renamed ``new`` throughout, named by its id as an input built
+    from a run names it (its alias is its id), with ``fields`` set on it."""
+    plan: dict[str, Any] = json.loads((HERE / "r1" / "anchor.plan.json").read_text(encoding="utf-8").replace(old, new))
+    data = json.loads((HERE / "r1" / "input.json").read_text(encoding="utf-8").replace(old, new))
+    arm = next(arm for arm in data["arms"] if arm["id"] == new)
+    arm.update({"name": new, **fields})
+    return plan, ReportInput.model_validate(data)
+
+
+def _plan_faults(plan: dict[str, Any], report_input: ReportInput) -> list[tuple[str, str]]:
+    try:
+        validate_plan(ReportPlan.model_validate(plan), report_input)
+    except PlanRefusal as refused:
+        return list(refused.faults)
+    return []
+
+
+#: Lever arms' ids beside the names the page prints for them: Discodon's (a hyphen and a digit), one a hyphen alone
+#: marks, and one a digit alone marks.
+_LEVER_ARMS = [("fanout-1", "fanout 1"), ("fan-wide", "fan wide"), ("fanout1", "fanout 1")]
+
+
+@pytest.mark.parametrize(("arm_id", "printed"), _LEVER_ARMS, ids=[arm_id for arm_id, _ in _LEVER_ARMS])
+def test_a_lever_arms_id_the_page_prints_by_another_name_is_refused_though_a_hyphen_or_digit_alone_marks_it(
+    arm_id: str, printed: str
+) -> None:
+    """A lever arm's id is the campaign's label (``fanout-1``): where the page prints the arm otherwise ("fanout 1"),
+    prose typing the id is refused, even where its one id mark is a hyphen or a digit; its alias, which an input
+    built from a run sets to the id, does not hide it."""
+    plan, report_input = _r1_with_arm("brisk-s", arm_id, short_name=printed)
+    assert _plan_faults(plan, report_input) == []
+
+    _slot(plan, "why_not")["text"] += f" Most {arm_id} answers still read well."
+
+    assert _plan_faults(plan, report_input) == [
+        (
+            "decision.slots[1].text",
+            f"types the arm id {arm_id!r} above Full results: write the name the page prints for it, {printed!r}, or "
+            f"its key {{arm:{arm_id}}}",
+        )
+    ]
+
+
+def test_a_model_arms_id_that_is_its_served_model_is_the_readers_word() -> None:
+    """A model arm's id is the model's name a reader knows: typed beside a short name the page prints, it stands."""
+    model = "deepseek/deepseek-v4.1-flash"
+    plan, report_input = _r1_with_arm("atlas-m", model, short_name="DeepSeek Flash", served_model=model)
+    assert _plan_faults(plan, report_input) == []
+
+    _slot(plan, "why_not")["text"] += f" The {model} replies were short."
+
+    assert _plan_faults(plan, report_input) == []
+
+
+def test_an_ordinary_hyphenated_word_and_an_arm_id_its_printed_name_differs_from_only_in_case_stand() -> None:
+    """A hyphen marks only a token that is an arm's id the page prints otherwise: "cost-per-reply", "off-lane" and
+    "high-effort" are words, and the id ``open-70b``, printed "Open-70B", is its own name in any case."""
+    plan, report_input = _r1_with_arm("brisk-s", "fanout-1", short_name="fanout 1")
+
+    _slot(plan, "why_not")["text"] += (
+        " The cost-per-reply gap is small, off-lane asks hold, high-effort runs cost more, and open-70b is close."
+    )
+
+    assert _plan_faults(plan, report_input) == []
+
+
 def test_a_plain_word_id_a_percentile_a_key_and_method_are_not_refused() -> None:
     plan = _anchor("r5")
     _slot(plan, "next")["text"] += " The multi and about strata matter less."

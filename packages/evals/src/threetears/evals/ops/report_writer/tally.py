@@ -66,6 +66,9 @@ class TurnCost:
     :ivar refused: Why the client refused the reply after it was paid for, or ``None`` for a reply the session read.
     :ivar admitted_on_estimate: Whether a dollar budget admitted the turn on a ceiling built on rates the host's
         pricer does not guarantee: its cap was checked against an estimate.
+    :ivar sent_binding: The thinking binding's behaviour the request carried, or ``None`` when it carried none.
+    :ivar input_transformations: What the provider reported doing to the request's input, as it wrote it, or ``None``
+        when the response carried no report.
     """
 
     session: str
@@ -86,6 +89,8 @@ class TurnCost:
     wall_s: float
     refused: str | None = None
     admitted_on_estimate: bool = False
+    sent_binding: str | None = None
+    input_transformations: tuple[dict[str, Any], ...] | None = None  # Any: the provider's JSON objects
 
     @classmethod
     def of(
@@ -140,6 +145,8 @@ class TurnCost:
             wall_s=wall_s,
             refused=refused,
             admitted_on_estimate=admitted_on_estimate,
+            sent_binding=reply.sent_binding,
+            input_transformations=reply.input_transformations,
         )
 
     def to_json(self) -> dict[str, Any]:  # Any: a JSON object
@@ -167,6 +174,10 @@ class TurnCost:
             "wall_s": self.wall_s,
             "refused": self.refused,
             "admitted_on_estimate": self.admitted_on_estimate,
+            "sent_binding": self.sent_binding,
+            "input_transformations": (
+                None if self.input_transformations is None else [dict(entry) for entry in self.input_transformations]
+            ),
         }
 
 
@@ -186,11 +197,23 @@ class Tally:
         self._calls: Counter[tuple[WriterRole, int]] = Counter()
         self._bounces: dict[tuple[WriterRole, int], list[str]] = {}
         self._transcripts: dict[str, str] = {}
+        self._sent = 0
 
     @property
     def turns(self) -> tuple[TurnCost, ...]:
         """Every turn recorded, in the order they were sent."""
         return tuple(self._turns)
+
+    @property
+    def sent(self) -> int:
+        """Every turn sent, whether its reply came back or not: at least ``len(turns)``. A turn whose reply never
+        came (the client failed after its retries, or the writing was cancelled or ran out of time while it was in
+        flight) is counted here and in no :class:`TurnCost`, since nothing reported what it used or cost."""
+        return max(self._sent, len(self._turns))
+
+    def record_sent(self) -> None:
+        """Count one turn as sent, before its reply is awaited (:attr:`sent`)."""
+        self._sent += 1
 
     def record_turn(self, cost: TurnCost) -> None:
         """Keep one paid turn.
@@ -235,12 +258,43 @@ class Tally:
         self._transcripts[session] = digest
 
     def spent_usd(self) -> float | None:
-        """What every turn cost together, or ``None`` when any turn was unpriced.
+        """What every turn cost together, or ``None`` when any turn was unpriced, a turn sent whose reply never came
+        included.
 
         :return: The sum, or ``None``.
         :rtype: float | None
         """
-        return _sum_cost(self._turns)
+        if self.unpriced_turns():
+            return None
+        # One sum for both: the total is the priced share when every turn is priced, never a second summation that
+        # could differ from it in the last place.
+        return self.priced_usd()
+
+    def priced_usd(self) -> float:
+        """What the turns that reported a cost cost together: the priced share, a floor whenever a sent turn is
+        unpriced (:meth:`unpriced_turns`).
+
+        :return: The sum.
+        :rtype: float
+        """
+        return math.fsum(turn.cost_usd for turn in self._turns if turn.cost_usd is not None)
+
+    def unreturned_turns(self) -> int:
+        """The turns sent whose reply never came: the client raised, or the writing was cancelled or ran out of time
+        while they were in flight. Each is unpriced (:meth:`unpriced_turns` counts it too).
+
+        :return: The count.
+        :rtype: int
+        """
+        return self.sent - len(self._turns)
+
+    def unpriced_turns(self) -> int:
+        """The turns sent whose cost nothing reported: replies with no cost, and turns whose reply never came.
+
+        :return: The count.
+        :rtype: int
+        """
+        return self.sent - len(self._turns) + sum(1 for turn in self._turns if turn.cost_usd is None)
 
     def to_json(self) -> dict[str, Any]:  # Any: a JSON object
         """The tally as the stored report's ``generation``: the turns, then the sums by role, by round and in all.

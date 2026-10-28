@@ -19,14 +19,13 @@ from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.host import HostProfile
 from threetears.evals.schema.models import utc_now_iso
-from threetears.evals.ops import analysis_estimate, analysis_generate
+from threetears.evals.ops import analysis_estimate
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture, settled
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, generate, ops_fixture, settled
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.toyhost_plan import PLAN_CALLS
 
 #: A writer the host has not measured, so does not allow.
 UNLISTED = "vendor/unlisted-writer"
@@ -41,30 +40,31 @@ class TestAnalysisGenerate:
         fixture = off_loop(ops_fixture, profile=_allowing(MODEL))
 
         with pytest.raises(ValidationFailedError, match=f"allows '{MODEL}'"):
-            await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE, model=UNLISTED)
+            await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE, model=UNLISTED)
 
-        assert fixture.writers == [], "no client was built, so no provider request could be made"
+        assert fixture.writers == fixture.analysts == [], "no client was built, so no provider request could be made"
 
     async def test_an_allowed_writer_proceeds(self) -> None:
         fixture = off_loop(ops_fixture, profile=_allowing(MODEL))
 
-        (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE, model=MODEL)).jobs
+        (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE, model=MODEL)).jobs
 
         assert (await settled(fixture.host, job.job_id)).state == "completed"
-        assert len(fixture.writers[0].calls) == PLAN_CALLS
+        (analyst,) = fixture.analysts
+        assert analyst.model_name == MODEL and set(analyst.sessions) == {"analyst", "editor-1"}
 
     async def test_the_hosts_default_writer_is_held_to_the_list_too(self) -> None:
         """Checked in the job, once its client names the default writer: the job ends refused, before any call."""
         fixture = off_loop(ops_fixture, profile=_allowing("vendor/some-other-writer"))
 
-        (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+        (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
         status = await settled(fixture.host, job.job_id)
 
         assert status.state == "failed" and status.detail is not None
         assert status.detail.startswith("refused before any call: ") and "default writer" in status.detail
-        (writer,) = fixture.writers
-        assert writer.calls == [] and writer.priced == [], "nothing was sent or priced"
-        assert writer.closed == 1, "the client it built was released"
+        (analyst,) = fixture.analysts
+        assert analyst.sessions == {}, "nothing was sent"
+        assert analyst.released, "the client it built was released"
 
     async def test_an_estimate_gives_the_same_answer(self) -> None:
         fixture = off_loop(ops_fixture, profile=_allowing(MODEL))
@@ -75,7 +75,7 @@ class TestAnalysisGenerate:
     async def test_a_host_with_no_list_allows_any_writer(self) -> None:
         fixture = off_loop(ops_fixture)
 
-        (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE, model=UNLISTED)).jobs
+        (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE, model=UNLISTED)).jobs
 
         assert (await settled(fixture.host, job.job_id)).state == "completed"
 
