@@ -44,6 +44,11 @@ corpus. Its number moves only when the cassette's own format changes, never with
 cheap to regenerate from the kept runs, but a corpus is re-captured by calling the third-party tools it exists to
 spare, so a new field on a finding must not refuse every corpus a host recorded.
 
+**A report document and its sessions have a version space of their own** (:data:`REPORT_DOC_SCHEMA_VERSION`). Both
+are derived and regenerable, but a report is written by a paid analyst loop, so a change to the stored report record
+refuses report documents and their sessions only, never the analyses, insights, judge profiles, plans and snapshots
+the shared regenerable version governs.
+
 The bundle (``schema_version``), the cell model and the identity keys (``IDENTITY_VERSION``) are separate version spaces with their own pins too; an upgrader never recomputes a key or a
 digest. A kept key is stored beside its pre-image and the identity version that computed
 it — a run's ``variant_levers`` beside the keys its results carry, a campaign arm's ``levers`` and
@@ -403,7 +408,8 @@ REGENERABLE_SCHEMA_VERSION: int = 13
 
 A bump is a drop: regenerable documents written under the old version are refused on read
 (:data:`~threetears.evals.schema.models.SchemaVersion`) and regenerated from the core, never migrated. It governs
-the analysis, the insight and the judge profile, never the cassette (:data:`CASSETTE_SCHEMA_VERSION`).
+the analysis, the insight, the judge profile, the report plan and the report snapshot, never the cassette
+(:data:`CASSETTE_SCHEMA_VERSION`) nor a report document or session (:data:`REPORT_DOC_SCHEMA_VERSION`).
 """
 
 #: The version every cassette is written under, and the only one a read of one accepts. It moves only when the
@@ -419,6 +425,29 @@ A bump is a drop: a cassette written under the old version is refused on read
 (:data:`~threetears.evals.schema.models.CassetteSchemaVersion`), and the corpus is re-captured (a new capture run,
 so a new corpus), never migrated. Bump it only for a change to the cassette's own format, since every bump spends
 the third-party quota of every corpus again.
+"""
+
+#: The version every stored report document and report session is written under, and the only one a read of one
+#: accepts: a space of its own, apart from :data:`REGENERABLE_SCHEMA_VERSION`, so a change to the report writer's
+#: stored record refuses report documents and their sessions and never an analysis, an insight, a judge profile, a
+#: report plan or a snapshot. A stored report document is read strictly (``kernel/report_doc.py``), so every change
+#: to its document, its generation record or its sessions moves this number, and a stale one is refused by its version
+#: alone, before its body is read, with the remedy to drop it (``EvalStorage.drop_derived(scopes)``) and write the
+#: report again.
+#:
+#: - **v13** — the first report documents (``eval_report_doc``), written under the shared regenerable version, with
+#:   every session the writing loop began held whole in ``generation["sessions"]``.
+#: - **v14** — the report's own version space, and sessions in their own documents: each session is stored as an
+#:   ``eval_report_session`` (one per session, keyed by its report and its name), and the generation record (format
+#:   2) names each by ``{digest, turns, ref}``, so a listing of report documents loads no session. A v13 report
+#:   document is refused on read by its version; no host stores report documents yet, so the bump drops nothing in
+#:   production.
+REPORT_DOC_SCHEMA_VERSION: int = 14
+"""The version every report document and report session is written under, and the only one a read of one accepts.
+
+A bump is a drop: a report document or session written under the old version is refused on read and the report is
+written again from a fresh snapshot, never migrated. It governs ``eval_report_doc`` and ``eval_report_session`` only,
+so :data:`REGENERABLE_SCHEMA_VERSION` does not move with it.
 """
 
 #: The kept documents, by ``doc_type``: the ``kept`` entries of
@@ -886,6 +915,7 @@ __all__ = [
     "DURABLE_VERSION_SPACE",
     "MINOR_ADDITIVITY_SENTENCE",
     "REGENERABLE_SCHEMA_VERSION",
+    "REPORT_DOC_SCHEMA_VERSION",
     "CoreUpgrader",
     "CoreVersionRefused",
     "VersionSpace",
