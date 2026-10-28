@@ -38,7 +38,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from threetears.evals.kernel.capped_completion import call_ceiling
+from threetears.evals.kernel.capped_completion import call_ceiling, ceiling_is_estimate
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_MAX_TOKENS
@@ -60,6 +60,7 @@ class _Floor:
     usd: float
     call: str
     lowered_by: str
+    estimate: bool = False
 
 
 async def price_subject_call_floor(
@@ -111,7 +112,13 @@ async def price_subject_call_floor(
     if not floors:
         return None
     floor = max(floors, key=lambda each: each.usd)
-    return CallCeiling(usd=floor.usd, call=floor.call, lowered_by=floor.lowered_by, lower_bound=True)
+    return CallCeiling(
+        usd=floor.usd,
+        call=floor.call,
+        lowered_by=floor.lowered_by,
+        lower_bound=True,
+        estimate=any(each.estimate for each in floors),
+    )
 
 
 async def _judge_floor(
@@ -128,11 +135,12 @@ async def _judge_floor(
     service = run_judge.service
     try:
 
-        def priced() -> list[tuple[float, str]]:
+        def priced() -> tuple[list[tuple[float, str]], bool]:
             requests = service.floor_requests(template.rubric, intent=template.intent, judged_artifact=judged_artifact)
-            return [(usd, each.dim_id) for each in requests if (usd := service.price_ceiling(each)) is not None]
+            ceilings = [(usd, each.dim_id) for each in requests if (usd := service.price_ceiling(each)) is not None]
+            return ceilings, any(ceiling_is_estimate(service.client_for(each)) for each in requests)
 
-        floors = await run_blocking(host.blocking_executor, priced)
+        floors, estimate = await run_blocking(host.blocking_executor, priced)
     finally:
         await service.aclose()
     if not floors:
@@ -140,6 +148,7 @@ async def _judge_floor(
     usd, dim_id = max(floors)
     model = run_judge.effective_judges.get(dim_id, judge_model)
     return _Floor(
+        estimate=estimate,
         usd=usd,
         call=(
             f"the {dim_id!r} judge call every judged case makes ({JUDGE_CALL_ATTEMPTS} request(s): the first and its "
@@ -166,10 +175,12 @@ async def _simulator_floor(host: EvalHost, simulator_model: str, conversation: C
                 # The minimum over the actors is unknown when one of them is: that actor might be the one to speak.
                 return None
             floors.append((usd, actor.id))
+        estimate = ceiling_is_estimate(client)
     finally:
         await client.aclose()
     usd, _actor_id = min(floors)
     return _Floor(
+        estimate=estimate,
         usd=usd,
         call=(
             f"a simulated-user utterance (any of the conversation's {len(floors)} actor(s), each asking up to "

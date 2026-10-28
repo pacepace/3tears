@@ -87,7 +87,13 @@ from threetears.evals.kernel.candidate_kind import (
     CostCapReached,
     UnknownCandidateKind,
 )
-from threetears.evals.kernel.capped_completion import CappedCompletion, call_ceiling, prompt_token_bound
+from threetears.evals.kernel.capped_completion import (
+    CappedCompletion,
+    call_ceiling,
+    ceiling_is_estimate,
+    prompt_token_bound,
+    turn_prompt_token_bound,
+)
 from threetears.evals.kernel.cassettes import (
     ActionSeam,
     CassetteSeams,
@@ -742,6 +748,7 @@ __all__ = [
     "WorldSession",
     "WorldSessionError",
     "call_ceiling",
+    "ceiling_is_estimate",
     "candidate_failure_cause",
     "classify_result",
     "counted_goal_verdicts",
@@ -760,6 +767,7 @@ __all__ = [
     "plan_variation_calls",
     "production_replicating_cost",
     "prompt_token_bound",
+    "turn_prompt_token_bound",
     "program_cost",
     # The authoring gate itself, for an adopter whose designs are authored outside the engine's
     # campaign write path (as code or config, checked at its own boot or authoring time): the only

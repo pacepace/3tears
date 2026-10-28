@@ -6,6 +6,71 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the pricing port: the host prices a call, the engine bounds it; a report budget in tokens and turns
+
+**Why.** The engine cannot know what a host pays, so the host owns prices and the engine owns the arithmetic (owner,
+2026-10-28). W3's `Pricer` answered rates alone; a host also needs to price what a call actually cost from the reply
+(OpenRouter's reported cost, a bring-your-own-key upstream's charge, cache writes split by lifetime), to say when its
+rates are only an estimate, and to write a report on a model nothing prices.
+
+**Changed (provisional, `threetears.evals.providers`; none of it was in a final release):** `Pricer` is the host's
+port, asked for every `Model` call, a completion and a tool turn alike (every client the engine ships), with two
+halves.
+- **Before a call**, `rates_for(model, *, provider)` answers `HostRates(rates, guaranteed)`: the `ModelRates` the call
+  is billed at, and whether the host guarantees them. The model computes the bound from them with its own arithmetic
+  (`price_ceiling`, `turn_price_ceiling`), so a host writes none. Rates that are not guaranteed (an OpenRouter route
+  whose upstream may bill otherwise) still bound and admit the call, and a report's dollar budget says it was
+  checked against an estimate. `None` leaves the call to the catalogue route, its bound and its price both:
+  OpenRouter's reported cost for an OpenRouter call, else the catalogue row.
+- **After a call**, `price(model, *, provider, usage, served_provider)` answers `CallPrice(usd, source,
+  unpriced_reason)`. `usage` is the reply's raw usage block exactly as the wire returned it (OpenRouter's `cost`,
+  `is_byok` and `cost_details.upstream_inference_cost`; Anthropic's `cache_creation` split by lifetime), and
+  `served_provider` the upstream OpenRouter routed to. An unpriced call is `usd=None` with its reason, never `0`.
+  `providers.wire.usage_counts(provider, usage)` reads a usage block's tokens exactly as the engine does.
+
+A call no pricer answers rates for is priced as before: OpenRouter's reported figure for an OpenRouter call, else the
+catalogue's row, and `AnthropicPublishedRates` stays the default for a model handed neither a pricer nor a catalogue,
+now implementing both halves. The default reproduces every recorded completion's and turn's `cost_usd`,
+`price_source` and bound byte for byte. `ModelRates` no longer carries a `source`: the price's source is `CallPrice`'s.
+`PriceSource` and its two `OPENROUTER_REPORTED*` words are unchanged. Only rates a pricer guarantees bound a call
+exactly: Anthropic's published rates for a direct call, and a host's `guaranteed=True`. A bound from OpenRouter's
+catalogue row is always an estimate, since OpenRouter may route a call to an endpoint priced otherwise and a
+bring-your-own-key upstream bills at its own rates, so a cap checked against one says so; no dollar figure moves.
+
+`ToolTurnClient.turn_price_ceiling` answers a `TurnCeiling(usd, estimate)` (new, `threetears.evals.schema`), so a
+wrapper forwarding it carries the estimate through; a turn recording writes `"estimate": true` beside a ceiling that is
+one, and reads every recording made before as it was.
+
+**Added:** a report's budget takes one of two forms, declared by the host: `ReportBudget(usd=)` as before, or
+`ReportBudget(tokens=, turns=)` (either cap, or both) for a model nothing prices, such as a local model or a
+subscription. A token and turn budget admits each turn by a bound on its tokens and by the turns sent, never by its
+price, so `report_write` asks for no price before it starts and the report is written, tallied unpriced; its made line
+says `unpriced (N turns, none of them priced)`, never `$0`. Both forms at once, or neither, are refused when the budget
+is built. An admission refusal still sends nothing. Each tallied turn records `admitted_on_estimate`, each sum counts
+them and lists the pricer's `unpriced_reasons`, and the made line of a report whose dollar budget admitted turns on an
+estimate says `its budget checked against estimated rates on K of N turns`. Run launches keep their dollar rule.
+
+**A host's own client** (one that is not a `Model`) needs no pricer: it prices its own calls. Its `price_ceiling` is
+the bound its calls are held to, and its completions' `cost_usd` and `price_source` are recorded as reported; a
+missing cost reads `unpriced`, never `$0`.
+
+**Added: a run's cap says when it was checked against estimates.** `Model.ceiling_is_estimate()` (and the lease a
+`Clients` role hands out) says whether the model's price ceilings are built on rates its pricer does not guarantee,
+and `kernel.ceiling_is_estimate(client)` reads it beside `call_ceiling`. The engine's own `price_largest_call`
+pricers (judge kind, reporter, `price_subject_call_floor`) set the new `CallCeiling.estimate` from it; an arm whose
+largest call is bounded on an estimate is still admitted, its estimate says `its cap is checked against estimated
+rates` (`ArmEstimate.call_ceiling_estimate`, left out of the JSON while false), its run records
+`EvalRun.cap_checked_on_estimates` (core v15.9, left out of the document when unset), and its summary's spend cap
+line ends `, checked against estimated rates`. A host wrapping a `Model` forwards `ceiling_is_estimate` beside
+`price_ceiling`, or its runs read as checked against guaranteed rates; a host building its own `CallCeiling` sets
+`estimate=` the same way.
+
+**Added:** `RoleUsage.unpriced_reasons` (core v15.9): each distinct reason a pricer gave for a call it could not price,
+beside a `cost_usd` of `None`, left out of the document when unset, so every stored row and digest is unchanged. A host
+that builds `RoleUsage` itself need not set it.
+
+**Removed, never released:** `Pricer.rates_for` answering a bare `ModelRates`, and `ModelRates.source`.
+
 ### evals: a report's sessions are stored as their own documents, so listing reports loads none
 
 **Changed (stored shape):** the report writer stored every session it ran (the analyst's and each review round's)
@@ -312,7 +377,7 @@ skipped it in silence, OpenRouter's catalogue was never read, no turn had a pric
 first one. The engine cannot know what a host pays (a deal, BYOK, a subscription, a local model), so the host
 supplies prices; the package ships a default only for standalone and development use (owner, 2026-10-28).
 
-**Added (provisional; W4 replaces it with the host pricing port; `threetears.evals.providers`):**
+**Added (provisional; replaced before release by the pricing port above; `threetears.evals.providers`):**
 `Model(..., pricer=...)` takes a `Pricer`, whose
 `rates_for(model, provider=)` answers the `ModelRates` a call is billed at (base input, five-minute and one-hour cache
 writes, cache reads, output, an optional long-prompt tier, and the `price_source` to write), or `None` to leave the

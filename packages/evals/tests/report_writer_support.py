@@ -25,6 +25,7 @@ from threetears.evals.schema.turns import (
     ToolResultClearing,
     ToolTurnClient,
     TurnBlock,
+    TurnCeiling,
     TurnMessage,
     TurnReply,
     TurnReplyRefused,
@@ -90,9 +91,15 @@ Request = dict[str, Any]
 class FakeToolTurnClient:
     """Answers each turn with the next scripted reply, and keeps every request body it was sent."""
 
-    def __init__(self, *replies: TurnReply | TurnReplyRefused | Exception, ceiling: float | None = 0.01) -> None:
+    def __init__(
+        self,
+        *replies: TurnReply | TurnReplyRefused | Exception,
+        ceiling: float | None = 0.01,
+        estimate: bool = False,
+    ) -> None:
         self.replies = list(replies)
         self.ceiling = ceiling
+        self.estimate = estimate
         self.ceilings: dict[int, float | None] = {}
         self.requests: list[Request] = []
         self.refreshed = 0
@@ -124,8 +131,9 @@ class FakeToolTurnClient:
 
     def turn_price_ceiling(
         self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int
-    ) -> float | None:
-        return self.ceilings.get(len(self.requests), self.ceiling)
+    ) -> TurnCeiling | None:
+        usd = self.ceilings.get(len(self.requests), self.ceiling)
+        return TurnCeiling(usd=usd, estimate=self.estimate) if usd is not None else None
 
     async def refresh_prices(self) -> None:
         self.refreshed += 1
