@@ -163,7 +163,7 @@ def arm_name(display: str, *, control: bool = False) -> ArmName:
         named: list[re.Match[str] | None] = [match for match in pairs if match and match["axis"] != "candidate_kind"]
         pairs = named if len(named) == 1 else pairs
     if len(pairs) > 1 and all(pairs):
-        label = ", ".join(f"{humanize('dimension', match['axis'])} {match['level']}" for match in pairs if match)
+        label = ", ".join(f"{lever_reader_name(match['axis'])} {match['level']}" for match in pairs if match)
         return ArmName(label=label, control=control, levers=tuple(match["axis"] for match in pairs if match))
     level = pairs[0]["level"] if len(pairs) == 1 and pairs[0] else display
     if labelled := _LABELLED.match(level):
@@ -173,7 +173,23 @@ def arm_name(display: str, *, control: bool = False) -> ArmName:
     return ArmName(label=level, control=control)
 
 
-def arm_display_name(name: str, levers: Iterable[str]) -> str:
+def lever_reader_name(lever: str, declared: Mapping[str, str] | None = None) -> str:
+    """The one name a reader is shown for a lever, everywhere a page names one: an arm name computed from it, and a
+    configuration's setting. The name declared for it where one is (``declared``: a report input's factor names, by
+    id, ``Reasoning budget``), else the package's reader name for its id (:func:`humanize`, ``research timeout``,
+    never ``research_timeout``).
+
+    :param lever: The lever, by id.
+    :ptype lever: str
+    :param declared: Each lever's declared name, by id; None or empty where nothing declares one.
+    :ptype declared: Mapping[str, str] | None
+    :return: Its reader name.
+    :rtype: str
+    """
+    return (declared or {}).get(lever) or humanize("dimension", lever)
+
+
+def arm_display_name(name: str, levers: Iterable[str], declared: Mapping[str, str] | None = None) -> str:
     """The name every surface prints for an arm whose name code computed from its levers: its first character upper
     case where it opens on one of ``levers``' reader names (``fanout 2`` to ``Fanout 2``, ``fanout 2 · retry 1`` to
     ``Fanout 2 · retry 1``), so prose, tables, legends and keys print one name and no reader takes ``Fanout 2`` and
@@ -186,13 +202,16 @@ def arm_display_name(name: str, levers: Iterable[str]) -> str:
 
     :param name: The computed name, as code spelled it.
     :ptype name: str
-    :param levers: The levers it was spelled from, by id; their reader names (:func:`humanize`) are what may open it.
+    :param levers: The levers it was spelled from, by id; their reader names (:func:`lever_reader_name`) are what
+        may open it.
     :ptype levers: Iterable[str]
+    :param declared: Each lever's declared name, by id, as :func:`lever_reader_name` reads it.
+    :ptype declared: Mapping[str, str] | None
     :return: The name as printed.
     :rtype: str
     """
     for lever in levers:
-        reader = humanize("dimension", lever)
+        reader = lever_reader_name(lever, declared)
         if reader and (name == reader or name.startswith(f"{reader} ")):
             return name[:1].upper() + name[1:]
     return name
@@ -380,6 +399,7 @@ __all__ = [
     "declared_check_name",
     "humanize",
     "is_dump",
+    "lever_reader_name",
     "lint_prose",
     "measure_name",
     "sentences",

@@ -256,7 +256,11 @@ def call_blocks(
     named = next((arm for arm in campaign.arms if arm.variant_key == call.variant_key), None)
     keys = {call.variant_key, *(resolve_control_arm(named).variant_keys if named is not None else [])}
     verb = "keep" if readings.control in keys else "adopt"
-    head = f"Called: {verb} {call.arm}, by {call.called_by} on {_date(call.called_at)}"
+    # The decided arm as the page names it (its readings print it by the name every surface prints), never the label
+    # the call stored, which a computed lever name reads in another case.
+    labels = readings.arm_labels()
+    decided = next((labels[key] for key in (call.variant_key, *keys) if key in labels), call.arm)
+    head = f"Called: {verb} {decided}, by {call.called_by} on {_date(call.called_at)}"
     if call.run_ids and (added := [run for run in campaign.run_ids if run not in set(call.run_ids)]):
         over = len(call.run_ids)
         head += f", over {over} run{'' if over == 1 else 's'}; {len(added)} added since"
@@ -305,7 +309,7 @@ def call_blocks(
             lines.append(f"The call does not name the missed bar on {names(aspect)} as overridden: {said}.")
     for pair in readings.pairs:
         if pair.ahead is not None and pair.ahead not in keys and keys & {pair.first, pair.second}:
-            lines.append(f"{pair.ahead_label or pair.ahead} is shown ahead of {call.arm} on {names(pair.aspect)}.")
+            lines.append(f"{pair.ahead_label or pair.ahead} is shown ahead of {decided} on {names(pair.aspect)}.")
     return [DisclosureBlock(section="header", source="call", text=line) for line in lines]
 
 

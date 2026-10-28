@@ -61,8 +61,14 @@ from threetears.evals.analysis.report_decision import every_caveat
 from threetears.evals.analysis.report_doc_checks import check_report_doc
 from threetears.evals.analysis.report_input import Factor, Level, ReportInput
 from threetears.evals.analysis.report_plan_facts import complete_plan, plan_facts
-from threetears.evals.analysis.service import assemble_campaign_bundle, campaign_report
-from threetears.evals.analysis.style import arm_display_name, arm_name
+from threetears.evals.analysis.service import assemble_campaign_bundle, campaign_report, record_campaign_call
+from threetears.evals.analysis.style import arm_display_name, arm_name, lever_reader_name
+from threetears.evals.analysis.report.blocks import DisclosureBlock
+from threetears.evals.analysis.report.block_spec import block_look
+from threetears.evals.analysis.report.plan_page.tables import arms_key
+from threetears.evals.analysis.report_plan_facts import fact_arms
+from threetears.evals.kernel.declaration import OverriddenBar
+from packages.evals.tests.analyst_support import fixture_inputs
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.report_doc import ReportDoc
@@ -443,19 +449,44 @@ def test_the_configuration_column_names_each_setting_by_its_reader_name_and_keep
     assert not any("_" in cell for cell in settings.values())
 
 
-def test_the_arm_column_and_the_configuration_column_name_a_lever_alike() -> None:
-    """One reader-name source names a lever in both columns of a row (``humanize``): the computed arm name's
-    ``Chunk tokens`` is the Configuration column's ``chunk tokens``, never a factor's other name for it, even where the
-    input declares one."""
+def test_a_setting_the_input_names_reads_by_that_name() -> None:
+    """A factor the input declares for a setting names it: ``Chunk size 256tok``; the others fall back."""
     held = _input()
     named = held.model_copy(
         update={"factors": [Factor(id="chunk_tokens", name="Chunk size", levels=[Level(id="256tok")])]}
     )
     page = build(_draft(named), named, strict=True)
-    rows = {row["arm"].value: row["settings"].value for row in page.arms_key.table.rows}
-    assert rows[_PRINTED[2]] == "extractor-v2 · chunk tokens 1024tok · retriever top k 5"
-    assert str(rows[_PRINTED[2]]).split(" · ")[1].removesuffix(" 1024tok") == _PRINTED[2].split(" 1024tok")[0].lower()
-    assert not any("Chunk size" in str(value) for value in rows.values())
+    (control,) = [row for row in page.arms_key.table.rows if row["arm"].value == "control"]
+    assert control["settings"].value == "extractor-v2 · Chunk size 256tok · retriever top k 3"
+
+
+def test_on_r2_both_columns_read_the_declared_names() -> None:
+    """r2 declares its arms' names and its factors' (``Reasoning budget``, ``Retry on failure``): the arm column prints
+    each arm's declared name as written, and the Configuration column each setting by its factor's declared name, the
+    value as written."""
+    held = fixture_inputs()["r2"]
+    factors = {factor.id: factor.name for factor in held.factors}
+    assert (factors["reasoning"], factors["retry"]) == ("Reasoning budget", "Retry on failure"), "the control"
+    rows = {
+        row["arm"].value: row["settings"].value for row in arms_key(held, block_look(held, fact_arms(held))).table.rows
+    }
+    for arm in held.arms:
+        settings = arm.settings
+        assert rows[printed_arm_name(arm)] == (
+            f"{settings['model']} · Reasoning budget {settings['reasoning']} · Retry on failure {settings['retry']}"
+        )
+
+
+def test_a_computed_name_and_a_setting_read_one_lever_reader_name() -> None:
+    """The one source both columns read: a lever's declared name where one is, else its humanized id. A computed name
+    opening on the declared name is capitalised by it, and one opening on the humanized id where nothing declares one."""
+    declared = {"reasoning": "reasoning budget"}
+    assert lever_reader_name("reasoning", declared) == "reasoning budget"
+    assert lever_reader_name("research_timeout") == "research timeout"
+    assert arm_display_name("reasoning budget high, retry 1", ["reasoning", "retry"], declared) == (
+        "Reasoning budget high, retry 1"
+    )
+    assert arm_display_name("research timeout 30s", ["research_timeout"]) == "Research timeout 30s"
 
 
 # --- one campaign, every surface -------------------------------------------------------------------------------------
@@ -507,13 +538,25 @@ def _plan(report_input: ReportInput) -> ReportPlan:
 
 
 def test_one_campaign_prints_each_derived_arm_one_way_on_every_surface() -> None:
-    """The campaign's page (its readings and every aspect's fold), the plan page, the document's page, the code-only
-    page and quick's contrast rows: each prints both candidates capitalised, none the name as the levers spell it, so a
+    """The campaign's page (its call lines, its readings and every aspect's fold), the plan page, the document's page,
+    the code-only page and quick's contrast rows: each prints both candidates capitalised, none the name as the levers spell it, so a
     planned campaign page, which lays a plan page over the folds, reads one name throughout."""
     host, campaign = _campaign()
     bundle = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
     held = analyst_input(bundle)
+    decided = next(arm.variant_key for arm in bundle.arms if arm.label == _COMPUTED[1])
+    missed = [
+        OverriddenBar(aspect=status.aspect, measure=status.measure)
+        for status in bundle.readings.missed_bars()
+        if status.arm == decided
+    ]
+    record_campaign_call(
+        host, campaign.id, campaign.scope_id, arm=decided, called_by="op", reason="t", bars_overridden=missed
+    )
     page = campaign_report(host, campaign.id, campaign.scope_id)
+    calls = [block.text for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "call"]
+    assert calls[0].startswith(f"Called: adopt {_PRINTED[1]}, by op"), calls
+    assert not any(computed in line for line in calls for computed in _COMPUTED.values()), calls
     surfaces = {
         "campaign page": campaign_report_markdown(page),
         "campaign folds": " | ".join(report_markdown(fold.report) for fold in page.aspects),

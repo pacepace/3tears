@@ -165,6 +165,7 @@ from threetears.evals.analysis.style import (
     code,
     declared_check_name,
     humanize,
+    lever_reader_name,
     measure_name,
 )
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
@@ -925,7 +926,7 @@ def _short_names(
             parts = [
                 _trimmed(level.display, base[level.axis_id].display)
                 if cut
-                else f"{humanize('dimension', level.axis_id)} {elide_level(level.display)}"
+                else f"{lever_reader_name(level.axis_id)} {elide_level(level.display)}"
                 for level, cut in zip(ordered, trimmed, strict=True)
             ]
             # Computed from the levers it differs on, so printed by the one display-name rule; a model trimmed of the

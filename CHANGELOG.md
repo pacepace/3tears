@@ -93,7 +93,7 @@ the `report_read` lines (:441 and the transcripts paragraph) say a `plan` analys
 
 **Changed:** an arm name the engine computes from an arm's levers is capitalised where it is made, so every surface
 prints `Fanout 2` (owner, 2026-10-28: "people might think Fanout 1 is different from fanout 1"): the document's page
-(prose, the arms key, the options table, a chart's labels), the plan page, the campaign page (its own readings and
+(prose, the arms key, the options table, a chart's labels), the plan page, the campaign page (its call lines, its own readings and
 every aspect's fold), a code-only page, and quick's contrast rows. It applies to a derived campaign arm (one no arm of
 the campaign's declaration names) and to a name a code-only page spells from the levers, when it opens on a lever's
 name; a level value (`careful`), a model's name, a label a person gave and a declared short name print as written.
@@ -106,9 +106,11 @@ freezes, and its fingerprint, keep the label they were read under. quick's `cont
 with derived lever arms gets a new report input digest and snapshot id; one whose arms are named or named by model
 does not.
 
-**Changed:** the arms key's Configuration column names each setting in words, by the reader name a computed arm name
-spells it with, so the two columns of a row name a lever alike (`fanout 1 · research timeout 30s · reply limit 45s`,
-where it read `research_timeout 30s · reply_limit 45s`). The model and every value read as written.
+**Changed:** the arms key's Configuration column names each setting in words: the name the report input declares for
+it (a factor's: r2 reads `Atlas-M · Reasoning budget low · Retry on failure 1`), else the package's reader name
+(`fanout 1 · research timeout 30s · reply limit 45s`, where it read `research_timeout 30s · reply_limit 45s`). A
+computed arm name reads the same one source (`style.lever_reader_name`), so the two columns name a lever alike. The
+model and every value read as written.
 
 **Changed:** a chart of totals under a cent (a run's trials' cost) reads per 1,000 with the mark, `$8.00/1000`, on its
 ticks, its labels and its values table, as a key and a table write it; it read in dollars to its least total's
