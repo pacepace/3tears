@@ -250,8 +250,8 @@ def test_a_gate_matrix_prints_every_cost_at_one_precision_whatever_else_its_cell
     assert block is not None
     costs = [found for row in block.rows for cell in row.cells[1:] for found in _COST.findall(cell)]
     assert len(costs) > 1, "the control: r1's matrix prices its cells"
-    under_a_hundred = {len(decimals) for whole, decimals in costs if len(whole) < 3}
-    assert under_a_hundred == {1}, costs
+    # One form for every cost the matrix prints (#993): one count of decimals, whatever its size.
+    assert len({len(decimals) for _whole, decimals in costs}) == 1, costs
     assert any(cell.endswith("(Cheapest passing)") for row in block.rows for cell in row.cells), "the control"
 
 

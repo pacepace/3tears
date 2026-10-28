@@ -88,6 +88,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     Drawn,
     KindResolver,
     chart_block,
+    money_drawn,
     count_text,
     criterion_label,
     factor_legend,
@@ -348,7 +349,7 @@ def _task_matrix(context: ChartContext) -> Drawn:
         pick_label=PICK_LABEL if picks else None,
     )
     # The costs' count is the matrix's own cost unit words; each measure's money says it in a line under the chart.
-    return Drawn(chart_block(context, data, money=list(measures_drawn.items())))
+    return money_drawn(context, data, money=list(measures_drawn.items()))
 
 
 def _direction(reading: Reading) -> str:
@@ -530,7 +531,7 @@ def _criterion_matrix(context: ChartContext) -> Drawn:
         rows=rows,
         row_header=GATE_HEADERS[context.query.source],
     )
-    return Drawn(chart_block(context, data, money=money))
+    return money_drawn(context, data, money=money)
 
 
 def _gate_matrix(context: ChartContext) -> Drawn:
@@ -776,7 +777,7 @@ def _gate_scatter(context: ChartContext) -> Drawn:
             for panel, points in zip(panels, drawn_points, strict=True)
         ]
         data = GateScatterChart.model_validate({**common, "region_label": REGION_LABEL, "panels": gate_panels})
-    return Drawn(chart_block(context, data, money=[(x_key, x_drawn), (y_key, y_drawn)]), notes)
+    return money_drawn(context, data, notes, money=[(x_key, x_drawn), (y_key, y_drawn)])
 
 
 # --- lattice --------------------------------------------------------------------------------------------------------
@@ -889,7 +890,7 @@ def _lattice(context: ChartContext) -> Drawn:
         emphasis=context.emphasis,
     )
     # The costs' count is the matrix's own cost unit words; the measure's money says it in a line under the chart.
-    return Drawn(chart_block(context, data, money=[(key, drawn)]))
+    return money_drawn(context, data, money=[(key, drawn)])
 
 
 def _cost(report_input: ReportInput, arm: str) -> float | None:

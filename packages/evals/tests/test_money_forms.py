@@ -17,8 +17,9 @@ in one form, so successive rows never alternate between ``$0.008`` and ``$0.11``
   smaller total, an arm none of whose calls were priced says ``unpriced``, never ``$0``, and the unanswered mark stays;
 - the single-value helpers (``format_number``, ``spell_dollars``, ``dollars_text``) are byte-identical: the number
   format cases, and Discodon's two call shapes (``dollars_text(cost)``, ``format_number(cost, prefix="$")``);
-- the bundle's census carries an arm's pricing into the report input, and an arm assembled without it leaves no key,
-  so a stored input digests as it did.
+- every chart and table kind that draws a money set under a cent moves its ruler and states it, never stacks its own
+  unit's count beside the moved one, and reads its ticks and notes in one form; a total is never scaled; a change chart
+  scales by the amounts it compares.
 """
 
 from __future__ import annotations
@@ -33,11 +34,8 @@ from pathlib import Path
 import pytest
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_inputs, fixture_snapshots
-from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle
-from packages.evals.tests.run_facts_support import CASES, aspect_bundle, campaign_over, result_of, run_of
 from threetears.evals.analysis import ABSENT, UNPRICED, dollars_text, format_number
-from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_input
-from threetears.evals.analysis.bundle.schema import ArmPricing
+from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell, money_columns
 from threetears.evals.analysis.report.charts import BarsChart
@@ -51,8 +49,6 @@ from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report.plan_page.tables import arms_table
 from threetears.evals.kernel.report_plan import ChartQuery, PlanChartKind, PlannedChart
 from threetears.evals.analysis.report_input import Pricing, ReportInput, Unanswered
-from threetears.evals.analysis.report_input_build import report_input
-from threetears.evals.schema.models import RoleUsage
 from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.kernel.numbers import MoneyForm, money_form, spell_dollars
 
@@ -61,9 +57,6 @@ INPUTS: dict[str, ReportInput] = {
     **{name: held for name, held in fixture_inputs().items() if name in ("r1", "r2", "r3", "r4", "r5")},
     KAIRO: frozen_input(fixture_snapshots("s")[KAIRO]),
 }
-
-#: The arms of the census's planted campaign: the control and the candidate.
-BASE, FAST = "base", "fast"
 
 #: An amount of money as a page prints it: its sign, its digits and the per-1,000 mark where it has one.
 _AMOUNT = re.compile(r"([+\-]?)\$(\d[\d,]*)(?:\.(\d+))?(/1000)?")
@@ -533,28 +526,6 @@ def test_discodons_two_call_shapes_read_as_they_did(amount: float, dollars: str,
     assert dollars_text(None) == UNPRICED
 
 
-# --- the census carries an arm's pricing ---------------------------------------------------------------------------
-
-
-def test_an_arms_pricing_reaches_the_report_input_and_an_arm_without_it_carries_no_key() -> None:
-    bundle = kairo_bundle()
-    plain = analyst_input(bundle)
-    assert all(row.pricing is None for row in plain.scoreboard.values())
-    assert '"pricing"' not in plain.model_dump_json()
-    pricing = ArmPricing(sources=["openrouter:reported"], providers=["DeepInfra"], calls=10, priced_calls=9)
-    aspects = [
-        aspect.model_copy(
-            update={"scoreboard": [row.model_copy(update={"pricing": pricing}) for row in aspect.scoreboard]}
-        )
-        for aspect in bundle.aspects
-    ]
-    priced = analyst_input(bundle.model_copy(update={"aspects": aspects}))
-    for row in priced.scoreboard.values():
-        assert row.pricing == Pricing(
-            sources=["openrouter:reported"], providers=["DeepInfra"], calls=10, priced_calls=9
-        )
-
-
 def _costing(held: ReportInput, per_1k: dict[str, float]) -> ReportInput:
     """The input with each arm's cost per 1,000 (its cost_per_1k measure's mean) as given."""
     measure = held.measures["cost_per_1k"]
@@ -632,64 +603,6 @@ def test_a_partly_priced_arms_bar_says_so_beside_its_cost() -> None:
     notes = {row.id: row.note or "" for row in data.rows}
     assert notes[control].endswith(" (850 of 897 calls priced)")
     assert all("calls priced" not in note for arm, note in notes.items() if arm != control)
-
-
-# --- the census reads an arm's pricing off its stored usage rows -------------------------------------------------------
-
-
-def _row_of(role: str, *, cost: float | None, calls: int | None, source: str = "", provider: str = "") -> RoleUsage:
-    return RoleUsage(
-        role=role,
-        model=FAST,
-        cost_usd=cost,
-        price_source=source or None,
-        call_count=calls,
-        provider=provider or None,
-    )
-
-
-def test_the_census_reads_an_arms_pricing_off_its_production_usage_rows() -> None:
-    """Sources from the priced rows only, providers from every row, the calls and priced calls the rows count; the
-    judge's rows, which no production deployment pays for, are no part of it."""
-    usage = [
-        [
-            _row_of("candidate", cost=0.002, calls=3, source="openrouter:reported"),
-            _row_of("external", cost=None, calls=1, provider="searx"),
-            _row_of("judge", cost=0.5, calls=1, source="anthropic:published"),
-        ]
-        for _ in range(CASES)
-    ]
-    base, fast = run_of(BASE), run_of(FAST)
-    trials = [
-        (base, [result_of(base, index) for index in range(CASES)]),
-        (fast, [result_of(fast, index, usage=rows) for index, rows in enumerate(usage)]),
-    ]
-    _, bundle, _ = aspect_bundle(trials)
-    (pricing,) = [row.pricing for row in bundle.scoreboard if row.pricing is not None and row.pricing.providers]
-    assert pricing == ArmPricing(
-        sources=["openrouter:reported"], providers=["searx"], calls=4 * CASES, priced_calls=3 * CASES
-    )
-    built = report_input(campaign_over(trials))
-    (row,) = [row for row in built.scoreboard.values() if row.pricing is not None and row.pricing.providers]
-    assert row.pricing == Pricing(
-        sources=["openrouter:reported"], providers=["searx"], calls=4 * CASES, priced_calls=3 * CASES
-    )
-    table = arms_table(built, block_look(built, fact_arms(built)), ())
-    assert any(
-        cell == f"{3 * CASES} of {4 * CASES} calls priced" for cell in (r["cost_per_1k"].value for r in table.rows)
-    )
-
-
-def test_a_row_that_did_not_count_its_calls_leaves_the_priced_share_uncounted() -> None:
-    usage = [[_row_of("candidate", cost=0.002, calls=None, source="openrouter:reported")] for _ in range(CASES)]
-    base, fast = run_of(BASE), run_of(FAST)
-    trials = [
-        (base, [result_of(base, index) for index in range(CASES)]),
-        (fast, [result_of(fast, index, usage=rows) for index, rows in enumerate(usage)]),
-    ]
-    _, bundle, _ = aspect_bundle(trials)
-    priced = [row.pricing for row in bundle.scoreboard if row.pricing is not None and row.pricing.calls is None]
-    assert priced and priced[0].priced_calls is None and priced[0].sources == ["openrouter:reported"]
 
 
 # --- every chart and table kind that draws money, on sets under a cent -------------------------------------------------

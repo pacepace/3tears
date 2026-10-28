@@ -46,7 +46,6 @@ from threetears.evals.analysis.bundle.caps import (
 )
 from threetears.evals.analysis.depth import depth_of
 from threetears.evals.analysis.bundle.schema import (
-    ArmPricing,
     ArmScoreboard,
     FailCause,
     RoleUnanswered,
@@ -62,11 +61,7 @@ from threetears.evals.kernel.result_condition import (
     trial_exclusion,
 )
 from threetears.evals.kernel.scoring import capability_scores, has_pass_criterion
-from threetears.evals.kernel.usage_capture import (
-    count_substituted_deliveries,
-    production_replicating_cost,
-    production_rows,
-)
+from threetears.evals.kernel.usage_capture import count_substituted_deliveries, production_replicating_cost
 from threetears.evals.kernel.provider import sum_optional_tokens
 from threetears.evals.schema.models import OUTCOME_DIM_ID, TRANSCRIPT_DIM_ID, USAGE_ROLES, rubric_dim_scale
 
@@ -301,31 +296,6 @@ def _census(arm: str, results: Sequence[EvalResult], readings: Mapping[str, Tria
         reply_cost_usd=sum(replies) / len(replies) if replies else None,
         depth=depth_of(Counter(result.test_case_id for result in usable).values()),
         unanswered=_unanswered(results),
-        pricing=_pricing(results),
-    )
-
-
-def _pricing(results: Sequence[EvalResult]) -> ArmPricing | None:
-    """How one arm's production cost was priced, off the rows of the roles a production deployment pays for
-    (:func:`~threetears.evals.kernel.usage_capture.production_rows`): the price sources the priced rows name, the
-    providers the rows name, and the calls counted and priced, each None once a row did not count its calls.
-
-    :param results: The arm's trials.
-    :ptype results: Sequence[EvalResult]
-    :return: The pricing; None where no trial recorded a production row.
-    :rtype: ArmPricing | None
-    """
-    rows = [
-        row for result in results for row in production_rows(result.usage or [], candidate_kind=result.candidate_kind)
-    ]
-    if not rows:
-        return None
-    counted = all(row.call_count is not None for row in rows)
-    return ArmPricing(
-        sources=sorted({row.price_source for row in rows if row.cost_usd is not None and row.price_source}),
-        providers=sorted({row.provider for row in rows if row.provider}),
-        calls=sum(row.call_count or 0 for row in rows) if counted else None,
-        priced_calls=sum(row.call_count or 0 for row in rows if row.cost_usd is not None) if counted else None,
     )
 
 

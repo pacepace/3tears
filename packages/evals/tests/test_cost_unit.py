@@ -72,7 +72,9 @@ def test_a_pages_cost_reads_per_what_its_source_counts(name: str) -> None:
     else:
         assert basis.noun == REPLIES, "money per one thing, and the scoreboard's reply cost, is per reply"
     arm = next(arm.id for arm in held.arms if _resolves(f"cost_per_1k.{arm.id}", held))
-    assert render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {}).endswith(f" per 1,000 {basis.noun}")
+    # Per 1,000, or per 1,000,000 where a cost is under a cent per 1,000 (#993: the ruler moves); per its own noun.
+    said = render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {})
+    assert said.endswith((f" {per_count(basis.noun)}", f" {per_count(basis.noun, 1_000_000)}")), said
 
 
 @pytest.mark.parametrize("name", _costed())
@@ -85,7 +87,9 @@ def test_a_counted_measures_own_figure_reads_per_what_its_label_counts(name: str
         if arm is None:
             continue  # its figures sit in slices alone, which the gate matrix and lattice tests read
         said = render(f"{{measure.{key}.{arm}.mean|usd_per_1k}}", held, {})
-        assert said.endswith(per_count(_label_noun(held, key)))
+        noun = _label_noun(held, key)
+        # Per 1,000, or per 1,000,000 where the family is under a cent per 1,000 (#993: the ruler moves).
+        assert said.endswith((per_count(noun), per_count(noun, 1_000_000))), said
 
 
 def _resolves(key: str, held: ReportInput) -> bool:
@@ -113,7 +117,8 @@ def test_no_fixture_page_says_replies_where_its_cost_counts_something_else() -> 
             cells = " ".join(" ".join(row.cells) for row in drawn.rows)
             assert "replies" not in cells, (kind, cells[:300])
             if "$" in cells:
-                assert per_count(basis.noun) in cells, (kind, cells[:300])
+                # Per 1,000 of its own noun, or per 1,000,000 where a cost is under a cent per 1,000 (#993).
+                assert per_count(basis.noun) in cells or per_count(basis.noun, 1_000_000) in cells, (kind, cells[:300])
                 seen += 1
     assert seen, "the control: some fixture draws a gate matrix or a lattice over costs counted in other than replies"
 

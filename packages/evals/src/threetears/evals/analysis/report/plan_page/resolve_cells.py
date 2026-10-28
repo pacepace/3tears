@@ -56,6 +56,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     Drawn,
     KindResolver,
     chart_block,
+    money_drawn,
     count_text,
     criterion_line,
     drawn_keys,
@@ -387,7 +388,7 @@ def _heatmap(context: ChartContext) -> Drawn:
             reference=first.reference,
         )
     money = list(dict.fromkeys((matrix.key, matrix.drawn) for matrix in matrices if matrix.key))
-    return Drawn(chart_block(context, data, money=money), missing_note(missing))
+    return money_drawn(context, data, missing_note(missing), money=money)
 
 
 # --- diff_heatmap -------------------------------------------------------------------------------------------------
@@ -514,7 +515,7 @@ def _diff_heatmap(context: ChartContext) -> Drawn:
         saturate=None if rate or not largest else largest,
     )
     note = DIFFERENCE_NOTE.format(compared=compared_name, base=base_name, unit=POINTS_WORDS if rate else UNIT_WORDS)
-    return Drawn(chart_block(context, data, money=[(key, levels[key]) for key in keys]), (note,))
+    return money_drawn(context, data, (note,), money=[(key, levels[key]) for key in keys])
 
 
 # --- confusion ----------------------------------------------------------------------------------------------------

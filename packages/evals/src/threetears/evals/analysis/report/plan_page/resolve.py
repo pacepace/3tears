@@ -26,7 +26,6 @@ from threetears.evals.analysis.report.plan_page import (
     resolve_rates,
     resolve_table,
 )
-from threetears.evals.analysis.report.blocks import ChartBlock
 from threetears.evals.analysis.report.plan_page.charting import ChartContext, KindResolver
 from threetears.evals.analysis.report.plan_page.look import PageLook
 from threetears.evals.analysis.report.plan_page.model import PageChart
@@ -108,8 +107,4 @@ def resolve_chart(
         spec=spec, report_input=report_input, look=look, title=title or fallback_title or spec.kind, summary=summary
     )
     drawn = resolver(context)
-    # What the chart's money is drawn per, where its figures do not say it, among code's lines (#993).
-    per = drawn.block.drawn_per if isinstance(drawn.block, ChartBlock) else []
-    return PageChart(
-        title=title, chart=drawn.block, notes=[*drawn.notes, *(line for line in per if line not in drawn.notes)]
-    )
+    return PageChart(title=title, chart=drawn.block, notes=list(drawn.notes))

@@ -52,7 +52,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     Drawn,
     KindResolver,
     STORED_SPAN_REFUSAL,
-    chart_block,
+    money_drawn,
     computed_notes,
     drawn_keys,
     figure_interval,
@@ -613,7 +613,7 @@ def _bars(context: ChartContext) -> Drawn:
             *price_notes(context),
         )
     money = {(bar.key, bar.drawn or drawn) for bar in bars if bar.key}
-    return Drawn(chart_block(context, data, money=sorted(money, key=lambda pair: pair[0])), notes)
+    return money_drawn(context, data, notes, money=sorted(money, key=lambda pair: pair[0]))
 
 
 # --- lines ------------------------------------------------------------------------------------------------------
@@ -748,7 +748,7 @@ def _lines(context: ChartContext) -> Drawn:
         level=context.level if banded else None,
     )
     keys = list(dict.fromkeys([*context.query.measures, *(row.key for row in context.rows() if row.key)]))
-    return Drawn(chart_block(context, data, money=[(keys[0], drawn)] if keys else []), missing_note(missing))
+    return money_drawn(context, data, missing_note(missing), money=[(keys[0], drawn)] if keys else [])
 
 
 #: The kinds this module resolves.

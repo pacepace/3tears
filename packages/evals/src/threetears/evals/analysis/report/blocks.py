@@ -578,8 +578,7 @@ class TableCell(EvalDocumentModel):
             raise ValueError(f"the cell's interval runs from {self.low} down to {self.high}")
         return self
 
-    @property
-    def money(self) -> MoneyForm | None:
+    def _money_form(self) -> MoneyForm | None:
         """The one form a money number in this cell is written in, its column's (``decimals``, ``per_thousand``);
         None where the cell holds no money number, or no form was given, so the number rule spells it."""
         if self.decimals is None or not self.is_number or not is_money(self.unit):
@@ -595,7 +594,7 @@ class TableCell(EvalDocumentModel):
         :return: Its text.
         :rtype: str
         """
-        form = self.money
+        form = self._money_form()
         return form.spell(number) if form is not None else with_unit(number, self.unit)
 
     @property
@@ -617,7 +616,7 @@ class TableCell(EvalDocumentModel):
 def money_columns(rows: Sequence[Mapping[str, TableCell]]) -> list[dict[str, TableCell]]:
     """A table's rows with each column's money in one form (#993): every money number a column holds, and the ends of
     its intervals, choose the column's :func:`~threetears.evals.kernel.numbers.money_form` from the values themselves,
-    never from one cell, and every such cell is written in it (:attr:`TableCell.money`). The values are as stored, so
+    never from one cell, and every such cell is written in it (:meth:`TableCell.amount`). The values are as stored, so
     the shared decimals state no digit a value does not hold; a cell of words, of another unit, or already carrying a
     form its builder chose from a wider set, is left as it is.
 
@@ -879,14 +878,6 @@ class ChartBlock(_Block):
         "its values at where its format names none (a point to one decimal); empty for none.",
     )
     zero_line: bool = Field(default=False, description="Whether the chart draws a line at zero (a difference's).")
-    drawn_per: list[str] = Field(
-        default_factory=list,
-        exclude_if=lambda value: not value,
-        description=(
-            "Code's lines saying what the chart's money is drawn per, where its figures do not say it (#993): money per "
-            "reply drawn per 1,000 replies, a price per 1,000 drawn per 1,000,000; printed among the lines under it."
-        ),
-    )
     margin: float | None = Field(
         default=None, description="A margin band either side of zero, on the chart's ruler; None when none declared."
     )

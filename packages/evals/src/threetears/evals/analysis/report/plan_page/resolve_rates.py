@@ -70,7 +70,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     CriterionWhere,
     Drawn,
     KindResolver,
-    chart_block,
+    money_drawn,
     computed_notes,
     criterion_line,
     drawn_keys,
@@ -245,8 +245,7 @@ def _change_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str,
     fmt_unit = Quantity(1.0, data.fmt or unit.fmt, unit.unit, change=True)
     line = data.reference
     strips = [_Strip(title=title, arm="", dots=dots, line=line, drawn=fmt_unit) for title, dots in grouped.items()]
-    per = drawn.block.drawn_per if isinstance(drawn.block, ChartBlock) else []
-    return strips, context.level, (*drawn.notes, *per), True
+    return strips, context.level, drawn.notes, True
 
 
 def _figure_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, ...], bool]:
@@ -548,7 +547,7 @@ def _dot_interval(context: ChartContext) -> Drawn:
             reference=strip.line,
             emphasis=context.emphasis,
         )
-        return Drawn(chart_block(context, data, read_at=read_at, money=_strip_money(strips)), notes)
+        return money_drawn(context, data, notes, money=_strip_money(strips), read_at=read_at)
     panels = []
     for strip in strips:
         look = context.look.arm(strip.arm) if strip.arm in context.look.arms else None
@@ -564,7 +563,7 @@ def _dot_interval(context: ChartContext) -> Drawn:
             )
         )
     data = DotIntervalChart(domain=spans[first], fmt=first.fmt, level=level, emphasis=context.emphasis, panels=panels)
-    return Drawn(chart_block(context, data, read_at=read_at, money=_strip_money(strips)), notes)
+    return money_drawn(context, data, notes, money=_strip_money(strips), read_at=read_at)
 
 
 def _strip_money(strips: Sequence[_Strip]) -> list[tuple[str, Quantity]]:
@@ -687,7 +686,7 @@ def _range_bars(context: ChartContext) -> Drawn:
     )
     notes = (NO_MEDIAN_TEMPLATE.format(missing="; ".join(no_median)),) if no_median else ()
     money = [(key, quantities[key]) for key in dict.fromkeys(key for _, _, key, _ in groups)]
-    return Drawn(chart_block(context, data, money=money), notes)
+    return money_drawn(context, data, notes, money=money)
 
 
 # --- scatter_frontier ---------------------------------------------------------------------------------------------
@@ -876,13 +875,13 @@ def _scatter(context: ChartContext) -> Drawn:
     if len(tasks) == 1:
         y_line, x_line = lines(tasks[0])
         data = chart(points=drawn_points(tasks[0]), reference=y_line, x_reference=x_line)
-        return Drawn(chart_block(context, data, money=[(x_key, x_drawn), (y_key, y_drawn)]), notes)
+        return money_drawn(context, data, notes, money=[(x_key, x_drawn), (y_key, y_drawn)])
     panels = []
     for task in tasks:
         y_line, x_line = lines(task)
         title = next((slice_name(context, item) for item in context.report_input.tasks if item.id == task), task or "")
         panels.append(ScatterPanel(title=title, points=drawn_points(task), reference=y_line, x_reference=x_line))
-    return Drawn(chart_block(context, chart(panels=panels), money=[(x_key, x_drawn), (y_key, y_drawn)]), notes)
+    return money_drawn(context, chart(panels=panels), notes, money=[(x_key, x_drawn), (y_key, y_drawn)])
 
 
 #: The kinds this module resolves.

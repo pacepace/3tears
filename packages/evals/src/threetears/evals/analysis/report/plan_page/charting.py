@@ -222,9 +222,7 @@ class Drawn:
 KindResolver = Callable[[ChartContext], Drawn]
 
 
-def chart_block(
-    context: ChartContext, data: KitChart, *, read_at: str = "", money: Iterable[tuple[str, Quantity]] = ()
-) -> ChartBlock:
+def chart_block(context: ChartContext, data: KitChart, *, read_at: str = "") -> ChartBlock:
     """The chart's block: its kind, its title and the kit's data, on the planned page's fixed section.
 
     :param context: The chart being resolved.
@@ -235,23 +233,43 @@ def chart_block(
         analysis computes (two arms' difference, a lever's effect) reads them at its quantity's unit, so a point
         prints to one decimal as its key and note do, never at the float's four figures; empty for the format's.
     :ptype read_at: str
-    :param money: Each money figure it draws, by key, with its quantity, so the block says what each is drawn per
-        (:func:`money_notes`, printed among code's lines under it).
-    :ptype money: Iterable[tuple[str, Quantity]]
     :return: The block.
     :rtype: ChartBlock
     """
     kind = context.spec.kind
     if kind == "table":
         raise context.refuse("a table is laid out as a table block, not drawn as a chart")
-    return ChartBlock(
-        section=PLANNED_SECTION,
-        chart=kind,
-        title=context.title,
-        data=data,
-        unit=read_at,
-        drawn_per=money_notes(context.report_input, money),
-    )
+    return ChartBlock(section=PLANNED_SECTION, chart=kind, title=context.title, data=data, unit=read_at)
+
+
+def money_drawn(
+    context: ChartContext,
+    data: KitChart,
+    notes: Sequence[str] = (),
+    *,
+    money: Iterable[tuple[str, Quantity]],
+    read_at: str = "",
+) -> Drawn:
+    """A chart that draws money, as a resolver returns it: its block (:func:`chart_block`) and code's lines under it,
+    then a line for each money figure saying what its dollars are per where its figures do not say it themselves
+    (:func:`money_notes`, the one owner of money's words), so no chart draws money a thousand times over unstated.
+
+    :param context: The chart being resolved.
+    :ptype context: ChartContext
+    :param data: The kit's chart data.
+    :ptype data: KitChart
+    :param notes: Code's other lines under it.
+    :ptype notes: Sequence[str]
+    :param money: Each money figure it draws, by key, with the quantity it is drawn as.
+    :ptype money: Iterable[tuple[str, Quantity]]
+    :param read_at: As :func:`chart_block` reads it.
+    :ptype read_at: str
+    :return: The drawn chart.
+    :rtype: Drawn
+    """
+    lines = tuple(notes)
+    per = tuple(line for line in money_notes(context.report_input, money) if line not in lines)
+    return Drawn(chart_block(context, data, read_at=read_at), (*lines, *per))
 
 
 def held_means(report_input: ReportInput, key: str) -> list[float]:

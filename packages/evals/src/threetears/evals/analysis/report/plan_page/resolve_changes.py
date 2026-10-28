@@ -53,7 +53,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     ChartContext,
     Drawn,
     KindResolver,
-    chart_block,
+    money_drawn,
     contrast_groups,
     contrast_unit_of,
     contrast_words,
@@ -871,7 +871,7 @@ def _forest(context: ChartContext) -> Drawn:
         reference=reference,
         emphasis=context.emphasis,
     )
-    return Drawn(chart_block(context, data, money=_drawn_money(context, drawn)), notes)
+    return money_drawn(context, data, notes, money=_drawn_money(context, drawn))
 
 
 def _bar_row(change: _Change, level: str) -> BarRow:
@@ -981,7 +981,7 @@ def _diverging(context: ChartContext) -> Drawn:
             reference=reference,
             emphasis=context.emphasis,
         )
-    return Drawn(chart_block(context, data, read_at=read_at, money=_drawn_money(context, drawn)), notes)
+    return money_drawn(context, data, notes, money=_drawn_money(context, drawn), read_at=read_at)
 
 
 #: The kinds this module resolves.

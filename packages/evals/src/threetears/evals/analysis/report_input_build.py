@@ -57,7 +57,7 @@ from typing import Any, Literal
 
 from threetears.evals.analysis.arms import writer_arms
 from threetears.evals.analysis.bundle.caps import capped_text
-from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS, AnalysisContextBundle, ArmPricing, TrialRow
+from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS, AnalysisContextBundle, TrialRow
 from threetears.evals.analysis.campaign_bundle import CAMPAIGN_MESSAGE_CHARS_PER_ASPECT, KIND_MEANS, CampaignBundle
 from threetears.evals.analysis.campaign_readings import AspectReading, PairReading
 from threetears.evals.analysis.depth import REPEATS_FLOOR
@@ -85,7 +85,6 @@ from threetears.evals.analysis.report_input import (
     PairRead,
     PassK,
     Precision,
-    Pricing,
     PriorInsight,
     Reading,
     ReportInput,
@@ -527,26 +526,20 @@ class _Builder:
                 cases=row.cases,
                 reply_cost_usd=row.reply_cost_usd,
                 test_cost_usd=row.test_cost_usd,
-                # Only where a role counted them, so an arm none counted for carries no key.
-                **(
-                    {
-                        "unanswered": {
-                            held.role: Unanswered(
-                                retried=held.retried,
-                                lost=held.lost,
-                                reasons=held.reasons,
-                                calls=held.calls,
-                                share=held.share,
-                                uncounted=held.results_uncounted,
-                            )
-                            for held in row.unanswered
-                        }
-                    }
-                    if row.unanswered
-                    else {}
-                ),
-                # None where the census read none, which the row leaves out of its document.
-                pricing=_pricing(row.pricing),
+                # Only where a role counted them: None for an arm none counted for, which its document leaves out.
+                unanswered={
+                    held.role: Unanswered(
+                        retried=held.retried,
+                        lost=held.lost,
+                        reasons=held.reasons,
+                        calls=held.calls,
+                        share=held.share,
+                        uncounted=held.results_uncounted,
+                    )
+                    for held in row.unanswered
+                }
+                if row.unanswered
+                else None,
             )
             for row in aspect.scoreboard
         }
@@ -1243,10 +1236,3 @@ def _rounded(node: Any) -> Any:
     if isinstance(node, float) and math.isfinite(node) and node != 0:
         return round(node, PLANNER_FIGURES - 1 - math.floor(math.log10(abs(node))))
     return node
-
-
-def _pricing(held: ArmPricing | None) -> Pricing | None:
-    """An arm's pricing as the bundle's census read it, copied into the report input; None where it read none."""
-    if held is None:
-        return None
-    return Pricing(sources=held.sources, providers=held.providers, calls=held.calls, priced_calls=held.priced_calls)
