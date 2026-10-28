@@ -273,6 +273,11 @@ class TurnReply:
     :ivar cost_usd: What the turn cost, or ``None`` when nothing priced it (never ``0`` for unpriced).
     :ivar price_source: Who priced it, or ``None`` when unpriced.
     :ivar pricing_failure: Why ``cost_usd`` is ``None``; ``None`` when priced.
+    :ivar sent_binding: The thinking binding's behaviour the request carried (``error`` or ``drop_block``,
+        :class:`ThinkingBinding`), or ``None`` when it carried none.
+    :ivar input_transformations: What the provider reported doing to the request's input, its
+        ``input_transformations`` as it wrote them (a thinking block dropped, or let through, for a changed prefix),
+        or ``None`` when the response carried none. An empty tuple is the provider saying it changed nothing.
     """
 
     content: tuple[TurnBlock, ...]
@@ -288,6 +293,8 @@ class TurnReply:
     cost_usd: float | None
     price_source: str | None
     pricing_failure: str | None
+    sent_binding: str | None = None
+    input_transformations: tuple[dict[str, Any], ...] | None = None  # Any: the provider's JSON objects
 
     @property
     def text(self) -> str:
@@ -327,11 +334,16 @@ class TurnReply:
             "cost_usd": self.cost_usd,
             "price_source": self.price_source,
             "pricing_failure": self.pricing_failure,
+            "sent_binding": self.sent_binding,
+            "input_transformations": (
+                None if self.input_transformations is None else [dict(entry) for entry in self.input_transformations]
+            ),
         }
 
     @classmethod
     def from_json(cls, value: Mapping[str, Any]) -> Self:  # Any: a JSON object
-        """A reply read back from :meth:`to_json`'s JSON.
+        """A reply read back from :meth:`to_json`'s JSON; a reply written before ``sent_binding`` and
+        ``input_transformations`` were reads them as ``None``.
 
         :param value: The JSON object.
         :ptype value: Mapping[str, Any]
@@ -339,7 +351,7 @@ class TurnReply:
         :rtype: TurnReply
         :raises ValueError: A member missing, extra or of the wrong type, named.
         """
-        members = set(value)
+        members = set(value) - _LATER_REPLY_MEMBERS
         if members != _REPLY_MEMBERS:
             missing, extra = sorted(_REPLY_MEMBERS - members), sorted(members - _REPLY_MEMBERS)
             raise ValueError(f"a turn reply's members differ: missing {missing}, unexpected {extra}")
@@ -366,10 +378,25 @@ class TurnReply:
             cost_usd=None if cost is None else float(cost),
             price_source=_optional_text(value, "price_source"),
             pricing_failure=_optional_text(value, "pricing_failure"),
+            sent_binding=_optional_text(value, "sent_binding"),
+            input_transformations=_transformations(value.get("input_transformations")),
         )
 
 
-#: The members :meth:`TurnReply.to_json` writes, and :meth:`TurnReply.from_json` reads.
+def _transformations(value: Any) -> tuple[dict[str, Any], ...] | None:  # Any: JSON
+    """A reply's stored ``input_transformations``: ``None``, or a list of JSON objects."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(entry, Mapping) for entry in value):
+        raise ValueError("a turn reply's input_transformations is neither a list of objects nor null")
+    return tuple(dict(entry) for entry in value)
+
+
+#: The members :meth:`TurnReply.to_json` writes since it first could, each read as ``None`` where a reply written
+#: before lacks it.
+_LATER_REPLY_MEMBERS = frozenset({"sent_binding", "input_transformations"})
+
+#: The members every reply :meth:`TurnReply.to_json` wrote has, and :meth:`TurnReply.from_json` requires.
 _REPLY_MEMBERS = frozenset(
     {
         "content",

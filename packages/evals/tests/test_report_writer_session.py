@@ -10,7 +10,7 @@ from __future__ import annotations
 import ast
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Final
 
@@ -868,6 +868,19 @@ async def test_every_turn_asks_the_provider_to_refuse_a_history_edited_under_a_t
     assert (await session.revise(REVISION)).ending == "submitted"
 
     assert [request["block_binding"] for request in client.requests] == [{"prefix_mismatch_behavior": "error"}] * 4
+
+
+async def test_each_turn_s_tally_keeps_the_binding_its_request_carried_and_what_the_provider_reported() -> None:
+    tally = Tally()
+    client = FakeToolTurnClient(
+        replace(reply(call(1)), sent_binding="error", input_transformations=()),
+        replace(reply(submitted()), sent_binding="error", input_transformations=()),
+    )
+
+    await start(client, tally=tally).draft()
+
+    turns = tally.to_json()["turns"]
+    assert [(turn["sent_binding"], turn["input_transformations"]) for turn in turns] == [("error", [])] * 2
 
 
 async def test_the_brief_holds_the_overview_to_the_result_limit() -> None:

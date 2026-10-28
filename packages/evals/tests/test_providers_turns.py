@@ -9,6 +9,7 @@ live API.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final
@@ -18,6 +19,7 @@ import pytest
 
 from threetears.evals.providers import Catalogue, Model, ProviderError
 from threetears.evals.schema import (
+    TurnReply,
     ThinkingBinding,
     ToolResultClearing,
     TurnText,
@@ -80,9 +82,11 @@ class Server:
         self._replies = list(replies)
         self.bodies: list[dict[str, Any]] = []
         self.urls: list[str] = []
+        self.headers: list[httpx.Headers] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.urls.append(str(request.url))
+        self.headers.append(request.headers)
         self.bodies.append(json.loads(request.content))
         return httpx.Response(200, json=self._replies.pop(0))
 
@@ -543,7 +547,9 @@ async def test_a_binding_rides_a_thinking_budget_and_no_turn_that_sends_thinking
         "budget_tokens": 2048,
         "block_binding": {"prefix_mismatch_behavior": "error"},
     }
+    assert budget.headers[0]["anthropic-beta"] == "thinking-binding-controls-2026-08-01"
     assert disabled.bodies[0]["thinking"] == {"type": "disabled"}, "thinking disabled replays no block to check"
+    assert "anthropic-beta" not in disabled.headers[0]
 
 
 async def test_a_binding_on_a_model_built_with_no_effort_goes_where_the_model_thinks_anyway() -> None:
@@ -574,7 +580,42 @@ async def test_a_binding_on_a_model_built_with_no_effort_goes_where_the_model_th
     assert always.bodies[0]["thinking"] == {"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "error"}}
     assert sent[0].headers["anthropic-beta"] == "thinking-binding-controls-2026-08-01"
     assert "thinking" not in always.bodies[1], "with no binding, no effort sends no thinking, as it always did"
+    assert "anthropic-beta" not in sent[1].headers
     assert "thinking" not in maybe.bodies[0]
+    assert "anthropic-beta" not in maybe.headers[0]
+
+
+async def test_a_reply_says_which_binding_its_request_carried_and_what_the_provider_reported_doing() -> None:
+    """The evidence a run keeps of the check: the behaviour sent, and the response's ``input_transformations``."""
+    dropped = {"type": "thinking_dropped", "reason": "prefix_binding_mismatch", "path": "messages.3.content.0"}
+    server = Server(
+        {**CASES["opening"]["reply"], "input_transformations": []},
+        {**CASES["opening"]["reply"], "input_transformations": [dropped]},
+        CASES["opening"]["reply"],
+    )
+    model = opus(server)
+    opening = [TurnMessage("user", OPENING)]
+
+    checked = await model.turn(system=SYSTEM, messages=opening, tools=TOOLS, max_tokens=4096, binding=ThinkingBinding())
+    dropping = await model.turn(
+        system=SYSTEM,
+        messages=opening,
+        tools=TOOLS,
+        max_tokens=4096,
+        binding=ThinkingBinding(prefix_mismatch_behavior="drop_block"),
+    )
+    plain = await model.turn(system=SYSTEM, messages=opening, tools=TOOLS, max_tokens=4096)
+
+    assert (checked.sent_binding, checked.input_transformations) == ("error", ())
+    assert (dropping.sent_binding, dropping.input_transformations) == ("drop_block", (dropped,))
+    assert (plain.sent_binding, plain.input_transformations) == (None, None)
+    assert TurnReply.from_json(dropping.to_json()) == dropping
+    earlier = {
+        key: value for key, value in checked.to_json().items() if key not in {"sent_binding", "input_transformations"}
+    }
+    assert TurnReply.from_json(earlier) == replace(checked, sent_binding=None, input_transformations=None), (
+        "a reply recorded before the members reads them as none"
+    )
 
 
 def test_a_binding_refuses_a_behaviour_the_provider_does_not_take() -> None:

@@ -250,6 +250,10 @@ think. Setting it opts the turn into the check on any account. `RecordedTurns` p
 through; a recording holds replies only, so recordings made before it replay unchanged. Every analyst and editor turn
 that thinks sends `"error"`: the history is append-only, so a turn whose history changed under a thinking block is the
 provider's 400, never answered without the reasoning. A turn with no binding sends the body it always did.
+`TurnReply` gains `sent_binding` (the behaviour the request carried, or `None`) and `input_transformations` (the
+response's report of blocks dropped or let through, as the provider wrote it, or `None` when it sent none), and the
+report writer's tally keeps both on every turn, so a stored report shows each turn was checked. A reply recorded
+before them reads both as `None`.
 
 **Changed:** `kernel.report_doc` now exports `ReportDoc`, `report_doc_validity` and `report_doc_json_schema`, and
 `analysis.analyst.skill` exports `SkillText`, each with its first production caller in the analyst session.

@@ -46,6 +46,9 @@ from threetears.evals.schema import (
     TurnStopReason,
     block_from_json,
 )
+from threetears.evals.schema.logs import get_logger
+
+log = get_logger(__name__)
 
 __all__ = [
     "BASE_URLS",
@@ -697,6 +700,8 @@ class TurnRead:
     :ivar provider_stop_reason: The reason as the provider named it, or ``None``.
     :ivar cache_read_tokens: Prompt tokens read from the cache, or ``None`` when unreported.
     :ivar cache_write_tokens: Prompt tokens written to it, or ``None`` when unreported.
+    :ivar input_transformations: The response's ``input_transformations`` (a request under the thinking binding's beta
+        carries the array), or ``None`` when it carried none.
     """
 
     content: tuple[TurnBlock, ...]
@@ -704,6 +709,7 @@ class TurnRead:
     provider_stop_reason: str | None
     cache_read_tokens: int | None
     cache_write_tokens: int | None
+    input_transformations: tuple[dict[str, Any], ...] | None = None  # Any: the provider's JSON objects
 
 
 def read_turn(status: int, body: Mapping[str, Any]) -> TurnRead:  # Any: JSON
@@ -732,4 +738,16 @@ def read_turn(status: int, body: Mapping[str, Any]) -> TurnRead:  # Any: JSON
         provider_stop_reason=raw,
         cache_read_tokens=_count(usage.get("cache_read_input_tokens")),
         cache_write_tokens=_count(usage.get("cache_creation_input_tokens")),
+        input_transformations=_transformations(body.get("input_transformations")),
     )
+
+
+def _transformations(value: Any) -> tuple[dict[str, Any], ...] | None:  # Any: JSON
+    """The response's ``input_transformations``, each entry as it came; ``None`` for none, or for a value that is no
+    list of objects (logged, so an unread report is never read as nothing done)."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(entry, Mapping) for entry in value):
+        log.warning("eval.providers tool turn input_transformations unread: %r", value)
+        return None
+    return tuple(dict(entry) for entry in value)

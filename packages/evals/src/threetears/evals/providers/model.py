@@ -554,6 +554,8 @@ class _Live:
             cost_usd=cost,
             price_source=source,
             pricing_failure=unpriced,
+            sent_binding=body.get("thinking", {}).get("block_binding", {}).get("prefix_mismatch_behavior"),
+            input_transformations=turned.input_transformations,
         )
 
     def turn_price_ceiling(
