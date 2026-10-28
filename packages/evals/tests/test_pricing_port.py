@@ -24,7 +24,7 @@ import httpx
 import pytest
 
 from threetears.evals.providers import Catalogue, Model, Provider
-from threetears.evals.schema import TurnMessage, TurnToolSpec
+from threetears.evals.schema import TurnCeiling, TurnMessage, TurnToolSpec
 
 FIXTURES: Final = Path(__file__).parent / "fixtures" / "providers"
 
@@ -187,10 +187,10 @@ OPENAI_PIN: Final[tuple[float | None, float | None, str | None]] = (
 )
 
 
-def ceiling_usd(ceiling: object) -> float | None:
-    """A ceiling as dollars: the bound as the client answered it."""
-    assert ceiling is None or isinstance(ceiling, float), ceiling
-    return ceiling
+def ceiling_usd(ceiling: TurnCeiling | None) -> float | None:
+    """A turn's ceiling as dollars: the bound as the client answered it, which on a default route is no estimate."""
+    assert ceiling is None or not ceiling.estimate, ceiling
+    return ceiling.usd if ceiling is not None else None
 
 
 @pytest.mark.parametrize("route", ROUTES)

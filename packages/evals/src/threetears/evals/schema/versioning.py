@@ -347,7 +347,13 @@ CORE_SCHEMA_VERSION: int = 15
 #:   ``served_model``. Each is left out of the document when unset, so a row or an entry setting none is stored byte
 #:   for byte as before. None is in any identity, key or digest; the cost readings never read the counts.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 8
+#: - **v15.9** — a usage row says why its dollars are unknown: ``RoleUsage.unpriced_reasons`` (default None: no reason
+#:   given, the row priced, or stored before the field existed) holds each distinct reason the pricer gave for a call
+#:   it could not price, set only beside a ``cost_usd`` of None, which stays unknown and never reads as ``$0``. Left
+#:   out of the document when unset, so a row setting none is stored byte for byte as before. It is in no identity,
+#:   key or digest, and no cost reading reads it.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 9
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

@@ -217,7 +217,7 @@ async def test_each_ceiling_a_session_answered_is_kept_for_its_turn_and_replayed
     refused_ceiling = recording.turn_price_ceiling(messages=ask("a much longer conversation " * 50), **asked)
 
     assert first_ceiling == witness.turn_price_ceiling(messages=ask("a"), **asked), "a recording passes it through"
-    assert first_ceiling is not None and refused_ceiling is not None and refused_ceiling > first_ceiling
+    assert first_ceiling is not None and refused_ceiling is not None and refused_ceiling.usd > first_ceiling.usd
     replaying = RecordedTurns.replay(path)
     replay = replaying.turn_session("analyst", snapshot=REPLAYED_ON)
     assert replay.turn_price_ceiling(messages=ask("anything"), **asked) == first_ceiling

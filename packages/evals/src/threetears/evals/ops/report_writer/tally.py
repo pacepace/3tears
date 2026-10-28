@@ -1,4 +1,4 @@
-"""What writing a report cost: every paid turn, the tool calls and bounces each round made, and the dollar budget.
+"""What writing a report cost: every paid turn, the tool calls and bounces each round made, and the report's budget.
 
 A report is written in sessions of tool turns (the analyst's, then each editor round's), and every turn is paid for.
 :class:`Tally` keeps one :class:`TurnCost` per turn sent, whichever session sent it: the role and round it belongs to,
@@ -15,10 +15,14 @@ turns were unpriced, so a total never reads lower than what was spent.
 recording refuses one holding the literal ``{snapshot}``); the turn is still tallied, with why it was refused, before
 the refusal reaches the caller.
 
-:class:`ReportBudget` is the host's dollar cap for one report, shared by all of its sessions. Before every turn a
-session asks it to admit the turn on the client's price ceiling for it; a refusal sends nothing. A turn that is sent
-is charged what it cost, or, when nothing priced it, its ceiling: the most it can have cost, so an unpriced turn
-never lets the budget read more room than there is.
+:class:`ReportBudget` is the host's cap for one report, shared by all of its sessions, in one of two forms the host
+declares. **A dollar budget** (``ReportBudget(usd=)``) admits every turn on the client's price ceiling for it, and
+charges a sent turn what it cost, or, when nothing priced it, its ceiling: the most it can have cost, so an unpriced
+turn never lets the budget read more room than there is. A ceiling built on rates the host's pricer does not
+guarantee still admits the turn, and the turn is tallied as admitted on an estimate (``admitted_on_estimate``), which
+the made line discloses. **A token and turn budget** (``ReportBudget(tokens=, turns=)``) admits a turn by its tokens
+and the turns sent, never by its price, so a model nothing prices (a local model, a subscription) still writes a
+report, tallied unpriced and never as ``$0``. Either way, a refusal sends nothing.
 """
 
 from __future__ import annotations
@@ -29,8 +33,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from threetears.evals.kernel.numbers import spell_dollars
-from threetears.evals.schema.turns import TurnReply
+from threetears.evals.kernel.numbers import group_thousands, spell_dollars
+from threetears.evals.schema.turns import TurnCeiling, TurnReply
 
 __all__ = ["ReportBudget", "Tally", "TurnCost", "WriterRole"]
 
@@ -60,6 +64,8 @@ class TurnCost:
     :ivar stop_reason: Why the reply stopped, in a turn's words.
     :ivar wall_s: Seconds from sending the turn to its reply.
     :ivar refused: Why the client refused the reply after it was paid for, or ``None`` for a reply the session read.
+    :ivar admitted_on_estimate: Whether a dollar budget admitted the turn on a ceiling built on rates the host's
+        pricer does not guarantee: its cap was checked against an estimate.
     """
 
     session: str
@@ -79,6 +85,7 @@ class TurnCost:
     stop_reason: str
     wall_s: float
     refused: str | None = None
+    admitted_on_estimate: bool = False
 
     @classmethod
     def of(
@@ -91,6 +98,7 @@ class TurnCost:
         turn: int,
         wall_s: float,
         refused: str | None = None,
+        admitted_on_estimate: bool = False,
     ) -> TurnCost:
         """The tally entry for one reply.
 
@@ -108,6 +116,8 @@ class TurnCost:
         :ptype wall_s: float
         :param refused: Why the client refused the reply after it was paid for; ``None`` for one it handed back.
         :ptype refused: str | None
+        :param admitted_on_estimate: Whether a dollar budget admitted it on an estimated ceiling.
+        :ptype admitted_on_estimate: bool
         :return: The entry.
         :rtype: TurnCost
         """
@@ -129,6 +139,7 @@ class TurnCost:
             stop_reason=reply.stop_reason,
             wall_s=wall_s,
             refused=refused,
+            admitted_on_estimate=admitted_on_estimate,
         )
 
     def to_json(self) -> dict[str, Any]:  # Any: a JSON object
@@ -155,6 +166,7 @@ class TurnCost:
             "stop_reason": self.stop_reason,
             "wall_s": self.wall_s,
             "refused": self.refused,
+            "admitted_on_estimate": self.admitted_on_estimate,
         }
 
 
@@ -263,6 +275,8 @@ class Tally:
         rolled.update({name: _sum_count(getattr(turn, name) for turn in turns) for name in _TOKENS})
         rolled["cost_usd"] = _sum_cost(turns)
         rolled["unpriced_turns"] = sum(1 for turn in turns if turn.cost_usd is None)
+        rolled["unpriced_reasons"] = sorted({turn.pricing_failure for turn in turns if turn.pricing_failure})
+        rolled["admitted_on_estimate"] = sum(1 for turn in turns if turn.admitted_on_estimate)
         rolled["tool_calls"] = sum(self._calls[key] for key in keys)
         bounces = [kind for key in keys for kind in self._bounces.get(key, [])]
         rolled["bounces"] = len(bounces)
@@ -292,61 +306,135 @@ def _sum_cost(turns: Iterable[TurnCost]) -> float | None:
 
 
 class ReportBudget:
-    """The host's dollar cap for one report, shared by every session that writes it.
+    """The host's cap for one report, shared by every session that writes it: dollars, or tokens and turns.
 
-    :meth:`admit` is asked before every turn with the client's price ceiling for it, and refuses a turn that could
-    take the spend past the cap, or one the client cannot bound; a refused turn is never sent. ``report_write``
-    refuses a model whose turns cannot be bounded before it starts, so that refusal is a backstop. :meth:`charge` counts a
-    sent turn at what it cost, or at its ceiling when nothing priced it.
+    Exactly one form, declared by the host. ``ReportBudget(usd=)`` admits a turn on the client's price ceiling for it,
+    and refuses one that could take the spend past the cap, or one the client cannot bound; ``report_write`` refuses a
+    model whose turns cannot be bounded before it starts, so that refusal is a backstop. ``ReportBudget(tokens=,
+    turns=)``, either cap or both, admits a turn by a bound on its tokens (its prompt's, as its price ceiling bounds it,
+    and its output cap) and by the turns already sent, and never asks for a price. A refused turn is never sent.
+    :meth:`charge` counts a sent turn: at what it cost or, unpriced, its ceiling; at the tokens it reported or, where
+    it reported none, its bound; and as one turn.
 
-    :ivar usd: The cap, in dollars.
+    :ivar usd: The dollar cap, or ``None`` for a token and turn budget.
+    :ivar tokens: The token cap (prompt and output tokens, cache reads and writes included), or ``None``.
+    :ivar turns: The turn cap, or ``None``.
     """
 
-    def __init__(self, *, usd: float) -> None:
-        """Set the cap.
+    def __init__(self, *, usd: float | None = None, tokens: int | None = None, turns: int | None = None) -> None:
+        """Set the cap, in one form.
 
         :param usd: The most the report may spend, in dollars: finite and above 0.
-        :ptype usd: float
-        :raises ValueError: A cap that is not a finite amount above 0.
+        :ptype usd: float | None
+        :param tokens: The most tokens its turns may use, in all: a whole number above 0.
+        :ptype tokens: int | None
+        :param turns: The most turns it may send: a whole number above 0.
+        :ptype turns: int | None
+        :raises ValueError: Both forms, or neither; a dollar cap that is not a finite amount above 0; a token or turn
+            cap that is not a whole number above 0.
         """
-        if isinstance(usd, bool) or not isinstance(usd, int | float) or not math.isfinite(usd) or usd <= 0:
+        if usd is not None and (tokens is not None or turns is not None):
+            raise ValueError(
+                "a report's budget is dollars (usd=) or tokens and turns (tokens=, turns=), declared by the host, "
+                "never both"
+            )
+        if usd is None and tokens is None and turns is None:
+            raise ValueError(
+                "a report's budget declares a cap: dollars (usd=), or tokens and turns (tokens=, turns=) for a model "
+                "nothing prices"
+            )
+        if usd is not None and (
+            isinstance(usd, bool) or not isinstance(usd, int | float) or not math.isfinite(usd) or usd <= 0
+        ):
             raise ValueError(f"a report's budget is a finite number of dollars above 0, not {usd!r}")
-        self.usd = float(usd)
+        for name, cap in (("tokens", tokens), ("turns", turns)):
+            if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0):
+                raise ValueError(f"a report's {name} budget is a whole number above 0, not {cap!r}")
+        self.usd = float(usd) if usd is not None else None
+        self.tokens = tokens
+        self.turns = turns
         self._spent = 0.0
+        self._spent_tokens = 0
+        self._sent = 0
+
+    @property
+    def spelled(self) -> str:
+        """The cap in words: ``$20.00``, or ``2,000,000-token, 60-turn``."""
+        if self.usd is not None:
+            return spell_dollars(self.usd)
+        caps = [f"{group_thousands(str(self.tokens))}-token"] if self.tokens is not None else []
+        caps += [f"{self.turns}-turn"] if self.turns is not None else []
+        return ", ".join(caps)
 
     @property
     def spent(self) -> float:
-        """What the turns charged so far count for: each at its cost, or its ceiling when it was unpriced."""
+        """What the turns charged so far count for in dollars: each at its cost, or its ceiling when it was unpriced
+        (0 under a token and turn budget, which counts no dollars)."""
         return self._spent
 
-    def admit(self, ceiling: float | None) -> str | None:
+    def admit(self, ceiling: TurnCeiling | None, *, tokens: int) -> str | None:
         """Whether a turn may be sent: ``None`` admits it; otherwise why it is refused, as a sentence.
 
-        :param ceiling: The client's ceiling for the turn, or ``None`` when it cannot bound it.
-        :ptype ceiling: float | None
+        :param ceiling: The client's price ceiling for the turn, or ``None`` when it cannot bound it; read by a dollar
+            budget alone.
+        :ptype ceiling: TurnCeiling | None
+        :param tokens: A bound on the tokens the turn can use: its prompt's bound and its output cap; read by a token
+            budget alone.
+        :ptype tokens: int
         :return: ``None``, or the refusal.
         :rtype: str | None
         """
+        if self.usd is None:
+            if self.turns is not None and self._sent >= self.turns:
+                return f"the report's {self.turns}-turn budget is spent: {self._sent} turns were sent"
+            if self.tokens is not None and self._spent_tokens + tokens > self.tokens:
+                return (
+                    f"the next turn can use up to {group_thousands(str(tokens))} tokens, and "
+                    f"{group_thousands(str(self._spent_tokens))} of the report's "
+                    f"{group_thousands(str(self.tokens))}-token budget are used"
+                )
+            return None
         if ceiling is None:
             return (
                 f"the client cannot bound the next turn's cost, so the report's {spell_dollars(self.usd)} budget cannot admit it "
-                "(load the price catalogue, hand the model a pricer, or use a model it prices)"
+                "(load the price catalogue, hand the model a pricer, use a model it prices, or declare a token and "
+                "turn budget for a model nothing prices)"
             )
-        if self._spent + ceiling > self.usd:
+        if self._spent + ceiling.usd > self.usd:
             return (
-                f"the next turn can cost up to {spell_dollars(ceiling)}, and {spell_dollars(self._spent)} of the report's "
+                f"the next turn can cost up to {spell_dollars(ceiling.usd)}, and {spell_dollars(self._spent)} of the report's "
                 f"{spell_dollars(self.usd)} budget is spent"
             )
         return None
 
-    def charge(self, cost: float | None, *, ceiling: float | None) -> None:
-        """Count a sent turn: at its cost, or at its ceiling when nothing priced it.
+    def admitted_on_estimate(self, ceiling: TurnCeiling | None) -> bool:
+        """Whether admitting a turn on ``ceiling`` checks the cap against an estimate: a dollar budget, and a ceiling
+        built on rates the host's pricer does not guarantee.
 
-        :param cost: What the turn cost, or ``None`` when unpriced.
-        :ptype cost: float | None
-        :param ceiling: The ceiling it was admitted on.
-        :ptype ceiling: float | None
+        :param ceiling: The ceiling the turn is admitted on.
+        :ptype ceiling: TurnCeiling | None
+        :return: Whether it is an estimate the cap is checked against.
+        :rtype: bool
         """
-        counted = cost if cost is not None else ceiling
+        return self.usd is not None and ceiling is not None and ceiling.estimate
+
+    def charge(self, reply: TurnReply, *, ceiling: TurnCeiling | None, tokens: int) -> None:
+        """Count a sent turn: its dollars, its tokens, and the turn itself.
+
+        :param reply: The reply it was answered with, a refused one included: it was paid for.
+        :ptype reply: TurnReply
+        :param ceiling: The price ceiling it was admitted on, counted for its dollars when nothing priced it.
+        :ptype ceiling: TurnCeiling | None
+        :param tokens: The token bound it was admitted on, counted when the reply reported no token count.
+        :ptype tokens: int
+        """
+        counted = reply.cost_usd if reply.cost_usd is not None else ceiling.usd if ceiling is not None else None
         if counted is not None:
             self._spent += counted
+        used = (
+            reply.input_tokens + reply.output_tokens
+            if reply.input_tokens is not None and reply.output_tokens is not None
+            else tokens
+        )
+        self._spent_tokens += used
+        self._sent += 1

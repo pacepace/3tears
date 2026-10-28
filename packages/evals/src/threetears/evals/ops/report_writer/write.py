@@ -15,10 +15,12 @@ whatever the ending, and on :class:`ReportNotStored` when the store gate or the 
 **Keys.** The caller passes the model (plan §4.6): a host builds ``Model(id, provider="anthropic", api_key=...)``
 from the key it holds. Nothing here reads an environment variable.
 
-**A run that cannot be priced never starts.** Every turn is admitted on its price ceiling (:class:`ReportBudget`), so
-before anything is frozen or sent the model is asked whether its turns can be priced
-(:meth:`~threetears.evals.ops.report_writer.loop.TurnModel.turn_pricing_refusal`); one that cannot is refused by name,
-with nothing frozen, sent or spent. The budget's own refusal of a turn it cannot bound stays as the backstop.
+**Under a dollar budget, a run that cannot be priced never starts.** A dollar budget (:class:`ReportBudget`) admits
+every turn on its price ceiling, so before anything is frozen or sent the model is asked whether its turns can be
+priced (:meth:`~threetears.evals.ops.report_writer.loop.TurnModel.turn_pricing_refusal`); one that cannot is refused
+by name, with nothing frozen, sent or spent. The budget's own refusal of a turn it cannot bound stays as the backstop.
+A token and turn budget admits turns by their tokens and the turns sent, so it asks for no price: a model nothing
+prices writes its report under it, tallied unpriced.
 """
 
 from __future__ import annotations
@@ -33,7 +35,6 @@ from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report_doc_checks import DocVerdict
 from threetears.evals.analysis.report_doc_store import doc_verdicts, generation_record, made_line, store_report_doc
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.kernel.numbers import spell_dollars
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.report_doc import EvalReportDoc, ReportDoc
 from threetears.evals.ops.analyst import report_snapshot_freeze, snapshot_input
@@ -130,7 +131,7 @@ async def report_write(
     :ptype created_by: str
     :param model: The model every session runs on (``Model(id, provider="anthropic", api_key=...)``).
     :ptype model: TurnModel
-    :param budget: The report's dollar budget, which admits every turn.
+    :param budget: The report's budget (dollars, or tokens and turns), which admits every turn.
     :ptype budget: ReportBudget
     :param analyst_mount: The ``evals_analyst`` tool on the analyst's cut, read-only, bound to the host and caller.
     :ptype analyst_mount: ToolMount
@@ -148,9 +149,9 @@ async def report_write(
     :ptype limits: WriterLimits | None
     :return: How it ended, the stored document if any, and the generation record.
     :rtype: ReportWritten
-    :raises ValueError: Not exactly one of the sources named; a model whose turns cannot be bounded, refused with the
-        budget's lead-in and the model's own pricing refusal; or one the model refuses for its route or settings,
-        raised as the model words it. Each before anything is frozen or sent.
+    :raises ValueError: Not exactly one of the sources named; under a dollar budget, a model whose turns cannot be
+        bounded, refused with the budget's lead-in and the model's own pricing refusal; or one the model refuses for
+        its route or settings, raised as the model words it. Each before anything is frozen or sent.
     :raises ReportNotStored: The loop ended with a document to store, and the store gate or the store refused it;
         the run's record rides on it (:attr:`ReportNotStored.written`), raised from the cause.
     :raises EvalServiceError: The freeze or the snapshot's read refused (no such campaign, analysis or snapshot).
@@ -164,10 +165,11 @@ async def report_write(
         raise ValueError(
             f"a report is written from one source: name a snapshot_id, a campaign_id or an analysis_id, not {named or 'none'}"
         )
-    if (unpriced := await model.turn_pricing_refusal()) is not None:
+    if budget.usd is not None and (unpriced := await model.turn_pricing_refusal()) is not None:
         raise ValueError(
-            f"the report was not started, and nothing was frozen, sent or spent: its {spell_dollars(budget.usd)} "
-            f"budget admits each turn on its price ceiling, and {unpriced}"
+            f"the report was not started, and nothing was frozen, sent or spent: its {budget.spelled} budget admits "
+            f"each turn on its price ceiling, and {unpriced}; a model nothing prices is written under a token and turn "
+            "budget (ReportBudget(tokens=, turns=))"
         )
     if snapshot_id is None:
         frozen = await report_snapshot_freeze(

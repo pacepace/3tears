@@ -25,6 +25,7 @@ from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.turns import (
     ToolResultClearing,
     TurnBlock,
+    TurnCeiling,
     TurnMessage,
     TurnReply,
     TurnReplyRefused,
@@ -94,11 +95,10 @@ class FakeToolTurnClient:
 
     def turn_price_ceiling(
         self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int
-    ) -> float | None:
+    ) -> TurnCeiling | None:
         self.ceilings_asked += 1
-        if self.ceilings is not None:
-            return self.ceilings.pop(0)
-        return self.ceiling
+        usd = self.ceilings.pop(0) if self.ceilings is not None else self.ceiling
+        return TurnCeiling(usd=usd) if usd is not None else None
 
     async def refresh_prices(self) -> None:
         self.refreshed += 1
