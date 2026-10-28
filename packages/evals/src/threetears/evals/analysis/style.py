@@ -176,8 +176,8 @@ def arm_name(display: str, *, control: bool = False) -> ArmName:
 def lever_reader_name(lever: str, declared: Mapping[str, str] | None = None) -> str:
     """The one name a reader is shown for a lever, everywhere a page names one: an arm name computed from it, and a
     configuration's setting. The name declared for it where one is (``declared``: a report input's factor names, by
-    id, ``Reasoning budget``), else the package's reader name for its id (:func:`humanize`, ``research timeout``,
-    never ``research_timeout``).
+    id, ``Reasoning budget``), else the package's reader name for its id (:func:`humanize`, ``max output tokens``,
+    never ``max_output_tokens``).
 
     :param lever: The lever, by id.
     :ptype lever: str
