@@ -19,8 +19,8 @@ Contracts held here (``threetears.evals.analysis.planned_analysis``, ``threetear
   and Markdown; ``report_read`` serves it static where asked and ``trials="all"`` still reaches every failed trial's
   record through the folds; a key the frozen evidence no longer holds refuses the page naming the regeneration; a
   planned page is an analysis's and holds no blocks of its own;
-- the actions round-trip: a generation started through ``analysis_generate`` is listed by ``analyses_list`` as a plan
-  and read by ``report_read`` with its plan;
+- the actions round-trip: a generation started through ``analysis_generate`` is the report writer's, never the
+  planner's, listed by ``analyses_list`` as a document and read by ``report_read`` with no plan;
 - a key's subjects (the arms and aspects it names) are read off its one reading of the input.
 
 The model is the one non-production part: a fixtured planner writes a structure and its prose over whatever report
@@ -57,9 +57,9 @@ from threetears.evals.kernel.campaign import EvalAnalysis, report_plan_id
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.kernel.errors import RefusedInput, ValidationFailedError
 from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
-from threetears.evals.ops import analyses_list, analysis_delete, analysis_generate, report_read
+from threetears.evals.ops import analyses_list, analysis_delete, report_read
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, settled
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, planned_generation, settled
 from packages.evals.tests.report_plan_support import r5_input
 from packages.evals.tests.report_support import stored_memo_analysis, toy_campaign_host
 from packages.evals.tests.reporter_case_support import freeze_corpus_campaign, reporter_fixture
@@ -351,17 +351,11 @@ class TestStoredMemos:
 
     async def test_a_reporter_case_pins_a_memo_as_a_memo_case_and_a_plan_as_a_plan_case(self) -> None:
         fixture = off_loop(reporter_fixture)
-        (job,) = (await _generate_through_the_action(fixture)).jobs
-        planned = (await settled(fixture.host, job.job_id)).analysis_id
-        assert planned is not None
+        planned = (await planned_generation(fixture))[0].id
         memo, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
 
         assert off_loop(freeze_corpus_campaign, fixture, recorded_analysis_id=memo.id).kind_version == 1
         assert off_loop(freeze_corpus_campaign, fixture, recorded_analysis_id=planned).kind_version == 2
-
-
-async def _generate_through_the_action(fixture: Any) -> Any:
-    return await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
 
 
 class TestAStoredPlanThisBuildCannotRead:
@@ -371,9 +365,7 @@ class TestAStoredPlanThisBuildCannotRead:
 
     async def _unreadable(self) -> tuple[Any, str]:
         fixture = off_loop(ops_fixture)
-        (job,) = (await _generate_through_the_action(fixture)).jobs
-        analysis_id = (await settled(fixture.host, job.job_id)).analysis_id
-        assert analysis_id is not None
+        analysis_id = (await planned_generation(fixture))[0].id
         storage = fixture.host.eval_host.storage
         analysis = off_loop(storage.load_analysis, analysis_id, TOYHOST_SCOPE)
         stored = off_loop(get_report_plan, storage, analysis)
@@ -418,9 +410,7 @@ class TestThePlanIsDerived:
 
     async def test_deleting_its_analysis_deletes_it_and_keeps_the_insights(self) -> None:
         fixture = off_loop(ops_fixture)
-        (job,) = (await _generate_through_the_action(fixture)).jobs
-        analysis_id = (await settled(fixture.host, job.job_id)).analysis_id
-        assert analysis_id is not None
+        analysis_id = (await planned_generation(fixture))[0].id
         storage = fixture.host.eval_host.storage
         analysis = off_loop(storage.load_analysis, analysis_id, TOYHOST_SCOPE)
         assert analysis is not None and analysis.report_plan_id is not None
@@ -433,8 +423,9 @@ class TestThePlanIsDerived:
         ]
 
 
-async def test_the_actions_round_trip_a_planned_analysis() -> None:
-    """Generate, poll, list and read through the mounted tool: the listing and the read say a plan wrote it."""
+async def test_the_actions_round_trip_a_generated_analysis_as_a_report_document() -> None:
+    """Generate, poll, list and read through the mounted tool: ``analysis_generate`` reaches the report writer, never
+    the planner, so the listing and the read say a report document wrote it."""
     fixture = off_loop(ops_fixture)
     evals = eval_catalogue().mount_all(standard_tools())[0]
 
@@ -451,12 +442,9 @@ async def test_the_actions_round_trip_a_planned_analysis() -> None:
     )
     assert listed.structured is not None, listed.text
     (line,) = listed.structured["analyses"]
-    assert (line["id"], line["basis"], line["report_plan_id"]) == (
-        status.analysis_id,
-        "plan",
-        report_plan_id(str(status.analysis_id)),
-    )
-    assert (line["findings"], line["recommendations"]) == (1, 1)
+    assert (line["id"], line["basis"], line["report_plan_id"]) == (status.analysis_id, "doc", None)
+    assert line["report_doc_id"] is not None
+    assert (line["findings"], line["recommendations"]) == (1, 0)
 
     read = await evals.call(
         {"action": "report_read", "campaign_id": fixture.campaign.id, "format": "json"},
@@ -464,13 +452,13 @@ async def test_the_actions_round_trip_a_planned_analysis() -> None:
         caller=CALLER,
     )
     assert read.structured is not None, read.text
+    # Until the report view reads the document (wave 2), the page is the code-only page naming the analysis.
     assert (read.structured["basis"], read.structured["analysis_id"], read.structured["analysis_basis"]) == (
-        "analysis",
+        "code_only",
         status.analysis_id,
-        "plan",
+        "doc",
     )
-    plan = read.structured["plan"]
-    assert plan["schema"] == "report-plan/1" and plan["mode"] == "decide" and plan["durable_claims"]
+    assert read.structured["plan"] is None, "a report document carries no plan"
     assert json.loads(read.structured["body"])["analysis_id"] == status.analysis_id
 
 

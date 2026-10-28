@@ -148,6 +148,9 @@ class WritingOutcome:
     :ivar sessions: Every session begun, by name, as a stored value, whatever the ending: the analyst's
         (``AnalystSession.to_json()``, under ``analyst``) and each review round's (``ToolSession.to_json()``, under
         ``editor-<round>``).
+    :ivar failure: The client's failure a ``failed`` loop ended on, when one did (the analyst's or a review's), so a
+        caller that records it can ask the host what of it is safe to keep: its text, which ``reason`` carries, may
+        hold a provider's account. Never stored.
     """
 
     ending: WriterEnding
@@ -159,6 +162,7 @@ class WritingOutcome:
     faults: tuple[SubmissionFault, ...] = ()
     reason: str = ""
     sessions: dict[str, dict[str, Any]] = field(default_factory=dict)  # Any: JSON objects
+    failure: Exception | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -273,7 +277,7 @@ async def write_rounds(
         # A failure the loop reports as its `failed` ending: the client's own (a provider's, after its retries) or
         # a refused reply, which the engine cannot name by type. The tally, the caller's, keeps every turn sent.
         contain(exc, log=log, what="the report writing loop failed and ends failed", level="error")
-        return _outcome("failed", seen, analyst, reason=f"{type(exc).__name__}: {exc}")
+        return _outcome("failed", seen, analyst, reason=f"{type(exc).__name__}: {exc}", failure=exc)
 
 
 def _not_submitted(drafted: AnalystOutcome, seen: _Rounds, analyst: AnalystSession) -> WritingOutcome:
@@ -292,7 +296,7 @@ def _not_reviewed(reviewed: EditorOutcome, seen: _Rounds, analyst: AnalystSessio
     if reviewed.ending == "review_failed":
         faults = "; ".join(reviewed.faults)
         return _outcome("review_failed", seen, analyst, reason=f"{reviewed.reason}: {faults}")
-    return _outcome("failed", seen, analyst, reason=reviewed.reason)
+    return _outcome("failed", seen, analyst, reason=reviewed.reason, failure=reviewed.failure)
 
 
 def _outcome(
@@ -303,6 +307,7 @@ def _outcome(
     stores: bool = False,
     faults: tuple[SubmissionFault, ...] = (),
     reason: str = "",
+    failure: Exception | None = None,
 ) -> WritingOutcome:
     """The outcome, storing (where the ending stores) the last document a review was read for, with its findings."""
     return WritingOutcome(
@@ -315,6 +320,7 @@ def _outcome(
         faults=faults,
         reason=reason,
         sessions={ANALYST_SESSION: analyst.to_json(), **seen.editors},
+        failure=failure,
     )
 
 

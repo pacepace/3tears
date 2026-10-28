@@ -112,6 +112,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/cell_mean.py": {},
     "analysis/cells.py": {},
     "analysis/confusion.py": {},
+    "analysis/doc_analysis.py": {},
     "analysis/errors.py": {},
     "analysis/gen_prompt.py": {},
     "analysis/generator.py": {},

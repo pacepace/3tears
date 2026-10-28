@@ -192,7 +192,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
-  <br>`= 9`
+  <br>`= 10`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
@@ -428,7 +428,7 @@ The host contract — what a consuming product declares, and what the engine nev
 **Types**
 
 - **`CompletionRole`** · *host contract* · literal · The apparatus roles the engine asks a host for a completion client in.
-  <br>`'judge'` | `'simulator'` | `'analysis'` | `'variation'` | `'proposer'`
+  <br>`'judge'` | `'simulator'` | `'analysis'` | `'variation'` | `'proposer'` | `'analyst'`
 
 **Constants**
 
@@ -886,7 +886,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Classes**
 
-- **`AnalysisGeneration`** · dataclass · How this host generates an analysis as a background job.
+- **`AnalysisGeneration`** · dataclass · How this host generates an analysis as a background job: the report writer, on the host's model and budget.
 - **`CampaignDefinition`** · model · What creating a campaign names: what it is called, its subject and behavior, its question, arms, aspects and floors, and the campaigns whose aspects it adopts.
 - **`CampaignLine`** · model · One campaign, as a listing shows it.
 - **`CampaignListing`** · model · A scope's campaigns, newest first.
@@ -915,7 +915,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Constants**
 
-- **`ANALYSIS_PREPARATION_BUDGET_S`** · *host contract* · constant (float) · The default wall-clock ceiling on a generation job's preparation, used when a host supplies none (`AnalysisGeneration.preparation_budget_s`, read on every call): assembling the bundle, the prompt, the client, the default-writer check and the first call's price — in seconds.
+- **`ANALYSIS_PREPARATION_BUDGET_S`** · *host contract* · constant (float) · The default wall-clock ceiling on a generation job's preparation, used when a host supplies none (`AnalysisGeneration.preparation_budget_s`, read on every call): building the `analyst` client, holding it to the host's allowed writers and asking whether its turns can be priced — in seconds.
   <br>`= 900.0`
 - **`REPORTER_UNHONOURED_LAUNCH_ARGUMENTS`** · constant (frozenset) · The launch arguments a reporter arm cannot honour, for its `LaunchableKind`: it drives no simulated user, calls no tool a cassette could record, and generates no case — each is frozen from a campaign.
 
@@ -1576,8 +1576,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `campaign_runs_add` | `write` | `campaign_id`, `run_ids`, `aspect?` | Put runs in a campaign's aspect — runs launched after it was created, or measured on their own first. |
 | `campaign_runs_remove` | `write` | `campaign_id`, `run_ids`, `aspect?` | Take runs out of a campaign; the runs and their results stay, in any other campaign too. |
 | `campaign_record` | `write` | `campaign_id`, `arm`, `call_reason?`, `floors_overridden?`, `bars_overridden?`, `analysis_id?` | Record a person's call on a campaign: the arm decided, why, and each warning it overrides. |
-| `analysis_generate` | `spend`, job | `campaign_id`, `model?` | Generate a campaign's analysis with a paid model call, as a job to poll. |
-| `analysis_estimate` | `read` | `campaign_id`, `model?` | Price a campaign's analysis generation against the host's out-of-run cap, without spending. |
+| `analysis_generate` | `spend`, job | `campaign_id`, `model?` | Write a campaign's report with the analyst and the report editor (paid model turns), as a job to poll. |
+| `analysis_estimate` | `read` | `campaign_id`, `model?` | State the report budget a campaign's analysis generation would be held to, without spending. |
 | `judge_second` | `spend`, job | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Ask a second judge to score a seeded share of a finished run's judged results, as a job; read agreement. |
 | `judge_second_estimate` | `read` | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Price a second judge's pass over a run against the host's out-of-run cap, without spending. |
 | `judge_drift_check` | `spend`, job | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?` | Re-score every judged result of a run under a changed judge, as a job; read how far each moved. |

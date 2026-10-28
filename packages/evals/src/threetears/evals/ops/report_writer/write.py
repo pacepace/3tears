@@ -132,6 +132,7 @@ async def report_write(
     analysis_id: str | None = None,
     withhold: Collection[str] = (),
     limits: WriterLimits | None = None,
+    tally: Tally | None = None,
 ) -> ReportWritten:
     """Write a report over one frozen snapshot, and store what its ending stores (the module docstring).
 
@@ -159,6 +160,9 @@ async def report_write(
     :ptype withhold: Collection[str]
     :param limits: What the loop is held to; plan §4.3's defaults when ``None``.
     :ptype limits: WriterLimits | None
+    :param tally: The tally every turn is counted in, when the caller keeps it (a job that must say what a run it
+        stopped had spent); a fresh one when ``None``.
+    :ptype tally: Tally | None
     :return: How it ended, the stored document if any, and the generation record.
     :rtype: ReportWritten
     :raises ValueError: Not exactly one of the sources named; under a dollar budget, a model whose turns cannot be
@@ -195,7 +199,7 @@ async def report_write(
     )
     skill = load_skill()
     analyst_skill, editor_skill = skill.analyst(withhold=withhold), skill.editor()
-    tally = Tally()
+    tally = tally if tally is not None else Tally()
     outcome = await write_rounds(
         model=model,
         snapshot=snapshot_id,

@@ -6,6 +6,36 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: `analysis_generate` writes the report with the analyst and the report editor, on the host's model and budget
+
+**Changed:** a generation no longer runs the report planner. Its job freezes the campaign's evidence and runs the
+report writer (`write_report`) on the client the host returns for the new `analyst` completion role, which both the
+analyst and the report editor use. Every turn is admitted against the host's report budget
+(`AnalysisGeneration.report_budget`, a `ReportBudget` read from host config as each generation starts), the only
+admission on the report: no caller can raise it, and the out-of-run cap is not read. The loop is held to
+`AnalysisGeneration.limits` (`WriterLimits()` by default), passed through unchanged, and the job is bounded by
+`budget_s`, which a host derives from the same limits with `Ceilings().writer_ceiling_s(limits, request_s=...)` plus
+its headroom. A stored report is linked by an analysis whose `basis` is `doc` and whose `report_doc_id` names the
+document; its recommended variant is set when the document recommends exactly one arm, and each claim marked durable
+becomes an insight that later campaigns read as a prior. A report that stores nothing ends the job failed or refused
+with its ending and reason, and the attempt keeps the turns' count and cost, a turn in flight when the writing stopped
+counted as sent and unpriced. The report's spend is ledgered once under `analysis`: one row stating every turn sent,
+its priced share and its unpriced turns apart, and that the report budget admitted them, its total unpriced when any
+turn was, never $0 (new optional `OutOfRunSpend` fields, core v15.10). Provenance is the analyst skill's digest, not the
+planner's prompt id. Until the report view lands, `report_read` of a `doc` analysis serves the code-only page over
+its frozen evidence, its first screen saying the report is stored as report document `<id>`. The planner stays for the reporter kind.
+
+**Hosts must change** (`packages/evals/MIGRATIONS.toml` has the port): `AnalysisGeneration` drops `prompt_id`,
+`resolve_prompt` and `max_output_tokens` and takes `report_budget`, `limits`, `budget_s` and `preparation_budget_s`;
+a host factory adds an `analyst` row, and a client wrapper forwards `turn_session` and `turn_pricing_refusal` (and
+wraps the session client `turn_session` returns). A client that is not a turn model, or a host with no report budget,
+is refused before anything is frozen or sent, saying what to set. `threetears.evals.ops` exports, provisional,
+`ReportBudget`, `WriterLimits` and the limits it holds (`AnalystLimits`, `EditorLimits`, `SessionLimits`) for a host
+building its own, and `ReportWriter`, the opaque type of `analysis_generate`'s `writer` (the action hands its job one;
+a host calling the operation directly passes `actions.report_writing.campaign_report_writer(caller)`). `analysis_estimate` states the budget and the most
+turns the writer can send, makes no call, and says it does not check the campaign's evidence, which the job checks
+when it freezes it. The jobs conformance kit counts a turn model's turns as requests.
+
 ### evals: the pricing port: the host prices a call, the engine bounds it; a report budget in tokens and turns
 
 **Why.** The engine cannot know what a host pays, so the host owns prices and the engine owns the arithmetic (owner,

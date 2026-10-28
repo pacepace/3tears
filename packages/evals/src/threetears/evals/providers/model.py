@@ -1371,6 +1371,14 @@ class _Lease:
     async def refresh_prices(self) -> PriceRefresh:
         return await self._model.refresh_prices()
 
+    async def turn_pricing_refusal(self) -> str | None:
+        """The model's own answer (:meth:`Model.turn_pricing_refusal`): the ``analyst`` role writes a report in turns."""
+        return await self._model.turn_pricing_refusal()
+
+    def turn_session(self, name: str, *, snapshot: str) -> ToolTurnClient:
+        """The model's own session client (:meth:`Model.turn_session`), for the ``analyst`` role's report writer."""
+        return self._model.turn_session(name, snapshot=snapshot)
+
     async def aclose(self) -> None:
         """Release nothing: the factory closes its models in :meth:`Clients.aclose`."""
 

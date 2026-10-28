@@ -74,13 +74,13 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
 from threetears.evals.kernel.report_plan import PlannedReport, ReportPlan
-from threetears.evals.ops import ReporterCaseFreeze, analysis_generate, report_read, reporter_case_freeze
+from threetears.evals.ops import ReporterCaseFreeze, report_read, reporter_case_freeze
 from threetears.evals.schema.models import EvalResult, EvalTestCase, RubricScore
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_aspect_design
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, toyhost_batch, toyhost_measurements
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture, settled
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture, planned_generation
 from packages.evals.tests.report_plan_support import r5_input, r5_plan
 from packages.evals.tests.scripted_table import FakeCellSink
 from packages.evals.tests.report_support import stored_memo_analysis, toy_campaign_host
@@ -254,10 +254,7 @@ class TestTheCaseShape:
 
 
 async def _planned_analysis_id(fixture: OpsFixture) -> str:
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
-    analysis_id = (await settled(fixture.host, job.job_id)).analysis_id
-    assert analysis_id is not None
-    return analysis_id
+    return (await planned_generation(fixture))[0].id
 
 
 def _stored_case(fixture: OpsFixture, test_case_id: str) -> ReporterCase:
