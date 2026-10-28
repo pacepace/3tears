@@ -1671,7 +1671,9 @@ class EvalStorage:
         if since is not None:
             gaps = [gap for gap in gaps if datetime.fromisoformat(gap.created_at) >= since]
         newest = sorted(gaps, key=lambda gap: (datetime.fromisoformat(gap.created_at), gap.id), reverse=True)
-        return sorted(newest[:limit], key=lambda gap: (datetime.fromisoformat(gap.created_at), gap.id)), len(newest) > limit
+        return sorted(newest[:limit], key=lambda gap: (datetime.fromisoformat(gap.created_at), gap.id)), len(
+            newest
+        ) > limit
 
     def save_analysis_attempt(self, attempt: EvalAnalysisAttempt, *, if_match: str | None = None) -> None:
         """Persist one generation attempt's record in the scope it names; conditionally when ``if_match`` is given.

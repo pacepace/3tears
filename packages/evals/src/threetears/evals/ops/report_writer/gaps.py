@@ -302,7 +302,9 @@ def _low_scores(reviews: Sequence[Review], provenance: _Provenance) -> Iterator[
             if item.score >= 2:
                 continue
             yield EvalAnalystGap(
-                id=analyst_gap_id(provenance.snapshot_id, kind, session, provenance.transcripts.get(session, ""), str(item.n)),
+                id=analyst_gap_id(
+                    provenance.snapshot_id, kind, session, provenance.transcripts.get(session, ""), str(item.n)
+                ),
                 kind=kind,
                 need=_NOTICE_NEEDS[kind].format(n=item.n, name=item.name),
                 why=item.reason.strip() or _NO_REASON,

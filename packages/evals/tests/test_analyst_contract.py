@@ -753,7 +753,8 @@ def test_the_analyst_tool_carries_every_analyst_action_and_read_only_it_carries_
     assert _analyst_tool().hints.idempotent, "the freeze, its one write, names the snapshot it stored on a repeat"
     (reading,) = analyst_tools(writes=False)
     read_only = eval_catalogue().mount(reading)
-    assert read_only.hints.read_only and "report_snapshot_freeze" not in {a.name for a in read_only.actions}
+    assert "report_snapshot_freeze" not in {a.name for a in read_only.actions}
+    assert not read_only.hints.read_only, "its gap note appends a bounded, idempotent feedback record"
     assert read_only.hints.idempotent
     assert {action.permission for action in analyst_actions()} <= {"read", "write"}
     assert [action.name for action in analyst_actions() if action.permission == "write"] == ["report_snapshot_freeze"]
@@ -782,7 +783,7 @@ def test_the_editors_cut_is_the_analyst_tool_read_off_the_workflows_with_no_bloc
         "Investigate: analyses",
         "Investigate: gaps",
     }
-    assert editor.hints.read_only and editor.hints.idempotent
+    assert not editor.hints.read_only and editor.hints.idempotent, "its gap note appends a bounded, idempotent record"
     # One meaning per parameter: every parameter the editor's cut carries reads exactly as the analyst's tool says it.
     editor_params, analyst_params = editor.input_schema()["properties"], analyst.input_schema()["properties"]
     assert all(editor_params[name] == analyst_params[name] for name in editor_params if name != "action")

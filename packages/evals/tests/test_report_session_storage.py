@@ -47,8 +47,8 @@ from packages.evals.tests.report_writer_support import (
     thinking,
     written,
 )
-from threetears.evals.actions import MountedTool, analyst_tools, eval_catalogue
-from threetears.evals.actions.catalogue import Caller, catalogue_primer
+from threetears.evals.actions import MountedTool, analyst_actions, analyst_tools
+from threetears.evals.actions.catalogue import ActionCatalogue, Caller, catalogue_primer
 from threetears.evals.actions.report_writing import ReportNotStored
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.report_doc_store import doc_verdicts, generation_record, store_report_doc
@@ -120,7 +120,9 @@ class HostTool:
 
 def mounted(host: OpsHost, role: str) -> HostTool:
     (spec,) = analyst_tools(writes=False, role="editor" if role == "editor" else "analyst")
-    return HostTool(eval_catalogue().mount(spec), host, CALLER)
+    # The report writer's own actions: its gap note stores nothing (the write stores each gap at its end), so every
+    # result is a read of the snapshot, as write_report mounts it.
+    return HostTool(ActionCatalogue(analyst_actions(gaps_kept_by="write")).mount(spec), host, CALLER)
 
 
 def analyst_script(*more: Any) -> list[Any]:
