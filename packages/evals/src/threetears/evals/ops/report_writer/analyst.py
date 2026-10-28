@@ -359,7 +359,9 @@ class AnalystSession:
             return None, found
         verdicts = tuple(
             SubmissionFault(
-                "validity" if verdict.invariant == 0 else "invariant", verdict.path, f"{verdict.fault}; {verdict.remedy}"
+                "validity" if verdict.invariant == 0 else "invariant",
+                verdict.path,
+                f"{verdict.fault}; {verdict.remedy}",
             )
             for verdict in self._check(found)
         )

@@ -327,7 +327,11 @@ def test_a_caveat_on_a_contrast_a_claim_reads_that_nothing_carries_is_a_fact() -
     assert [(fact.path, fact.figures) for fact in facts] == [
         (
             "claims[0].caveats",
-            ["arm:1017", f"{_ON_1017}.production_replicating_cost.delta", f"{_ON_1017}.production_replicating_cost.interval"],
+            [
+                "arm:1017",
+                f"{_ON_1017}.production_replicating_cost.delta",
+                f"{_ON_1017}.production_replicating_cost.interval",
+            ],
         ),
         (
             "claims[3].caveats",

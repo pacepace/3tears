@@ -385,9 +385,7 @@ def test_a_label_two_caveats_share_is_printed_once_naming_what_tells_them_apart_
     doc = _doc(name)
     runs = doc.claims[1].caveats
     label = CAVEAT_LABELS["short_run"]
-    line = CAVEATS_TEMPLATE.format(
-        labels=CAVEAT_REPEATED_ON.format(label=label, count="2", arms="qwen3.8-flash (A)")
-    )
+    line = CAVEATS_TEMPLATE.format(labels=CAVEAT_REPEATED_ON.format(label=label, count="2", arms="qwen3.8-flash (A)"))
     page = build(doc, _input(name), strict=True)
     written, markdown, text = html.unescape(doc_page_html(page)), doc_page_markdown(page), doc_page_text(page)
 
