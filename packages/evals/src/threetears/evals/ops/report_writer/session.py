@@ -51,6 +51,7 @@ from typing import Any, Final, Literal, Protocol
 
 from threetears.evals.analysis.analyst.skill import SkillText
 from threetears.evals.kernel.capped_completion import refresh_prices
+from threetears.evals.kernel.numbers import group_thousands
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally, TurnCost, WriterRole
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.turns import (
@@ -349,7 +350,7 @@ class ToolSession:
         if len(text) <= cap:
             return text
         return (
-            f"{text[:cap]}\n[cut at {cap:,} of {len(text):,} characters: narrow the call (a filter, a smaller "
+            f"{text[:cap]}\n[cut at {group_thousands(str(cap))} of {group_thousands(str(len(text)))} characters: narrow the call (a filter, a smaller "
             "limit, the next page) to read the rest]"
         )
 

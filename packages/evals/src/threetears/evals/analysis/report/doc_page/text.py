@@ -161,7 +161,7 @@ def _above(page: DocPage, *, editor: bool) -> Iterator[list[str]]:
     yield [
         f"{CONFIDENCE_LABEL}: {confidence.words}.",
         *(
-            f"- {CHECKED_MARK + ' ' if line.checked else ''}{line.label}. {one_line(line.text)}"
+            f"- {CHECKED_MARK + ' ' if line.checked else ''}{one_line(line.label)}. {one_line(line.text)}"
             for line in confidence.caveats
         ),
     ]

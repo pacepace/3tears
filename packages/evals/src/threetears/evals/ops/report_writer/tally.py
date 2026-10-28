@@ -29,6 +29,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from threetears.evals.kernel.numbers import spell_dollars
 from threetears.evals.schema.turns import TurnReply
 
 __all__ = ["ReportBudget", "Tally", "TurnCost", "WriterRole"]
@@ -327,13 +328,13 @@ class ReportBudget:
         """
         if ceiling is None:
             return (
-                f"the client cannot bound the next turn's cost, so the report's ${self.usd:.2f} budget cannot admit it "
+                f"the client cannot bound the next turn's cost, so the report's {spell_dollars(self.usd)} budget cannot admit it "
                 "(load the price catalogue, or use a model it prices)"
             )
         if self._spent + ceiling > self.usd:
             return (
-                f"the next turn can cost up to ${ceiling:.4f}, and ${self._spent:.4f} of the report's "
-                f"${self.usd:.2f} budget is spent"
+                f"the next turn can cost up to {spell_dollars(ceiling)}, and {spell_dollars(self._spent)} of the report's "
+                f"{spell_dollars(self.usd)} budget is spent"
             )
         return None
 
