@@ -1,5 +1,5 @@
 """The stored report document (``eval_report_doc``): it round-trips, lists newest first, is never written over, is
-swept with the derived documents, and is refused on read after a regenerable bump."""
+swept with the derived documents, and is refused on read after a bump of the report version."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from packages.evals.tests.report_doc_support import converted_doc, snapshot_of
 from threetears.evals.kernel.errors import ConflictError
 from threetears.evals.kernel.report_doc import EvalReportDoc, ReportDoc
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS
-from threetears.evals.schema.versioning import REGENERABLE_SCHEMA_VERSION
+from threetears.evals.schema.versioning import REPORT_DOC_SCHEMA_VERSION
 
 _SCOPE = "uni-1"
 _KAIRO = "prototype3/kairo"
@@ -111,10 +111,10 @@ def test_drop_derived_sweeps_report_documents_with_their_snapshots_and_keeps_the
     assert storage.load_campaign(campaign.id, _SCOPE) is not None
 
 
-def test_a_report_document_written_before_a_regenerable_bump_is_refused_on_read() -> None:
-    """A document under another regenerable version is refused, never read as this build's, and is still swept."""
+def test_a_report_document_written_before_a_report_version_bump_is_refused_on_read() -> None:
+    """A document under another report version is refused, never read as this build's, and is still swept."""
     storage, store = memory_storage()
-    old = _stored().to_dict() | {"schema_version": REGENERABLE_SCHEMA_VERSION - 1}
+    old = _stored().to_dict() | {"schema_version": REPORT_DOC_SCHEMA_VERSION - 1}
     store.upsert(old)
 
     with pytest.raises(ValidationError, match="schema_version"):
@@ -166,14 +166,14 @@ def test_a_report_stored_with_findings_may_carry_none_since_a_review_fails_on_it
     assert (report.ending, report.findings) == ("stored_with_findings", [])
 
 
-def test_a_document_from_an_older_regenerable_version_is_refused_by_its_version_before_its_body() -> None:
+def test_a_document_from_an_older_report_version_is_refused_by_its_version_before_its_body() -> None:
     """A stale record is refused on read for its version alone, with the remedy to regenerate, whatever its body is.
 
     Its body is in a shape this build no longer reads too, which the refusal does not report: a stale document is one to
     make again, never a fault to fix field by field.
     """
     storage, store = memory_storage()
-    old = _stored().to_dict() | {"schema_version": REGENERABLE_SCHEMA_VERSION - 1}
+    old = _stored().to_dict() | {"schema_version": REPORT_DOC_SCHEMA_VERSION - 1}
     old["doc"] = {"schema": "report-doc/0", "sections": []}
     old["ending"] = "an ending no build wrote"
     store.upsert(old)
@@ -184,7 +184,7 @@ def test_a_document_from_an_older_regenerable_version_is_refused_by_its_version_
     errors = refused.value.errors()
     assert len(errors) == 1
     message = str(errors[0]["msg"])
-    assert f"written under eval schema v{REGENERABLE_SCHEMA_VERSION - 1}" in message
+    assert f"written under report document schema v{REPORT_DOC_SCHEMA_VERSION - 1}" in message
     assert "EvalStorage.drop_derived(scopes), then writes each report again from a fresh snapshot" in message
 
 

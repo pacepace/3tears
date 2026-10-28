@@ -54,7 +54,7 @@ from threetears.evals.kernel.campaign import (
     EvalSweep,
     generation_slot_id,
 )
-from threetears.evals.kernel.report_doc import EvalReportDoc
+from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession, report_session_id
 from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import (
@@ -1530,21 +1530,41 @@ class EvalStorage:
         """
         return self._store.delete(snapshot_id, scope_id)
 
-    def save_report_doc(self, report: EvalReportDoc) -> None:
-        """Persist a report document in the scope it names, only where none is stored under its id.
+    def save_report_doc(self, report: EvalReportDoc, *, sessions: Sequence[EvalReportSession] = ()) -> None:
+        """Persist a report document and the sessions that wrote it, in the scope it names, where none is stored yet.
 
-        A report document is immutable: writing a report again stores a new one beside it, never over it.
+        A report document is immutable: writing a report again stores a new one beside it, never over it. Its sessions
+        are written first, each once, under the id its report and name give, and the document last, so a stored
+        document's ``generation`` never names a session that was not written. A write that fails part way leaves the
+        sessions written before it, which no stored document names and :meth:`drop_derived` sweeps, and no document.
 
-        :raises ConflictError: A report document is already stored under its id.
+        :param report: The report document.
+        :ptype report: EvalReportDoc
+        :param sessions: Its sessions, each naming this report and scope.
+        :ptype sessions: Sequence[EvalReportSession]
+        :raises ValueError: A session names another report or another scope; nothing is written.
+        :raises ConflictError: A report document, or one of its sessions, is already stored under its id.
         :raises StorageError: Any other write failure.
         """
+        strays = [
+            session.id
+            for session in sessions
+            if (session.report_doc_id, session.scope_id) != (report.id, report.scope_id)
+        ]
+        if strays:
+            raise ValueError(
+                f"report {report.id} in scope {report.scope_id} is stored with its own sessions only, not {strays}"
+            )
+        for session in sessions:
+            self._save(session.to_dict(), create_only=True)
         self._save(report.to_dict(), create_only=True)
 
     def load_report_doc(self, report_id: str, scope_id: str) -> EvalReportDoc | None:
         """Load a report document by id within a scope, or ``None`` when none resolves.
 
-        :raises ValidationError: The stored document does not read under this build's model (a regenerable bump, or a
-            ``report-doc/1`` shape this build no longer accepts).
+        :raises ValidationError: The stored document does not read under this build's model (a bump of
+            :data:`~threetears.evals.schema.versioning.REPORT_DOC_SCHEMA_VERSION`, or a ``report-doc/1`` shape this build
+            no longer accepts).
         """
         return self._load(EvalReportDoc, report_id, scope_id)
 
@@ -1554,7 +1574,7 @@ class EvalStorage:
         """Every report document in a scope, newest first, written from one snapshot or for one campaign when named.
 
         Newest is by ``created_at``, then the greatest id, so two written at one instant list in one order on every
-        store.
+        store. It reads no session: each is its own document, which :meth:`load_report_sessions` reads by its report.
 
         :param scope_id: The scope to read.
         :ptype scope_id: str
@@ -1572,12 +1592,41 @@ class EvalStorage:
         items = self._store.by_doc_type("eval_report_doc", scope_id, **filters)
         return self._hydrate_all(EvalReportDoc, sorted(items, key=_analysis_order, reverse=True))
 
-    def delete_report_doc(self, report_id: str, scope_id: str) -> bool:
-        """Delete a report document by id within a scope, raw, reporting whether there was one.
+    def load_report_sessions(
+        self, report_doc_id: str, scope_id: str, *, name: str | None = None
+    ) -> dict[str, EvalReportSession]:
+        """A stored report's sessions, by name: every one, or the one named.
 
-        Raw, so a document no model of this build reads can be deleted.
+        :param report_doc_id: The report document's id.
+        :ptype report_doc_id: str
+        :param scope_id: The scope it is stored in.
+        :ptype scope_id: str
+        :param name: One session's name (``analyst``, ``editor-<round>``); ``None`` for every one.
+        :ptype name: str | None
+        :return: Each session found, by name, in name order; empty when none resolves.
+        :rtype: dict[str, EvalReportSession]
+        :raises ValidationError: A stored session does not read under this build's model (a report version bump).
         """
-        return self._store.delete(report_id, scope_id)
+        if name is not None:
+            session = self._load(EvalReportSession, report_session_id(report_doc_id, name), scope_id)
+            return {} if session is None else {session.name: session}
+        rows = self._store.by_doc_type("eval_report_session", scope_id, report_doc_id=report_doc_id)
+        sessions = self._hydrate_all(EvalReportSession, rows)
+        return {session.name: session for session in sorted(sessions, key=lambda session: session.name)}
+
+    def delete_report_doc(self, report_id: str, scope_id: str) -> bool:
+        """Delete a report document by id within a scope, and its sessions, raw, reporting whether the document was there.
+
+        Raw, so a document no model of this build reads can be deleted; its sessions are found by the report they name,
+        never through its generation record, and are deleted after it, so a failure part way leaves only sessions no
+        document names, which :meth:`drop_derived` sweeps. Sessions of a report that is no longer there go too.
+        """
+        deleted = self._store.delete(report_id, scope_id)
+        for row in self._store.by_doc_type(
+            "eval_report_session", scope_id, exclude=("session",), report_doc_id=report_id
+        ):
+            self._store.delete(str(row["id"]), scope_id)
+        return deleted
 
     def save_analysis_attempt(self, attempt: EvalAnalysisAttempt, *, if_match: str | None = None) -> None:
         """Persist one generation attempt's record in the scope it names; conditionally when ``if_match`` is given.
@@ -2997,10 +3046,11 @@ class EvalStorage:
         return deleted
 
     def drop_derived(self, scopes: Iterable[str]) -> DerivedDropped:
-        """Delete every derived document in the scopes named — analyses, insights, report plans, snapshots and documents,
-        judge profiles — and nothing else.
+        """Delete every derived document in the scopes named — analyses, insights, report plans, snapshots, report
+        documents and their sessions, judge profiles — and nothing else.
 
-        The operator step for a regenerable bump (:data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`):
+        The operator step for a regenerable bump (:data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`,
+        or :data:`~threetears.evals.schema.versioning.REPORT_DOC_SCHEMA_VERSION` for report documents and their sessions):
         a document written under the old version is refused on read, and assembling a campaign's evidence reads the
         subject's insight ledger, so one old insight refuses every generation, estimate and code-only report over the
         subject until it is gone. Every derived type regenerates from the kept core — an analysis by generating it

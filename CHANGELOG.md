@@ -6,6 +6,34 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a report's sessions are stored as their own documents, so listing reports loads none
+
+**Changed (stored shape):** the report writer stored every session it ran (the analyst's and each review round's)
+whole inside the report document's `generation`, so `list_report_docs` loaded every transcript; the Kairo record was
+253,272 bytes, 180 KB of them sessions. Each session is now its own derived, regenerable document,
+`eval_report_session` (`EvalReportSession`: the report it belongs to, its name, its transcript digest, its turns and
+its JSON exactly as the session wrote it, with W3's elided tool results still marked), stored under an id its report
+and name give (`report_session_id`). The report's `generation` record (format 2) names each session by
+`{digest, turns, ref}` and holds no message; the Kairo record is 38,120 bytes. `EvalStorage.save_report_doc` takes
+the report's `sessions` and writes them before the report, so a stored report never names a session that was not
+written (a write that fails part way leaves only sessions no report names, which `drop_derived` sweeps);
+`EvalStorage.load_report_sessions(report_doc_id, scope_id, name=)` reads them back, all or one by name;
+`delete_report_doc` and `drop_derived` remove them with their report; `list_report_docs` reads none. The store gate
+`store_report_doc` takes `report_doc_id` (minted by `new_report_doc_id` before anything is written) and the
+`sessions`, and `generation_record` takes `report_doc_id` (`None` for a record held only in memory). A stored
+session (format 3) keeps each message as its JSON text, so a store that hands object keys back in another order (a
+Postgres `jsonb` column, shortest key first) cannot change what a resume sends again: a session reloaded from any
+store and resumed sends the request an uninterrupted one sends, byte for byte, tool-call arguments in the order they
+were sent and every thinking block, signature included, as the reply carried it. A paid run that stores nothing, or
+whose store refuses, still keeps every session in memory: `ReportWritten.generation` holds each inline (`session`,
+`ref` None), as before. `ReportNotStored.report_doc_id` (new) names the id the report was minted under, so a host
+removes any session written before the store failed with `delete_report_doc(report_doc_id, scope_id)` alone. Report documents and their sessions get their own version,
+`REPORT_DOC_SCHEMA_VERSION` (14); a report document written before (version 13) is refused on read by its version,
+with the step to clear it (`EvalStorage.drop_derived`) and write the report again. The shared
+`REGENERABLE_SCHEMA_VERSION` stays at 13, so analyses, insights, judge profiles, plans and snapshots read as before.
+A host stores no report documents yet, so nothing stored is dropped. Discodon needs no code: the new type routes by
+its facts in `DOC_TYPE_FACTS`; only its test that lists every eval doc type gains `eval_report_session`.
+
 ### evals: an aggregate refuses a scope past the read budget instead of reading it whole
 
 **Changed:** the aggregating lenses read their scope's results into Python, and an aggregate cannot be paged as `scope_export` is since v0.80.0

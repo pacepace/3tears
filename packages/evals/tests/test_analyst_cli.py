@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +43,7 @@ from packages.evals.tests.report_writer_support import (
 from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, catalogue_primer, eval_catalogue
 from threetears.evals.actions.report_writing import ReportNotStored
 from threetears.evals.kernel import StorageError
-from threetears.evals.kernel.report_doc import EvalReportDoc
+from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession
 from threetears.evals.schema.turns import ToolTurnClient
 from threetears.evals.testing import RecordedTurns
 
@@ -239,7 +240,7 @@ def test_write_whose_store_is_refused_leaves_the_recording_and_its_record_then_r
 ) -> None:
     host = seeded_host()
 
-    def refuse(report: EvalReportDoc) -> None:
+    def refuse(report: EvalReportDoc, *, sessions: Sequence[EvalReportSession] = ()) -> None:
         raise StorageError("the document is larger than the store takes")
 
     monkeypatch.setattr(host.eval_host.storage, "save_report_doc", refuse)
