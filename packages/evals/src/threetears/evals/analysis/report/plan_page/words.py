@@ -117,7 +117,6 @@ __all__ = [
     "PRICE_STEP_NOTES",
     "PRICE_STEP_TEMPLATE",
     "TABLE_HEADERS",
-    "TABLE_PER_THOUSAND",
     "COST_HEADER",
     "INTERVAL_HEADER",
     "LOG_BARS_NOTE",
@@ -672,9 +671,6 @@ PRICE_OPEN_NOTE = (
 #: An interval column's head in a plain table: the chart's interval level, where it states one (``95% interval``).
 INTERVAL_HEADER = "{level} interval"
 
-#: What a plain table states a money figure per reply per, beside its measure's name: its count, as the input states
-#: it (``per 1,000 replies``).
-TABLE_PER_THOUSAND = "{name}, {per}"
 
 #: How a target-matrix cell's two levels read together, in a plain table.
 CELL_TEMPLATE = "{row} × {column}"

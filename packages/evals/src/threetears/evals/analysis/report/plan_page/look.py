@@ -90,7 +90,6 @@ __all__ = [
     "magnitude_domain",
     "page_look",
     "in_change_form",
-    "in_one_form",
     "quantity",
     "quantity_of",
     "series_token",
@@ -462,7 +461,7 @@ def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False) -
             counted=_UNIT_COUNTS[unit] * base,
             own=_UNIT_COUNTS[unit],
         )
-        return in_one_form(drawn, values) if values else drawn
+        return _in_one_form(drawn, values) if values else drawn
     if unit == "ms":
         return Quantity(1.0, f"{sign}ms", "ms", change=change)
     if unit == "s":
@@ -472,7 +471,7 @@ def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False) -
     return Quantity(1.0, f"{sign}num", unit, change=change)
 
 
-def in_one_form(drawn: Quantity, values: Iterable[float]) -> Quantity:
+def _in_one_form(drawn: Quantity, values: Iterable[float]) -> Quantity:
     """A money quantity stated by the one owner of money's scale (:func:`~threetears.evals.analysis.report.cost_unit.
     money_ruler`) over the amounts it draws: their one form for its notes and its ticks alike, and, where one is under a
     cent, every amount drawn a thousand times over, per a thousand times more of what it counts (its ``factor`` and
@@ -505,7 +504,7 @@ def in_one_form(drawn: Quantity, values: Iterable[float]) -> Quantity:
 
 def in_change_form(amounts: Quantity, changes: Iterable[float], widths: Iterable[float] = ()) -> Quantity:
     """How changes between some money amounts are drawn: on the amounts' own ruler (``amounts``, from
-    :func:`in_one_form` over the amounts compared), so a change chart scales as its source set does and never because
+    :func:`quantity` over the amounts compared), so a change chart scales as its source set does and never because
     an interval end sits near zero, in the changes' form (their own precision, capped by their widest interval:
     :meth:`~threetears.evals.kernel.numbers.MoneyForm.for_changes`). Any other quantity is the change quantity of its
     unit, as it is.
