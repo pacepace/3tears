@@ -322,6 +322,27 @@ def test_a_null_panel_field_inherits_the_chart_s_value_in_the_kit_as_in_the_mode
 # What the converted charts draw: a readable cost axis, and arms told apart
 # =============================================================================
 
+#: The number format cases every renderer reads, the kit's money formats among them.
+_NUMBER_CASES = Path(__file__).resolve().parent / "fixtures" / "number-format-cases.json"
+
+
+@pytest.mark.integration
+def test_the_kit_draws_each_kit_money_case_as_the_package_spells_it(tmp_path: Path) -> None:
+    """The kit's own formats (``namedFmt``), read in the browser, write each ``kit_money`` case as the package's
+    money form does (test_money_forms reads the same cases): ``usdpk:2`` draws a total of $0.008 as ``$8.00/1000``."""
+    reason = chromium_unavailable()
+    if reason is not None:
+        pytest.skip(f"headless Chromium cannot launch: {reason}")
+    cases = json.loads(_NUMBER_CASES.read_text(encoding="utf-8"))["kit_money"]["cases"]
+    passed = [{"state": "passed", "label": "passed", "count": 4}]
+    block = {"kind": "chart", "section": "memo", "finding": 0, "chart": "outcome_bar", "title": "Outcomes"}
+    page = tmp_path / "formats.html"
+    page.write_text(report_page([{**block, "bars": [{"arm": "a", "tag": "P", "short_name": "a", "segments": passed}]}]), encoding="utf-8")
+    drawn, errors = rendered(page, f"() => {json.dumps(cases)}.map(c => namedFmt(c.fmt)(c.value))")
+    assert errors == []
+    assert drawn == [case["expected"] for case in cases]
+
+
 #: The tick labels of the page's scatter's x axis: those under the plot, which carry the currency sign.
 _COST_TICKS = """() => [...document.querySelectorAll('div.chart[data-kind="scatter_frontier"] text.tick')]
   .map(t => t.textContent).filter(t => t.startsWith('$'))"""

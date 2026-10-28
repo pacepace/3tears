@@ -18,8 +18,11 @@ in one form, so successive rows never alternate between ``$0.008`` and ``$0.11``
 - the single-value helpers (``format_number``, ``spell_dollars``, ``dollars_text``) are byte-identical: the number
   format cases, and Discodon's two call shapes (``dollars_text(cost)``, ``format_number(cost, prefix="$")``);
 - every chart and table kind that draws a money set under a cent moves its ruler and states it, never stacks its own
-  unit's count beside the moved one, and reads its ticks and notes in one form; a total is never scaled; a change chart
-  scales by the amounts it compares.
+  unit's count beside the moved one, and reads its ticks and notes in one form; a total is never scaled, and a chart of
+  totals under a cent reads per 1,000 with its mark (``$8.00/1000``) on its ticks (the kit's ``usdpk``), its notes and
+  its values table alike, as a key and a table write it; a change chart scales by the amounts it compares;
+- the kit's money formats and the package's money form spell each kit money case alike (``kit_money`` in the number
+  format cases, which the kit's own reading in headless Chromium pins too).
 """
 
 from __future__ import annotations
@@ -38,7 +41,7 @@ from threetears.evals.analysis import ABSENT, UNPRICED, dollars_text, format_num
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell, money_columns
-from threetears.evals.analysis.report.charts import BarsChart, GateMatrixChart, LatticeChart
+from threetears.evals.analysis.report.charts import BarRow, BarsChart, GateMatrixChart, LatticeChart
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import even_precision
 from threetears.evals.analysis.report.figure_keys import Figure, format_figure, render, resolve
@@ -49,7 +52,7 @@ from threetears.evals.analysis.report.plan_page.model import PageChart
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report.plan_page.tables import arms_table
 from threetears.evals.kernel.report_plan import ChartQuery, PlanChartKind, PlannedChart
-from threetears.evals.analysis.report.cost_unit import MoneyRuler
+from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report_gates import criterion_ruler, gate_check
 from threetears.evals.analysis.report_input import Criterion, Pricing, ReportInput, Unanswered
 from threetears.evals.analysis.report_plan_facts import fact_arms
@@ -852,7 +855,7 @@ def _page_texts(page: PageChart) -> list[str]:
 
 
 #: A kit money format, its sign and its decimals.
-_MONEY_FMT = re.compile(r"\+?usd:(\d)")
+_MONEY_FMT = re.compile(r"\+?usd(?:pk)?:(\d)")
 
 #: The fields of a chart's data that hold the format of the numbers beside them, by the numbers' field names.
 _FORMATTED = {
@@ -1065,7 +1068,8 @@ def _reconciles(value: float, stored: list[float], scale: float) -> bool:
 @pytest.mark.parametrize("name", sorted(UNDER_A_CENT))
 def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(name: str) -> None:
     """Every chart and table kind that draws a set under a cent, scatter, gate scatter, both heatmaps and prices
-    included: it moves the ruler (no per-1,000 mark on a chart, whose ticks cannot write one), never states two counts
+    included: it moves the ruler (no per-1,000 mark beside a chart's count; only a chart of totals carries one), never
+    states two counts
     nor its own unit's count beside the moved one, states the drawn count, and draws each value at that count times
     the figure stored; its ticks, notes and tips read to one form's decimals; its words name no code key."""
     held, key, stale, moved = UNDER_A_CENT[name]
@@ -1088,7 +1092,10 @@ def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(
     for label, page in drawn:
         texts = _page_texts(page)
         joined = " | ".join(texts)
-        if isinstance(page.chart, ChartBlock):
+        totals = "test_cost_usd" in label
+        if isinstance(page.chart, ChartBlock) and not totals:
+            # A counted set moves its ruler, so the mark never sits beside its count; only a total, which counts
+            # nothing, reads per 1,000 with its mark (test_a_chart_of_totals_under_a_cent_reads_per_1000_with_its_mark).
             assert "/1000" not in joined, (label, joined[:400])
         spelled = [abs(_amount(found.group(0))) for text in texts for found in _AMOUNT.finditer(text)]
         if "/prices/" not in label and any(0 < amount < 0.01 for amount in spelled):
@@ -1112,7 +1119,6 @@ def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(
             ),
         ]
         assert not [text for text in words if re.search(r"\busd\b|\b\w+_usd\b", text, re.I)], (label, words)
-        totals = "test_cost_usd" in label
         under = any(0 < amount < 0.01 for amount in spelled) or moved in joined
         if under and not totals and (key in label or label.split("/")[2] == "all" or "reply_cost_usd" in label):
             # A chart states the count it moved its ruler to; a table either does, or writes each amount with the
@@ -1248,8 +1254,11 @@ def _amounts_reconcile(label: str, page: PageChart, owned: list[tuple[float, int
     return read
 
 
-def test_a_total_under_a_cent_is_never_scaled() -> None:
-    """A run's trials' cost counts nothing per anything: drawn as stored, never a thousand times over."""
+def test_a_chart_of_totals_under_a_cent_reads_per_1000_with_its_mark() -> None:
+    """A run's trials' cost counts nothing per anything: drawn as stored, never a thousand times over, so its ruler
+    cannot move. Its set is under a cent, so it reads per 1,000 with the mark as a key and a table do: its ticks in the
+    kit's ``usdpk`` to the form's decimals, its bars' notes and its values table in the same spelling, and no count
+    named, since the set states none."""
     held, *_ = UNDER_A_CENT["r5 under a cent per 1,000 replies"]
     spec, faults = complete_chart(_planned("bars", _query("scoreboard", ["test_cost_usd"])), held, "block")
     assert not faults, faults
@@ -1258,7 +1267,38 @@ def test_a_total_under_a_cent_is_never_scaled() -> None:
     rows = page.chart.data.rows or []
     stored = {arm: row.test_cost_usd for arm, row in held.scoreboard.items()}
     assert rows and all(row.value == pytest.approx(stored[row.id]) for row in rows)
+    form = money_form(stored.values())
+    assert form.per_thousand, "the control: the planted set is under a cent"
+    assert page.chart.data.fmt == f"usdpk:{form.decimals}"
+    _, table = page.chart.values_table()
+    assert [line[1] for line in table] == [form.spell(stored[row.id]) for row in rows]
+    assert all(text.endswith("/1000") for text in [*(row.note or "" for row in rows), *(line[1] for line in table)])
     assert not any("per 1,000" in note for note in page.notes)
+    assert not any("/1000" in note for note in page.notes)
+
+
+def test_a_counted_set_at_the_cap_never_carries_the_mark_and_a_total_carries_one_scale() -> None:
+    """The MONEY set ruling: a set still under a cent at 1,000,000 of what it counts reads at that count, never with
+    the mark beside it; a total reads per 1,000 with its mark and no count. Neither amount carries two scales."""
+    counted = money_ruler([0.0000000012, 0.0000000030], per=1, start=1000)
+    assert (counted.counted, counted.form.per_thousand) == (1_000_000, False)
+    assert "/1000" not in counted.spell(0.0000000012)
+    total = money_ruler([0.0004, 0.008], per=0)
+    assert (total.counted, total.form.per_thousand, total.words("replies")) == (0, True, "")
+    assert total.spell(0.008) == "$8.00/1000"
+
+
+def test_the_kit_money_cases_read_as_the_package_spells_them() -> None:
+    """Each ``kit_money`` case of the number format cases: the package writes in a chart's notes and values table
+    what the kit draws on its ticks (the same cases, read by the kit in headless Chromium)."""
+    cases = json.loads(_CASES.read_text(encoding="utf-8"))["kit_money"]["cases"]
+    assert {case["fmt"].lstrip("+").split(":")[0] for case in cases} >= {"usdpk", "usd"}
+    for case in cases:
+        name, _, digits = case["fmt"].lstrip("+").partition(":")
+        form = MoneyForm(per_thousand=name == "usdpk", decimals=int(digits))
+        assert form.spell(case["value"], signed=case["fmt"].startswith("+")) == case["expected"], case["why"]
+        drawn = BarsChart(rows=[BarRow(label="a", value=case["value"])], domain=(0, 1), fmt=case["fmt"])
+        assert drawn.table([])[1][0][1] == case["expected"], case["why"]
 
 
 def test_a_change_chart_scales_by_its_amounts_never_by_an_interval_end_near_zero() -> None:

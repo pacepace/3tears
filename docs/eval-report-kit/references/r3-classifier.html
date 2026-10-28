@@ -324,6 +324,9 @@ const K_FMTS={
   num:kShort, int:v=>Math.round(v).toLocaleString("en-US"), pct:(v,d)=>kShort(v,d)+"%", pts:(v,d)=>kShort(v,d)+" pts",
   usd:(v,d)=>d==null?fmt.usd(v):(v<0?"-":"")+"$"+Math.abs(v).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d}),
   usdk:v=>Math.abs(v)>=1000?"$"+(v/1000).toFixed(1)+"k":"$"+Math.round(v).toLocaleString("en-US"),
+  // dollars per 1,000 with the mark, a total under a cent drawn as stored: $0.008 reads $8.00/1000 (the package's
+  // MoneyForm per 1,000); an exact zero is $0, no measurement of a scale
+  usdpk:(v,d)=>v===0?"$0":K_FMTS.usd(v*1000,d==null?2:d)+"/1000",
   ms:(v,d)=>(d==null?String(Math.round(v)):v.toFixed(d))+" ms", s:(v,d)=>kShort(v,d)+" s",
   dur:v=>v>=1000?kShort(v/1000)+"s":kShort(v)+"ms", x:(v,d)=>v.toFixed(d==null?1:d)+"×", k:(v,d)=>(v/1000).toFixed(d==null?1:d)+"k"
 };

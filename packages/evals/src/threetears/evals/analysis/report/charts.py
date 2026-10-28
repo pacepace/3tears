@@ -48,8 +48,11 @@ Token = Annotated[str, Field(pattern=r"^--[a-z][a-z0-9-]*$", description='A kit 
 Fmt = Annotated[
     str,
     Field(
-        pattern=r"^\+?(num|int|pct|pts|usd|usdk|ms|s|dur|x|k)(:\d)?$",
-        description="A kit format: num, int, pct, pts, usd, usdk, ms, s, dur, x or k, as `name` or `name:digits`.",
+        pattern=r"^\+?(num|int|pct|pts|usd|usdk|usdpk|ms|s|dur|x|k)(:\d)?$",
+        description=(
+            "A kit format: num, int, pct, pts, usd, usdk, usdpk (dollars per 1,000, the mark written: `$8.00/1000`), "
+            "ms, s, dur, x or k, as `name` or `name:digits`."
+        ),
     ),
 ]
 
@@ -81,11 +84,15 @@ _FORMAT_UNITS: dict[str, str] = {
     "pts": POINTS,
     "usd": MONEY,
     "usdk": MONEY,
+    "usdpk": MONEY,
     "ms": "ms",
     "dur": "ms",
     "s": "s",
     "x": "×",
 }
+
+#: The kit's format for money per 1,000 with its mark (``$8.00/1000``): the one a chart of totals under a cent reads in.
+_PER_THOUSAND_FORMAT = "usdpk"
 
 #: A format spec's parts: the sign flag, the name and the digits. The digits are the axis's, not the table's, but for
 #: money's: a chart chooses money's one form from every amount it draws (#993), and its table writes it too.
@@ -118,6 +125,10 @@ def _formatted(spec: str, value: float, read_at: str = "") -> str:
     if match is None or match[2] not in _FORMAT_UNITS:
         raise ValueError(f"fmt {spec!r} is not one of {', '.join(_FORMAT_UNITS)}")
     unit = _FORMAT_UNITS[match[2]]
+    if match[2] == _PER_THOUSAND_FORMAT:
+        # Dollars per 1,000, the mark written, as the kit's ticks write them (a set of totals under a cent, #993).
+        form = MoneyForm(per_thousand=True, decimals=int(match[3]) if match[3] is not None else 2)
+        return form.spell(value, signed=bool(match[1]))
     if unit == MONEY and match[3] is not None:
         return MoneyForm(decimals=int(match[3])).spell(value, signed=bool(match[1]))
     if not unit and read_at:
