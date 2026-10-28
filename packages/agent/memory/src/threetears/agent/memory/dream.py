@@ -338,7 +338,7 @@ class DreamService:
         """
         if not self._config.consolidation_enabled:
             # convert at border: log extra_data fields
-            log.info(
+            log.debug(
                 "Dream consolidation skipped: MemoryConfig.consolidation_enabled is off",
                 extra={"extra_data": {"agent_id": str(agent_id)}},
             )

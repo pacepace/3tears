@@ -6,6 +6,7 @@
 - :func:`exact_decimal_type`, :func:`stored_decimal`, :class:`UnsupportedL1ColumnError` and
   :class:`NonFiniteNumericError`, how an exact ``NUMERIC`` column keeps its ``Decimal``, or is refused.
 - :func:`stored_time`, the ISO text a ``TIME`` column keeps a ``datetime.time`` as.
+- :func:`stored_date`, the ISO text a ``DATE`` column keeps a ``datetime.date`` as.
 
 Nothing cached in L1 ages: a row stays until a write that reaches it is heard
 (the collection broadcasts and their tables' write generations).
@@ -14,7 +15,7 @@ Nothing cached in L1 ages: a row stays until a write that reaches it is heard
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import time
+from datetime import date, datetime, time
 from decimal import ROUND_HALF_UP, Context, Decimal
 from typing import Any, Protocol, runtime_checkable
 
@@ -31,6 +32,7 @@ __all__ = [
     "UnsupportedL1ColumnError",
     "exact_decimal_type",
     "stored_decimal",
+    "stored_date",
     "stored_time",
     # released here (v0.66.0) before it moved to threetears.core.sql_fragments; still importable
     "quote_identifier",
@@ -178,6 +180,21 @@ def stored_decimal(value: Any, scale: int) -> Decimal:
     if not number.is_finite():
         raise NonFiniteNumericError(f"{number} has no value at scale {scale}; an L1 holds only finite NUMERIC values")
     return number.quantize(Decimal(1).scaleb(-scale), context=_NUMERIC_CONTEXT)
+
+
+def stored_date(value: date) -> str:
+    """``value`` as the ISO text (``YYYY-MM-DD``) a ``DATE`` column keeps, read back by
+    :meth:`datetime.date.fromisoformat` as the ``date`` L3 answers.
+
+    A ``datetime`` keeps its date only, as asyncpg writes a ``datetime`` to a Postgres ``date``.
+
+    :param value: the date written
+    :ptype value: datetime.date
+    :return: the ISO text stored
+    :rtype: str
+    """
+    day = value.date() if isinstance(value, datetime) else value
+    return day.isoformat()
 
 
 def stored_time(value: time, *, zoned: bool) -> str:

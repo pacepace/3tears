@@ -32,6 +32,8 @@ the parity tests silently; these guard against that.
 
 from __future__ import annotations
 
+from typing import Any
+
 import subprocess
 import sys
 
@@ -844,6 +846,46 @@ def test_index_def_rejects_desc_column_not_covered() -> None:
     """a ``desc`` name the index does not cover is refused at declaration."""
     with pytest.raises(ValueError, match="desc names"):
         Index("i", "a", desc="b")
+
+
+def test_index_def_rejects_desc_on_a_column_with_an_operator_class() -> None:
+    """SQLAlchemy drops a descending column's operator class, so the pair is refused at declaration."""
+    with pytest.raises(ValueError, match="both an operator class and desc"):
+        Index("i", "a", "b", desc="b", ops={"b": "text_pattern_ops"})
+    assert Index("i", "a", "b", desc="b", ops={"a": "text_pattern_ops"}).desc == ("b",)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"desc": "date_created"},
+        {"where": "agent_id IS NOT NULL"},
+        {"using": "brin"},
+        {"ops": {"agent_id": "uuid_ops"}},
+        {"pg_with": {"fillfactor": "70"}},
+    ],
+    ids=["desc", "where", "using", "ops", "pg_with"],
+)
+def test_table_def_for_refuses_index_options_it_cannot_carry(options: dict[str, Any]) -> None:
+    """the coordination DDL definition has columns and uniqueness only; anything more is refused, not dropped."""
+    from threetears.core.coordination.tables import table_def_for
+
+    schema = TableSchema(
+        name="t",
+        primary_key="a",
+        columns=[
+            Column("a", STRING_TYPE),
+            Column("agent_id", STRING_TYPE),
+            Column("date_created", DATETIMETZ_TYPE),
+        ],
+        indexes=(Index("ix_t_history", "agent_id", "date_created", **options),),
+    )
+    with pytest.raises(ValueError, match="cannot carry"):
+        table_def_for(schema)
+    plain = TableSchema(
+        name="t", primary_key="a", columns=list(schema.columns), indexes=(Index("ix_t_history", "agent_id"),)
+    )
+    assert [index.name for index in table_def_for(plain).indexes] == ["ix_t_history"]
 
 
 def test_parity_helper_catches_index_direction_regression() -> None:

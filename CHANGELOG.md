@@ -14,7 +14,8 @@ start (metallm's `users.config_sleep_from` / `config_sleep_until`) and reading a
 string. Both are now ISO text decoded on read (`TEXT_DATE` / `TEXT_TIME` / `TEXT_TIMETZ`, `VARCHAR_*` in
 DuckDB) and round-trip exactly, microseconds included. A `Time` column keeps the wall clock and drops a
 zone, as Postgres `time` does through asyncpg; a `Time(timezone=True)` column keeps a fixed offset and
-refuses a naive or `ZoneInfo` time, as asyncpg does. **Added:** `threetears.core.cache.base.stored_time`.
+refuses a naive or `ZoneInfo` time, as asyncpg does. A `datetime` written to a `Date` column keeps its date,
+as asyncpg writes it to a Postgres `date`. **Added:** `threetears.core.cache.base.stored_time` and `stored_date`.
 After this no type in metallm's metadata or any 3tears schema reaches the mapper's default, so the warning
 fires only for a genuinely new type.
 
@@ -29,6 +30,9 @@ remove/add pair for it; `embedding_width`'s rebuild from a declaration keeps the
 identity one. **Changed:** `threetears.core.testing.sqla_parity.index_signature` compares an index's
 columns in order and with direction (it compared an unordered set of names, so neither drift could fail
 parity); a textual reference element such as `text("date_created DESC")` reads as that column descending.
+A column cannot be both `desc` and in `ops` (`ValueError`): SQLAlchemy drops a descending column's operator
+class. `coordination.tables.table_def_for` refuses an index that declares `desc`, `where`, `using`, `ops` or
+`pg_with` (`ValueError`), which its DDL definition cannot carry; it dropped them silently.
 
 ### scheduled-jobs: the undo of a fire cut off on close is a public function
 
@@ -47,8 +51,10 @@ change. `extraction_enabled=False` makes `MemoryExtractor.extract` answer `SKIPP
 makes `MemoryRetriever.retrieve` / `retrieve_with_candidates` answer an empty result, so
 `retrieve_memories` and `MemoryInjectionMiddleware` hand the model nothing. `consolidation_enabled=False`
 makes `DreamService.run_consolidation` answer an empty `ConsolidationResult` without loading a
-candidate. Each logs the reason once per call at INFO. The explicit memory tools do not read the
+candidate. Each logs the reason once per call at DEBUG. The explicit memory tools do not read the
 switches: an agent with all three off still saves, searches, recalls and retires memories through them.
+`MemoryRetriever` is the ambient path: a host's own recall tool built on one gives it a config with
+`ambient_recall_enabled` on.
 
 ## v0.81.0 -- 2026-10-28
 

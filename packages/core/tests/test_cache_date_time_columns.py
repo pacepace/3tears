@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable, Iterator
-from datetime import date, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from typing import Any
 from unittest import mock
 from zoneinfo import ZoneInfo
@@ -85,6 +85,15 @@ class TestRoundTrip:
         row = _round_trip(make_backend(_metadata()), day=value)
         assert type(row["day"]) is date
         assert row["day"] == value
+
+    @pytest.mark.parametrize("value", [datetime(2026, 10, 28, 23, 59, 1), datetime(2026, 10, 28, 1, 0, tzinfo=UTC)])
+    def test_a_datetime_in_a_date_column_keeps_its_date(
+        self, make_backend: Callable[[MetaData], Any], value: datetime
+    ) -> None:
+        """asyncpg writes a ``datetime`` to a Postgres ``date`` as its date; the cache reads it back as one."""
+        row = _round_trip(make_backend(_metadata()), day=value)
+        assert type(row["day"]) is date
+        assert row["day"] == date(2026, 10, 28)
 
     @pytest.mark.parametrize(
         "value",

@@ -688,10 +688,7 @@ class BackgroundDispatch:
         # the job comes back even when the record could not be written, since its work never ran.
         await self._write(trigger, fire_id, result, failure_reason)
         if due_again:
-            await self._bring_back(trigger, fire_id)
-
-    async def _bring_back(self, trigger: JobTrigger, fire_id: UUID) -> None:
-        await bring_back_cut_off_fire(self._schedule_store, trigger, fire_id)
+            await bring_back_cut_off_fire(self._schedule_store, trigger, fire_id)
 
     async def _write(self, trigger: JobTrigger, fire_id: UUID, result: JobFireResult, failure_reason: str) -> None:
         failed = result.status == "failed"

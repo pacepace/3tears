@@ -418,7 +418,7 @@ class MemoryExtractor:
         """
         if not self._config.extraction_enabled:
             # convert at border: log extra_data fields
-            log.info(
+            log.debug(
                 "memory extraction skipped: MemoryConfig.extraction_enabled is off",
                 extra={"extra_data": {"conversation_id": str(conversation_id), "agent_id": str(agent_id)}},
             )

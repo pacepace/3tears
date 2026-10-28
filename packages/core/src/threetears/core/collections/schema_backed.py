@@ -294,7 +294,8 @@ class IndexDef:
         (``date_created DESC`` in the DDL); every other column sorts
         ascending. each name must also be in ``columns``. emitted as
         ``column.desc()`` so the declared index equals a migration
-        that creates the column ``DESC``.
+        that creates the column ``DESC``. a column cannot carry both
+        ``desc`` and an operator class in ``ops``.
     """
 
     name: str
@@ -324,6 +325,12 @@ class IndexDef:
         if stray:
             raise ValueError(
                 f"IndexDef(name={self.name!r}): desc names {stray!r} which are not in columns {self.columns!r}",
+            )
+        both = [col for col in self.desc if col in dict(self.ops or ())]
+        if both:
+            raise ValueError(
+                f"IndexDef(name={self.name!r}): {both!r} carry both an operator class and desc, which "
+                "to_sqlalchemy_table cannot emit (SQLAlchemy drops the operator class of a descending column)",
             )
 
 

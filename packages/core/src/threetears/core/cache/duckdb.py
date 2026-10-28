@@ -36,6 +36,7 @@ from threetears.core.cache.base import (
     bulk_columns,
     exact_decimal_type,
     stored_decimal,
+    stored_date,
     stored_time,
 )
 from threetears.core.sql_fragments import quote_identifier
@@ -1271,6 +1272,8 @@ class DuckDBBackend:
             result = json.dumps(value, default=json_default)
         elif isinstance(value, _UUID_TYPES):
             result = str(value)
+        elif isinstance(value, date) and col_type.endswith("_DATE"):
+            result = stored_date(value)
         elif isinstance(value, datetime):
             result = value.isoformat()
         elif isinstance(value, time):

@@ -26,7 +26,8 @@ class MemoryConfig:
     """Configuration for memory retrieval and extraction."""
 
     # The three automatic paths, each on its own switch. Off, the path does
-    # nothing and says so once per call at INFO; the explicit memory tools
+    # nothing and says so once per call at DEBUG (a switch left off is a
+    # setting, not news); the explicit memory tools
     # (``memory_add``, ``memory_search``, ``memory_recall``, ``memory_forget``
     # and the rest in ``tools``) never read these, so an agent with all three
     # off still saves and recalls what it is asked to.
@@ -35,7 +36,8 @@ class MemoryConfig:
     # from a turn. Off, it answers ``SKIPPED`` with ``ExtractionGate.DISABLED``.
     # ``ambient_recall_enabled``: :class:`MemoryRetriever` hands memories to a
     # turn nobody asked to recall them in. Off, it answers an empty result, so
-    # ``MemoryInjectionMiddleware`` injects nothing.
+    # ``MemoryInjectionMiddleware`` injects nothing; a host's own recall tool
+    # built on ``MemoryRetriever`` gives it a config with this on.
     # ``consolidation_enabled``: :meth:`DreamService.run_consolidation` merges
     # near-duplicate memories into gists. Off, it answers an empty result.
     extraction_enabled: bool = True
