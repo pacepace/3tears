@@ -387,7 +387,9 @@ def _unread(report_doc_id: str, why: str) -> RefusedInput:
     return RefusedInput(f"report document {report_doc_id} {why}", remedy=NO_LONGER_READS)
 
 
-def read_report_doc(storage: EvalStorage, report_doc_id: str, scope_id: str) -> StoredReportPage:
+def read_report_doc(
+    storage: EvalStorage, report_doc_id: str, scope_id: str, *, campaign_id: str | None = None
+) -> StoredReportPage:
     """A stored report document read back as its page, on its own snapshot (the module docstring's read). Blocking.
 
     :param storage: Where the document and its snapshot are stored.
@@ -396,9 +398,14 @@ def read_report_doc(storage: EvalStorage, report_doc_id: str, scope_id: str) -> 
     :ptype report_doc_id: str
     :param scope_id: The scope it is stored in.
     :ptype scope_id: str
+    :param campaign_id: The campaign the document must have been written for, checked as soon as its record loads and
+        before anything else is read; ``None`` checks none. A record that does not validate cannot be attributed to a
+        campaign, so it is refused as unread whatever this names.
+    :ptype campaign_id: str | None
     :return: The document, its page, its snapshot and its made line.
     :rtype: StoredReportPage
-    :raises NotFoundError: No report document is stored under the id in the scope.
+    :raises NotFoundError: No report document is stored under the id in the scope, or the one stored was written for
+        another campaign than ``campaign_id``.
     :raises RefusedInput: The document is one this version no longer reads: its record does not validate (its version,
         or its document or findings), its snapshot is gone or no longer reads as this version's report input, or its
         generation record is not one the made line reads. Its remedy is the one regenerate line
@@ -408,10 +415,11 @@ def read_report_doc(storage: EvalStorage, report_doc_id: str, scope_id: str) -> 
         record = storage.load_report_doc(report_doc_id, scope_id)
     except ValidationError as unread:
         raise _unread(report_doc_id, f"does not read under this version ({unread.error_count()} fault(s))") from unread
-    if record is None:
-        raise NotFoundError(
-            "report document", report_doc_id, remedy="analyses_list names each analysis's report document"
-        )
+    if record is None or (campaign_id is not None and record.campaign_id != campaign_id):
+        remedy = "analyses_list names each analysis's report document"
+        if campaign_id is not None:
+            remedy = f"analyses_list names the report document of each of campaign {campaign_id}'s analyses"
+        raise NotFoundError("report document", report_doc_id, remedy=remedy)
     try:
         snapshot = storage.load_report_snapshot(record.snapshot_id, scope_id)
     except ValidationError as unread:

@@ -16,7 +16,7 @@ table cell on one line with its pipes escaped.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 
 from threetears.evals.analysis.analyst.blocks import values_table
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
@@ -25,6 +25,7 @@ from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
     CAVEATS_TEMPLATE,
     CHECKED_MARK,
+    EVIDENCE_TITLE,
     FINDINGS_TITLE,
     METHOD_TITLE,
     NEXT_TITLE,
@@ -135,11 +136,14 @@ def _lines(page: DocPage) -> Iterator[list[str]]:
         yield [inert(f"_{one_line(page.made)}_")]
 
 
-def doc_page_markdown(page: DocPage) -> str:
+def doc_page_markdown(page: DocPage, *, record: Sequence[str] = ()) -> str:
     """Write a report document's page as Markdown (this module's account).
 
     :param page: The page.
     :ptype page: DocPage
+    :param record: Lines this package wrote (the campaign's folds, each failed or lost trial's record in them), laid
+        out after the document under their own heading, the document left as it is; none by default.
+    :ptype record: Sequence[str]
     :return: The Markdown, ending in a newline.
     :rtype: str
     """
@@ -148,4 +152,6 @@ def doc_page_markdown(page: DocPage) -> str:
         if out:
             out.append("")
         out += lines
+    if record:
+        out += ["", f"## {EVIDENCE_TITLE}", *record]
     return "\n".join(out) + "\n"

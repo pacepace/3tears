@@ -25,6 +25,7 @@ Contracts held here (``threetears.evals.ops.report_read``, ``threetears.evals.an
 from __future__ import annotations
 
 import json
+from html import escape
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,7 @@ from threetears.evals.analysis.report_doc_store import read_report_doc
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.report_doc import EvalReportSession
+from threetears.evals.kernel.report_snapshot import report_snapshot_id
 from threetears.evals.ops import JobStatus, ReportDocument, analyses_list, report_read
 from threetears.evals.schema.versioning import REPORT_DOC_SCHEMA_VERSION
 from threetears.evals.storage import InMemoryDocumentStore
@@ -161,8 +163,9 @@ async def test_json_keeps_every_member_it_carried_and_gains_the_report_doc_witho
     read = _read(fixture, "json")
     document = json.loads(read.body)
 
-    assert set(document) == set(code_only) == _CAMPAIGN_MEMBERS | {"aspects", "report_doc"}
+    assert set(document) == set(code_only) == _CAMPAIGN_MEMBERS | {"aspects", "report_doc", "needs_regeneration"}
     assert code_only["report_doc"] is None, "a page with no stored document carries none"
+    assert (code_only["needs_regeneration"], document["needs_regeneration"]) == (None, None)
     assert (document["kind"], document["basis"], document["analysis_id"]) == ("campaign", "analysis", analysis.id)
     assert document["readings"]["aspects"] == code_only["readings"]["aspects"]
     served = document["report_doc"]
@@ -178,17 +181,32 @@ async def test_json_keeps_every_member_it_carried_and_gains_the_report_doc_witho
 # -- what no longer reads -----------------------------------------------------------------------------------------------
 
 
-def _code_only_with_the_line(fixture: OpsFixture, analysis_id: str, basis: str) -> None:
-    """Every form of the campaign's report is the code-only page with the one regenerate line, naming the analysis."""
+def _code_only_with_the_line(
+    fixture: OpsFixture, analysis_id: str | None, basis: str | None, **asked: Any
+) -> list[ReportDocument]:
+    """Every form of the report is the code-only page with the one regenerate line, naming what it stands in for:
+    the campaign's analysis, or the report document asked for by its id. Never refused."""
+    named = analysis_id if analysis_id is not None else asked["report_doc_id"]
+    said = (
+        f"This campaign's analysis {analysis_id} was {NO_LONGER_READS}."
+        if analysis_id is not None
+        else f"Report document {named} was {NO_LONGER_READS}."
+    )
+    reads = []
     for form, static in (("markdown", False), ("html", False), ("html", True), ("json", False)):
-        read = _read(fixture, form, static=static)
+        read = _read(fixture, form, static=static, **asked)
         assert (read.basis, read.analysis_id, read.analysis_basis) == ("code_only", analysis_id, basis), form
-        assert (read.doc, read.needs_regeneration) == (None, NO_LONGER_READS), form
+        assert read.doc is None and read.needs_regeneration is not None, form
+        assert read.needs_regeneration.startswith(f"{NO_LONGER_READS} ("), form
         if form != "json":
-            assert NO_LONGER_READS in read.body and analysis_id in read.body, form
+            assert (escape(said) if form == "html" else said) in read.body, form
+            assert NO_LONGER_READS in read.body, form
             assert "No recommendation was written" not in read.body, form
         else:
-            assert json.loads(read.body)["report_doc"] is None
+            body = json.loads(read.body)
+            assert body["report_doc"] is None and body["needs_regeneration"] == read.needs_regeneration
+        reads.append(read)
+    return reads
 
 
 async def test_a_plan_analysis_reads_code_only_with_the_line_and_no_planner_page_is_reached(
@@ -213,7 +231,74 @@ def _stored_record(store: InMemoryDocumentStore, report_doc_id: str) -> dict[str
     return raw
 
 
-@pytest.mark.parametrize("unread", ["stale_version", "model_moved", "snapshot_gone", "doc_deleted"])
+#: Every way a stored document stops reading: in its record, in its snapshot, or in its snapshot's bundle.
+_UNREAD = [
+    "stale_version",
+    "model_moved",
+    "generation_moved",
+    "snapshot_gone",
+    "snapshot_unreadable",
+    "input_moved",
+    "no_bundle",
+    "bundle_moved",
+    "doc_deleted",
+]
+
+#: Why each reads code-only, as the page's needs_regeneration says after the line.
+_WHY = {
+    "stale_version": "does not read under this version",
+    "model_moved": "does not read under this version",
+    "generation_moved": "carries a generation record this version does not read",
+    "snapshot_gone": "which is gone",
+    "snapshot_unreadable": "which does not read",
+    "input_moved": "was written from a snapshot that no longer reads",
+    "no_bundle": "holds no bundle",
+    "bundle_moved": "report snapshot",
+    "doc_deleted": "not found",
+}
+
+
+def _no_longer_reads(store: InMemoryDocumentStore, fixture: OpsFixture, report_doc_id: str, unread: str) -> None:
+    """Make the stored document ``report_doc_id`` one this version no longer reads, as ``unread`` names."""
+    storage = fixture.host.eval_host.storage
+    record = _stored_record(store, report_doc_id)
+    snapshot = _stored_record(store, record["snapshot_id"])
+    match unread:
+        case "stale_version":
+            store.upsert({**record, "schema_version": REPORT_DOC_SCHEMA_VERSION - 1})
+        case "model_moved":
+            store.upsert({**record, "doc": {**record["doc"], "claims": "no longer a list"}})
+        case "generation_moved":
+            store.upsert({**record, "generation": {**record["generation"], "format": 1}})
+        case "snapshot_gone":
+            assert off_loop(storage.delete_report_snapshot, record["snapshot_id"], TOYHOST_SCOPE)
+        case "snapshot_unreadable":
+            store.upsert({**snapshot, "source": "no longer a source"})
+        case "input_moved":
+            store.upsert({**snapshot, "report_input": {**snapshot["report_input"], "moved": True}})
+        case "no_bundle":
+            # The same input frozen bare, which holds no bundle, and the document pointed at it.
+            bare_id = report_snapshot_id(None, snapshot["report_input_digest"])
+            bare = {
+                **snapshot,
+                "id": bare_id,
+                "campaign_id": None,
+                "source": "report_input",
+                "analysis_id": None,
+                "bundle": None,
+                "bundle_fingerprint": None,
+                "bundle_assembled_at": None,
+                "example_result_ids": {},
+            }
+            store.upsert(bare)
+            store.upsert({**record, "snapshot_id": bare_id})
+        case "bundle_moved":
+            store.upsert({**snapshot, "bundle": {**snapshot["bundle"], "schema_version": 999}})
+        case "doc_deleted":
+            assert off_loop(storage.delete_report_doc, report_doc_id, TOYHOST_SCOPE)
+
+
+@pytest.mark.parametrize("unread", _UNREAD)
 async def test_a_document_that_no_longer_reads_gets_the_code_only_page_and_the_line_never_a_refusal(
     unread: str,
 ) -> None:
@@ -221,19 +306,40 @@ async def test_a_document_that_no_longer_reads_gets_the_code_only_page_and_the_l
     fixture = off_loop(ops_fixture, store=store)
     analysis = await _generated(fixture)
     assert analysis.report_doc_id is not None
-    storage = fixture.host.eval_host.storage
-    record = _stored_record(store, analysis.report_doc_id)
-    match unread:
-        case "stale_version":
-            store.upsert({**record, "schema_version": REPORT_DOC_SCHEMA_VERSION - 1})
-        case "model_moved":
-            store.upsert({**record, "doc": {**record["doc"], "claims": "no longer a list"}})
-        case "snapshot_gone":
-            assert off_loop(storage.delete_report_snapshot, record["snapshot_id"], TOYHOST_SCOPE)
-        case "doc_deleted":
-            assert off_loop(storage.delete_report_doc, analysis.report_doc_id, TOYHOST_SCOPE)
+    _no_longer_reads(store, fixture, analysis.report_doc_id, unread)
 
-    _code_only_with_the_line(fixture, analysis.id, "doc")
+    (said, *_) = _code_only_with_the_line(fixture, analysis.id, "doc")
+
+    assert said.needs_regeneration is not None and _WHY[unread] in said.needs_regeneration
+
+
+@pytest.mark.parametrize("unread", [name for name in _UNREAD if name != "doc_deleted"])
+async def test_a_document_read_by_its_id_that_no_longer_reads_gets_the_code_only_page_naming_it(unread: str) -> None:
+    store = InMemoryDocumentStore()
+    fixture = off_loop(ops_fixture, store=store)
+    older = await _generated(fixture)
+    await _generated(fixture)
+    assert older.report_doc_id is not None
+    _no_longer_reads(store, fixture, older.report_doc_id, unread)
+
+    (said, *_) = _code_only_with_the_line(fixture, None, None, report_doc_id=older.report_doc_id)
+
+    assert said.needs_regeneration is not None and _WHY[unread] in said.needs_regeneration
+
+
+async def test_a_stand_in_s_json_never_reads_as_a_campaign_never_analysed() -> None:
+    fixture = off_loop(ops_fixture)
+    never = json.loads(_read(fixture, "json").body)
+    planned, _ = await planned_generation(fixture)
+
+    stands_in = json.loads(_read(fixture, "json").body)
+
+    assert never["needs_regeneration"] is None
+    assert (
+        stands_in["needs_regeneration"].startswith(f"{NO_LONGER_READS} (")
+        and planned.id in (stands_in["needs_regeneration"])
+    )
+    assert stands_in != never
 
 
 # -- one line ------------------------------------------------------------------------------------------------------------
@@ -253,7 +359,7 @@ async def test_the_line_is_one_constant_every_surface_prints_byte_for_byte() -> 
 
     assert NO_LONGER_READS == "written in a shape this version no longer reads; regenerate with analysis_generate"
     assert line.id == planned.id and line.needs_regeneration == NO_LONGER_READS
-    assert called.structured is not None and called.structured["needs_regeneration"] == NO_LONGER_READS
+    assert called.structured is not None and called.structured["needs_regeneration"].startswith(NO_LONGER_READS)
     for form in ("markdown", "html"):
         assert _read(fixture, form).body.count(NO_LONGER_READS) == 1, form
     assert NO_LONGER_READS in called.text
@@ -308,12 +414,61 @@ async def test_a_report_doc_id_of_another_campaign_or_of_none_is_refused_as_not_
     fixture = off_loop(ops_fixture, store=store)
     analysis = await _generated(fixture)
     assert analysis.report_doc_id is not None
-    elsewhere = {**_stored_record(store, analysis.report_doc_id), "id": "another-report", "campaign_id": "elsewhere"}
+    record = _stored_record(store, analysis.report_doc_id)
+    elsewhere = {**record, "id": "another-report", "campaign_id": "elsewhere"}
     store.upsert(elsewhere)
 
     for report_doc_id in ("another-report", "no-such-report"):
         with pytest.raises(NotFoundError, match="report document"):
             _read(fixture, "markdown", report_doc_id=report_doc_id)
+    # The campaign is checked as soon as the record loads, before its snapshot: one gone is still not this campaign's.
+    assert off_loop(fixture.host.eval_host.storage.delete_report_snapshot, record["snapshot_id"], TOYHOST_SCOPE)
+    with pytest.raises(NotFoundError, match="report document 'another-report'"):
+        _read(fixture, "markdown", report_doc_id="another-report")
+
+
+async def test_an_older_document_read_by_its_id_reads_as_written_after_the_campaign_moved_on() -> None:
+    """#977's audit read: a version written before an aspect was relabelled is laid out over the declaration it was
+    written against, so it reads as its own page, never as one to regenerate."""
+    fixture = off_loop(ops_fixture)
+    older = await _generated(fixture)
+    assert older.report_doc_id is not None
+    storage = fixture.host.eval_host.storage
+    campaign = off_loop(storage.load_campaign, fixture.campaign.id, TOYHOST_SCOPE)
+    assert campaign is not None
+    (aspect,) = campaign.aspects
+    moved = campaign.model_copy(update={"aspects": [aspect.model_copy(update={"label": "renamed_after_v1"})]})
+    off_loop(storage.save_campaign, moved)
+
+    for form in ("markdown", "json"):
+        read = _read(fixture, form, report_doc_id=older.report_doc_id)
+        assert (read.basis, read.analysis_id, read.needs_regeneration) == ("analysis", None, None), form
+        assert read.doc is not None and read.doc["headline"] == TOY_DOC["headline"]
+    document = json.loads(_read(fixture, "json", report_doc_id=older.report_doc_id).body)
+    assert document["report_doc"]["id"] == older.report_doc_id
+    assert [fold["aspect"] for fold in document["aspects"]] == [aspect.label], "laid out as the document was written"
+
+
+# -- every trial's record --------------------------------------------------------------------------------------------------
+
+
+async def test_trials_all_lays_the_folds_after_the_document_which_reads_as_it_was_stored() -> None:
+    fixture = off_loop(ops_fixture)
+    analysis = await _generated(fixture)
+    assert analysis.report_doc_id is not None
+    stored = off_loop(read_report_doc, fixture.host.eval_host.storage, analysis.report_doc_id, TOYHOST_SCOPE)
+
+    for static in (False, True):
+        table = _read(fixture, "html", static=static).body
+        everything = _read(fixture, "html", static=static, trials="all").body
+        document, marker = doc_page_html(stored.page, static=static), '<details class="section" data-part="evidence">'
+        assert table == document and marker not in table, "the table read lays the document out alone"
+        assert everything.split(marker)[0] == document.split("</article>")[0], "the document above it, unchanged"
+        record = everything.split(marker)[1]
+        assert 'id="aspect-' in record and record.count("<details") > 1, "each aspect's fold, its trials' records in it"
+    markdown = _read(fixture, "markdown", trials="all").body
+    assert markdown.startswith(doc_page_markdown(stored.page).rstrip("\n")) and "\n## Evidence record\n" in markdown
+    assert _read(fixture, "json", trials="all").body == _read(fixture, "json").body, "JSON carries no records"
 
 
 # -- the action and the result ----------------------------------------------------------------------------------------------

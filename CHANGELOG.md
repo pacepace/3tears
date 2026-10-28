@@ -25,11 +25,18 @@ listing's `needs_regeneration` print byte for byte: the listing now sets it on e
 where a plan or document no longer reads, the reason after it in parentheses. A memo analysis reads as before.
 `ReportDocument.plan` is replaced by `doc` (the stored `report-doc/1` JSON for a `doc` analysis), with no alias; a
 host reading only `.body` (Discodon) changes nothing. `ReportDocument.analysis_id` names the analysis a code-only
-page stands in for, `basis` reading `code_only` there.
+page stands in for, `basis` reading `code_only` there. Such a stand-in never reads as a campaign never analysed: its
+`needs_regeneration` (the JSON body's new member too, `null` on every other page) is the line, then why in parentheses.
+A document's page carries no memo `recommendation`: the arms its document recommends are `report_doc.doc.recommends`.
+With `trials="all"`, a document's page is followed, closed, by an "Evidence record": each aspect's fold as the
+code-only page draws it, every failed or lost trial's record in it, the document above it as stored; `trials="table"`
+lays out the document alone. Every document's readings and folds are laid out over the campaign as its snapshot
+declared it, so a version written before the campaign relabelled or gained an aspect reads as written.
 
 **Added:** `report_read(report_doc_id=, include_sessions=)` and the action's two arguments: `report_doc_id` reads one
 of the campaign's stored report documents, any version (`analysis.service.report_doc_report`; one of another campaign
-or of none is refused as not found), and `include_sessions` adds, to the JSON form's `report_doc`, `sessions`: every
+or of none is refused as not found, the campaign checked as soon as the record loads, before its snapshot is read),
+and `include_sessions` adds, to the JSON form's `report_doc`, `sessions`: every
 session that wrote it, by name, each its stored `eval_report_session` whole (the audit read, #977). A Markdown or HTML
 page never holds a transcript, so `include_sessions` with either is refused, saying to ask for `json`; a read without
 it loads no session. `CampaignReport` gains `doc_page`, `report_doc` and `unread_analysis_id`;
@@ -39,7 +46,14 @@ it loads no session. `CampaignReport` gains `doc_page`, `report_doc` and `unread
 failure or a cancel), names the document and that `delete_report_doc` removes it, since no analysis links it; the
 error raised where the snapshot holds no bundle names the stored document again. The out-of-run ledger's totals line
 counts each way its calls were admitted (`1 admitted at up to $0.0300, 2 admitted by a report budget, 1 admitted
-unbounded`), and a scope whose calls were all unbounded no longer reads "admitted at up to $0.0000".
+unbounded`), and a scope whose calls were all unbounded no longer reads "admitted at up to $0.0000". The ledger keeps
+its four decimals (`:.4f`, the spend ledger the number rule exempts), so every figure on the line reads one way.
+
+**For the docs scrub (`docs/evals-w4`):** `packages/evals/docs/serving.md`'s campaign JSON table (:448-458) gains
+`needs_regeneration` (the one regenerate line and why, on a page standing in for an analysis this version no longer
+reads; null otherwise) and says `analysis_id` is the analysis the page renders or stands in for, never "the memo's";
+the `report_read` lines (:441 and the transcripts paragraph) say a `plan` analysis reads code-only with that line, that
+`trials="all"` adds the evidence record after a document's page, and that `include_sessions` is JSON only.
 
 ### evals: money reads one form per figure type, tiny amounts per 1,000 (#993), and each arm's cost sits beside its quality
 

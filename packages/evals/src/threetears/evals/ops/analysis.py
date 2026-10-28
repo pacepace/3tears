@@ -376,7 +376,8 @@ class ReportDocument(EvalBaseModel):
         description=(
             "Set where the report stands in, code-only, for an analysis or report document this version no longer "
             "reads (every report-plan analysis; a document that no longer validates, or whose snapshot is gone): the "
-            "one regenerate line, which the page's first screen prints too. None otherwise."
+            "one regenerate line, which the page's first screen prints too, then why in parentheses. The JSON body "
+            "carries it too. None otherwise."
         ),
     )
     format: ReportFormat
@@ -1718,13 +1719,15 @@ def report_read(
     - ``memo`` (an analysis stored before the report planner): laid out as written.
 
     A report document that no longer reads (its version, its model, or a snapshot gone or holding no bundle) reads as a
-    plan does. Neither is ever refused, and ``needs_regeneration`` carries that one line, as the page prints it.
+    plan does. Neither is ever refused, and ``needs_regeneration`` carries that one line, as the page prints it, then
+    why in parentheses; the JSON body carries it too, so a stand-in never reads as a campaign never analysed.
 
     **The trials.** By default each aspect's trials section is the census line, the table of its failed and lost
     trials, each row naming its stored result (read one with ``result_get``), and the table of its passed trials;
     ``trials="all"`` adds each failed or lost trial's full record (what it asked, what the judge saw and said, and
-    why), which is most of a large campaign's page. A report document's page draws no trial records, and the JSON form
-    carries none either way.
+    why), which is most of a large campaign's page. A report document's page draws none of them by default; with
+    ``trials="all"`` each aspect's fold follows the document, closed, as its evidence record, every such trial's record
+    in it, the document above it as it was stored. The JSON form carries no records either way.
 
     **Any stored version, and its transcripts** (the audit read). ``report_doc_id`` reads one of the campaign's report
     documents, not just the newest (:func:`~threetears.evals.analysis.service.report_doc_report`): its page, as above.
@@ -1775,7 +1778,6 @@ def report_read(
         report = report_doc_report(host, campaign_id, scope_id, report_doc_id, trials=trials)
     analysis_id = report.analysis_id or report.unread_analysis_id
     analysis = get_analysis(host.storage, analysis_id, scope_id) if analysis_id is not None else None
-    unread = report.unread_analysis_id is not None or (report_doc_id is not None and report.report_doc is None)
     body = serialize_report(report, format, static=static)
     if include_sessions and report.report_doc is not None:
         body = _with_sessions(host, report.json_document(), scope_id)
@@ -1785,7 +1787,7 @@ def report_read(
         analysis_id=analysis_id,
         analysis_basis=analysis.basis if analysis is not None else None,
         doc=dict(cast("dict[str, Any]", report.report_doc["doc"])) if report.report_doc is not None else None,
-        needs_regeneration=NO_LONGER_READS if unread else None,
+        needs_regeneration=report.needs_regeneration,
         format=format,
         body=body,
     )

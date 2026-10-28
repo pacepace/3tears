@@ -408,7 +408,8 @@ class TestAStoredPlanThisBuildCannotRead:
         host = fixture.host.eval_host
 
         read = off_loop(report_read, host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
-        assert (read.basis, read.analysis_id, read.needs_regeneration) == ("code_only", analysis_id, NO_LONGER_READS)
+        assert (read.basis, read.analysis_id) == ("code_only", analysis_id)
+        assert read.needs_regeneration is not None and read.needs_regeneration.startswith(f"{NO_LONGER_READS} (")
         assert NO_LONGER_READS in read.body
         assert off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE).unread_analysis_id == analysis_id
         with pytest.raises(RefusedInput, match="report plan this build cannot read"):

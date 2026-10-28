@@ -43,6 +43,7 @@ from threetears.evals.analysis.report.doc_page.model import (
 from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
     CAVEATS_TEMPLATE,
+    EVIDENCE_TITLE,
     FINDINGS_TITLE,
     METHOD_TITLE,
     NEXT_TITLE,
@@ -206,13 +207,27 @@ def _appendix(page: DocPage) -> list[str]:
     ]
 
 
-def doc_page_html(page: DocPage, *, static: bool = False) -> str:
+def _evidence_record(record: Sequence[str]) -> list[str]:
+    """Code's record after the document, closed, under its own heading; nothing where none is passed."""
+    if not record:
+        return []
+    return [
+        f'<details class="section" data-part="evidence"><summary><h2>{escape(EVIDENCE_TITLE)}</h2></summary>'
+        + "".join(record)
+        + "</details>"
+    ]
+
+
+def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] = ()) -> str:
     """Write a report document's page as one standalone HTML page (this module's account).
 
     :param page: The page.
     :ptype page: DocPage
     :param static: Write the static page: no ``<script>``, no ``<link>``, every chart as its table of values.
     :ptype static: bool
+    :param record: Markup this package wrote (the campaign's folds, each failed or lost trial's record in them), laid
+        out closed after the document, which it leaves as it is; none by default.
+    :ptype record: Sequence[str]
     :return: The page.
     :rtype: str
     """
@@ -243,6 +258,7 @@ def doc_page_html(page: DocPage, *, static: bool = False) -> str:
         *([_explore(page.explore)] if page.explore is not None else []),
         *([_next(page.next)] if page.next else []),
         *_appendix(page),
+        *_evidence_record(record),
         "</article>",
         "</div>",
         *([] if static else [f"<script>{KIT_JS}</script>"]),

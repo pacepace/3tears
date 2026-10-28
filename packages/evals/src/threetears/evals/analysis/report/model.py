@@ -356,7 +356,7 @@ class CampaignReport(EvalDocumentModel):
     **A report document's page** holds no blocks either: its :attr:`doc_page` is the page its stored report document
     draws on its own snapshot, which the serializers write whole in place of the campaign's page (the document's own
     appendix holds every table), and its :attr:`report_doc` is the stored document the JSON form carries. The folds
-    stay, as the JSON form's readings and bundles.
+    stay, as the JSON form's readings and bundles, and with :attr:`doc_trials` as the document's evidence record.
     """
 
     basis: ReportBasis = Field(description="`analysis` with a memo over the campaign, `code_only` without one.")
@@ -375,7 +375,11 @@ class CampaignReport(EvalDocumentModel):
     readings: CampaignReadings = Field(description="What code read off the campaign: every row and every floor.")
     call: CampaignCall | None = Field(default=None, description="The person's call; None while none is recorded.")
     recommendation: Recommendation | None = Field(
-        default=None, description="The writer's recommendation, as the memo holds it; None with no memo."
+        default=None,
+        description=(
+            "The writer's recommendation, as the memo holds it; None with no memo. A report document's page carries "
+            "none here: the arms its document recommends are `report_doc.doc.recommends`."
+        ),
     )
     recommended_variant_key: str | None = Field(
         default=None,
@@ -419,6 +423,23 @@ class CampaignReport(EvalDocumentModel):
             "screen saying so in the one regenerate line; None for any other page. Set only on a code-only page."
         ),
     )
+    needs_regeneration: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "On a code-only page standing in for an analysis or a report document this version no longer reads: the "
+            "one regenerate line, then why in parentheses; None for any other page, so a stand-in's JSON never reads "
+            "as a campaign that was never analysed. Set only on a code-only page."
+        ),
+    )
+    doc_trials: bool = Field(
+        default=False,
+        description=(
+            "On a report document's page, whether the campaign's folds (each aspect's page, every failed or lost "
+            "trial's record in it, as the code-only page draws them with trials='all') follow the document as its "
+            "evidence record; False lays out the document alone."
+        ),
+    )
 
     @model_validator(mode="after")
     def _the_recommendation_is_keyed(self) -> Self:
@@ -459,11 +480,13 @@ class CampaignReport(EvalDocumentModel):
             too, or ``report_doc`` is set without it or it without ``report_doc``; or ``unread_analysis_id`` is set and
             ``basis`` is not ``code_only``.
         """
-        if self.unread_analysis_id is not None and self.basis != "code_only":
+        if (self.unread_analysis_id is not None or self.needs_regeneration is not None) and self.basis != "code_only":
             raise ValueError(
                 f"an analysis this version no longer reads is named on the code-only page standing in for it, and "
                 f"this page's basis is {self.basis}"
             )
+        if self.doc_trials and self.doc_page is None:
+            raise ValueError("the folds follow a report document's page only, and this page draws none")
         if (self.doc_page is None) != (self.report_doc is None):
             raise ValueError("a report document's page carries the document it draws: set both or neither")
         if self.doc_page is None:
@@ -628,7 +651,9 @@ class CampaignReport(EvalDocumentModel):
         and each aspect's bundle by its fingerprint and shape, with each criterion set after its readings were visible
         and when (``late_criteria``, empty where none was), since its readings read the same either way; and
         ``report_doc``, the stored report document a document's page draws (:attr:`report_doc`, never a session's
-        transcript), ``None`` on every other page.
+        transcript; the arms it recommends are ``report_doc.doc.recommends``, ``recommendation`` being a memo's),
+        ``None`` on every other page; and ``needs_regeneration``, the one regenerate line and why, on a code-only page
+        standing in for an analysis or a document this version no longer reads, ``None`` on every other.
 
         Every float in it is served to twelve significant figures (:func:`~threetears.evals.schema.hashing.round_floats`):
         a figure code computed carries bits past that which two Python builds compute differently, so one campaign
@@ -665,6 +690,7 @@ class CampaignReport(EvalDocumentModel):
                 for fold in self.aspects
             ],
             "report_doc": self.report_doc,
+            "needs_regeneration": self.needs_regeneration,
         }
         served: dict[str, object] = round_floats(document)
         return served

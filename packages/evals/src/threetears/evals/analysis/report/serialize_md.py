@@ -94,7 +94,8 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     the glossary as its appendix after Method.
 
     A report document's page (``doc_page`` set) is the page its stored document draws
-    (:func:`~threetears.evals.analysis.report.doc_page.markdown.doc_page_markdown`), written whole.
+    (:func:`~threetears.evals.analysis.report.doc_page.markdown.doc_page_markdown`), written whole, with each aspect's
+    fold and the glossary after it as its evidence record where ``doc_trials`` asks for every trial's record.
 
     :param report: The campaign's page.
     :ptype report: CampaignReport
@@ -102,7 +103,8 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     :rtype: str
     """
     if report.doc_page is not None:
-        return doc_page_markdown(report.doc_page)
+        record = [*_fold_lines(report), *_glossary_lines(report.terms)] if report.doc_trials else []
+        return doc_page_markdown(report.doc_page, record=record)
     if report.plan_page is not None:
         return planned_page_markdown(report.plan_page, appendix=[*_fold_lines(report), *_glossary_lines(report.terms)])
     # The title first, then the decision: the question, the answer, then what warns, as consequences.

@@ -77,7 +77,7 @@ from threetears.evals.analysis.report.words import campaign_arm_tags, declared_a
 from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
 from threetears.evals.analysis.report_doc_store import StoredReportPage, read_report_doc
 from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalCampaign
+from threetears.evals.kernel.campaign import CampaignDeclaration, EvalAnalysisAttempt, EvalCampaign
 from threetears.evals.kernel.campaign_writes import serialized_campaign_write
 from threetears.evals.kernel.declaration import CampaignCall, OverriddenBar, resolve_control_arm
 from threetears.evals.kernel.errors import (
@@ -1887,13 +1887,9 @@ def _planned_page(
     )
 
 
-def _as_analysed(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> EvalCampaign:
-    """The campaign as the analysis's generation read it: what it declared then, and the call recorded since.
-
-    An analysis outliving its campaign is still laid out, named by the campaign's id.
-    """
-    declared = analysis.design_snapshot
-    snapshot = {
+def _declared(declared: CampaignDeclaration) -> dict[str, Any]:  # Any: the campaign's fields, by name
+    """A declaration as the campaign's fields it sets."""
+    return {
         "question": declared.question,
         "declared_at": declared.declared_at,
         "declared_by": declared.declared_by or "",
@@ -1901,8 +1897,22 @@ def _as_analysed(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> EvalC
         "aspects": list(declared.aspects),
         "floors": list(declared.floors),
     }
+
+
+def _with_declaration(campaign: EvalCampaign, declared: CampaignDeclaration) -> EvalCampaign:
+    """The campaign as it was declared when a bundle was assembled, and the call recorded since."""
+    return campaign.model_copy(update=_declared(declared))
+
+
+def _as_analysed(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> EvalCampaign:
+    """The campaign as the analysis's generation read it: what it declared then, and the call recorded since.
+
+    An analysis outliving its campaign is still laid out, named by the campaign's id.
+    """
+    declared = analysis.design_snapshot
+    snapshot = _declared(declared)
     if campaign is not None:
-        return campaign.model_copy(update=snapshot)
+        return _with_declaration(campaign, declared)
     return EvalCampaign.model_validate(
         {
             "id": analysis.campaign_id,
@@ -2054,7 +2064,8 @@ def campaign_report(
     :ptype scope_id: str
     :param trials: How much of each failed or lost trial the page lays out (:data:`TrialDetail`): by default their
         table alone, each row naming its stored result (``result_get`` reads it); ``all`` adds each one's full
-        record, which is most of a large campaign's page. A report document's page draws no trial records.
+        record, which is most of a large campaign's page. A report document's page lays the folds, each such record
+        in them, after the document as its evidence record with ``all``, and none with ``table``.
     :ptype trials: TrialDetail
     :return: The page; its ``basis`` says which it is.
     :rtype: CampaignReport
@@ -2070,19 +2081,13 @@ def campaign_report(
         try:
             read = read_report_doc(host.storage, reported.report_doc_id, scope_id)
         except NotFoundError as missing:
-            # NOSILENT: the page is the code-only page with the one regenerate line, naming the analysis; the
-            # listing's needs_regeneration says the same.
-            log.warning("campaign %s's analysis %s reads code-only: %s", campaign_id, reported.id, missing.message)
-            return _code_only_page(host, campaign, trials=trials, unread_analysis_id=reported.id)
+            return _stands_in(host, campaign, missing.message, trials=trials, unread_analysis_id=reported.id)
         except RefusedInput as unread:
-            # NOSILENT: as above.
-            log.warning("campaign %s's analysis %s reads code-only: %s", campaign_id, reported.id, unread.fault)
-            return _code_only_page(host, campaign, trials=trials, unread_analysis_id=reported.id)
-        return _doc_page(
-            host, campaign, read, declared=_as_analysed(reported, campaign), analysis_id=reported.id, trials=trials
-        )
+            return _stands_in(host, campaign, unread.fault, trials=trials, unread_analysis_id=reported.id)
+        return _doc_page(host, campaign, read, analysis_id=reported.id, trials=trials)
     if reported.report_plan_id is not None:
-        return _code_only_page(host, campaign, trials=trials, unread_analysis_id=reported.id)
+        why = f"analysis {reported.id} was written by the report planner, as report-plan/1"
+        return _stands_in(host, campaign, why, trials=trials, unread_analysis_id=reported.id)
     return _analysis_page(reported, campaign, trials=trials)
 
 
@@ -2094,7 +2099,9 @@ def report_doc_report(
     the code-only page with the one regenerate line, never refused.
 
     Read by its id, the page names no analysis (``analysis_id`` is None): what the campaign's report is stays
-    :func:`campaign_report`'s answer, and the campaign is laid out as it is declared now.
+    :func:`campaign_report`'s answer. Its readings and folds are laid out over the campaign as the document's snapshot
+    declared it, as every document's page is, so a version written before the campaign gained or lost an aspect or an
+    arm reads as it was written.
 
     :param host: The host whose store holds the campaign and the document.
     :ptype host: EvalHost
@@ -2104,53 +2111,43 @@ def report_doc_report(
     :ptype scope_id: str
     :param report_doc_id: The document's id (``EvalAnalysis.report_doc_id``; a later version stores a new one).
     :ptype report_doc_id: str
-    :param trials: How much of each failed or lost trial the code-only page lays out, where it stands in.
+    :param trials: How much of each failed or lost trial the page lays out (:func:`campaign_report`).
     :ptype trials: TrialDetail
     :return: The page.
     :rtype: CampaignReport
     :raises NotFoundError: No campaign with that id in the scope, or no report document with that id in the scope, or
-        one written for another campaign.
+        one written for another campaign, refused as soon as its record loads, before its snapshot is read. A record
+        that does not validate cannot be attributed to a campaign: it reads as the code-only page of this one.
     """
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     try:
-        read = read_report_doc(host.storage, report_doc_id, scope_id)
+        read = read_report_doc(host.storage, report_doc_id, scope_id, campaign_id=campaign_id)
     except RefusedInput as unread:
-        # NOSILENT: the page is the code-only page with the one regenerate line, naming the document.
-        log.warning("report document %s of campaign %s reads code-only: %s", report_doc_id, campaign_id, unread.fault)
-        return _code_only_page(host, campaign, trials=trials, unread_report_doc_id=report_doc_id)
-    if read.record.campaign_id != campaign_id:
-        raise NotFoundError(
-            "report document",
-            report_doc_id,
-            remedy=f"analyses_list names the report document of each of campaign {campaign_id}'s analyses",
-        )
-    return _doc_page(host, campaign, read, declared=campaign, analysis_id=None, trials=trials)
+        return _stands_in(host, campaign, unread.fault, trials=trials, unread_report_doc_id=report_doc_id)
+    return _doc_page(host, campaign, read, analysis_id=None, trials=trials)
 
 
 def _doc_page(
-    host: EvalHost,
-    campaign: EvalCampaign,
-    read: StoredReportPage,
-    *,
-    declared: EvalCampaign,
-    analysis_id: str | None,
-    trials: TrialDetail,
+    host: EvalHost, campaign: EvalCampaign, read: StoredReportPage, *, analysis_id: str | None, trials: TrialDetail
 ) -> CampaignReport:
     """A stored report document's page, its readings and folds off its snapshot's bundle laid out over the campaign as
-    ``declared`` (as its analysis read it, or as it stands); the code-only page of ``campaign`` with the one regenerate
-    line where the snapshot holds no bundle or the campaign no longer lays out over it."""
+    that bundle declared it (what the document was written against, which its analysis's ``design_snapshot`` copies);
+    the code-only page of ``campaign`` with the one regenerate line where the snapshot holds no bundle or its bundle
+    no longer lays out. With ``trials="all"`` the folds follow the document, each failed or lost trial's record in
+    them, as the code-only page draws them."""
     snapshot = read.snapshot
     try:
         if snapshot.bundle is None or snapshot.bundle_assembled_at is None:
-            raise RefusedInput(f"its snapshot {snapshot.id} holds no bundle", remedy=NO_LONGER_READS)
+            raise RefusedInput(
+                f"report document {read.record.id}'s snapshot {snapshot.id} holds no bundle", remedy=NO_LONGER_READS
+            )
         bundle = CampaignBundle.from_dict(snapshot.bundle, what=f"report snapshot {snapshot.id}")
+        declared = _with_declaration(campaign, bundle.declaration)
         page = _campaign_page(declared, bundle, assembled_at=snapshot.bundle_assembled_at, trials=trials)
     except RefusedInput as unread:
-        # NOSILENT: the page is the code-only page with the one regenerate line.
-        log.warning("report document %s reads code-only: %s", read.record.id, unread.fault)
         if analysis_id is None:
-            return _code_only_page(host, campaign, trials=trials, unread_report_doc_id=read.record.id)
-        return _code_only_page(host, campaign, trials=trials, unread_analysis_id=analysis_id)
+            return _stands_in(host, campaign, unread.fault, trials=trials, unread_report_doc_id=read.record.id)
+        return _stands_in(host, campaign, unread.fault, trials=trials, unread_analysis_id=analysis_id)
     return CampaignReport.model_validate(
         {
             **dict(page),
@@ -2159,8 +2156,32 @@ def _doc_page(
             "blocks": [],
             "doc_page": read.page,
             "report_doc": read.summary(),
+            "doc_trials": trials == "all",
         }
     )
+
+
+def _stands_in(
+    host: EvalHost,
+    campaign: EvalCampaign,
+    why: str,
+    *,
+    trials: TrialDetail,
+    unread_analysis_id: str | None = None,
+    unread_report_doc_id: str | None = None,
+) -> CampaignReport:
+    """The code-only page standing in for an analysis or a report document this version no longer reads: its first
+    screen says so in the one regenerate line, and its ``needs_regeneration`` is that line with why."""
+    named = unread_analysis_id or unread_report_doc_id
+    log.warning("campaign %s's report %s reads code-only: %s", campaign.id, named, why)
+    page = _code_only_page(
+        host,
+        campaign,
+        trials=trials,
+        unread_analysis_id=unread_analysis_id,
+        unread_report_doc_id=unread_report_doc_id,
+    )
+    return CampaignReport.model_validate({**dict(page), "needs_regeneration": f"{NO_LONGER_READS} ({why})"})
 
 
 def _code_only_page(
