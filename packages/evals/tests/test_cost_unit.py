@@ -22,8 +22,9 @@ from packages.evals.tests.analyst_support import KAIRO, fixture_inputs, fixture_
 from threetears.evals.analysis.analyst.blocks import block_render
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.cost_unit import REPLIES, per_count
-from threetears.evals.analysis.report.figure_keys import cost_basis, literal_numbers, render, resolve
+from threetears.evals.analysis.report.cost_unit import REPLIES, money_ruler, per_count
+from threetears.evals.analysis.report.figure_keys import cost_basis, cost_ruler, literal_numbers, render, resolve
+from threetears.evals.analysis.report_gates import task_costs
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.report_plan import ChartQuery
@@ -72,7 +73,11 @@ def test_a_pages_cost_reads_per_what_its_source_counts(name: str) -> None:
     else:
         assert basis.noun == REPLIES, "money per one thing, and the scoreboard's reply cost, is per reply"
     arm = next(arm.id for arm in held.arms if _resolves(f"cost_per_1k.{arm.id}", held))
-    assert render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {}).endswith(f" per 1,000 {basis.noun}")
+    # Per 1,000, or per 1,000,000 where a cost is under a cent per 1,000 (#993: the ruler moves); per its own noun.
+    said = render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {})
+    # The count the one owner of money's scale moves the page's cost to (#993): per 1,000, or per 1,000,000 where a
+    # cost is under a cent per 1,000; per its own noun.
+    assert said.endswith(f" {per_count(basis.noun, cost_ruler(held).counted)}"), said
 
 
 @pytest.mark.parametrize("name", _costed())
@@ -85,7 +90,16 @@ def test_a_counted_measures_own_figure_reads_per_what_its_label_counts(name: str
         if arm is None:
             continue  # its figures sit in slices alone, which the gate matrix and lattice tests read
         said = render(f"{{measure.{key}.{arm}.mean|usd_per_1k}}", held, {})
-        assert said.endswith(per_count(_label_noun(held, key)))
+        noun = _label_noun(held, key)
+        # The count the family's ruler moves to (#993): its every arm's mean, per 1,000 at least.
+        own = 1000 if measure.unit == "usd_per_1k" else 1_000_000
+        means = [stat.mean for stat in measure.per_arm.values()]
+        assert said.endswith(per_count(noun, money_ruler(means, per=own, start=1000).counted)), said
+
+
+def _page_costs(held: ReportInput) -> list[Any]:
+    """Each arm's cost by the page's one cost rule, where it states one."""
+    return [resolve(f"cost_per_1k.{arm.id}", held) for arm in held.arms if _resolves(f"cost_per_1k.{arm.id}", held)]
 
 
 def _resolves(key: str, held: ReportInput) -> bool:
@@ -113,7 +127,14 @@ def test_no_fixture_page_says_replies_where_its_cost_counts_something_else() -> 
             cells = " ".join(" ".join(row.cells) for row in drawn.rows)
             assert "replies" not in cells, (kind, cells[:300])
             if "$" in cells:
-                assert per_count(basis.noun) in cells, (kind, cells[:300])
+                # Per the count the one owner of money's scale moves the costs to (#993), of their own noun.
+                costs = (
+                    [task_costs(held, task.id).get(arm.id) for task in held.tasks for arm in held.arms]
+                    if kind == "gate_matrix"
+                    else [figure.value for figure in _page_costs(held)]
+                )
+                counted = money_ruler(costs, per=1000, start=1000).counted
+                assert per_count(basis.noun, counted) in cells, (kind, counted, cells[:300])
                 seen += 1
     assert seen, "the control: some fixture draws a gate matrix or a lattice over costs counted in other than replies"
 

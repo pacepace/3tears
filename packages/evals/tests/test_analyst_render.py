@@ -48,7 +48,8 @@ from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, resolve
 from threetears.evals.analysis.report.plan_page.build import plan_page
-from threetears.evals.analysis.report.plan_page.charting import measure_words
+from threetears.evals.analysis.report.plan_page.charting import figure_unit, held_means, money_words
+from threetears.evals.analysis.report.plan_page.look import quantity_of
 from threetears.evals.analysis.report.plan_page.words import ASPECT_MEASURE_TEMPLATE
 from threetears.evals.analysis.report_input import Cell, Contrast, ReportInput, Stratum, Task
 from threetears.evals.analysis.report_plan_checks import raised_warnings
@@ -535,7 +536,11 @@ def test_a_contrasts_block_keeps_each_aspects_contrast_and_names_the_aspect_wher
     assert max(shared.values()) > 1, "the control: two aspects hold one arm's contrast on one key"
 
     def words(contrast: Contrast) -> str:
-        plain = measure_words(held, contrast.measure, kind=contrast.kind)
+        # A money measure's words name what its changes are drawn per, on its amounts' ruler (#993: the one owner's
+        # words); any other measure's are its plain words.
+        unit = figure_unit(held, contrast.measure, kind=contrast.kind)
+        drawn = quantity_of(unit, held_means(held, contrast.measure))
+        plain = money_words(held, contrast.measure, drawn, kind=contrast.kind)
         assert contrast.aspect is not None
         split = len(on[contrast.measure]) > 1
         return ASPECT_MEASURE_TEMPLATE.format(measure=plain, aspect=names[contrast.aspect]) if split else plain
@@ -719,7 +724,9 @@ def test_cells_that_read_alike_print_their_numbers_at_one_precision_and_lose_no_
         ["B", "96.4% · $1.655 per 1,000 calls", "-3.0 to +0.25"],
     ]
     assert even_precision([["p95 latency", "Few-shot (12 ex.)"]]) == [["p95 latency", "Few-shot (12 ex.)"]]
-    assert even_precision([["$0.000616"], ["$1"]]) == [["$0.000616"], ["$1"]], "past three decimals, nothing is padded"
+    # A column holding an amount under a cent reads per 1,000 throughout (#993), each amount moved by its digits.
+    assert even_precision([["$0.000616"], ["$1"]]) == [["$0.616/1000"], ["$1,000/1000"]]
+    assert even_precision([["0.000616"], ["1"]]) == [["0.000616"], ["1"]], "past three decimals, nothing is padded"
 
 
 #: Values across magnitudes, as a latency or cost column holds them: each reaches even_precision as format_number

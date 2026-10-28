@@ -411,8 +411,11 @@ def _served(tool: MountedTool) -> list[str]:
 #: again when a run's summary gained ``cap_checked_on_estimates`` (W4 PRICE), the one field its help page now lists,
 #: and again when ``analysis_generate`` moved to the report writer (W4 GEN): its summary and detail, and
 #: ``analysis_estimate``'s, describe the report budget, and the estimate gains ``bound`` and ``unchecked``.
+#: The editor's cut and the analyst tool moved at #993: the figure-key grammar they teach words its ``usd`` filter for
+#: money's one form per family (and its ``usd_per_1k`` filter its ruler moved per 1,000,000 under a cent), and its
+#: examples render money in it.
 _EVALS_BYTES = "926f69e0608b7b0a533a2ad4476a5ec99906b5c20ab7888d4d5f56d9be75e91d"
-_EDITOR_BYTES = "2a1e4201091bdd3a95e99774a668fa5c60cb22ca6674a73d1a1bc62d71351c27"
+_EDITOR_BYTES = "d9dfd5d9e8e3785a9fc37d31c5a9711f14c6dd2e37d0f069c0198f89918dd4f0"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's
 #: description and its topics.
@@ -436,7 +439,7 @@ _ANALYST_ACTIONS_BEFORE = [
     "block_render",
     "capability_gap",
 ]
-_ANALYST_BYTES = "2c5b842838dc0125e158b2982c541b5f59f73b916458421eca4a3eb32b08a87b"
+_ANALYST_BYTES = "bba54d1bf30cdff448b91ba2d85354e7ceeb38e61ee7b086856d7fe068f1d4d5"
 
 
 def test_the_evals_tool_serves_the_bytes_it_served_before() -> None:

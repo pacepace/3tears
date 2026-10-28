@@ -30,7 +30,7 @@ from packages.evals.tests.analyst_support import KAIRO, budget_inputs, fixture_i
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.cost_unit import per_count
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.kernel.numbers import spell_dollars, spell_multiple, spell_price
+from threetears.evals.kernel.numbers import spell_multiple
 from threetears.evals.analysis.report.figure_keys import (
     MULTIPLE_UNIT,
     cost_basis,
@@ -141,8 +141,12 @@ def test_a_multiple_reads_two_figures_whole_from_ten() -> None:
 
 
 def _price(text: str) -> float:
-    """The dollars a spelled price reads, as a reader would take them off the page."""
-    return float(text.split(" ", 1)[0].replace("$", "").replace(",", ""))
+    """The dollars a spelled price reads, as a reader would take them off the page: ``$8/1000`` is $0.008 (#993)."""
+    amount = text.split(" ", 1)[0].replace("$", "").replace(",", "")
+    digits, mark, _ = amount.partition("/1000")
+    # A price whose family is under a cent per 1,000 reads per 1,000,000 of what it counts (#993).
+    per_million = " per 1,000,000 " in f"{text} "
+    return float(digits) / (1000 if mark else 1) / (1000 if per_million else 1)
 
 
 #: The inputs declaring a monthly volume, which a monthly cost is read at.
@@ -165,20 +169,6 @@ def test_a_price_per_1000_times_the_volume_reaches_the_monthly_figure_beside_it(
         assert price * float(volume) / 1000 == pytest.approx(month, rel=0.005), arm
         checked += 1
     assert checked, "the control: a declared volume and a cost"
-
-
-def test_a_price_keeps_a_third_figure_only_where_cents_would_round_one_away() -> None:
-    assert [spell_price(amount) for amount in (0.302, 0.30, 0.1, 0.4949, -0.495, 1.655, 0.0123, 0.9996, 7560.0)] == [
-        "$0.302",
-        "$0.30",
-        "$0.10",
-        "$0.495",
-        "-$0.495",
-        spell_dollars(1.655),
-        "$0.0123",
-        "$1.00",
-        "$7,560.00",
-    ]
 
 
 #: Every input a cost some trials did not report is read on: the fixtures and Kairo round 2, whose arms each leave

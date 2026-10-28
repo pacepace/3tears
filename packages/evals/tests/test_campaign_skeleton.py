@@ -142,7 +142,8 @@ def test_a_cost_quality_chart_draws_a_point_per_arm_and_prints_every_figure_as_a
     assert headers == ["Arm", "Cost per 1,000 replies ($)", "Interval ($)", "Pass rate (%)", "Interval (%)"]
     assert chart.kit_chart()[1]["x_title"] == "Cost per 1,000 replies ($)"  # type: ignore[index]
     assert [row[0] for row in rows] == ["alpha", "beta"]
-    assert (rows[0][1], rows[0][2], rows[1][1]) == ("4", "[3.6, 4.4]", "0.8"), rows
+    # One form over the chart's costs (#993): $0.80 needs cents, so $4 beside it reads $4.00.
+    assert (rows[0][1], rows[0][2], rows[1][1]) == ("4.00", "[3.60, 4.40]", "0.80"), rows
     assert rows[0][3] == "85" and rows[0][4] == "[80, 90]"
 
 
@@ -185,8 +186,9 @@ def test_a_cost_quality_chart_is_drawn_one_point_per_arm_with_its_figures_in_wor
     assert isinstance(points, list) and [point["label"] for point in points] == ["alpha", "beta"]  # type: ignore[index]
     assert points[0]["tip"] == [  # type: ignore[index]
         "alpha",
-        "$4 per 1,000 replies",
-        "$0.004 [$0.0036, $0.0044] per reply",
+        # One form over the chart (#993), its interval on the chart's ruler: never $4 beside $0.8, nor a cost under a
+        # cent spelled per reply.
+        "$4.00 [$3.60, $4.40] per 1,000 replies",
         "pass rate 85% [80%, 90%]",
     ]
     assert data["y_domain"] == [0, 100] and data["x_domain"][0] == 0, "no axis is cut to flatter a gap"  # type: ignore[index]

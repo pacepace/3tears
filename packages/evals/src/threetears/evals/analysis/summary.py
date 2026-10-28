@@ -66,7 +66,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, computed_field, mo
 
 from threetears.evals.analysis.agreement import InterJudgeDimension, InterJudgeTally
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
-from threetears.evals.kernel.numbers import format_number, spell_dollars
+from threetears.evals.kernel.numbers import UNPRICED, format_number, spell_dollars
 from threetears.evals.analysis.reporting import (
     ModelIdentityTally,
     RequestSettingsReading,
@@ -118,10 +118,6 @@ from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
 from threetears.evals.kernel.remedies import FIND_RUN
 from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
-
-
-#: What an amount no client could price reads as. Never ``$0``: an unpriced call may have been billed.
-UNPRICED = "unpriced"
 
 
 def dollars_text(amount: float | None) -> str:

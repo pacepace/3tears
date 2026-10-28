@@ -30,16 +30,23 @@ Nothing here refuses: a label that does not read is a count unstated.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 
-from threetears.evals.kernel.numbers import format_number, group_thousands
-from threetears.evals.analysis.report_input import Measure
+from threetears.evals.kernel.numbers import MoneyForm, format_number, group_thousands, money_form
+from threetears.evals.analysis.report_input import Measure, ReportInput
 
 __all__ = [
+    "PRICED_SHARE_TEMPLATE",
+    "PRICED_TRIALS_TEMPLATE",
+    "MoneyRuler",
+    "money_ruler",
     "REPLIES",
     "CostBasis",
     "per_count",
     "per_noun",
+    "per_one",
+    "priced_in_part",
 ]
 
 #: What money per one trial is per, as the package counts trials: one trial is one reply.
@@ -99,6 +106,181 @@ def per_noun(measure: Measure) -> str:
         return ""
     noun = found.group("noun").strip()
     return noun if 0 < len(noun.split()) <= _MOST_WORDS else ""
+
+
+#: How many of the calls an arm's cost counts were priced, said beside an amount priced over only part of them: a
+#: smaller total, which no page states bare.
+PRICED_SHARE_TEMPLATE = "{priced} of {calls} calls priced"
+
+#: The words beside a run's total where only part of its trials' spend was priced, which counts trials, not calls.
+PRICED_TRIALS_TEMPLATE = "{priced} of {trials} trials priced"
+
+
+def priced_in_part(report_input: ReportInput, arm: str) -> str | None:
+    """Whether an arm's cost counts only part of its calls, as its pricing says (``ScoreboardRow.pricing``): the words
+    every surface states beside such an amount (``850 of 897 calls priced``); None where all were priced, or the input
+    does not say.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param arm: The arm, by id.
+    :ptype arm: str
+    :return: The words, or None.
+    :rtype: str | None
+    """
+    row = report_input.scoreboard.get(arm)
+    pricing = row.pricing if row is not None else None
+    if (
+        pricing is None
+        or pricing.calls is None
+        or pricing.priced_calls is None
+        or pricing.priced_calls >= pricing.calls
+    ):
+        return None
+    return PRICED_SHARE_TEMPLATE.format(priced=pricing.priced_calls, calls=pricing.calls)
+
+
+#: The most of what money counts a ruler states it per: a set under a cent even per 1,000,000 reads there, to the
+#: decimals its least amount needs.
+_MOST_COUNTED = 1_000_000
+
+
+@dataclass(frozen=True)
+class MoneyRuler:
+    """How a set of money amounts is stated (#993), from :func:`money_ruler`, the one owner of money's scale: the form
+    every amount is spelled in, what an amount is multiplied by to be drawn, and how many of what it counts each drawn
+    amount is per.
+
+    :ivar form: The drawn amounts' one form (:func:`~threetears.evals.kernel.numbers.money_form`).
+    :ivar scale: What an amount as stored is multiplied by to be drawn (1000 for money per reply drawn per 1,000
+        replies; 1 for a total, which is never scaled).
+    :ivar counted: How many of what the money counts each drawn amount is per; 0 for a total (a run's cost, a month's),
+        which counts nothing.
+    """
+
+    form: MoneyForm
+    scale: float
+    counted: int
+
+    def drawn(self, value: float) -> float:
+        """An amount as stored, as drawn."""
+        return value * self.scale
+
+    def spell(self, value: float, *, signed: bool = False) -> str:
+        """An amount as stored, spelled as drawn, in the set's form."""
+        return self.form.spell(value * self.scale, signed=signed)
+
+    def words(self, noun: str) -> str:
+        """The words a drawn amount is per (``per 1,000,000 calls``); empty for a total."""
+        return per_count(noun, self.counted) if self.counted else ""
+
+    def label(self, label: str, noun: str, own: int) -> str:
+        """A label naming the money (a measure's name, a column's head) with the drawn count in it: the count the
+        label states for its own unit (``own``: 1,000 in ``Cost per 1k calls``) replaced by the drawn one (``Cost per
+        1,000,000 calls``), or, where the label states none (money per reply, whose label names no count), the drawn
+        count's words after it (``Cost per reply, per 1,000 replies``). Never two counts: unchanged where the drawn
+        count is the label's own, and for a total.
+
+        :param label: The label as the input or the page writes it.
+        :ptype label: str
+        :param noun: What the money counts, as a plural noun.
+        :ptype noun: str
+        :param own: The count the money's own unit is per (1 for money per reply, 1,000 for a price per 1,000).
+        :ptype own: int
+        :return: The label with the drawn count.
+        :rtype: str
+        """
+        if not self.counted or self.counted == own:
+            return label
+        if own == 1 and noun:
+            # Money per one of what it counts states its count as ``per reply``: the drawn count replaces it.
+            single = re.search(rf"(?<!\w){re.escape(per_one(noun))}(?!\w)", label, re.I)
+            if single is not None:
+                return label[: single.start()] + self.words(noun) + label[single.end() :]
+        spellings = _COUNT_SPELLINGS.get(own)
+        if spellings is not None:
+            found = (
+                re.search(rf"(?<!\w)(?:per\s+)?(?:{spellings})\s+{re.escape(noun)}(?!\w)", label, re.I)
+                if noun
+                else None
+            )
+            if found is not None:
+                return label[: found.start()] + self.words(noun) + label[found.end() :]
+        return f"{label}, {self.words(noun)}"
+
+    def for_changes(self, changes: Iterable[float | None], widths: Iterable[float | None] = ()) -> MoneyRuler:
+        """The ruler changes between the set's amounts are stated on: the set's own scale and count, so a change
+        chart scales as the amounts it compares do, in the changes' form (their own precision, capped by their
+        widest interval: :meth:`~threetears.evals.kernel.numbers.MoneyForm.for_changes`).
+
+        :param changes: The changes, as stored.
+        :ptype changes: Iterable[float | None]
+        :param widths: The widths of their intervals, as stored.
+        :ptype widths: Iterable[float | None]
+        :return: The changes' ruler.
+        :rtype: MoneyRuler
+        """
+        form = self.form.for_changes(
+            (change * self.scale if change is not None else None for change in changes),
+            (width * self.scale if width is not None else None for width in widths),
+        )
+        return MoneyRuler(form=form, scale=self.scale, counted=self.counted)
+
+
+def money_ruler(amounts: Iterable[float | None], *, per: int, start: int = 0, marked: bool = True) -> MoneyRuler:
+    """The one owner of how a set of money amounts is stated (:class:`MoneyRuler`): every chart, table and figure key
+    reads its scale, its form and its count from here, so no surface chooses its own.
+
+    An amount that counts something (money per reply, per 1,000 or per 1,000,000 of what it counts) is drawn per
+    ``start`` of it, and, where some amount is under a cent there, per a thousand times more, up to 1,000,000: the
+    ruler moves, and the per-1,000 mark is never stacked on it. A set still under a cent per 1,000,000 moves no
+    further: it reads at that count, in dollars to the decimals its least amount needs for two significant figures
+    (``$0.0030 per 1,000,000 replies``), never with the mark beside the count. A total (``per`` 0: a run's cost, a month's) counts
+    nothing and is never scaled: a set of totals under a cent reads per 1,000 with its mark (``$8.00/1000``) where the
+    surface can write one (``marked``), else in dollars to the decimals its least amount needs.
+
+    :param amounts: Every amount the set holds, as stored.
+    :ptype amounts: Iterable[float | None]
+    :param per: How many of what it counts one stored amount is per: 1 for money per reply, 1,000 or 1,000,000 for a
+        price per that many; 0 for a total.
+    :ptype per: int
+    :param start: The least count to state it per (a chart states money per reply per 1,000 replies); ``per`` where
+        unset.
+    :ptype start: int
+    :param marked: Whether the surface can write the per-1,000 mark (a key and a table can; a chart's ticks cannot):
+        read for a total only, since a counted set states its count instead.
+    :ptype marked: bool
+    :return: The ruler.
+    :rtype: MoneyRuler
+    """
+    held = [amount for amount in amounts if amount is not None]
+    if per == 0:
+        return MoneyRuler(form=money_form(held, marked=marked), scale=1.0, counted=0)
+    count = max(start, per)
+    while money_form(amount * count / per for amount in held).per_thousand and count < _MOST_COUNTED:
+        count *= 1000
+    # A counted set states its count, so it never carries the per-1,000 mark beside it, at the cap included.
+    form = money_form((amount * count / per for amount in held), marked=False)
+    return MoneyRuler(form=form, scale=count / per, counted=count)
+
+
+def per_one(noun: str) -> str:
+    """The words a cost per one of ``noun`` is printed with: ``per reply``, ``per conversation``.
+
+    :param noun: What the cost counts, as a plural noun (:func:`per_noun`); empty where the input does not say.
+    :ptype noun: str
+    :return: ``per`` and the noun made singular (``replies`` to ``reply``, ``calls`` to ``call``); ``per`` and
+        ``(unit not stated)`` where the noun is empty.
+    :rtype: str
+    """
+    if not noun:
+        return f"per {_UNSTATED}"
+    *rest, last = noun.split(" ")
+    if last.endswith("ies"):
+        last = last[:-3] + "y"
+    elif last.endswith("s") and not last.endswith("ss"):
+        last = last[:-1]
+    return "per " + " ".join([*rest, last])
 
 
 def per_count(noun: str, count: int = 1_000) -> str:

@@ -314,18 +314,24 @@ class TestFilters:
     def test_usd_per_1k_states_its_ruler(self):
         assert _figure("scoreboard.September.reply_cost_usd", "usd_per_1k") == "$1.89 per 1,000 replies"
         assert _figure("cost_per_1k.September", "usd_per_1k") == "$1.89 per 1,000 replies"
-        # Under a dollar a price keeps its third significant figure, which cents would round away.
-        assert _figure("contrast.1017.production_replicating_cost.delta", "usd_per_1k") == "+$0.492 per 1,000 replies"
+        # A change reads to the two figures its interval's width supports (#993): +$0.49 on an interval $0.64 wide.
+        assert _figure("contrast.1017.production_replicating_cost.delta", "usd_per_1k") == "+$0.49 per 1,000 replies"
 
     def test_a_price_per_million_states_its_ruler_in_what_its_label_counts(self):
         counted = _counted("r3", "cost_per_1m")
-        assert _figure("measure.cost_per_1m.brisk-s.few.mean", name="r3") == f"$40 per 1,000,000 {counted}"
-        assert _figure("measure.cost_per_1m.atlas-m.rubric.mean", name="r3") == f"$610 per 1,000,000 {counted}"
+        # One form for the family (#993): cents, which its least price ($1.30) needs.
+        assert _figure("measure.cost_per_1m.brisk-s.few.mean", name="r3") == f"$40.00 per 1,000,000 {counted}"
+        assert _figure("measure.cost_per_1m.atlas-m.rubric.mean", name="r3") == f"$610.00 per 1,000,000 {counted}"
 
     def test_a_price_per_million_keeps_reading_whole_and_reads_per_thousand(self):
         counted = _counted("r3", "cost_per_1m")
         assert _figure("measure.cost_per_1m.atlas-m.zero.mean", "int", name="r3") == "180"
-        assert _figure("measure.cost_per_1m.atlas-m.zero.mean", "usd_per_1k", name="r3") == f"$0.18 per 1,000 {counted}"
+        # Per 1,000 the family's least price is under a cent ($0.0013), so its ruler moves to per 1,000,000 (#993),
+        # never a per-1,000 mark stacked on a per-1,000 ruler.
+        assert (
+            _figure("measure.cost_per_1m.atlas-m.zero.mean", "usd_per_1k", name="r3")
+            == f"$180.00 per 1,000,000 {counted}"
+        )
 
     def test_usd_whole_drops_a_large_amounts_cents_and_groups_its_thousands(self):
         held = _input("r4")

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Annotated, Any, Literal, Self, get_args
 
 from pydantic import Field, JsonValue, model_validator
@@ -32,7 +32,9 @@ from threetears.evals.analysis.report.charts import (
     ScatterPoint,
     Token,
 )
+from threetears.evals.analysis.report.cost_unit import REPLIES, money_ruler, per_count
 from threetears.evals.analysis.report.plan_page.look import arm_shape, arm_token, cost_axis_format
+from threetears.evals.kernel.numbers import MoneyForm, money_form
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
@@ -500,6 +502,20 @@ class TableCell(EvalDocumentModel):
             "serializer prints it after the value, in parentheses. None for none."
         ),
     )
+    decimals: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description=(
+            "For a money number, the decimals its column's one form writes it to (#993), chosen from every amount the "
+            "column holds; None for none, and the number rule spells the number."
+        ),
+    )
+    per_thousand: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="For a money number with `decimals`, whether its column reads per 1,000 (`$8.00/1000`).",
+    )
     status: ChartStatus | None = Field(
         default=None,
         description=(
@@ -563,6 +579,25 @@ class TableCell(EvalDocumentModel):
             raise ValueError(f"the cell's interval runs from {self.low} down to {self.high}")
         return self
 
+    def _money_form(self) -> MoneyForm | None:
+        """The one form a money number in this cell is written in, its column's (``decimals``, ``per_thousand``);
+        None where the cell holds no money number, or no form was given, so the number rule spells it."""
+        if self.decimals is None or not self.is_number or not is_money(self.unit):
+            return None
+        return MoneyForm(per_thousand=self.per_thousand, decimals=self.decimals)
+
+    def amount(self, number: float) -> str:
+        """A number of this cell's (its value, or an end of its interval) as the cell writes it: in its money form where
+        it holds one, else in its unit by the number rule.
+
+        :param number: The number, in the cell's unit.
+        :ptype number: float
+        :return: Its text.
+        :rtype: str
+        """
+        form = self._money_form()
+        return form.spell(number) if form is not None else with_unit(number, self.unit)
+
     @property
     def is_number(self) -> bool:
         """Whether the cell holds a number (a boolean is not one)."""
@@ -573,10 +608,70 @@ class TableCell(EvalDocumentModel):
         """``value`` as every serializer prints it, its ``flag`` after it in parentheses; the interval, where the cell
         has one, is the glyph's and the row's own interval column's, never spelled here twice."""
         if self.unit and isinstance(self.value, int | float) and not isinstance(self.value, bool):
-            said = with_unit(self.value, self.unit)
+            said = self.amount(self.value)
         else:
             said = render_cell(self.value)
         return said if self.flag is None else f"{said} ({self.flag})"
+
+
+def money_columns(
+    rows: Sequence[Mapping[str, TableCell]], *, by_row: Sequence[str | None] | None = None, marked: bool = True
+) -> list[dict[str, TableCell]]:
+    """A table's rows with each set of its money in one form (#993). A set is every amount of one figure type the
+    table shows, across its rows and columns: by default a column's (a table of arms by measure); where ``by_row``
+    names a row's figure type (a table of slices by arm, each row one measure across the arms), every money cell of
+    the rows naming the same one. Every money number a set holds, and the ends of its intervals, choose the set's
+    :func:`~threetears.evals.kernel.numbers.money_form` from the values themselves, never from one cell, and every
+    such cell is written in it (:meth:`TableCell.amount`). A set under a cent reads per 1,000 with its mark, unless
+    the table states the count its money is drawn per (``marked`` False: its head or its row names it), where a set
+    still under a cent at the ruler's cap reads in dollars to the decimals its least amount needs, never with the
+    mark beside that count. The values are as stored, so
+    the shared decimals state no digit a value does not hold; a cell of words, of another unit, or already carrying a
+    form its builder chose from a wider set, is left as it is.
+
+    :param rows: The table's rows, by column key.
+    :ptype rows: Sequence[Mapping[str, TableCell]]
+    :param by_row: Each row's figure type, where the table lays one per row (``None`` for a row whose money is set by
+        its column); unset for a table whose every set is a column.
+    :ptype by_row: Sequence[str | None] | None
+    :param marked: Whether a set under a cent may carry the per-1,000 mark; False for a table that names the count
+        its money is drawn per.
+    :ptype marked: bool
+    :return: The rows, each money cell carrying its set's form.
+    :rtype: list[dict[str, TableCell]]
+    """
+
+    def chosen(cell: TableCell) -> bool:
+        return cell.is_number and is_money(cell.unit) and cell.decimals is None
+
+    def set_of(at: int, key: str) -> tuple[str, str]:
+        kind = by_row[at] if by_row is not None else None
+        return ("row", kind) if kind is not None else ("column", key)
+
+    held: dict[tuple[str, str], list[float]] = {}
+    for at, row in enumerate(rows):
+        for key, cell in row.items():
+            if chosen(cell):
+                held.setdefault(set_of(at, key), []).extend(
+                    float(number)
+                    for number in (cell.value, cell.low, cell.high)
+                    if isinstance(number, int | float) and not isinstance(number, bool)
+                )
+    forms = {name: money_form(amounts, marked=marked) for name, amounts in held.items()}
+    return [
+        {
+            key: cell.model_copy(
+                update={
+                    "decimals": forms[set_of(at, key)].decimals,
+                    "per_thousand": forms[set_of(at, key)].per_thousand,
+                }
+            )
+            if chosen(cell)
+            else cell
+            for key, cell in row.items()
+        }
+        for at, row in enumerate(rows)
+    ]
 
 
 def table_row(values: Mapping[str, CellValue | TableCell]) -> dict[str, TableCell]:
@@ -904,19 +999,42 @@ class ChartBlock(_Block):
         ]
         return BarsChart(rows=rows, domain=(0, longest or 1), fmt="int", legend=legend)
 
+    def _cost_drawn(self) -> tuple[Callable[[float], str], float, str]:
+        """How a cost/quality chart draws its costs: the speller of one cost as stored, the scale it is drawn at, and
+        the words of the count it is drawn per. Money is on the one owner's ruler over every point's cost and its
+        interval's ends (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`, #993): per 1,000 replies, or
+        per 1,000,000 where a cost is under a cent per 1,000, every amount in the chart's one form; any other unit per
+        1,000 replies by the number rule."""
+        if not is_money(self.unit):
+            return (
+                lambda amount: with_unit(amount * _REPLIES_PER_COST_UNIT, self.unit),
+                _REPLIES_PER_COST_UNIT,
+                per_count(REPLIES),
+            )
+        ruler = money_ruler(
+            (amount for point in self.points for amount in (point.cost, point.cost_low, point.cost_high)),
+            per=1,
+            start=_REPLIES_PER_COST_UNIT,
+            marked=False,
+        )
+        return ruler.spell, ruler.scale, ruler.words(REPLIES)
+
     def _cost_quality_scatter(self) -> ScatterChart:
         """A cost/quality chart as the kit's scatter: each arm a point in its colour and mark at its cost per 1,000
         replies and its pass rate, labelled by its short name (by its tag on a phone), the legend naming each tag's
         arm; the cost axis from zero to past the dearest arm, the pass rate's from zero to 100%, so no axis is cut to
         flatter a gap. Cost is drawn per 1,000 replies, since a reply's own cost is a fraction of a cent an axis
         cannot print, and the axis carries the digits its ticks need (:func:`~threetears.evals.analysis.report.plan_page.look.cost_axis_format`). No frontier is
-        drawn, since none is tested."""
-        top = max(point.cost for point in self.points) * _REPLIES_PER_COST_UNIT * 1.15 or 1
+        drawn, since none is tested. Money's ruler is the one owner's over every point's cost and interval
+        (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`, #993): per 1,000 replies, or per 1,000,000
+        where a cost is under a cent per 1,000, each tip's cost and its interval in the chart's one form."""
+        cost, scale, per = self._cost_drawn()
+        top = max(point.cost for point in self.points) * scale * 1.15 or 1
         unit = f" ({unit_label(self.unit)})" if self.unit else ""
         tagged = all(point.tag is not None for point in self.points)
         points = [
             ScatterPoint(
-                x=point.cost * _REPLIES_PER_COST_UNIT,
+                x=point.cost * scale,
                 y=point.pass_rate,
                 label=point.short_name or point.arm,
                 narrow_label=point.tag or point.short_name or point.arm,
@@ -924,9 +1042,7 @@ class ChartBlock(_Block):
                 shape=arm_shape(point.tag),
                 tip=[
                     point.arm,
-                    f"{with_unit(point.cost * _REPLIES_PER_COST_UNIT, self.unit)} per 1,000 replies",
-                    f"{with_unit(point.cost, self.unit)} "
-                    f"[{with_unit(point.cost_low, self.unit)}, {with_unit(point.cost_high, self.unit)}] per reply",
+                    f"{cost(point.cost)} [{cost(point.cost_low)}, {cost(point.cost_high)}] {per}",
                     f"pass rate {with_unit(point.pass_rate, PERCENT)} "
                     f"[{with_unit(point.pass_rate_low, PERCENT)}, {with_unit(point.pass_rate_high, PERCENT)}]",
                 ],
@@ -947,7 +1063,7 @@ class ChartBlock(_Block):
             y_domain=(0, 100),
             x_fmt=cost_axis_format(top, money=is_money(self.unit)),
             y_fmt="pct",
-            x_title=f"Cost per 1,000 replies{unit}",
+            x_title=f"Cost {per}{unit}",
             y_title="Pass rate",
             legend=legend,
         )
@@ -973,13 +1089,20 @@ class ChartBlock(_Block):
             # place where no script runs) reads what the axis does; each figure's interval follows it, as the pass
             # rate's does.
             cost = f" ({unit_label(self.unit)})" if self.unit else ""
-            per = _REPLIES_PER_COST_UNIT
-            headers = ["Arm", f"Cost per 1,000 replies{cost}", f"Interval{cost}", "Pass rate (%)", "Interval (%)"]
+            spelled, scale, per = self._cost_drawn()
+
+            def bare(amount: float) -> str:
+                # The head carries the sign, so a cell reads the number alone: money in the chart's one form.
+                return (
+                    spelled(amount).replace("$", "", 1) if is_money(self.unit) else number_in(amount * scale, self.unit)
+                )
+
+            headers = ["Arm", f"Cost {per}{cost}", f"Interval{cost}", "Pass rate (%)", "Interval (%)"]
             return headers, [
                 [
                     point.arm,
-                    interval_value_text(point.cost * per, self.unit),
-                    interval_text(point.cost_low * per, point.cost_high * per, self.unit),
+                    bare(point.cost),
+                    f"[{bare(point.cost_low)}, {bare(point.cost_high)}]",
                     interval_value_text(point.pass_rate, PERCENT),
                     interval_text(point.pass_rate_low, point.pass_rate_high, PERCENT),
                 ]
@@ -1158,5 +1281,6 @@ __all__ = [
     "interval_text",
     "interval_value_text",
     "reading_anchor",
+    "money_columns",
     "table_row",
 ]

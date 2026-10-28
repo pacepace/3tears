@@ -35,7 +35,7 @@ from packages.evals.tests.analyst_support import fixture_inputs, shape_snapshots
 from threetears.evals.analysis.analyst.blocks import block_render
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.kernel.numbers import format_number, group_thousands
+from threetears.evals.kernel.numbers import format_number, group_thousands, money_form
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import BarsChart, ForestChart
 from threetears.evals.analysis.report.figure_keys import format_figure, price_frontier, resolve
@@ -45,7 +45,6 @@ from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.analysis.style import humanize
-from threetears.evals.analysis.summary import dollars_text
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.report_plan import ChartQuery, PlannedChart
 
@@ -388,20 +387,20 @@ def _price_charts() -> list[tuple[ReportInput, BarsChart]]:
 
 
 def test_a_money_charts_labels_and_ticks_share_one_spelling_grouped() -> None:
+    """A price chart's notes and its ticks in the one form of every amount it draws (#993): whole dollars where the
+    least is $10 or more, else cents and up; the kit draws its ticks to the same decimals, thousands grouped."""
     for _held, data in _price_charts():
         assert data.rows is not None
-        assert data.fmt == "usd" and data.tick_fmt in (None, data.fmt), (data.fmt, data.tick_fmt)
+        drawn = [end for row in data.rows for end in (row.value, row.lo, row.hi) if end is not None]
+        form = money_form(drawn)
+        assert data.fmt == f"usd:{form.decimals}" and data.tick_fmt in (None, data.fmt), (data.fmt, data.tick_fmt)
         for row in data.rows:
             assert row.note is not None and row.value is not None
             spelled = _MONEY.match(row.note)
             assert spelled is not None, row.note
-            digits = row.note.lstrip("+-$")
+            digits = row.note.lstrip("+-$").split(" ")[0]
             assert digits == group_thousands(digits.replace(",", "")), row.note
-            if abs(row.value) >= 10:
-                assert spelled.group(2) is None, row.note
-                assert float(digits.replace(",", "")) == round(abs(row.value))
-            else:
-                assert row.note.lstrip("+-") == dollars_text(abs(row.value)), row.note
+            assert row.note.split(" (")[0] == form.spell(row.value), row.note
 
 
 # =============================================================================

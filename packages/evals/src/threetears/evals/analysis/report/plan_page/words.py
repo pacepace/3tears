@@ -36,6 +36,7 @@ __all__ = [
     "BASIS_NOTE",
     "ANSWER_TEMPLATES",
     "APPENDIX_TITLE",
+    "ALL_PRICED_TEMPLATE",
     "ARM_HEADERS",
     "ARM_ROLE_WORDS",
     "ARMS_EYEBROW",
@@ -69,10 +70,14 @@ __all__ = [
     "OPTIONS_TITLE",
     "OPTION_HEADERS",
     "PASSES_TEMPLATE",
+    "PRICED_HEADER",
     "REFERENCE_TEMPLATE",
     "REPEAT_TEMPLATE",
     "RECOMMENDED_MARK",
     "ROLE_WORDS",
+    "SERVED_BY_TEMPLATE",
+    "UPLIFT_NOT_COMPARABLE",
+    "MONEY_DRAWN_NOTE",
     "RUN_TEMPLATE",
     "SYNTHETIC",
     "STATISTIC_NOTE",
@@ -112,7 +117,6 @@ __all__ = [
     "PRICE_STEP_NOTES",
     "PRICE_STEP_TEMPLATE",
     "TABLE_HEADERS",
-    "TABLE_PER_THOUSAND",
     "COST_HEADER",
     "INTERVAL_HEADER",
     "LOG_BARS_NOTE",
@@ -195,6 +199,23 @@ COST_HEADER = "Cost {per}"
 
 #: A count out of a total, as a cell's marker reads it: passes over usable trials, usable trials over those run.
 PASSES_TEMPLATE = "{passed} of {usable}"
+
+#: The arms table's column saying what priced each arm's cost: its price sources, and who served its calls beside them.
+PRICED_HEADER = "Priced by"
+
+#: Who served an arm's calls, beside its price sources.
+SERVED_BY_TEMPLATE = "served by {providers}"
+
+#: An arm's priced share of the calls its cost counts, beside its cost: all of them, or how many of how many. A partly
+#: priced arm says the second in place of its cost, which would be a smaller total read as whole.
+ALL_PRICED_TEMPLATE = "all {calls} calls priced"
+
+#: Code's line under a chart whose money is drawn per more of what it counts than its figures state: money per reply
+#: drawn per 1,000 replies, a price per 1,000 drawn per 1,000,000 where one is under a cent (#993).
+MONEY_DRAWN_NOTE = "{name}, in dollars."
+
+#: The uplift beside an arm's cost where the control's cost counts only part of its calls: no ratio to a smaller total.
+UPLIFT_NOT_COMPARABLE = "no uplift: the control has {share}"
 
 #: An arm's role, as the arms key and the options table's control row say it.
 ARM_ROLE_WORDS: dict[str, str] = {"control": "Control", "challenger": "Candidate"}
@@ -650,9 +671,6 @@ PRICE_OPEN_NOTE = (
 #: An interval column's head in a plain table: the chart's interval level, where it states one (``95% interval``).
 INTERVAL_HEADER = "{level} interval"
 
-#: What a plain table states a money figure per reply per, beside its measure's name: its count, as the input states
-#: it (``per 1,000 replies``).
-TABLE_PER_THOUSAND = "{name}, {per}"
 
 #: How a target-matrix cell's two levels read together, in a plain table.
 CELL_TEMPLATE = "{row} × {column}"

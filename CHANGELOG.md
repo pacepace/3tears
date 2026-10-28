@@ -6,6 +6,61 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: money reads one form per figure type, tiny amounts per 1,000 (#993), and each arm's cost sits beside its quality
+
+**Changed:** money is spelled one way per set, never per value (owner ruling of 2026-10-27, which supersedes the W2c
+rule of three significant figures from $0.10 to $1), and one owner states every set: `cost_unit.money_ruler`, which
+every chart, table and figure key of the report document and the planned page reads its scale, form and count from,
+and the code-only report's money rulers, tables, means and intervals too (its ± spreads and margin lines keep the
+number rule; a cost there drawn per 1,000,000 replies is headed `($/1,000,000 replies)`, where it read
+`($/1,000 replies)`). A set is every amount of one figure type a table or chart shows, across its rows and columns:
+a column of arms by measure, and in a table of slices by arm (Full results' strata, tasks and cells) each measure's
+every row across the arms, so r1's tasks read `$58.00 | $24.00 | $4.60 | $8.90`, where a row read `$58 | $24 | $4.60 |
+$8.90`; the code-only report's two arms' means in one row, a contrast's change and its interval's ends (`$0.47 |
+[$0.35, $0.60]`, where it read `$0.51 | [$0.4107, $0.606]`), and its projected costs (`$0.92` beside `$11.00`, where
+it read `$2.3` beside `$27`); and the campaign page's cost/quality chart, its tips and its table (`$4.00 [$3.60,
+$4.40] per 1,000 replies` beside `$0.80`, where a tip read `$4` beside `$0.8`, and a cost under a cent per reply is no
+longer spelled per reply). The code-only report's Methods row states a partly priced total as one (`cheaper candidate
+$0.063 (21 of 24 trials priced)`), as every other surface does. A set's form is chosen from the amounts
+themselves: whole dollars where the least is $10 or more (`$7,560`); else cents, with more decimals only where the
+least amount needs them for two significant figures (`$0.030` beside `$3.477`, so r2's `$0.302` reads alike in prose
+and in its tables). Where an amount is under a cent the ruler moves instead: money per reply is stated per 1,000
+replies, and a set under a cent per 1,000 per 1,000,000 (r3's keys read `$180.00 per 1,000,000 turns`), the words
+replacing the label's own count, never stacked beside it (`Cost per 1,000,000 calls`, never `Cost per 1k calls, per
+1,000,000 calls`). A chart says what its dollars are per in a line under it and in its titles, and draws its ticks
+and notes to the same decimals (the kit's `usd:<decimals>`), never with a per-1,000 mark its ticks cannot write. A
+set still under a cent per 1,000,000 moves no further: it reads at that count, to the decimals its least amount needs
+for two significant figures (`$0.0030` under `($/1,000,000 replies)`), never with the per-1,000 mark beside the count,
+so no amount carries two scales. A total (a run's cost, a month's) counts nothing and is never scaled; a bare key or a
+table of totals under a cent writes the per-1,000 mark instead (`$8.00/1000` for $0.008). One exception, a chart of totals under a cent: it has no
+ruler to move, and the chart kit's ticks can write neither the per-1,000 mark nor a bare count of thousandths that its
+values table would spell alike, so such a chart reads in dollars to the decimals its least total needs (`$0.00048`),
+where a key or a table writes the same total `$0.48/1000`. A gate's reason and a gate row's line state money on the
+criterion's ruler (the measure's every arm and the line), the count named once in the criterion's name (`Cost budget,
+per 1,000,000 calls $1.060 > $0.302`). A chart's lines name what its dollars are per by the measure's reader name,
+never a code key (`Cost per 1,000 replies, in dollars.`, where the scoreboard's key once showed). A change reads on the ruler of the amounts it compares,
+never scaled because an interval end sits near zero, to the precision of the change itself and of its widest
+interval: Kairo's production-cost contrast now reads `+$0.49 per 1,000 replies`, where it read `+$0.492` on an
+interval $0.64 wide, and a $0.40 change between monthly totals of $1,208 reads `+$0.40`, never `$0`. An unknown
+amount reads `unpriced`, never `$0`. The single-value helpers `dollars_text`, `format_number` and `spell_dollars`
+read exactly as before, so a host printing one amount sees no change. `numbers.spell_price`, which never shipped, is
+removed.
+
+**Added:** the report document's options table puts each arm's quality beside its cost: its pass rate (passes over
+usable trials), then its cost per run, or per 1,000 runs where the column reads per 1,000 (the header says which),
+then what priced it. Beside the cost: the uplift on the control's, the priced share of the calls the cost counts
+(`all 897 calls priced`) and the unanswered calls, as before. An arm only part of whose calls were priced states
+`850 of 897 calls priced` in place of a cost, which would be a smaller total read as whole; an arm none of whose
+calls were priced reads `unpriced`; and no uplift is read against a partly priced control (`no uplift: the control
+has 850 of 897 calls priced`). Everywhere else such an amount is stated, its figure keys (`cost_per_1k`, a cost
+uplift or gap), a chart's bars, dots, points and lattice tiles, and a task matrix's costs say the priced share beside
+it. The new "Priced by" column names each arm's price sources and the providers that served its calls. They come from
+a new optional `ScoreboardRow.pricing` on the report input (price sources, serving providers, calls and priced
+calls), left out of the document while unset so every stored input digests as it did. Nothing fills it from a
+campaign's stored usage yet: reading it into the bundle's census moves the pinned campaign fingerprints, which waits
+on its own decision (#1011). Token-metered calls record no upstream serving provider yet (#1010). Monthly figures
+still appear only where the campaign declares a volume.
+
 ### evals: `analysis_generate` writes the report with the analyst and the report editor, on the host's model and budget
 
 **Changed:** a generation no longer runs the report planner. Its job freezes the campaign's evidence and runs the

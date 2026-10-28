@@ -42,6 +42,7 @@ one decimal, as the rows' keys read (:func:`~threetears.evals.analysis.report.pl
 from __future__ import annotations
 
 import dataclasses
+import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
@@ -53,14 +54,16 @@ from threetears.evals.analysis.report.plan_page.charting import (
     ChartContext,
     Drawn,
     KindResolver,
-    chart_block,
+    money_drawn,
     contrast_groups,
     contrast_unit_of,
     contrast_words,
     figure_stat,
     figure_unit,
+    held_means,
     interval_words,
     measure_words,
+    money_words,
     missing_note,
     reference_line,
     separated,
@@ -70,7 +73,14 @@ from threetears.evals.analysis.report.plan_page.charting import (
     stat_value,
     unit_refusal,
 )
-from threetears.evals.analysis.report.plan_page.look import Quantity, centred_domain, figure_text, quantity
+from threetears.evals.analysis.report.plan_page.look import (
+    Quantity,
+    centred_domain,
+    figure_text,
+    in_change_form,
+    quantity,
+    quantity_of,
+)
 from threetears.evals.analysis.report.plan_page.words import (
     BASIS_NOTE,
     COMPARE_NARROW_NOTE,
@@ -93,7 +103,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     change_words,
 )
 from threetears.evals.kernel.numbers import format_number
-from threetears.evals.analysis.quantities import PERCENT, POINTS
+from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.figure_keys import arm_settings, correction_words, pairing_contrast
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_rows import lever_arms
@@ -126,6 +136,79 @@ class _Change:
     group: str | None = None
     panel: str | None = None
     short_label: str | None = None
+
+
+def _in_one_form(
+    context: ChartContext, keys: Sequence[str], changes: list[_Change], drawn: Quantity
+) -> tuple[list[_Change], Quantity]:
+    """A chart's money changes on one ruler (#993): the ruler of the amounts they compare (every mean the input holds
+    of the chart's measures, by the one owner of money's scale), so a change chart scales as its source set does and
+    never because an interval end sits near zero; in the changes' own form, capped by their widest interval. Each
+    change is redrawn at that ruler's factor, its note and tip respelled in it, and its measure's words name what its
+    money is drawn per. Changes of any other unit are returned as they are.
+
+    :param context: The chart being resolved.
+    :ptype context: ChartContext
+    :param keys: The measures the changes are on.
+    :ptype keys: Sequence[str]
+    :param changes: The changes, drawn at ``drawn``.
+    :ptype changes: list[_Change]
+    :param drawn: Their unit's change quantity, as :func:`quantity` makes it.
+    :ptype drawn: Quantity
+    :return: The changes and their quantity.
+    :rtype: tuple[list[_Change], Quantity]
+    """
+    report_input = context.report_input
+    money = _money_keys(context, keys)
+    if drawn.unit != MONEY or not money or not changes:
+        return changes, drawn
+    amounts = _amounts_drawn(context, keys)
+    if amounts is None:
+        return changes, drawn
+    scale = amounts.factor / drawn.factor
+    settled = in_change_form(
+        amounts,
+        [change.value * scale for change in changes],
+        [abs(change.interval[1] - change.interval[0]) * scale for change in changes if change.interval is not None],
+    )
+    names = {measure_words(report_input, key): money_words(report_input, key, settled) for key in money}
+
+    def respelled(text: str, numbers: Sequence[float]) -> str:
+        for number in numbers:
+            text = text.replace(figure_text(number, drawn), figure_text(number * scale, settled))
+        return relabelled(text)
+
+    moved = {old: new for old, new in names.items() if old != new}
+    # One pass, the longest name first, so a measure named inside another's name (``cost`` in ``production replicating
+    # cost``) is never replaced twice.
+    pattern = re.compile("|".join(re.escape(old) for old in sorted(moved, key=len, reverse=True))) if moved else None
+
+    def relabelled(text: str | None) -> str:
+        if not text or pattern is None:
+            return text or ""
+        return pattern.sub(lambda found: moved[found.group(0)], text)
+
+    redrawn = []
+    for change in changes:
+        numbers = (change.value, *(change.interval or ()))
+        redrawn.append(
+            dataclasses.replace(
+                change,
+                value=change.value * scale,
+                interval=(change.interval[0] * scale, change.interval[1] * scale) if change.interval else None,
+                note=respelled(change.note, numbers),
+                tip=[respelled(line, numbers) for line in change.tip],
+                label=relabelled(change.label),
+                group=relabelled(change.group) if change.group is not None else None,
+            )
+        )
+    return redrawn, settled
+
+
+def _drawn_money(context: ChartContext, drawn: Quantity) -> list[tuple[str, Quantity]]:
+    """Each measure a change chart reads, with the one quantity its changes are drawn as (the one-unit rule)."""
+    keys = dict.fromkeys([*context.query.measures, *(row.key for row in context.rows() if row.key)])
+    return [(key, drawn) for key in keys]
 
 
 @dataclass(frozen=True)
@@ -230,7 +313,8 @@ def _contrast_changes(
                     panel=named if panelled else None,
                 )
             )
-    return changes, drawn or quantity("points"), _missing_contrasts(context, contrasts)
+    keys = [group.key for group in groups]
+    return (*_in_one_form(context, keys, changes, drawn or quantity("points")), _missing_contrasts(context, contrasts))
 
 
 def _missing_contrasts(context: ChartContext, contrasts: Sequence[Contrast]) -> tuple[str, ...]:
@@ -262,10 +346,21 @@ def _control_or_refuse(context: ChartContext) -> str:
 
 
 def _descriptive(
-    context: ChartContext, key: str, arm: str, mine: Stat | None, theirs: Stat | None, drawn: Quantity, where: str = ""
+    context: ChartContext,
+    key: str,
+    arm: str,
+    mine: Stat | None,
+    theirs: Stat | None,
+    drawn: Quantity,
+    where: str = "",
+    *,
+    keys: Sequence[str] = (),
 ) -> _Change | None:
     """One arm less the control on one figure: the pipeline's own change where the arm's figure states only that,
-    else the difference of the two values, bold or muted by the descriptive rule; None where neither is held."""
+    else the difference of the two values, bold or muted by the descriptive rule; None where neither is held. The two
+    levels its tip compares are spelled on the ruler the chart settles every measure it draws (``keys``) on
+    (:func:`_levels_drawn`), as the chart's words
+    state it, never at the change's factor before the chart settles its ruler."""
     if mine is None:
         return None
     look = context.look.arm(arm)
@@ -290,11 +385,11 @@ def _descriptive(
     spreads = [spread(mine), spread(theirs)]
     read = separated(change, [one * drawn.factor if one is not None else None for one in spreads])
     control = context.look.arm(_control_or_refuse(context))
-    level = quantity("percent") if drawn.unit == "pts" else drawn
+    level = quantity("percent") if drawn.unit == "pts" else _levels_drawn(context, keys or [key], drawn)
     tip = [
         *head,
-        f"{control.name} {_level_text(theirs_value[0] * drawn.factor, level)} · "
-        f"{look.name} {_level_text(mine_value[0] * drawn.factor, level)}",
+        f"{control.name} {_level_text(theirs_value[0] * level.factor, level)} · "
+        f"{look.name} {_level_text(mine_value[0] * level.factor, level)}",
         figure_text(change, drawn),
     ]
     return _Change(
@@ -310,8 +405,35 @@ def _descriptive(
 
 
 def _level_text(value: float, drawn: Quantity) -> str:
-    """A level (not a change) in the quantity's unit, unsigned."""
-    return figure_text(value, Quantity(drawn.factor, drawn.fmt, drawn.unit))
+    """A level (not a change) in the quantity's unit, unsigned: money in its ruler's form."""
+    return figure_text(value, dataclasses.replace(drawn, change=False))
+
+
+def _levels_drawn(context: ChartContext, keys: Sequence[str], drawn: Quantity) -> Quantity:
+    """How the levels a change compares are drawn: money on the one ruler the chart settles its changes on
+    (:func:`_amounts_drawn` over every money measure it draws), so a tip's two levels differ by its bar; any other unit
+    as the change is drawn."""
+    if drawn.unit != MONEY:
+        return drawn
+    amounts = _amounts_drawn(context, keys)
+    return amounts if amounts is not None else drawn
+
+
+def _money_keys(context: ChartContext, keys: Sequence[str]) -> list[str]:
+    """The measures among a chart's that are money."""
+    return [key for key in keys if quantity(figure_unit(context.report_input, key)).unit == MONEY]
+
+
+def _amounts_drawn(context: ChartContext, keys: Sequence[str]) -> Quantity | None:
+    """The one ruler a change chart's money is drawn on: the one owner of money's scale over every mean the input
+    holds of every money measure the chart draws; None where it draws no money."""
+    money = _money_keys(context, keys)
+    if not money:
+        return None
+    report_input = context.report_input
+    return quantity_of(
+        figure_unit(report_input, money[0]), [mean for key in money for mean in held_means(report_input, key)]
+    )
 
 
 def _figure_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[str, ...]]:
@@ -328,11 +450,12 @@ def _figure_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tup
         theirs = figure_stat(report_input, key, control, context.query.aspect)
         for arm in context.arm_order(arms):
             mine = figure_stat(report_input, key, arm, context.query.aspect)
-            change = _descriptive(context, key, arm, mine, theirs, drawn)
+            change = _descriptive(context, key, arm, mine, theirs, drawn, keys=keys)
             if change is not None:
                 group = measure_words(report_input, key) if grouped else None
                 changes.append(_with_group(change, group))
-    return changes, drawn, (UNCORRECTED_NOTE,) if any(c.strong is not None for c in changes) else ()
+    notes = (UNCORRECTED_NOTE,) if any(c.strong is not None for c in changes) else ()
+    return (*_in_one_form(context, keys, changes, drawn), notes)
 
 
 def _with_group(change: _Change, group: str | None, label: str | None = None) -> _Change:
@@ -362,11 +485,15 @@ def _slice_changes(context: ChartContext) -> tuple[dict[str, list[_Change]], Qua
                     item.per_arm.get(control, {}).get(key),
                     drawn,
                     where=where,
+                    keys=keys,
                 )
                 if change is not None:
                     by_arm.setdefault(arm, []).append(_with_group(change, None, label=where))
     notes = (UNCORRECTED_NOTE,) if any(c.strong is not None for rows in by_arm.values() for c in rows) else ()
-    return by_arm, drawn, notes
+    # One form across every arm's changes (#993), each arm's rows kept in order.
+    flat, settled = _in_one_form(context, keys, [change for rows in by_arm.values() for change in rows], drawn)
+    redrawn = iter(flat)
+    return {arm: [next(redrawn) for _ in rows] for arm, rows in by_arm.items()}, settled, notes
 
 
 def _preference_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[str, ...]]:
@@ -443,7 +570,7 @@ def _lever_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tupl
                     group=factor.name or factor.id,
                 )
             )
-    return changes, drawn, (LEVER_NOTE,)
+    return (*_in_one_form(context, [key], changes, drawn), (LEVER_NOTE,))
 
 
 # --- rows an analysis computes: two arms' difference, and the lever effects ----------------------------------------
@@ -550,10 +677,11 @@ def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tu
                 strong=item.excludes_zero,
             )
         )
+    changes, drawn = _in_one_form(context, [key], changes, drawn)
     named = COMPARE_NOTE.format(
         first=_arm_name(context, first),
         second=_arm_name(context, second),
-        measure=measure_words(context.report_input, key),
+        measure=money_words(context.report_input, key, drawn),
     )
     basis = tuple(dict.fromkeys(BASIS_NOTE.format(basis=basis) for basis in bases))
     return changes, drawn, (named, *basis, *narrow_notes(context))
@@ -728,7 +856,8 @@ def _lever_rows(context: ChartContext) -> tuple[list[_Change], Quantity, tuple[s
     if len({change.group for change in changes}) == 1:
         changes = [_with_group(change, None) for change in changes]
     crossed = LEVERS_INTERACTION_NOTE if any(isinstance(row.item, InteractionRow) for row in rows) else ""
-    note = LEVERS_NOTE.format(measure=measure_words(context.report_input, key), interactions=crossed)
+    changes, drawn = _in_one_form(context, [key], changes, drawn)
+    note = LEVERS_NOTE.format(measure=money_words(context.report_input, key, drawn), interactions=crossed)
     return changes, drawn, (f"{note} {LEVERS_READ_NOTE}",)
 
 
@@ -786,7 +915,7 @@ def _forest(context: ChartContext) -> Drawn:
         reference=reference,
         emphasis=context.emphasis,
     )
-    return Drawn(chart_block(context, data), notes)
+    return money_drawn(context, data, notes, money=_drawn_money(context, drawn))
 
 
 def _bar_row(change: _Change, level: str) -> BarRow:
@@ -896,7 +1025,7 @@ def _diverging(context: ChartContext) -> Drawn:
             reference=reference,
             emphasis=context.emphasis,
         )
-    return Drawn(chart_block(context, data, read_at=read_at), notes)
+    return money_drawn(context, data, notes, money=_drawn_money(context, drawn), read_at=read_at)
 
 
 #: The kinds this module resolves.

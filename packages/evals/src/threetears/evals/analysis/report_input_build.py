@@ -526,24 +526,20 @@ class _Builder:
                 cases=row.cases,
                 reply_cost_usd=row.reply_cost_usd,
                 test_cost_usd=row.test_cost_usd,
-                # Only where a role counted them, so an arm none counted for carries no key.
-                **(
-                    {
-                        "unanswered": {
-                            held.role: Unanswered(
-                                retried=held.retried,
-                                lost=held.lost,
-                                reasons=held.reasons,
-                                calls=held.calls,
-                                share=held.share,
-                                uncounted=held.results_uncounted,
-                            )
-                            for held in row.unanswered
-                        }
-                    }
-                    if row.unanswered
-                    else {}
-                ),
+                # Only where a role counted them: None for an arm none counted for, which its document leaves out.
+                unanswered={
+                    held.role: Unanswered(
+                        retried=held.retried,
+                        lost=held.lost,
+                        reasons=held.reasons,
+                        calls=held.calls,
+                        share=held.share,
+                        uncounted=held.results_uncounted,
+                    )
+                    for held in row.unanswered
+                }
+                if row.unanswered
+                else None,
             )
             for row in aspect.scoreboard
         }

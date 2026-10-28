@@ -458,7 +458,13 @@ def test_each_options_cell_reads_what_its_figure_key_or_the_gate_check_reads(nam
                 status = gate_check(report_input, arm).status
                 assert cell.status == {"pass": "good", "borderline": "warn", "fail": "bad"}[status]
             elif column == "cost_per_1k":
-                assert cell.value == format_figure(resolve(f"cost_per_1k.{arm}", report_input), ("usd",))
+                # The amount its key reads per the count the column's head names (#993: the ruler moves under a
+                # cent, and the words sit in the head, never on each amount).
+                said = format_figure(resolve(f"cost_per_1k.{arm}", report_input), ("usd_per_1k",))
+                amount, _, per = said.partition(" per ")
+                assert cell.value == amount
+                header = next(one.header for one in page.options.table.columns if one.key == column)
+                assert header.endswith(f"per {per.split(' (')[0]}"), (header, said)
 
 
 def test_an_options_column_outside_the_families_is_refused() -> None:

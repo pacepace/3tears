@@ -25,13 +25,15 @@ score           a judged score                                               ``n
 (other)         the number, its unit beside it                               ``num``
 ==============  ===========================================================  ==================
 
-**Money has one spelling within a chart, by its size** (the kit's ``usd``): its values, its notes and its ticks
-alike, thousands grouped (``$8,400``), an amount of :data:`_WHOLE_DOLLARS_FROM` or more in whole dollars and a smaller
-one as the package spells money (:func:`~threetears.evals.kernel.numbers.spell_dollars`: cents from ten cents up,
-three significant figures below, never ``$0.00``). Cents on an axis of thousands are noise,
-and under ten dollars whole dollars round away the figure; a rule by each amount's size reads one amount alike on
-every chart and panel that draws it. Money per reply is its own quantity (``per`` ``reply``): drawn per 1,000 replies,
-which another cost's thousand may not count, so it never shares an axis with one.
+**Money has one form within a chart, chosen from every amount it draws** (#993): its notes and its ticks alike, thousands
+grouped, in the set's :func:`~threetears.evals.kernel.numbers.money_form` (whole dollars where every amount is $10 or
+more, else cents, with more decimals where its least amount needs them), the kit drawing its ticks to the same decimals
+(``usd:<decimals>``). Where some amount is under a cent, the chart draws every amount a thousand times over, per 1,000
+more of what it counts (``counted``), as money per reply is drawn per 1,000 replies, so its ticks and notes read in
+dollars alike. A quantity made without its drawn values (a change read alone) spells each amount as the package
+spells money (:func:`~threetears.evals.kernel.numbers.spell_dollars`), by the kit's ``usd``.
+Money per reply is its own quantity (``per`` ``reply``): drawn per 1,000 replies, which another cost's thousand may not
+count, so it never shares an axis with one.
 
 **A level's look** (:func:`series_token`): where a chart colours by a factor's levels (a factorial grid's paths and
 tiles), each level takes the kit's series colours in the factor's order, as candidates do in theirs.
@@ -57,10 +59,11 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
-from threetears.evals.kernel.numbers import format_number, group_thousands, spell_dollars
+from threetears.evals.kernel.numbers import MoneyForm, format_number, group_thousands, spell_dollars
+from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, signed_with_unit, with_unit
 from threetears.evals.analysis.report.charts import ChartShape, ChartStatus
 from threetears.evals.analysis.style import humanize
@@ -86,7 +89,9 @@ __all__ = [
     "log_ticks",
     "magnitude_domain",
     "page_look",
+    "in_change_form",
     "quantity",
+    "quantity_of",
     "series_token",
 ]
 
@@ -337,6 +342,14 @@ class Quantity:
     :ivar rate: Whether the values are a rate in percent (or a change in one), whose axis never runs past 0 to 100.
     :ivar per: What money's thousand counts where it is not the measure's own (``reply``: money per reply, drawn per
         1,000 replies); empty otherwise.
+    :ivar money: The one form money is spelled in on the chart, chosen from its drawn values (this module's money);
+        None where the quantity was made without them, or is no money. Never per 1,000: a set under a cent is drawn
+        at a thousand times its factor instead.
+    :ivar counted: How many of what money counts each drawn amount is per (``1000`` for money per reply drawn per
+        1,000 replies, ``1000000`` for a price per 1,000 drawn per 1,000,000), so its words name the count it is drawn
+        at; ``0`` for money that counts nothing (a run's total, a month's price) and for any other quantity.
+    :ivar own: How many of what money counts its unit's own figure is per (1 per reply, 1,000, 1,000,000); 0 for a
+        total and any other quantity.
     """
 
     factor: float = field(compare=False)
@@ -346,6 +359,25 @@ class Quantity:
     change: bool = False
     rate: bool = False
     per: str = ""
+    money: MoneyForm | None = field(default=None, compare=False)
+    counted: int = field(default=0, compare=False)
+    own: int = field(default=0, compare=False)
+
+    def label(self, label: str, noun: str) -> str:
+        """A label naming this quantity's money with the count it is drawn per in it, by the one owner of money's
+        words (:meth:`~threetears.evals.analysis.report.cost_unit.MoneyRuler.label`): the label's own count replaced,
+        never a second one after it; the label as it is for a total and for any other quantity.
+
+        :param label: The label, as the input or the page writes it.
+        :ptype label: str
+        :param noun: What the money counts, as a plural noun.
+        :ptype noun: str
+        :return: The label.
+        :rtype: str
+        """
+        if self.unit != MONEY or self.money is None:
+            return label
+        return MoneyRuler(form=self.money, scale=self.factor, counted=self.counted).label(label, noun, self.own)
 
 
 #: The money units a cost is stated in, per reply and per a number of replies, and dollars as they are (a run's total).
@@ -353,6 +385,10 @@ _PER_REPLY, _PER_THOUSAND, _PER_MILLION, _DOLLARS = "usd", "usd_per_1k", "usd_pe
 
 #: The magnitude from which money drops its cents on a chart: every amount drawn at it or above.
 _WHOLE_DOLLARS_FROM = 10.0
+
+#: How many of what it counts each money unit's figure is per; a run's total and a month's price count nothing.
+_UNIT_COUNTS = {_PER_REPLY: 1, _PER_THOUSAND: 1000, _PER_MILLION: 1_000_000, _DOLLARS: 0}
+
 
 #: Every unit money is drawn in, and what money per reply's thousand counts.
 _MONEY_UNITS = frozenset({_PER_REPLY, _PER_THOUSAND, _PER_MILLION, _DOLLARS})
@@ -362,10 +398,24 @@ _REPLY = "reply"
 _MONEY_FORMAT = "usd"
 
 
+#: The most decimals the kit's format names (``usd:<digit>``).
+_MOST_KIT_DECIMALS = 9
+
+
+def _money_fmt(sign: str, form: MoneyForm | None) -> str:
+    """The kit's format for a chart's money: to the form's decimals (``usd:2``), so its ticks read as its notes; by the
+    kit's sizes (``usd``) where the chart's money has no form, or a set a million times over is still under a cent."""
+    if form is None or form.per_thousand:
+        return f"{sign}{_MONEY_FORMAT}"
+    return f"{sign}{_MONEY_FORMAT}:{min(form.decimals, _MOST_KIT_DECIMALS)}"
+
+
 def _money_text(value: float, drawn: Quantity) -> str:
-    """An amount as the chart's money spelling writes it (this module's money), as the kit's ``usd`` draws it: whole
-    dollars, grouped, from :data:`_WHOLE_DOLLARS_FROM`; under it the package's money spelling
-    (:func:`~threetears.evals.kernel.numbers.spell_dollars`)."""
+    """An amount as the chart's money spelling writes it (this module's money): in the chart's one form where the
+    quantity holds one; else as the kit's ``usd`` draws it: whole dollars, grouped, from :data:`_WHOLE_DOLLARS_FROM`;
+    under it the package's money spelling (:func:`~threetears.evals.kernel.numbers.spell_dollars`)."""
+    if drawn.money is not None:
+        return drawn.money.spell(value, signed=drawn.change)
     size = abs(value)
     if size >= _WHOLE_DOLLARS_FROM:
         text = f"${group_thousands(format_number(float(round(size))))}"
@@ -382,7 +432,10 @@ def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False) -
         ``usd_per_1k``, ``usd_per_1m``, ``ms``, ``s``, ``score``, empty for a bare number, or any other unit, written
         beside the number.
     :ptype unit: str
-    :param values: The drawn values, in display units, where the format follows their magnitude.
+    :param values: The drawn values, in display units (after the factor ``quantity(unit).factor`` gives): money's one
+        form on the chart is chosen from them (this module's money), and where one is under a cent the quantity draws
+        every amount a thousand times over (its factor and ``counted`` say so) in dollars and cents, its ticks and its
+        notes alike, never per 1,000 with a mark the kit's ticks cannot draw. No other format reads them.
     :ptype values: Sequence[float]
     :param change: Whether the values are changes (an arm less the control), read signed.
     :ptype change: bool
@@ -398,14 +451,17 @@ def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False) -
     if unit == "points":
         return Quantity(1.0, "+num:0", POINTS, change=True)
     if unit in _MONEY_UNITS:
-        factor = 1000.0 if unit == _PER_REPLY else 1.0
-        return Quantity(
-            factor,
-            f"{sign}{_MONEY_FORMAT}",
+        base = 1000 if unit == _PER_REPLY else 1
+        drawn = Quantity(
+            float(base),
+            _money_fmt(sign, None),
             MONEY,
             change=change,
             per=_REPLY if unit == _PER_REPLY else "",
+            counted=_UNIT_COUNTS[unit] * base,
+            own=_UNIT_COUNTS[unit],
         )
+        return _in_one_form(drawn, values) if values else drawn
     if unit == "ms":
         return Quantity(1.0, f"{sign}ms", "ms", change=change)
     if unit == "s":
@@ -413,6 +469,77 @@ def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False) -
     if unit == "score":
         return Quantity(1.0, f"{sign}num:2", "", change=change)
     return Quantity(1.0, f"{sign}num", unit, change=change)
+
+
+def _in_one_form(drawn: Quantity, values: Iterable[float]) -> Quantity:
+    """A money quantity stated by the one owner of money's scale (:func:`~threetears.evals.analysis.report.cost_unit.
+    money_ruler`) over the amounts it draws: their one form for its notes and its ticks alike, and, where one is under a
+    cent, every amount drawn a thousand times over, per a thousand times more of what it counts (its ``factor`` and
+    ``counted``), so ticks and notes read in dollars. A total (``counted`` 0) is never scaled. Any other quantity is
+    returned as it is.
+
+    :param drawn: The quantity, as :func:`quantity` makes it without values.
+    :ptype drawn: Quantity
+    :param values: Every amount it draws, at its factor.
+    :ptype values: Iterable[float]
+    :return: The quantity in one form; what was drawn at ``drawn.factor`` is drawn at the returned one.
+    :rtype: Quantity
+    """
+    if drawn.unit != MONEY:
+        return drawn
+    ruler = money_ruler(
+        (value / drawn.factor for value in values if math.isfinite(value)),
+        per=drawn.own,
+        start=drawn.counted,
+        marked=False,
+    )
+    return replace(
+        drawn,
+        factor=ruler.scale,
+        fmt=_money_fmt("+" if drawn.change else "", ruler.form),
+        money=ruler.form,
+        counted=ruler.counted,
+    )
+
+
+def in_change_form(amounts: Quantity, changes: Iterable[float], widths: Iterable[float] = ()) -> Quantity:
+    """How changes between some money amounts are drawn: on the amounts' own ruler (``amounts``, from
+    :func:`quantity` over the amounts compared), so a change chart scales as its source set does and never because
+    an interval end sits near zero, in the changes' form (their own precision, capped by their widest interval:
+    :meth:`~threetears.evals.kernel.numbers.MoneyForm.for_changes`). Any other quantity is the change quantity of its
+    unit, as it is.
+
+    :param amounts: The quantity the compared amounts are drawn as, in one form.
+    :ptype amounts: Quantity
+    :param changes: Every change drawn, at the amounts' factor.
+    :ptype changes: Iterable[float]
+    :param widths: The widths of their intervals, at the amounts' factor.
+    :ptype widths: Iterable[float]
+    :return: The changes' quantity, signed.
+    :rtype: Quantity
+    """
+    if amounts.unit != MONEY or amounts.money is None:
+        return replace(amounts, change=True, fmt=amounts.fmt if amounts.fmt.startswith("+") else f"+{amounts.fmt}")
+    form = amounts.money.for_changes(changes, widths)
+    return replace(amounts, change=True, fmt=_money_fmt("+", form), money=form)
+
+
+def quantity_of(unit: str, figures: Iterable[float], *, change: bool = False) -> Quantity:
+    """How a quantity in ``unit`` is drawn, from the figures it draws as the input states them (before any factor):
+    :func:`quantity` over them at the unit's own factor, so its money is spelled in the one form of the whole set
+    (this module's money), drawn a thousand times over where some amount is under a cent.
+
+    :param unit: The figures' unit, as :func:`quantity` reads it.
+    :ptype unit: str
+    :param figures: Every figure the chart or table column draws in it, in the input's units.
+    :ptype figures: Iterable[float]
+    :param change: Whether the figures are changes, read signed.
+    :ptype change: bool
+    :return: The quantity; draw each figure at its ``factor``.
+    :rtype: Quantity
+    """
+    factor = quantity(unit, change=change).factor
+    return quantity(unit, [figure * factor for figure in figures], change=change)
 
 
 def figure_text(value: float, drawn: Quantity) -> str:

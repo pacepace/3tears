@@ -433,16 +433,26 @@ def _figure_faults(input_key: str, spec: ChartSpec, data: Any, keys: Sequence[st
     an axis formatted otherwise than the measure whose figures lie on it."""
     report_input = _input(input_key)
     faults = []
-    for axis in _axes(data):
+    axes = _axes(data)
+    for axis in axes:
         for value in axis.values:
             whose = [key for key in keys if _is_figure(value, _figures(input_key, key))]
             if not whose:
                 faults.append(f"{value} is no figure of {list(keys)} in its unit")
             elif spec.kind in _FORMATTED_AS_ITS_MEASURE:
-                formats = {quantity(figure_unit(report_input, key), axis.values).fmt for key in whose}
+                # Money's format follows every amount the chart draws of the measure, on every panel (#993: one form
+                # per chart), so the expectation reads them all.
+                formats = {
+                    quantity(figure_unit(report_input, key), _drawn_of(input_key, key, axes)).fmt for key in whose
+                }
                 if axis.fmt not in formats:
                     faults.append(f"{value} is a figure of {whose}, drawn as {axis.fmt!r}, not {sorted(formats)}")
     return faults
+
+
+def _drawn_of(input_key: str, key: str, axes: Sequence[_Axis]) -> list[float]:
+    """Every value a chart draws, on any of its axes, that is a figure of ``key``."""
+    return [value for axis in axes for value in axis.values if _is_figure(value, _figures(input_key, key))]
 
 
 def _drew(spec: ChartSpec, block: Any) -> bool:
@@ -482,7 +492,9 @@ def _keys_of_each_panel(data: Any, keys: Sequence[str], input_key: str = "r1") -
         assert axis.values, "each panel draws values"
         whose = [key for key in keys if all(_is_figure(value, _figures(input_key, key)) for value in axis.values)]
         assert len(whose) == 1, f"one measure's figures in a panel, and {whose} hold them"
-        assert axis.fmt == quantity(figure_unit(report_input, whose[0]), axis.values).fmt
+        assert (
+            axis.fmt == quantity(figure_unit(report_input, whose[0]), _drawn_of(input_key, whose[0], _axes(data))).fmt
+        )
         found.append(whose[0])
     return found
 
