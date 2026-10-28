@@ -3097,6 +3097,19 @@ def reader_names(report_input: ReportInput) -> dict[NamedKind, dict[str, str]]:
     }
 
 
+def printed_arm_name(arm: Arm) -> str:
+    """The name a page prints for an arm: its declared short name, else its alias, else its id.
+
+    Every page passes these names to :func:`render`, so ``{arm:<id>}`` prints this beside the arm's tag.
+
+    :param arm: The arm.
+    :ptype arm: Arm
+    :return: Its name on the page.
+    :rtype: str
+    """
+    return arm.short_name or arm.name or arm.id
+
+
 # --- the weakest margin --------------------------------------------------------------------------------------------
 
 #: What every weakest-margin key begins with.
@@ -7025,6 +7038,7 @@ __all__ = [
     "parse_key",
     "pooled_figures",
     "price_frontier",
+    "printed_arm_name",
     "reader_name",
     "reader_names",
     "render",

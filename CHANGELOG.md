@@ -129,6 +129,21 @@ with the step to clear it (`EvalStorage.drop_derived`) and write the report agai
 A host stores no report documents yet, so nothing stored is dropped. Discodon needs no code: the new type routes by
 its facts in `DOC_TYPE_FACTS`; only its test that lists every eval doc type gains `eval_report_session`.
 
+### evals: reader prose may not type a lever arm's id the page prints by another name
+
+**Fixed:** a planner's plan and an analyst's report document could type an arm's internal id above Full results (or
+the appendix) and pass their checks: Discodon's production plans had readers see "fanout-1 answers" where the page
+names the arm "fanout 1", and only a judge caught it. Neither check held arms to the rule: `validate_plan` let every
+arm id through as a name the reader is shown, and the report document's invariant 5 read an arm id as an id only by
+an underscore, dot, colon, slash, equals sign, bracket or quote (never a hyphen), and let the arm's alias exempt it,
+though an input built from a run sets every arm's alias to its id. Both now share one rule (`internal_ids`): an arm's
+id is internal where it differs, case-folded, from the name the page prints for the arm (`{arm:<id>}`'s name: its
+short name, else its alias, else its id; `figure_keys.printed_arm_name`, new) and from its served model, and holds an
+id mark, a hyphen or a digit. A model arm whose id is its served model (`deepseek/deepseek-v4.1-flash`) still stands,
+as does an id its printed name differs from only in case (`open-70b`, "Open-70B"), a plain-word id, and an ordinary
+hyphenated word ("cost-per-reply"), which is no arm's id. A plan refusal names the printed name and the `{arm:<id>}`
+key; a document verdict names the printed name, as before.
+
 ### evals: an aggregate refuses a scope past the read budget instead of reading it whole
 
 **Changed:** the aggregating lenses read their scope's results into Python, and an aggregate cannot be paged as `scope_export` is since v0.80.0
@@ -145,7 +160,8 @@ counts no other subject's results; `comparison_sets` reads only the runs it grou
 status). `program_budget` and `orphaned_runs` take no filter, so past the budget they are refused. A read that
 returns more than the budget (a deleted run's results are in no listing) is not aggregated: a call for one subject
 reads that subject's runs instead, and any other call is refused, its `details` adding `results_returned`. Campaign
-reports read their runs by id and are unaffected. A narrowed pivot, frontier or history says what it did not count
+reports read their runs by id, so the scope's size never refuses them; a campaign's own runs past the budget are
+refused (see "a campaign's bundle, a launch's planning block" below). A narrowed pivot, frontier or history says what it did not count
 in `narrowed_read_disclosure` (new on `PivotTable`, `HistoryResult` and `FrontierResult`, printed in each one's text,
 and left out of a dump while unset, so no stored bundle's fingerprint moves); a narrowed frontier's judge tiers are
 read on that subject's results alone, and it says that too. `RegressionWatch` now reads the history of the completed
@@ -227,10 +243,8 @@ the run. `iter_run_results`, `run_result_keys`, `run_case_pages` and `read_resul
   bound is not pinned by one, and it now loads the run, so a run this build cannot read refuses the poll, and a run
   whose lease lapsed is settled by it. The SQLite store parses each row's JSON while it holds its connection's lock,
   so other threads wait on that one connection for longer.
-- **Still read whole**, each its own follow-up: comparing two runs (`runs_compare`, `compare_two_runs`,
-  `bisect_runs`, and the pair disclosures' measurement windows), settling a lapsed run that recorded no
-  completeness, the witnessed cells' judge-ceiling check, `results_list` and `list_results`, `delete_run`'s cascade,
-  the campaign and analysis readers, `run_summary` (the lens) and the scope aggregates.
+- **Every other reader of a whole run** is paged too: see the next entry. The scope aggregates are bounded by the read
+  budget above instead.
 
 **Changed (MCP):** `scope_export` takes `export_after_case_id`, the previous page's `page.next_after_case_id`, beside
 `export_after_run_id`, and the text of a page inside a run names it (and `export_run_ids` for a named run):
@@ -238,6 +252,91 @@ the run. `iter_run_results`, `run_result_keys`, `run_case_pages` and `read_resul
 `page: run 2 of 7, its cases 1-1000 of 2400`. `export_after_case_id` without `export_after_run_id`, or naming no case
 of that run, is refused (`VALIDATION_FAILED`, `details` `after_run_id` and `after_case_id`). A run archived or
 moved to another status between its pages is left, and the next page starts at the run after it.
+
+### evals: the remaining readers of a whole run walk it a page at a time
+
+**Fixed:** the readers the entry above left reading every stored result of a run at once now walk it a page at a
+time, with no ceiling on the run (#998; owner, 2026-10-27: "Fix reads, drop ceiling"). Each makes one read of the
+run's result keys and reads its results by id, `RUN_RESULTS_PAGE` at a time, in the order the store keeps them
+(`iter_stored_results`, new in `threetears.evals.kernel.run_pages`, beside `iter_keyed_results`, which pages any
+keys in a reader's order), the order a whole read handed them out in, so every figure is the one that read gave.
+Checked against the previous build on two runs of 75 shuffled results: `runs_compare`,
+`runs_bisect`, the `run_summary` lens and `results_list` are byte for byte its output. A reader that must hold every
+result to fold it into figures keeps it without its two verbatim fields, `world_events` and `kind_payload`
+(`without_payloads`, `results_without_payloads`), which grow without bound with what a cell
+did and which no figure reads.
+
+- **Two runs side by side:** `compare_two_runs` and `bisect_runs` (so `runs_compare` and `runs_bisect`, operations
+  and actions) hold each run's results without their verbatim fields. The pair disclosures' measurement window reads
+  the runs' keys alone, which carry when each result was stored: `measurement_window` takes keys as well as results.
+- **A run written lost** with no completeness of its own counts what it stored as it walks it, keeping nothing:
+  `reconstruct_completeness` takes any iterable of results. A stored row whose key (id, case, `k`, model, when
+  stored) cannot be read refuses the walk's key read with `UnreadableResultKey` (new, a `StorageError`,
+  exported from `threetears.evals.kernel` (provisional), so a host calling the key read catches it by name), and
+  the run is still written lost, its completeness unknown and why written on it, as for a result this build cannot reconstruct. A store that fails to answer is not caught: nothing is written, and the
+  next read settles the run. `LeaseStore` now reads results through
+  `RunResultsStore` (the key read and the read by id) in place of `query_eval_results_by_run`.
+- **The witnessed judge ceiling** keeps each saved cell's id and judge spend. **Changed:** `WitnessedJudging.spent`
+  takes `(result id, judge spend)` pairs, where it took the run's results.
+- **`results_list`** sorts the run's keys (case, repeat, id): unfiltered, it reads only the page's results;
+  filtered by `condition`, it reads every result a page at a time to count the matches and keeps the page's rows.
+  **`list_results`** reads the run a page at a time and returns the list as before; it takes a `RunResultsStore`.
+- **`delete_run`** reads the run's result ids (`query_eval_result_ids_by_run`), as `delete_unreadable_run` does,
+  where it reconstructed every result; that read now leaves out what the key read leaves out, so it ships each
+  result's scalars, never its row. **Changed:** a run this build reads whose result it cannot reconstruct is now
+  deleted with that result, where the delete was refused; `CurationStore` declares
+  `query_eval_result_ids_by_run` in place of `query_eval_results_by_run`.
+- **The `run_summary` lens** (no engine caller), **a reporter calibration** (`reporter_calibration`; `AnalysisStore`
+  gains the key read and the read by id in place of `query_eval_results_by_run`) and **a campaign arm's variant key**
+  (which reads the run's keys and its first result by id; `CampaignStore` likewise) read the run a page at a time.
+- **The judge passes:** a judge repeat (`collect_repeatable`, so the judge temperature comparison too) and a second
+  judge pass read the run's keys, refuse a named result that is not the run's from them, read only the named results
+  when results are named, and plan each result without its verbatim fields (each write reads the result again). A
+  judge case freeze from runs, and a judge profile's readout (`judge_kind_readings` keeps each trial's result without
+  its verbatim fields once the trial is read) walk their runs a page at a time. The jobs conformance kit's
+  cancelled-before-its-cells stage reads the run's result ids alone.
+- **A host's reader** handed a run's results by a comparison, a bisection or `run_summary` (a sweepable's `read`, its
+  `row_columns`, `production_footing`) now reads them without `world_events` and `kind_payload`: a host reads its
+  kind's payload as the cell ends, into the measures it reports. Discodon's readers read neither.
+- **Not converted, and why:** a campaign's bundle (`assemble_context_bundle`) is not paged (owner): its port promises
+  one store call per read however large the campaign (`CampaignReadStore`, `test_bundle_store_reads`). It is held to the
+  read budget instead (the next entry), until the store computes its aggregates (#996). The scope aggregates (bounded by
+  the read budget, SQL pushdown #996) and the export of several runs a page (bounded by `EXPORT_PAGE_RESULTS`) are
+  bounded already, and so, with the bundle, are the two readers over many runs #998 did not list,
+  `detectable_effects` and `RegressionWatch`'s judged tiers (the next entry). `quick`'s calibration, labelling rows
+  and arm variants read each arm's results through `list_results`, which pages its reads but returns every result; a
+  `quick` run is the caller's own, in memory.
+
+### evals: a campaign's bundle, a launch's planning block and a regression watch's judged tiers are refused past the read budget
+
+**Changed:** `assemble_context_bundle` (so every analysis generation and campaign report) read every result of the runs
+it assembles in one batch, however many: a campaign past what one process holds was read whole. It is held to
+`READ_TIER_ROW_BUDGET` (50,000) as the aggregates are (owner, 2026-10-28, under the aggregates' 2026-10-27 "refuse now,
+SQL later"), and is not paged, since its port promises one store call per read. Before any result is read, the runs it
+reads (the aspect's unarchived member runs, and its archived ones when a declared control may be among them) are
+estimated as the aggregates estimate them, off the batch run read it already makes: each run's matrix (cases × k), or
+the cells it recorded persisting when those are more, with no further read. Past the budget it is refused
+(`VALIDATION_FAILED`, `details` `runs`, `results_estimated` and `result_budget`, one WARNING line `eval.read_tier
+lens=assemble_context_bundle ... refused`), and the remedy names how to narrow: a campaign of fewer member runs,
+archiving the members it need not read, or, where the call takes one, an aspect that reads fewer runs. A read that
+returns more than the budget (results their runs' matrices did not promise) is refused too, `details` adding
+`results_returned`. A campaign at the budget or under assembles as before, in the same store calls.
+`hold_to_read_budget` (new, `threetears.evals.analysis.reads`) is that check, for a reader outside the aggregates that
+holds a set of runs' results whole. The store computing the bundle's aggregates and a bounded sample of its trials'
+evidence, so a campaign of any size assembles in flat calls, memory and reply size, is #996.
+
+**Changed:** the two other readers that hold many runs' results at once are held to the same budget the same way.
+`detectable_effects`, the planning block a launch estimate (`launch_estimate`, the `launch_estimate` action) carries,
+read every earlier run of its template whole: it now estimates them off the run listing it already reads and refuses
+past the budget before reading a result, naming archiving the template's earlier runs it need not read (it leaves
+archived runs out), or a template with fewer. A launch estimate is not refused with it: the price does not depend on the
+block, so past the budget by the runs' matrices the block reads none of their results (a read that returned more than
+the budget is read and dropped) and says why in its `cannot_estimate` (the budget, what the runs hold, and the same
+remedy), and the arms' prices, the total and the verdict are returned as within it. `detectable_effects` called on its
+own still refuses. A regression watch's judged tiers, read over the run's subject when its history read that subject
+alone, are held to the budget off the run listing they already read (the history it reads first refuses on the same runs
+and estimate, so this is the same bound held where the read is made); the watch's hook logs it at ERROR as it logs the
+history's refusal. Each refuses a read that returned more than the budget too.
 
 ### langgraph: a checkpoint L2 entry that cannot be refreshed is deleted, not left holding an older checkpoint
 
@@ -552,8 +651,17 @@ The planned page's parts gain plan-free forms beside them, its own bytes unchang
 (every arm, `recommends` marked) and `plan_page.full_results.every_table` (every table the input holds a row of).
 `analysis.analyst.blocks.values_table`, the values table `block_render` returns, is public for the page text. From
 `kernel.report_doc`, `ReportDoc`, `Evidence`, `DocCaveat`, `ReportFinding` and `is_analyst_caveat` join `__all__` with
-the renderer as their caller. No kit, stylesheet or script changes: the page uses the kit's existing classes, and its
-one script is the kit's, so its content security policy is the planned page's.
+the renderer as their caller. The page uses the kit's existing classes, and its one script is the kit's, so its
+content security policy is the planned page's.
+
+**Changed:** the kit, for the 390 px render check on the acceptance pages. A reference line's label (a floor, budget
+or margin) is drawn to the right of its line where it fits, else to its left, else wrapped at its spaces to the wider
+side, on every kind that draws one; forest's narrow-width special case (the label at the plot's foot) gives way to it.
+A computed tick count steps down until no two tick labels touch. A lattice's tiles keep a 6.5rem floor and its row
+headers one line, and a lattice too wide scrolls in a `.tbl` frame, as a table does. `kit.js` and `kit.css` are
+inlined in every default-mode HTML page, planned and reference pages included, so their text (and the script's hash)
+changed: a host allowing the kit by a CSP hash it computed from an earlier wheel recomputes it from this one. A
+`static=True` page carries no script and is unaffected by the script's change.
 
 ### evals: tool turns over Anthropic's Messages API, recorded and replayed per session
 
@@ -623,6 +731,21 @@ sends it as `context_management: {"edits": [{"type": "clear_tool_uses_20250919",
 "input_tokens", ...}, "keep": {"type": "tool_uses", ...}, "clear_at_least": {"type": "input_tokens", ...}}]}` with
 `anthropic-beta: context-management-2025-06-27`; `RecordedTurns` passes it to the client it records through. A turn
 with no clearing sends the body it always did.
+
+**Added (provisional):** `threetears.evals.schema.ThinkingBinding(prefix_mismatch_behavior="error" | "drop_block")`,
+the provider's check that a replayed thinking block's conversation is unchanged. The tool-turn port's
+`turn(..., binding=)` takes it, and `Model.turn` sends it as `thinking.block_binding` with `anthropic-beta:
+thinking-binding-controls-2026-08-01` where the turn sends adaptive or budgeted thinking. A model that cannot turn
+thinking off (Claude Opus 5.5, say) is sent `{"type": "adaptive"}` to carry it when built with no effort, which is what
+it runs anyway; a turn with thinking disabled sends none, nor does one with no thinking on a model that may then not
+think. Setting it opts the turn into the check on any account. `RecordedTurns` passes it to the client it records
+through; a recording holds replies only, so recordings made before it replay unchanged. Every analyst and editor turn
+that thinks sends `"error"`: the history is append-only, so a turn whose history changed under a thinking block is the
+provider's 400, never answered without the reasoning. A turn with no binding sends the body it always did.
+`TurnReply` gains `sent_binding` (the behaviour the request carried, or `None`) and `input_transformations` (the
+response's report of blocks dropped or let through, as the provider wrote it, or `None` when it sent none), and the
+report writer's tally keeps both on every turn, so a stored report shows each turn was checked. A reply recorded
+before them reads both as `None`.
 
 **Changed:** `kernel.report_doc` now exports `ReportDoc`, `report_doc_validity` and `report_doc_json_schema`, and
 `analysis.analyst.skill` exports `SkillText`, each with its first production caller in the analyst session.

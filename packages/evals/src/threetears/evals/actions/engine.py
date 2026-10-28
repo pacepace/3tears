@@ -1614,8 +1614,8 @@ def _cancelled_before_its_cells(storage: EvalStorage, run_id: str, scope_id: str
     after the last of them leaves nothing to resume — so the sample's finished run is written as that cancel leaves a
     run instead: its rows gone, and its record ``cancelled`` with nothing persisted. Only the host's store is touched.
     """
-    for row in storage.query_eval_results_by_run(run_id, scope_id):
-        storage.delete_eval_result(row.id, scope_id)
+    for result_id in storage.query_eval_result_ids_by_run(run_id, scope_id):
+        storage.delete_eval_result(result_id, scope_id)
     run, etag = storage.load_eval_run_with_etag(run_id, scope_id)
     assert run is not None  # the stage's run finished, so its record is stored
     cancelled = run.model_copy(

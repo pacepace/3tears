@@ -95,7 +95,13 @@ from threetears.evals.kernel.scoring import (
 from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN
-from threetears.evals.kernel.run_pages import RunResultsStore, read_results, run_case_pages, run_result_keys
+from threetears.evals.kernel.run_pages import (
+    RunResultsStore,
+    read_results,
+    results_without_payloads,
+    run_case_pages,
+    run_result_keys,
+)
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -433,6 +439,37 @@ def _refuse_past_budget(
         details=details,
         remedy=_past_budget_remedy(how, estimate, returned),
     )
+
+
+def hold_to_read_budget(
+    lens: str, scope_id: str, runs: Sequence[EvalRun], *, how: str, returned: int | None = None
+) -> None:
+    """Refuse a read-tier call that reads every result of ``runs`` at once, past :data:`READ_TIER_ROW_BUDGET`.
+
+    For a reader outside this module's aggregates that holds a set of runs' results whole, as they do (a campaign's
+    context bundle): before any result is read (``returned`` ``None``), the runs' estimate, each run's matrix (cases ×
+    k) or the cells it recorded persisting when those are more, read off the runs already loaded; after the read, what
+    it returned (``returned``), the safety net for results their runs' matrices did not promise. The refusal is the
+    aggregates' own: ``VALIDATION_FAILED``, ``details`` ``runs``, ``results_estimated`` and ``result_budget`` (and
+    ``results_returned`` after a read), one WARNING line, and a remedy that begins with ``how``.
+
+    :param lens: The operation, as the refusal and its log line name it.
+    :ptype lens: str
+    :param scope_id: The scope the runs live in.
+    :ptype scope_id: str
+    :param runs: The runs whose results the call reads.
+    :ptype runs: Sequence[EvalRun]
+    :param how: How the call narrows to fewer results.
+    :ptype how: str
+    :param returned: How many results the read returned; ``None`` before anything is read.
+    :ptype returned: int | None
+    :raises ValidationFailedError: The runs are estimated past the budget, or the read returned more than it.
+    """
+    estimate = sum(_results_estimate(run) for run in runs)
+    if returned is None and estimate > READ_TIER_ROW_BUDGET:
+        raise _refuse_past_budget(lens, scope_id, estimate=estimate, runs=len(runs), returned=None, how=how)
+    if returned is not None and returned > READ_TIER_ROW_BUDGET:
+        raise _refuse_past_budget(lens, scope_id, estimate=estimate, runs=len(runs), returned=returned, how=how)
 
 
 def narrowed_read_disclosure(subject_id: str, *, tiers: bool = False) -> str:
@@ -1575,7 +1612,8 @@ def run_summary(
     """
     # The summary reads the run's scalars and never its payload.
     run = load_run_listed(run_id, scope_id)
-    results = storage.query_eval_results_by_run(run_id, scope_id)
+    # Read a page at a time, the results kept without their verbatim fields, which no figure here reads.
+    results = results_without_payloads(storage, run_id, scope_id)
 
     pass_hat = compute_pass_hat_k(results, rubric_threshold=rubric_threshold)
     latency = compute_latency_summary(results)
@@ -1714,8 +1752,9 @@ def bisect_runs(
     run_a = _load_run(storage, run_a_id, scope_id)
     run_b = _load_run(storage, run_b_id, scope_id)
 
-    results_a = storage.query_eval_results_by_run(run_a_id, scope_id)
-    results_b = storage.query_eval_results_by_run(run_b_id, scope_id)
+    # Each run read a page at a time, its results kept without their verbatim fields, which no input is read off.
+    results_a = results_without_payloads(storage, run_a_id, scope_id)
+    results_b = results_without_payloads(storage, run_b_id, scope_id)
 
     sweepables = profile.sweepables
     values_a = sweepables.read_all(run_a, results_a)
@@ -1853,8 +1892,9 @@ def compare_two_runs(
     """
     run_a = _load_run(storage, run_a_id, scope_id)
     run_b = _load_run(storage, run_b_id, scope_id)
-    results_a = storage.query_eval_results_by_run(run_a_id, scope_id)
-    results_b = storage.query_eval_results_by_run(run_b_id, scope_id)
+    # Each run read a page at a time, its results kept without their verbatim fields, which no figure here reads.
+    results_a = results_without_payloads(storage, run_a_id, scope_id)
+    results_b = results_without_payloads(storage, run_b_id, scope_id)
 
     pass_a = compute_pass_hat_k(results_a, rubric_threshold=rubric_threshold)
     pass_b = compute_pass_hat_k(results_b, rubric_threshold=rubric_threshold)

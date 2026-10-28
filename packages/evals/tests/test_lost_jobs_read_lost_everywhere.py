@@ -16,7 +16,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -25,7 +25,7 @@ from pydantic import ValidationError
 
 from threetears.evals import PUBLIC_ROOTS
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.kernel import EvalStorage, LeasedJobKind, settle_job_record
+from threetears.evals.kernel import EvalStorage, LeasedJobKind, StorageError, settle_job_record
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep, SweepArmRecord
 from threetears.evals.run import (
     LAUNCH_JOB,
@@ -231,6 +231,65 @@ def test_a_lost_run_whose_completeness_is_unknown_says_why_on_its_own_record() -
     assert stored is not None and stored.completeness is None
     (detail,) = stored.error_details
     assert "completeness unknown" in detail and "turns_delivered" in detail, detail
+
+
+def test_a_lost_run_whose_result_carries_no_readable_key_still_settles_with_its_completeness_unknown() -> None:
+    """The count reads the run's result keys first; a row whose ``k`` is not a number refuses that read, not the run."""
+    store = InMemoryDocumentStore()
+    storage = EvalStorage(store)
+    run = make_eval_run(scope_id=_SCOPE, status="running")
+    storage.save_job_record(run.to_dict(), if_match=None)
+    readable = make_eval_result(id="res-ok", scope_id=_SCOPE, eval_run_id=run.id)
+    storage.save_eval_result(readable)
+    store.upsert(readable.to_dict() | {"id": "res-keyless", "k_iteration": "first"})
+
+    got = storage.load_eval_run(run.id, _SCOPE)
+
+    assert got is not None and got.status == "cancelled" and got.lost is not None and got.completeness is None
+    stored, _ = storage.load_job_record(EvalRun, run.id, _SCOPE)
+    assert stored is not None and stored.lost is not None, "the run was written lost, not merely read so"
+    (detail,) = stored.error_details
+    assert "completeness unknown" in detail and "res-keyless" in detail, detail
+
+
+class _ResultReadsFail(InMemoryDocumentStore):
+    """Every typed read of results fails while ``failing`` is set, as a store that cannot answer for a moment does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failing = False
+
+    def by_doc_type(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        if self.failing and doc_type == "eval_result":
+            raise RuntimeError("the database did not answer")
+        return super().by_doc_type(doc_type, scope_id, field_in=field_in, **kwargs)
+
+
+def test_a_store_that_fails_while_a_lost_run_is_counted_leaves_it_to_be_settled_by_the_next_read() -> None:
+    """A store's failure is no fact about the run: nothing is written, and the next read counts what it stored."""
+    store = _ResultReadsFail()
+    storage = EvalStorage(store)
+    run = make_eval_run(scope_id=_SCOPE, status="running")
+    storage.save_job_record(run.to_dict(), if_match=None)
+    storage.save_eval_result(make_eval_result(id="res-ok", scope_id=_SCOPE, eval_run_id=run.id))
+    store.failing = True
+
+    with pytest.raises(StorageError, match="did not answer"):
+        storage.load_eval_run(run.id, _SCOPE)
+
+    unsettled, _ = storage.load_job_record(EvalRun, run.id, _SCOPE)
+    assert unsettled is not None and unsettled.status == "running" and unsettled.lost is None, "nothing written"
+    store.failing = False
+    got = storage.load_eval_run(run.id, _SCOPE)
+    assert got is not None and got.lost is not None and got.error_details == []
+    assert got.completeness is not None and got.completeness.persisted_cells == 1
 
 
 class _ContestedStore(InMemoryDocumentStore):

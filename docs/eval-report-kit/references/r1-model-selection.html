@@ -185,6 +185,9 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 .gate .task span.xc{font-weight:600;color:var(--warn);text-transform:uppercase;letter-spacing:.05em;display:block;margin-top:.25rem}
 /* lattice of tiles for two crossed factors; columns set inline from the data */
 .lattice{display:grid;gap:2px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+/* in its .tbl frame, which draws the border: never narrower than its tiles' floor, so it scrolls instead */
+.tbl>.lattice{border:0;border-radius:0;min-width:min-content}
+.lattice>.rh{min-width:auto;white-space:nowrap}
 .lattice>div{background:var(--surface);padding:.7rem .8rem;min-width:0}
 .lattice .hd{background:var(--sunk);font-size:var(--t-xs);font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:flex;align-items:end}
 .lattice .rh{background:var(--sunk);font-family:var(--f-display);font-weight:600;display:flex;align-items:center}
@@ -295,6 +298,10 @@ function ticksRaw(a,b,n=5){const step=Math.pow(10,Math.floor(Math.log10((b-a)/n)
 function kFmtTicks(a,b,n,f){for(let k=n;k>1;k--){const t=ticks(a,b,k),L=t.map(f);if(new Set(L).size===L.length)return t;}return ticks(a,b,2);}
 // explicit tick values, thinned left to right so no two labels touch at the drawn width
 function kThinTicks(vals,x,f){const out=[];let last=-1e9;for(const v of vals){const half=f(v).length*3.2;if(x(v)-half<last+6)continue;out.push(v);last=x(v)+half;}return out;}
+// computed ticks, at most n, fewer until no two neighbours' labels touch at the drawn scale x (kThinTicks's measure):
+// a nice step can land closer than the count asked for implies
+function kFitTicks(a,b,n,f,x){for(let k=Math.max(2,n);k>1;k--){const t=kFmtTicks(a,b,k,f);if(t.every((v,i)=>!i||x(v)-x(t[i-1])>=(f(v).length+f(t[i-1]).length)*3.2+6))return t;}
+  return kThinTicks(kFmtTicks(a,b,2,f),x,f);}
 const kClamp=(v,a,b)=>Math.max(Math.min(a,b),Math.min(Math.max(a,b),v));
 const fmt={
   pct:(v,d=1)=>v.toFixed(d)+"%",
@@ -373,6 +380,21 @@ function placeLabels(items,bounds,obstacles=[],marks){const W=(t,strong)=>textW(
     let pick=opts[0],bs=1e9;opts.forEach((o,i)=>{const sc=score(box(o))+i*.08;if(sc<bs){bs=sc;pick=o;}});
     it.x=pick[0];it.y=pick[1];it.anchor=pick[2];placed.push(box(pick));}
   return items;}
+// a reference line's label (a gate, a budget, a margin), beside its line at rx and inside [x0,x1] (x1 short of
+// anything else in its band, such as the level): on one line to the right of the line where it fits, else to its left,
+// else wrapped at its spaces to the wider side's width (a line still wider than that side sits against x1). Returns
+// its lines, where they start (x, anchor) and the widest (w).
+function kRefLabel(rx,text,x0,x1){const W=t=>textW(t,11),tw=W(text),lx=Math.min(rx-4,x1),R=x1-rx-4,L=lx-x0;
+  if(tw<=R)return {x:rx+4,anchor:"start",lines:[text],w:tw};if(tw<=L)return {x:lx,anchor:"end",lines:[text],w:tw};
+  const room=Math.max(R,L),lines=[];let cur="";
+  for(const wd of text.split(" ")){const nx=cur?cur+" "+wd:wd;if(cur&&W(nx)>room){lines.push(cur);cur=wd;}else cur=nx;}lines.push(cur);
+  const w=Math.max(...lines.map(W));if(w>room)return {x:x1,anchor:"end",lines,w};
+  return R>=L?{x:rx+4,anchor:"start",lines,w}:{x:lx,anchor:"end",lines,w};}
+// the label drawn as one text, its lines 13px apart: stacked up to baseline y (up), else down from it
+function kRefText(s,o,y,up){const n=o.lines.length,t=S("text",{x:o.x,y:up?y-(n-1)*13:y,"text-anchor":o.anchor,class:"tick"},s);
+  o.lines.forEach((l,i)=>S("tspan",{x:o.x,dy:i?13:0,text:i<n-1?l+" ":l},t));return t;}
+// its box [x0,y0,x1,y1] for placeLabels, its first baseline at y
+const kRefBox=(o,y)=>{const a=o.anchor==="end"?o.x-o.w:o.x;return [a,y-10,a+o.w,y+3+(o.lines.length-1)*13];};
 // marks: one shape per arm where color alone would carry identity; hollow marks a failure or an absent setting
 function mark(g,shape,x,y,r,color,hollow){const st=hollow?`fill:var(--surface);stroke:var(${color});stroke-width:2`:`fill:var(${color});stroke:var(--surface);stroke-width:2`;
   if(shape==="square")return S("rect",{x:x-r*.88,y:y-r*.88,width:r*1.76,height:r*1.76,rx:1.5,style:st},g);
@@ -429,11 +451,12 @@ function kArmChip(tag,label,color){const s=H("span",{class:"armchip"});const t=H
 // is an interval open above
 // opt:{domain:[a,b], fmt, tickFmt?, ticks?, ref?:{value,label}, origin?, originLabel?, level?, labelW?, rowH?}
 function barsH(el,w,rows,opt){const rowH=opt.rowH||28,narrow=w<480,tagW=rows.some(r=>r.tag!=null)?22:0,lw=opt.labelW||(narrow?Math.min(130,w*.36):Math.min(220,w*.3));
-  const m={l:lw,r:narrow?52:70,t:opt.ref||opt.level||opt.originLabel?20:6,b:22};
+  const m={l:lw,r:narrow?52:70,t:opt.ref||opt.level||opt.originLabel?20:6,b:22};const [d0,d1]=opt.domain;const x=opt.log?logs(d0,d1,m.l,w-m.r):lin(d0,d1,m.l,w-m.r);
+  const rl=opt.ref&&opt.ref.label?kRefLabel(x(opt.ref.value),opt.ref.label,0,opt.level?w-textW(`${opt.level} intervals`,11)-8:w):null;if(rl)m.t+=(rl.lines.length-1)*13;
   const grouped=rows.some(r=>r.group!=null);let gaps=0;rows.forEach((r,i)=>{if(i&&r.group!==rows[i-1].group)gaps++;});
-  const h=m.t+m.b+rowH*rows.length+gaps*14+(grouped?14:0);const s=svgIn(el,w,h);const [d0,d1]=opt.domain;const x=opt.log?logs(d0,d1,m.l,w-m.r):lin(d0,d1,m.l,w-m.r);
+  const h=m.t+m.b+rowH*rows.length+gaps*14+(grouped?14:0);const s=svgIn(el,w,h);
   const tf=opt.tickFmt||opt.fmt;const tw=Math.max(...[d0,d1,(d0+d1)/2].map(v=>tf(v).length))*6.4+14;
-  const tv=opt.ticks?kThinTicks(opt.ticks,x,tf):kFmtTicks(d0,d1,Math.max(2,Math.floor((w-m.l-m.r)/tw)),tf);
+  const tv=opt.ticks?kThinTicks(opt.ticks,x,tf):kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/tw),tf,x);
   for(const v of tv){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:tf(v)},s);}
   const o=opt.origin||0;const z=x(kClamp(o,d0,d1));S("line",{x1:z,x2:z,y1:m.t-2,y2:h-m.b,class:"axis"},s);
   if(opt.originLabel)S("text",{x:z+4,y:m.t-8,class:"tick",text:opt.originLabel},s);
@@ -463,7 +486,7 @@ function barsH(el,w,rows,opt){const rowH=opt.rowH||28,narrow=w<480,tagW=rows.som
     if(flip&&past+6+nw>w){nt=opt.fmt(val);nw=nt.length*6.4;}
     S("text",{x:right?edge+6:flip?past+6:edge-6,y:cy+4,"text-anchor":right||flip?"start":"end",class:r.strong?"lbl-strong":"tick",text:nt},g);
     hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,opt.fmt(val)+(r.lo==null?"":open?` (from ${opt.fmt(r.lo)} up, no upper bound)`:` (${opt.fmt(r.lo)} to ${opt.fmt(r.hi)})`)]));});
-  if(opt.ref){const rx=x(opt.ref.value);S("line",{x1:rx,x2:rx,y1:m.t-6,y2:h-m.b,class:"floor"},s);if(opt.ref.label)S("text",{x:rx+4,y:m.t-8,class:"tick",text:opt.ref.label},s);}
+  if(opt.ref){const rx=x(opt.ref.value);S("line",{x1:rx,x2:rx,y1:m.t-6,y2:h-m.b,class:"floor"},s);if(rl)kRefText(s,rl,m.t-8,true);}
   if(opt.level)S("text",{x:w,y:m.t-8,"text-anchor":"end",class:"tick",text:`${opt.level} intervals`},s);
   return s;}
 
@@ -489,11 +512,12 @@ function lineChart(el,w,cats,series,opt){const narrow=w<480;const h=opt.h||(narr
 // ---------- forest plot: change against a control, with interval and an optional margin ----------
 // rows:[{label, value, lo, hi, color, strong?, note?, group?, tip?}] opt:{domain:[a,b], fmt, ref?:{value,label} (margin band from value up), level?}
 function forest(el,w,rows,opt){const narrow=w<480,rowH=opt.rowH||30,need=Math.max(...rows.map(r=>r.label.length))*6.6+18,lw=opt.labelW||Math.min(need,narrow?w*.42:Math.min(230,w*.32));
-  const m={l:lw,r:narrow?60:96,t:22,b:24};let gaps=0;rows.forEach((r,i)=>{if(i&&r.group!==rows[i-1].group)gaps++;});
-  const h=m.t+m.b+rowH*rows.length+gaps*14+(rows.some(r=>r.group)?14:0);const s=svgIn(el,w,h);const [d0,d1]=opt.domain;const x=lin(d0,d1,m.l,w-m.r);
+  const m={l:lw,r:narrow?60:96,t:22,b:24};let gaps=0;rows.forEach((r,i)=>{if(i&&r.group!==rows[i-1].group)gaps++;});const [d0,d1]=opt.domain;const x=lin(d0,d1,m.l,w-m.r);
+  const rl=opt.ref&&opt.ref.label?kRefLabel(x(Math.max(d0,opt.ref.value)),opt.ref.label,0,opt.level?w-m.r-textW(`${opt.level} intervals`,11)-8:w):null;if(rl)m.t+=(rl.lines.length-1)*13;
+  const h=m.t+m.b+rowH*rows.length+gaps*14+(rows.some(r=>r.group)?14:0);const s=svgIn(el,w,h);
   if(opt.ref){const mx=x(Math.max(d0,opt.ref.value));S("rect",{x:mx,y:m.t,width:x(d1)-mx,height:h-m.t-m.b,style:"fill:var(--good-wash);opacity:.6"},s);
-    S("line",{x1:mx,x2:mx,y1:m.t-4,y2:h-m.b,class:"floor"},s);if(opt.ref.label)S("text",{x:mx+4,y:narrow&&opt.level?h-m.b-6:m.t-8,class:"tick",text:opt.ref.label},s);}
-  for(const v of kFmtTicks(d0,d1,Math.max(2,Math.floor((w-m.l-m.r)/(Math.max(opt.fmt(d0).length,opt.fmt(d1).length)*6.4+16))),opt.fmt)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:opt.fmt(v)},s);}
+    S("line",{x1:mx,x2:mx,y1:m.t-4,y2:h-m.b,class:"floor"},s);if(rl)kRefText(s,rl,m.t-8,true);}
+  for(const v of kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/(Math.max(opt.fmt(d0).length,opt.fmt(d1).length)*6.4+16)),opt.fmt,x)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:opt.fmt(v)},s);}
   S("line",{x1:x(0),x2:x(0),y1:m.t-4,y2:h-m.b,class:"axis",style:"stroke-width:1.5"},s);
   if(opt.level)S("text",{x:w-m.r,y:m.t-8,"text-anchor":"end",class:"tick",text:`${opt.level} intervals`},s);
   let y0=m.t+(rows.some(r=>r.group)?14:0);
@@ -548,9 +572,9 @@ function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);
   if(d.x_title)S("text",{x:(m.l+w-m.r)/2,y:h-6,"text-anchor":"middle",class:"tick",text:d.x_title},s);
   if(d.y_title)S("text",{x:m.l+6,y:h-m.b-8,class:"tick",text:d.y_title},s);
   if(d.x_reference){const rx=x(d.x_reference.value);S("line",{x1:rx,x2:rx,y1:m.t,y2:h-m.b,class:"floor"},s);obs.push([rx-2,m.t,rx+2,h-m.b,1]);
-    if(d.x_reference.label){S("text",{x:rx+4,y:m.t+12,class:"tick",text:d.x_reference.label},s);obs.push([rx+4,m.t+2,rx+4+d.x_reference.label.length*6.4,m.t+15]);}}
+    if(d.x_reference.label){const rl=kRefLabel(rx,d.x_reference.label,m.l,w-m.r);kRefText(s,rl,m.t+12,false);obs.push(kRefBox(rl,m.t+12));}}
   if(d.reference){const ry=y(d.reference.value);S("line",{x1:m.l,x2:w-m.r,y1:ry,y2:ry,class:"floor"},s);obs.push([m.l,ry-2,w-m.r,ry+2,1]);
-    if(d.reference.label){const lw=d.reference.label.length*6.4;S("text",{x:w-m.r,y:ry+13,"text-anchor":"end",class:"tick",text:d.reference.label},s);obs.push([w-m.r-lw,ry+1.5,w-m.r,ry+16.5]);}}
+    if(d.reference.label){const rl=kRefLabel(w-m.r+4,d.reference.label,m.l,w-m.r);kRefText(s,rl,ry+13,false);obs.push(kRefBox(rl,ry+13));}}
   if(d.price_line){const p=d.price_line.value,yAt=v=>-(v/Math.max(1e-9,p)),lx=Math.min(x1,p*-y0);
     S("line",{x1:x(0),y1:y(0),x2:x(lx),y2:y(Math.max(y0,yAt(lx))),style:"stroke:var(--good);stroke-width:1.5;stroke-dasharray:5 4"},s);
     if(d.price_line.label){const mx=lx*.55,t=d.price_line.label,tx=x(mx)+8,ty=y(Math.max(y0,yAt(mx)))+16;S("text",{x:tx,y:ty,class:"tick",style:"fill:var(--good)",text:t},s);obs.push([tx,ty-10,tx+t.length*6.4,ty+3]);}
@@ -572,30 +596,33 @@ function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);
 // one rate per candidate against a floor: dot, interval, floor dashed
 function kDotInterval(el,w,d){kNeed(d,["domain","fmt"]);const rows=kList(d,"rows");kNeedLevel(d,rows);const f=namedFmt(d.fmt);const [d0,d1]=d.domain;
   const rowH=d.row_height||28,need_=Math.max(...rows.map(r=>r.label.length))*6.6+18,m={l:kLabelW(d,w)||Math.min(need_,w*.42),r:14,t:22,b:22},maxC=Math.floor((m.l-12)/6.6);
-  const h=m.t+m.b+rowH*rows.length;const s=svgIn(el,w,h);const x=lin(d0,d1,m.l,w-m.r);
+  const x=lin(d0,d1,m.l,w-m.r);const rl=d.reference&&d.reference.label?kRefLabel(x(d.reference.value),d.reference.label,0,d.level?w-m.r-textW(`${d.level} intervals`,11)-8:w):null;if(rl)m.t+=(rl.lines.length-1)*13;
+  const h=m.t+m.b+rowH*rows.length;const s=svgIn(el,w,h);
   const tw=Math.max(f(d0).length,f(d1).length)*6.4+16;
-  for(const v of d.ticks?kThinTicks(d.ticks,x,f):kFmtTicks(d0,d1,Math.max(2,Math.floor((w-m.l-m.r)/tw)),f)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:f(v)},s);}
+  for(const v of d.ticks?kThinTicks(d.ticks,x,f):kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/tw),f,x)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:f(v)},s);}
   rows.forEach((r,i)=>{const cy=m.t+rowH*i+rowH/2,c=kTok(r.color,"--s1"),g=S("g",{},s);
     S("text",{x:m.l-8,y:cy+4,"text-anchor":"end",class:r.strong||kIsEm(d,r.id)?"lbl-strong":"lbl",text:r.label.length<=maxC?r.label:r.label.slice(0,maxC-1)+"…"},g);
     if(r.lo!=null)S("line",{x1:x(kClamp(r.lo,d0,d1)),x2:x(kClamp(r.hi,d0,d1)),y1:cy,y2:cy,style:`stroke:var(${c});stroke-width:3;stroke-linecap:round;opacity:.35`},g);
     mark(g,kShape(r.shape),x(kClamp(r.value,d0,d1)),cy,5,c,r.hollow);
     hit(g,m.l,cy-rowH/2,w-m.l-m.r,rowH,tipHTML(r.tip||[r.label,f(r.value)+(r.lo!=null&&r.hi!=null?` (${f(r.lo)} to ${f(r.hi)})`:"")]));});
-  if(d.reference){const rx=x(d.reference.value);S("line",{x1:rx,x2:rx,y1:m.t-4,y2:h-m.b,class:"floor"},s);if(d.reference.label)S("text",{x:rx+4,y:m.t-8,class:"tick",text:d.reference.label},s);}
+  if(d.reference){const rx=x(d.reference.value);S("line",{x1:rx,x2:rx,y1:m.t-4,y2:h-m.b,class:"floor"},s);if(rl)kRefText(s,rl,m.t-8,true);}
   if(d.level)S("text",{x:w-m.r,y:m.t-8,"text-anchor":"end",class:"tick",text:`${d.level} intervals`},s);
   return s;}
 
 // latency distributions: one bar per row from "from" to "to" (p50 to p95), grouped, with a budget line
 function kRangeBars(el,w,d){kNeed(d,["domain","fmt"]);const groups=kList(d,"groups");const f=namedFmt(d.fmt);const [d0,d1]=d.domain;
-  const band=g=>kList(g,"rows").length*13+20,m={l:Math.min(190,w*.36),r:16,t:16,b:26};const h=m.t+m.b+groups.reduce((a,g)=>a+band(g),0);const s=svgIn(el,w,h);const x=lin(d0,d1,m.l,w-m.r);
+  const band=g=>kList(g,"rows").length*13+20,m={l:Math.min(190,w*.36),r:16,t:16,b:26};const x=lin(d0,d1,m.l,w-m.r);
+  const rl=d.reference&&d.reference.label?kRefLabel(x(d.reference.value),d.reference.label,0,w):null;if(rl)m.t+=(rl.lines.length-1)*13;
+  const h=m.t+m.b+groups.reduce((a,g)=>a+band(g),0);const s=svgIn(el,w,h);
   const tw=Math.max(f(d0).length,f(d1).length)*6.4+16;
-  for(const v of d.ticks?kThinTicks(d.ticks,x,f):kFmtTicks(d0,d1,Math.max(2,Math.floor((w-m.l-m.r)/tw)),f)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-8,"text-anchor":"middle",class:"tick",text:f(v)},s);}
+  for(const v of d.ticks?kThinTicks(d.ticks,x,f):kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/tw),f,x)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-8,"text-anchor":"middle",class:"tick",text:f(v)},s);}
   let top=m.t;for(const gr of groups){const y0=top+10;top+=band(gr);
     S("text",{x:m.l-12,y:y0+gr.rows.length*13/2+3,"text-anchor":"end",class:"lbl-strong",text:w<480&&gr.short_label?gr.short_label:gr.label},s);
     gr.rows.forEach((r,i)=>{const cy=y0+i*13+4,c=kTok(r.color,"--s1"),g=S("g",{},s);
       S("line",{x1:x(kClamp(r.from,d0,d1)),x2:x(kClamp(r.to,d0,d1)),y1:cy,y2:cy,style:`stroke:var(${c});stroke-width:6;stroke-linecap:round`},g);
       mark(g,kShape(r.shape),x(kClamp(r.to,d0,d1)),cy,4,c,r.hollow);
       hit(g,m.l,cy-6.5,w-m.l-m.r,13,tipHTML(r.tip||[`${r.label} · ${gr.label}`,`${f(r.from)} to ${f(r.to)}`]));});}
-  if(d.reference){const rx=x(d.reference.value);S("line",{x1:rx,x2:rx,y1:m.t-8,y2:h-m.b,class:"floor"},s);if(d.reference.label)S("text",{x:rx+4,y:m.t-2,class:"tick",text:d.reference.label},s);}
+  if(d.reference){const rx=x(d.reference.value);S("line",{x1:rx,x2:rx,y1:m.t-8,y2:h-m.b,class:"floor"},s);if(rl)kRefText(s,rl,m.t-2,true);}
   return s;}
 
 // HTML renderers: drawn once, sized by CSS
@@ -619,7 +646,7 @@ function kGateMatrix(el,d){const cols=kList(d,"columns"),rows=kList(d,"rows");co
 
 // two crossed factors: a tile per cell with the metric, a bar, cost and latency, and a status pill
 function kLattice(el,d){kNeed(d,["fmt"]);const cols=kList(d,"columns"),rows=kList(d,"rows");const f=namedFmt(d.fmt),cf=d.cost_fmt?namedFmt(d.cost_fmt):null,lf=d.latency_fmt?namedFmt(d.latency_fmt):null;
-  const bd=d.bar_domain||null;const box=H("div",{class:"lattice"});box.style.gridTemplateColumns=kGridCols(cols.length);box.appendChild(kTxt("div","hd",""));
+  const bd=d.bar_domain||null;const box=H("div",{class:"lattice"});box.style.gridTemplateColumns=`auto repeat(${cols.length},minmax(6.5rem,1fr))`;box.appendChild(kTxt("div","hd",""));
   for(const c of cols)box.appendChild(kTxt("div","hd",c.label));
   for(const r of rows){const rh=H("div",{class:"rh"});if(r.color){const sw=H("span",{class:"sw"});sw.style.background=`var(${kTok(r.color)})`;rh.appendChild(sw);}rh.append(document.createTextNode(r.label));box.appendChild(rh);
     const cells=kList(r,"cells");if(cells.length!==cols.length)throw new Error(`row "${r.label}" has ${cells.length} cells for ${cols.length} columns`);
@@ -627,7 +654,8 @@ function kLattice(el,d){kNeed(d,["fmt"]);const cols=kList(d,"columns"),rows=kLis
       if(bd){const bar=H("div",{class:"bar"}),i=H("i");i.style.width=kClamp((c.value-bd[0])/(bd[1]-bd[0])*100,0,100)+"%";bar.appendChild(i);cell.appendChild(bar);}
       const meta=[c.cost!=null&&cf?cf(c.cost)+(d.cost_unit?" "+d.cost_unit:""):null,c.latency!=null&&lf?lf(c.latency):null].filter(Boolean);
       if(meta.length)cell.appendChild(kTxt("span","meta",meta.join(" · ")));if(c.status)cell.appendChild(kPill(c.status,c.status_label||""));box.appendChild(cell);}}
-  el.appendChild(box);}
+  // tiles keep a legible width; where the columns do not fit, the lattice scrolls inside its own frame, as a table does
+  const wrap=H("div",{class:"tbl"});wrap.appendChild(box);el.appendChild(wrap);}
 
 // grids of cells (heatmap, difference heatmap, confusion) share the .mx layout
 function kMxGrid(cols,rows,cell){const box=H("div",{class:"mx"});box.style.gridTemplateColumns=kGridCols(cols.length);box.appendChild(H("div"));

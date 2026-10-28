@@ -51,6 +51,7 @@ from threetears.evals.kernel import ResultKey, ValidationFailedError
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
 from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.quick import EXIT_REFUSED, run_cli
 from threetears.evals.ops import RegressionAlert, RegressionSink, RegressionWatch, history_text, pivot_text
 from threetears.evals.run.reads import list_runs
@@ -69,6 +70,7 @@ from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture
+from packages.evals.tests.run_pages_support import BatchRecordingStore
 
 PROFILE = toyhost_profile(every_seat=True)
 SCOPE = "uni-aggregate-budget"
@@ -544,12 +546,12 @@ class _RecordingSink(RegressionSink):
 _WATCH_CASES = [f"c{index}" for index in range(12)]
 
 
-def _watched(*, others: int = 0) -> tuple[RegressionWatch, _RecordingSink]:
+def _watched(*, others: int = 0, store: InMemoryDocumentStore | None = None) -> tuple[RegressionWatch, _RecordingSink]:
     """Two completed runs of one contestant of :data:`NARROW`, the later one's cost up fivefold and its judged
     transcript score down from 5 to 1, every judged score rated in agreement by a person (24 ratings, so the judge
     calibrates on this subject alone), beside ``others`` runs of :data:`OTHER`; and a watch on cost and the
-    transcript."""
-    storage, _ = memory_storage()
+    transcript; over ``store`` when one is given."""
+    storage = memory_storage()[0] if store is None else EvalStorage(store)
     plan = [("run-a", NARROW, 0.01, 5), ("run-b", NARROW, 0.05, 1)]
     plan += [(f"other-{index}", OTHER, 0.01, 5) for index in range(others)]
     for order, (run_id, subject, cost, transcript) in enumerate(plan):
@@ -653,6 +655,38 @@ class TestTheRegressionWatch:
         assert "subject_filter" not in message and "subject_id" not in message
 
 
+class TestTheRegressionWatchsJudgedTiersAreHeldToTheBudget:
+    """A judged step's evidence tiers read the subject's results whole, so they are held to the budget as its history
+    is: the subject's two runs hold 24 results by their matrices, beside three runs of another subject."""
+
+    def test_one_result_past_the_budget_is_refused_reading_no_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        store = BatchRecordingStore()
+        watch, _ = _watched(others=3, store=store)
+        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 2 * len(_WATCH_CASES) - 1)
+        store.clear()
+
+        # The history it reads first refuses on the same runs and estimate; the tiers' own hold is the same bound.
+        with pytest.raises(ValidationFailedError) as refused:
+            watch.check("run-b", SCOPE)
+
+        assert refused.value.details == {"runs": 2, "results_estimated": 24, "result_budget": 23}
+        assert store.typed_reads == [] and store.id_reads == [], "refused before any result was read"
+
+    def test_at_the_budget_the_judged_step_is_tiered_on_the_subjects_results(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = BatchRecordingStore()
+        watch, _ = _watched(others=3, store=store)
+        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 2 * len(_WATCH_CASES))
+        store.clear()
+
+        (_, transcript) = watch.check("run-b", SCOPE)
+
+        assert transcript.evidence_tier == "calibrated" and transcript.narrowed_read_disclosure is not None
+        subject_reads = [rows for named, _, rows in store.typed_reads if set(named) == {"run-a", "run-b"}]
+        assert subject_reads == [24], "the tiers read the subject's 24 in one read of both its runs"
+
+
 class TestTheFrontierCommand:
     """The quick CLI's ``frontier`` names its own flag in a refusal past the budget, never the action's filter."""
 
@@ -690,13 +724,28 @@ class TestTheFrontierCommand:
 
 
 def test_a_campaign_report_reads_its_runs_by_id_past_the_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The scope past the budget never refuses a campaign whose own runs fit it: the bundle is held to its own runs'
+    estimate (``test_bundle_read_budget``), never the scope's."""
     fixture = off_loop(ops_fixture)
     host = fixture.host.eval_host
     before = off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE)
-    monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 1)
+    members = off_loop(host.storage.load_eval_runs, fixture.campaign.run_ids, TOYHOST_SCOPE)
+    # The campaign's own runs, by their matrices (cases × k), are the budget; one run outside it puts the scope past.
+    campaign_estimate = sum(len(run.test_case_ids) * run.k_runs for run in members)
+    outside = make_eval_run(
+        scope_id=TOYHOST_SCOPE, status="completed", k_runs=1, test_case_ids=[f"tc-{n}" for n in range(3)]
+    )
+    off_loop(host.storage.save_eval_run, outside)
+    for n in range(campaign_estimate + 1):
+        off_loop(
+            host.storage.save_eval_result,
+            make_eval_result(id=f"outside-{n}", scope_id=TOYHOST_SCOPE, eval_run_id=outside.id, test_case_id="tc-0"),
+        )
+    monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", campaign_estimate)
 
     after = off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE)
 
-    assert off_loop(host.storage.query_eval_results, TOYHOST_SCOPE), "the scope holds results past the budget"
+    scope_results = off_loop(host.storage.query_eval_results, TOYHOST_SCOPE)
+    assert len(scope_results) > campaign_estimate, "the scope holds results past the budget"
     assert after.basis == before.basis == "code_only"
     assert after.verdicts == before.verdicts

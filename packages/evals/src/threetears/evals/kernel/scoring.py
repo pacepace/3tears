@@ -168,7 +168,7 @@ def summarize_completeness(run: EvalRun, cells: Sequence[CellSummary]) -> RunCom
     )
 
 
-def reconstruct_completeness(run: EvalRun, results: Sequence[EvalResult]) -> RunCompleteness:
+def reconstruct_completeness(run: EvalRun, results: Iterable[EvalResult]) -> RunCompleteness:
     """Count what a run delivered from the rows it left behind, its own tally being gone.
 
     For the one stop :func:`~threetears.evals.kernel.scoring.summarize_completeness` cannot describe: a hard kill
@@ -187,16 +187,21 @@ def reconstruct_completeness(run: EvalRun, results: Sequence[EvalResult]) -> Run
 
     :param run: The abandoned run being reclaimed — the source of the promised matrix.
     :ptype run: EvalRun
-    :param results: Every result stored against that run.
-    :ptype results: Sequence[EvalResult]
+    :param results: Every result stored against that run, walked once and none of it kept, so a reader can hand them
+        over a page at a time (:func:`~threetears.evals.kernel.run_pages.iter_stored_results`).
+    :ptype results: Iterable[EvalResult]
     :return: The counts, ready to store on the run.
     :rtype: RunCompleteness
     """
+    persisted = excluded = 0
+    for result in results:
+        persisted += 1
+        excluded += classify_result(result) is ResultOutcome.INFRA_EXCLUDE
     return RunCompleteness(
         expected_cells=run.expected_cells,
-        produced_cells=len(results),
-        persisted_cells=len(results),
-        infra_excluded_cells=sum(1 for result in results if classify_result(result) is ResultOutcome.INFRA_EXCLUDE),
+        produced_cells=persisted,
+        persisted_cells=persisted,
+        infra_excluded_cells=excluded,
         counted_from="stored_results",
     )
 

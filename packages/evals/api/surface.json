@@ -1186,6 +1186,11 @@
       "signature": "SweepableValue(content_hash: str, display: str, scale: Scale, raw: Any | None = None)",
       "tier": "host-contract"
     },
+    "threetears.evals.schema.ThinkingBinding": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.ToolResultClearing": {
       "kind": "dataclass",
       "signature": "",
@@ -3131,6 +3136,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.UnreadableResultKey": {
+      "kind": "exception",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.UnreadableRunError": {
       "kind": "exception",
       "signature": "UnreadableRunError(message: str, *, run_ids: Sequence[str])",
@@ -4203,7 +4213,7 @@
     },
     "threetears.evals.run.list_results": {
       "kind": "function",
-      "signature": "list_results(storage: ResultStore, run_id: str, scope_id: str) -> list[EvalResult]",
+      "signature": "list_results(storage: RunResultsStore, run_id: str, scope_id: str) -> list[EvalResult]",
       "tier": "host-contract"
     },
     "threetears.evals.run.list_rubric_dims": {

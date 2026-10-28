@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261028-7aaddf34a0e8",
+  "input": "r3",
+  "input_digest": "8ed49915119167ef21cff1f2fafe46ccf65af216b00f381724c01ea19af772a0",
+  "plan_digest": "b5d0b2831eb537b6fb45de84e28e30ee07ac8537740c7d22f61ea6b591d975af",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+    "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "The headline is a decision with an instruction and a reason, it names the options table's recommended arm, and the balanced-accuracy lattice does not contradict it.",
+      "quote": "Deploy Brisk-S · Few-shot (12 ex.) (E). It satisfies every accuracy floor and stays well under the latency budget.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "The lede has two sentences: a concrete supporting fact (90.7% at 184 ms), then the change that would overturn the answer (a cell floor above 82.9%).",
+      "quote": "Brisk-S · Few-shot (12 ex.) (E) delivers 90.7% Balanced accuracy at 184 ms p95 latency. A stricter Cell floor above 82.9% would eliminate all options.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "The input carries no caveats or disclosures, the plan has no flag, and no caveat is stated twice outside Method's definitions.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The first section's headline claims something its lattice contradicts: Rubric + reasoning beats Few-shot for Atlas-M (93.2% vs 92.1%) and Brisk-S (91.5% vs 90.7%), so few-shot does not give the largest gains across all model families.",
+      "quote": "Few-shot prompting yields the largest accuracy gains across all model families",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Every measure, criterion, cell and arm above Full results appears under its reader name, and no internal id, hash or measure key shows.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin under the call (0.7 points on the overall gate), then a scoped risk in the complex news cell.",
+      "quote": "The weakest margin is Brisk-S · Few-shot (12 ex.) (E): 90.7% against Overall accuracy at 90%, a gap of 0.7 points. Complex news remains the most vulnerable cell.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "The same 90.7% figure is called Balanced accuracy in the lede and Overall accuracy in Watch, which gives one measure two names on the page.",
+      "quote": "The weakest margin is Brisk-S · Few-shot (12 ex.) (E): 90.7% against Overall accuracy at 90%, a gap of 0.7 points.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The masthead through the decision block and options table say what to do (deploy E), why (it clears every gate) and the main risk (the 0.7-point overall margin), without needing a section.",
+      "quote": "Deploy Brisk-S · Few-shot (12 ex.) (E). It satisfies every accuracy floor and stays well under the latency budget.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Next proposes a latency optimisation where latency already has ample headroom (184 ms against 250 ms), and it ignores the 0.7-point overall-accuracy margin, so its result could not overturn deploying E.",
+      "quote": "Test whether reducing few-shot exemplars from twelve to six cuts latency further without dropping complex news accuracy below 80%.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence is given as 'high' with no clauses, so there is no clause to score.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Each figure measures what its sentence says: E's own accuracy, latency and cost, the failing arms' own latencies and cell score, E's minimum and maximum cells, and the total case count.",
+      "quote": "Atlas-M · Rubric + reasoning (C) breaches the latency budget at 1302 ms; Brisk-S · Rubric + reasoning (F) also breaches it at 496 ms; and Nano-XS · Few-shot (12 ex.) (H) misses the Cell floor in complex news at 76.7%.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-28T13:02:24.705561+00:00"
+}

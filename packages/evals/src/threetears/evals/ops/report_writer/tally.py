@@ -66,6 +66,9 @@ class TurnCost:
     :ivar refused: Why the client refused the reply after it was paid for, or ``None`` for a reply the session read.
     :ivar admitted_on_estimate: Whether a dollar budget admitted the turn on a ceiling built on rates the host's
         pricer does not guarantee: its cap was checked against an estimate.
+    :ivar sent_binding: The thinking binding's behaviour the request carried, or ``None`` when it carried none.
+    :ivar input_transformations: What the provider reported doing to the request's input, as it wrote it, or ``None``
+        when the response carried no report.
     """
 
     session: str
@@ -86,6 +89,8 @@ class TurnCost:
     wall_s: float
     refused: str | None = None
     admitted_on_estimate: bool = False
+    sent_binding: str | None = None
+    input_transformations: tuple[dict[str, Any], ...] | None = None  # Any: the provider's JSON objects
 
     @classmethod
     def of(
@@ -140,6 +145,8 @@ class TurnCost:
             wall_s=wall_s,
             refused=refused,
             admitted_on_estimate=admitted_on_estimate,
+            sent_binding=reply.sent_binding,
+            input_transformations=reply.input_transformations,
         )
 
     def to_json(self) -> dict[str, Any]:  # Any: a JSON object
@@ -167,6 +174,10 @@ class TurnCost:
             "wall_s": self.wall_s,
             "refused": self.refused,
             "admitted_on_estimate": self.admitted_on_estimate,
+            "sent_binding": self.sent_binding,
+            "input_transformations": (
+                None if self.input_transformations is None else [dict(entry) for entry in self.input_transformations]
+            ),
         }
 
 

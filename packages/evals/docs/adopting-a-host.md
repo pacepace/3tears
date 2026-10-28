@@ -762,7 +762,10 @@ pivot, a frontier or a history reads as the whole of it. They make the same esti
 - **A read that returns more than the budget** (a deleted run's results are in no listing) is not aggregated. A
   call for one subject reads that subject's runs instead; any other call is refused.
 
-Campaign reports read their member runs by id, so the budget never applies to them. Answering a scope past the
+Campaign reports read their member runs by id, so the scope's size never refuses them. A campaign's own runs are
+held to the same budget: `assemble_context_bundle` (every analysis and campaign report) estimates the runs it reads
+from the batch run read it already makes and refuses past the budget before reading a result, naming a campaign
+of fewer member runs, archiving members it need not read, or an aspect that reads fewer runs. Answering a scope past the
 budget in one call needs the projection pushed down into SQL (#996).
 
 **A run is read a page at a time.** A run's summary (`summarize_run`, `run_get`), a take-up of it (`job_resume`, the
@@ -774,7 +777,16 @@ by run, the one a whole read of the run made, now once a walk and shipping no he
 key. Leaving the fields out costs what your store's `exclude` costs: one rebuild of each document per path when it
 drops them one at a time; a store whose fields are top-level keys of a Postgres `jsonb` can drop them all in one
 operation (`data - text[]`). A store that applies `exclude` after fetching should project each row as it reads it, or
-the pass holds every row's text at once. A few readers still read a run whole; the CHANGELOG lists them.
+the pass holds every row's text at once. Every other reader of a whole run reads it the same way, in the store's
+order: a comparison or bisection of two runs, a run written lost, the witnessed judge ceiling, `results_list`,
+`list_results`, `delete_run` (its ids only), a calibration and the judge passes. A campaign's bundle still reads its
+member runs' results in one batch call, and a launch estimate's planning block (`detectable_effects`) and a regression
+watch's judged tiers read many runs whole; past the budget above each reads no result, and the bundle and the tiers are
+refused while a launch estimate is still priced, its planning block saying why in `cannot_estimate`. A reader that keeps
+every result to fold into figures keeps it without `world_events` and `kind_payload`, so a host callable handed a run's
+results there (a sweepable's `read`, `row_columns`) reads them without those two fields; read what your kind reports
+into its measures as the cell ends.
+Aggregates over a scope are bounded by the read budget above instead.
 
 ## Stored data: what is kept
 

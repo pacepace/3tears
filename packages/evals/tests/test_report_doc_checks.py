@@ -12,6 +12,7 @@ in a chart's title on the rendered page.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
@@ -391,6 +392,64 @@ def test_an_id_with_no_reader_name_is_sent_to_words() -> None:
 
     assert len(remedies) == 2
     assert all("in words" in remedy and "name the page prints" not in remedy for remedy in remedies), remedies
+
+
+def _r1_with_arm(old: str, new: str, words: str = "", **fields: str) -> list[DocVerdict]:
+    """The third prototype's r1 document on its snapshot, the arm ``old`` renamed ``new`` throughout and named by its id
+    as an input built from a run names it (its alias is its id), with ``fields`` set on it and ``words`` appended to
+    the recommendation; checked with the page it builds."""
+    held = json.loads(_input("prototype3/r1").model_dump_json(by_alias=True).replace(old, new))
+    arm = next(arm for arm in held["arms"] if arm["id"] == new)
+    arm.update({"name": new, **fields})
+    report_input = ReportInput.model_validate(held)
+    raw = json.loads(json.dumps(converted_doc("prototype3/r1")).replace(old, new))
+    _append(_RECOMMENDATION, words)(raw)
+    doc = ReportDoc.model_validate(raw)
+    return check_report_doc(doc, report_input, above_appendix_text=_rendered_above_appendix_text(doc, report_input))
+
+
+#: Lever arms' ids beside the names the page prints for them: Discodon's (a hyphen and a digit), one a hyphen alone
+#: marks, and one a digit alone marks.
+_LEVER_ARMS = [("fanout-1", "fanout 1"), ("fan-wide", "fan wide"), ("fanout1", "fanout 1")]
+
+
+@pytest.mark.parametrize(("arm_id", "printed"), _LEVER_ARMS, ids=[arm_id for arm_id, _ in _LEVER_ARMS])
+def test_a_lever_arms_id_the_page_prints_by_another_name_is_refused_though_a_hyphen_or_digit_alone_marks_it(
+    arm_id: str, printed: str
+) -> None:
+    """A lever arm's id is the campaign's label (``fanout-1``): where the page prints the arm otherwise ("fanout 1"),
+    prose typing the id is refused, even where its one id mark is a hyphen or a digit, in the document and on the
+    page it builds; its alias, which an input built from a run sets to the id, does not hide it."""
+    assert _r1_with_arm("brisk-s", arm_id, short_name=printed) == []
+
+    verdicts = _r1_with_arm("brisk-s", arm_id, f" Most {arm_id} answers still read well.", short_name=printed)
+
+    said = f"types the arm id {arm_id!r}, which the page prints as {printed!r}"
+    assert [(verdict.invariant, verdict.path, verdict.fault) for verdict in verdicts] == [
+        (5, "decision[0].text", f"{said} above the appendix"),
+        (5, "page", f"{said} on the page above the appendix"),
+    ]
+
+
+def test_a_model_arms_id_that_is_its_served_model_is_the_readers_word() -> None:
+    """A model arm's id is the model's name a reader knows: typed beside a short name the page prints, it stands."""
+    model = "deepseek/deepseek-v4.1-flash"
+    fields = {"short_name": "DeepSeek Flash", "served_model": model}
+    assert _r1_with_arm("atlas-m", model, **fields) == []
+
+    verdicts = _r1_with_arm("atlas-m", model, f" The {model} replies were short.", **fields)
+
+    assert verdicts == [], _said(verdicts)
+
+
+def test_an_ordinary_hyphenated_word_and_an_arm_id_its_printed_name_differs_from_only_in_case_stand() -> None:
+    """A hyphen marks only a token that is an arm's id the page prints otherwise: "cost-per-reply", "off-lane" and
+    "high-effort" are words, and the id ``open-70b``, printed "Open-70B", is its own name in any case."""
+    words = " The cost-per-reply gap is small, off-lane asks hold, high-effort runs cost more, and open-70b is close."
+
+    verdicts = _r1_with_arm("brisk-s", "fanout-1", words, short_name="fanout 1")
+
+    assert verdicts == [], _said(verdicts)
 
 
 def test_a_verdict_names_where_it_sits_and_how_to_mend_it() -> None:

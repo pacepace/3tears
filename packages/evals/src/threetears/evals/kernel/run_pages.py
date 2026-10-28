@@ -15,6 +15,12 @@ keys are put in the page order, and each page is then one read of its results by
 a walk of a run of ``n`` results is one read of the run plus ``n / page`` reads by id: the run is passed over once,
 however many pages it takes, where a read of the run per page would pass over it once a page.
 
+**Or in the store's order.** A reader that folds a run into figures a list of results gives (a comparison of two runs,
+a count of what a lost run delivered, a calibration) walks it in the order the store keeps it
+(:func:`iter_stored_results`), the order a read of the whole run hands its results out in, so its figures are the
+ones that read gave, to the last bit of every float sum. One that keeps every result past its page keeps it without
+its verbatim fields (:func:`results_without_payloads`).
+
 **The page order** is by the case's place in the run (``EvalRun.test_case_ids``, each once), then ``k``, model, when
 the row was stored and id. A result whose case is none of its run's cases (the engine writes none) comes after
 every case of the run, by its case. The order is the same however the run is cut into pages, so a reader of the
@@ -26,6 +32,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from typing import Final, NamedTuple, Protocol
 
+from threetears.evals.kernel.errors import StorageError
 from threetears.evals.schema.models import EvalResult, EvalRun
 
 #: The most results a reader of a whole run holds at once.
@@ -33,6 +40,23 @@ from threetears.evals.schema.models import EvalResult, EvalRun
 #: A result is a few kilobytes to a few hundred (a judge's reasoning, a kind's payload, a world's events), so a page of
 #: this many is megabytes at most, where a large run read whole was the run's whole volume.
 RUN_RESULTS_PAGE: Final[int] = 200
+
+
+#: The fields of a stored result that hold what its cell did verbatim: a world's whole event log and its kind's own
+#: payload. Each grows without bound with what the cell did, and no reading of a run's results as figures reads either:
+#: the engine's comparisons, counts and calibrations read the scores, outcomes, usage and measures beside them, and a
+#: host reads its kind's payload as the cell ends, into the measures it reports.
+_VERBATIM_RESULT_FIELDS: Final = ("world_events", "kind_payload")
+
+
+class UnreadableResultKey(StorageError):
+    """A stored result row whose key (id, case, ``k``, model, when stored) cannot be read, so its run cannot be walked a
+    page at a time (status 503, refused as a storage error).
+
+    Raised by the key read (:meth:`RunResultsStore.query_eval_result_keys_by_run`) for a row, never for a store that
+    failed to answer: a reader that tolerates a row this build cannot read (a lost run's count of what it stored)
+    catches this and lets every other storage failure through.
+    """
 
 
 class ResultKey(NamedTuple):
@@ -163,12 +187,90 @@ def iter_run_results(storage: RunResultsStore, run: EvalRun, *, page_results: in
         yield from read_results(storage, run.scope_id, keys[start : start + page_results])
 
 
+def iter_stored_results(storage: RunResultsStore, run_id: str, scope_id: str) -> Iterator[EvalResult]:
+    """Every result of the run in the order the store keeps them, :data:`RUN_RESULTS_PAGE` at a time.
+
+    The store's order is the order a read of the whole run (``query_eval_results_by_run``) hands its results out in,
+    so a reader that folds them into figures gives the figures that read gave, sums and all. The run's keys are read
+    once, when the walk starts, in that order (:meth:`RunResultsStore.query_eval_result_keys_by_run`); each page is
+    read by id when the one before it has been walked. A result removed since its key was read is absent.
+
+    :param storage: Where the run's results are read.
+    :ptype storage: RunResultsStore
+    :param run_id: The run.
+    :ptype run_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :return: The results.
+    :rtype: Iterator[EvalResult]
+    """
+    return iter_keyed_results(storage, scope_id, storage.query_eval_result_keys_by_run(run_id, scope_id))
+
+
+def iter_keyed_results(storage: RunResultsStore, scope_id: str, keys: Sequence[ResultKey]) -> Iterator[EvalResult]:
+    """The results ``keys`` name, in the keys' order, :data:`RUN_RESULTS_PAGE` at a time: each page read by id when the
+    one before it has been walked. A result removed since its key was read is absent.
+
+    :param storage: Where the results are read.
+    :ptype storage: RunResultsStore
+    :param scope_id: Their scope.
+    :ptype scope_id: str
+    :param keys: Their keys, in the order to walk them: a run's (:meth:`RunResultsStore.query_eval_result_keys_by_run`)
+        in the store's order or the reader's, or some of them.
+    :ptype keys: Sequence[ResultKey]
+    :return: The results.
+    :rtype: Iterator[EvalResult]
+    """
+    page = RUN_RESULTS_PAGE
+    for start in range(0, len(keys), page):
+        yield from read_results(storage, scope_id, keys[start : start + page])
+
+
+def without_payloads(result: EvalResult) -> EvalResult:
+    """The result without its verbatim fields, ``world_events`` and ``kind_payload`` (each read as none), or itself
+    when it carries neither.
+
+    :param result: A stored result.
+    :ptype result: EvalResult
+    :return: The result as a reader of figures keeps it.
+    :rtype: EvalResult
+    """
+    if all(getattr(result, name) is None for name in _VERBATIM_RESULT_FIELDS):
+        return result
+    return result.model_copy(update=dict.fromkeys(_VERBATIM_RESULT_FIELDS))
+
+
+def results_without_payloads(storage: RunResultsStore, run_id: str, scope_id: str) -> list[EvalResult]:
+    """Every result of the run, in the store's order, read a page at a time and each kept without its verbatim fields.
+
+    For a reader that needs every result of the run at once to fold them into figures (the cases two runs share, a
+    composite per case): it holds the run's results without what grows without bound with each cell
+    (``world_events`` and ``kind_payload``), and one page of them whole. Its figures are the ones a read of the whole run
+    gave (:func:`iter_stored_results`); a result kept this way is never written back.
+
+    :param storage: Where the run's results are read.
+    :ptype storage: RunResultsStore
+    :param run_id: The run.
+    :ptype run_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :return: The results, in the store's order.
+    :rtype: list[EvalResult]
+    """
+    return [without_payloads(result) for result in iter_stored_results(storage, run_id, scope_id)]
+
+
 __all__ = [
     "RUN_RESULTS_PAGE",
     "ResultKey",
     "RunResultsStore",
+    "UnreadableResultKey",
+    "iter_keyed_results",
     "iter_run_results",
+    "iter_stored_results",
     "read_results",
+    "results_without_payloads",
     "run_case_pages",
     "run_result_keys",
+    "without_payloads",
 ]

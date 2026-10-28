@@ -68,6 +68,7 @@ from threetears.evals.schema import (
     StopReason,
     ToolResultClearing,
     TurnCeiling,
+    ThinkingBinding,
     TurnToolSpec,
     ToolTurnClient,
     TurnMessage,
@@ -615,10 +616,12 @@ class _Live:
         tools: Sequence[TurnToolSpec],
         max_tokens: int,
         clearing: ToolResultClearing | None = None,
+        binding: ThinkingBinding | None = None,
     ) -> TurnReply:
         """One tool turn over the Messages API, priced as a completion is; declined calls resent as :meth:`_post`
         does, and nothing else (a tool turn negotiates no setting: the caller chose them). A clearing goes as the
-        body's ``context_management`` under its beta header."""
+        body's ``context_management``, and a binding as its ``thinking.block_binding`` where the body thinks, each
+        under its beta header."""
         read = await self._read_for_call()
         body = turn_body(
             self.model_name,
@@ -629,8 +632,12 @@ class _Live:
             sent=self._asked,
             facts=self._declared(),
             clearing=clearing,
+            binding=binding,
         )
-        status, parsed = await self._post(body, betas=(ToolResultClearing.BETA,) if clearing is not None else ())
+        betas = [ToolResultClearing.BETA] if clearing is not None else []
+        if "block_binding" in body.get("thinking", {}):
+            betas.append(ThinkingBinding.BETA)
+        status, parsed = await self._post(body, betas=betas)
         reply = read_reply(self.provider, self.model_name, status, parsed)
         turned: TurnRead = read_turn(status, parsed)
         price = self._price(reply, read.failure)
@@ -655,6 +662,8 @@ class _Live:
             cost_usd=price.usd,
             price_source=price.source,
             pricing_failure=price.unpriced_reason,
+            sent_binding=body.get("thinking", {}).get("block_binding", {}).get("prefix_mismatch_behavior"),
+            input_transformations=turned.input_transformations,
         )
 
     def turn_price_ceiling(
@@ -1099,6 +1108,7 @@ class Model:
         tools: Sequence[TurnToolSpec],
         max_tokens: int,
         clearing: ToolResultClearing | None = None,
+        binding: ThinkingBinding | None = None,
     ) -> TurnReply:
         """Send one turn of a tool-calling loop to Anthropic's Messages API, live.
 
@@ -1119,6 +1129,11 @@ class Model:
         :param clearing: Old tool results the provider clears itself past its trigger (server-side context editing,
             sent as ``context_management`` with the ``context-management-2025-06-27`` beta); ``None`` clears nothing.
         :ptype clearing: ToolResultClearing | None
+        :param binding: The check the provider runs on the thinking blocks the conversation replays, sent as
+            ``thinking.block_binding`` with the ``thinking-binding-controls-2026-08-01`` beta where the turn sends
+            thinking; ``None`` asks for none. With ``error``, a history changed under a replayed thinking block is
+            the provider's 400, a :class:`ProviderError`.
+        :ptype binding: ThinkingBinding | None
         :return: The model's reply.
         :rtype: TurnReply
         :raises ValueError: A route other than Anthropic's, naming the one that works; a model with a
@@ -1131,7 +1146,7 @@ class Model:
         :raises httpx.HTTPError: The request could not be sent, or timed out.
         """
         return await self._turn_client().turn(
-            system=system, messages=messages, tools=tools, max_tokens=max_tokens, clearing=clearing
+            system=system, messages=messages, tools=tools, max_tokens=max_tokens, clearing=clearing, binding=binding
         )
 
     def turn_price_ceiling(
