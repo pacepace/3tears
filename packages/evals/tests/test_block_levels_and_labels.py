@@ -391,7 +391,7 @@ def test_a_money_charts_labels_and_ticks_share_one_spelling_grouped() -> None:
     least is $10 or more, else cents and up; the kit draws its ticks to the same decimals, thousands grouped."""
     for _held, data in _price_charts():
         assert data.rows is not None
-        drawn = [row.value for row in data.rows if row.value is not None]
+        drawn = [end for row in data.rows for end in (row.value, row.lo, row.hi) if end is not None]
         form = money_form(drawn)
         assert data.fmt == f"usd:{form.decimals}" and data.tick_fmt in (None, data.fmt), (data.fmt, data.tick_fmt)
         for row in data.rows:

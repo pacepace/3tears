@@ -6,24 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: money reads one form per figure type, tiny amounts per 1,000 (#993), and each arm's cost sits beside its quality with its pricing
+### evals: money reads one form per figure type, tiny amounts per 1,000 (#993), and each arm's cost sits beside its quality
 
 **Changed:** money is spelled one way per set, never per value (owner ruling of 2026-10-27, which supersedes the W2c
-rule of three significant figures from $0.10 to $1). A figure-key family (every arm's `cost_per_1k`, a measure's
-statistic across the arms), a chart, and a column of every table the engine builds each choose one form from the
-amounts themselves: whole dollars where the least amount is $10 or more (`$7,560`); else cents, with more decimals
-only where the least amount needs them for two significant figures (`$0.030` beside `$3.477`, so r2's `$0.302` reads
-alike in prose and in its tables); and when any amount is under a cent, the whole set per 1,000 (`$8.00/1000` for
-$0.008, and `$110.00/1000` beside it for $0.11). One rule serves charts, keys and tables, so one amount reads alike
-on each. A `usd_per_1k` key whose family is under a cent per 1,000 moves its ruler instead of stacking a mark: r3's
-reads `$180.00 per 1,000,000 turns`. A chart whose amounts are under a cent draws them a thousand times over, per
-1,000 more of what they count, so its ticks and its notes read in dollars alike (the kit's `usd:<decimals>`). A
-change or a gap reads in the form of the amounts it compares, to no more decimals than its interval's width
-supports: Kairo's production-cost contrast now reads `+$0.49 per 1,000 replies`, where it read `+$0.492` on an
-interval $0.64 wide. A table an editor wrote moves a column per 1,000 by each amount's digits, never rounding one.
-An unknown amount reads `unpriced`, never `$0`. The single-value helpers `dollars_text`, `format_number` and
-`spell_dollars` read exactly as before, so a host printing one amount sees no change. `numbers.spell_price`, which
-never shipped, is removed.
+rule of three significant figures from $0.10 to $1), and one owner states every set: `cost_unit.money_ruler`, which
+every chart, table and figure key reads its scale, form and count from. A set's form is chosen from the amounts
+themselves: whole dollars where the least is $10 or more (`$7,560`); else cents, with more decimals only where the
+least amount needs them for two significant figures (`$0.030` beside `$3.477`, so r2's `$0.302` reads alike in prose
+and in its tables). Where an amount is under a cent the ruler moves instead: money per reply is stated per 1,000
+replies, and a set under a cent per 1,000 per 1,000,000 (r3's keys read `$180.00 per 1,000,000 turns`), the words
+replacing the label's own count, never stacked beside it (`Cost per 1,000,000 calls`, never `Cost per 1k calls, per
+1,000,000 calls`). A chart says what its dollars are per in a line under it and in its titles, and draws its ticks
+and notes to the same decimals (the kit's `usd:<decimals>`), never with a per-1,000 mark its ticks cannot write. A
+bare key, and a table where the ruler cannot move, write the per-1,000 mark instead (`$8.00/1000` for $0.008). A total
+(a run's cost, a month's) counts nothing and is never scaled. A change reads on the ruler of the amounts it compares,
+never scaled because an interval end sits near zero, to the precision of the change itself and of its widest
+interval: Kairo's production-cost contrast now reads `+$0.49 per 1,000 replies`, where it read `+$0.492` on an
+interval $0.64 wide, and a $0.40 change between monthly totals of $1,208 reads `+$0.40`, never `$0`. An unknown
+amount reads `unpriced`, never `$0`. The single-value helpers `dollars_text`, `format_number` and `spell_dollars`
+read exactly as before, so a host printing one amount sees no change. `numbers.spell_price`, which never shipped, is
+removed.
 
 **Added:** the report document's options table puts each arm's quality beside its cost: its pass rate (passes over
 usable trials), then its cost per run, or per 1,000 runs where the column reads per 1,000 (the header says which),
@@ -32,14 +34,13 @@ then what priced it. Beside the cost: the uplift on the control's, the priced sh
 `850 of 897 calls priced` in place of a cost, which would be a smaller total read as whole; an arm none of whose
 calls were priced reads `unpriced`; and no uplift is read against a partly priced control (`no uplift: the control
 has 850 of 897 calls priced`). Everywhere else such an amount is stated, its figure keys (`cost_per_1k`, a cost
-uplift or gap) and a chart's bars, dots and points say the priced share beside it. The new "Priced by" column names
-each arm's price sources and, beside them, the providers that served its calls. These come from a new optional
-`ScoreboardRow.pricing` on the report input (price sources, serving providers, calls and priced calls), filled from
-the campaign bundle's new `ArmScoreboard.pricing`, which the census reads off the usage rows of the roles a
-production deployment pays for. Both are left out of the document while unset, so a bundle or report input assembled
-before them fingerprints as it did; a stored bundle shows no pricing column until it is assembled again (#1011).
-Token-metered calls record no upstream serving provider yet (#1010). Monthly figures still appear only where the
-campaign declares a volume.
+uplift or gap), a chart's bars, dots, points and lattice tiles, and a task matrix's costs say the priced share beside
+it. The new "Priced by" column names each arm's price sources and the providers that served its calls. They come from
+a new optional `ScoreboardRow.pricing` on the report input (price sources, serving providers, calls and priced
+calls), left out of the document while unset so every stored input digests as it did. Nothing fills it from a
+campaign's stored usage yet: reading it into the bundle's census moves the pinned campaign fingerprints, which waits
+on its own decision (#1011). Token-metered calls record no upstream serving provider yet (#1010). Monthly figures
+still appear only where the campaign declares a volume.
 
 ### evals: the pricing port: the host prices a call, the engine bounds it; a report budget in tokens and turns
 
