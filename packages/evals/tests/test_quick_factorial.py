@@ -173,8 +173,8 @@ async def test_the_campaign_declares_one_axis_per_factor_at_the_levels_the_runs_
 async def test_every_arm_is_named_by_both_coordinates_and_tested_against_the_control() -> None:
     comparison = await _factorial()
     rows = {row["contrast"]: row for row in comparison.contrasts("accuracy")}
-    assert set(rows) == {"callable prompt v2, model a", "callable prompt v1, model b", "callable prompt v2, model b"}
-    assert {row["control"] for row in rows.values()} == {"callable prompt v1, model a"}
+    assert set(rows) == {"Callable prompt v2, model a", "Callable prompt v1, model b", "Callable prompt v2, model b"}
+    assert {row["control"] for row in rows.values()} == {"Callable prompt v1, model a"}
     # A row's figures are the page's, on its ruler: a share's change in points, and the row says so.
     assert all(row["delta"] == pytest.approx(50.0) for row in rows.values()), "the careful rule reads every case"
     assert {row["unit"] for row in rows.values()} == {"%"}
@@ -191,11 +191,11 @@ async def test_against_reads_the_same_runs_against_another_control_and_runs_noth
     assert on_b.arms == comparison.arms and on_b.control == "model=b, prompt=v1"
     assert on_b.name == f"{comparison.name}, against model=b, prompt=v1"
     rows = {row["contrast"]: row for row in on_b.contrasts("accuracy")}
-    assert rows["callable prompt v2, model b"]["control"] == "callable prompt v1, model b"
-    assert rows["callable prompt v2, model b"]["verdict"] == (
-        "callable prompt v2, model b and callable prompt v1, model b not separated"
+    assert rows["Callable prompt v2, model b"]["control"] == "Callable prompt v1, model b"
+    assert rows["Callable prompt v2, model b"]["verdict"] == (
+        "Callable prompt v2, model b and Callable prompt v1, model b not separated"
     )
-    assert rows["callable prompt v1, model a"]["delta"] == pytest.approx(-50.0)
+    assert rows["Callable prompt v1, model a"]["delta"] == pytest.approx(-50.0)
     with pytest.raises(ValueError, match="names no arm"):
         await comparison.against("model=c, prompt=v1")
 

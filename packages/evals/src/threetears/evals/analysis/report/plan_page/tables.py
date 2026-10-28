@@ -90,6 +90,7 @@ from threetears.evals.analysis.report_gates import gate_check
 from threetears.evals.analysis.report_input import Pricing, ReportInput
 from threetears.evals.analysis.report_plan_checks import OPTION_COLUMN_FAMILIES
 from threetears.evals.analysis.report_rows import query_aspect
+from threetears.evals.analysis.style import humanize
 from threetears.evals.kernel.numbers import UNPRICED
 from threetears.evals.kernel.report_plan import ReportPlan
 
@@ -481,10 +482,21 @@ def _priced_by(pricing: Pricing | None) -> TableCell:
     return TableCell(value=", ".join(pricing.sources) or None, flag=served)
 
 
+def _setting_name(report_input: ReportInput, setting: str) -> str:
+    """A setting as a reader is shown it, by the rule measures and aspects are named by: the name the input declares
+    for it (the factor its id keys, ``Reasoning budget``), else the package's reader name for the id (``max output
+    tokens``, never ``max_output_tokens``)."""
+    declared = next((factor.name for factor in report_input.factors if factor.id == setting and factor.name), None)
+    return declared or humanize("dimension", setting)
+
+
 def _settings(report_input: ReportInput, arm_id: str) -> str:
+    """An arm's configuration, once: its model as written, then each other setting by its reader name and its value
+    as written (``Meridian-4.1 · max output tokens 32k · reasoning medium``)."""
     arm = next(arm for arm in report_input.arms if arm.id == arm_id)
     return " · ".join(
-        str(value) if setting == "model" else f"{setting} {value}" for setting, value in arm.settings.items()
+        str(value) if setting == "model" else f"{_setting_name(report_input, setting)} {value}"
+        for setting, value in arm.settings.items()
     )
 
 

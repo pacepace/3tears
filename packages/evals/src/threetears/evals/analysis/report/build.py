@@ -160,6 +160,7 @@ from threetears.evals.analysis.reporting import self_judging_text
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
 from threetears.evals.analysis.style import (
     ArmName,
+    arm_display_name,
     arm_name,
     code,
     declared_check_name,
@@ -729,10 +730,13 @@ def _arm_names(
     displays = arm_names(bundle.variant_index if index is None else index)
     control = _control_key(bundle)
     names = {key: arm_name(display, control=key == control) for key, display in displays.items()}
+    # A name spelled from the arm's levers is printed by the one display-name rule, so every surface reads it alike.
+    names = {key: replace(name, label=arm_display_name(name.label, name.levers)) for key, name in names.items()}
     if labels:
         # A campaign's own labels, where its page is being built: the label is the name, the model stays beside it.
         names = {
-            key: replace(name, label=labels[key], given=True) if key in labels else name for key, name in names.items()
+            key: replace(name, label=labels[key], given=True, levers=()) if key in labels else name
+            for key, name in names.items()
         }
     taken = [name.label for name in names.values()]
     return {
@@ -916,13 +920,18 @@ def _short_names(
                 for level in arm_levels(entries.get(key), distinguishing)
                 if level.axis_id not in base or base[level.axis_id].content_hash != level.content_hash
             ]
+            ordered = sorted(differing, key=lambda level: level.axis_id != CANDIDATE_MODEL_LEVER)
+            trimmed = [level.axis_id == CANDIDATE_MODEL_LEVER and level.axis_id in base for level in ordered]
             parts = [
                 _trimmed(level.display, base[level.axis_id].display)
-                if level.axis_id == CANDIDATE_MODEL_LEVER and level.axis_id in base
+                if cut
                 else f"{humanize('dimension', level.axis_id)} {elide_level(level.display)}"
-                for level in sorted(differing, key=lambda level: level.axis_id != CANDIDATE_MODEL_LEVER)
+                for level, cut in zip(ordered, trimmed, strict=True)
             ]
-            shorts[key] = " · ".join(parts) or name.label
+            # Computed from the levers it differs on, so printed by the one display-name rule; a model trimmed of the
+            # control's prefix is a model's name, which no lever's reader name opens.
+            levers = [level.axis_id for level, cut in zip(ordered, trimmed, strict=True) if not cut]
+            shorts[key] = arm_display_name(" · ".join(parts), levers) or name.label
         if len(name.label) <= len(shorts[key]):
             shorts[key] = name.label
     taken = list(shorts.values())
