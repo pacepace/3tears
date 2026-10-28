@@ -88,10 +88,11 @@ from threetears.evals.kernel.report_doc import (
 from threetears.evals.kernel.report_plan import PlannedChart
 
 #: The names with a caller outside this module: :func:`check_report_doc`, :class:`DocVerdict` and
-#: :data:`InvariantNumber`, the invariants surface, which the analyst's ``report_check`` (``ops/analyst.py``) calls and
-#: groups its verdicts by, and the store gate (``analysis/report_doc_store.py``) calls, which is also the writing loop's
-#: checker; the report writer (``actions/report_writing.py``) reads :class:`DocVerdict`. A name joins this list with its
-#: first production caller, never for a test alone.
+#: :data:`InvariantNumber`, the invariants surface: the store gate (``analysis/report_doc_store.py``) calls it, the one
+#: checker of the analyst's ``report_check``, the writing loop and the store; ``report_check`` (``ops/analyst.py``)
+#: groups its verdicts by :class:`DocVerdict` and :data:`InvariantNumber`; the report writer
+#: (``actions/report_writing.py``) reads :class:`DocVerdict`. A name joins this list with its first production caller,
+#: never for a test alone.
 __all__ = ["DocVerdict", "InvariantNumber", "check_report_doc"]
 
 #: Which check a verdict comes from: ``0`` validity, then the invariants 1 to 6 (7 is not checked at storage).

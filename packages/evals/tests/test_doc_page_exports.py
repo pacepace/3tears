@@ -1,9 +1,9 @@
 """The claims renderer's entry points are exported once production code calls them, and not before.
 
 ``analysis/report/doc_page``'s builder, its three writers and the page text are this build's report-document page.
-The builder and the page text are exported (:data:`_CALLED`): the analyst's ``report_check`` (``ops/analyst.py``)
-builds a draft's page strict and returns its text, the writing loop's editor reads the page text, the store gate checks
-the text above the appendix and the report writer builds the page it stores. The HTML and Markdown writers wait for the
+The builder and the page text are exported (:data:`_CALLED`): the store gate, the one checker, builds a draft's page
+strict and checks its text above the appendix, the analyst's ``report_check`` (``ops/analyst.py``) returns that page's
+text, the writing loop's editor reads it and the report writer builds the page it stores. The HTML and Markdown writers wait for the
 report read (the page). ``CLAUDE.md`` holds that no public API exists only
 for a test, and the caller gate (``tests/enforcement/test_public_api_has_a_caller.py``) reads a module's surface from
 its ``__all__``, so each module's ``__all__`` stays empty until its caller lands. This test keeps that checkable, as

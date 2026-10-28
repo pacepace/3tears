@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import math
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -37,17 +37,20 @@ from threetears.evals.testing import RecordedTurns
 
 @dataclass(frozen=True)
 class Replayed:
-    """A replay: what ``replay.json`` recorded, what the replay came to, and what it left unasked."""
+    """A replay: what ``replay.json`` recorded, what the replay came to, what it left unasked, and why its store
+    refused, where it did."""
 
     expected: dict[str, Any]
     written: ReportWritten
     unconsumed: dict[str, int]
+    refused: str | None = None
 
 
 async def replay(case: Path) -> Replayed:
     """Replay one recorded run (its directory) as ``replay.json`` says it was made."""
     expected: dict[str, Any] = json.loads((case / REPLAY).read_text())
     recording = RecordedTurns.replay(case / RECORDING)
+    refusal: str | None = None
     try:
         result = await written(
             RecordedModel(recording, expected["model"]),
@@ -56,9 +59,9 @@ async def replay(case: Path) -> Replayed:
             withhold=expected["withhold"],
         )
     except ReportNotStored as refused:
-        # A store refused in the replay as in the run: the run's record rides on it, and drift reads it.
-        result = refused.written
-    return Replayed(expected, result, recording.unconsumed())
+        # A store refused in the replay: the run's record rides on it, and drift reads it and says why.
+        result, refusal = refused.written, str(refused)
+    return Replayed(expected, result, recording.unconsumed(), refusal)
 
 
 def drift(replayed: Replayed) -> list[str]:
@@ -75,7 +78,8 @@ def drift(replayed: Replayed) -> list[str]:
     if result.ending != expected["ending"]:
         found.append(f"ended {result.ending} ({outcome.reason or 'no reason given'}), recorded {expected['ending']}")
     if (result.stored is not None) != expected["stored"]:
-        found.append(f"stored is {result.stored is not None}, recorded {expected['stored']}")
+        why = f" (the store refused: {replayed.refused})" if replayed.refused is not None else ""
+        found.append(f"stored is {result.stored is not None}, recorded {expected['stored']}{why}")
     for name, now in (("analyst_rounds", outcome.analyst_rounds), ("editor_rounds", outcome.editor_rounds)):
         if now != expected[name]:
             found.append(f"{name} is {now}, recorded {expected[name]}")
@@ -112,6 +116,18 @@ async def test_a_replay_stored_what_its_run_stored() -> None:
     assert stored is not None and stored.ending == "stored"
     assert [finding["severity"] for finding in stored.findings] == ["should_fix"]
     assert replayed.written.page is not None and replayed.written.page.made
+
+
+async def test_a_refused_store_is_named_in_the_drift_line() -> None:
+    """A replay whose store refused says why beside the stored line, so the red names its cause."""
+    (case,) = [path.parent for path in replay_cases() if path.parent.name == "hand-pass"]
+    replayed = await replay(case)
+    assert replayed.refused is None and not drift(replayed), "the control: it stores as recorded"
+    unstored = replace(replayed.written, stored=None, page=None)
+
+    found = drift(Replayed(replayed.expected, unstored, replayed.unconsumed, "the store gate found 1 verdict"))
+
+    assert found == ["stored is False, recorded True (the store refused: the store gate found 1 verdict)"], found
 
 
 @pytest.fixture

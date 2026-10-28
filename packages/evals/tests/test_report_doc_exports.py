@@ -5,8 +5,8 @@ is the store, and the names its production callers read: the invariants (``analy
 editor's facts (``analysis/report_doc_facts.py``), the claims renderer (``analysis/report/doc_page/build.py``) and the
 analyst's session (``ops/report_writer``). Its other public names are this build's first ``report-doc/1`` surface,
 waiting for their production callers. ``analysis/report_doc_checks.py`` exports ``check_report_doc``,
-``DocVerdict`` and ``InvariantNumber``, whose callers are the ``report_check`` action's operation (``ops/analyst.py``)
-and the store gate (``analysis/report_doc_store.py``), the writing loop's checker; its row here holds no name, so a
+``DocVerdict`` and ``InvariantNumber``, whose callers are the store gate (``analysis/report_doc_store.py``), the one
+checker, and the ``report_check`` action's operation (``ops/analyst.py``), which groups its verdicts; its row here holds no name, so a
 public name added to it later joins ``__all__`` or this list. ``CLAUDE.md`` holds that no
 public API exists only for a test, and the caller gate (``tests/enforcement/test_public_api_has_a_caller.py``) reads a
 module's surface from its ``__all__``, so it cannot see the names left out. This test keeps the promise checkable:

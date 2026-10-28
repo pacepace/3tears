@@ -31,9 +31,9 @@ snapshot, recorded, the one route here that reads a key::
 
 It reads ``ANTHROPIC_API_KEY`` and nothing else, records every turn of every session into ``<out>/turns.jsonl``, and
 writes beside it, whether the report was stored or the store refused it, ``replay.json`` (what a replay must reach:
-the ending and why, whether it was stored, the rounds, the tally's sums;
-``test_report_writer_replay.py`` replays every recording that has one), ``outcome.json`` (the ending, why, a refusal's
-faults, the reviews), ``generation.json`` (the tally, the reviews and the analyst's session) and, for a stored report,
+the ending and why, whether it was stored, the rounds, the tally's sums; ``test_report_writer_replay.py`` replays
+every recording that has one), ``outcome.json`` (the ending, why, a refusal's faults, the reviews), ``generation.json``
+(the tally, the reviews and every session, the analyst's and each review round's) and, for a stored report,
 ``doc.json``, ``record.json``, ``page.html`` and ``page.md``. A recording is made once: an ``--out`` that holds one
 is refused, as is a run with no key, each saying what to do instead. A paid run is never made from a test.
 

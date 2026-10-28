@@ -1,7 +1,8 @@
 """The report document's store gate: the verdicts a document is checked by, the record it is stored as, its made line.
 
 **One checker.** :func:`doc_verdicts` is what a ``report-doc/1`` document is checked by, wherever it is checked: the
-analyst's submissions in the writing loop, and the store gate. It builds the page strict
+analyst's submissions in the writing loop, the store gate, and the analyst's ``report_check`` (``ops/analyst.py``),
+which reads it through :func:`doc_verdicts_and_page` for the page it built too. It builds the page strict
 (:func:`~threetears.evals.analysis.report.doc_page.build.build`) and runs the invariants
 (:func:`~threetears.evals.analysis.report_doc_checks.check_report_doc`, validity first) over the document and the
 page's text above its appendix. A page that cannot be built strict is a verdict too, naming the field it refused,
@@ -25,6 +26,7 @@ from typing import Any, Final, Literal
 
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.doc_page.build import build
+from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.doc_page.text import above_appendix_text
 from threetears.evals.analysis.report_doc_checks import DocVerdict, InvariantNumber, check_report_doc
 from threetears.evals.analysis.report_input import ReportInput
@@ -32,7 +34,7 @@ from threetears.evals.kernel.numbers import spell_dollars
 from threetears.evals.kernel.report_doc import EvalReportDoc, ReportDoc, ReportFinding
 from threetears.evals.kernel.storage import EvalStorage
 
-__all__ = ["doc_verdicts", "generation_record", "made_line", "store_report_doc"]
+__all__ = ["doc_verdicts", "doc_verdicts_and_page", "generation_record", "made_line", "store_report_doc"]
 
 #: The format of the generation record :func:`generation_record` writes and :func:`made_line` reads.
 _GENERATION_FORMAT: Final = 1
@@ -71,11 +73,32 @@ def doc_verdicts(
         last verdict, under the check its field belongs to.
     :rtype: list[DocVerdict]
     """
+    verdicts, _page = doc_verdicts_and_page(doc, report_input, findings=findings, made=made)
+    return verdicts
+
+
+def doc_verdicts_and_page(
+    doc: ReportDoc, report_input: ReportInput, *, findings: Sequence[ReportFinding] = (), made: str = ""
+) -> tuple[list[DocVerdict], DocPage | None]:
+    """:func:`doc_verdicts`, with the strict page it built, so a caller that reads the page builds it once.
+
+    :param doc: The document.
+    :ptype doc: ReportDoc
+    :param report_input: The report input of the snapshot it was written from.
+    :ptype report_input: ReportInput
+    :param findings: The editor's findings the page prints in Method; none for a draft.
+    :ptype findings: Sequence[ReportFinding]
+    :param made: The page's made line; empty for a draft.
+    :ptype made: str
+    :return: The verdicts, as :func:`doc_verdicts` returns them, and the strict page, or ``None`` where it does not
+        build (its refusal is then the last verdict).
+    :rtype: tuple[list[DocVerdict], DocPage | None]
+    """
     try:
         page = build(doc, report_input, strict=True, findings=findings, made=made)
     except UnresolvableReference as refused:
-        return [*check_report_doc(doc, report_input), _refusal(str(refused))]
-    return check_report_doc(doc, report_input, above_appendix_text=above_appendix_text(page))
+        return [*check_report_doc(doc, report_input), _refusal(str(refused))], None
+    return check_report_doc(doc, report_input, above_appendix_text=above_appendix_text(page)), page
 
 
 def _refusal(said: str) -> DocVerdict:

@@ -13,8 +13,8 @@ host mounting `analyst_tools()` serves it; the `evals` tool, the read-only tools
 (`analyst_tools(role="editor")`) serve exactly the bytes they served before. It takes `snapshot_id` and `doc`, the
 draft `report-doc/1` document as a JSON object (or its JSON text), with `limit` and `offset` over the page's lines. It
 returns every verdict `check_report_doc` finds, on the draft and on its strict-built page's text above the appendix,
-with a page that does not build as one more verdict (invariant `0`, path `page`), then the page as text: the
-`doc_page_text` of `build(doc, input, strict=True)`, the same function the editor's message is written by. A result
+with a page that does not build as one more verdict, at the field the strict build stopped at, then the page as
+text: the `doc_page_text` of `build(doc, input, strict=True)`, the same function the editor's message is written by. A result
 always fits one result's budget. The verdicts come first, grouped by check and remedy so each remedy is stated once
 (`VerdictGroup`), as many as fit from `verdict_offset`; those that do not are named by `verdicts_unread_from`, and the
 result then holds no page line, so no verdict is ever cut unsaid. Where every verdict fits, the page's lines from
@@ -72,11 +72,15 @@ until the analysis job (W4) calls them (`tests/test_report_writer_exports.py`).
   `replay.json` beside it (the ending and why, whether it was stored), its tools run live, and holds it to its ending,
   rounds, tally sums and every turn consumed; it refuses a recording of a run that ended `failed`, naming why.
 
-These join `__all__` with the writing loop as their caller: `editor_facts` and `EditorFact`; `load_skill`; the analyst session's `AnalystSession`, `AnalystLimits`, `AnalystOutcome`, `InvariantCheck`,
-`SubmissionFault` and `ANALYST_SESSION`; and the session's `ToolOutcome`. `analyst_tools` gains its production caller.
-`check_report_doc`, `DocVerdict` and `InvariantNumber`, `doc_page.build.build`, `doc_page.text.doc_page_text` and
-`above_appendix_text`, already exported with `report_check`, gain the store gate, the editor and the report writer as
-callers.
+These join `__all__` with the writing loop as their caller: `editor_facts` and `EditorFact`; `load_skill`; the
+analyst session's `AnalystSession`, `AnalystLimits`, `AnalystOutcome`, `InvariantCheck`, `SubmissionFault` and
+`ANALYST_SESSION`; and the session's `ToolOutcome`. `analyst_tools` gains its production caller. `check_report_doc`,
+`DocVerdict` and `InvariantNumber`, `doc_page.build.build`, `doc_page.text.doc_page_text` and `above_appendix_text`,
+already exported with `report_check`, gain the store gate, the editor and the report writer as callers.
+
+**Changed:** `report_check` and the writing loop share one checker: `report_check` checks a draft through
+`analysis.report_doc_store.doc_verdicts_and_page` (new, exported: `doc_verdicts` with the strict page it built), so a
+page that does not build is reported at the field it stopped at, under that field's check, in both.
 
 ### evals: the claims renderer draws a report document's page
 

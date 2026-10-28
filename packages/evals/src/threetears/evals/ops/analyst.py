@@ -13,10 +13,10 @@ server's log.
 **A freeze runs in its call**, not as a job: it assembles one campaign's bundle, as ``analysis_estimate`` does in its
 call, and makes no model call. The assembly and the report input it builds run on the host's blocking executor.
 
-**A draft check stores nothing.** It builds the draft's page strict, as generation does
-(:func:`~threetears.evals.analysis.report.doc_page.build.build`), runs the invariants over the draft and that page's
-text above the appendix (:func:`~threetears.evals.analysis.report_doc_checks.check_report_doc`), and returns the
-verdicts whole, then a page of the page's text (:func:`~threetears.evals.analysis.report.doc_page.text.doc_page_text`,
+**A draft check stores nothing.** It checks the draft with the one checker the writing loop and the store gate check
+by (:func:`~threetears.evals.analysis.report_doc_store.doc_verdicts_and_page`: the page built strict, as generation
+builds it, the invariants over the draft and that page's text above the appendix, a strict build's refusal a verdict at
+the field it names), and returns the verdicts whole, then a page of the page's text (:func:`~threetears.evals.analysis.report.doc_page.text.doc_page_text`,
 the function the editor's message is written by). It reads the snapshot and nothing else, so the same draft on the
 same snapshot always returns the same result.
 """
@@ -31,11 +31,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_input, report_snapshot
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
-from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
-from threetears.evals.analysis.report.doc_page.build import build
-from threetears.evals.analysis.report.doc_page.text import above_appendix_text, doc_page_text
-from threetears.evals.analysis.report_doc_checks import DocVerdict, InvariantNumber, check_report_doc
+from threetears.evals.analysis.report.doc_page.text import doc_page_text
+from threetears.evals.analysis.report_doc_checks import DocVerdict, InvariantNumber
+from threetears.evals.analysis.report_doc_store import doc_verdicts_and_page
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.service import assemble_campaign_bundle, get_analysis, require_evidence
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, RefusedInput, ValidationFailedError
@@ -343,15 +342,6 @@ _CHECK_READS_AS = (
     "its values table"
 )
 
-#: The path the verdict of a page that does not build sits at: the page, which names the field it refused.
-_PAGE = "page"
-
-#: What a draft whose page does not build is told to do.
-_UNBUILT_REMEDY = (
-    "the page is drawn strict, as generation draws it, and stops at the first field it cannot draw: mend the field "
-    "this names (the verdicts before it say how), then check the draft again to read its page"
-)
-
 
 class VerdictAt(BaseModel):
     """One verdict's place and fault, under the remedy it shares with the others of its group."""
@@ -368,7 +358,8 @@ class VerdictGroup(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     invariant: InvariantNumber = Field(
-        description="The check: 0 validity (a page that does not build among it), else the invariant's number."
+        description="The check: 0 validity, else the invariant's number; a page that does not build is under the check "
+        "its field belongs to."
     )
     remedy: str = Field(description="How to mend every fault below, and which tool shows what to mend it with.")
     faults: list[VerdictAt] = Field(description="Each verdict's field path and fault, in the order found.")
@@ -391,7 +382,8 @@ class DraftChecked(BaseModel):
     verdict_offset: int = Field(description="The first verdict this result holds.")
     verdicts: list[VerdictGroup] = Field(
         description="This result's verdicts in the order found: validity (0), then each invariant, a page that does "
-        "not build last, at path page. Those that share a remedy are grouped under it, so each remedy is stated once."
+        "not build last, at the field it stopped at. Those that share a remedy are grouped under it, so each remedy "
+        "is stated once."
     )
     verdicts_unread_from: int | None = Field(
         description="Where the verdicts this result could not hold start: send the same draft with this "
@@ -455,8 +447,8 @@ def _page_said(verdict_offset: int, offset: int, end: int, total: int, *, built:
     """Which lines of the page a result holds, and how to read the rest, without the draft written back."""
     if not built:
         return (
-            "no page: the draft does not build, so there is none to read (the verdict at path page says where it "
-            "stopped); mend the verdicts and check the draft again"
+            "no page: the draft does not build, so there is none to read (the last verdict names the field it "
+            "stopped at); mend the verdicts and check the draft again"
         )
     if offset >= total:
         return f"no line from offset={offset}: the page has {total} lines, read from offset=0"
@@ -466,24 +458,6 @@ def _page_said(verdict_offset: int, offset: int, end: int, total: int, *, built:
     if end < total:
         return f"{shown}; {total - end} unread: {_again(verdict_offset, end)}"
     return f"{shown}, the last of them"
-
-
-def _draft_read(doc: ReportDoc, report_input: ReportInput) -> tuple[list[DocVerdict], list[str] | None]:
-    """Every verdict on a draft, and its page's lines; ``None`` for the lines of a page that does not build. Blocking.
-
-    The page is built strict, as generation builds it; its text above the appendix is what invariant 5 reads beside
-    the draft's prose. A page that refuses to build is one more verdict, after the checks', which read the draft's own
-    fields alone.
-    """
-    try:
-        page = build(doc, report_input, strict=True)
-    except UnresolvableReference as refused:
-        unbuilt = DocVerdict(
-            invariant=0, path=_PAGE, fault=f"the page does not build: {refused}", remedy=_UNBUILT_REMEDY
-        )
-        return [*check_report_doc(doc, report_input), unbuilt], None
-    verdicts = check_report_doc(doc, report_input, above_appendix_text=above_appendix_text(page))
-    return verdicts, doc_page_text(page).splitlines()
 
 
 def _checked_page(
@@ -535,7 +509,8 @@ def _draft_checked(
 ) -> DraftChecked:
     """The draft read once, then the result that fits: as many verdicts as fit from ``verdict_offset``, and, where
     every one from it fits, as many of the page's lines as fit beside them. Blocking."""
-    verdicts, lines = _draft_read(doc, report_input)
+    verdicts, page = doc_verdicts_and_page(doc, report_input)
+    lines = doc_page_text(page).splitlines() if page is not None else None
     left = max(len(verdicts) - verdict_offset, 0)
 
     def result(held: int, rows: int) -> DraftChecked:
@@ -563,8 +538,9 @@ async def report_check(
 ) -> DraftChecked:
     """Read a draft report document on its snapshot as the store and the editor would; store nothing.
 
-    Every verdict the invariants find, on the draft and on its page's text above the appendix, with a page that does
-    not build as one more; then a page of the page's text as the editor reads it
+    Every verdict the one checker finds (:func:`~threetears.evals.analysis.report_doc_store.doc_verdicts_and_page`), on
+    the draft and on its page's text above the appendix, with a page that does not build as one more, at the field it
+    stopped at; then a page of the page's text as the editor reads it
     (:func:`~threetears.evals.analysis.report.doc_page.text.doc_page_text`). A result always passes ``fits``: the
     verdicts come first, grouped so each remedy is stated once, as many as fit from ``verdict_offset``; where some are
     left over it holds no line of the page and names the ``verdict_offset`` that reads them, so no verdict is ever cut

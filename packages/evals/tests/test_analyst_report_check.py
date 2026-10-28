@@ -46,6 +46,7 @@ from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_doc_checks import check_report_doc
+from threetears.evals.analysis.report_doc_store import doc_verdicts
 from threetears.evals.kernel.report_doc import ReportDoc, report_doc_prose
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -231,11 +232,14 @@ def _slot_word(doc: dict[str, Any]) -> dict[str, Any]:
 async def test_each_invariants_planted_negative_comes_back_as_its_verdict(
     invariant: int, plant: Any, builds: bool
 ) -> None:
-    """The verdict is the invariants' own, whole, ahead of the page; a page that does not build is one more verdict
-    and leaves no page to read."""
+    """The verdict is the one checker's (``doc_verdicts``), whole, ahead of the page; a page that does not build is one
+    more verdict, at the field the strict build stopped at, and leaves no page to read."""
     fixture = off_loop(_seeded)
     doc = plant(converted_doc(_KAIRO))
     outcome = await _check(fixture, _KAIRO, doc)
+    draft = ReportDoc.model_validate(doc)
+    checked = [(v.invariant, v.path, v.fault, v.remedy) for v in doc_verdicts(draft, _input(_KAIRO))]
+    checks = [(v.invariant, v.path, v.fault, v.remedy) for v in check_report_doc(draft, _input(_KAIRO))]
 
     assert outcome.ending == "ok" and outcome.structured is not None, outcome.text
     verdicts = _flat(outcome.structured)
@@ -243,11 +247,12 @@ async def test_each_invariants_planted_negative_comes_back_as_its_verdict(
     assert outcome.structured["passes"] is False
     assert outcome.structured["verdicts_total"] == len(verdicts)
     assert outcome.structured["verdicts_unread_from"] is None
-    unbuilt = [verdict for verdict in verdicts if verdict[1] == "page" and verdict[0] == 0]
+    assert sorted(verdicts) == sorted(checked), "every verdict the one checker finds, and no other"
     if builds:
-        assert not unbuilt and outcome.structured["page"] and outcome.structured["total"] > 0
+        assert outcome.structured["page"] and outcome.structured["total"] > 0
     else:
-        assert len(unbuilt) == 1 and unbuilt[0][2].startswith("the page does not build: ")
+        unbuilt = checked[len(checks) :]
+        assert checked[: len(checks)] == checks and len(unbuilt) == 1, "a page that does not build is one more verdict"
         assert verdicts[-1] == unbuilt[0], "the page's verdict follows the checks'"
         assert outcome.structured["page"] == "" and outcome.structured["total"] == 0
         assert outcome.structured["unread_from"] is None
@@ -502,6 +507,8 @@ async def test_many_verdicts_stay_within_the_budget_and_every_one_is_reached_by_
     doc = _faulted_everywhere(converted_doc(_KAIRO))
     whole = check_report_doc(ReportDoc.model_validate(doc), _input(_KAIRO))
     assert len(whole) >= 40, f"the control: {len(whole)} verdicts"
+    checked = doc_verdicts(ReportDoc.model_validate(doc), _input(_KAIRO))
+    assert checked[:-1] == whole, "the control: the one checker adds the page's refusal to the checks'"
 
     read: list[tuple[int, str, str, str]] = []
     results: list[dict[str, Any]] = []
@@ -523,13 +530,15 @@ async def test_many_verdicts_stay_within_the_budget_and_every_one_is_reached_by_
             assert outcome.text.index("verdicts (") < outcome.text.index("progress: ")
 
     assert len(results) > 1, "the control: the verdicts run past one result"
-    # The checks' verdicts, in order, then the one a page that does not build adds: its keys name nothing.
+    # The checks' verdicts, in order, then the one a page that does not build adds, at the field it stopped at: its
+    # keys name nothing.
     assert [verdict[:3] for verdict in read[:-1]] == [(v.invariant, v.path, v.fault) for v in whole]
-    assert read[-1][:2] == (0, "page") and read[-1][2].startswith("the page does not build: ")
+    refused = checked[-1]
+    assert read[-1] == (refused.invariant, refused.path, refused.fault, refused.remedy)
     assert all(structured["verdicts_total"] == len(whole) + 1 for structured in results)
     assert results[-1]["progress"].endswith(
         "no page: the draft does not build, so there is none to read (the "
-        "verdict at path page says where it stopped); mend the verdicts and "
+        "last verdict names the field it stopped at); mend the verdicts and "
         "check the draft again"
     )
     typed = [group for group in results[0]["verdicts"] if group["invariant"] == 1]

@@ -44,8 +44,8 @@ from threetears.evals.analysis.report.md_parts import markdown_table, one_line
 from threetears.evals.analysis.report.plan_page.words import CONFIDENCE_LABEL, OPTIONS_TITLE, RUN_TEMPLATE, SYNTHETIC
 
 #: The entry points, with their callers: the analyst's ``report_check`` (``ops/analyst.py``) returns a draft's
-#: ``doc_page_text`` and checks its ``above_appendix_text``; the writing loop's editor reads ``doc_page_text``; and the
-#: store gate (``analysis/report_doc_store.py``) checks ``above_appendix_text`` for internal ids.
+#: ``doc_page_text``, and the writing loop's editor reads it; the store gate (``analysis/report_doc_store.py``), the one
+#: checker, checks ``above_appendix_text`` for internal ids.
 __all__ = ["above_appendix_text", "doc_page_text"]
 
 

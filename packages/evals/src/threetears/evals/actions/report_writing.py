@@ -248,7 +248,6 @@ async def write_report(
             generation=generation,
             created_by=caller.identity,
         )
-        page = build(outcome.doc, report_input, strict=True, findings=outcome.findings, made=made_line(stored))
     except Exception as exc:
         # Re-raised with the run's record on it: every turn was paid for, so the tally, the reviews and the sessions
         # reach the caller beside the failure, never instead of it.
@@ -257,4 +256,5 @@ async def write_report(
             "record (tally, reviews, sessions) is this error's .written",
             written=unstored,
         ) from exc
+    page = build(outcome.doc, report_input, strict=True, findings=outcome.findings, made=made_line(stored))
     return replace(unstored, stored=stored, page=page)

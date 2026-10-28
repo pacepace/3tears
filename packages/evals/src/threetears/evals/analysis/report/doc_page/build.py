@@ -100,9 +100,9 @@ from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.report_doc import DocCaveat, Evidence, ReportDoc, ReportFinding, is_analyst_caveat
 from threetears.evals.kernel.report_plan import ChartSpec, PlannedChart
 
-#: The entry point, with its callers: the analyst's ``report_check`` (``ops/analyst.py``), which builds a draft's page
-#: strict; the writing loop's editor (the page text); the store gate (``analysis/report_doc_store.py``); and the report
-#: writer (``actions/report_writing.py``, the page it stores).
+#: The entry point, with its callers: the writing loop's editor (the page text); the store gate
+#: (``analysis/report_doc_store.py``), the one checker, which builds a draft's page strict for the analyst's
+#: ``report_check`` and the loop alike; and the report writer (``actions/report_writing.py``, the page it stores).
 __all__ = ["build"]
 
 #: A figure key in the document's prose, as the figure keys' grammar spells one: ``{path|filter}``.
