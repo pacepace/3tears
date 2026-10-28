@@ -6138,6 +6138,33 @@ def keys_in(text: str) -> list[FigureKey]:
     return keys
 
 
+def is_figure_key(text: str) -> bool:
+    """Whether ``text`` is written as a figure key, read against no input: a braced key or a bare path whose filters
+    the grammar defines and whose path starts with a family's word (``cost.gap.``), or names an arm (``arm:<id>``).
+
+    It says nothing of whether the key resolves on any snapshot: only that the grammar reads it as a key, so a word
+    that is no family's (an action's name, a model id, a version) is not one.
+
+    :param text: A braced key (``{reading.a.change|abs}``) or a bare path.
+    :ptype text: str
+    :return: Whether it is a figure key's form.
+    :rtype: bool
+    """
+    inner = text[1:-1] if text.startswith("{") and text.endswith("}") else text
+    try:
+        key = parse_key(inner)
+    except UnresolvableReference:
+        return False
+    path = key.path
+    if path.startswith(_ARM_PREFIX):
+        return len(path) > len(_ARM_PREFIX)
+    return any(
+        path.startswith(f"{family.slots[0].spelling}.") or (path == family.slots[0].spelling and len(family.slots) == 1)
+        for family in _FAMILIES
+        if isinstance(family.slots[0], _Word)
+    )
+
+
 def resolve(key: str, report_input: ReportInput) -> Figure:
     """Read one key's path from the report input.
 
@@ -7280,6 +7307,7 @@ __all__ = [
     "flip_margin",
     "format_figure",
     "gain_axis",
+    "is_figure_key",
     "key_form",
     "key_subjects",
     "keys_in",

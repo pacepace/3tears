@@ -54,6 +54,7 @@ from threetears.evals.kernel.campaign import (
     EvalSweep,
     generation_slot_id,
 )
+from threetears.evals.kernel.analyst_gap import EvalAnalystGap
 from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession, report_session_id
 from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
@@ -1624,6 +1625,55 @@ class EvalStorage:
         ):
             self._store.delete(str(row["id"]), scope_id)
         return deleted
+
+    def save_analyst_gap(self, gap: EvalAnalystGap) -> bool:
+        """Persist one analyst gap or notice in the scope it names, only where none is stored under its id.
+
+        A gap's id is its call's (``analyst_gap_id``), so a replay, a retried write or a second call naming the same gap
+        finds the first one stored and leaves it as it is: one record per gap, the first one's provenance kept.
+
+        :param gap: The gap.
+        :ptype gap: EvalAnalystGap
+        :return: ``True`` when it was written; ``False`` when a document was already stored under its id.
+        :rtype: bool
+        :raises StorageError: Any other write failure.
+        """
+        try:
+            self._save(gap.to_dict(), create_only=True)
+        except ConflictError:
+            return False
+        return True
+
+    def list_analyst_gaps(
+        self, scope_id: str, *, limit: int, since: datetime | None = None
+    ) -> tuple[list[EvalAnalystGap], bool]:
+        """The newest analyst gaps and notices in a scope, at most ``limit``, oldest first, stored at or after ``since``.
+
+        A bounded read: the store is asked for the newest ``limit + 1`` records by ``created_at`` (an addressing field)
+        and nothing else, and ``since`` is read against each record's own time, so a window holding more than ``limit``
+        records says so rather than reading every record the scope holds. Oldest is by ``created_at``, then the id.
+
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param limit: The most records returned, at least 1.
+        :ptype limit: int
+        :param since: An aware time; only the records stored at or after it. ``None`` for every one.
+        :ptype since: datetime | None
+        :return: The records, and whether the window holds more than ``limit`` (the oldest were left unread).
+        :rtype: tuple[list[EvalAnalystGap], bool]
+        :raises ValueError: ``limit`` is below 1.
+        :raises ValidationError: A stored gap does not read under this build's model.
+        """
+        if limit < 1:
+            raise ValueError(f"a read of gaps reads at least one, not {limit}")
+        rows = self._store.by_doc_type("eval_analyst_gap", scope_id, order_by="created_at", limit=limit + 1)
+        gaps = self._hydrate_all(EvalAnalystGap, rows)
+        if since is not None:
+            gaps = [gap for gap in gaps if datetime.fromisoformat(gap.created_at) >= since]
+        newest = sorted(gaps, key=lambda gap: (datetime.fromisoformat(gap.created_at), gap.id), reverse=True)
+        return sorted(newest[:limit], key=lambda gap: (datetime.fromisoformat(gap.created_at), gap.id)), len(
+            newest
+        ) > limit
 
     def save_analysis_attempt(self, attempt: EvalAnalysisAttempt, *, if_match: str | None = None) -> None:
         """Persist one generation attempt's record in the scope it names; conditionally when ``if_match`` is given.

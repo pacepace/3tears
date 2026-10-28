@@ -4,7 +4,8 @@
 it: the analyst's cut read-only (``analyst_tools(writes=False)``) and the editor's (``analyst_tools(role="editor")``),
 each bound to the host and the caller its calls run as, each described by its own description and the catalogue's
 primer (:func:`~threetears.evals.actions.catalogue.catalogue_primer`), and each a read of the frozen snapshot, so a
-stored session may drop a result's body and call the tool again for it. The writing itself is the operation's
+stored session may drop a result's body and call the tool again for it. Both mount the gap note that stores nothing
+(``analyst_actions(gaps_kept_by="write")``): the write stores each gap its sessions noted when it ends. The writing itself is the operation's
 (:func:`~threetears.evals.ops.report_writer.write.report_write`): it freezes the evidence first unless handed a
 snapshot already frozen, so neither tool writes, runs the writing loop, and stores what its ending stores through the
 store gate. Its result and its refusal (``ReportWritten``, ``ReportNotStored``) are the operation's, named here too.
@@ -70,8 +71,9 @@ def _mount(host: OpsHost, caller: Caller, *, prefix: str, role: Literal["analyst
     (spec,) = analyst_tools(prefix, writes=False, role=role)
     # The analyst's actions alone, which are every action its cut holds: the engine's catalogue adds actions no
     # analyst tool mounts, and the action that starts a generation (actions/engine.py) hands its job this module's
-    # writer, so this module reads none of it.
-    tool = ActionCatalogue(analyst_actions()).mount(spec)
+    # writer, so this module reads none of it. Its gap note stores nothing: the write stores every gap its sessions
+    # noted when it ends, with the session each came from (report_write), so each is stored once.
+    tool = ActionCatalogue(analyst_actions(gaps_kept_by="write")).mount(spec)
     if not tool.hints.read_only:
         raise ValueError(
             f"the {role}'s tool {tool.name!r} carries an action that writes; the report writer mounts reads"

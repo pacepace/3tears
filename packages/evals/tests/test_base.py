@@ -35,6 +35,7 @@ from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.kernel.identity import IDENTITY_VERSION
 from packages.evals.tests.factories import memory_storage
+from packages.evals.tests.schema_pin_support import ADDED_AT_MAJOR
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.stored_models import doc_type_of, sampled_model_names, stored_models, stored_sample
 
@@ -452,11 +453,19 @@ def test_every_core_model_refuses_a_document_at_a_version_it_does_not_read(
         model.from_dict({**document, "schema_version": version})
 
 
-@pytest.mark.parametrize(("model", "version"), _versioned(lambda space: range(space.baseline, space.version + 1)))
+@pytest.mark.parametrize(
+    ("model", "version"),
+    [
+        param
+        for param in _versioned(lambda space: range(space.baseline, space.version + 1))
+        if param.values[1] >= ADDED_AT_MAJOR.get(doc_type_of(param.values[0]), 0)  # type: ignore[operator]
+    ],
+)
 def test_every_core_model_reads_a_document_at_every_version_from_the_baseline(
     model: type[EvalBaseModel], version: int
 ) -> None:
-    """A kept document at any version from its space's baseline to this build's reads, at this build's version."""
+    """A kept document at any version from its space's baseline (or the major its type was added in) to this build's
+    reads, at this build's version."""
     document = _document_at(model, version)
 
     read = model.from_dict({**document, "schema_version": version})

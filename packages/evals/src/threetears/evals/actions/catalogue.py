@@ -225,6 +225,10 @@ class Action:
     :ivar idempotent: A ``write`` or ``destructive`` action a caller may repeat with the same parameters to no further
         effect (``report_snapshot_freeze`` names the snapshot it stored); a ``read`` is idempotent by its class, and
         neither a ``spend`` nor long work can be, since each call spends or starts work again. ``False``, the default.
+    :ivar appends: A ``read`` that may append a bounded, idempotent feedback record (``capability_gap``'s note of a
+        missing capability, stored once per gap): it changes no evaluation data, so a read tool carries it, and a
+        tool carrying it is not read-only to a transport (its ``readOnlyHint`` is false) while it stays idempotent.
+        ``False``, the default.
     """
 
     name: str
@@ -243,6 +247,7 @@ class Action:
     cut: str | None = None
     paged: bool = False
     idempotent: bool = False
+    appends: bool = False
 
     def __post_init__(self) -> None:
         """Refuse an action no transport could mount honestly.
@@ -317,6 +322,11 @@ class Action:
             raise ValueError(
                 f"{where}: idempotent is declared by a write or destructive action that starts no long work; a read "
                 "is idempotent by its class, and a spend or long work spends or starts work again on every call"
+            )
+        if self.appends and self.permission != "read":
+            raise ValueError(
+                f"{where}: appends is declared by a read that may append a feedback record; a {self.permission} "
+                "action's class already says it changes what it changes"
             )
         if self.text_field is not None and self.text_field not in self.result.model_fields:
             raise ValueError(
@@ -460,7 +470,10 @@ def read_only_tools(prefix: str = DEFAULT_PREFIX) -> tuple[ToolSpec]:
     return (
         ToolSpec(
             name=prefix,
-            description="Read evals: templates, runs, jobs, campaigns and reports. Nothing here launches or changes.",
+            description=(
+                "Read evals: templates, runs, jobs, campaigns and reports. Nothing here launches anything or changes "
+                "evaluation data; a read may append a bounded, idempotent feedback record."
+            ),
             permissions=frozenset({"read"}),
         ),
     )
@@ -623,7 +636,7 @@ class ActionOutcome:
 class ToolHints:
     """The MCP behaviour hints a mounted tool's actions earn.
 
-    :ivar read_only: Every action is ``read``.
+    :ivar read_only: Every action is ``read``, and none appends a feedback record (:attr:`Action.appends`).
     :ivar destructive: Some action is ``destructive``.
     :ivar open_world: Some action spends on a provider outside the host.
     :ivar idempotent: Every action may be repeated with the same parameters to no further effect: a ``read``, or a
@@ -686,7 +699,7 @@ class MountedTool:
         """The behaviour hints this tool's actions earn."""
         classes = {action.permission for action in self.actions}
         return ToolHints(
-            read_only=classes == {"read"},
+            read_only=classes == {"read"} and not any(action.appends for action in self.actions),
             destructive="destructive" in classes,
             open_world="spend" in classes,
             idempotent=all(action.permission == "read" or action.idempotent for action in self.actions),

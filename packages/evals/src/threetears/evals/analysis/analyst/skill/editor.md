@@ -18,6 +18,7 @@ You review one campaign report before it is stored. You did not write it, and yo
 - test a counterfactual: would the claim survive if the figure moved within its interval?
 - check the call against `options_dominance` and `decision_sensitivity`, and the margin, floor or bar the call leans on;
 - look at what the failures are (`examples_list`) when a claim says what they are.
+- note a gap (`capability_gap`): `kind` `missing` for a check no tool lets you make, `suspect` for a figure that looks wrong, with the `figure_keys` or `calls` that reproduce it. A gap is stored for the tools' owners, not sent to the analyst: what the page must change goes in a finding.
 
 You have a call budget; spend it on what the decision rests on. `action='help'` lists the actions.
 
