@@ -52,19 +52,28 @@ fault sends the submission back with every fault found (a bounce; a reply cut at
 3 a round, then the round ends `refused` with the faults. Plan §4.3's limits hold before anything is sent: 100 tool
 calls for the draft and 30 a revision, a warning 10 before the end, then "submit now", then a hard stop
 (`over_budget`); 12,000 characters a tool result; and the report's dollar budget admits every turn on the client's
-price ceiling, a refusal sending nothing. Older tool-result bodies are elided once a turn's input passes 150k tokens,
-keeping the latest 12, in tool results only and only before the last turn that carries thinking, at least 12 at a
-time and never undone, so no thinking block or tool call is ever changed. The `Tally` records each turn's role,
+price ceiling, a refusal sending nothing. The session's history is append-only: no message is changed once sent,
+since on models that bind a thinking block to its conversation (Opus 5.5 among them) an edited earlier turn
+invalidates every later thinking block and the provider refuses the request. Old tool results are cleared by the
+provider instead (server-side context editing): every turn asks for it once the input passes 150k tokens, keeping the
+latest 12 tool calls, and only when at least 36k tokens can be cleared at once. The `Tally` records each turn's role,
 round, model, served model, tokens (cache reads and writes included), cost (`None` when unpriced, never `0`) and
 price source, with sums by role and round; it is the stored report's `generation`. A session is a stored value
-(`to_json`): the skill text's digest, every message in order with thinking blocks exactly as returned, every tool
+(`to_json`): the model it runs on, the skill text's digest, every message in order with thinking blocks exactly as returned, every tool
 call and result, a result body dropped only where the tool can re-derive it from the frozen snapshot and recorded
-with its sha256; `AnalystSession.resume(...)` re-derives those bodies, refuses a changed skill text, tool or body,
-and sends exactly what the uninterrupted session would. The loop reads no environment variable.
+with its sha256; `AnalystSession.resume(...)` re-derives those bodies, refuses a changed model, skill text, tool or
+body (and a malformed record, with a `ValueError`), and sends exactly what the uninterrupted session would, including
+for a session stored mid-round. The loop reads no environment variable.
 
-**Added (provisional):** `threetears.evals.schema.TurnReplyRefused`, raised by a turn client that was answered (and
-billed) but refuses the reply; it carries the reply, so the loop tallies the turn's cost before the refusal goes on.
-`RecordedTurns` raises one (still a `RecordingRefused`) for a reply holding the literal `{snapshot}`.
+**Added (provisional):** `threetears.evals.schema.TurnReplyRefused(message, reply=)`, raised by a turn client that
+was answered (and billed) but refuses the reply; it carries the reply, so the loop tallies the turn's cost before the
+refusal goes on. `RecordedTurns` raises one (still a `RecordingRefused`) for a reply holding the literal `{snapshot}`.
+`threetears.evals.schema.ToolResultClearing(trigger_input_tokens=, keep_tool_uses=, clear_at_least_input_tokens=)`
+is server-side clearing of old tool results; the tool-turn port's `turn(..., clearing=)` takes it, and `Model.turn`
+sends it as `context_management: {"edits": [{"type": "clear_tool_uses_20250919", "trigger": {"type":
+"input_tokens", ...}, "keep": {"type": "tool_uses", ...}, "clear_at_least": {"type": "input_tokens", ...}}]}` with
+`anthropic-beta: context-management-2025-06-27`; `RecordedTurns` passes it to the client it records through. A turn
+with no clearing sends the body it always did.
 
 **Changed:** `kernel.report_doc` now exports `ReportDoc`, `report_doc_validity` and `report_doc_json_schema`, and
 `analysis.analyst.skill` exports `SkillText`, each with its first production caller in the analyst session.

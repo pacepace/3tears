@@ -238,6 +238,7 @@
 "threetears.evals.schema.StoreConflict": "host-contract",
 "threetears.evals.schema.SubjectSnapshot": "host-contract",
 "threetears.evals.schema.SweepableValue": "host-contract",
+"threetears.evals.schema.ToolResultClearing": "provisional",
 "threetears.evals.schema.ToolTurnClient": "provisional",
 "threetears.evals.schema.TraceSink": "host-contract",
 "threetears.evals.schema.TRANSCRIPT_DIM_ID": "provisional",

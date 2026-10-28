@@ -48,7 +48,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar, Self
 
-from threetears.evals.schema.turns import ToolTurnClient, TurnMessage, TurnReply, TurnReplyRefused, TurnToolSpec
+from threetears.evals.schema.turns import (
+    ToolResultClearing,
+    ToolTurnClient,
+    TurnMessage,
+    TurnReply,
+    TurnReplyRefused,
+    TurnToolSpec,
+)
 from threetears.evals.testing.recorded_completions import RecordingRefused
 
 __all__ = ["RecordedTurns"]
@@ -218,6 +225,7 @@ class _Book:
         messages: Sequence[TurnMessage],
         tools: Sequence[TurnToolSpec],
         max_tokens: int,
+        clearing: ToolResultClearing | None,
     ) -> TurnReply:
         """The session's next reply: the recorded one, or the live client's, recorded before it is handed back."""
         index = self.served.get(name, 0)
@@ -230,7 +238,9 @@ class _Book:
                 )
             self.served[name] = index + 1
             return TurnReply.from_json(_restored(replies[index], snapshot))
-        reply = await self.inner.turn(system=system, messages=messages, tools=tools, max_tokens=max_tokens)
+        reply = await self.inner.turn(
+            system=system, messages=messages, tools=tools, max_tokens=max_tokens, clearing=clearing
+        )
         try:
             kept = _held(reply.to_json(), snapshot, self.path)
         except RecordingRefused as refused:
@@ -287,8 +297,10 @@ class _PaidReplyRefused(RecordingRefused, TurnReplyRefused):
     """A recording's refusal of a reply it was sent and paid for, carrying the reply (:class:`TurnReplyRefused`)."""
 
     def __init__(self, path: Path, reply: TurnReply) -> None:
-        super().__init__(path, _PLACEHOLDER_PROBLEM, _PLACEHOLDER_REMEDY)
-        self.reply = reply
+        refused = RecordingRefused(path, _PLACEHOLDER_PROBLEM, _PLACEHOLDER_REMEDY)
+        TurnReplyRefused.__init__(self, str(refused), reply=reply)
+        self.path = refused.path
+        self.remedy = refused.remedy
 
 
 class _Session:
@@ -300,10 +312,22 @@ class _Session:
         self._snapshot = snapshot
 
     async def turn(
-        self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int
+        self,
+        *,
+        system: str,
+        messages: Sequence[TurnMessage],
+        tools: Sequence[TurnToolSpec],
+        max_tokens: int,
+        clearing: ToolResultClearing | None = None,
     ) -> TurnReply:
         return await self._book.turn(
-            self._name, self._snapshot, system=system, messages=messages, tools=tools, max_tokens=max_tokens
+            self._name,
+            self._snapshot,
+            system=system,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            clearing=clearing,
         )
 
     def turn_price_ceiling(

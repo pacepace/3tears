@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -23,6 +23,7 @@ from threetears.evals.ops.report_writer.analyst import AnalystLimits, AnalystSes
 from threetears.evals.ops.report_writer.session import SessionLimits
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.turns import (
+    ToolResultClearing,
     TurnBlock,
     TurnMessage,
     TurnReply,
@@ -36,6 +37,7 @@ from threetears.evals.schema.turns import (
 from threetears.evals.testing import RecordedTurns, RecordingRefused
 
 SNAPSHOT: Final = "snap-7f3a91c2"
+MODEL: Final = "analyst-model"
 SKILL: Final = SkillText(text="ANALYST SKILL TEXT", files=("SKILL.md",))
 OVERVIEW: Final = "OVERVIEW: arms September, control; aspects late"
 
@@ -55,14 +57,23 @@ Request = dict[str, Any]
 class FakeToolTurnClient:
     """Answers each turn with the next scripted reply, and keeps every request body it was sent."""
 
-    def __init__(self, *replies: TurnReply, ceiling: float | None = 0.01) -> None:
+    def __init__(
+        self, *replies: TurnReply | TurnReplyRefused, ceiling: float | None | Sequence[float | None] = 0.01
+    ) -> None:
         self.replies = list(replies)
-        self.ceiling = ceiling
+        self.ceilings = list(ceiling) if isinstance(ceiling, Sequence) else None
+        self.ceiling = ceiling if not isinstance(ceiling, Sequence) else None
         self.requests: list[Request] = []
         self.ceilings_asked = 0
 
     async def turn(
-        self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int
+        self,
+        *,
+        system: str,
+        messages: Sequence[TurnMessage],
+        tools: Sequence[TurnToolSpec],
+        max_tokens: int,
+        clearing: ToolResultClearing | None = None,
     ) -> TurnReply:
         self.requests.append(
             {
@@ -70,16 +81,22 @@ class FakeToolTurnClient:
                 "messages": [message.to_json() for message in messages],
                 "tools": [tool.to_json() for tool in tools],
                 "max_tokens": max_tokens,
+                "context_management": clearing.to_json() if clearing is not None else None,
             }
         )
         if not self.replies:
             raise AssertionError(f"the session sent turn {len(self.requests)}, which the script does not hold")
-        return self.replies.pop(0)
+        scripted = self.replies.pop(0)
+        if isinstance(scripted, TurnReplyRefused):
+            raise scripted
+        return scripted
 
     def turn_price_ceiling(
         self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int
     ) -> float | None:
         self.ceilings_asked += 1
+        if self.ceilings is not None:
+            return self.ceilings.pop(0)
         return self.ceiling
 
 
@@ -159,7 +176,7 @@ def reply(
         content=content,
         stop_reason=stop or ("tool_use" if calls else "end_turn"),
         provider_stop_reason=None,
-        model="analyst-model",
+        model=MODEL,
         served_model="analyst-model-20261001",
         input_tokens=input_tokens,
         output_tokens=50,
@@ -194,6 +211,7 @@ def start(
     limits: AnalystLimits | None = None,
 ) -> AnalystSession:
     return AnalystSession.start(
+        model=MODEL,
         client=client,
         mount=mount or FakeToolMount(),
         skill=SKILL,
@@ -378,8 +396,11 @@ async def test_a_reply_cut_at_the_cap_is_not_kept_and_its_calls_are_not_run() ->
 
     after = client.requests[2]["messages"]
     assert all(message["role"] != "assistant" or "sig-9" not in json.dumps(message) for message in after)
-    assert [message["role"] for message in after] == ["user", "assistant", "user"]
-    assert {block["type"] for block in after[-1]["content"]} == {"tool_result", "text"}
+    assert [message["role"] for message in after] == ["user", "assistant", "user", "user"], (
+        "the bounce follows the results it was sent after, which stay as they were sent"
+    )
+    assert after[:3] == client.requests[1]["messages"]
+    assert {block["type"] for block in after[-1]["content"]} == {"text"}
     assert len(mount.calls) == 2, "the cut reply's call is never run"
 
 
@@ -477,6 +498,7 @@ async def test_a_reply_holding_the_snapshot_placeholder_is_tallied_before_it_is_
     recording = RecordedTurns.record(inner, tmp_path / "turns.jsonl")
     client = recording.turn_session("analyst", snapshot=SNAPSHOT)
     session = AnalystSession.start(
+        model=MODEL,
         client=client,
         mount=FakeToolMount(),
         skill=SKILL,
@@ -531,56 +553,6 @@ async def test_a_refusal_or_a_reply_stopped_short_fails_the_round(stop: TurnStop
     assert outcome.ending == "failed" and stop in outcome.reason
 
 
-# --- elision --------------------------------------------------------------------------------------------------------
-
-
-async def test_elision_keeps_the_last_12_results_and_leaves_the_request_legal() -> None:
-    """20 thinking turns, then 16 without thinking; the input passes the limit on the 36th reply."""
-    limits = AnalystLimits(session=SessionLimits(elide_over_tokens=5_000))
-    replies = [reply(thinking(n), call(n)) for n in range(1, 21)]
-    replies += [reply(call(n)) for n in range(21, 36)]
-    replies += [reply(call(36), input_tokens=6_000), reply(call(37), input_tokens=3_000), reply(submitted())]
-    client = FakeToolTurnClient(*replies)
-
-    outcome = await start(client, limits=limits).draft()
-
-    assert outcome.ending == "submitted"
-    before, after, following = client.requests[35], client.requests[36], client.requests[37]
-    _assert_legal(before, after, replies)
-    results = [block for message in after["messages"] for block in message["content"] if block["type"] == "tool_result"]
-    elided = [block["tool_use_id"] for block in results if block["content"] == "[elided; call again]"]
-    assert elided == [f"toolu_{n:03d}" for n in range(1, 20)], (
-        "every result before the last thinking turn but the latest 12 is elided, and none after it"
-    )
-    assert all(block["content"] != "[elided; call again]" for block in results[-12:])
-    assert all(
-        json.dumps(block) == json.dumps(original)
-        for message, original_message in zip(after["messages"], before["messages"], strict=False)
-        if message["role"] == "assistant"
-        for block, original in zip(message["content"], original_message["content"], strict=True)
-    )
-    assert following["messages"][: len(after["messages"])] == after["messages"], "an elision stays as it is"
-
-
-def _assert_legal(before: Request, after: Request, replies: Sequence[TurnReply]) -> None:
-    """The request the elision rewrote is one the API accepts: only tool-result bodies changed, every thinking block
-    and tool call exactly as its reply carried it, every call answered by its result first in the next message."""
-    sent = {json.dumps(reply.message().to_json(), sort_keys=True) for reply in replies}
-    messages = after["messages"]
-    for index, message in enumerate(messages):
-        if message["role"] == "assistant":
-            assert json.dumps(message, sort_keys=True) in sent, f"assistant message {index} is not as its reply was"
-            calls = [block["id"] for block in message["content"] if block["type"] == "tool_use"]
-            answered = [block for block in messages[index + 1]["content"]]
-            assert [block.get("tool_use_id") for block in answered[: len(calls)]] == calls
-    for old, new in zip(before["messages"], messages, strict=False):
-        assert old["role"] == new["role"]
-        for old_block, new_block in zip(old["content"], new["content"], strict=True):
-            if old_block != new_block:
-                assert old_block["type"] == new_block["type"] == "tool_result"
-                assert new_block == {**old_block, "content": "[elided; call again]"}
-
-
 # --- stored and resumed ---------------------------------------------------------------------------------------------
 
 
@@ -611,6 +583,7 @@ async def test_a_stored_session_resumes_with_the_request_an_uninterrupted_one_se
     mount = FakeToolMount(refused=frozenset({"bogus"}))
     resumed = await AnalystSession.resume(
         record,
+        model=MODEL,
         client=later,
         mount=mount,
         skill=SKILL,
@@ -658,6 +631,7 @@ async def test_a_session_is_not_resumed_with_another_skill_text() -> None:
     with pytest.raises(ValueError, match="resume it with the skill text it started from"):
         await AnalystSession.resume(
             await _stored(),
+            model=MODEL,
             client=FakeToolTurnClient(),
             mount=FakeToolMount(refused=frozenset({"bogus"})),
             skill=other,
@@ -673,6 +647,7 @@ async def test_a_session_whose_tool_now_answers_otherwise_is_not_resumed() -> No
     with pytest.raises(ValueError, match="no longer answers as it did"):
         await AnalystSession.resume(
             await _stored(),
+            model=MODEL,
             client=FakeToolTurnClient(),
             mount=FakeToolMount(refused=frozenset({"bogus"}), salt=" (changed)"),
             skill=SKILL,
@@ -682,3 +657,211 @@ async def test_a_session_whose_tool_now_answers_otherwise_is_not_resumed() -> No
             tally=Tally(),
             budget=ReportBudget(usd=10),
         )
+
+
+async def _resume(record: Mapping[str, Any], client: FakeToolTurnClient, **options: Any) -> AnalystSession:
+    arguments: dict[str, Any] = {
+        "model": MODEL,
+        "client": client,
+        "mount": FakeToolMount(refused=frozenset({"bogus"})),
+        "skill": SKILL,
+        "arms": ARMS,
+        "caveats": CAVEATS,
+        "check": ScriptedCheck(),
+        "tally": Tally(),
+        "budget": ReportBudget(usd=10),
+    }
+    arguments.update(options)
+    return await AnalystSession.resume(record, **arguments)
+
+
+MID_ROUND: Final = [
+    pytest.param(
+        AnalystLimits(draft_calls=4, session=SessionLimits(warn_before=3)),
+        [reply(thinking(1), call(1)), reply(thinking(2), call(2))],
+        [0.01, 0.01, 100.0],
+        [reply(thinking(3), call(3)), reply(thinking(4), submitted())],
+        {"round": 1, "calls": 4, "calls_used": 2, "warned": True, "closing": False},
+        id="the-budget-refused-a-turn-after-the-warning",
+    ),
+    pytest.param(
+        AnalystLimits(draft_calls=1, session=SessionLimits(warn_before=0)),
+        [reply(thinking(1), call(1)), reply(thinking(2), call(2))],
+        [0.01, 0.01],
+        [reply(thinking(3), submitted())],
+        {"round": 1, "calls": 1, "calls_used": 1, "warned": False, "closing": True},
+        id="a-call-after-submit-now-left-open",
+    ),
+]
+
+
+@pytest.mark.parametrize(("limits", "draft", "ceilings", "revision", "state"), MID_ROUND)
+async def test_a_session_stored_mid_round_resumes_with_the_request_an_uninterrupted_one_sends(
+    limits: AnalystLimits,
+    draft: list[TurnReply],
+    ceilings: list[float],
+    revision: list[TurnReply],
+    state: dict[str, Any],
+) -> None:
+    later_ceilings = [0.01] * len(revision)
+    uninterrupted = FakeToolTurnClient(*draft, *revision, ceiling=[*ceilings, *later_ceilings])
+    whole = start(uninterrupted, limits=limits, budget=ReportBudget(usd=10))
+    assert (await whole.draft()).ending == "over_budget"
+    await whole.revise(REVISION)
+
+    first = FakeToolTurnClient(*draft, ceiling=list(ceilings))
+    stopped = start(first, limits=limits, budget=ReportBudget(usd=10))
+    assert (await stopped.draft()).ending == "over_budget"
+    record = json.loads(json.dumps(stopped.to_json()))
+    later = FakeToolTurnClient(*revision, ceiling=later_ceilings)
+    resumed = await _resume(record, later, mount=FakeToolMount())
+    outcome = await resumed.revise(REVISION)
+
+    assert {key: record["session"]["state"][key] for key in state} == state
+    assert outcome.ending == "submitted" and outcome.round == 2
+    assert later.requests == uninterrupted.requests[len(first.requests) :]
+
+
+async def test_a_session_is_not_resumed_on_another_model() -> None:
+    with pytest.raises(ValueError, match="ran on 'analyst-model', and it is resumed on 'other-model'"):
+        await _resume(await _stored(), FakeToolTurnClient(), model="other-model")
+
+
+async def test_a_reply_from_another_model_is_refused_after_it_is_counted() -> None:
+    tally = Tally()
+    stray = TurnReply(**{**_reply_members(reply(submitted())), "model": "other-model"})
+
+    with pytest.raises(ValueError, match="sent the turn to 'other-model'"):
+        await start(FakeToolTurnClient(stray), tally=tally).draft()
+
+    assert [turn.model for turn in tally.turns] == ["other-model"]
+
+
+def _reply_members(value: TurnReply) -> dict[str, Any]:
+    return {name: getattr(value, name) for name in TurnReply.__dataclass_fields__}
+
+
+def _without(path: str) -> Callable[[dict[str, Any]], Any]:
+    def change(record: dict[str, Any]) -> Any:
+        *parents, leaf = path.split(".")
+        held = record
+        for parent in parents:
+            held = held[parent]
+        del held[leaf]
+        return record
+
+    return change
+
+
+def _set(path: str, value: Any) -> Callable[[dict[str, Any]], Any]:
+    def change(record: dict[str, Any]) -> Any:
+        *parents, leaf = path.split(".")
+        held = record
+        for parent in parents:
+            held = held[parent]
+        held[leaf] = value
+        return record
+
+    return change
+
+
+MALFORMED: Final = [
+    pytest.param(lambda record: [record], id="not-an-object"),
+    pytest.param(_without("bounces"), id="no-bounces"),
+    pytest.param(_set("bounces", -1), id="negative-bounces"),
+    pytest.param(_set("limits", {"draft_calls": 1, "revision_calls": 1, "bounces": 3, "extra": 1}), id="extra-limit"),
+    pytest.param(_without("session.model"), id="no-model"),
+    pytest.param(_without("session.state"), id="no-state"),
+    pytest.param(_set("session.state", {"turns": 1}), id="state-missing-counts"),
+    pytest.param(_set("session.state.calls_used", "two"), id="count-of-the-wrong-type"),
+    pytest.param(_set("session.state.warned", 1), id="flag-of-the-wrong-type"),
+    pytest.param(_set("session.results", [{"tool_use_id": "toolu_001"}]), id="result-missing-its-digest"),
+    pytest.param(_set("session.messages", [{"role": "user"}]), id="message-missing-its-content"),
+    pytest.param(_set("session.limits", {"max_tokens": 0}), id="limit-out-of-range"),
+    pytest.param(_set("session.format", 1), id="an-older-session-format"),
+]
+
+
+@pytest.mark.parametrize("change", MALFORMED)
+async def test_a_malformed_record_is_refused_with_a_value_error(change: Callable[[dict[str, Any]], Any]) -> None:
+    record = change(json.loads(json.dumps(await _stored())))
+
+    with pytest.raises(ValueError, match=r"stored|a session's max_tokens"):
+        await _resume(record, FakeToolTurnClient())
+
+
+async def test_consecutive_requests_share_a_byte_identical_prefix_across_warnings_bounces_and_revisions() -> None:
+    """The history is append-only: each request is the one before it, then what was added since."""
+    limits = AnalystLimits(draft_calls=4, revision_calls=3, session=SessionLimits(warn_before=2))
+    client = FakeToolTurnClient(
+        reply(thinking(1), call(1), call(2)),
+        reply(thinking(2), call(3)),
+        reply(thinking(3), submitted(_unknown_arm())),
+        reply(thinking(4), TurnText("cut"), call(4), stop="max_tokens"),
+        reply(thinking(5), submitted()),
+        reply(thinking(6), call(5)),
+        reply(thinking(7), call(6), call(7)),
+        reply(thinking(8), submitted()),
+    )
+    session = start(client, limits=limits)
+
+    assert (await session.draft()).ending == "submitted"
+    assert (await session.revise(REVISION)).ending == "submitted"
+
+    sent = client.requests
+    said = "\n".join(texts(message["content"]) for message in sent[-1]["messages"] if message["role"] == "user")
+    assert "2 left" in said and "[validity]" in said and "[max_tokens]" in said and REVISION in said
+    assert "used up" in said, "the revision's own budget ran out and told the model to answer"
+    for before, after in zip(sent, sent[1:], strict=False):
+        assert (after["system"], after["tools"], after["max_tokens"]) == (
+            before["system"],
+            before["tools"],
+            before["max_tokens"],
+        )
+        assert json.dumps(after["messages"][: len(before["messages"])]) == json.dumps(before["messages"]), (
+            "an earlier message changed between consecutive requests"
+        )
+        assert len(after["messages"]) > len(before["messages"])
+
+
+async def test_every_turn_asks_the_provider_to_clear_old_tool_results() -> None:
+    client = FakeToolTurnClient(reply(call(1)), reply(submitted()))
+
+    await start(client).draft()
+
+    assert [request["context_management"] for request in client.requests] == [
+        {
+            "edits": [
+                {
+                    "type": "clear_tool_uses_20250919",
+                    "trigger": {"type": "input_tokens", "value": 150_000},
+                    "keep": {"type": "tool_uses", "value": 12},
+                    "clear_at_least": {"type": "input_tokens", "value": 36_000},
+                }
+            ]
+        }
+    ] * 2
+
+
+async def test_the_brief_holds_the_overview_to_the_result_limit() -> None:
+    mount = FakeToolMount(answers={"campaign_overview": "o" * 20_000})
+    client = FakeToolTurnClient(reply(submitted()))
+
+    await start(client, mount=mount).draft()
+
+    brief = texts(client.requests[0]["messages"][0]["content"])
+    assert "o" * 12_000 + "\n[cut at 12,000 of 20,000 characters" in brief
+    assert "o" * 12_001 not in brief
+
+
+async def test_any_client_refusing_a_paid_reply_keeps_the_turn_s_cost() -> None:
+    tally, budget = Tally(), ReportBudget(usd=10)
+    paid = reply(submitted(), cost=0.3)
+    client = FakeToolTurnClient(TurnReplyRefused("the reply named a forbidden id", reply=paid))
+
+    with pytest.raises(TurnReplyRefused, match="forbidden id") as refused:
+        await start(client, tally=tally, budget=budget).draft()
+
+    assert refused.value.reply is paid
+    assert [(turn.cost_usd, turn.refused) for turn in tally.turns] == [(0.3, "the reply named a forbidden id")]
+    assert budget.spent == pytest.approx(0.3)

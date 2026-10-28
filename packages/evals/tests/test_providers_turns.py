@@ -18,6 +18,7 @@ import pytest
 
 from threetears.evals.providers import Catalogue, Model, ProviderError
 from threetears.evals.schema import (
+    ToolResultClearing,
     TurnText,
     TurnThinking,
     TurnToolResult,
@@ -446,3 +447,49 @@ async def test_a_thinking_block_in_a_user_message_is_refused_before_anything_is_
             system=SYSTEM, messages=[TurnMessage("user", [thinking, TurnText(OPENING)])], tools=TOOLS, max_tokens=512
         )
     assert server.bodies == []
+
+
+async def test_a_clearing_goes_as_context_management_under_its_beta_and_nothing_else_changes() -> None:
+    """Server-side context editing: the one way a long tool loop keeps its context in bounds without editing what it
+    sent (an edited earlier turn invalidates every later thinking block)."""
+    sent: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, json=CASES["opening"]["reply"])
+
+    model = Model(
+        MODEL,
+        provider="anthropic",
+        api_key="test-key",
+        catalogue=catalogue(),
+        effort="high",
+        http=httpx.AsyncClient(transport=httpx.MockTransport(answer)),
+    )
+    clearing = ToolResultClearing(trigger_input_tokens=150_000, keep_tool_uses=12, clear_at_least_input_tokens=36_000)
+
+    await model.turn(
+        system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=32000, clearing=clearing
+    )
+    await model.turn(system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=32000)
+
+    cleared, plain = (json.loads(request.content) for request in sent)
+    assert cleared["context_management"] == {
+        "edits": [
+            {
+                "type": "clear_tool_uses_20250919",
+                "trigger": {"type": "input_tokens", "value": 150000},
+                "keep": {"type": "tool_uses", "value": 12},
+                "clear_at_least": {"type": "input_tokens", "value": 36000},
+            }
+        ]
+    }
+    assert sent[0].headers["anthropic-beta"] == "context-management-2025-06-27"
+    assert {key: value for key, value in cleared.items() if key != "context_management"} == plain
+    assert plain == CASES["opening"]["body"], "a turn with no clearing sends the body it always did"
+    assert "anthropic-beta" not in sent[1].headers
+
+
+def test_a_clearing_refuses_a_limit_that_is_not_a_count_above_0() -> None:
+    with pytest.raises(ValueError, match="keep_tool_uses is a whole number above 0"):
+        ToolResultClearing(keep_tool_uses=0)

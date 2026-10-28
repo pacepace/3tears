@@ -3,7 +3,7 @@
 :class:`AnalystSession` runs the analyst over one frozen snapshot through a
 :class:`~threetears.evals.ops.report_writer.session.ToolSession`. Its system text is the analyst skill
 (``load_skill().analyst(withhold=...)``); its first user message is the brief: the snapshot id, how to submit, the
-``report-doc/1`` JSON schema, and the snapshot's ``campaign_overview`` as the tool answers it. The analyst then calls
+``report-doc/1`` JSON schema, and the snapshot's ``campaign_overview`` as the tool answers it, held to the result limit. The analyst then calls
 the tool as it needs, and a reply that calls no tool is its submission: one fenced JSON object.
 
 **A submission is read in four steps, and the first that finds a fault sends it back** (a bounce, which costs no
@@ -209,6 +209,7 @@ class AnalystSession:
     def start(
         cls,
         *,
+        model: str,
         client: ToolTurnClient,
         mount: ToolMount,
         skill: SkillText,
@@ -222,6 +223,8 @@ class AnalystSession:
     ) -> AnalystSession:
         """A new analyst session, before its draft.
 
+        :param model: The model id the client sends to (``Model.model_name``), which the stored session keeps.
+        :ptype model: str
         :param client: The client its turns go through (``Model.turn_session(ANALYST_SESSION, snapshot=...)``).
         :ptype client: ToolTurnClient
         :param mount: The ``evals_analyst`` tool on the analyst's cut, bound to its host and caller.
@@ -249,6 +252,7 @@ class AnalystSession:
         session = ToolSession(
             name=ANALYST_SESSION,
             role="analyst",
+            model=model,
             client=client,
             mount=mount,
             system=skill,
@@ -280,7 +284,7 @@ class AnalystSession:
                 f"{overview.text}"
             )
         self._open(1, self.limits.draft_calls)
-        return await self._run(self._brief(overview.text))
+        return await self._run(self._brief(self._session.capped(overview.text)))
 
     async def revise(self, request: str) -> AnalystOutcome:
         """The next round: send the caller's request (the editor's findings) in the same conversation.
@@ -400,6 +404,7 @@ class AnalystSession:
         cls,
         record: Mapping[str, Any],  # Any: a JSON object
         *,
+        model: str,
         client: ToolTurnClient,
         mount: ToolMount,
         skill: SkillText,
@@ -413,6 +418,8 @@ class AnalystSession:
 
         :param record: What :meth:`to_json` wrote.
         :ptype record: Mapping[str, Any]
+        :param model: The model id the client sends to, which must be the one the session ran on.
+        :ptype model: str
         :param client: The client its next turns go through.
         :ptype client: ToolTurnClient
         :param mount: The tool, which re-derives each result body the record dropped.
@@ -431,22 +438,27 @@ class AnalystSession:
         :ptype budget: ReportBudget
         :return: The session.
         :rtype: AnalystSession
-        :raises ValueError: A record of another format or out of shape, or one :meth:`ToolSession.from_json` refuses.
+        :raises ValueError: A record of another format or out of shape, or one :meth:`ToolSession.from_json` refuses (a
+            model, skill text or tool other than the stored one included).
         """
-        if record.get("format") != _FORMAT:
-            raise ValueError(
-                f"a stored analyst session of format {record.get('format')!r}; this build reads format {_FORMAT}"
-            )
+        if not isinstance(record, Mapping) or record.get("format") != _FORMAT:
+            found = record.get("format") if isinstance(record, Mapping) else type(record).__name__
+            raise ValueError(f"a stored analyst session of format {found!r}; this build reads format {_FORMAT}")
         try:
             stored = record["session"]
-            snapshot, bounces, limits = record["snapshot"], record["bounces"], record["limits"]
-            session_limits = stored["limits"]
+            snapshot, bounces = record["snapshot"], record["bounces"]
+            held = AnalystLimits(**record["limits"], session=SessionLimits(**stored["limits"]))
+            if isinstance(bounces, bool) or not isinstance(bounces, int) or not 0 <= bounces <= held.bounces:
+                raise TypeError(f"bounces is {bounces!r}, not a count within the round's {held.bounces}")
+            if not isinstance(snapshot, str):
+                raise TypeError(f"snapshot is {snapshot!r}, not an id")
         except (KeyError, TypeError) as missing:
-            raise ValueError(f"a stored analyst session out of shape: {missing!r}") from missing
+            raise ValueError(
+                f"a stored analyst session out of shape: {missing!r} is missing or of the wrong type"
+            ) from missing
         session = await ToolSession.from_json(
-            stored, client=client, mount=mount, system=skill, tally=tally, budget=budget
+            stored, model=model, client=client, mount=mount, system=skill, tally=tally, budget=budget
         )
-        held = AnalystLimits(**limits, session=SessionLimits(**session_limits))
         return cls(session, snapshot=snapshot, arms=arms, caveats=caveats, check=check, limits=held, bounces=bounces)
 
 

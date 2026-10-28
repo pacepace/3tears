@@ -243,6 +243,7 @@ from threetears.evals.schema.turns import (
     TurnMessage,
     TurnReply,
     TurnReplyRefused,
+    ToolResultClearing,
     TurnStopReason,
     block_from_json,
 )
@@ -287,6 +288,7 @@ __all__ = [
     "TurnMessage",
     "TurnReply",
     "TurnReplyRefused",
+    "ToolResultClearing",
     "TurnStopReason",
     "block_from_json",
     "KnownModelRoleOrigin",
