@@ -272,6 +272,30 @@ async def test_a_submission_that_still_fails_after_its_bounces_ends_refused_and_
     assert result.outcome.faults and result.generation["tally"]["total"]["bounces"] == 3
 
 
+async def test_a_validity_fault_and_an_invariant_fault_bounce_once_together_each_with_its_remedy() -> None:
+    """One bounce carries every verdict the store gate's checker finds, validity's included: a draft naming an arm the
+    snapshot does not hold and typing a digit is sent back once, listing both, each with its remedy, and the next
+    submission goes to the editor. A session that checked validity on its own first would bounce twice, the first time
+    with validity's fault alone and no remedy."""
+    broken = copy.deepcopy(DOC)
+    broken["recommends"] = ["October"]
+    broken["headline"] += " It costs 40 percent more."
+    first = analyst(reply(submitted(broken)), reply(submitted()))
+    model = FakeTurnModel(analyst=first, editor_1=editor(reply(review())))
+
+    result = await written(model)
+
+    assert result.ending == "stored", result.outcome.reason
+    bounces = [_texts({"messages": [request["messages"][-1]]}) for request in first.requests[2:]]
+    assert len(bounces) == 1 and "bounce 1 of 3" in bounces[0]
+    (bounce,) = bounces
+    validity = [line for line in bounce.splitlines() if line.startswith("- [validity] recommends")]
+    invariant = [line for line in bounce.splitlines() if line.startswith("- [invariant] headline")]
+    assert validity and "October" in validity[0] and "campaign_overview lists its arms" in validity[0]
+    assert invariant and "figure_keys_check" in invariant[0]
+    assert result.generation["tally"]["by_round"]["analyst:1"]["bounce_kinds"] == {"validity": 1}
+
+
 async def test_a_client_failure_ends_failed_and_keeps_the_tally() -> None:
     failing = editor(ConnectionError("the provider refused the connection after its retries"))
     model = FakeTurnModel(analyst=analyst(), editor_1=failing)

@@ -49,6 +49,14 @@ An interval marked **computed** was computed here from a rate's count (binomial)
 - **Descriptive versus inferential.** Breakdowns computed after the fact are uncorrected. Bold only the rows separated at the stated level, and call them leads.
 - **Every chart's figures are in the appendix.** Hover adds detail but is never the only way to read a value.
 
+## Fitting the block to the claim
+
+- **A claim about a gap draws the gap.** "Costs more than", "beats", "falls behind": draw the difference between the arms with its interval (`compare`, a `forest` over `contrasts`, `diverging_bars`), paired where a contrast pairs them, not each arm's level. A percent or a multiple beside the gap comes from the same basis as the gap: a paired gap's share of the control, never one read off unpaired means while the block shows the paired gap. Where no key states it on that basis, state the gap and its interval, and log a `capability_gap`.
+- **Effects with intervals are drawn with them.** When the figures a claim compares carry intervals (a lever's effect, a contrast), choose a block that draws them. A lattice or bars of point estimates hides which effects are separated.
+- **The claim's figure is in its block.** The figure a claim turns on appears in its block's values table. If it doesn't, change the block or the claim.
+- **A caption describes only what its block draws.** Bold rows, intervals, a band, an overall row: name one only if `block_render` shows it there. A caption promising a row or a mark the block lacks reads as a missing figure.
+- **Every arm a claim compares gets its figure.** A claim about several arms states the figure for each one ("53% for one, 48% for the other"), not for one and lets the reader assume the rest.
+
 ## Choosing between candidates
 
 When two kinds both fit, choose the one whose most visible feature is your claim. A forest makes the interval against zero the most visible thing. Bars make magnitude most visible. If your claim is "clearly worse", use the forest. If it is "costs a quarter more", use the bars. Two charts side by side are right when a call has two reasons. Then each is its own claim.

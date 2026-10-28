@@ -195,6 +195,21 @@ def test_no_file_under_docs_repeats_a_skill_file() -> None:
     assert not copies, "docs repeat skill text; point at the package instead:\n" + "\n".join(sorted(set(copies)))
 
 
+# The Kairo note's correction (W4 skill round 2)
+
+
+def test_the_kairo_note_no_longer_teaches_that_the_caveats_leave_measured_cost_untouched() -> None:
+    """The note once said the call "rests on measured cost, which none of the caveats touch", the error its own run's
+    editor raised: the snapshot attaches the reasoning-ratio confound to 1017's cost contrast too. The note now carries
+    the confound on that cost, with its likely direction, and Watch names it beside both of 1017's readings."""
+    note = load_skill().files["exemplars/kairo-round2.md"]
+
+    assert "none of the caveats touch" not in note
+    assert "27–28%" not in note, "a percent read off unpaired means beside a claim about paired gaps"
+    assert "1017's cost contrast" in note and "would likely cost more" in note
+    assert "beside both of 1017's readings" in note
+
+
 # The digest
 
 

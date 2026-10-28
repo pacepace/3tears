@@ -6,7 +6,7 @@ A story form is a way of answering, not a category the eval belongs to. Choose i
 
 **When:** the evidence supports one call. Usually one option survives the gates and dominates the others, or a declared rule ranks the survivors.
 
-**Headline:** the call as an instruction, with its reason. "Keep the current model. Both candidates cost more per reply and stay in character less often."
+**Headline:** the call as an instruction, with its reason. "Keep the current router. The candidate costs more per request and resolves no more tickets."
 
 **Slots:** recommendation (with the figures that make it), why_not (each rejected option and the one thing that rules it out), watch (the weakest margin, a confound scoped to one arm, a contradicted prior insight), next (the step that could change the call, and which way).
 
@@ -18,7 +18,7 @@ A story form is a way of answering, not a category the eval belongs to. Choose i
 
 **When:** two or more options survive, none dominates, and the campaign declared nothing that ranks the axes, such as an exchange rate or a priority.
 
-**Headline:** the trade, with both sides and where the loss sits. "Switching saves a third of the cost but loses six points of personality, mostly in long conversations."
+**Headline:** the trade, with both sides and where the loss sits. "Switching halves the cost but answers fewer questions correctly, mostly on the hardest ones."
 
 **Slots:** the_trade, where_it_flips (the price bands where the best option changes), our_lean (labelled yours, with the band it holds for), what_settles_it.
 
@@ -42,7 +42,7 @@ A story form is a way of answering, not a category the eval belongs to. Choose i
 
 **When:** one arm, read against its own thresholds or its own history. There is nothing to choose between.
 
-**Headline:** where it stands against the lines that matter, led by the nearest one. "The router holds every floor; complex news is two points above its line."
+**Headline:** where it stands against the lines that matter, led by the nearest one. "The service holds every floor; refunds are one point above their line."
 
 **Slots:** usually recommendation (ship, hold, or fix first), watch, next, plus why_not when an alternative was implicitly on the table.
 
@@ -60,7 +60,7 @@ A story form is a way of answering, not a category the eval belongs to. Choose i
 
 ## Mixing forms
 
-Reports often mix. A decision on cost can carry a diagnosis on the judged aspect: "Keep the current model: the candidates cost more. Whether they also hold character worse can't be read until the judge is calibrated." The headline carries the dominant form, meaning the one the reader acts on. The secondary form gets its own claim and its own slot (often Watch or what_is_tangled), and never contradicts the headline unaddressed.
+Reports often mix. A decision on cost can carry a diagnosis on the judged aspect: "Keep the current router: the candidate costs more. Whether its answers also read worse can't be known until the judge is calibrated." The headline carries the dominant form, meaning the one the reader acts on. The secondary form gets its own claim and its own slot (often Watch or what_is_tangled), and never contradicts the headline unaddressed.
 
 Pick the four decision slots that fit what you are actually saying. A decision with an unresolved secondary question might use recommendation, why_not, what_is_tangled and next.
 

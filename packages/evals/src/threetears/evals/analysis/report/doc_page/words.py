@@ -17,6 +17,8 @@ __all__ = [
     "APPENDIX_TITLE",
     "CAVEAT_LABELS",
     "CAVEATS_TEMPLATE",
+    "CAVEAT_REPEATED",
+    "CAVEAT_REPEATED_ON",
     "CHECKED_MARK",
     "CLAIM_WORD",
     "DEGRADED_BLOCK",
@@ -77,8 +79,16 @@ CAVEAT_LABELS: Final[dict[str, str]] = {
     "best_of_n": "The pick is the best of several candidates",
 }
 
-#: The caveats a claim or a Method item names, by their labels, as the line beside it says them.
+#: The caveats a claim or a Method item names, by their labels, as the line beside it says them: each distinct label
+#: once.
 CAVEATS_TEMPLATE = "Caveats: {labels}."
+
+#: A label several of the caveats beside one claim or Method item share (two runs of one arm short of their usable
+#: measurements): said once, with how many caveats carry it, as a count in words, and the arms their records name.
+CAVEAT_REPEATED_ON = "{label} — {count} of them, on {arms}"
+
+#: The same, where no record among them names an arm.
+CAVEAT_REPEATED = "{label} — {count} of them"
 
 #: How a checked caveat's line is marked in Markdown and the page text: code's, not a caveat left open.
 CHECKED_MARK = "(checked)"

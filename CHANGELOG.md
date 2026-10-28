@@ -6,6 +6,40 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: analyst skill round 2: the Kairo review's findings, the misfits' and the planner re-record's, in the skill and the editor
+
+**Changed:** the analyst skill and the report editor's rubric carry what the W3 acceptance runs' reviews found, as
+general guidance: every caveat code attaches to the evidence a claim rests on is carried beside it with its likely
+direction, measured telemetry included, and no finding is called immune to the caveats while one could move it; the
+deciding measure's coverage is stated; a claim about a gap draws the gap, its percent on the same basis; a caption
+describes only what its block draws; a count written as a word comes from a key; a saving is written as its size with
+its direction in words; one measure keeps one name; a rerun is sized at the size that settles four times in five;
+Watch cites code's weakest margin by its keys and names every thin leg a route rests on; a headline and its own block
+never disagree. The editor treats a page its own evidence contradicts, a sign that contradicts its sentence, and an
+immunity line a caveat on its evidence could move as must_fix. The Kairo reasoning note no longer says the caveats
+leave cost untouched. The skill's digest moves with it.
+
+**Added:** the editor is handed one more computed fact, `caveat_not_carried`: a caveat code attaches to a contrast a
+claim's evidence reads that neither the claim nor the confidence carries (a method-reach caveat landed on a Method term
+counts as carried). Evidence reads a contrast when a block names the contrast's measure for its arm, or reads the
+contrasts source with no measure named, or when a key in the claim names its arm and measure. A block that reads every
+reading of an aspect without naming the contrast's measure does not count as reading it, and a caveat the confidence
+carries satisfies the fact even where its clause calls the finding untouched; the editor's must_fix rule (a finding
+called immune while a caveat on its evidence could move it) covers what the fact misses. Like every fact it never
+refuses and is the editor's to weigh. `contrasts_list` and the fact name a contrast's figures and its confounds through
+one shared pair, `analysis.analyst.facts.contrast_key` and `confound_caveat_id` (new, provisional).
+
+**Changed:** an analyst submission is checked in one pass by the store gate's checker, its validity included, so one
+bounce carries every verdict, each with its remedy, where a validity fault used to bounce alone, without its remedy,
+and cost a bounce of its own. The tally still counts that bounce as `validity`.
+
+**Changed:** on a report document's page, caveats that share a label beside one claim or Method term print that label
+once, saying how many carry it, in words, and the arms their records name (`A run fell short of its usable
+measurements — two of them, on qwen3.8-flash (A)`), where the label printed once per caveat; Markdown, text and HTML
+print the same line.
+
+A host needs no code change.
+
 ### evals: money reads one form per figure type, tiny amounts per 1,000 (#993), and each arm's cost sits beside its quality
 
 **Changed:** money is spelled one way per set, never per value (owner ruling of 2026-10-27, which supersedes the W2c
