@@ -4,13 +4,15 @@ Every converted document of the second and third prototypes passes with no verdi
 negatives, each a small change to a passing document, and each is held two ways: its invariant finds it, and with that
 check removed it passes, since every other check gives the same verdicts on it as on the document it was planted in.
 A check emits verdicts under its own number only, so dropping one invariant's verdicts is removing its check. The
-verdicts are byte-identical whatever the document's ``story`` says.
+verdicts are byte-identical whatever the document's ``story`` says. Invariant 5's page half reads the claims
+renderer's text above the appendix, which is chunk R's and not on this branch: a fake stands in for it, built from the
+document's own prose with its keys written out.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import cache
 from typing import Any, get_args
 
@@ -18,7 +20,9 @@ import pytest
 
 from packages.evals.tests.report_doc_support import LATER_DOCS, converted_doc, snapshot_of
 from threetears.evals.analysis.report_doc_checks import DocVerdict, check_report_doc
+from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.kernel.report_doc import ReportDoc, Story
 
 #: The Kairo document of the third prototype, which most negatives are planted in.
@@ -39,7 +43,7 @@ def _verdicts(
     name: str,
     *changes: _Change,
     after: Callable[[ReportDoc], ReportDoc] | None = None,
-    page_text: tuple[tuple[str, str], ...] = (),
+    page: Callable[[ReportDoc, ReportInput], str] | None = None,
 ) -> list[DocVerdict]:
     raw = converted_doc(name)
     for change in changes:
@@ -47,7 +51,8 @@ def _verdicts(
     doc = ReportDoc.model_validate(raw)
     if after is not None:
         doc = after(doc)
-    return check_report_doc(doc, _input(name), page_text=page_text)
+    text = page(doc, _input(name)) if page is not None else ""
+    return check_report_doc(doc, _input(name), above_appendix_text=text)
 
 
 def _said(verdicts: list[DocVerdict]) -> str:
@@ -143,24 +148,48 @@ def test_each_later_converted_document_passes_every_invariant(name: str) -> None
 
 
 @pytest.mark.parametrize(
-    ("what", "changes", "page_text"),
+    ("what", "changes"),
     [
-        ("a percentile label", (_append(_RECOMMENDATION, " Its p95 reply is no slower."),), ()),
-        ("a cost's unit", (_append(_RECOMMENDATION, " Costs are read per 1k replies, or $/1,000."),), ()),
-        ("a claim id in Method", (_append(("method", 0, "text"), " The cost claim is c1."),), ()),
-        ("a low confidence with open caveats", (_set(("confidence", "form"), "low"),), ()),
-        ("a card's id on the page", (), (("examples", "Trial T15, on the oft-match-score case."),)),
+        ("a percentile label", (_append(_RECOMMENDATION, " Its p95 reply is no slower."),)),
+        ("a cost's unit", (_append(_RECOMMENDATION, " Costs are read per 1k replies, or $/1,000."),)),
+        ("a claim id in Method", (_append(("method", 0, "text"), " The cost claim is c1."),)),
+        ("a low confidence with open caveats", (_set(("confidence", "form"), "low"),)),
     ],
     ids=lambda value: value if isinstance(value, str) else "",
 )
-def test_what_an_invariant_allows_passes(
-    what: str, changes: tuple[_Change, ...], page_text: tuple[tuple[str, str], ...]
-) -> None:
+def test_what_an_invariant_allows_passes(what: str, changes: tuple[_Change, ...]) -> None:
     """A percentile label, a cost's unit and a claim's own id are typed with their digits; a low confidence holds any
-    caveat; an example card the renderer draws prints its trial's id."""
-    verdicts = _verdicts(_KAIRO, *changes, page_text=page_text)
+    caveat."""
+    verdicts = _verdicts(_KAIRO, *changes)
 
     assert verdicts == [], f"{what}:\n{_said(verdicts)}"
+
+
+# --- the rendered page's text, by a fake of the claims renderer's ------------------------------------------------
+
+
+def _fake_above_appendix_text(doc: ReportDoc, report_input: ReportInput, extra: str = "") -> str:
+    """A stand-in for the claims renderer's ``above_appendix_text(page)`` (chunk R, not on this branch): the
+    document's prose above the appendix with every key written out as the page prints it, example cards left out,
+    and ``extra`` for what the renderer itself would print."""
+    names = {arm.id: arm.name for arm in fact_arms(report_input)}
+    texts = [doc.headline, doc.lede, doc.flag or ""]
+    texts += [entry.text for entry in doc.decision]
+    texts += [part for claim in doc.claims for part in (claim.text, *(block.caption for block in claim.evidence))]
+    texts += [step.text for step in doc.next]
+    return "\n".join([*(render(text, report_input, names) for text in texts), extra])
+
+
+def _page_with(extra: str) -> Callable[[ReportDoc, ReportInput], str]:
+    return lambda doc, report_input: _fake_above_appendix_text(doc, report_input, extra)
+
+
+@pytest.mark.parametrize("name", LATER_DOCS)
+def test_each_later_document_passes_with_its_page_text(name: str) -> None:
+    """The page's own text above the appendix, the keys written out, types no internal id on any converted document."""
+    verdicts = _verdicts(name, page=_fake_above_appendix_text)
+
+    assert verdicts == [], _said(verdicts)
 
 
 def test_a_plain_high_with_no_open_caveat_breaks_no_form() -> None:
@@ -183,7 +212,7 @@ class _Negative:
     doc: str = _KAIRO
     base: tuple[_Change, ...] = ()
     after: Callable[[ReportDoc], ReportDoc] | None = None
-    page_text: tuple[tuple[str, str], ...] = field(default=())
+    page: Callable[[ReportDoc, ReportInput], str] | None = None
 
 
 _NEGATIVES = [
@@ -212,7 +241,8 @@ _NEGATIVES = [
     _Negative("a slot word", 5, (_append(_RECOMMENDATION, " See why_not."),)),
     _Negative("a caveat id", 5, (_append(_RECOMMENDATION, " The late:margin holds."),)),
     _Negative("a card's id in prose", 5, (_append(_RECOMMENDATION, " Trial T15 shows it."),)),
-    _Negative("a measure key on the page", 5, page_text=(("options table", "production_replicating_cost"),)),
+    _Negative("a measure key on the page", 5, page=_page_with("Cost | production_replicating_cost")),
+    _Negative("a caveat id on the page", 5, page=_page_with("Open caveats: judge_uncalibrated")),
     _Negative("no Method item", 6, after=_no_method),
 ]
 
@@ -220,11 +250,11 @@ _PLANTED = pytest.mark.parametrize("negative", _NEGATIVES, ids=[negative.name fo
 
 
 def _base(negative: _Negative) -> list[DocVerdict]:
-    return _verdicts(negative.doc, *negative.base)
+    return _verdicts(negative.doc, *negative.base, page=_fake_above_appendix_text if negative.page else None)
 
 
 def _planted(negative: _Negative) -> list[DocVerdict]:
-    return _verdicts(negative.doc, *negative.base, *negative.plant, after=negative.after, page_text=negative.page_text)
+    return _verdicts(negative.doc, *negative.base, *negative.plant, after=negative.after, page=negative.page)
 
 
 @_PLANTED

@@ -80,7 +80,7 @@ interval (a reading's spread, two arms apart on a pass rate, the campaign scorec
 ### evals: the report document's invariants, as code verdicts
 
 **Added (provisional):** `threetears.evals.analysis.report_doc_checks.check_report_doc(doc, report_input,
-page_text=())` returns every verdict code proves against a `report-doc/1` document on its snapshot, each a
+above_appendix_text="")` returns every verdict code proves against a `report-doc/1` document on its snapshot, each a
 `DocVerdict` of `invariant` (0 for validity, which runs first, then 1 to 6), field `path`, `fault` and `remedy`.
 Numbers come through figure keys (every key renders; no typed digit outside keys but the snapshot's names, percentile
 labels, a cost's unit such as `per 1k`, and the document's own claim ids; no unit doubled after a key that prints it);
@@ -89,8 +89,8 @@ scoped caveat code assigns, stated or implied, lands where its reach allows (a m
 not at all), each once in the confidence, checked immaterial only where `caveat_materiality` proves it; the
 confidence form matches its open caveats; no internal id (an aspect, measure, criterion, task or stratum id, an arm id
 printed by another name, a caveat id, a slot word, an example's trial or case id) is typed above the appendix, in the
-prose or in the rendered page's text when `page_text` is given (where an example card's trial and case ids are
-allowed); and Method holds an item. Nothing interpretive is a verdict, and no check reads `story`. The module
+prose or in the rendered page's text above the appendix when given (the claims renderer's, example cards left out);
+and Method holds an item. Nothing interpretive is a verdict, and no check reads `story`. The module
 exports nothing until its callers land (the store, the `report_check` action, the writing loop); the names are pinned
 in `tests/test_report_doc_exports.py`, which now covers both report-document modules. `kernel.report_doc` exports
 `ReportDoc`, `REPORT_DOC_PROSE_FIELDS`, `DecisionSlotWord`, `is_analyst_caveat` and `report_doc_validity`, which the

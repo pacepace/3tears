@@ -41,8 +41,10 @@ refused, so a revision sees everything at once.
    that reads as one (:func:`~threetears.evals.analysis.report_prose_checks.reads_as_id`) where a reader is shown a
    name: an aspect, measure, judged dimension, stratum, task or criterion id, an arm id the page prints by another
    name, a caveat id, a decision slot's word, or an example's trial or case id. The rendered page's text above the
-   appendix is checked the same way where the caller passes it (``page_text``), with one exemption: the example cards
-   the renderer draws print their trial and case ids, so those ids are allowed there.
+   appendix is checked the same way where the caller passes it (``above_appendix_text``, the renderer's
+   ``above_appendix_text(page)``), which catches what the renderer itself prints: a caveat id, a measure key in a
+   header. That text leaves out the example cards the renderer draws, which print their trial and case ids and are
+   exempt (plan §2.2, input 11).
 6. **Method is present**: at least one item. The full-results appendix is the renderer's, always built.
 
 Invariant 7 (``check.py`` at 1200 and 390 px, light and dark) needs a browser, so it is not checked at storage; the
@@ -139,6 +141,8 @@ _METHOD_REMEDY = "Method holds at least one term: say how the evidence was gathe
 #: a slash (``per 1,000``, ``per 1k``, ``$/1k``).
 _COST_UNIT = re.compile(r"(?:(?<!\w)per\s+|/\s?)(?:1,000,000|1,000|1000|1k)(?!\w)", re.IGNORECASE)
 
+#: The path a verdict on the rendered page's text sits at.
+_PAGE = "page"
 #: The fields below the page's appendix, where ids may appear.
 _APPENDIX = ("omitted[", "method[")
 
@@ -152,9 +156,7 @@ _PLACES: dict[str, frozenset[str]] = {
 _HOME = "confidence.caveats"
 
 
-def check_report_doc(
-    doc: ReportDoc, report_input: ReportInput, *, page_text: Sequence[tuple[str, str]] = ()
-) -> list[DocVerdict]:
+def check_report_doc(doc: ReportDoc, report_input: ReportInput, *, above_appendix_text: str = "") -> list[DocVerdict]:
     """Every verdict code proves against a report document on its snapshot (this module's account): validity's, then
     each invariant's, in order.
 
@@ -162,9 +164,9 @@ def check_report_doc(
     :ptype doc: ReportDoc
     :param report_input: The report input of the snapshot it was written from.
     :ptype report_input: ReportInput
-    :param page_text: The rendered page's text above the appendix, as ``(where, text)``, for invariant 5; empty to
-        check the document's prose alone. The example cards the renderer draws may print trial and case ids.
-    :ptype page_text: Sequence[tuple[str, str]]
+    :param above_appendix_text: The rendered page's text above the appendix, example cards left out (the claims
+        renderer's ``above_appendix_text(page)``), for invariant 5; empty to check the document's prose alone.
+    :ptype above_appendix_text: str
     :return: The verdicts; empty for a document that may be stored.
     :rtype: list[DocVerdict]
     """
@@ -180,7 +182,7 @@ def check_report_doc(
     verdicts += _block_verdicts(doc, report_input)
     verdicts += _coverage_verdicts(doc, report_input, caveats)
     verdicts += _form_verdicts(doc)
-    verdicts += _id_verdicts(doc, prose, report_input, caveats, page_text)
+    verdicts += _id_verdicts(doc, prose, report_input, caveats, above_appendix_text)
     verdicts += _method_verdicts(doc)
     return verdicts
 
@@ -370,7 +372,7 @@ def _id_verdicts(
     prose: list[tuple[str, str]],
     report_input: ReportInput,
     caveats: Sequence[Caveat | ImpliedCaveat],
-    page_text: Sequence[tuple[str, str]],
+    above_appendix_text: str,
 ) -> Iterator[DocVerdict]:
     said = {
         identifier: f"the {kind} id {identifier!r}" for identifier, (kind, _n) in internal_ids(report_input).items()
@@ -406,8 +408,11 @@ def _id_verdicts(
         and (reads_as_id(identifier) or any(character.isdigit() for character in identifier))
     }
     above = [(path, text) for path, text in prose if not path.startswith(_APPENDIX)]
-    yield from _typed(above, said | cards, shown - set(said) - set(cards), "above the appendix")
-    yield from _typed(page_text, said, shown - set(said), "on the page above the appendix")
+    ids = said | cards
+    hidden = shown - set(ids)
+    yield from _typed(above, ids, hidden, "above the appendix")
+    if above_appendix_text:
+        yield from _typed([(_PAGE, above_appendix_text)], ids, hidden, "on the page above the appendix")
 
 
 def _typed(texts: Sequence[tuple[str, str]], said: dict[str, str], shown: set[str], where: str) -> Iterator[DocVerdict]:
