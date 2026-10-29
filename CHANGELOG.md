@@ -86,6 +86,27 @@ cost/quality chart as the kit's bars and scatter), at three widths the styleshee
 width, with each mark's tooltip as its `<title>`, and no script, event attribute or URL. Each chart's table of values
 stays under it. A chart the kit lays out as HTML (a gate matrix, a lattice, example cards) and a report's interval
 rows say in one line that they are shown as their table. The default page is unchanged, byte for byte.
+### evals: five rendering defects on a production report page: examples read as fields, the worst case on the corrected interval, a recorded scale, one printed name, no blank cost
+
+**Fixed:** the examples table's Details column no longer prints a case's input as truncated JSON: an input or expectation
+that is a JSON object (a world, a payload), whole or cut where the snapshot was frozen, reads as its first four key and
+value pairs (`Input · city: Oslo`), each key by its reader name and each long value cut at a word; any other text stays
+one field as written (`resolve_examples.readable_fields`). The weakest margin (`Margin`, `weakest.*`, Watch) takes a
+reading's worst case from the multiplicity-corrected interval of the arm's pass-rate contrast wherever the input holds
+one (`report_margins.corrected_interval`), not the plain 95% interval, so Kairo's reads -12.6 (gap 2.4) where it read
+-10.8 (gap 4.2); a floor keeps its own nominal interval. `weakest.interval` (new key) says which interval the worst case
+is read on, the planner's facts line and the editor's `weakest_not_in_watch` fact name it, and a plan page's Watch that
+cites the weakest margin carries code's line saying so. A judged dimension no judge tier covers (the reserved dual-score
+axes `outcome` and `transcript` among them) keeps the scale the bundle froze beside its scores, so a pass/fail one
+reads as a pass rate and never as a 1 to 5 mean. `reader_name("measure", ...)` names a goal check with no declared
+name as every table header and chart does (its expression as a code span), where it had printed the bare expression as a
+gate row's label. An arms (options) table's cost column no longer leaves a cell blank: an arm the page's cost source
+lacks but the scoreboard prices per reply shows that cost in the column's form, and an arm with no known cost reads
+`unpriced`.
+
+**Fingerprints:** no stored document, bundle or report input changes. Rendered text moves where a margin is read on the
+corrected interval: the Kairo fixtures' weakest margin (-10.8 to -12.6, gap 4.2 to 2.4), s1's weakest margin (now v4's
+billing reading, which its Watch names), and one scored run plan's R7 quote.
 
 ### evals: Discodon's W4 adoption findings: unanswered calls through the ledger, a turn cap on a dollar budget, the report writer's port declared
 

@@ -160,10 +160,14 @@ class _FactWeakest(BaseModel):
 
 
 #: The weakest-margin keys, in the order the facts list them, and how the facts render it.
-_WEAKEST_KEYS = tuple(f"{WEAKEST_PREFIX}{field}" for field in ("arm", "criterion", "value", "threshold", "margin"))
+_WEAKEST_KEYS = tuple(
+    f"{WEAKEST_PREFIX}{field}" for field in ("arm", "criterion", "value", "threshold", "margin", "interval")
+)
 _WEAKEST_SAID = (
     "{weakest.arm}: {weakest.value} against {weakest.criterion} at {weakest.threshold}, a gap of {weakest.margin}"
 )
+#: The same, for a margin read on an interval (a reading's or a floor's), which names the interval it is read on.
+_WEAKEST_SAID_ON_INTERVAL = f"{_WEAKEST_SAID}, read on {{weakest.interval}}"
 
 
 class PlanFacts(BaseModel):
@@ -256,9 +260,11 @@ def fact_arms(report_input: ReportInput) -> tuple[FactArm, ...]:
 
 
 def _weakest(report_input: ReportInput) -> _FactWeakest | None:
-    if weakest_margin(report_input) is None:
+    found = weakest_margin(report_input)
+    if found is None:
         return None
-    return _FactWeakest(said=render(_WEAKEST_SAID, report_input, {}), keys=_WEAKEST_KEYS)
+    said = _WEAKEST_SAID if found.kind == "criterion" else _WEAKEST_SAID_ON_INTERVAL
+    return _FactWeakest(said=render(said, report_input, {}), keys=_WEAKEST_KEYS)
 
 
 def flag_disclosures(facts: PlanFacts, mode: str, listed: Iterable[str]) -> tuple[str, ...]:
