@@ -1937,6 +1937,15 @@ stores and never reads; register a measure for whatever should be compared.
 the engine turns those rows into a result's `cost_usd`, and what happens when a call cannot be priced, is
 in [Cost and budgets: how a result's cost is counted](cost-and-budgets.md#how-a-results-cost-is-counted).
 
+**Calls nobody answered.** Count them on the ledger with `RoleUsageLedger.add_unanswered(model=, retried=, lost=,
+reasons=)`, never on a row you build yourself. Pass the key fields you passed `add` for the calls they sit beside. A
+lost call names no served model, and the ledger folds it into its model's answered row anyway, so you need not know
+which row it belongs to. The counts sit beside the row's `call_count` and never in its cost. A model none of whose calls
+was answered keeps a row of its own (`RoleUsage.answers_nothing`): its `call_count` is None, because it answered
+nothing, and no cost reads it. A reader that keys rows on `call_count` should expect that row. Each count you leave
+out reads as not counted, never as zero. So where your rate measures need the counts on every row, mark a row whose
+calls were all answered with `add_unanswered(model=..., retried=0, lost=0)` on its key.
+
 ## Cassettes: recording and replaying tools
 
 A [cassette](concepts.md#cassette) lets two arms face exactly the same tool answers. An `Eval` does the wiring
