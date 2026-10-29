@@ -13,6 +13,11 @@ packages (bumped in lock-step).
 the declared `arms` (`CampaignLineArm`: label, short name, role), the recorded `call` (`CampaignLineCall`: arm and
 reason), `verdict_short` (code's few words: `Keep <arm>` for the control and `Adopt <arm>` for a candidate, from the
 recorded call or else the report's recommendation; `No call` for a report recommending none; None with neither),
+`outcome_short` (what the evidence says in a few words, read by code off the report's frozen readings by their kind,
+never from the writer's prose or the headline's text, and distinct from the decision: a broken floor leads
+(`<arm> broke a floor`), then a missed bar (`<arm> missed a bar`); then a change's `<arm> improved`, `No candidate
+improved` or `Not separated`, a choice's `<arm> ahead`, `Arms differ` or `Not separated`, a measurement's `Measured`,
+and `No readings yet` where the readings hold no row; None with no report or one this build cannot read),
 `report_state` (`none`, `written` or `needs_regeneration`), `report` (`CampaignLineReport`: the analysis id, code's
 verdict line as `headline`, why it needs regeneration, when and on what model it was generated, its attempt's
 `cost_usd`, None while any call is unpriced, and `unpriced_calls`) and `feeds` (for an exploratory campaign, the

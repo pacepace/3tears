@@ -13,6 +13,9 @@ Contracts held here (``threetears.evals.ops.campaigns_list``, ``CampaignLine``):
   description; renaming moves no fingerprint;
 - **verdict_short** is code's: ``Keep``/``Adopt`` and the arm from the recorded call, else from the report's
   recommendation, ``No call`` for a report recommending none, None with neither;
+- **outcome_short** is code's, read off the report's frozen readings and distinct from the decision: a broken floor
+  leads, then a missed bar, then by kind (a change: which candidate improved, else whether anything separated; a
+  choice: which arm leads; a measurement: measured), `No readings yet` for no rows, None with no report;
 - **the title** is code's: the arms (declared, else the runs' candidate models; judges counted), control first, then
   the aspects, then the name in parentheses, counting past three arms and two aspects;
 - **feeds**: an exploratory campaign names the declared campaigns holding any of its runs; a declared one feeds
@@ -34,6 +37,16 @@ from packages.evals.tests.ops_support import (
 import pytest
 
 from threetears.evals.analysis import assemble_campaign_bundle
+from threetears.evals.analysis.campaign_readings import (
+    AspectReading,
+    BarStatus,
+    CampaignReadings,
+    MeasureReading,
+    PairReading,
+    ShownReading,
+)
+from threetears.evals.analysis.report.build import analysis_campaign_bundle
+from threetears.evals.analysis.report.decision import FloorStatus
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.offload import run_blocking
@@ -260,3 +273,146 @@ def test_a_campaign_declaring_no_arm_is_titled_by_its_runs_models_and_a_judge_on
     )
     line = _line(campaigns_list(fixture.host.eval_host, TOYHOST_SCOPE).campaigns, fixture.campaign.id)
     assert line.title.endswith(f" · {measure} ({stored.name})")
+
+
+def _change_row(aspect: str, key: str, label: str, reading: ShownReading) -> AspectReading:
+    return AspectReading(
+        aspect=aspect,
+        arm=key,
+        arm_label=label,
+        change=1.0,
+        gain_interval=None,
+        gain_confidence=None,
+        drop_interval=None,
+        drop_confidence=None,
+        gain_p=None,
+        gain_p_holm=None,
+        drop_p=None,
+        drop_p_holm=None,
+        reading=reading,
+        margin=None,
+        control_cases=1,
+        arm_cases=1,
+        control_passed=0,
+        control_trials=1,
+        arm_passed=0,
+        arm_trials=1,
+        projection=None,
+    )
+
+
+def _pair(aspect: str, first: tuple[str, str], second: tuple[str, str], ahead: str | None) -> PairReading:
+    return PairReading(
+        aspect=aspect,
+        first=first[0],
+        first_label=first[1],
+        second=second[0],
+        second_label=second[1],
+        change=1.0,
+        interval=None,
+        confidence=None,
+        p=None,
+        p_holm=None,
+        ahead=ahead,
+        first_cases=1,
+        second_cases=1,
+        first_passed=0,
+        first_trials=1,
+        second_passed=0,
+        second_trials=1,
+    )
+
+
+def _floor(aspect: str, key: str, label: str) -> FloorStatus:
+    return FloorStatus(
+        floor="f", aspect=aspect, arm=key, arm_label=label, status="broken", reading=None, interval=None, reason="r"
+    )
+
+
+def _bar(aspect: str, key: str, label: str) -> BarStatus:
+    return BarStatus(
+        aspect=aspect,
+        arm=key,
+        arm_label=label,
+        measure="passed",
+        bar=0.5,
+        direction="higher_is_better",
+        status="missed",
+        value=0.1,
+        interval=None,
+        margin=None,
+    )
+
+
+def _measure(aspect: str, key: str, label: str) -> MeasureReading:
+    return MeasureReading(
+        aspect=aspect,
+        arm=key,
+        arm_label=label,
+        measure="passed",
+        name="pass rate",
+        value=0.5,
+        interval=None,
+        cases=1,
+    )
+
+
+async def test_the_short_outcome_is_read_from_the_reports_readings_by_kind() -> None:
+    fixture = off_loop(ops_fixture)
+    (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    await settled(fixture.host, job.job_id)
+    host = fixture.host.eval_host
+    await run_blocking(host.blocking_executor, _outcomes_read, host, fixture.campaign.id)
+
+
+def _outcomes_read(host: EvalHost, campaign_id: str) -> None:
+    analysis = host.storage.load_reported_analysis(campaign_id, TOYHOST_SCOPE)
+    assert analysis is not None
+    bundle = analysis_campaign_bundle(analysis)
+    first, second = bundle.arms[:2]
+    named = bundle.model_copy(update={"arms": [first, second.model_copy(update={"short_name": "fast"})]})
+    aspect = bundle.readings.aspects[0]
+    one = (first.variant_key, first.label)
+    two = (second.variant_key, second.label)
+    third = ("other-key", "third")
+    empty = {"readings": [], "pairs": [], "measures": [], "floors": [], "bars": []}
+
+    def read(kind: str, **rows: list[object]) -> str | None:
+        readings: CampaignReadings = named.readings.model_copy(update={**empty, "kind": kind, **rows})
+        host.storage.save_analysis(
+            analysis.model_copy(update={"campaign_bundle": named.model_copy(update={"readings": readings}).frame()})
+        )
+        return _line(campaigns_list(host, TOYHOST_SCOPE).campaigns, campaign_id).outcome_short
+
+    assert read("change") == "No readings yet"
+    assert read("change", readings=[_change_row(aspect, *two, "unclear")]) == "Not separated"
+    assert read("change", readings=[_change_row(aspect, *two, "worse")]) == "No candidate improved"
+    assert read("change", readings=[_change_row(aspect, *two, "within_margin")]) == "No candidate improved"
+    assert read("change", readings=[_change_row(aspect, *two, "better")]) == "fast improved"
+    both = [_change_row(aspect, *two, "better"), _change_row(aspect, *third, "better")]
+    assert read("change", readings=both) == "2 candidates improved"
+    assert read("change", readings=[_change_row(aspect, *third, "better")]) == "third improved", "label, no short name"
+    assert read("choice") == "No readings yet"
+    assert read("choice", pairs=[_pair(aspect, one, two, None)]) == "Not separated"
+    assert read("choice", pairs=[_pair(aspect, one, two, two[0])]) == "fast ahead"
+    cycle = [_pair(aspect, one, two, one[0]), _pair(aspect, two, third, two[0]), _pair(aspect, third, one, third[0])]
+    assert read("choice", pairs=cycle) == "Arms differ", "an arm ahead of one and behind another leads nowhere"
+    assert read("measurement") == "No readings yet"
+    assert read("measurement", measures=[_measure(aspect, *one)]) == "Measured"
+    missed = {"bars": [_bar(aspect, *two)]}
+    assert read("measurement", measures=[_measure(aspect, *one)], **missed) == "fast missed a bar"
+    assert read("change", **missed, readings=[_change_row(aspect, *two, "better")]) == "fast missed a bar"
+    two_missed = {"bars": [_bar(aspect, *one), _bar(aspect, *two), _bar(aspect, *two)]}
+    assert read("change", **two_missed) == "2 arms missed a bar"
+    broke = {"floors": [_floor(aspect, *two)], **missed}
+    assert read("change", **broke, readings=[_change_row(aspect, *two, "better")]) == "fast broke a floor"
+    many = {"floors": [_floor(aspect, *two), _floor(aspect, *third)]}
+    assert read("change", **many) == "2 candidates broke a floor"
+
+
+def test_a_campaign_with_no_report_has_no_short_outcome() -> None:
+    fixture = ops_fixture()
+
+    line = _line(campaigns_list(fixture.host.eval_host, TOYHOST_SCOPE).campaigns, fixture.campaign.id)
+
+    assert line.outcome_short is None
