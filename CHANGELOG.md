@@ -8,6 +8,17 @@ packages (bumped in lock-step).
 
 ## v0.82.0 -- 2026-10-28
 
+### core: a bulk write's CPU work runs off the event loop
+
+**Fixed:** `SqlL3Backend.upsert_many` and `copy_many` built every row's parameters, measured each statement as the
+rail sends it, and (over the rail) converted each value and encoded the request on the event loop. For a page of a
+thousand rows that is tens of milliseconds of Python, and it held every call the process answers for as long, a
+page after a page. A reports tool pod writing a local LSF pull over the rail logged 60 such stalls in 220 s (up to
+0.3 s). The parameters and batches are now built on a thread (`asyncio.to_thread`). The proxy builds and encodes a
+copy page, and any statement binding more than 256 parameters, on a thread too (`nats_request(...,
+offload_encode=True)`). A statement's operation is now read once per statement text, because a page's
+multi-row `INSERT` was tokenized in Python several times per statement. What is sent is unchanged.
+
 ### agent-tools, nats: a replica joins its call group when it can answer, and leaves it without dropping a call
 
 **Added:** `ToolServer.hold_calls()`, `open_calls()`, `leave_calls()` and `serving_calls`, plus `NatsClient.drain(sub,
