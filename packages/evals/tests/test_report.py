@@ -79,10 +79,10 @@ class TestTheToyAnalysisSerializesTwoWays:
         finding = analysis.document.findings[0]
         lines = markdown.splitlines()
 
-        # The campaign's name is the title; the declared question is quoted whole under it, then the arms;
-        # who wrote the memo is in the methods.
+        # The title is code's (what is compared and on what, the campaign's name a qualifier); the declared question is
+        # quoted whole on its own line under it, then the arms; who wrote the memo is in the methods.
         assert report.source.campaign_name == "chunk width sweep"
-        assert report.title == "chunk width sweep"
+        assert report.title == "256tok vs 1024tok · extract_invoice_fields (chunk width sweep)"
         # The title is the first line: nothing stands above it.
         top = lines.index(f"# {report.title}")
         assert top == 0

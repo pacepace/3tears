@@ -61,9 +61,10 @@ def test_the_first_screen_says_the_judge_was_truncated_and_at_which_cap(g2: Repo
     assert "v4-flash lost 10 of 12 trials, most because the judge's reply was truncated" in first
 
 
-#: The first screen's opening lines, golden: the name and what it compares as the title, then each arm named once
+#: The first screen's opening lines, golden: the title code builds (the arms, the measure, the name a qualifier; re-pinned
+#: from the name with the question it asks, since the page heads the campaign by the title), then each arm named once
 #: with the control marked, the date and the design.
-TITLE = "Kairo queue discipline: does v4-flash do better than v4.1-flash?"
+TITLE = "v4.1-flash vs v4-flash · classify (Kairo queue discipline)"
 ARMS = "v4.1-flash (control) vs v4-flash · 14 Oct 2026 · 4 cases × 3 repeats"
 SCOREBOARD_HEADER = "| Arm | Ran | Lost | Usable | Passed | Failed by check | Failed by judge | Cost per reply |"
 
