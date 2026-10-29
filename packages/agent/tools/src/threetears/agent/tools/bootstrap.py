@@ -921,6 +921,14 @@ class ToolServerBootstrap:
                 probe=lambda: server.jwks_warmed,
                 tier=HealthTier.READY,
             ),
+            # readiness: NATS routes calls to this replica. False while the pod holds its calls until it
+            # can answer them (ToolServer.hold_calls) and from the moment a shutdown leaves the call queue
+            # group, so a rolling deploy waits for a new replica to take calls before it removes an old one.
+            HealthCheck(
+                name="calls_open",
+                probe=lambda: server.serving_calls,
+                tier=HealthTier.READY,
+            ),
         ]
         self._refuse_colliding_health_checks(checks)
         checks.extend(self._extra_health_checks)

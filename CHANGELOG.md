@@ -8,6 +8,20 @@ packages (bumped in lock-step).
 
 ## v0.82.0 -- 2026-10-28
 
+### agent-tools, nats: a replica joins its call group when it can answer, and leaves it without dropping a call
+
+**Added:** `ToolServer.hold_calls()`, `open_calls()`, `leave_calls()` and `serving_calls`, plus `NatsClient.drain(sub,
+timeout=)`. A pod's replicas share one queue group on the call subject, and NATS hands each call to any member, so a
+rolling deploy refused calls at both ends. A new replica joined before it could answer and refused its share with
+`TOOL_NOT_READY` (503). An old replica stopped what its tools answer from while it was still in the group. Seen on
+cobalt dev: 54 503s in a few hundred reads while a two-replica pod rolled. A pod that calls `hold_calls()` before
+`serve()` still connects, binds its probe subject and registers, but subscribes the call subject only when it calls
+`open_calls()`; until then its siblings take every call. `leave_calls()` drains the call subscription: the server
+stops routing to the replica, and every call it had already routed there is answered (bounded, 10 s by default).
+`shutdown()` now leaves first. `unsubscribe` cancelled any call still running, so its caller got no answer. The
+tool-pod bootstrap gains a `calls_open` readiness check on `serving_calls`, so a replica that holds its calls, or has
+begun to leave, reports not ready. A pod that never holds its calls joins at once, before it registers, as before.
+
 ### iam: client-IP resolution can skip every trusted hop
 
 **Added:** `ForwardedForMode.RIGHTMOST_UNTRUSTED`, passed as `mode=` to `resolve_client_ip` and
