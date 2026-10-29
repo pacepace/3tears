@@ -389,6 +389,8 @@ def test_two_needs_differing_only_in_an_id_the_engine_mints_group() -> None:
         ("a 2:1 ratio of trials", "a 3:1 ratio of trials"),
         ("the run at 10:30 has no cost", "the run at 11:30 has no cost"),
         ("arm.a has no reading", "arm.b has no reading"),
+        ("reads settings.json twice", "reads settings.toml twice"),
+        ("reads `settings.json` twice", "reads `settings.toml` twice"),
     ],
 )
 def test_needs_differing_in_a_word_that_is_no_key_or_minted_id_stay_apart(one: str, other: str) -> None:
@@ -555,10 +557,12 @@ def test_the_analyst_tool_that_stores_gaps_is_no_read_only_tool_and_stays_idempo
         assert action is not None and action.permission == "read" and action.appends
 
 
-def test_the_read_tool_says_a_read_may_append_a_feedback_record() -> None:
+def test_the_read_tool_promises_no_append_it_never_makes() -> None:
     (spec,) = read_only_tools()
+    mounted = eval_catalogue().mount(spec)
 
-    assert "may append a bounded, idempotent feedback record" in spec.description
+    assert not any(action.appends for action in mounted.actions)
+    assert "append" not in spec.description
     assert "changes evaluation data" in spec.description
 
 

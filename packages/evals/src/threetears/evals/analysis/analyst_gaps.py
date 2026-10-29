@@ -11,7 +11,7 @@ to the same text. The normalization, in order:
    (``gap:`` and 16), a UUID, and a 32- or 64-hex digest;
 3. every figure key becomes ``_key_``: a braced key, a backticked span, or a dotted path, each only where the
    figure-key grammar reads it as a key (``figure_keys.is_figure_key``: its filters known, its path a family's or an
-   arm's); a backticked span that is no key keeps its words;
+   arm's); a backticked span that is no key keeps its words, and a file name (``settings.json``) is never one;
 4. every character that is not a letter, a digit, an underscore or whitespace becomes a space;
 5. runs of whitespace become one space, and the ends are trimmed.
 
@@ -70,6 +70,8 @@ _MINTED_ID = re.compile(
 _BRACED = re.compile(r"\{[^{}]*\}")
 _BACKTICKED = re.compile(r"`([^`]*)`")
 _DOTTED = re.compile(r"(?<![\w.:-])[^\W\d_][\w:-]*(?:\.[\w-]+)+")
+#: A name ending in one of these is a file (``settings.json``), never a key, though its first word is a family's.
+_FILE_NAME = re.compile(r"^[^\W\d_][\w-]*\.(?:json|toml|ya?ml|md|txt|csv|py|js|html?|ini|cfg|log)$")
 _NOT_A_WORD = re.compile(r"[^\w\s]")
 _SPACES = re.compile(r"\s+")
 
@@ -89,10 +91,14 @@ def _normalized_need(need: str) -> str:
     :rtype: str
     """
     text = unicodedata.normalize("NFKC", need).casefold()
+
+    def is_key(span: str) -> bool:
+        return is_figure_key(span) and not _FILE_NAME.match(span)
+
     text = _MINTED_ID.sub(_ID_MARK, text)
-    text = _BRACED.sub(lambda found: _KEY_MARK if is_figure_key(found.group(0)) else found.group(0), text)
-    text = _BACKTICKED.sub(lambda found: _KEY_MARK if is_figure_key(found.group(1)) else found.group(1), text)
-    text = _DOTTED.sub(lambda found: _KEY_MARK if is_figure_key(found.group(0)) else found.group(0), text)
+    text = _BRACED.sub(lambda found: _KEY_MARK if is_key(found.group(0)) else found.group(0), text)
+    text = _BACKTICKED.sub(lambda found: _KEY_MARK if is_key(found.group(1)) else found.group(1), text)
+    text = _DOTTED.sub(lambda found: _KEY_MARK if is_key(found.group(0)) else found.group(0), text)
     text = _NOT_A_WORD.sub(" ", text)
     return _SPACES.sub(" ", text).strip()
 

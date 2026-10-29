@@ -439,7 +439,7 @@ so it reads as the campaign declared before the runs did; what it adds (`margins
 arm) is dated now and named on the page where that is later than its aspect's first result.
 
 4. `analysis_generate` writes the campaign's report (a job; `analysis_estimate` answers its budget), and
-   `report_read` reads the campaign's page, the analyst's once one is stored and the code-only page before;
+   `report_read` reads the campaign's page, the analyst's once one is stored and the code-only page before (a `plan` analysis, or a document this version no longer reads, reads code-only with one line to regenerate it; `trials="all"` adds each failed or lost trial's evidence record after a document's page);
 5. `campaign_record` the person's call: the arm, `call_reason`, and each broken floor (`floors_overridden`, by key,
    `billing/rate_drop/*`) and missed bar (`bars_overridden`, `tone/cost_usd`) it overrides. It is refused while the
    arm leaves one unnamed, or names one the arm did not raise, and on a measurement
@@ -452,7 +452,8 @@ arm) is dated now and named on the page where that is later than its aspect's fi
 | Key | Holds |
 |---|---|
 | `kind`, `shape` | `"campaign"` and the shape's version (`CAMPAIGN_JSON_SHAPE`) |
-| `campaign_id`, `basis`, `analysis_id` | the campaign; whether an analysis wrote the page's words or code alone did; the analysis, or null |
+| `campaign_id`, `basis`, `analysis_id` | the campaign; whether an analysis wrote the page's words or code alone did; the analysis the page renders or stands in for, or null |
+| `needs_regeneration` | the one regenerate line and why, on a page standing in for an analysis this version no longer reads; null otherwise |
 | `readings` | code's readings (`CampaignReadings`): the `kind`, `alpha`, the control, and `readings` (a change's rows), `pairs` (a choice's), `measures` (a measurement's), `floors` and `bars`, each row with its interval and reason. Every float is to twelve significant figures (a declared one, like `alpha`, a bar or a margin, has fewer and is unchanged), so one campaign serves the same JSON across Python builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary |
 | `recommendation` | the analysis's `arm` (its label, for display), its `variant_key` (the key the analysis recorded for that arm, which a call's `variant_key` is compared to) and `confidence`, or null; a report that recommends no arm, or more than one, has none here |
 | `report_doc` | the stored report document, its id, and how it was written (its ending, models and cost), without its session transcripts, when the campaign's analysis is one |
@@ -690,7 +691,7 @@ wrong (`suspect`, with the keys and calls that reproduce it). `analyst_gaps_list
 the gaps since a date, grouped by kind and need, suspect ones first, each group as text ready to file as an issue.
 
 **Reading a report's transcripts.** `report_read` takes a report's id (`report_doc_id`) to read any stored version,
-and `include_sessions` to return its full session transcripts: what the analyst and each editor round were sent and
+and `include_sessions` (JSON only) to return its full session transcripts: what the analyst and each editor round were sent and
 did.
 
 ## Reporter runs: evaluating the analysis writer itself
