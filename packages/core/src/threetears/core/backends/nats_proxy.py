@@ -89,8 +89,6 @@ __all__ = [
     "GENERATION_UNAVAILABLE_ERROR_CODE",
     "LOCK_NOT_AVAILABLE_ERROR_CODE",
     "NatsProxyL3Backend",
-    "REPLICA_LEAVING_ERROR_CODE",
-    "UNANSWERED_ATTEMPTS",
 ]
 
 _logger = get_logger(__name__)
@@ -123,18 +121,19 @@ DATA_VERSION_NOT_READY_ERROR_CODE = "DATA_VERSION_NOT_READY"
 
 #: the broker's ``error_code`` for a request the hub replica running it shut down before finishing: the
 #: replica's bound on leaving its L3 doors ran out with the request still running. Whether a write took
-#: effect is unknown, so a write raises it; a read is sent again. The hub spells it the same.
-REPLICA_LEAVING_ERROR_CODE = "BROKER_REPLICA_LEAVING"
+#: effect is unknown, so a write raises it; a read is sent again. The hub answers it
+#: (``aibots.hub.broker.proxy.REPLICA_LEAVING_ERROR_CODE``); the wire value is the contract.
+_REPLICA_LEAVING_ERROR_CODE = "BROKER_REPLICA_LEAVING"
 
 #: how many times one request is sent, at most, when it may be sent again: unanswered (a hub replica
 #: that received it stopped), routed to no hub, or cut off by a leaving replica. The reply bound applies
 #: to each, so a request is bounded by this many of them.
-UNANSWERED_ATTEMPTS: Final = 3
+_UNANSWERED_ATTEMPTS: Final = 3
 
 #: the pause before a request is sent again, in seconds; doubled before each later attempt
 _UNANSWERED_BACKOFF_SECONDS: Final = 0.2
 
-#: a reply this long or longer is never a refusal, so it is never read for :data:`REPLICA_LEAVING_ERROR_CODE`
+#: a reply this long or longer is never a refusal, so it is never read for :data:`_REPLICA_LEAVING_ERROR_CODE`
 _REFUSAL_REPLY_MAX_BYTES: Final = 4096
 
 #: SQLSTATE class 23, integrity constraint violation: a deterministic refusal of this statement,
@@ -262,14 +261,14 @@ def _may_send_again(error: RequestError, *, idempotent: bool) -> bool:
 
 
 def _cut_off_by_a_leaving_replica(reply: bytes) -> bool:
-    """whether ``reply`` is the broker's :data:`REPLICA_LEAVING_ERROR_CODE` refusal.
+    """whether ``reply`` is the broker's :data:`_REPLICA_LEAVING_ERROR_CODE` refusal.
 
     :param reply: the reply's body
     :ptype reply: bytes
     :return: whether the replica running the request stopped before it finished
     :rtype: bool
     """
-    if len(reply) >= _REFUSAL_REPLY_MAX_BYTES or REPLICA_LEAVING_ERROR_CODE.encode() not in reply:
+    if len(reply) >= _REFUSAL_REPLY_MAX_BYTES or _REPLICA_LEAVING_ERROR_CODE.encode() not in reply:
         return False
     try:
         parsed = json.loads(reply)
@@ -278,7 +277,7 @@ def _cut_off_by_a_leaving_replica(reply: bytes) -> bool:
     return (
         isinstance(parsed, dict)
         and parsed.get("success") is False
-        and parsed.get("error_code") == REPLICA_LEAVING_ERROR_CODE
+        and parsed.get("error_code") == _REPLICA_LEAVING_ERROR_CODE
     )
 
 
@@ -1581,9 +1580,9 @@ class NatsProxyL3Backend:
 
         For a reader that parses the reply some other way than ``json`` (:meth:`fetch_arrow`).
 
-        A request is sent again, up to :data:`UNANSWERED_ATTEMPTS` times in all, when no hub received it
+        A request is sent again, up to :data:`_UNANSWERED_ATTEMPTS` times in all, when no hub received it
         (any request), and, when ``idempotent``, when it went unanswered within the bound or the replica
-        running it stopped first (:data:`REPLICA_LEAVING_ERROR_CODE`) -- a hub rollout, which routes the
+        running it stopped first (:data:`_REPLICA_LEAVING_ERROR_CODE`) -- a hub rollout, which routes the
         next attempt to a sibling. Each attempt is encoded afresh, so it carries a proof of its own.
 
         :param subject: NATS subject on which to publish the request
@@ -1620,13 +1619,13 @@ class NatsProxyL3Backend:
                     timeout=timedelta(seconds=nats_timeout),
                 )
             except RequestError as exc:
-                if attempt >= UNANSWERED_ATTEMPTS or not _may_send_again(exc, idempotent=idempotent):
+                if attempt >= _UNANSWERED_ATTEMPTS or not _may_send_again(exc, idempotent=idempotent):
                     raise DataLayerUnavailableError(f"NATS request failed: subject={subject}: {exc}") from exc
                 again = f"{type(exc).__name__}: {exc}"
             else:
-                if not (idempotent and attempt < UNANSWERED_ATTEMPTS and _cut_off_by_a_leaving_replica(reply)):
+                if not (idempotent and attempt < _UNANSWERED_ATTEMPTS and _cut_off_by_a_leaving_replica(reply)):
                     return reply
-                again = REPLICA_LEAVING_ERROR_CODE
+                again = _REPLICA_LEAVING_ERROR_CODE
             _logger.warning(
                 "L3 request got no answer; sending it again",
                 extra={"extra_data": {"subject": subject, "attempt": attempt, "reason": again}},

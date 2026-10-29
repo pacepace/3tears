@@ -16,16 +16,20 @@ from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-import pyarrow as pa
 import pytest
 from threetears.nats import Subject
 from threetears.nats.errors import NoRespondersError, RequestTimeoutError
 
-from threetears.core.backends import nats_proxy
-from threetears.core.backends.nats_proxy import REPLICA_LEAVING_ERROR_CODE, NatsProxyL3Backend
+from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.exceptions import DataLayerUnavailableError
 
 _TX_ID = "019d9a00-0000-7000-8000-000000000000"
+
+#: the code a leaving hub replica answers a request it could not finish with: the wire contract
+REPLICA_LEAVING_ERROR_CODE = "BROKER_REPLICA_LEAVING"
+
+#: the most times one request is sent
+ATTEMPTS = 3
 
 _LEFT = {"success": False, "error_code": REPLICA_LEAVING_ERROR_CODE, "error_message": "the replica shut down"}
 
@@ -75,18 +79,18 @@ class TestAReadIsSentAgain:
         assert len(sent) == 2
 
     async def test_a_read_unanswered_every_time_raises_after_the_last_attempt(self) -> None:
-        proxy, sent = _proxy(*(RequestTimeoutError("request timed out") for _ in range(nats_proxy.UNANSWERED_ATTEMPTS)))
+        proxy, sent = _proxy(*(RequestTimeoutError("request timed out") for _ in range(ATTEMPTS)))
 
         with pytest.raises(DataLayerUnavailableError, match="timed out"):
             await proxy.fetch("SELECT 1 AS n FROM items")
-        assert len(sent) == nats_proxy.UNANSWERED_ATTEMPTS
+        assert len(sent) == ATTEMPTS
 
     async def test_a_read_cut_off_every_time_raises_the_last_refusal(self) -> None:
-        proxy, sent = _proxy(*(_LEFT for _ in range(nats_proxy.UNANSWERED_ATTEMPTS)))
+        proxy, sent = _proxy(*(_LEFT for _ in range(ATTEMPTS)))
 
         with pytest.raises(DataLayerUnavailableError, match=REPLICA_LEAVING_ERROR_CODE):
             await proxy.fetch("SELECT 1 AS n FROM items")
-        assert len(sent) == nats_proxy.UNANSWERED_ATTEMPTS
+        assert len(sent) == ATTEMPTS
 
 
 class TestAWriteIsSentAgainOnlyWhenItRanNowhere:
@@ -126,6 +130,7 @@ class TestAWriteIsSentAgainOnlyWhenItRanNowhere:
                 if read == "fetch":
                     await proxy.fetch(query, 1)
                 else:
+                    pa = pytest.importorskip("pyarrow")
                     await proxy.fetch_arrow(query, 1, types={"id": pa.int64()})
             assert len(sent) == 1, f"{read} sent a statement that may write again"
 
