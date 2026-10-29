@@ -585,13 +585,58 @@ def _main_clause_index(tokens: list[str]) -> int:
 _DETECTED_STATEMENTS = 64
 
 
+#: what keeps a statement off :func:`_plain_operation`: a literal, a dollar-quoted text or a comment, inside which
+#: a keyword or a mark is not code
+_NOT_PLAIN_RE = re.compile(r"'|--|/\*|\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$")
+
+#: a quoted identifier, unclosed to the end: one name, never a keyword
+_QUOTED_NAME_RE = re.compile(r'"(?:""|[^"])*"?')
+
+#: a plain statement's first token, when it is a word
+_FIRST_WORD_RE = re.compile(r"\s*([A-Za-z_][A-Za-z_0-9$]*)?")
+
+#: ``ON CONFLICT`` as two code words; what precedes it is read in :func:`_plain_operation`
+_ON_CONFLICT_RE = re.compile(r"ON\s+CONFLICT(?![A-Za-z_0-9$])", re.IGNORECASE)
+
+
+def _plain_operation(query: str) -> str | None:
+    """:func:`_detect_operation` for a plain statement, in a few C-level searches: None for any other.
+
+    A page's multi-row ``INSERT`` is thousands of placeholders, and each page's text differs by its rows, so no
+    cache holds it; read a character at a time in Python it held the event loop on every page (cobalt dev,
+    2026-10-29: 58 of 70 stalls of a reports pod rebuilding its copy). A statement with no literal, dollar-quoted
+    text or comment has only words, names and marks, so its main verb is its first word, and ``ON CONFLICT`` is
+    code wherever it stands as two words. A ``WITH`` list, or an ``ON`` whose word begins before it, is left to the
+    tokens.
+
+    :param query: SQL query string
+    :ptype query: str
+    :return: the label; None when the statement is not plain
+    :rtype: str | None
+    """
+    result: str | None = None
+    if _NOT_PLAIN_RE.search(query) is None:
+        code = _QUOTED_NAME_RE.sub('"', query)
+        head = _FIRST_WORD_RE.match(code)
+        verb = "" if head is None or head.group(1) is None else head.group(1).upper()
+        if verb != "WITH":
+            result = _MAIN_VERBS.get(verb, "select")
+            if result == "insert":
+                found = [match.start() for match in _ON_CONFLICT_RE.finditer(code)]
+                # an ON whose word began before it ("xON") is no keyword: such a statement goes to the tokens
+                joined = [start for start in found if start and (code[start - 1].isalnum() or code[start - 1] in "_$")]
+                result = None if joined else "upsert" if found else "insert"
+    return result
+
+
 @functools.lru_cache(maxsize=_DETECTED_STATEMENTS)
 def _detect_operation(query: str) -> str:
     """label a statement with its SQL operation, from the verb of its main clause.
 
-    Remembered per statement text: the label is a function of the text alone, and tokenizing a page's
-    multi-row ``INSERT`` in Python, several times a statement, held the event loop for tens of
-    milliseconds a page.
+    A plain statement (a page's generated SQL) is labelled in a few searches (:func:`_plain_operation`); any other
+    is read as tokens, and remembered per statement text: the label is a function of the text alone, and tokenizing a
+    page's multi-row ``INSERT`` in Python, several times a statement, held the event loop for tens of milliseconds a
+    page.
 
     The label tells the broker how to run the statement -- a ``select`` is fetched
     for rows, anything else executed for a count -- and names it in logs. It is the
@@ -603,6 +648,18 @@ def _detect_operation(query: str) -> str:
     :ptype query: str
     :return: operation type (select, insert, update, delete, upsert); ``select``
         when the main clause opens with no verb this backend labels
+    :rtype: str
+    """
+    plain = _plain_operation(query)
+    return plain if plain is not None else _operation_of_tokens(query)
+
+
+def _operation_of_tokens(query: str) -> str:
+    """:func:`_detect_operation` read from the statement's tokens (:func:`_code_tokens`): exact for any statement.
+
+    :param query: SQL query string
+    :ptype query: str
+    :return: the label
     :rtype: str
     """
     tokens = _code_tokens(query)
