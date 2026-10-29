@@ -22,6 +22,7 @@ none changes nothing.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 import re
@@ -206,6 +207,23 @@ def _raise_for_failed_reply(
     if error_code == LOCK_NOT_AVAILABLE_ERROR_CODE and sqlstate == _LOCK_NOT_AVAILABLE_SQLSTATE:
         raise asyncpg.PostgresError.new({"C": sqlstate, "M": str(response.get("error_message", ""))})
     raise DataLayerUnavailableError(message)
+
+
+#: a statement binding more parameters than this (a multi-row write's page) has its request built and encoded
+#: on a thread: each parameter is converted in Python and the request passes through JSON several times, tens of
+#: milliseconds for a page that on the event loop held every call the process answers
+_OFFLOAD_PARAMS = 256
+
+
+def _offloaded(params: Sequence[Any]) -> bool:
+    """whether a statement's request is built and encoded on a thread rather than the event loop.
+
+    :param params: the statement's parameters
+    :ptype params: Sequence[Any]
+    :return: whether it binds more than :data:`_OFFLOAD_PARAMS`
+    :rtype: bool
+    """
+    return len(params) > _OFFLOAD_PARAMS
 
 
 def _encode_request(payload: dict[str, Any]) -> bytes:
@@ -563,8 +581,17 @@ def _main_clause_index(tokens: list[str]) -> int:
     return index
 
 
+#: the statements whose operation is remembered: a bulk write sends one statement text a page after a page
+_DETECTED_STATEMENTS = 64
+
+
+@functools.lru_cache(maxsize=_DETECTED_STATEMENTS)
 def _detect_operation(query: str) -> str:
     """label a statement with its SQL operation, from the verb of its main clause.
+
+    Remembered per statement text: the label is a function of the text alone, and tokenizing a page's
+    multi-row ``INSERT`` in Python, several times a statement, held the event loop for tens of
+    milliseconds a page.
 
     The label tells the broker how to run the statement -- a ``select`` is fetched
     for rows, anything else executed for a count -- and names it in logs. It is the
@@ -1366,9 +1393,16 @@ class NatsProxyL3Backend:
         :rtype: dict[str, Any]
         :raises DataLayerUnavailableError: if broker returns error
         """
-        payload = self._query_payload(query, params, operation, namespace, customer_scope=customer_scope)
+        offload = _offloaded(params)
+        payload = (
+            await asyncio.to_thread(
+                self._query_payload, query, params, operation, namespace, customer_scope=customer_scope
+            )
+            if offload
+            else self._query_payload(query, params, operation, namespace, customer_scope=customer_scope)
+        )
         subject = Subjects.l3_query(namespace=self.ns).path
-        response = await self.nats_request(subject, payload)
+        response = await self.nats_request(subject, payload, offload_encode=offload)
 
         if not response.get("success", False):
             self.raise_for_failed_reply(response, "L3 query")
@@ -1385,6 +1419,7 @@ class NatsProxyL3Backend:
         payload: dict[str, Any],
         *,
         timeout_s: float | None = None,
+        offload_encode: bool = False,
     ) -> dict[str, Any]:
         """send raw NATS request and parse JSON response.
 
@@ -1406,12 +1441,15 @@ class NatsProxyL3Backend:
             past one statement's bound (:meth:`load_files`); the backend's ``timeout_ms`` and two
             seconds' grace when None
         :ptype timeout_s: float | None
+        :param offload_encode: encode the request on a thread, for a large one (a page of rows); see
+            :meth:`nats_request_bytes`
+        :ptype offload_encode: bool
         :return: parsed JSON response dict from broker
         :rtype: dict[str, Any]
         :raises DataLayerUnavailableError: if NATS request times out,
             the broker returns malformed JSON, or the client is closed
         """
-        reply = await self.nats_request_bytes(subject, payload, timeout_s=timeout_s)
+        reply = await self.nats_request_bytes(subject, payload, timeout_s=timeout_s, offload_encode=offload_encode)
         try:
             result: dict[str, Any] = json.loads(reply)
         except ValueError as exc:
@@ -1425,6 +1463,7 @@ class NatsProxyL3Backend:
         payload: dict[str, Any],
         *,
         timeout_s: float | None = None,
+        offload_encode: bool = False,
     ) -> bytes:
         """send a raw NATS request and answer the reply's bytes, undecoded: :meth:`nats_request` before its parse.
 
@@ -1436,11 +1475,19 @@ class NatsProxyL3Backend:
         :ptype payload: dict[str, Any]
         :param timeout_s: how long to wait for the reply, in seconds; as :meth:`nats_request`'s
         :ptype timeout_s: float | None
+        :param offload_encode: encode the request on a thread rather than the event loop: a page of a
+            thousand rows is several JSON passes and a proof (:meth:`encode_request`), which on the loop
+            held every call the process answers for tens of milliseconds a page
+        :ptype offload_encode: bool
         :return: the reply's body
         :rtype: bytes
         :raises DataLayerUnavailableError: if the NATS request times out or the client is closed
         """
-        payload_bytes = self.encode_request(subject, payload)
+        payload_bytes = (
+            await asyncio.to_thread(self.encode_request, subject, payload)
+            if offload_encode
+            else self.encode_request(subject, payload)
+        )
         nats_timeout = timeout_s if timeout_s is not None else (self.timeout_ms / 1000) + 2
 
         try:
@@ -1795,9 +1842,12 @@ class _ProxyConnection:
                 "conn.transaction(namespace=...) and bound on the broker "
                 "for the lifetime of the session",
             )
-        payload = self._tx_payload(query, params)
+        offload = _offloaded(params)
+        payload = (
+            await asyncio.to_thread(self._tx_payload, query, params) if offload else self._tx_payload(query, params)
+        )
         subject = Subjects.l3_tx("execute", namespace=self._backend.ns).path
-        response = await self._backend.nats_request(subject, payload)
+        response = await self._backend.nats_request(subject, payload, offload_encode=offload)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.execute")
         return _format_execute_tag(
@@ -1840,9 +1890,12 @@ class _ProxyConnection:
                 "conn.transaction(namespace=...) and bound on the broker "
                 "for the lifetime of the session",
             )
-        payload = self._tx_payload(query, params)
+        offload = _offloaded(params)
+        payload = (
+            await asyncio.to_thread(self._tx_payload, query, params) if offload else self._tx_payload(query, params)
+        )
         subject = Subjects.l3_tx("fetchrow", namespace=self._backend.ns).path
-        response = await self._backend.nats_request(subject, payload)
+        response = await self._backend.nats_request(subject, payload, offload_encode=offload)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.fetchrow")
         row = response.get("row")
@@ -1929,9 +1982,12 @@ class _ProxyConnection:
                 "conn.transaction(namespace=...) and bound on the broker "
                 "for the lifetime of the session",
             )
-        payload = self._tx_payload(query, params)
+        offload = _offloaded(params)
+        payload = (
+            await asyncio.to_thread(self._tx_payload, query, params) if offload else self._tx_payload(query, params)
+        )
         subject = Subjects.l3_tx("fetch", namespace=self._backend.ns).path
-        response = await self._backend.nats_request(subject, payload)
+        response = await self._backend.nats_request(subject, payload, offload_encode=offload)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.fetch")
         raw_rows: list[dict[str, Any]] = response.get("rows", [])
@@ -2025,9 +2081,10 @@ class _ProxyConnection:
                 "schema_name= is not allowed on the L3 rail; the namespace is declared at "
                 "conn.transaction(namespace=...) and bound on the broker for the session"
             )
-        payload = self._copy_payload(table_name, columns, records)
+        # a page of rows: its values converted and the request encoded on a thread, never the loop
+        payload = await asyncio.to_thread(self._copy_payload, table_name, columns, records)
         subject = Subjects.l3_tx("copy", namespace=self._backend.ns).path
-        response = await self._backend.nats_request(subject, payload)
+        response = await self._backend.nats_request(subject, payload, offload_encode=True)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.copy")
         row_count = response.get("row_count")
