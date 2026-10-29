@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261029-9c77dc447b89",
+  "input": "r4",
+  "input_digest": "96d0986057f2da9a09c4bccebf74c51e8c2731a2aab3e4e833b09505ff1fd5a8",
+  "plan_digest": "d498467bf2c8d963892e1be9786570ad741afe21197354da9cbce8c398afa360",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+    "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "The headline is a trade naming both sides, with the loss on Stays in character against the cost saving, matching headline_kind trade, the table's lean option and the forest's f64 drop.",
+      "quote": "Trade 6.1 points on Stays in character for -$0.63 per 1,000 replies in savings.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The first sentence restates the headline's trade (cost saving against the 6.1-point drop), and the second poses a vague value question instead of naming what would change the answer.",
+      "quote": "f64 (A) saves 30% on cost while clearing all guardrails, but drops 6.1 points (-7.3 to -4.9) on Stays in character.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "fail",
+      "reason": "The flag discloses the missing exchange rate but never says what it weakens or that the measured results survive it.",
+      "quote": "No prior rule sets the allowable dollar savings per point lost on Stays in character, leaving product leadership to weigh the cost tradeoff.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The first section headline's guardrail clause has no direction ('meeting or breaching'), and a forest of paired differences cannot show threshold breaches.",
+      "quote": "All candidates drop character fidelity while meeting or breaching guardrails",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Everything above Full results uses reader names for arms, aspects and strata, and shows no measure keys, hashes or run ids.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "In tradeoff mode, Where the answer flips names the flip point, $0.103 per point per 1,000 replies, which is $0.63 divided by 6.1.",
+      "quote": "f64 (A) is favored when a point on Stays in character is worth less than $0.103 per 1,000 replies; above that, Production (P) remains preferable.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure goes by several names: Stays in character is also called character fidelity, character consistency and candidate consistency.",
+      "quote": "The decision rests on whether character consistency losses in extended turns justify the monthly budget reduction.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline, lede and decision block say what to do (lean f64 if cost comes first), why (a 30% saving with guardrails clear) and the main risk (persona loss in extended turns), with no section needed.",
+      "quote": "Lean toward f64 (A) if monthly infrastructure cost reduction takes precedence over character fidelity in conversations exceeding five turns.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "What would settle it names a concrete user study on long conversations, and from context its decisive direction is clear: harm to engagement favors Production.",
+      "quote": "A user-preference study measuring churn or satisfaction in conversations beyond five turns would settle whether persona degradation affects engagement.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence form is high and the plan has no confidence clauses.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "The saving is rendered as a negative figure, so 'cuts cost by -$0.63' and '-$0.63 ... in savings' state the opposite of the $0.63 reduction they claim.",
+      "quote": "f64 (A) cuts cost by -$0.63 per 1,000 replies (-$7,560 per month)",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-29T20:49:04.855366+00:00"
+}

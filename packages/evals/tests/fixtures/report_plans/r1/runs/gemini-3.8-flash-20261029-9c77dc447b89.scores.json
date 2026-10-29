@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261029-9c77dc447b89",
+  "input": "r1",
+  "input_digest": "671ed1ea10d5bb21b6b16d65fae9e43fe0f1f8508eee021e54fad733cbe000f9",
+  "plan_digest": "77ffba13af84a2472e56afd95a562db9a0894e5bb5f92f5380e4eef669556e7a",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+    "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with instruction and reason, naming the options table's recommended arm, and the gate matrix confirms Atlas-M alone clears every gate.",
+      "quote": "Deploy Atlas-M (B). It is the only model that clears every quality gate and latency budget.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The lede restates the headline's all-gates claim and describes the rivals, but says nothing about what would change the answer.",
+      "quote": "Atlas-M (B) clears all eleven declared gates across tasks while operating well inside the latency budget. Cheaper models fail on multi-turn troubleshooting and research quality.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "There is no flag, and the single caveat, the zero margin on Resolves the issue, appears once in Watch.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "pass",
+      "reason": "The section headline is a finding with a subject and a direction, and the gate matrix under it shows that finding.",
+      "quote": "Atlas-M (B) is the sole candidate to pass every gate across all tasks.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results, every arm, task, measure and gate uses its reader name, and no internal id or key appears.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin under the call, Atlas-M's zero gap on Resolves the issue, and the sample that would settle it.",
+      "quote": "Atlas-M (B) meets Resolves the issue in Troubleshooting (multi-turn) at 90% against the 90% gate, leaving zero margin.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One set of gates goes by several names: quality gates, quality floors and accuracy thresholds, and latency budget, latency limits and p95 latency limit.",
+      "quote": "Green cells show passing criteria; Atlas-L (A) breaches latency limits while Brisk-S (C) and Open-70B (D) miss accuracy thresholds.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline says what to do and why, and the decision block, which comes before the options table, states the main risk of zero margin on troubleshooting resolution.",
+      "quote": "Adopt Atlas-M (B) for the concierge chat assistant. It satisfies every quality floor and p95 latency limit across tasks.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "Next names a concrete experiment, a troubleshooting benchmark with double the cases, and the context makes the deciding outcome clear: resolution falling below the floor would overturn the call.",
+      "quote": "Run an expanded troubleshooting benchmark on Atlas-M (B) with double the case count to ensure issue resolution stays above the floor.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence is high and has no clauses.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Each figure in the prose measures what its sentence claims: Atlas-M's own 90% against the 90% gate, four of five tasks over the latency budget, eleven gates, and 200 ratings at 86% agreement.",
+      "quote": "Atlas-L (A) breaches the latency budget in four of five tasks",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-29T20:49:03.054590+00:00"
+}
