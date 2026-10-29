@@ -239,8 +239,8 @@ class CampaignLine(EvalBaseModel):
             "named by their short names (else labels). The first that holds: `<arm> broke a floor` (or `<N> "
             "candidates broke a floor`), a broken floor leading as the page's warnings do; `<arm> missed a bar` (or "
             "`<N> arms missed a bar`); then by kind. A change: `<arm> improved` (or `<N> candidates improved`) where "
-            "a candidate is shown better, else `No candidate improved` where any row is separated (shown worse, or "
-            "no worse than the margin), else `Not separated`. A choice: `<arm> ahead` where one arm is shown ahead of "
+            "a candidate is shown better, else `No candidate improved`, whether the candidates are "
+            "equal, not separated or worse. A choice: `<arm> ahead` where one arm is shown ahead of "
             "another and behind none, else `Arms differ` where any pair separates, else `Not separated`. A "
             "measurement: `Measured`. `No readings yet` where the readings hold no row of their kind. None with no "
             "reported analysis, or one this build cannot read."
@@ -655,9 +655,7 @@ def _outcome(readings: CampaignReadings, arms: Sequence[CampaignArm]) -> str:
         return count(
             named([row.arm for row in better], {row.arm: row.arm_label for row in better}), "candidates", "improved"
         )
-    if any(row.reading != "unclear" for row in readings.readings):
-        return "No candidate improved"
-    return "Not separated"
+    return "No candidate improved"
 
 
 def _recommended(analysis: EvalAnalysis, campaign: EvalCampaign) -> str:

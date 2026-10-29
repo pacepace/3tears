@@ -14,7 +14,7 @@ Contracts held here (``threetears.evals.ops.campaigns_list``, ``CampaignLine``):
 - **verdict_short** is code's: ``Keep``/``Adopt`` and the arm from the recorded call, else from the report's
   recommendation, ``No call`` for a report recommending none, None with neither;
 - **outcome_short** is code's, read off the report's frozen readings and distinct from the decision: a broken floor
-  leads, then a missed bar, then by kind (a change: which candidate improved, else whether anything separated; a
+  leads, then a missed bar, then by kind (a change: which candidate improved, else none did; a
   choice: which arm leads; a measurement: measured), `No readings yet` for no rows, None with no report;
 - **the title** is code's: the arms (declared, else the runs' candidate models; judges counted), control first, then
   the aspects, then the name in parentheses, counting past three arms and two aspects;
@@ -385,7 +385,7 @@ def _outcomes_read(host: EvalHost, campaign_id: str) -> None:
         return _line(campaigns_list(host, TOYHOST_SCOPE).campaigns, campaign_id).outcome_short
 
     assert read("change") == "No readings yet"
-    assert read("change", readings=[_change_row(aspect, *two, "unclear")]) == "Not separated"
+    assert read("change", readings=[_change_row(aspect, *two, "unclear")]) == "No candidate improved"
     assert read("change", readings=[_change_row(aspect, *two, "worse")]) == "No candidate improved"
     assert read("change", readings=[_change_row(aspect, *two, "within_margin")]) == "No candidate improved"
     assert read("change", readings=[_change_row(aspect, *two, "better")]) == "fast improved"
