@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a new entity keeps the row it was made with until it is saved
+
+**Fixed:** a new entity's working row lived only in L1: `BaseEntity.__init__` wrote it there and kept no copy, and
+`save_entity` reads it back first. A caller that held a new entity across an await (a check, an audit snapshot) lost
+it to any eviction of the key: `to_dict()` raised `L1 cache miss in to_dict()`, or a field set afterwards was saved
+without the rest of the row. The hub's group member add failed that way on cobalt dev during a 24-member
+`group apply`. The entity now keeps the row it was made with and answers from it when L1 misses; L1 still answers
+first, and `mark_clean` drops the copy, so a clean entity with no held row and no L1 row still raises.
+
 ## v0.82.0 -- 2026-10-28
 
 ### core: a bulk write's CPU work runs off the event loop
