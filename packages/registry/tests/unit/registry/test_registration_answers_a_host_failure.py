@@ -123,13 +123,13 @@ class _AdmitsTheAgent(_UnreadableStore):
 class _UnwritableCatalog(ToolCatalog):
     """a real catalog whose durable write fails, as its KV bucket does when unreachable."""
 
-    async def register(self, entry: CatalogEntry) -> None:
+    async def register(self, entry: CatalogEntry) -> bool:
         """raise the KV failure a persist raises.
 
         :param entry: the entry offered
         :ptype entry: CatalogEntry
         :return: never returns
-        :rtype: None
+        :rtype: bool
         :raises KvError: always
         """
         del entry

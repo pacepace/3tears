@@ -17,6 +17,7 @@ catalog but its NATS subscription has not yet propagated.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -316,7 +317,13 @@ class RegistrationHandler:
         DQ-B7 queue-group note: registration is intentionally NOT in a
         queue group -- every registry instance must observe every
         tool-pod manifest so the catalog stays consistent across
-        replicas. de-duplication happens inside :class:`ToolCatalog`.
+        replicas: each routes from its own in-memory catalog, and the
+        bucket is read only at a warm start, so a replica that heard a
+        share of the manifests would hold a share of the copies. what
+        a queue group would have saved -- every replica rewriting the
+        bucket on every heartbeat -- is gone instead: :class:`ToolCatalog`
+        writes an entry only when its content changes, so an idle
+        platform writes nothing from any replica.
 
         :param nc: connected canonical NATS wrapper client
         :ptype nc: NatsClient
@@ -476,7 +483,7 @@ class RegistrationHandler:
             return
 
         try:
-            registered = await self._register_tools(
+            registered, changed = await self._register_tools(
                 manifest.pod_id,
                 verdict.admitted,
                 verdict.standing,
@@ -514,7 +521,10 @@ class RegistrationHandler:
                 refused_tools=verdict.refused,
             ),
         )
-        log.info(
+        # INFO only when the registration changed the catalog: an unchanged re-registration is the
+        # pod's heartbeat, and logging each one was a line per pod per heartbeat per replica.
+        log.log(
+            logging.INFO if changed else logging.DEBUG,
             "registration completed",
             extra={
                 "extra_data": {
@@ -522,6 +532,7 @@ class RegistrationHandler:
                     "tools_count": len(registered),
                     "tools_refused": len(verdict.refused),
                     "publisher_verified": verdict.standing.verified,
+                    "platform_shared": verdict.standing.platform_shared,
                 }
             },
         )
@@ -618,7 +629,16 @@ class RegistrationHandler:
                 error_code=RefusalCode.NO_TOOLS_ADMITTED,
             )
 
-        log.info(
+        # INFO only for a pod offering a copy this catalog does not hold yet: a pod re-registers on every
+        # heartbeat, and logging each re-admission was a line per pod per heartbeat per replica. what a
+        # re-registration changed is logged by the catalog, and its outcome by "registration completed".
+        new_copy = False
+        for tool in admitted:
+            held = self._catalog.get(f"{tool.name}@{tool.version}")
+            if held is None or held.get_endpoint(manifest.pod_id) is None:
+                new_copy = True
+        log.log(
+            logging.INFO if new_copy else logging.DEBUG,
             "tool pod registration authorized",
             extra={
                 "extra_data": {
@@ -984,7 +1004,7 @@ class RegistrationHandler:
         standing: PublisherStanding,
         *,
         proves_delegation: bool = False,
-    ) -> list[str]:
+    ) -> tuple[list[str], bool]:
         """register each admitted tool as this pod's copy, carrying the definition it announced.
 
         creates catalog entry for each tool with a single endpoint
@@ -1006,10 +1026,12 @@ class RegistrationHandler:
         :param proves_delegation: whether the manifest declared that the pod proves a call's
             delegated token; honoured only for a verified pod whose key the registry knows
         :ptype proves_delegation: bool
-        :return: list of full_name values registered
-        :rtype: list[str]
+        :return: the full_name values registered, and whether the registration changed the catalog:
+            a copy new to it, or one whose persisted content it changed
+        :rtype: tuple[list[str], bool]
         """
         registered: list[str] = []
+        changed = False
         needs_probe = False
         now = datetime.now(UTC)
         for tool in tools:
@@ -1053,13 +1075,15 @@ class RegistrationHandler:
                 endpoints=[endpoint],
                 date_registered=now,
             )
-            await self._catalog.register(entry)
+            if await self._catalog.register(entry):
+                changed = True
             registered.append(full_name)
 
         if needs_probe:
+            changed = True
             await self._probe_and_promote(pod_id)
 
-        result = registered
+        result = (registered, changed)
         return result
 
     async def _probe_and_promote(self, pod_id: str) -> None:
