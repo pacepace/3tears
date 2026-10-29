@@ -693,8 +693,11 @@ branches on what kind of eval it is. The full design is [ANALYST.md](../../../do
    as a reader will, with facts code computed for it to weigh, and scores seven items from 0 to 2: the first screen,
    a coherent story, honest emphasis, sound elision, confounds handled, actionable next steps, and evidence that fits
    its claims. Code adds the scores. A review passes with no 0, at least 11 of 14 and no must-fix finding. A review
-   that passes with no finding open clears the report; otherwise, a should-fix finding included, the analyst
-   revises, at most twice.
+   that passes with no blocking finding open clears the report; otherwise the analyst revises, at most twice. In the
+   first review every finding blocks. In a later one, each finding says which earlier finding it continues, or that
+   it is new, and lists the earlier ones now resolved; every must-fix blocks, and so does every earlier finding still
+   open, while a should-fix first raised in that review does not: it is listed open on the page, and the report is
+   finished.
 6. **Store.** The document is stored with its snapshot, how the writing ended, the editor's findings left open, the
    cost of each role, round and turn, and each session's transcript.
 

@@ -6,6 +6,30 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: after round 1, only a carried-over finding or a must_fix sends a report back; the editor marks what each finding continues
+
+**Changed:** owner ruling 2026-10-29 (option 3), after the re-recorded acceptance runs showed each later review
+raising new should_fix findings, so four of seven ended drafts. Round 1 is unchanged: every finding sends a revision.
+From round 2, a finding blocks clearance when it is a `must_fix`, new or old, or when it continues a finding an
+earlier review raised, of any severity; a `should_fix` first raised in that review blocks nothing. It is stored with
+the report and listed open on the page, and alone it neither sends a revision nor makes the report a draft. A report
+is a draft only when a blocking finding is open at the end (`Review.blocking`; `Review.clears` is the passing scores
+and no blocking finding; `Review.passes` is unchanged).
+
+**Added:** code tells a carried finding from a new one by structure, never by comparing text. Each finding gets a
+stable id where it is first raised (`f<round>.<n>`) and keeps it while it stays open: `ReportFinding.id` and
+`ReportFinding.since` (the round it was first raised; `""` and `0` on a finding stored before). The editor is given
+the previous review's findings by id, and from round 2 marks each of its findings with the id it continues or
+`"new"` (`continues`), and lists the earlier ids now resolved (`resolved`). Every earlier finding is accounted for
+exactly once, continued or resolved, or the answer is asked for again naming what is missing. `Review.resolved` holds
+them, and the stored review records `resolved` and `blocking` (by id). The editor's rubric explains the marking and
+what blocks; the revision request marks each blocking finding. `EvalReportDoc.draft` is every ending but `stored`,
+plus a `stored` document carrying a finding with no id (stored before this). The skill's digest moves with it.
+
+**Fixtures:** the hand-scripted `hand-revise` recording's round-2 review lists its round-1 finding as resolved
+(edited as data). The seven `prototype5` recordings predate the marking: each round-2 review there names no
+`continues`, so the replays drift until they are recorded again.
+
 ### evals: a campaign listing carries what a list page shows, a title code builds and a short verdict; a campaign's name is a capped qualifier that moves no fingerprint
 
 **Added:** `CampaignLine` (`campaigns_list`, and every operation returning a campaign's line) carries `created_at`,

@@ -453,12 +453,24 @@ def report_doc_json_schema() -> dict[str, Any]:
 class ReportFinding(_Doc):
     """One review finding the editor left unresolved, which the page prints in Method.
 
-    ``severity`` ``must_fix`` fails a review; ``should_fix`` does not.
+    ``severity`` ``must_fix`` always blocks a review from clearing. Whether a ``should_fix`` blocks depends on when it
+    was raised (owner ruling 2026-10-29): in round 1 every finding blocks; after it, one carried over from an earlier
+    review blocks and one first raised in this review does not. ``id`` and ``since`` say which: code gives each finding
+    its id where it is first raised, and a later review that marks a finding as continuing an earlier one keeps that
+    finding's id and round. A finding stored before the ruling carries neither (``""`` and ``0``).
     """
 
     claim: str = Field(description="The claim it is about, by id; empty for the page as a whole.")
     severity: Literal["must_fix", "should_fix"]
     finding: ModelProse = Field(min_length=1, description="What the editor found.")
+    id: str = Field(
+        default="",
+        description="Code's stable id for it (`f<round>.<n>`, the round it was first raised), which a later review "
+        "names to say it continues; empty for a finding stored before findings had ids.",
+    )
+    since: int = Field(
+        default=0, ge=0, description="The review round it was first raised in; 0 for one stored before it was kept."
+    )
 
 
 def new_report_doc_id() -> str:
@@ -526,10 +538,10 @@ class EvalReportDoc(EvalDocumentModel):
         description="The document, as `report-doc/1` JSON (its prose names figures by key)."
     )
     ending: Literal["stored", "stored_with_findings", "over_budget"] = Field(
-        description="How the writing loop ended: `stored`, a review passed with no finding open; "
+        description="How the writing loop ended: `stored`, a review passed with no blocking finding open; "
         "`stored_with_findings`, the revisions ran out before a review cleared it (its findings, if any, are kept); "
         "`over_budget`, the budget ran out and the last draft the invariants passed, reviewed at least once, was kept. "
-        "Every ending but `stored` keeps a draft (`draft`)."
+        "Every ending but `stored` keeps a draft (`draft`); a `stored` one may carry findings that block nothing."
     )
     findings: list[VerbatimJsonObject] = Field(
         default_factory=list,
@@ -562,16 +574,18 @@ class EvalReportDoc(EvalDocumentModel):
 
     @property
     def draft(self) -> bool:
-        """Whether the document is a draft: its editor's review did not clear it, so its page must say so first.
+        """Whether the document is a draft: its editor's review left a blocking finding open, so its page says so first.
 
-        Code decides it from how the loop ended and the review's structured findings, never from prose (owner ruling
-        2026-10-29): every ending but ``stored`` keeps a draft, and so does a ``stored`` document carrying a finding,
-        which a build before the ruling stored with its ``should_fix`` findings open.
+        Code decides it from how the loop ended and the review's structured findings, never from prose (owner rulings
+        2026-10-29): every ending but ``stored`` keeps a draft, since only a review with no blocking finding open ends
+        the loop ``stored``. A ``stored`` document may carry findings a later review first raised as ``should_fix``,
+        which block nothing and leave it finished; one carrying a finding with no id was stored by a build before
+        findings had ids, which stored its ``should_fix`` findings open, and is a draft.
 
-        :return: True for a draft; False for a finished document, stored after a review left no finding open.
+        :return: True for a draft; False for a finished document.
         :rtype: bool
         """
-        return self.ending != "stored" or bool(self.findings)
+        return self.ending != "stored" or any(not finding.get("id") for finding in self.findings)
 
     @field_validator("doc_type")
     @classmethod
@@ -598,7 +612,8 @@ class EvalReportDoc(EvalDocumentModel):
 
         :raises ValueError: A finding does not validate as a :class:`ReportFinding`.
         """
-        return [ReportFinding.model_validate(finding).model_dump(mode="json") for finding in v]
+        # Defaults left out: a finding stored before findings had ids (no ``id``, no ``since``) reads back as stored.
+        return [ReportFinding.model_validate(finding).model_dump(mode="json", exclude_defaults=True) for finding in v]
 
     @model_validator(mode="after")
     def check_findings(self) -> Self:

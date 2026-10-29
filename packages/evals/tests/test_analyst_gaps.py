@@ -274,7 +274,7 @@ async def test_an_unresolved_key_that_bounced_a_draft_and_a_low_score_are_notice
     model = FakeTurnModel(
         analyst=FakeToolTurnClient(reply(submitted(_with_bad_key())), reply(submitted()), reply(submitted())),
         editor_1=_editor(reply(review(findings=[MUST_FIX]))),
-        editor_2=_editor(reply(review(scores=(2, 2, 2, 2, 2, 2, 2)))),
+        editor_2=_editor(reply(review(scores=(2, 2, 2, 2, 2, 2, 2), resolved=["f1.1"]))),
     )
 
     result = await written(model, host=host)
@@ -301,7 +301,7 @@ async def test_a_gap_touching_a_claim_a_must_fix_finding_names_is_linked_to_it()
     model = FakeTurnModel(
         analyst=_analyst(reply(submitted()), reply(submitted())),
         editor_1=_editor(reply(review(scores=(2, 2, 2, 2, 2, 2, 2), findings=[MUST_FIX]))),
-        editor_2=_editor(reply(review(scores=(2, 2, 2, 2, 2, 2, 2)))),
+        editor_2=_editor(reply(review(scores=(2, 2, 2, 2, 2, 2, 2), resolved=["f1.1"]))),
     )
 
     await written(model, host=host)
