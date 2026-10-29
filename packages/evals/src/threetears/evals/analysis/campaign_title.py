@@ -12,9 +12,10 @@ resolved (a frozen campaign bundle's: the control first, then the derived candid
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.style import arm_display_name
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm, printed_aspect_name
 
@@ -46,7 +47,13 @@ def campaign_title(
     return f"{arms} · {_title_measure(campaign)} ({campaign.name})"
 
 
-def declared_title(name: str, arms: Sequence[CampaignArm], aspects: Sequence[tuple[str, str | None]]) -> str:
+def declared_title(
+    name: str,
+    arms: Sequence[CampaignArm],
+    aspects: Sequence[tuple[str, str | None]],
+    *,
+    given: Collection[str] | None = None,
+) -> str:
     """The title over arms and aspects already resolved, as a frozen campaign bundle holds them.
 
     The same title :func:`campaign_title` builds for a campaign declaring those arms: the arms are the bundle's
@@ -60,10 +67,14 @@ def declared_title(name: str, arms: Sequence[CampaignArm], aspects: Sequence[tup
     :param aspects: Each aspect's label and its declared short name (``None`` where it declares none), in the
         campaign's order.
     :ptype aspects: Sequence[tuple[str, str | None]]
+    :param given: The labels a person gave (the campaign's declared arms'); every other arm's label code computed,
+        and is printed as every page prints it (:func:`~threetears.evals.analysis.style.arm_display_name`). None
+        reads every label as given.
+    :ptype given: Collection[str] | None
     :return: The title.
     :rtype: str
     """
-    control, candidates = _declared_names(arms)
+    control, candidates = _declared_names(arms, given)
     return named_title(name, control=control, candidates=candidates, aspects=aspects)
 
 
@@ -104,10 +115,20 @@ def report_input_title(report_input: ReportInput) -> str:
     )
 
 
-def _declared_names(arms: Sequence[CampaignArm]) -> tuple[list[str], list[str]]:
-    control = [arm.short_name or arm.label for arm in arms if arm.role == "control"]
-    candidates = [arm.short_name or arm.label for arm in arms if arm.role != "control"]
+def _declared_names(arms: Sequence[CampaignArm], given: Collection[str] | None = None) -> tuple[list[str], list[str]]:
+    control = [_printed(arm, given) for arm in arms if arm.role == "control"]
+    candidates = [_printed(arm, given) for arm in arms if arm.role != "control"]
     return control, candidates
+
+
+def _printed(arm: CampaignArm, given: Collection[str] | None) -> str:
+    """An arm as a title names it: its declared short name, its label as given, or its computed label as pages print
+    it."""
+    if arm.short_name:
+        return arm.short_name
+    if given is None or arm.label in given or not arm.levers:
+        return arm.label
+    return arm_display_name(arm.label, arm.levers)
 
 
 def _title_arms(campaign: EvalCampaign, candidate_models: Sequence[str], *, variants: int, judges: bool) -> str:

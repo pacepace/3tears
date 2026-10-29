@@ -289,7 +289,10 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, tr
         arm_short_names=declared_arm_names(arms),
         trials=trials,
         title=declared_title(
-            campaign_name or f"Campaign {analysis.campaign_id}", arms, [(bundle.aspect, bundle.short_name)]
+            campaign_name or f"Campaign {analysis.campaign_id}",
+            arms,
+            [(bundle.aspect, bundle.short_name)],
+            given={arm.label for arm in analysis.design_snapshot.arms},
         ),
     )
 

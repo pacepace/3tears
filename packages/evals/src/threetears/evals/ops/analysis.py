@@ -1071,7 +1071,10 @@ def _resolved_title(analysis: EvalAnalysis, campaign: EvalCampaign) -> str:
         # NOSILENT: the line's report says it needs regeneration; the title is then read off the campaign's runs.
         return ""
     return declared_title(
-        campaign.name, frozen.arms, [(aspect.label, aspect.short_name) for aspect in campaign.aspects]
+        campaign.name,
+        frozen.arms,
+        [(aspect.label, aspect.short_name) for aspect in campaign.aspects],
+        given={arm.label for arm in frozen.declaration.arms},
     )
 
 
@@ -1088,7 +1091,12 @@ def _analysis_title(host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampai
             campaign if campaign is not None else host.storage.load_campaign(analysis.campaign_id, analysis.scope_id)
         )
         return _stored_title(host, stored) if stored is not None else f"Campaign {analysis.campaign_id}"
-    return declared_title(frozen.name, frozen.arms, [(bundle.aspect, bundle.short_name) for bundle in frozen.aspects])
+    return declared_title(
+        frozen.name,
+        frozen.arms,
+        [(bundle.aspect, bundle.short_name) for bundle in frozen.aspects],
+        given={arm.label for arm in frozen.declaration.arms},
+    )
 
 
 def _analysis_line(host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampaign | None = None) -> AnalysisLine:

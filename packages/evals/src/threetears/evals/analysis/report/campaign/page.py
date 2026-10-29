@@ -219,7 +219,7 @@ def _title(campaign: EvalCampaign, readings: CampaignReadings, arms: Sequence[Ca
     name = campaign.name or f"Campaign {campaign.id}"
     aspects = [(aspect.label, aspect.short_name) for aspect in campaign.aspects]
     if arms is not None:
-        return declared_title(name, arms, aspects)
+        return declared_title(name, arms, aspects, given={arm.label for arm in campaign.arms})
     return named_title(
         name,
         control=[readings.control_label] if readings.control is not None else [],
