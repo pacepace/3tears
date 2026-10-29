@@ -57,7 +57,13 @@ from threetears.core.exceptions import (
 )
 from threetears.core.namespaces import PLURAL_PREFIX_AGENT, build_namespace_name
 from threetears.core.security.delegated_token import L3_DOOR
-from threetears.core.security.door_request import DOOR_TOKEN_FIELD, DoorCredential, PopKey, l3_request_op
+from threetears.core.security.door_request import (
+    DOOR_PROOF_FIELD,
+    DOOR_TOKEN_FIELD,
+    DoorCredential,
+    PopKey,
+    l3_request_op,
+)
 
 # Subject comes from its own module, and NatsClient only under TYPE_CHECKING.
 # `threetears.core.collections` MUST import with nats-py absent -- that is the
@@ -215,6 +221,37 @@ def _encode_request(payload: dict[str, Any]) -> bytes:
     :rtype: bytes
     """
     return json.dumps(payload, default=json_default).encode("utf-8")
+
+
+def _with_proof(encoded: bytes, body: Mapping[str, Any], sent: Mapping[str, Any]) -> bytes:
+    """the wire bytes of ``sent``: ``body``'s encoding ``encoded``, with the proof ``sent`` adds spliced on its end.
+
+    :meth:`DoorCredential.present` answers ``body`` with its token kept in place and the proof
+    appended as the last key, so ``_encode_request(sent)`` is ``encoded`` up to its closing brace,
+    then the proof field. Splicing it on skips encoding the whole body a second time -- a page of a
+    thousand rows each request. Any other shape of ``sent`` is encoded whole, as before.
+
+    :param encoded: ``_encode_request`` of the request, the bytes ``body`` was parsed from
+    :ptype encoded: bytes
+    :param body: ``encoded`` parsed back to JSON values
+    :ptype body: Mapping[str, Any]
+    :param sent: what the credential presents for ``body``
+    :ptype sent: Mapping[str, Any]
+    :return: the bytes ``_encode_request(sent)`` answers
+    :rtype: bytes
+    """
+    splices = (
+        DOOR_PROOF_FIELD not in body
+        and list(sent) == [*body, DOOR_PROOF_FIELD]
+        and sent.get(DOOR_TOKEN_FIELD) == body.get(DOOR_TOKEN_FIELD)
+        and all(sent[key] is value for key, value in body.items() if key != DOOR_TOKEN_FIELD)
+        and encoded.endswith(b"}")
+    )
+    if not splices:
+        return _encode_request(dict(sent))
+    # the field encoded as ``_encode_request`` encodes a one-key object, braces dropped
+    field = _encode_request({DOOR_PROOF_FIELD: sent[DOOR_PROOF_FIELD]})[1:-1]
+    return encoded[:-1] + b", " + field + b"}"
 
 
 def _deserialize_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -1466,7 +1503,8 @@ class NatsProxyL3Backend:
                 # the operation is the subject's own part (``query``, ``tx.commit``): two subjects that
                 # take one body shape never share a proof
                 op = l3_request_op(subject)
-                encoded = _encode_request(credential.present(json.loads(encoded), door=L3_DOOR, op=op))
+                body = json.loads(encoded)
+                encoded = _with_proof(encoded, body, credential.present(body, door=L3_DOOR, op=op))
         return encoded
 
     def acquire(self) -> "_ProxyAcquireCM":

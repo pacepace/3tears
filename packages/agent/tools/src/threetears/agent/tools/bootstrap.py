@@ -51,6 +51,7 @@ import asyncio
 import os
 import signal
 from collections.abc import Awaitable, Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -60,6 +61,7 @@ from threetears.core.collections import bind_collections_bucket
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.coordination.replay_anchor import CollectionReplayAnchor
+from threetears.core.utils.cpu_quota import bound_native_threads, default_executor_workers, effective_cpu_count
 from threetears.epoch import EpochGenerationReader
 from threetears.nats import Principal, kv_key_scope_for
 from threetears.observe import (
@@ -618,8 +620,9 @@ class ToolServerBootstrap:
             permanently wrong, or :data:`EX_SOFTWARE` when shutdown failed
         """
         configure_logging(level=self._log_level)
+        executor_workers = self.size_to_cpu_quota()
         try:
-            asyncio.run(self.run_async())
+            asyncio.run(self._run_on_executor(executor_workers))
         except ToolPodConfigError as exc:
             # ONE record, through the repo logger, so this reaches the observability
             # pipeline as a queryable event rather than as container stderr nobody
@@ -642,6 +645,51 @@ class ToolServerBootstrap:
             # already logged once at ERROR where it happened, naming the cause. The status is the
             # one thing left to say, and a traceback here would only repeat the record.
             raise SystemExit(EX_SOFTWARE) from None
+
+    def size_to_cpu_quota(self) -> int:
+        """size this process's native pools to the CPUs its cgroup quota allows, once, at boot.
+
+        A pod's ``os.cpu_count()`` is its node's cores (32 on a large node), not its CPU limit, and
+        pyarrow and the asyncio default executor size themselves from it. 32 compute threads on a
+        4-CPU quota spend the quota early in each 100 ms period, and the kernel then freezes every
+        thread in the pod -- the event loop with them -- for the rest of it. pyarrow's pools are
+        sized here (:func:`~threetears.core.utils.cpu_quota.bound_native_threads`); the executor
+        size is returned for :meth:`run` to install on its loop.
+
+        :return: the asyncio default executor's ``max_workers``
+        :rtype: int
+        """
+        cpus = effective_cpu_count()
+        arrow_sized = bound_native_threads(cpus)
+        executor_workers = default_executor_workers(cpus)
+        log.info(
+            f"{self._service_name} sized to its CPU quota",
+            extra={
+                "extra_data": {
+                    "service": self._service_name,
+                    "effective_cpus": cpus,
+                    "machine_cpus": os.cpu_count(),
+                    "executor_workers": executor_workers,
+                    "arrow_sized": arrow_sized,
+                }
+            },
+        )
+        return executor_workers
+
+    async def _run_on_executor(self, executor_workers: int) -> None:
+        """:meth:`run_async` with the loop's default executor bounded to ``executor_workers`` threads.
+
+        ``asyncio.run`` shuts the default executor down when the loop closes, this one included.
+
+        :param executor_workers: the executor's ``max_workers`` (:meth:`size_to_cpu_quota`)
+        :ptype executor_workers: int
+        :return: None
+        :rtype: None
+        """
+        asyncio.get_running_loop().set_default_executor(
+            ThreadPoolExecutor(max_workers=executor_workers, thread_name_prefix="asyncio")
+        )
+        await self.run_async()
 
     async def run_async(self) -> None:
         """async driver: build server, register tools, install signals, serve.

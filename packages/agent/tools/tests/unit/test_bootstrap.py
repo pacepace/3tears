@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlalchemy import Column, MetaData, String, Table
 
+import threetears.agent.tools.bootstrap as bootstrap_module
 from threetears.agent.tools.bootstrap import (
     EX_CONFIG,
     EX_SOFTWARE,
@@ -1149,3 +1150,39 @@ class TestAToolPodExitsWhenItsOwnerIsGone:
         with pytest.raises(ToolPodShutdownError):
             await asyncio.wait_for(bootstrap.run_async(), timeout=5.0)
         assert server.shutdown_called is True
+
+
+class TestBootSizesTheProcessToItsCpuQuota:
+    """a tool pod's boot sizes pyarrow and the asyncio default executor from its cgroup quota, not the node's cores.
+
+    32 threads on a 4-CPU quota spend the quota early in each period and the kernel freezes the whole pod,
+    event loop included, for the rest of it: the reports tool pod's 50-100 ms stalls.
+    """
+
+    def test_run_sizes_pyarrow_and_the_default_executor_from_the_quota(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pyarrow = pytest.importorskip("pyarrow")
+        sizes: list[int | None] = []
+        real_executor = bootstrap_module.ThreadPoolExecutor
+
+        def _recording_executor(*args: Any, **kwargs: Any) -> Any:
+            sizes.append(kwargs.get("max_workers"))
+            return real_executor(*args, **kwargs)
+
+        monkeypatch.setattr(bootstrap_module, "effective_cpu_count", lambda: 3)
+        monkeypatch.setattr(bootstrap_module, "ThreadPoolExecutor", _recording_executor)
+        before = (pyarrow.cpu_count(), pyarrow.io_thread_count())
+        server = _FakeToolServer()
+        server.serve_event.set()
+        try:
+            with caplog.at_level(logging.INFO, logger=bootstrap_module.__name__):
+                _SucceedingBootstrap(server).run()
+            assert (pyarrow.cpu_count(), pyarrow.io_thread_count()) == (3, 6)
+        finally:
+            pyarrow.set_cpu_count(before[0])
+            pyarrow.set_io_thread_count(before[1])
+        assert sizes == [7]
+        sized = [r for r in caplog.records if r.getMessage() == "test-pod sized to its CPU quota"]
+        assert len(sized) == 1
+        assert sized[0].extra_data["effective_cpus"] == 3  # type: ignore[attr-defined]
