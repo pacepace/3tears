@@ -56,10 +56,10 @@ async def g2_ruled() -> tuple[Result, Report]:
 async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     lines = report_markdown(report).splitlines()
-    # The title is the campaign's name (no floor is broken on four cases, so none warns under the verdict); the
-    # question declared before the run is quoted whole on its own line under it, the contract the verdict reads; then
+    # The title heads the campaign by the title code builds (what it compares and on what, its name a qualifier; no
+    # floor is broken on four cases, so none warns under the verdict); the question declared before the run is quoted whole on its own line under it, the contract the verdict reads; then
     # the subhead says what the question need not: each arm with its version. Then the verdict, which no floor decides.
-    assert lines[0] == "# G2: can the cheaper model replace production?"
+    assert lines[0] == "# production vs cheaper candidate · classify (G2: can the cheaper model replace production?)"
     assert lines[1] == f'"{G2_QUESTION}"'
     assert lines[3] == (
         "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026 · "

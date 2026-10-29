@@ -1860,6 +1860,7 @@ def _campaign_page(
         report_doc_id=analysis.report_doc_id if analysis is not None else None,
         unread_analysis_id=unread_analysis_id,
         unread_report_doc_id=unread_report_doc_id,
+        arms=bundle.arms,
     )
     if analysis is None:
         return page

@@ -46,6 +46,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+from threetears.evals.analysis.campaign_title import report_input_title
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
@@ -437,7 +438,7 @@ def build(
         for place, claim in enumerate(doc.claims, start=1)
     ]
     page = DocPage(
-        title=report_input.meta.campaign,
+        title=report_input_title(report_input),
         masthead=_masthead(reader),
         headline=reader.written(doc.headline, "headline"),
         lede=reader.written(doc.lede, "lede"),

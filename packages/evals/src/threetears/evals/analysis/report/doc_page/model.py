@@ -133,7 +133,9 @@ class DocFinding(EvalDocumentModel):
 class DocPage(EvalDocumentModel):
     """A campaign page built from its report document: every part, already resolved, in the page's order."""
 
-    title: str = Field(description="The campaign's name, the page's title.")
+    title: str = Field(
+        description="What the campaign compares and on what, with its name as a qualifier: the page's title."
+    )
     masthead: PageMasthead
     degraded: str = Field(
         default="", description="Code's one note where part of a stored document no longer reads; empty where all does."

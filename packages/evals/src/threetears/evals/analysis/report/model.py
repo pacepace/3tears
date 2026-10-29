@@ -1,7 +1,7 @@
 """The ``Report`` — the one page every door into a campaign's report renders, and the evidence it was computed from.
 
-**One page, result first.** A report is an ordered list of blocks in its sections: the first screen (the title — the
-campaign's name —, the question declared quoted, each criterion set after the readings it judges, and the subhead under
+**One page, result first.** A report is an ordered list of blocks in its sections: the first screen (the title — what the
+campaign compares, its name a qualifier —, the question declared quoted, each criterion set after the readings it judges, and the subhead under
 it, the arms line, the verdict line, the scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
 qualification is a step down, in the sections), the floors clause by clause where any is declared, what it
 means (the memo's findings, each a table code built and one sentence, then the contrasts against the control), the
@@ -133,8 +133,8 @@ class Report(EvalDocumentModel):
     title: str = Field(
         min_length=1,
         description=(
-            "The title line, a name: the campaign's, with what it compares where no question was declared "
-            "(`invoices: does v2 do better than v1?`)."
+            "The title line: what the campaign compares and on what, with its name as a qualifier, built by code "
+            "(`v1 vs v2 · pass rate (invoices)`); never a call, a recommendation or a verdict."
         ),
     )
     finding_count: int = Field(ge=0, description="How many findings the memo holds.")
@@ -360,7 +360,10 @@ class CampaignReport(EvalDocumentModel):
     """
 
     basis: ReportBasis = Field(description="`analysis` with a memo over the campaign, `code_only` without one.")
-    title: str = Field(min_length=1, description="The title line: the campaign's name.")
+    title: str = Field(
+        min_length=1,
+        description="The title line: what the campaign compares and on what, with its name as a qualifier.",
+    )
     campaign_id: str = Field(min_length=1, description="The campaign.")
     campaign_name: str | None = Field(default=None, description="The campaign's name, where known.")
     scope_id: str = Field(min_length=1, description="The scope the campaign lives in.")

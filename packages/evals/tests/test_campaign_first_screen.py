@@ -51,12 +51,15 @@ _SCORECARD: dict[str, tuple[str, str, str]] = {
     "measurement": ("measures", "**alpha by aspect**", 'data-table="scorecard"'),
 }
 
+#: The title a change over billing and tone heads its page with: what it compares and on what, its name a qualifier.
+_TITLE = "production vs v2 · billing, tone (support queue)"
+
 #: The line a change's first screen warns of billing's broken floor in.
 _FLOOR_WARNING = "Adopting v2 overrides the 10-point floor it breaks on billing."
 
 #: A change's first screen in Markdown, in order, each marker by the chunk that lays its part out.
 _CHANGE_MARKDOWN: list[tuple[str, str]] = [
-    ("03", "# support queue"),
+    ("03", f"# {_TITLE}"),
     ("03", f'"{QUESTION}"'),
     ("memo", SUMMARY),
     ("memo", f"**Recommended:** {CONTROL_LABEL} (high confidence)"),
@@ -84,7 +87,7 @@ async def test_both_aspects_readings_are_in_the_scorecard_after_the_broken_floor
         ("tone", CANDIDATE_LABEL, "shown better"),
     ]
     first = first_screen_markdown(page)
-    assert first.startswith("# support queue\n")
+    assert page.title == _TITLE and first.startswith(f"# {_TITLE}\n")
     assert first.index(f'"{QUESTION}"') < first.index(f"**{_FLOOR_WARNING}**")
     # Code's readings follow what warns, wherever the scorecard lays them out.
     markdown, html = campaign_report_markdown(page), campaign_report_html(page)

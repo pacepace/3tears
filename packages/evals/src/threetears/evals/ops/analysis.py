@@ -57,6 +57,7 @@ from threetears.evals.analysis.service import (
     report_doc_report,
     running_analysis_attempt,
 )
+from threetears.evals.analysis.campaign_title import TITLE_ARMS, TITLE_ASPECTS, campaign_title, declared_title
 from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
 from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.schema.base import EvalBaseModel, VerbatimText
@@ -66,7 +67,6 @@ from threetears.evals.kernel.declaration import (
     CampaignCall,
     Margin,
     OverriddenBar,
-    printed_aspect_name,
 )
 from threetears.evals.kernel.judge_cases import JUDGE_KIND
 from threetears.evals.kernel.campaign import (
@@ -122,10 +122,6 @@ log = get_logger(__name__)
 #: builds (:func:`campaign_title`), as short as any declared short name. A name stored longer before the cap still
 #: reads and lists; only a write is held to it.
 CAMPAIGN_NAME_CHARS = DECLARED_NAME_CHARS
-
-#: Past this many arms a title counts the candidates rather than naming them; past this many aspects, it counts them.
-TITLE_ARMS = 3
-TITLE_ASPECTS = 2
 
 #: What a name over the cap is told to do instead.
 CAMPAIGN_NAME_REMEDY = (
@@ -402,6 +398,13 @@ class AnalysisLine(EvalBaseModel):
 
     id: str
     campaign_id: str
+    title: str = Field(
+        description=(
+            "What the analysis compares, in a few words, as the report's first line heads it: `<arms> · <measure> "
+            "(<campaign name>)`, built by code from the campaign bundle frozen with the analysis, never stored and "
+            "never carrying a call, a recommendation or a verdict."
+        )
+    )
     basis: AnalysisBasis = Field(
         description=(
             "What wrote the analysis: `memo` (the memo writer; findings count the memo's findings), `plan` (the "
@@ -653,7 +656,7 @@ def _with_report(host: EvalHost, line: CampaignLine, campaign: EvalCampaign) -> 
     analysis = host.storage.load_reported_analysis(campaign.id, campaign.scope_id)
     if analysis is None:
         return line
-    listed = _analysis_line(host, analysis)
+    listed = _analysis_line(host, analysis, campaign)
     why = listed.needs_regeneration
     if why is None and set(analysis.observation_refs) != set(campaign.run_ids):
         why = "the campaign holds other runs than the report was written over; generate it again (analysis_generate)"
@@ -683,71 +686,27 @@ def _with_report(host: EvalHost, line: CampaignLine, campaign: EvalCampaign) -> 
     )
 
 
-def _listed(host: EvalHost, campaign: EvalCampaign, every: list[EvalCampaign] | None = None) -> CampaignLine:
-    """A campaign's whole line: its title, declared fields, report, and what it feeds among ``every`` campaign of its
-    scope (read here when not given). Its runs are read only for a campaign that declares no arm, whose title names
-    their candidate models."""
-    every = every if every is not None else list_campaigns(host.storage, campaign.scope_id, archived=None)
+def _stored_title(host: EvalHost, campaign: EvalCampaign) -> str:
+    """A stored campaign's title (:func:`campaign_title`); its runs are read only for a campaign that declares no arm,
+    whose title names their candidate models."""
     runs = [] if campaign.arms else host.storage.load_eval_runs(campaign.run_ids, campaign.scope_id)
-    title = campaign_title(
+    return campaign_title(
         campaign,
         candidate_models=sorted({run.candidate_model for run in runs}),
         variants=len({json.dumps(run.variant_levers, sort_keys=True, default=str) for run in runs}),
         judges=any(run.candidate_kind == JUDGE_KIND for run in runs),
     )
+
+
+def _listed(host: EvalHost, campaign: EvalCampaign, every: list[EvalCampaign] | None = None) -> CampaignLine:
+    """A campaign's whole line: its title, declared fields, report, and what it feeds among ``every`` campaign of its
+    scope (read here when not given). Its runs are read only for a campaign that declares no arm, whose title names
+    their candidate models."""
+    every = every if every is not None else list_campaigns(host.storage, campaign.scope_id, archived=None)
+    title = _stored_title(host, campaign)
     return _with_report(host, _campaign_line(campaign), campaign).model_copy(
         update={"feeds": _feeds(campaign, every), "title": title}
     )
-
-
-def campaign_title(
-    campaign: EvalCampaign, *, candidate_models: Sequence[str] = (), variants: int = 0, judges: bool = False
-) -> str:
-    """What a campaign compares, in a few words: ``<arms> · <measure> (<name>)`` (:attr:`CampaignLine.title`).
-
-    :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
-    :param candidate_models: The distinct candidate models of its runs, read for a campaign that declares no arm.
-    :ptype candidate_models: Sequence[str]
-    :param variants: How many distinct variants its runs ran (their recorded lever maps), read beside the models: a
-        sweep of one model over another lever is titled by the model and its variant count.
-    :ptype variants: int
-    :param judges: Whether its runs are judge runs, whose arms are judges.
-    :ptype judges: bool
-    :return: The title.
-    :rtype: str
-    """
-    arms = _title_arms(campaign, candidate_models, variants=variants, judges=judges)
-    return f"{arms} · {_title_measure(campaign)} ({campaign.name})"
-
-
-def _title_arms(campaign: EvalCampaign, candidate_models: Sequence[str], *, variants: int, judges: bool) -> str:
-    if campaign.arms:
-        control = [arm.short_name or arm.label for arm in campaign.arms if arm.role == "control"]
-        candidates = [arm.short_name or arm.label for arm in campaign.arms if arm.role != "control"]
-    else:
-        control, candidates = [], [model.rsplit("/", 1)[-1] for model in candidate_models]
-    if judges and not campaign.arms:
-        return (
-            f"{len(candidates)} judge{'s' if len(candidates) != 1 else ''}" if len(candidates) != 1 else candidates[0]
-        )
-    if not campaign.arms and variants > len(candidates):
-        if len(candidates) == 1:
-            return f"{candidates[0]}, {variants} variants"
-        return f"{variants} variants"
-    named = [*control, *candidates]
-    if not named:
-        return "no arms"
-    if len(named) <= TITLE_ARMS:
-        return " vs ".join(named)
-    if control:
-        return f"{control[0]} vs {len(candidates)} candidates"
-    return f"{len(named)} arms"
-
-
-def _title_measure(campaign: EvalCampaign) -> str:
-    names = [printed_aspect_name(aspect.label, aspect.short_name) for aspect in campaign.aspects]
-    return ", ".join(names) if len(names) <= TITLE_ASPECTS else f"{len(names)} aspects"
 
 
 def _feeds(campaign: EvalCampaign, campaigns: list[EvalCampaign]) -> list[str]:
@@ -1009,7 +968,23 @@ def campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archive
     return _listed(host, set_campaign_archived(host.storage, campaign_id, scope_id, archived=archived))
 
 
-def _analysis_line(host: EvalHost, analysis: EvalAnalysis) -> AnalysisLine:
+def _analysis_title(host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampaign | None) -> str:
+    """The title the analysis is listed by: built from the campaign bundle frozen with it, so the line reads what the
+    analysis was written over. Where that bundle is of a shape this build cannot read, the stored campaign's title,
+    else the campaign's id."""
+    try:
+        frozen = analysis_campaign_bundle(analysis)
+    except RefusedInput:
+        # NOSILENT: the line says so in needs_regeneration (analysis_verdict refuses the same bundle); the title is
+        # read from the campaign as it stands, or from its id where the campaign is gone, and is no claim of the bundle.
+        stored = (
+            campaign if campaign is not None else host.storage.load_campaign(analysis.campaign_id, analysis.scope_id)
+        )
+        return _stored_title(host, stored) if stored is not None else f"Campaign {analysis.campaign_id}"
+    return declared_title(frozen.name, frozen.arms, [(bundle.aspect, bundle.short_name) for bundle in frozen.aspects])
+
+
+def _analysis_line(host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampaign | None = None) -> AnalysisLine:
     # One analysis frozen over a bundle this build cannot read, or whose plan or document no longer reads, is listed as
     # needing regeneration, never allowed to refuse the listing of every other one. Every plan, and a document that no
     # longer reads, is one the report read renders code-only: its line leads with the one regenerate line.
@@ -1041,6 +1016,7 @@ def _analysis_line(host: EvalHost, analysis: EvalAnalysis) -> AnalysisLine:
     return AnalysisLine(
         id=analysis.id,
         campaign_id=analysis.campaign_id,
+        title=_analysis_title(host, analysis, campaign),
         basis=analysis.basis,
         report_plan_id=analysis.report_plan_id,
         report_doc_id=analysis.report_doc_id,

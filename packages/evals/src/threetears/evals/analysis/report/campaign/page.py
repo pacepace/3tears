@@ -25,6 +25,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from threetears.evals.analysis.campaign_readings import CampaignReadings
+from threetears.evals.analysis.campaign_title import declared_title, named_title
 from threetears.evals.analysis.depth_reading import PAIRING_METHOD
 from threetears.evals.analysis.report.campaign.aggregate import aggregate_blocks
 from threetears.evals.analysis.report.campaign.depth_blocks import depth_blocks, depth_provenance_blocks
@@ -64,7 +65,7 @@ from threetears.evals.analysis.report.model import (
 )
 from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
 from threetears.evals.kernel.campaign import EvalCampaign, FindingResolution
-from threetears.evals.kernel.declaration import CampaignCall
+from threetears.evals.kernel.declaration import CampaignArm, CampaignCall
 from threetears.evals.kernel.errors import RefusedInput
 
 __all__ = ["build_campaign_report"]
@@ -83,6 +84,7 @@ def build_campaign_report(
     report_doc_id: str | None = None,
     unread_analysis_id: str | None = None,
     unread_report_doc_id: str | None = None,
+    arms: Sequence[CampaignArm] | None = None,
 ) -> CampaignReport:
     """Lay a campaign out as its page: under the title the question, the writer's summary and recommendation, what
     warns and the person's call; then the Scorecard, the findings and next steps, Design & provenance, then one fold
@@ -122,6 +124,9 @@ def build_campaign_report(
         code-only page stands in for: the first screen says so in the same line
         (:data:`~threetears.evals.analysis.report.campaign.memo_blocks.NO_LONGER_READS`); None for any other page.
     :ptype unread_report_doc_id: str | None
+    :param arms: The campaign's arms as a reader reads them (``CampaignBundle.arms``: the control first, then the derived
+        candidates), which the title names; None names the arms its readings label.
+    :ptype arms: Sequence[CampaignArm] | None
     :return: The page, ``basis="analysis"`` with a memo, ``code_only`` without one.
     :rtype: CampaignReport
     :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, the readings
@@ -193,7 +198,7 @@ def build_campaign_report(
         blocks.append(DisclosureBlock(section="methods", source="comparisons", text=PAIRING_METHOD))
     return CampaignReport(
         basis="analysis" if memo is not None else "code_only",
-        title=campaign.name or f"Campaign {campaign.id}",
+        title=_title(campaign, readings, arms),
         campaign_id=campaign.id,
         campaign_name=campaign.name or None,
         scope_id=campaign.scope_id,
@@ -205,6 +210,21 @@ def build_campaign_report(
         recommendation=recommendation,
         recommended_variant_key=recommended_variant_key if recommendation is not None else None,
         unread_analysis_id=unread_analysis_id,
+    )
+
+
+def _title(campaign: EvalCampaign, readings: CampaignReadings, arms: Sequence[CampaignArm] | None) -> str:
+    """The campaign's title (:func:`~threetears.evals.analysis.campaign_title.named_title`): over ``arms`` where given,
+    else over the arms the readings name (the control first), each by its label."""
+    name = campaign.name or f"Campaign {campaign.id}"
+    aspects = [(aspect.label, aspect.short_name) for aspect in campaign.aspects]
+    if arms is not None:
+        return declared_title(name, arms, aspects)
+    return named_title(
+        name,
+        control=[readings.control_label] if readings.control is not None else [],
+        candidates=[label for key, label in readings.arm_labels().items() if key != readings.control],
+        aspects=aspects,
     )
 
 

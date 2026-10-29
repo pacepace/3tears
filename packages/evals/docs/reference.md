@@ -1123,7 +1123,7 @@ A campaign's report: one page, the bundle it was computed from, and the typed ve
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `basis` | `ReportBasis` | required | `analysis` over a generated memo, `code_only` over the evidence alone. |
-| `title` | `str` | required | The title line, a name: the campaign's, with what it compares where no question was declared (`invoices: does v2 do better than v1?`). |
+| `title` | `str` | required | The title line: what the campaign compares and on what, with its name as a qualifier, built by code (`v1 vs v2 · pass rate (invoices)`); never a call, a recommendation or a verdict. |
 | `finding_count` | `int` | required | How many findings the memo holds. |
 | `source` | `ReportSource` | required | What this is a report of. |
 | `blocks` | `list[ReportBlock]` | required | The report, in reading order. |
