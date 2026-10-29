@@ -129,6 +129,7 @@ if TYPE_CHECKING:
     from threetears.nats.object_store import NatsObjectStore
 
 __all__ = [
+    "CHUNK_READS_AT_ONCE",
     "AppendedScope",
     "ScopeChange",
     "ScopedSnapshot",
@@ -185,6 +186,12 @@ _DEFAULT_L3_CONCURRENCY: Final = 4
 #: how many scopes a load holds at once: fetched from L2 beside each other and the one being committed.
 #: What a load holds is these scopes' decoded chunks, never every scope's
 _DEFAULT_L2_CONCURRENCY: Final = 16
+
+#: the chunks one snapshot reads from the object store at once, whatever the scopes it fetches ahead: each read
+#: is the server pushing the chunk's messages to this connection, and a load fetching 16 scopes ahead had more
+#: pending than the server holds for a client (MaxPending, 64 MiB), so the server dropped the pod as a slow consumer
+#: (cobalt dev, 2026-10-29)
+CHUNK_READS_AT_ONCE: Final = 4
 
 #: how many scopes' fetched chunks a replica holds at once to commit them as one move; a burst of more is
 #: committed in batches of this many
@@ -1472,6 +1479,8 @@ class ScopedSnapshot:
         self._settled = settled
         self._ensure_buckets = ensure_buckets
         self._l2_concurrency = l2_concurrency
+        #: the chunk reads in flight (:data:`CHUNK_READS_AT_ONCE`), across every scope fetched ahead
+        self._chunk_reads = asyncio.Semaphore(CHUNK_READS_AT_ONCE)
         self._apply_batch = max(1, apply_batch)
         self._l3_concurrency = l3_concurrency
         self._claim_ttl = claim_ttl
@@ -2179,7 +2188,8 @@ class ScopedSnapshot:
         :raises _Lost: when it is gone, unreadable, or holds another count
         """
         try:
-            data = await self._store.get(name)
+            async with self._chunk_reads:
+                data = await self._store.get(name)
         except ObjectNotFoundError as exc:
             raise _Lost(f"chunk {name} is gone") from exc
         except ObjectStoreError as exc:
