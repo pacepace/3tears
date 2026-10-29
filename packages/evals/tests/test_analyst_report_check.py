@@ -427,7 +427,9 @@ def _served(tool: MountedTool) -> list[str]:
 #: analyses_list's needs_regeneration came to say report_read renders a memo over another shape's bundle code-only.
 #: The editor's moved again when the weakest margin's keys gained `weakest.interval`, the interval its worst case is
 #: read on (the figure-key grammar it serves).
-_EVALS_BYTES = "49c225e153e027aedd04fd75226e892785af730a0d6f84202003f6b3d6e0b638"
+#: The evals tool moved again when the campaign name's cap came into its parameters' schema (maxLength) and the
+#: campaign line's report gained draft.
+_EVALS_BYTES = "1e68c866224e976f52cd14198beff388fb1fed04b7a74248d34b72ae59cd9fa0"
 _EDITOR_BYTES = "60cf01b3676e6dda92c5897678d6012062417ae05c8b3f8bdf7a21615cd51aa3"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's

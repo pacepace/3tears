@@ -200,6 +200,8 @@ class ArmDefinition(EvalBaseModel):
     )
     short_name: str | None = Field(
         default=None,
+        # Stated in the schema for a host's form; the validator below enforces it.
+        json_schema_extra={"maxLength": DECLARED_NAME_CHARS},
         description=(
             f"What a page prints for the arm where space is tight, at most {DECLARED_NAME_CHARS} characters, and no "
             "other arm's label or short name. Omitted, the page computes one from what differs from the control."
@@ -229,6 +231,8 @@ class AspectDefinition(EvalBaseModel):
     )
     short_name: str | None = Field(
         default=None,
+        # Stated in the schema for a host's form; the validator below enforces it.
+        json_schema_extra={"maxLength": DECLARED_NAME_CHARS},
         description=(
             f"What a page prints for the aspect in place of its label, at most {DECLARED_NAME_CHARS} characters, "
             "and no other aspect's label or short name. Omitted, the label is printed whole."
