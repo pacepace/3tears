@@ -64,7 +64,7 @@ from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.testing import RecordedTurns
 
 #: The accepted runs: Kairo round 2 and the six misfits, each a recording replayed here.
-_RUNS = Path(__file__).parent / "fixtures" / "report_docs" / "prototype4"
+_RUNS = Path(__file__).parent / "fixtures" / "report_docs" / "prototype5"
 
 #: The members the campaign's JSON carried before the report document's, which every page's JSON keeps.
 _CAMPAIGN_MEMBERS = {"kind", "shape", "campaign_id", "basis", "analysis_id", "recommendation", "readings", "call"}

@@ -26,7 +26,7 @@ repository root, as a file or as ``python -m packages.evals.tests.fixtures.repor
 snapshot, recorded, the one route here that reads a key::
 
     ANTHROPIC_API_KEY=... uv run python packages/evals/tests/fixtures/report_plans/analyst_cli.py write \\
-        --snapshot-of kairo --model <claude model id> --budget-usd 20 --out report_docs/prototype4/kairo \\
+        --snapshot-of kairo --model <claude model id> --budget-usd 20 --out report_docs/prototype5/kairo \\
         [--withhold kairo-round2.md] [--effort high]
 
 It reads ``ANTHROPIC_API_KEY`` and nothing else, records every turn of every session into ``<out>/turns.jsonl``, and

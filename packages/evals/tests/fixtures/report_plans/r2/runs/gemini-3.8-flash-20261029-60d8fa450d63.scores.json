@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261029-60d8fa450d63",
+  "input": "r2",
+  "input_digest": "3b825233f6120f9deb81f63c4a9c2849c6ba2d388a1db0be780cbe5395add19d",
+  "plan_digest": "a5a55f6f7229281950480c1ecb511775f3479132f4fb2f704c6e2bdf13de26ff",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+    "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "The headline is a decision (deploy J) with a reason (meets both gates at about a tenth of F's cost); it matches the table's recommended row, and the gate scatter shows J as the only arm clearing both gates.",
+      "quote": "Deploy Brisk-S · reasoning low · 1 retry (J): it meets both gates while cutting cost by an order of magnitude against Atlas-M · reasoning high · 1 retry (F).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The second sentence's account of what would change the answer is false: F fails the 600 ms latency gate at 2551 ms, so a floor above 97.1% leaves no arm passing both gates, and on pass rate alone three other arms besides F would also clear it.",
+      "quote": "If the pass rate floor increases past 97.1%, only higher-cost Atlas-M · reasoning high · 1 retry (F) survives.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "There is no flag and no report-wide disclosure; the multi-hop risk appears once as a Watch item and once as a section finding, which is a finding, not a repeated caveat.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The third section claims what failures mostly stem from, but its chart is four example cards, which cannot show the share of failure classes; the second section's 'strong accuracy' also hides that J falls below the 97% gate on multi-hop and ambiguous-entity tasks.",
+      "quote": "Failures stem primarily from argument errors and missing intermediate calls.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Every arm, measure, criterion and task above Full results renders under its reader name, and no ids, hashes or measure keys show.",
+      "quote": "The weakest margin is Brisk-S · reasoning low · 1 retry (J): 97.1% against Pass rate at 97%, a gap of 0.1 points.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin under the call (J's 0.1-point pass-rate margin, tighter than its latency headroom), then a scoped risk (traffic shifting toward multi-hop queries).",
+      "quote": "The weakest margin is Brisk-S · reasoning low · 1 retry (J): 97.1% against Pass rate at 97%, a gap of 0.1 points. Track whether traffic shifts toward multi-hop queries, where pass rates dip lower.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "Above the fold the lede garbles the latency criterion into a doubled name, and the one latency measure appears as 'Latency budget (p95)', 'p95 latency' and 'p95 Latency' across the page.",
+      "quote": "the 600 ms Latency budget (p95) budget at low cost",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline, lede and decision block say what to do (deploy J), why (only arm clearing both gates, about a tenth of F's cost), and the main risk (a 0.1-point pass-rate margin), all before the options table ends.",
+      "quote": "Select Brisk-S · reasoning low · 1 retry (J). It reaches a 97.1% Pass rate and p95 latency of 513 ms at $0.302 per 1,000 calls.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "Next names a concrete experiment (a second retry) whose result could move the call to a two-retry configuration, and its decisive direction is clear from context: more malformed calls recovered with p95 still under budget.",
+      "quote": "Evaluate whether a second retry recovers remaining malformed calls on difficult tasks without pushing p95 latency beyond the budget.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "Confidence is high and the plan has no confidence clauses, so the item passes.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "1,200 is each arm's case count, but the sentence attaches it to each of the four tasks, which hold 40%, 25%, 20% and 15% of an arm's cases, not 1,200 apiece.",
+      "quote": "A full factorial sweep over eighteen configurations across four representative planning tasks with 1,200 cases each.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-29T02:31:26.192523+00:00"
+}

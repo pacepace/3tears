@@ -477,6 +477,13 @@ class Example(_Part):
     outcome: str | None = Field(default=None, description="The failure class.")
     input: str | None = Field(default=None, description="The input the case gave.")
     expected: str | None = Field(default=None, description="What the case expected.")
+    # Left out of the document when unset, so an input built without every dimension's reason digests as it did.
+    reasons: dict[str, str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Each judged dimension's reason for the trial, by dimension, the primary's among them; none where "
+        "the input does not carry them.",
+    )
 
 
 class FailedTrials(_Part):

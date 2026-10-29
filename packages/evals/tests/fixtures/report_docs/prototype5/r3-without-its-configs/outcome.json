@@ -1,0 +1,89 @@
+{
+  "ending": "stored",
+  "reason": "",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, decision block and c1 together say what to do: ship Brisk-S few-shot. They say why: it is the only configuration inside all three gates, at $1,200 a month. They also name the main risk: its 184 ms p95 latency is a single figure with no interval. I checked the call against options_dominance with bars read as gates, and Brisk-S few-shot is the only survivor. The Watch line also flags the thin 0.7-point accuracy margin."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "c1 to c3 build the call in order: the gate matrix, then why the cheap Nano-XS few-shot is out, then why the most accurate configurations are out. Every row I checked matches its block. Complex × News is 82.9 minus 76.7, a 6.2-point gap. B, C and F pass both accuracy gates and fail only latency. The three 'What you could change' rows match decision_sensitivity: Nano-XS few-shot becomes the call at a cell floor of 76.7% or lower; nothing passes above an 82.9% floor, above a 90.7% accuracy gate, or below a 184 ms latency budget. One small tension: the lede says the call moves 'only' on latency or the cell floor, but the confidence line and Watch both name an accuracy re-run as a risk."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "The pick's weak points are on the first screen. Its accuracy margin is 0.7 points, and Watch calls it the weakest margin. Its 66 ms of latency headroom has no interval. c2 shows the rows where Nano-XS few-shot beats it (the Simple cells) as well as the rows where it loses. c4 calls its intervals descriptive. c5's word 'settled' reads a little strong next to the best-of-nine caveat (see findings)."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 1,
+          "reason": "None of the omitted items would change the call. Traffic-weighted accuracy, macro F1 and the confusion tables feed no gate, and the latency gate removes every option that ranks above the pick. But one stated reason is false. It says the Brisk-S model and prompt effects are in 'the full lever table in the appendix', and the appendix has no lever table. Those are the effects for the recommended model; for example, Brisk-S few-shot trails Atlas-M few-shot by 1.4 points (-1.8 to -1.0)."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "The snapshot attaches three caveats: no control, latency read as a point estimate, and best of nine. Each appears in the confidence line with the condition under which it would matter, and the two that bear on the call each get a next step. The unpaired intervals are labelled as wider than paired ones. One assumption stays in Method only: the monthly volume is read as turns. Both $1,200 and $1,143 depend on it, but the call does not."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an experiment and what it would settle: production p95 with an interval, which tests the 66 ms headroom; a fresh run of 19,383 cases, which tests the accuracy margin against the best-of-nine effect; and Complex × News examples for Nano-XS few-shot, which test the floor miss and would open the $1,143 saving. I checked 19,383 with settle_cases: it is the two-sided size that settles four times in five."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 2,
+          "reason": "Each block carries its claim's own figure, and the claim would have to change if the values flipped. The gate matrix shows the single all-pass column. c2's Complex × News row is +6.2 (+4.4 to +8), and Nano-XS few-shot's own 76.7% ± 1.4 stays below 80%. The scatter puts Atlas-M rubric + reasoning at 1302 ms and 93.2%. The lever rows match levers_effects. Two small problems: c2's note mentions an 'overall' row the table does not have, and one bound prints as -0.03699."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The same figure appears under two names. The gate is called 'Overall accuracy' (Watch: 'on Overall accuracy: 90.7% against 90%'; c1 and c5 rows). The measure is called 'Balanced accuracy' (recommendation, c3, appendix). The appendix also lists 'Traffic-weighted accuracy', 92.2% for the pick, and that is what most readers would take 'overall accuracy' to mean. Call the gate 'balanced-accuracy gate' or similar everywhere above the appendix."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The lede says the call moves 'only if' p95 latency proves slower or the cell floor is lowered. The confidence line, Watch and the second next step all name a third way: a fresh run reads balanced accuracy more than 0.7 points lower because the pick was chosen from nine. Add that to the lede or drop 'only'."
+        },
+        {
+          "claim": "c5",
+          "severity": "should_fix",
+          "finding": "c5 says every accuracy clearance is 'settled at today's size', and its fresh-run column (0.0005% for balanced accuracy) assumes the truth equals today's estimate. The best-of-nine caveat says that estimate reads high. Say in the sentence or caption that 'settled' does not account for selection, and point to the re-run in Next steps."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The 'Left out' reason for the Brisk-S model and prompt effects says 'the full lever table is in the appendix', but the appendix has no lever table. Either add the Brisk-S rows to c4 or the appendix (Brisk-S zero-shot to few-shot is the step that takes the pick from failing to passing; Atlas-M to Brisk-S few-shot is -1.4, -1.8 to -1.0), or correct the reason."
+        },
+        {
+          "claim": "c2",
+          "severity": "should_fix",
+          "finding": "The block note says each row is the difference 'overall and in each place', but the table has only the nine cells. Remove 'overall' or add the balanced-accuracy row (Nano-XS few-shot minus Brisk-S few-shot is -0.6, -1.0 to -0.2). Also round the Simple × Science upper bound, which prints as -0.03699."
+        },
+        {
+          "claim": "c2",
+          "severity": "should_fix",
+          "finding": "The $1,143-a-month saving in c2 and the $1,200 in the headline both assume the declared 30,000,000-a-month volume counts turns, and only Method says so. Add a short qualifier where the monthly figures first appear."
+        }
+      ],
+      "total": 13,
+      "passes": true,
+      "must_fix": false
+    }
+  ]
+}

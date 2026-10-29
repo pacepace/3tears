@@ -1,0 +1,79 @@
+{
+  "ending": "stored",
+  "reason": "",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline names the trade: Atlas-L is 2.96 points above Atlas-M on overall quality at 2.4 times the cost, and the cheaper models confirm account changes less often. The decision block says nothing was declared, gives the analyst's lean (Atlas-M at $31.37 per 1,000 conversations against Atlas-L's $75.05), and shows the price bands where the pick flips. The lead claim, safety-checks, shows the main risk of going cheaper. A reader can tell what is unresolved and what would settle it."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "I read each sentence against its table, row by row, and none is contradicted. In safety-checks, Brisk-S's 88% on confirming (83.3–92.7) and Open-70B's 89% on declining (84.0–94.0) are both clear of the Atlas intervals, and both 17-point gaps match their rows. In quality-gap, every live task's interval sits above zero and speculation bait's (−1.5 to +3.5) does not. Price, other-checks and latency also match their tables. The tool gives the same figures: a 2.96-point gain, $14.76 and $4.94 per point, and Open-70B pooled at 85.49."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 1,
+          "reason": "Atlas-M's weak spot against Atlas-L is visible: it trails in every live task, most in troubleshooting. But the decision block and explore table say flatly that Open-70B is never the cheapest way to a point and is best at no price. That rests on point estimates. Open-70B's pooled lead over Brisk-S is 0.79 points, with a combined interval of about −0.2 to +1.8 (each pooled half-width is 0.69). It falls off the frontier only if that lead is under about 1.1 points, so the interval allows it back on. The safety checks still count against Open-70B, but the overall-quality statement is stronger than the data support."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "None of the omitted items would change the single-model pick. Latency and per-task cost keep the same order in every task, the snapshot keeps no failure examples, and the speculation-bait gap is shown in quality-gap. The Open-70B persona omission is true for the pooled frontier. Within persona small talk it matters for routing, which is covered under next steps."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "The undescribed behaviour-check judge is attached to safety-checks and other-checks, and a next step names and calibrates it. The missing control and the unpaired intervals are attached to quality-gap and answered with a paired re-run. The best-of-several caveat names billing's thin 2-point margin. Each caveat says which way it would move the figures."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 1,
+          "reason": "The declaration, judge-calibration and paired re-run steps each say what they would settle. The routing step (Atlas-L for troubleshooting, Atlas-M elsewhere) rests on a premise the page's own task figures undercut. A point bought from Atlas-M to Atlas-L in troubleshooting costs $16.20 per 1,000 conversations, more than the $14.76 for the full switch. Routing troubleshooting alone would buy about 0.95 of the 2.96 points (32%) for about $15.39 of the $43.68 cost gap (35%). That is not 'most of the lead at a cost nearer Atlas-M's'."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "Safety-checks, price, other-checks and latency each show their own figures, and their counterfactuals hold. The quality-gap block's caption says it shows Atlas-L less Atlas-M 'overall and in each place', but it draws only the five task rows. The pooled 2.96-point gap that the headline leads with (interval +1.98 to +3.94) appears in no block."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The routing next step aims at the wrong task. In the task figures, the Atlas-M to Atlas-L step costs $16.20 per point in troubleshooting, $17.00 in billing and $18.33 in research questions, but only about $8 in persona small talk ($24 more per 1,000 conversations for 3 points). Routing troubleshooting to Atlas-L buys about a third of the lead for about a third of the cost gap. It does not keep 'most of the lead at a cost nearer Atlas-M's'. In persona small talk, Open-70B scores 90 against Atlas-M's 88 (gap −0.1 to +4.1) at $6.40 against $17, and stays in character 97% of the time. Rewrite the step from the task prices: say what a routed mix would test (for example, Open-70B or Atlas-L on persona small talk and Atlas-M elsewhere), and drop the claim that troubleshooting is where routing pays."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "'Open-70B is never the cheapest way to a point' (the trade) and 'Open-70B is best at no price' (explore) are point-estimate statements. Open-70B's pooled overall quality is 85.49 against Brisk-S's 84.70, and each has a half-width of 0.69. Open-70B is off the frontier only if its lead is under about 1.1 points, and the combined interval reaches about +1.8. Qualify both sentences, for example 'on the point estimates; its lead over Brisk-S is not settled'. Or rest Open-70B's exclusion on its safety-check gaps, which are separated."
+        },
+        {
+          "claim": "quality-gap",
+          "severity": "should_fix",
+          "finding": "The caption says each row is Atlas-L less Atlas-M 'overall and in each place', but the block draws only the five task rows. Add the pooled, traffic-weighted row the headline cites (+2.96, +1.98 to +3.94) so the headline's figure is on the page beside its interval. Otherwise, remove 'overall' from the caption."
+        },
+        {
+          "claim": "quality-gap",
+          "severity": "should_fix",
+          "finding": "'Above Atlas-M in every task that carries live traffic' rests on per-task intervals with no correction across five tasks. Billing's lower end is +0.44. Add the word 'uncorrected', or note that billing's gap is the one a correction could close. The best-of-several caveat already names billing, so this is a small change."
+        }
+      ],
+      "total": 11,
+      "passes": true,
+      "must_fix": false
+    }
+  ]
+}

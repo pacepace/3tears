@@ -1,0 +1,310 @@
+{
+  "schema": "report-doc/1",
+  "story": "diagnosis",
+  "headline": "No configuration is shown to pass both gates: only two, Atlas-M and Brisk-S with high reasoning and retry, hold {criteria.pass_rate.threshold} in every task, and both run over the {criteria.p95.threshold} latency budget.",
+  "lede": "Multi-hop lookups are every configuration's weakest task; the configuration that comes closest inside the budget, Brisk-S with low reasoning and retry, falls short there by {criteria.pass_rate.brisk-s.low.r1.multihop.gap|abs} points. Per-task latency, never recorded, could open a routed mix nobody has run.",
+  "flag": null,
+  "recommends": [],
+  "confidence": {
+    "form": "high_if_immaterial",
+    "caveats": [
+      {
+        "id": "no_control",
+        "label": null,
+        "material_if": "Only for a claim that one configuration beats another: the call reads each configuration against the declared gates.",
+        "checked": null
+      },
+      {
+        "id": "best_of_n",
+        "label": null,
+        "material_if": "Only where a configuration clears a gate by little. Brisk-S with high reasoning and retry clears multi-hop by {criteria.pass_rate.brisk-s.high.r1.multihop.gap} points, best of {n_candidates|words}; a fresh run would likely read it lower. That strengthens the headline but weakens the fallback and the routed mix, both of which lean on its thin clearances.",
+        "checked": null
+      },
+      {
+        "id": "analyst:task-counts",
+        "label": "Task pass rates state no case count",
+        "material_if": "If the true per-task rates of the two Brisk-S configurations with retry sit on the other side of the gate from today's readings. High reasoning would lose the fallback if its multi-hop or ambiguous-entity pass flipped. Low reasoning would become a single-configuration candidate only if both its misses flipped, multi-hop and ambiguous entities, and its date math, exactly on the line, held.",
+        "checked": null
+      },
+      {
+        "id": "analyst:task-latency",
+        "label": "Latency recorded only over all cases",
+        "material_if": "Only for a routed mix nobody ran: if each configuration's tail latency stays inside the budget in the tasks it would serve, the mix could clear both gates. It cannot rescue a single high-reasoning configuration, whose tail over all cases is already over budget.",
+        "checked": null
+      }
+    ]
+  },
+  "decision": [
+    {
+      "slot": "what_is_tangled",
+      "text": "On multi-hop lookups the two gates pull against each other: only high reasoning with retry reaches {criteria.pass_rate.threshold} there, and both such passers run over {criteria.p95.threshold} on tail latency. Ship none under the gates as declared."
+    },
+    {
+      "slot": "known_despite_it",
+      "text": "If every case belongs to exactly one task, neither pass-rate passer can meet the latency gate on its own, since each one's tail over all cases is over budget. On today's readings every configuration inside the budget misses multi-hop, the nearest by {criteria.pass_rate.brisk-s.low.r1.multihop.gap|abs} points, a miss not yet settled."
+    },
+    {
+      "slot": "watch",
+      "text": "The Brisk-S readings nearest the gate are all thin and carry no case count. If each task held its traffic share of cases, a run of today's size would read high reasoning's multi-hop pass below the line {assumed.share.settle.criteria.pass_rate.brisk-s.high.r1.task.multihop.wrong_side} of the time and its ambiguous-entity pass {assumed.share.settle.criteria.pass_rate.brisk-s.high.r1.task.disamb.wrong_side}; it would read low reasoning's multi-hop miss above the line {assumed.share.settle.criteria.pass_rate.brisk-s.low.r1.task.multihop.wrong_side} and its ambiguous-entity miss {assumed.share.settle.criteria.pass_rate.brisk-s.low.r1.task.disamb.wrong_side}. Low reasoning's date math sits exactly on the line."
+    },
+    {
+      "slot": "what_settles_it",
+      "text": "Per-task tail latency for a routed mix: Brisk-S with high reasoning and retry on multi-hop and ambiguous-entity lookups ({task.multihop.share} and {task.disamb.share} of traffic), Brisk-S with low reasoning and retry on single lookups and date math. Its legs also need their thin pass rates settled. If the mix fails, the planner's owner has to say which gate gives way on multi-hop."
+    }
+  ],
+  "claims": [
+    {
+      "id": "c-gates",
+      "text": "Only {count.passing.pass_rate|words} of the {n_candidates|words} configurations reach {criteria.pass_rate.threshold} in every task, Atlas-M and Brisk-S with high reasoning and retry; multi-hop lookups are the weakest task for every configuration.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "heatmap",
+          "query": {
+            "source": "tasks",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": "floor",
+          "emphasis": "",
+          "caption": "Pass rate by task and configuration; cells under the {criteria.pass_rate.threshold} gate are outlined."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c-latency",
+      "text": "Both run over the latency budget on tail latency across all cases: {measure.latency_ms.brisk-s.high.r1.p95} for Brisk-S and {measure.latency_ms.atlas-m.high.r1.p95} for Atlas-M, against {criteria.p95.threshold}. Latency was kept only over all cases, so the per-task gate has no figure; but if every case belongs to exactly one task, each must miss the budget in some task, so per-task latency can rescue only a routed mix, not either configuration alone.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "range_bars",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "latency_ms"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": "budget",
+          "emphasis": "brisk-s.high.r1",
+          "caption": "Median to tail latency ({criteria.p95.statistic}) over all cases for each configuration, the {criteria.p95.threshold} budget marked."
+        }
+      ],
+      "caveats": [
+        "analyst:task-latency"
+      ],
+      "durable": false
+    },
+    {
+      "id": "c-nearest",
+      "text": "Brisk-S with retry sits at the gate at both reasoning levels: with low reasoning ({measure.latency_ms.brisk-s.low.r1.p95}) it misses {count.failing.pass_rate.brisk-s.low.r1|words} tasks, multi-hop by {criteria.pass_rate.brisk-s.low.r1.multihop.gap|abs} points and ambiguous entities by {criteria.pass_rate.brisk-s.low.r1.disamb.gap|abs}; with high reasoning it clears multi-hop by only {criteria.pass_rate.brisk-s.high.r1.multihop.gap} and ambiguous entities by {criteria.pass_rate.brisk-s.high.r1.disamb.gap}. With no case counts, neither the misses nor the passes are settled.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "dot_interval",
+          "query": {
+            "source": "tasks",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
+              "brisk-s.low.r1",
+              "brisk-s.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": "floor",
+          "emphasis": "",
+          "caption": "Per-task pass rate for Brisk-S with retry at low and at high reasoning, the gate marked; task rates state no case count, so no interval is drawn."
+        }
+      ],
+      "caveats": [
+        "analyst:task-counts",
+        "best_of_n"
+      ],
+      "durable": false
+    },
+    {
+      "id": "c-cost",
+      "text": "Of the two that hold the pass rate in every task, Atlas-M costs {cost.gap.atlas-m.high.r1.brisk-s.high.r1.multiple} as much as Brisk-S, {cost.gap.atlas-m.high.r1.brisk-s.high.r1.monthly|abs} more a month.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "bars",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "cost_per_1k"
+            ],
+            "arms": [
+              "atlas-m.high.r1",
+              "brisk-s.high.r1",
+              "brisk-s.low.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Cost per thousand calls for the two pass-rate passers and the nearest miss inside the budget, on a log scale."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "c-fail",
+      "text": "The kept multi-hop failure of Brisk-S with low reasoning and retry merges two hops into one search; the date and ambiguous-entity cards fail other ways, an off-by-one window and a missing clarifying question.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "examples",
+          "query": {
+            "source": "examples",
+            "aspect": "",
+            "measures": [],
+            "arms": [
+              "brisk-s.low.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "The failures kept for this configuration, one per task where a failure was kept; the input does not say how many failed in all."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    }
+  ],
+  "explore": [
+    {
+      "control": "Latency budget",
+      "binds": "Which configurations pass the latency gate in each task",
+      "outcome": "No budget value changes the call: latency has no per-task figure, so the gate reads nothing at any threshold. Read over all cases instead, a budget at or above {measure.latency_ms.brisk-s.high.r1.p95} would admit Brisk-S with high reasoning and retry, subject to its thin multi-hop and ambiguous-entity passes."
+    },
+    {
+      "control": "Pass-rate gate",
+      "binds": "Which configurations hold the pass rate in every task",
+      "outcome": "Lowering it admits more configurations on pass rate, Brisk-S with low reasoning and retry once the gate is lowered to {criteria.pass_rate.brisk-s.low.r1.multihop.value}, but no configuration passes both gates while latency has no per-task figure."
+    }
+  ],
+  "omitted": [
+    {
+      "what": "Overall pass rate per configuration, and setting effects read on it",
+      "why": "The gate reads each task; several configurations clear it overall yet miss multi-hop, so overall figures would mislead. The options table still prints it, labelled in Method; the reasoning step that matters is visible per task in the Brisk-S chart."
+    },
+    {
+      "what": "Calls per task and median latency",
+      "why": "Neither bears on a declared gate."
+    },
+    {
+      "what": "Extra calls per task and outcome",
+      "why": "The snapshot holds no figures for them."
+    },
+    {
+      "what": "Model and reasoning effects on Atlas-M and Nano-XS",
+      "why": "Nano-XS reaches the gate in no task, and every Atlas-M configuration that reaches it on multi-hop is over the budget across all cases."
+    },
+    {
+      "what": "Other thin pass-rate misses (Atlas-M high reasoning without retry on multi-hop, Brisk-S high reasoning without retry on date math)",
+      "why": "Both configurations are over the latency budget across all cases, so settling their misses would not produce a passer."
+    },
+    {
+      "what": "Any cost or gain for a routed mix",
+      "why": "Nobody ran one; it appears only as a next step."
+    },
+    {
+      "what": "A lean toward Brisk-S with high reasoning and retry as the fallback",
+      "why": "Weighed and kept as conditional only: its multi-hop and ambiguous-entity passes are as unsettled as the low-reasoning misses, so it rests on the re-run in Next."
+    }
+  ],
+  "next": [
+    {
+      "text": "Record tail latency per task for Brisk-S with high reasoning and retry on multi-hop and ambiguous-entity lookups, and for Brisk-S with low reasoning and retry on single lookups and date math, from existing traces if kept, else by re-running.",
+      "settles": "Whether the routed mix can meet the budget in each task it serves; the mix would then need its own run before shipping."
+    },
+    {
+      "text": "Re-run Brisk-S with high reasoning and retry on multi-hop and ambiguous-entity lookups, stating per-task counts. As a what-if, if tasks held their traffic share of cases, a run sized to settle most of the time needs {assumed.share.settle.criteria.pass_rate.brisk-s.high.r1.task.multihop.cases_needed_two_sided_80} multi-hop and {assumed.share.settle.criteria.pass_rate.brisk-s.high.r1.task.disamb.cases_needed_two_sided_80} ambiguous-entity cases.",
+      "settles": "Whether it truly clears both tasks; the routed mix and any looser-budget fallback depend on it."
+    },
+    {
+      "text": "Re-run Brisk-S with low reasoning and retry on multi-hop, ambiguous-entity and date-math lookups, stating per-task counts. On the same what-if, settling most of the time needs {assumed.share.settle.criteria.pass_rate.brisk-s.low.r1.task.multihop.cases_needed_two_sided_80} multi-hop and {assumed.share.settle.criteria.pass_rate.brisk-s.low.r1.task.disamb.cases_needed_two_sided_80} ambiguous-entity cases; date math sits exactly on the line, so no run settles it unless the true rate is away from the line.",
+      "settles": "Whether its misses are real and whether it holds date math, its leg of the routed mix; only if both misses prove false and date math holds is it a single fast candidate."
+    },
+    {
+      "text": "Improve multi-hop planning for Brisk-S at low reasoning, where the kept failure merges hops into one search, and re-run multi-hop.",
+      "settles": "Whether a configuration inside the budget can reach the gate on multi-hop without high reasoning."
+    },
+    {
+      "text": "The planner's owner declares which gate gives way on multi-hop if neither a single configuration nor the routed mix passes both: a looser latency budget, or a lower pass-rate gate for that task.",
+      "settles": "Turns the diagnosis into a decision; under a looser budget, Brisk-S with high reasoning and retry is the cheapest pass-rate passer, if its re-run confirms it."
+    }
+  ],
+  "method": [
+    {
+      "term": "Cases",
+      "text": "{scoreboard.brisk-s.high.r1.cases} cases per configuration, with no repeats stated. The input does not say how cases split across tasks, only each task's share of traffic: {task.single.share} single lookups, {task.multihop.share} multi-hop, {task.datemath.share} date and unit math, {task.disamb.share} ambiguous entities.",
+      "caveats": []
+    },
+    {
+      "term": "Pass",
+      "text": "The input does not define what makes a task pass; its failure classes are a missing call, wrong arguments and the wrong tool.",
+      "caveats": []
+    },
+    {
+      "term": "Gates",
+      "text": "Pass rate at least {criteria.pass_rate.threshold} in each task, and tail latency ({criteria.p95.statistic}) at most {criteria.p95.threshold} in each task, both declared before the run. Latency was recorded only over all cases, so the latency gate has no figure in any task; a configuration with no failing figure is undecided, not failed.",
+      "caveats": []
+    },
+    {
+      "term": "Options table",
+      "text": "Its pass-rate column is the overall pass rate across all tasks. The gate reads each task, so an overall rate at or above the gate does not mean a configuration passes; read the per-task chart instead.",
+      "caveats": []
+    },
+    {
+      "term": "Assumed counts",
+      "text": "Run sizes and wrong-side odds for per-task rates read each task as holding its traffic share of a configuration's cases, a what-if because the input states no per-task count; on that reading multi-hop holds {assumed.share.spread.brisk-s.high.r1.pass_rate.task.multihop.n} cases.",
+      "caveats": []
+    },
+    {
+      "term": "Intervals",
+      "text": "Per-task pass rates state no case count and carry no interval. There is no control, so nothing is paired, and no multiplicity correction applies.",
+      "caveats": []
+    },
+    {
+      "term": "Cost",
+      "text": "Cost per thousand calls as measured. Monthly figures multiply it by the declared volume of {meta.volume_per_month}, and the input does not say what that volume counts.",
+      "caveats": []
+    },
+    {
+      "term": "Source",
+      "text": "{meta.provenance}",
+      "caveats": []
+    }
+  ]
+}

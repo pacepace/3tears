@@ -77,7 +77,7 @@ RUBRIC: Final = (
 HAND_RECORDINGS: Final = Path(__file__).parent / "fixtures" / "report_writer"
 
 #: Where the acceptance run's recordings land (``analyst_cli.py write --out``).
-ACCEPTED_RECORDINGS: Final = Path(__file__).parent / "fixtures" / "report_docs" / "prototype4"
+ACCEPTED_RECORDINGS: Final = Path(__file__).parent / "fixtures" / "report_docs" / "prototype5"
 
 
 def kairo_id() -> str:

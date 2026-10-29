@@ -472,7 +472,7 @@ def read_only_tools(prefix: str = DEFAULT_PREFIX) -> tuple[ToolSpec]:
             name=prefix,
             description=(
                 "Read evals: templates, runs, jobs, campaigns and reports. Nothing here launches anything or changes "
-                "evaluation data; a read may append a bounded, idempotent feedback record."
+                "evaluation data."
             ),
             permissions=frozenset({"read"}),
         ),

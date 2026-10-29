@@ -83,12 +83,6 @@ counts each way its calls were admitted (`1 admitted at up to $0.0300, 2 admitte
 unbounded`), and a scope whose calls were all unbounded no longer reads "admitted at up to $0.0000". The ledger keeps
 its four decimals (`:.4f`, the spend ledger the number rule exempts), so every figure on the line reads one way.
 
-**For the docs scrub (`docs/evals-w4`):** `packages/evals/docs/serving.md`'s campaign JSON table (:448-458) gains
-`needs_regeneration` (the one regenerate line and why, on a page standing in for an analysis this version no longer
-reads; null otherwise) and says `analysis_id` is the analysis the page renders or stands in for, never "the memo's";
-the `report_read` lines (:441 and the transcripts paragraph) say a `plan` analysis reads code-only with that line, that
-`trials="all"` adds the evidence record after a document's page, and that `include_sessions` is JSON only.
-
 ### evals: a computed lever arm name reads one way on every surface; the arms key names settings in words; the kit writes a per-1,000 tick
 
 **Changed:** an arm name the engine computes from an arm's levers is capitalised where it is made, so every surface
@@ -143,8 +137,8 @@ same call made twice stores it once (`EvalStorage.save_analyst_gap`, create-only
 since=)` reads them back). A gap is durable: `drop_derived` never sweeps it, and a core reset keeps it. Where it is
 stored depends on the mount, never on anything the model sets. `capability_gap` stays a `read` action, so a read-only
 mount carries it, and it is the one read that appends a record (`Action.appends`): a tool carrying it reports
-`readOnlyHint` false and `idempotentHint` true, and the read-only `evals` tool's description now says a read changes no
-evaluation data and may append a bounded, idempotent feedback record. Called through any mount (Claude Code over MCP, the dev
+`readOnlyHint` false and `idempotentHint` true, and only a tool that carries it says so in its description (the plain
+read-only `evals` tool says a read changes no evaluation data and nothing more). Called through any mount (Claude Code over MCP, the dev
 command line), the call stores the gap at once, with its snapshot and caller; its result says `recorded_in: store`.
 Inside a report write, the writer's own mount stores nothing (`recorded_in: write`), and `report_write` stores every
 gap its sessions noted when it ends, on every ending, a `ReportNotStored` included: each names the snapshot, the report
@@ -259,6 +253,13 @@ that disclose different machines share one rig row. It is evidence the bundle ca
 its bundle's fingerprint and a snapshot's id. A disclosure callable that fails, or returns no `RunDisclosure`, refuses
 the launch naming `LaunchHost.run_disclosure`. Every new field is left out of its document when unset, so a run,
 bundle or input with none stores and digests as before. Core schema v15.11.
+
+**Added:** an analyst's examples carry every judged dimension's reason (`Example.reasons` on the report input, by
+dimension, the primary's among them, and `reasons` on `examples_list`'s rows), where `reason` is the primary
+dimension's alone. Only the analyst's input (`analyst_input`, what a snapshot is frozen from) carries them: a
+planner's input and every stored input read and digest as before. A snapshot frozen from a campaign whose trials were
+judged on any dimension now has another content address, so it is a new snapshot. `Example.expected` stays unset: no
+trial the bundle holds carries an expected answer.
 
 ### evals: `analysis_generate` writes the report with the analyst and the report editor, on the host's model and budget
 

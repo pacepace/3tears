@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261029-60d8fa450d63",
+  "input": "r3",
+  "input_digest": "8ed49915119167ef21cff1f2fafe46ccf65af216b00f381724c01ea19af772a0",
+  "plan_digest": "45e2b0bc1cf01dd3d024630d74bdf77f389e6fbd9b6d923be4b5c3c1a2b99668",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+    "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "The headline is a decision with an instruction and a reason, it names the options table's recommended arm (the only arm that clears all three gates in the input), and the first chart (the balanced-accuracy lattice with that arm emphasised) does not contradict it.",
+      "quote": "Deploy Brisk-S · Few-shot (12 ex.) (E). It satisfies all accuracy and latency gates at modest operational cost.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: the first gives the chosen arm's measured accuracy and its latency against the budget, and the second says what would change the answer (relaxing the Cell floor would make the cheaper arm viable).",
+      "quote": "Brisk-S · Few-shot (12 ex.) (E) delivers 90.7% Balanced accuracy and stays under budget at 184 ms. Only relaxing the Cell floor would make the cheaper Nano-XS · Few-shot (12 ex.) (H) viable.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "There is no flag, the input carries no caveats, and the only risks (the 0.7-point margin and the complex news cell) each appear once in Watch.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "pass",
+      "reason": "Each section headline is a directional finding its chart shows: few-shot lifts Brisk-S and Nano-XS over 90 in the lattice, the heatmap's lowest Brisk-S cell is 82.9% (above the 80% floor), and the confusion chart's complexity errors fall almost entirely in adjacent rows.",
+      "quote": "Brisk-S · Few-shot (12 ex.) (E) clears the cell floor across all nine segments",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results, every arm, measure, criterion and cell is in reader words (arm names with tags, 'complex news turns', 'Cost per million turns'), and no run ids, hashes or measure keys appear.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the chosen arm's weakest margin (0.7 points on Overall accuracy, against 2.9 points on the cell floor and 66 ms on latency) and then the scoped risk on complex news turns.",
+      "quote": "Brisk-S · Few-shot (12 ex.) (E) has the narrowest clearance on Overall accuracy: 90.7% against 90%, a margin of 0.7 points. Performance on complex news turns is also the closest to the cell gate.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "The same 90.7% measure is called Balanced accuracy in the lede and Overall accuracy in the decision and Watch, the Cell floor also appears as 'the cell gate', and the cells are called slices, segments and cells.",
+      "quote": "It clears 90% Overall accuracy at 90.7%, meets the 80% Cell floor across every slice, and serves replies at 184 ms.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "From the masthead to the options table, the page says what to do (deploy E), why (it alone clears every gate, while the others breach the cell floor or the latency budget), and the main risk (the 0.7-point overall margin), without needing a section.",
+      "quote": "Adopt Brisk-S · Few-shot (12 ex.) (E). It clears 90% Overall accuracy at 90.7%, meets the 80% Cell floor across every slice, and serves replies at 184 ms.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "Next names a concrete experiment, targeted demonstrations for complex news on Nano-XS few-shot, and context makes the decisive direction clear: lifting that cell over the 80% floor would make the much cheaper arm the passing choice.",
+      "quote": "Evaluate whether complex news accuracy can be raised in Nano-XS · Few-shot (12 ex.) (H) with targeted demonstrations to unlock lower routing costs.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "Confidence is high and the plan has no confidence clauses, so the item passes.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Each figure is the named arm's own: 90.7% balanced accuracy, 184 ms p95 against the 250 ms budget, Nano-XS at 76.7% on complex news, 483 ms and 496 ms for the latency breaches, and the 0.7-point margin as the difference from 90%.",
+      "quote": "Lowering the cell floor below 76.7% qualifies Nano-XS · Few-shot (12 ex.) (H), while raising the overall accuracy floor above 90.7% eliminates Brisk-S · Few-shot (12 ex.) (E).",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-29T02:31:26.636600+00:00"
+}

@@ -1,0 +1,89 @@
+{
+  "ending": "stored",
+  "reason": "",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, the decision block and claim character are enough to act on. They say to keep September (P), the production model. Neither candidate is ahead in character: qwen3.8-flash (A) is down 7.6 points, interval -10.8 to -3.4; 1017 (B) is down 3.0, interval -5.8 to +1.1. Both candidates also cost more. The main risks are named: the judge has no calibration ratings, and 1017's reasoning share differs from September's. options_dominance agrees, with September dominant and the call unchanged at every margin."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "The claims build in order: character, then cost, then the judged ratings, then where the loss sits, then the example cards. I checked every block's rows against its sentence, and none contradicts it. Both cost intervals are clear of zero (+$0.38 to +$0.85 and +$0.17 to +$0.81). The missing-cost bound holds when recomputed: $2.24 and $2.36 for the candidates against $2.02 for September. One wording slip: 'most of each candidate's loss' in Next does not match claim offlane's 48% for qwen3.8-flash (A)."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 1,
+          "reason": "The lede says 1017 (B) is 'not told apart from September (P)' without saying this is the pass rate. On the judged holds-character rating, 1017 is clearly worse: -4.7, interval -8.2 to -1.3. The declared floor for 1017 also reads that rating, at -7.1 to -1.7. The decision block corrects this, but the lede alone makes 1017 look like a tie on character. Next says 'most' of each candidate's loss is off-lane, but for qwen3.8-flash (A) the share is 48%."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "None of the omitted items would change the call. The call rests on production cost, and September is cheaper than both candidates with intervals clear of zero. Measuring spend is the cost of running the evaluation. The delivery check and the operational counts are not separated. A price per point of character has nothing to price, because no candidate is cheaper. The small kinds of ask stay in the appendix."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 1,
+          "reason": "The model confound is carried in the confidence line and in Method, and the reasoning-share confound in a Watch line and a matched-reasoning rerun. Claims character, cost and judged also carry the reasoning-share confound. But claim offlane reads 1017 (B)'s holds-character contrast and does not carry that caveat, as the computed fact says. Its off-lane figure for 1017 (-20.2) could partly reflect the reasoning budget."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an experiment and what it would settle. Reconciling the earlier cost finding would show whether this becomes a cost-versus-character trade. Rerunning off-lane asks with a reworked directive would show whether the main loss closes. Human ratings would show whether the judged losses are real. A matched-reasoning rerun of 1017 (B) would show whether the pass-rate gap belongs to the model. One small gap: the 815-case size for that rerun does not say how many repeats it assumes, or that 516 cases beyond today's 299 would be needed."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "Blocks for claims character, cost and judged show their claims' own figures. Claim offlane's headline figures, the 48% and 53% loss shares, are not in its blocks: the blocks show per-kind gaps such as -22.9 and -20.2. Its captions also describe an 'overall' row that is not drawn. Claim cards cites 39, 64 and 62 off-lane failures, but its block shows only three example cards. It also does not say these are holds-character failures rather than pass-rate failures."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "offlane",
+          "severity": "should_fix",
+          "finding": "This claim reads 1017 (B)'s holds-character contrast (-4.7, -8.2 to -1.3), which carries the reasoning-share confound: 1017 spent 55% of its output reasoning against September's 76%. Neither the claim nor the confidence line carries it. Add the reasoning-share caveat to the claim. A short clause would do: 1017's off-lane gap (-20.2) may partly reflect its smaller reasoning budget."
+        },
+        {
+          "claim": "offlane",
+          "severity": "should_fix",
+          "finding": "The claim rests on loss shares, 48% for qwen3.8-flash (A) and 53% for 1017 (B) (strata.off_lane.loss_share.*.persona.holds_character), but neither block shows them. Add the loss shares to the blocks, or restate the claim in terms of the off-lane gap the blocks draw. Also fix the caption 'overall and in each place both hold it': no overall row is drawn. Either add the overall gap (-6.0 and -4.7) as a reference row or drop 'overall'."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The lede says 1017 (B) 'is not told apart from September (P) (-5.8 to +1.1)', but that is the pass rate only. On the judged holds-character rating, 1017 is worse (-4.7, -8.2 to -1.3), and the declared floor for 1017 reads that rating. Say 'not told apart on the pass rate, though down 4.7 points on the judged holds-character rating', as the decision block does."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The Next line in the decision block says the off-lane asks are 'where most of each candidate's loss sits', but claim offlane gives 48% for qwen3.8-flash (A). That is under half. Say 'about half', and say it is the holds-character loss, not the pass-rate loss."
+        },
+        {
+          "claim": "cards",
+          "severity": "should_fix",
+          "finding": "'September (P) failed 39 off-lane trials, against 64 and 62' counts holds-character failures. A reader may take them for pass-rate failures, which are 132, 200 and 159 overall. Name the rating in the sentence. Either add the counts to the block, or point to claim offlane's off-lane rates (65.8%, 42.9%, 45.6%) as their source."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The next step for 1017 (B) asks for '815 cases per arm', but the campaign has 299 cases, run three times each. Say whether 815 means distinct cases at three repeats (which needs 516 new cases) or trials, so the step can be costed."
+        }
+      ],
+      "total": 11,
+      "passes": true,
+      "must_fix": false
+    }
+  ]
+}

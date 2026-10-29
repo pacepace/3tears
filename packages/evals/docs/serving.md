@@ -174,7 +174,7 @@ fingerprint; the bundle itself is the wrapper's `bundle` field. Neither command 
 ### `spend`
 
 `spend` prints what the engine spent outside any run in the scope — case generations, rubric proposals,
-analysis generations, judge repeats and judge temperature comparisons
+campaign reports, judge repeats and judge temperature comparisons
 (`--purpose variation|proposer|analysis|judge|second_judge`) — narrowed by its flags.
 
 ### `frontier`
@@ -245,18 +245,18 @@ evals")`; your users then never name the host.
 ## Operations and jobs
 
 The operations (`threetears.evals.ops`) run over an `OpsHost`: the `LaunchHost`, plus `AnalysisGeneration`
-(the `eval_report_plan` prompt, output cap and budget a background generation runs under). Each returns a typed model.
+(the report budget and the time bounds a campaign report is written under). Each returns a typed model.
 
 **No transport call waits on a model.** Every operation whose work calls one is a **job**: `run_launch`,
 `sweep_launch`, `analysis_generate`, `judge_second`, `judge_drift_check` and `judge_temperature` return
 `JobsStarted`, and `job_poll` / `job_cancel` take any job id they returned; `job_resume` takes up a run's, a
 sweep's or a launch's job that ended before its work did (below). The call does what it can
 refuse cheaply before money is spent — the refusals it can name from a few store reads, and the admission
-ceiling — and refuses there with nothing spent; the job does the spending. An analysis generation does less in
-its call: assembling its bundle reads every member run's results, so its job assembles it, builds the client and
-prices the first call against the cap, and a refusal at any of those ends the job `failed` with
+ceiling — and refuses there with nothing spent; the job does the spending. A report does less in its call:
+freezing its evidence reads every member run's results, so its job freezes it, builds the client and admits each turn
+against the report budget before sending it, and a refusal before the first turn ends the job `failed` with
 `refused before any call: <why>` for `job_poll` to read, with nothing spent. That preparation is bounded: one
-that has not finished in `AnalysisGeneration.preparation_budget_s` (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s; the host may set it per call) ends the same way.
+that has not finished in `AnalysisGeneration.preparation_budget_s` (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s) ends the same way.
 So a call is a few store round-trips, and a transport holds every call to one fixed timeout (`mount_fastmcp(..., call_timeout_s=...)`, 60s by default)
 rather than one sized to what a call might spend. The timeout may be a function in place of the number, read once
 as each call starts, so an operator retunes it from live configuration without remounting.
@@ -268,7 +268,7 @@ Each job writes its own record, and polling reads it:
 | `launch:<id>` | `run_launch`; `job_resume` takes it up again | `EvalLaunch`: the case generation and every arm's preparation, then the runs to their end | `run_ids`, in arm order (from the moment they start), and each run's status in `progress` |
 | `run:<id>` | one run of a launch; `job_resume` takes it up again | the `EvalRun` | the run's status; read it with `run_get` |
 | `sweep:<id>` | `sweep_launch`; `job_resume` takes it up again | `EvalSweep` | the arms launched and finished |
-| `analysis:<campaign>:<attempt>` | `analysis_generate` | `EvalAnalysisAttempt` | the stored analysis's id; read it with `report_read` |
+| `analysis:<campaign>:<attempt>` | `analysis_generate` | `EvalAnalysisAttempt` | how the writing ended and the stored analysis's id; read it with `report_read` |
 | `second-judge:<id>` | `judge_second`, `judge_drift_check` | `EvalSecondJudgePass`, its id the pass id every paired score names | `result`: the pass's report, agreement and drift |
 | `judge-temperature:<id>` | `judge_temperature` | `EvalJudgeTemperatureCheck`, every answer kept | `result`: the comparison |
 | `action:<id>` | a host action ([Adopting the engine](adopting-a-host.md)) | `EvalActionJob` | `result`: the action's typed result |
@@ -382,8 +382,8 @@ not listed again among `jobs`.
 
 On a host that enforces its ceilings (`LaunchSettings.enforcement_enabled`), every spend operation is bounded
 in dollars before it spends: a launch by the per-run ceiling and its case generation by the host's out-of-run
-cap, an analysis generation and the judge actions by the host's out-of-run cap. With enforcement off, none is
-capped. The full rules are in [Cost and budgets](cost-and-budgets.md).
+cap, and the judge actions by the host's out-of-run cap. A report is held to its own report budget, which the host
+sets in dollars or in tokens and turns. With enforcement off, no run or out-of-run call is capped. The full rules are in [Cost and budgets](cost-and-budgets.md).
 
 ## The action catalogue
 
@@ -438,7 +438,8 @@ To ask again after the runs, `campaign_create` with `aspects_from` adopts the as
 so it reads as the campaign declared before the runs did; what it adds (`margins` for an adopted aspect, a floor, an
 arm) is dated now and named on the page where that is later than its aspect's first result.
 
-4. `report_read` the campaign's page; `analysis_generate` adds the report planner's plan (it resolves the `eval_report_plan` prompt);
+4. `analysis_generate` writes the campaign's report (a job; `analysis_estimate` answers its budget), and
+   `report_read` reads the campaign's page, the analyst's once one is stored and the code-only page before (a `plan` analysis, or a document this version no longer reads, reads code-only with one line to regenerate it; `trials="all"` adds each failed or lost trial's evidence record after a document's page);
 5. `campaign_record` the person's call: the arm, `call_reason`, and each broken floor (`floors_overridden`, by key,
    `billing/rate_drop/*`) and missed bar (`bars_overridden`, `tone/cost_usd`) it overrides. It is refused while the
    arm leaves one unnamed, or names one the arm did not raise, and on a measurement
@@ -451,9 +452,11 @@ arm) is dated now and named on the page where that is later than its aspect's fi
 | Key | Holds |
 |---|---|
 | `kind`, `shape` | `"campaign"` and the shape's version (`CAMPAIGN_JSON_SHAPE`) |
-| `campaign_id`, `basis`, `analysis_id` | the campaign; `analysis` or `code_only`; the memo's analysis, or null |
+| `campaign_id`, `basis`, `analysis_id` | the campaign; whether an analysis wrote the page's words or code alone did; the analysis the page renders or stands in for, or null |
+| `needs_regeneration` | the one regenerate line and why, on a page standing in for an analysis this version no longer reads; null otherwise |
 | `readings` | code's readings (`CampaignReadings`): the `kind`, `alpha`, the control, and `readings` (a change's rows), `pairs` (a choice's), `measures` (a measurement's), `floors` and `bars`, each row with its interval and reason. Every float is to twelve significant figures (a declared one, like `alpha`, a bar or a margin, has fewer and is unchanged), so one campaign serves the same JSON across Python builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary |
-| `recommendation` | the writer's `arm` (its label, for display), its `variant_key` (the key the analysis recorded for that arm, which a call's `variant_key` is compared to) and `confidence`, or null |
+| `recommendation` | the analysis's `arm` (its label, for display), its `variant_key` (the key the analysis recorded for that arm, which a call's `variant_key` is compared to) and `confidence`, or null; a report that recommends no arm, or more than one, has none here |
+| `report_doc` | the stored report document, its id, and how it was written (its ending, models and cost), without its session transcripts, when the campaign's analysis is one |
 | `call` | the recorded call (`CampaignCall`), or null |
 | `aspects` | each aspect's `aspect`, `bundle_fingerprint` (`v2:` and a digest; one with no prefix was recorded before fingerprints rounded floats), `bundle_schema_version` and `late_criteria`: each criterion set after the aspect's readings were visible (`criterion`: `aspect`, `control`, `margin`, `bar` or `floor`; `name`; `set_at`, null with no orderable time), empty where none. Its readings read the same either way; this says when, for a reader to judge |
 
@@ -670,6 +673,27 @@ failure after the action ran would report an error for work that was done (a lau
 that landed), and an agent would repeat it. An audit that must hold *before* an action runs belongs in the
 host or the action, which can refuse. A hook is not a gate.
 
+## The analyst's tool
+
+The report writer investigates a campaign through one domain tool, `evals_analyst`, and a host can mount the same
+tool beside `evals` for its own agents (`analyst_tools`, from `threetears.evals.actions`, through `mount_fastmcp`).
+It reads a frozen [snapshot](concepts.md#report-snapshot): freeze one with `report_snapshot_freeze`, its one write,
+then call any read action by its id. The actions answer what an analyst asks: the campaign's overview, readings and
+contrasts, a measure by arm or slice, examples with the judge's reasons, the caveats code assigns, where a call
+flips, where a difference is concentrated, which options dominate, the price of a point, two arms compared, what one
+setting buys, the cases that would settle an open reading, and a block's values as the page would draw it.
+`report_check` returns a draft report's every mechanical verdict and its page as text, and stores nothing. Every
+figure an action returns carries its figure key; `help` lists the actions and the figure-key grammar. Mount it
+read-only (`writes=False`) for an agent that should only read snapshots frozen another way.
+
+**Gaps.** `capability_gap` records what the analyst or the editor worked around (`missing`) or a result that looks
+wrong (`suspect`, with the keys and calls that reproduce it). `analyst_gaps_list`, a read action on `evals`, returns
+the gaps since a date, grouped by kind and need, suspect ones first, each group as text ready to file as an issue.
+
+**Reading a report's transcripts.** `report_read` takes a report's id (`report_doc_id`) to read any stored version,
+and `include_sessions` (JSON only) to return its full session transcripts: what the analyst and each editor round were sent and
+did.
+
 ## Reporter runs: evaluating the analysis writer itself
 
 A reporter run (the `analysis_reporter` kind, which measures the analysis writer itself) starts from a
@@ -688,6 +712,9 @@ frozen case, never a generated one.
 - `reporter_cases_list` reads the template's bank: which case each campaign and memo launches, and what
   superseded or retired the rest.
 - `reporter_case_archive` retires a case or restores it.
+
+The reporter kind evaluates memo writers and replays planned reports; the analyst's report is reviewed by its
+editor instead ([open problems](open-problems.md#reporter-cases-judge-memos-and-planned-reports-not-the-analysts-report)).
 
 The template then launches through `run_launch`, by the reporter kind the host registers. A run's calibration
 (`reporter_calibration`) reads memo cases and plan cases, and cases of different planner prompts, in separate
