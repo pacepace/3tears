@@ -56,6 +56,17 @@ this is the check that lets role authoring and role assignment drop
 below platform-admin without letting a customer admin hand out more than
 they were given. it, too, changes no evaluation.
 
+public surface — answers shared per access shape:
+
+- :class:`AccessShape` — a person's direct memberships, which is all of them
+  the evaluator reads; :class:`ShapeActors` evaluates as a shape rather than a
+  person, and :func:`~threetears.agent.acl.access_shapes.access_footprint` names what an
+  answer can reach.
+- :class:`AccessShapeAnswers` — one answer per shape in L1 and L2, derived once
+  across replicas and checked on every read against the generations
+  :class:`ShapeDependencies` has applied; followed with
+  :func:`~threetears.agent.acl.generation_follow.follow_access_shape_answers`.
+
 public surface — persistence:
 
 - collections :class:`GroupCollection`,
@@ -136,6 +147,10 @@ from threetears.agent.acl.builtin_roles import (
     PLATFORM_BUILTIN_TOOL_USER_ROLE_PERMISSIONS,
     ensure_platform_builtin_tool_user_role,
 )
+from threetears.agent.acl.access_shapes import (
+    AccessShape,
+    ShapeActors,
+)
 from threetears.agent.acl.access_tables import ACCESS_TABLES, bind_acl_cache_to_access_tables
 from threetears.agent.acl.caller_cache import (
     CallerAccessCache,
@@ -144,6 +159,7 @@ from threetears.agent.acl.caller_cache import (
     DEFAULT_CALLER_CACHE_MAX_ENTRIES,
     CallerNamespacesUnavailable,
     bind_caller_cache_to_access_tables,
+    bind_caller_cache_to_memberships,
 )
 from threetears.agent.acl.cache import (
     AclCache,
@@ -215,6 +231,12 @@ from threetears.agent.acl.query_visibility import (
     customer_scope_visibility_clause,
     three_scope_visibility_clause,
 )
+from threetears.agent.acl.shape_answers import (
+    AccessShapeAnswers,
+    ShapeAnswer,
+    ShapeAnswerOutcome,
+    ShapeDependencies,
+)
 from threetears.agent.acl.tables import (
     RBAC_L1_COLLECTIONS,
     RBAC_L1_TABLE_NAMES,
@@ -239,6 +261,13 @@ from threetears.agent.acl.types import (
 from threetears.agent.acl.write_eviction import evict_after_rbac_write
 
 __all__ = [
+    "AccessShape",
+    "AccessShapeAnswers",
+    "ShapeActors",
+    "ShapeAnswer",
+    "ShapeAnswerOutcome",
+    "ShapeDependencies",
+    "bind_caller_cache_to_memberships",
     "INTERNAL_AUDIENCE",
     "AccessDenied",
     "ACCESS_TABLES",

@@ -32,7 +32,12 @@ from threetears.epoch import (
 )
 
 from threetears.agent.acl.access_tables import ACCESS_TABLES, DegradedEvictions, bind_acl_cache_to_access_tables
-from threetears.agent.acl.caller_cache import CallerAccessCache, bind_caller_cache_to_access_tables
+from threetears.agent.acl.caller_cache import (
+    CallerAccessCache,
+    bind_caller_cache_to_access_tables,
+    bind_caller_cache_to_memberships,
+)
+from threetears.agent.acl.collections import GroupMemberCollection
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -40,11 +45,15 @@ if TYPE_CHECKING:
     from threetears.core.collections.registry import CollectionRegistry
 
     from threetears.agent.acl.cache import AclCache
+    from threetears.agent.acl.shape_answers import ShapeDependencies
 
 __all__ = [
     "AccessTableFollowing",
+    "ShapeAnswersFollowing",
+    "follow_access_shape_answers",
     "follow_access_tables",
     "follow_caller_access_cache",
+    "follow_caller_memberships",
 ]
 
 
@@ -211,6 +220,150 @@ def _bound_and_followed(
     return remove
 
 
+def follow_caller_memberships(
+    registry: CollectionRegistry,
+    cache: CallerAccessCache[Any],
+    reader: GenerationWatcher,
+    *,
+    grace: timedelta = DEFAULT_BROADCAST_GRACE,
+    restart_delay: timedelta = DEFAULT_WATCH_RESTART_DELAY,
+    max_restart_delay: timedelta = MAX_WATCH_RESTART_DELAY,
+) -> AccessTableFollowing:
+    """bind a cache of each caller's own membership rows to ``group_members`` and follow that table alone.
+
+    For an answer that is a principal's direct memberships (a person's access shape): only a
+    ``group_members`` row naming the principal drops it (:func:`bind_caller_cache_to_memberships`).
+    Call once ``registry``'s invalidation listener is running; stop the handle before it stops.
+
+    :param registry: the registry whose listener hears the rows, and which follows the table
+    :ptype registry: CollectionRegistry
+    :param cache: the per-caller cache to drop from
+    :ptype cache: CallerAccessCache
+    :param reader: reads and watches the epoch bucket
+    :ptype reader: GenerationWatcher
+    :param grace: how long a watch waits for an advance's rows before judging them missed
+    :ptype grace: timedelta
+    :param restart_delay: a failing watch's first wait before it starts again
+    :ptype restart_delay: timedelta
+    :param max_restart_delay: the longest wait between a failing watch's attempts
+    :ptype max_restart_delay: timedelta
+    :return: the handle that stops both
+    :rtype: AccessTableFollowing
+    :raises RuntimeError: when the registry's invalidation listener is not running
+    """
+
+    def bind(degraded: DegradedEvictions) -> Callable[[], None]:
+        unbind = bind_caller_cache_to_memberships(registry, cache, degraded=degraded)
+
+        def remove() -> None:
+            cache.followed_by(None)
+            unbind()
+
+        return remove
+
+    following = _bind_and_follow(
+        registry,
+        bind,
+        reader,
+        grace=grace,
+        restart_delay=restart_delay,
+        max_restart_delay=max_restart_delay,
+        tables=(GroupMemberCollection.schema.name,),
+    )
+    cache.followed_by(lambda: following.follower.watching)
+    return following
+
+
+@dataclass(frozen=True)
+class ShapeAnswersFollowing:
+    """access-shape answers' dependencies bound and their tables followed; :meth:`stop` undoes both.
+
+    :ivar follower: the watches, whose :attr:`~threetears.epoch.TableFollower.health` a caller can report
+    """
+
+    follower: TableFollower
+    _unbind: Callable[[], None]
+    _degraded: DegradedEvictions
+
+    @property
+    def healthy(self) -> bool:
+        """whether every table's watch is running and pushed since it last failed.
+
+        :return: the follower's health
+        :rtype: bool
+        """
+        return self.follower.healthy
+
+    @property
+    def degraded(self) -> DegradedEvictions:
+        """the rows heard that did not say what they reach, by table.
+
+        :return: the record
+        :rtype: DegradedEvictions
+        """
+        return self._degraded
+
+    async def stop(self) -> None:
+        """stop the watches, then unbind; nothing is served or kept after. Idempotent.
+
+        :return: nothing
+        :rtype: None
+        """
+        await self.follower.stop()
+        self._unbind()
+
+
+def follow_access_shape_answers(
+    registry: CollectionRegistry,
+    dependencies: ShapeDependencies,
+    reader: GenerationWatcher,
+    *,
+    grace: timedelta = DEFAULT_BROADCAST_GRACE,
+    restart_delay: timedelta = DEFAULT_WATCH_RESTART_DELAY,
+    max_restart_delay: timedelta = MAX_WATCH_RESTART_DELAY,
+) -> ShapeAnswersFollowing:
+    """follow every table access-shape answers derive from, and bind their dependencies to the rows.
+
+    The tables are followed on the registry first and the dependencies bound in the same step, with
+    nothing awaited between, so they start from the registry's marks and hear every row after. Call
+    once ``registry``'s invalidation listener is running; stop the handle before it stops. Answers are
+    served and kept only while every watch is running.
+
+    :param registry: the registry whose listener hears the rows, and which follows the tables
+    :ptype registry: CollectionRegistry
+    :param dependencies: the answers' dependencies
+    :ptype dependencies: ShapeDependencies
+    :param reader: reads and watches the epoch bucket
+    :ptype reader: GenerationWatcher
+    :param grace: how long a watch waits for an advance's rows before judging them missed
+    :ptype grace: timedelta
+    :param restart_delay: a failing watch's first wait before it starts again
+    :ptype restart_delay: timedelta
+    :param max_restart_delay: the longest wait between a failing watch's attempts
+    :ptype max_restart_delay: timedelta
+    :return: the handle that stops both
+    :rtype: ShapeAnswersFollowing
+    :raises RuntimeError: when the registry's invalidation listener is not running
+    """
+    follower = TableFollower(
+        registry,
+        reader,
+        dependencies.tables,
+        grace=grace,
+        restart_delay=restart_delay,
+        max_restart_delay=max_restart_delay,
+    )
+    follower.start()
+    unbind = dependencies.bind()
+    dependencies.followed_by(lambda: follower.watching)
+
+    def remove() -> None:
+        dependencies.followed_by(None)
+        unbind()
+
+    return ShapeAnswersFollowing(follower=follower, _unbind=remove, _degraded=dependencies.degraded)
+
+
 def _bind_and_follow(
     registry: CollectionRegistry,
     bind: Callable[[DegradedEvictions], Callable[[], None]],
@@ -219,6 +372,7 @@ def _bind_and_follow(
     grace: timedelta,
     restart_delay: timedelta,
     max_restart_delay: timedelta,
+    tables: tuple[str, ...] = ACCESS_TABLES,
 ) -> AccessTableFollowing:
     """bind a derived cache through ``bind`` and follow the access tables; see :func:`follow_access_tables`.
 
@@ -235,6 +389,8 @@ def _bind_and_follow(
     :ptype restart_delay: timedelta
     :param max_restart_delay: the longest wait between attempts
     :ptype max_restart_delay: timedelta
+    :param tables: the tables to follow: the access tables unless the cache derives from fewer
+    :ptype tables: tuple[str, ...]
     :return: the handle that stops both
     :rtype: AccessTableFollowing
     :raises RuntimeError: when the registry's invalidation listener is not running
@@ -249,7 +405,7 @@ def _bind_and_follow(
     follower = TableFollower(
         registry,
         reader,
-        ACCESS_TABLES,
+        tables,
         grace=grace,
         restart_delay=restart_delay,
         max_restart_delay=max_restart_delay,
