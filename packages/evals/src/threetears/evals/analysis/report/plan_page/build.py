@@ -29,7 +29,6 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from threetears.evals.analysis.campaign_title import report_input_title
-from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report.figure_keys import WEAKEST_PREFIX, keys_in, render, weakest_interval_words
 from threetears.evals.analysis.report.plan_page.charting import measure_words
 from threetears.evals.analysis.report.plan_page.drawable import plan_look
