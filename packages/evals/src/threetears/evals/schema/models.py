@@ -5358,6 +5358,25 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
             )
         return self
 
+    @property
+    def answers_nothing(self) -> bool:
+        """Whether the row holds only unanswered calls: it counts no answered call, no token and no dollar, and counts
+        calls that went unanswered (``RoleUsageLedger.add_unanswered`` on a key no answered call reached).
+
+        Such a row is no spend at all, so it neither prices nor unprices a total (owner, 2026-10-27: unanswered calls
+        add nothing to cost and never unprice it): :func:`~threetears.evals.kernel.usage_capture.blended_cost` and the
+        run summary's tallies leave it out, and its counts still reach the bundle's unanswered census.
+        """
+        return (
+            self.call_count is None
+            and self.cost_usd is None
+            and self.prompt_tokens is None
+            and self.completion_tokens is None
+            and self.reasoning_tokens is None
+            and self.provider_units is None
+            and (self.unanswered_retried is not None or self.unanswered_lost is not None)
+        )
+
     @model_validator(mode="after")
     def _reasons_count_the_unanswered(self) -> RoleUsage:
         """Refuse reasons with no unanswered count beside them, a reason counting no call, or more reasons than calls.

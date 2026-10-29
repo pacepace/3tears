@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an unanswered call never unprices a cell's cost
+
+**Fixed:** `RoleUsageLedger.add_unanswered` on a key no `add` reached (a lost call names no served model, and its host
+may name no price source) made a row of its own with no dollars, and a cell's blended cost read that row as an
+unpriced call, so one lost call made the whole `EvalResult.cost_usd` None (owner ruling 2026-10-27: unanswered calls
+add nothing to cost and never unprice it). The ledger's rows now fold such counts into the row of the same model,
+provider, unit, actor and purpose that counts answered calls, beside its `call_count`, where the unanswered census
+reads them as one share. A model that answered nothing keeps a row of its own (`RoleUsage.answers_nothing`, new),
+which the blended cost and the run summary's tallies leave out: its spend stays unreported, never 0.
+
 ### evals: a memo over a bundle shape this build no longer reads falls back to the code-only page; a campaign line maps its aspects to their runs
 
 **Changed:** `report_read` and the campaign's report no longer refuse a campaign whose newest analysis is a memo frozen

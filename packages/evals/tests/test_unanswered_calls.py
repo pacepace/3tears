@@ -42,6 +42,7 @@ from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CandidateTelemetry, CellSink, VariantConfig
 from threetears.evals.kernel.cassettes import CellCassettes
 from threetears.evals.kernel import RoleUsageLedger
+from threetears.evals.kernel.usage_capture import blended_cost
 from threetears.evals.run.runner import RunnerOptions, execute_run
 from threetears.evals.schema.models import EvalResult, EvalRun, JudgedArtifact, RoleUsage
 
@@ -138,17 +139,39 @@ def test_the_ledger_counts_unanswered_calls_on_the_row_of_the_calls_they_sit_bes
     ledger.add_unanswered(model="m", lost=2, reasons={"timeout": 2})
     ledger.add_unanswered(model="m", lost=0)
 
-    answered, lost = ledger.rows()
+    # The lost calls named no served model and no price source; they fold into their model's answered row, beside its
+    # call_count (owner, 2026-10-27: unanswered calls add nothing to cost and never unprice it). A separate row of
+    # unanswered calls alone, as this test once expected, unpriced the cell's cost.
+    (row,) = ledger.rows()
 
-    assert (answered.call_count, answered.cost_usd, answered.unanswered_retried, answered.unanswered_lost) == (
-        3,
-        0.02,
-        1,
-        None,
-    ), "a retried count sits beside the answered calls and moves none of their spend"
-    assert answered.unanswered_reasons == {"refused": 1}
-    assert (lost.served_model, lost.call_count, lost.cost_usd, lost.unanswered_retried) == (None, None, None, None)
-    assert (lost.unanswered_lost, lost.unanswered_reasons) == (2, {"timeout": 2}), "a counted zero adds to the count"
+    assert (row.call_count, row.cost_usd, row.unanswered_retried, row.unanswered_lost) == (3, 0.02, 1, 2), (
+        "the unanswered counts sit beside the answered calls and move none of their spend; a counted zero adds"
+    )
+    assert row.unanswered_reasons == {"refused": 1, "timeout": 2}
+
+
+def test_a_lost_call_recorded_before_its_models_answered_calls_folds_into_their_row() -> None:
+    ledger = RoleUsageLedger(role="candidate")
+    ledger.add_unanswered(model="m", lost=1, reasons={"timeout": 1})
+    ledger.add(model="m", served_model="m-1", prompt_tokens=1, completion_tokens=1, reasoning_tokens=None, cost_usd=0.5)
+
+    (row,) = ledger.rows()
+
+    assert (row.served_model, row.call_count, row.cost_usd, row.unanswered_lost) == ("m-1", 1, 0.5, 1)
+
+
+def test_unanswered_calls_never_unprice_a_cells_cost() -> None:
+    ledger = RoleUsageLedger(role="candidate")
+    ledger.add(model="m", prompt_tokens=1, completion_tokens=1, reasoning_tokens=None, cost_usd=0.25)
+    ledger.add_unanswered(model="m", served_model="other", lost=2)
+    ledger.add_unanswered(model="never-answered", lost=1)
+
+    rows = ledger.rows()
+    alone = [row for row in rows if row.answers_nothing]
+
+    assert [row.model for row in alone] == ["never-answered"], "a model that answered nothing keeps its own row"
+    assert (alone[0].call_count, alone[0].cost_usd) == (None, None), "its spend stays unreported, never 0"
+    assert blended_cost(rows, {"candidate"}) == 0.25, "the cell's cost is its answered calls', still priced"
 
 
 def test_unanswered_calls_land_on_a_row_keyed_by_provider_and_actor_as_add_keyed_it() -> None:

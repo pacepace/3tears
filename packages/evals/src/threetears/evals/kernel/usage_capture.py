@@ -526,12 +526,16 @@ class RoleUsageLedger:
         (``RoleUsage.unanswered_retried`` and ``unanswered_lost`` say what is counted and what is not). Neither touches
         the row's ``call_count``, tokens or dollars: what an answered call cost is folded by :meth:`add`, and a call
         never answered costs nothing the row can state. ``None`` leaves a count as it was, never as 0, so a host that
-        counts only lost calls says nothing of retried ones; 0 says it counted, and none went unanswered.
+        counts only lost calls says nothing of retried ones; 0 says it counted, and none went unanswered. A row these
+        reach that no :meth:`add` reached holds only unanswered calls (``RoleUsage.answers_nothing``): its spend stays
+        unreported, never 0, and a cell's cost leaves it out, so it never unprices that cost.
 
         The row is the one :meth:`add` keys on ``model``, ``served_model``, ``provider``, ``provider_unit``,
-        ``price_source``, ``actor_id`` and ``purpose``: pass what that call passed for the calls these sit beside, so they land on its row. A lost call named no served model, so its
-        count goes on the row whose ``served_model`` is ``None``; a row that holds only unanswered calls states no
-        spend, and its ``call_count`` stays ``None``.
+        ``price_source``, ``actor_id`` and ``purpose``: pass what that call passed for the calls these sit beside, so they land on its row. A lost call named no served model, and its
+        host may name no price source: :meth:`rows` folds counts that reached a key no :meth:`add` did into the row of
+        the same model, provider, unit, actor and purpose that counts answered calls. Where that model answered nothing,
+        the counts stay a row of their own that states no spend (``RoleUsage.answers_nothing``), which no cost reads, so
+        an unanswered call never unprices a cell's cost (owner, 2026-10-27).
 
         :param model: The model the calls were sent to, as :meth:`add` names it.
         :ptype model: str | None
@@ -677,7 +681,46 @@ class RoleUsageLedger:
                     unanswered_reasons=dict(totals.unanswered_reasons) or None,
                 )
             )
-        return rows
+        return _unanswered_folded(rows)
+
+
+def _unanswered_folded(rows: list[RoleUsage]) -> list[RoleUsage]:
+    """``rows`` with each row that holds only unanswered calls folded into the row of the calls it sits beside.
+
+    A lost call names no served model and its host may name no price source, so it reaches a key no answered call
+    did; left there it would be a row of its own, beside its model's answered row and apart from the share it belongs
+    in. It joins the first row, in first-seen order, of the same model, provider, unit, actor and purpose that counts
+    answered calls, wherever in the order either was seen. Where no such row exists every call of that model went
+    unanswered, and the row stays its own (:attr:`~threetears.evals.schema.models.RoleUsage.answers_nothing`), which
+    no cost reads.
+    """
+
+    def same_calls(row: RoleUsage) -> tuple[Any, ...]:
+        return (row.model, row.provider, row.provider_unit, row.actor_id, row.purpose)
+
+    answered: dict[tuple[Any, ...], int] = {}
+    for at, row in enumerate(rows):
+        if not row.answers_nothing:
+            answered.setdefault(same_calls(row), at)
+    folded = list(rows)
+    dropped: set[int] = set()
+    for at, row in enumerate(rows):
+        into_at = answered.get(same_calls(row)) if row.answers_nothing else None
+        if into_at is None:
+            continue
+        into = folded[into_at]
+        reasons = dict(into.unanswered_reasons or {})
+        for word, count in (row.unanswered_reasons or {}).items():
+            reasons[word] = reasons.get(word, 0) + count
+        folded[into_at] = into.model_copy(
+            update={
+                "unanswered_retried": sum_optional_tokens(into.unanswered_retried, row.unanswered_retried),
+                "unanswered_lost": sum_optional_tokens(into.unanswered_lost, row.unanswered_lost),
+                "unanswered_reasons": reasons or None,
+            }
+        )
+        dropped.add(at)
+    return [row for at, row in enumerate(folded) if at not in dropped]
 
 
 def async_delivery_usage(
@@ -765,7 +808,8 @@ def blended_cost(usage: list[RoleUsage], cost_roles: Collection[UsageRole]) -> f
     :return: The total at full float precision, or ``None`` when a model call in those roles went unpriced.
     :rtype: float | None
     """
-    rows = [row for row in usage if row.role in cost_roles]
+    # A row holding only unanswered calls is no spend (RoleUsage.answers_nothing): it neither prices nor unprices.
+    rows = [row for row in usage if row.role in cost_roles and not row.answers_nothing]
     if any(row.cost_usd is None and row.role != "external" for row in rows):
         return None
     return math.fsum(row.cost_usd for row in rows if row.cost_usd is not None)
