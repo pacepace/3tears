@@ -33,6 +33,7 @@ from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
 from threetears.core.backends.schema_sql import PGVECTOR_TYPES, json_default
 from threetears.core.cache.base import build_select_clause, bulk_columns, exact_decimal_type, stored_decimal
 from threetears.core.sql_fragments import quote_identifier
+from threetears.core.utils.cpu_quota import effective_cpu_count
 from threetears.observe import contain, get_logger
 
 __all__ = [
@@ -423,7 +424,10 @@ class DuckDBBackend:
         new_tables = 0
         with self._db_lock:
             if not self._initialized:
-                self._db = duckdb.connect(":memory:", config=dict(_DATABASE_CONFIG))
+                # ``threads`` on the CPU quota, not the machine's cores: DuckDB's default is one thread
+                # per core, 32 on a large node, which throttles a pod limited to a few CPUs for most of
+                # every period (:mod:`threetears.core.utils.cpu_quota`)
+                self._db = duckdb.connect(":memory:", config={**_DATABASE_CONFIG, "threads": effective_cpu_count()})
             for table in sa_metadata.tables.values():
                 if table.name in self._schema_info:
                     log.debug(f"DuckDB table already registered, skipping: {table.name}")

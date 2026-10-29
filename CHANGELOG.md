@@ -8,6 +8,42 @@ packages (bumped in lock-step).
 
 ## v0.82.0 -- 2026-10-28
 
+### agent-tools, nats: a replica joins its call group when it can answer, and leaves it without dropping a call
+
+**Added:** `ToolServer.hold_calls()`, `open_calls()`, `leave_calls()` and `serving_calls`, plus `NatsClient.drain(sub,
+timeout=)`. A pod's replicas share one queue group on the call subject, and NATS hands each call to any member, so a
+rolling deploy refused calls at both ends. A new replica joined before it could answer and refused its share with
+`TOOL_NOT_READY` (503). An old replica stopped what its tools answer from while it was still in the group. Seen on
+cobalt dev: 54 503s in a few hundred reads while a two-replica pod rolled. A pod that calls `hold_calls()` before
+`serve()` still connects, binds its probe subject and registers, but subscribes the call subject only when it calls
+`open_calls()`; until then its siblings take every call. `leave_calls()` drains the call subscription: the server
+stops routing to the replica, and every call it had already routed there is answered (bounded, 10 s by default).
+`shutdown()` now leaves first. `unsubscribe` cancelled any call still running, so its caller got no answer. The
+tool-pod bootstrap gains a `calls_open` readiness check on `serving_calls`, so a replica that holds its calls, or has
+begun to leave, reports not ready. A pod that never holds its calls joins at once, before it registers, as before.
+
+### core, agent-tools: a tool pod's native pools follow its CPU quota, not the node's cores
+
+**Added:** `threetears.core.utils.cpu_quota`: `effective_cpu_count()` reads the cgroup CPU quota (v2 `cpu.max`,
+else v1 `cpu.cfs_quota_us` / `cpu.cfs_period_us`), rounded up to a whole CPU and capped at the machine's cores;
+with no quota, `os.cpu_count()`. `bound_native_threads(n)` sizes pyarrow's CPU pool to `n` and its I/O pool to
+`2n`, between 2 and 8. `default_executor_workers(n)` is the standard library's executor rule, `min(32, n + 4)`, on
+the quota.
+
+**Fixed:** in a pod, `os.cpu_count()` is the node's cores (32 on cobalt's), and pyarrow, DuckDB and the asyncio
+default executor sized themselves from it. On a 4-CPU limit those threads spend the quota early in each 100 ms
+period, and the kernel then freezes every thread in the pod for the rest of the period, the event loop included.
+The reports tool pod logged 50-100 ms loop stalls during a full LSF pull (401 throttled periods, 53 s throttled).
+`ToolServerBootstrap.run` now sizes pyarrow and installs a bounded default executor at boot, and logs the effective
+count once (`<service> sized to its CPU quota`). The DuckDB L1 backend opens with `threads` set to the quota.
+
+### core: a proven L3 request is encoded once
+
+**Changed:** `NatsProxyL3Backend.encode_request` appended the proof by encoding the whole presented body a second
+time. It now splices the proof field onto the first encoding. The wire bytes are unchanged, and tests pin them
+byte for byte, a 1,000-row copy included. That is one fewer JSON pass per request (about 1 ms of 6 for a
+1,000-row page).
+
 ### iam: client-IP resolution can skip every trusted hop
 
 **Added:** `ForwardedForMode.RIGHTMOST_UNTRUSTED`, passed as `mode=` to `resolve_client_ip` and
