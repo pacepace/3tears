@@ -58,6 +58,15 @@
 # callers.
 
 [[release]]
+version = "0.84.0"
+since = "v0.83.0"
+summary = """
+An idle registry that no longer rewrites its catalog, L3 reads resent past a hub replica that stopped, and drift
+histograms that cover minutes: no 3tears-evals name has moved or been removed since 0.83.0, and no judge wording
+changed.
+"""
+
+[[release]]
 version = "0.83.0"
 since = "v0.82.0"
 summary = """

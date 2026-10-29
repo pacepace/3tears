@@ -37,6 +37,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Final
 
 from threetears.observe import BuildOnce, get_logger
+from threetears.scheduled_jobs.metrics import TIMING_BUCKETS
 
 try:
     from prometheus_client import REGISTRY, Counter, Histogram
@@ -225,11 +226,13 @@ class WakeMetricsEmitter:
         self._drift = Histogram(
             WAKE_DRIFT_SECONDS,
             "Wake fire drift (actual_fired_at - scheduled_fire_at) in seconds",
+            buckets=TIMING_BUCKETS,
             **_kwargs(()),
         )
         self._yield_duration = Histogram(
             WAKE_YIELD_DURATION_SECONDS,
             "Wake-yield duration (actual_fired_at -> yield point) in seconds",
+            buckets=TIMING_BUCKETS,
             **_kwargs(()),
         )
         self._webhook_received = Counter(

@@ -559,6 +559,17 @@ _ALLOWLIST = (
         rationale=("synced from NATS KV on load, not a local-only cache"),
     ),
     DictStateAllowlistEntry(
+        file="packages/registry/src/threetears/registry/catalog.py",
+        class_name="ToolCatalog",
+        attr_name="_written",
+        rationale=(
+            "what THIS process last wrote to each catalog key and saw land, key -> content digest, so a "
+            "re-registration that changes nothing is not written again. it describes this process's own "
+            "writes, so no other replica may share it; it is cleared whenever a bucket is bound and dropped "
+            "per key on any failed write or delete, and a restart correctly starts it empty and writes once"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/registry/src/threetears/registry/health.py",
         class_name="HeartbeatSubscriber",
         attr_name="_heard_at",

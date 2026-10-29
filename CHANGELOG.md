@@ -6,6 +6,57 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.84.0 -- 2026-10-29
+
+### registry: an idle platform no longer rewrites the tool catalog on every heartbeat
+
+**Fixed:** every tool pod re-publishes its manifest with each 15 s heartbeat, and every registry replica hears it.
+`ToolCatalog.register` wrote each of the pod's tools to `KV_tool_catalog` every time and logged `registered tool in
+catalog` for each, because the value carries when the copy last registered and when each definition was last
+announced, so no two writes were alike. On cobalt dev that was about 91 KV writes/s and 45 log lines/s per replica
+with nothing happening. The catalog now writes an entry only when its content changes (a copy, a definition, when a
+definition was first announced, a status, the publisher mark); the liveness instants alone are not written. They
+still advance in memory on every registration, so routing, discovery and the heartbeat sweep judge staleness from
+the latest heartbeat as before, and per-pod liveness stays in the heartbeat rows. A write that fails is retried on
+the entry's next registration, so a replica out of rotation for failed writes still comes back. Once writes
+have failed enough to take a replica out of rotation, every registration writes its entry again, changed or not, so
+an idle platform's next heartbeat still brings the write that puts it back. Short of that, an idle re-registration
+makes no write, so during a bucket outage it is answered as registered instead of `CATALOG_UNAVAILABLE`; the catalog
+routes from memory either way. The persisted shape
+is unchanged, so replicas on either version share the bucket. Registration stays out of a queue group: each
+replica routes from its own in-memory catalog. `registered tool in catalog`, `tool pod registration authorized` and
+`registration completed` log at INFO only for a registration that changed something, DEBUG otherwise.
+
+**Changed:** `ToolCatalog.register` returns `bool`, whether the registration changed the entry, which it then writes
+when a bucket is bound (it returned `None`).
+
+**Changed:** a catalog warm-loaded from the bucket carries liveness instants as of each entry's last content change.
+Its copies load unavailable, as before, and its pod's next heartbeat and registration revive them; a definition the
+pod stopped announcing is dead at load rather than living out the window, and a loaded copy whose pod has no heartbeat
+row is swept at the first sweep and re-added by the pod's next registration.
+
+### channels: a WebSocket peer that leaves is not a contained error
+
+**Fixed:** `WebSocketHandler` recorded every client disconnect as a contained error with a traceback (about 3 an hour
+in Grafana's "Contained errors" panel), because a socket reports one by raising from `receive_text`. A read that
+raises an exception carrying close code 1000, 1001, 1005 or 1006 (starlette's `WebSocketDisconnect` does) is now an
+ordinary departure, logged at DEBUG, during authentication and after it. Any other failure, including a close with
+another code, is still contained.
+
+**Added:** `threetears_websocket_peer_disconnects_total{close_code, phase}` counts every peer disconnect, so a mass of
+abnormal drops (1006) shows on a dashboard. `close_code` is the protocol's own code (1000-1015), `4xxx` for a code a
+client application chose, or `other`; `phase` is `authenticating` or `connected`.
+
+### scheduled-jobs, agent-wake: the drift histograms cover minutes
+
+**Fixed:** `threetears_scheduled_jobs_drift_seconds` used the client library's default buckets, which end at 10 s. A
+fire runs on the next tick, about 30 s apart, so ordinary drift landed in `+Inf` and the dashboard's p95 read 10 s
+whatever the drift was. Its buckets now run from 0.5 s to 600 s, and so do those of
+`threetears_agent_wake_drift_seconds` and `threetears_agent_wake_yield_duration_seconds`, which had the same defaults.
+
+**Added:** `threetears.scheduled_jobs.metrics.TIMING_BUCKETS`, the one bucket tuple both packages use, so their
+dashboards move together.
+
 ### core: an L3 read a stopped hub replica never answered is sent again; a write is not
 
 **Fixed:** `NatsProxyL3Backend` raised the first time a request went unanswered, so a hub rollout that stopped the

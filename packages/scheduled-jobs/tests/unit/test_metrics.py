@@ -63,6 +63,41 @@ class TestEmitterSmoke:
         assert emitter.available is False
 
 
+class TestDriftBuckets:
+    """the drift histogram resolves the range fires actually drift over."""
+
+    def test_drift_of_several_minutes_lands_in_a_finite_bucket(self) -> None:
+        """a fire waits for the next tick, roughly half a minute apart, and a backlog drains over
+        later ticks, so drift runs from seconds to minutes. a histogram whose last finite bucket is
+        10 s puts every one of those in ``+Inf``, and the dashboard's p95 then reads 10 s whatever
+        the real drift is.
+        """
+        pytest.importorskip("prometheus_client")
+        from prometheus_client import CollectorRegistry
+
+        registry = CollectorRegistry()
+        emitter = ScheduledJobsMetricsEmitter(registry=registry)
+        drifts = (25.0, 45.0, 100.0, 250.0)
+        for seconds in drifts:
+            emitter.observe_drift(seconds)
+        bounds = sorted(
+            float(sample.labels["le"])
+            for metric in registry.collect()
+            for sample in metric.samples
+            if sample.name == "threetears_scheduled_jobs_drift_seconds_bucket" and sample.labels["le"] != "+Inf"
+        )
+        assert bounds[-1] >= 300.0, f"the last finite bucket is {bounds[-1]} s; drift of minutes reads as +Inf"
+        for seconds in drifts:
+            # each observation is told apart from the next: a bucket boundary sits between it and
+            # twice it, so a quantile over these is not pinned to one bucket edge
+            assert any(seconds <= bound < seconds * 2 for bound in bounds), (
+                f"no bucket resolves a drift of {seconds} s: {bounds}"
+            )
+        # sub-second drift is still resolved: a prompt fire must not read as seconds late
+        assert bounds[0] <= 1.0
+        emitter.unregister_from_registry()
+
+
 class TestConcurrentFirstUse:
     def test_emitters_first_asked_for_on_several_threads_register_once(self) -> None:
         """concurrent first callers for one registry share one emitter and raise nothing.
