@@ -16,6 +16,7 @@ import re
 from collections.abc import Collection
 from importlib.resources import files
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
+from threetears.evals.analysis.report.chart_svg import AS_TABLE_NOTE, CHART_STYLE, chart_drawing
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.svg import GLYPH_STYLE, interval_glyph_svg
 from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
@@ -156,7 +157,8 @@ _PROSE_CELL = 40
 
 def page_head(title: str, *, static: bool) -> list[str]:
     """The page's ``<head>``: its title, the kit's font links (none on a static page) and the stylesheet — the kit's,
-    then the page's own and the charts'. Nothing in it comes from a field but the title, escaped."""
+    then the page's own and the glyphs', and on a static page its drawn charts'. Nothing in it comes from a field but
+    the title, escaped."""
     return [
         "<!doctype html>",
         '<html lang="en">',
@@ -165,7 +167,7 @@ def page_head(title: str, *, static: bool) -> list[str]:
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         f"<title>{escape(one_line(title))}</title>",
         *([] if static else [_FONT_LINKS]),
-        f"<style>{_KIT_CSS}{_PAGE_STYLE}{GLYPH_STYLE}</style>",
+        f"<style>{_KIT_CSS}{_PAGE_STYLE}{GLYPH_STYLE}{CHART_STYLE if static else ''}</style>",
         "</head>",
     ]
 
@@ -396,9 +398,12 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bo
     the table is visually hidden, read by a screen reader; where the chart is empty (no script ran, or the kit refused
     the data) or there is no chart to draw, the table is the figure, in its own scrolling frame.
 
-    A static page writes no ``div.chart`` at all, so no script is wanted to draw one, no empty box stands where it
-    would be, and the one rule that hides the table (``.chart:not(:empty) + .chart-values``) never matches: every
-    figure is its title and its table.
+    A static page writes no ``div.chart`` at all, so no script is wanted to draw one and no empty box stands where it
+    would be: it draws the chart here, as inline SVG
+    (:func:`~threetears.evals.analysis.report.chart_svg.chart_drawing`), in a ``div.chart-drawn`` the hiding rule
+    (``.chart:not(:empty) + .chart-values``) never matches, so the table stays in sight under the picture. A chart
+    not drawn there (a report's interval rows, a gate matrix, a lattice, example cards) says in one line that it is
+    shown as its table.
 
     Without ``figcaption`` the figure carries no visible title, for a figure whose heading the page writes beside it
     (a section's headline); its table keeps the title as its caption, for a screen reader."""
@@ -407,7 +412,9 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bo
     body = "".join("<tr>" + "".join(f"<td>{escape(cell)}</td>" for cell in row) + "</tr>" for row in rows)
     drawn = None if static else block.kit_chart()
     chart = ""
-    if drawn is not None:
+    if static:
+        chart = chart_drawing(block) or f'<p class="chart-note">{escape(AS_TABLE_NOTE)}</p>'
+    elif drawn is not None:
         kind, data = drawn
         chart = (
             f'<div class="chart" id="{escape(chart_id)}" data-kind="{escape(kind)}" '

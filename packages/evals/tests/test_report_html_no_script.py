@@ -20,6 +20,10 @@ A chart's labels, titles, tooltips and every other string in its data reach the 
 ``data-chart`` attribute, escaped there, so markup in them is never markup on the page; and once the kit has drawn the
 charts in headless Chromium (``integration``), no element of the injected markup exists in the document and every
 tooltip holds nothing but text.
+
+The static page, for a host that runs nothing, draws the charts on the server instead, as inline SVG: there every
+string a chart draws is escaped text in an SVG element, the drawings are made of shapes and text alone, and with
+JavaScript off a drawing shows at its chart's width.
 """
 
 from __future__ import annotations
@@ -27,11 +31,14 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
 from threetears.evals.analysis import KIT_CHARTS, campaign_report_html, report_html
+from threetears.evals.analysis.report import Report
+from threetears.evals.analysis.report.blocks import ChartBlock, ChartKind, CostQualityPoint
+from threetears.evals.analysis.report.chart_svg import AS_TABLE_NOTE
 from packages.evals.tests.hostile_page_support import (
     HOSTILE,
     HOSTILE_ASPECT,
@@ -188,6 +195,77 @@ def test_interval_rows_reach_the_page_as_their_table_alone() -> None:
     figure = page[page.index('data-figure="interval_rows"') :]
     figure = figure[: figure.index("</figure>")]
     assert 'class="chart"' not in figure and 'class="tbl chart-values"' in figure
+
+
+#: The kinds a static page shows as their table, saying so: a report's interval rows, which the kit does not draw
+#: either, and the kinds the kit lays out as HTML rather than drawing.
+_SHOWN_AS_TABLES = {"interval_rows", "gate_matrix", "lattice", "examples"}
+
+#: Every element a static page's drawing is made of: SVG's shapes and text, and the legend's and small multiples'
+#: own boxes and headings. Nothing that loads, embeds, links or runs.
+_DRAWING_TAGS = {"div", "span", "h4", "svg", "g", "title", "rect", "line", "path", "circle", "text", "tspan"}
+
+
+def _with_cost_quality(report: Report) -> Report:
+    """``report`` with a cost/quality chart too, its arms named in markup, so it holds every kind a report can."""
+    point = {"cost": 0.01, "cost_low": 0.008, "cost_high": 0.012, "pass_rate_low": 70, "pass_rate_high": 90}
+    chart = ChartBlock(
+        section="memo",
+        finding=0,
+        chart="cost_quality",
+        title=HOSTILE,
+        unit="usd",
+        points=[
+            CostQualityPoint(arm=HOSTILE, tag="P", short_name=HOSTILE, pass_rate=80, **point),
+            CostQualityPoint(arm=f"{HOSTILE} B", tag="A", short_name=f"{HOSTILE} B", pass_rate=85, **point),
+        ],
+    )
+    return report.model_copy(update={"blocks": [*report.blocks, chart]})
+
+
+def test_a_static_page_draws_its_charts_as_svg_and_runs_nothing() -> None:
+    """The static page of the hostile report, whose every chart label carries markup: every kind the kit draws as a
+    picture is drawn on the server as inline SVG, each figure holding its drawing or the one line saying it is shown
+    as its table, every label in the drawings escaped text, and still no script, handler, link or URL anywhere."""
+    page = report_html(_with_cost_quality(hostile_report()), static=True)
+    assert_static(page)
+    read = parsed(page)
+    drawn = [dict(attrs)["data-kind"] for _, attrs in read.tags if "chart-drawn" in (dict(attrs).get("class") or "")]
+    kinds = {"outcome_bar", "interval_rows", "cost_quality", *(chart["chart"] for chart in hostile_kit_charts())}
+    assert kinds == set(get_args(ChartKind)), "the hostile report carries every kind a stored report can"
+    assert set(drawn) == {"bars", "scatter_frontier", *(kind for kind in KIT_CHARTS if kind not in _SHOWN_AS_TABLES)}
+    assert drawn.count("scatter_frontier") == 2, "a cost/quality chart is drawn as the kit's scatter"
+    assert page.count(f'<p class="chart-note">{AS_TABLE_NOTE}</p>') == len(_SHOWN_AS_TABLES), "never silently"
+    assert "svg" in [tag for tag, _ in read.tags]
+    for chunk in re.findall(r'<div class="chart-drawn".*?</svg></div>', page, flags=re.DOTALL):
+        tags = {tag for tag, _ in parsed(chunk).tags}
+        assert tags <= _DRAWING_TAGS, f"a drawing made of {sorted(tags - _DRAWING_TAGS)}"
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in chunk, "a chart's labels and tooltips are drawn as words"
+    assert "xmlns" not in page and "url(#" not in page, "a drawing references nothing, not even its own namespace"
+
+
+@pytest.mark.integration
+def test_a_static_page_s_drawings_render_with_no_script_and_no_injected_element(tmp_path: Path) -> None:
+    """In headless Chromium with JavaScript off, at a desktop width and a phone's: the hostile static page's every
+    drawing shows one picture at its chart's width, none wider than its frame, and no element the markup in the
+    labels tried to add exists."""
+    reason = chromium_unavailable()
+    if reason is not None:
+        pytest.skip(f"headless Chromium cannot launch: {reason}")
+    page = tmp_path / "hostile-static.html"
+    page.write_text(report_html(hostile_report(), static=True), encoding="utf-8")
+    probe = """() => ({
+      injected: [...document.querySelectorAll('img, iframe, script, link, [onerror], [onload], a[href^="javascript"]')]
+        .map(e => e.outerHTML.slice(0, 80)),
+      shown: [...document.querySelectorAll('div.chart-drawn')].map(d => [...d.querySelectorAll('svg.viz-chart')]
+        .filter(s => s.getBoundingClientRect().height > 0)
+        .map(s => s.getBoundingClientRect().right <= d.getBoundingClientRect().right + 1)),
+    })"""
+    for width in (1200, 390):
+        seen, errors = rendered(page, probe, width=width)
+        assert errors == []
+        assert seen["injected"] == []
+        assert seen["shown"] and all(shown and all(shown) for shown in seen["shown"]), seen["shown"]
 
 
 @pytest.mark.integration

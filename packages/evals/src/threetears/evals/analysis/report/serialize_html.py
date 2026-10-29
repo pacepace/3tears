@@ -14,10 +14,14 @@ between the screens is ``#`` anchors; neither needs the script.
 
 **The static page** (``static=True`` on :func:`report_html` and :func:`campaign_report_html`) is for a host whose
 policy lets a page neither run nor load anything (``default-src 'none'``), even were escaping ever to fail. It is the
-default page less exactly three things: the kit's script, the three font links, and each chart's ``div.chart`` with
-its data. So it carries no ``<script>`` and no ``<link>``; its text is set in the system faces the kit's stylesheet
-names after each Plex face; and every chart is its table of values, shown, since the one rule that hides the table
-needs a drawn chart beside it. The default page is unchanged by the option, byte for byte.
+default page less exactly three things, the kit's script, the three font links, and each chart's ``div.chart`` with
+its data, and plus each chart drawn on the server as inline SVG
+(:func:`~threetears.evals.analysis.report.chart_svg.chart_drawing`) with the drawings' stylesheet. So it carries no
+``<script>`` and no ``<link>``; its text is set in the system faces the kit's stylesheet names after each Plex face;
+every chart the kit draws as a picture is that picture, drawn with no script, and its table of values stays shown
+under it, since the one rule that hides the table needs a ``div.chart`` beside it; a chart not drawn there (interval
+rows, a gate matrix, a lattice, example cards) says in one line that it is shown as its table. The default page is
+unchanged by the option, byte for byte.
 
 **A chart reads without its picture.** Each chart is the kit's ``.fig``: its title, a ``div.chart`` the kit draws at
 its real width, and a table of every value it draws. While the chart is drawn the table is visually hidden, for a
@@ -114,7 +118,7 @@ def report_html(report: Report, *, static: bool = False) -> str:
     :param report: The report.
     :ptype report: Report
     :param static: Write the static page: no ``<script>``, no ``<link>``, the text in the system faces the kit's
-        stylesheet names, and every chart as its table of values. False (the default) writes the page with the kit's
+        stylesheet names, and every chart drawn as inline SVG above its table of values. False (the default) writes the page with the kit's
         script and font links, byte for byte as before the option existed.
     :ptype static: bool
     :return: The page.
@@ -165,7 +169,7 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
 
     :param report: The campaign's page.
     :ptype report: CampaignReport
-    :param static: Write the static page, as :func:`report_html` does: no script, no link, every chart its table.
+    :param static: Write the static page, as :func:`report_html` does: no script, no link, every chart drawn as inline SVG above its table.
     :ptype static: bool
     :return: The page.
     :rtype: str
@@ -369,8 +373,8 @@ def _folded(blocks: Sequence[tuple[int, ReportBlock]], *, static: bool) -> list[
 
 
 def _block(block: ReportBlock, index: int, *, static: bool) -> str:
-    """One block as HTML; ``index`` makes a chart's ids unique on the page, and a static page's charts are their
-    tables."""
+    """One block as HTML; ``index`` makes a chart's ids unique on the page, and a static page draws its charts as
+    inline SVG."""
     if isinstance(block, TextBlock):
         return _text(block)
     if isinstance(block, TableBlock):

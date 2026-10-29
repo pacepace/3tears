@@ -1,5 +1,6 @@
 """A report document's page as one self-contained HTML page, in the default mode (the kit's one script draws each
-chart) or the static mode (nothing runs or loads; every chart is its table of values).
+chart) or the static mode (nothing runs or loads; every chart is drawn on the server as inline SVG above its table of
+values).
 
 The page is the kit's, as the planned page lays it out (:mod:`~threetears.evals.analysis.report.plan_page.html`),
 with no class, style or script of its own:
@@ -22,7 +23,8 @@ with no class, style or script of its own:
 **Nothing written into a field can make the page run or load anything**, as on every page this package writes: every
 text node is escaped before any markup is made of it (:mod:`~threetears.evals.analysis.report.html_parts`), and a
 chart's data reaches the page only as JSON escaped into its ``data-chart`` attribute. **The static page** is the
-default page less exactly the kit's script, the font links and each chart's ``div.chart``.
+default page less exactly the kit's script, the font links and each chart's ``div.chart``, plus each chart drawn on
+the server as inline SVG.
 """
 
 from __future__ import annotations
@@ -223,7 +225,8 @@ def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] 
 
     :param page: The page.
     :ptype page: DocPage
-    :param static: Write the static page: no ``<script>``, no ``<link>``, every chart as its table of values.
+    :param static: Write the static page: no ``<script>``, no ``<link>``, every chart drawn as inline SVG above its
+        table of values.
     :ptype static: bool
     :param record: Markup this package wrote (the campaign's folds, each failed or lost trial's record in them), laid
         out closed after the document, which it leaves as it is; none by default.

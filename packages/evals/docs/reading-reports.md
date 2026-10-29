@@ -395,13 +395,19 @@ dark alike.
 
 Serve the directory `write` produces as static files; or keep a route that returns `report_read(format="html")`.
 The default page carries the package's `kit.js` inline and links the kit's fonts, so it needs a policy that allows
-that one inline script (by its hash, which changes only when the package's `kit.js` does) and the Google Fonts hosts.
+that one inline script (by its hash, which changes only when the package's `kit.js` does) and the Google Fonts hosts:
+`style-src` and `font-src` for `fonts.googleapis.com` and `fonts.gstatic.com`. Without those the page still reads, its
+text in the system faces the kit's stylesheet names after each Plex face.
+
 A host whose policy runs and loads nothing asks for `report_read(format="html", static=True)` (or
-`report_html(report, static=True)`, `campaign_report_html(report, static=True)`): that page has no `<script>`, no
-`<link>`, every chart as its values table and its text in the system faces, and `default-src 'none'; style-src
-'unsafe-inline'` holds over it. Either page can also be shown in an `<iframe sandbox>` with no `allow-scripts`,
-changing the host's own `frame-ancestors` to `'self'`; the default page then reads as its tables. Linking to the route
-needs no change at all.
+`report_html(report, static=True)`, `campaign_report_html(report, static=True)`): that page needs no `script-src` at
+all. It has no `<script>` and no `<link>`, its text is in the system faces, and it carries its charts as inline SVG,
+drawn on the server by the kit's geometry and colour tokens, so they follow the page's light and dark themes; each
+mark's tooltip is its `<title>`, and each chart's values table stays under it for a screen reader and for copying the
+numbers out. A gate matrix, a lattice, example cards and interval rows are shown as their tables, each saying so in
+one line. `default-src 'none'; style-src 'unsafe-inline'` holds over it. Either page can also be shown in an
+`<iframe sandbox>` with no `allow-scripts`, changing the host's own `frame-ancestors` to `'self'`; the default page
+then reads as its tables, the static page with its charts. Linking to the route needs no change at all.
 
 A host that shows the page as an administrative view can frame the static page as an iframe's `srcdoc` with an
 empty `sandbox`: nothing on it needs a script, a link or a URL, so it reads whole there, the analyst's page included.

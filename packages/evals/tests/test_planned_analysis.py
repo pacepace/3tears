@@ -67,7 +67,7 @@ from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture,
 from packages.evals.tests.report_plan_support import r5_input
 from packages.evals.tests.report_support import stored_memo_analysis, toy_campaign_host
 from packages.evals.tests.reporter_case_support import freeze_corpus_campaign, reporter_fixture
-from packages.evals.tests.static_page_support import assert_static, less_what_static_leaves_out
+from packages.evals.tests.static_page_support import assert_static, less_drawings, less_what_static_leaves_out
 from packages.evals.tests.toyhost_plan import PLAN_CALLS, PlanWriter, contract_name
 from threetears.evals.kernel.inner_ceilings import MAX_GENERATION_CALLS
 from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
@@ -199,7 +199,9 @@ class TestAGeneration:
         assert (static.basis, static.analysis_id, static.analysis_basis) == ("code_only", analysis.id, "plan")
         assert '<article data-page="planned"' not in static.body and NO_LONGER_READS in static.body
         assert_static(static.body)
-        assert _without_instants(static.body) == _without_instants(less_what_static_leaves_out(default.body))
+        assert _without_instants(less_drawings(static.body)) == _without_instants(
+            less_what_static_leaves_out(default.body)
+        )
 
     async def test_trials_all_lays_each_failed_trial_s_record_out_in_its_fold(self) -> None:
         host, _, analysis, _, _ = await _generated()
