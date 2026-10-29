@@ -4,8 +4,9 @@ chart) or the static mode (nothing runs or loads; every chart is its table of va
 The page is the kit's, as the planned page lays it out (:mod:`~threetears.evals.analysis.report.plan_page.html`),
 with no class, style or script of its own:
 
-- ``.page`` > ``.mast``; where part of a stored document no longer reads, code's note as a ``.callout.warn``
-  (``data-part="degraded"``);
+- ``.page`` > ``.mast``; on a draft, code's one line saying its editor's review left findings open, as a
+  ``.callout.warn`` (``data-part="draft"``), first after the masthead; where part of a stored document no longer
+  reads, code's note as a ``.callout.warn`` (``data-part="degraded"``);
 - ``.bluf``: the ``h1`` headline, the ``.lede``, the amber ``.flag`` where the document has one, the confidence
   (``data-part="confidence"``: amber where caveats stay open or the evidence is weak, a muted ``.callout`` for plain
   high; each caveat its label in bold, then its clause, a checked one as ``li.checked``), the ``.decision`` grid (an
@@ -40,6 +41,7 @@ from threetears.evals.analysis.report.doc_page.model import (
     DocPage,
     DocTerm,
     caveats_line,
+    draft_line,
 )
 from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
@@ -250,6 +252,7 @@ def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] 
         '<div class="page">',
         '<article data-page="doc">',
         _masthead(page.masthead),
+        *([f'<p class="callout warn" data-part="draft">{escape(draft_line(page))}</p>'] if page.draft else []),
         *([f'<p class="callout warn" data-part="degraded">{escape(page.degraded)}</p>'] if page.degraded else []),
         '<div class="bluf">',
         *bluf,

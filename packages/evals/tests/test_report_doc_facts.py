@@ -420,6 +420,34 @@ def test_a_contrast_the_input_leaves_untested_is_named_without_its_figures_and_n
     assert facts[0].fact.startswith("The evidence of claim cost reads 1017 (B)'s contrast on Production cost, and code")
 
 
+# --- a high confidence over open caveats ----------------------------------------------------------------------------
+
+
+def test_a_high_over_open_caveats_is_one_fact_naming_how_many_and_which() -> None:
+    doc = converted_doc(_KAIRO)
+    left = [caveat["id"] for caveat in doc["confidence"]["caveats"] if caveat.get("material_if") is not None]
+    assert doc["confidence"]["form"] == "high_if_immaterial" and left, "the control: Kairo reads high over open caveats"
+
+    (fact,) = _of(_facts(_KAIRO), "high_over_open")
+
+    assert fact.path == "confidence" and fact.figures == []
+    count = "1 open caveat" if len(left) == 1 else f"{len(left)} open caveats"
+    assert fact.fact == (
+        f"The confidence reads high, if the caveats aren't material, over {count}, none of which code proves "
+        f"immaterial: {', '.join(f'`{caveat}`' for caveat in left)}."
+    )
+
+
+@pytest.mark.parametrize("form", ["low", "high"])
+def test_a_confidence_that_does_not_read_high_over_open_caveats_is_no_fact(form: str) -> None:
+    def formed(doc: dict[str, Any]) -> None:
+        doc["confidence"]["form"] = form
+        if form == "high":
+            doc["confidence"]["caveats"] = []
+
+    assert not _of(_facts(_KAIRO, doc_change=formed), "high_over_open")
+
+
 # --- the converted documents ---------------------------------------------------------------------------------------
 
 #: The facts each later converted document triggers, by kind. Every one that fires is real:
@@ -432,18 +460,21 @@ def test_a_contrast_the_input_leaves_untested_is_named_without_its_figures_and_n
 #: - s2: the document recommends beta, at low confidence, where code reads a tradeoff. True.
 #: - Kairo: the weakest margin is qwen3.8-flash's reading against the margin, a candidate the call does not pick, and
 #:   Watch does not name it. True; the editor weighs whether it matters to keeping September.
+#: - Every document but s2 reads high, if the caveats aren't material, over caveats it leaves open (``high_over_open``,
+#:   added 2026-10-29 after a stored page printed that line above four uncleared caveats). True of each: s2 is low,
+#:   and every other one's form is high_if_immaterial; whether each high stands is the editor's.
 _EXPECTED: dict[str, list[str]] = {
-    "prototype2/r2-with-its-gates-read-in-each-task": [],
-    "prototype2/r2-with-one-gate": [],
-    "prototype2/r3-without-its-configs": [],
-    "prototype2/s1": ["call_vs_dominance", "weakest_not_in_watch"],
+    "prototype2/r2-with-its-gates-read-in-each-task": ["high_over_open"],
+    "prototype2/r2-with-one-gate": ["high_over_open"],
+    "prototype2/r3-without-its-configs": ["high_over_open"],
+    "prototype2/s1": ["call_vs_dominance", "weakest_not_in_watch", "high_over_open"],
     "prototype2/s2": ["call_vs_dominance"],
-    "prototype2/s3": [],
-    "prototype3/kairo": ["weakest_not_in_watch"],
-    "prototype3/r1": [],
-    "prototype3/r2": [],
-    "prototype3/r3": [],
-    "prototype3/r4": [],
+    "prototype2/s3": ["high_over_open"],
+    "prototype3/kairo": ["weakest_not_in_watch", "high_over_open"],
+    "prototype3/r1": ["high_over_open"],
+    "prototype3/r2": ["high_over_open"],
+    "prototype3/r3": ["high_over_open"],
+    "prototype3/r4": ["high_over_open"],
 }
 
 
@@ -477,7 +508,7 @@ def test_no_fact_raises_on_a_misfit_input(misfit: str) -> None:
 def test_an_arm_the_snapshot_does_not_hold_is_written_as_the_document_wrote_it() -> None:
     facts = _facts(_KAIRO, recommends=["ghost"])
 
-    assert [fact.kind for fact in facts] == ["call_vs_dominance", "weakest_not_in_watch"]
+    assert [fact.kind for fact in facts] == ["call_vs_dominance", "weakest_not_in_watch", "high_over_open"]
     assert facts[0].fact.endswith("the document recommends `ghost`.")
 
 
@@ -513,7 +544,7 @@ def test_no_fact_tells_the_editor_what_to_conclude() -> None:
     ]
     advice = ("should", "must", "ought", "consider", "needs to")
 
-    assert len({fact.kind for fact in facts}) == 7
+    assert len({fact.kind for fact in facts}) == 8
     assert not [fact.fact for fact in facts if any(word in fact.fact.lower() for word in advice)]
 
 

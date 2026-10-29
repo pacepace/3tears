@@ -686,13 +686,17 @@ branches on what kind of eval it is. The full design is [ANALYST.md](../../../do
 5. **Review.** An editor (the same model, in a fresh context that never sees the analyst's reasoning) reads the page
    as a reader will, with facts code computed for it to weigh, and scores seven items from 0 to 2: the first screen,
    a coherent story, honest emphasis, sound elision, confounds handled, actionable next steps, and evidence that fits
-   its claims. Code adds the scores. A review passes with no 0, at least 11 of 14 and no must-fix finding; otherwise
-   the analyst revises, at most twice.
+   its claims. Code adds the scores. A review passes with no 0, at least 11 of 14 and no must-fix finding. A review
+   that passes with no finding open clears the report; otherwise, a should-fix finding included, the analyst
+   revises, at most twice.
 6. **Store.** The document is stored with its snapshot, how the writing ended, the editor's findings left open, the
    cost of each role, round and turn, and each session's transcript.
 
 A write that ends `stored`, or `stored_with_findings` once both revisions are spent, is the campaign's report. One the
 budget stops keeps its last reviewed draft with that review's findings, and stores nothing if no draft was reviewed.
+Only `stored` is a finished report. Any other stored report is a draft: its page says so on its first line under the
+masthead ("Draft: its editor's review left 6 findings open."), its appendix lists those findings, and `draft` is true
+on the stored document, on `report_read`'s result and on its line in `analyses_list`, so a host's list can show it.
 One that runs out of bounces, whose editor's answer cannot be read twice, or that a provider fails, stores nothing,
 and the job fails with its ending and reason.
 
@@ -703,6 +707,7 @@ Top to bottom, simplest first:
 | Part | Whose | What it says |
 |---|---|---|
 | Masthead | code's | what kind of eval it is, the system under test, its counts and when it ran |
+| Draft line | code's | on a draft only: that its editor's review left findings open, and how many |
 | Headline, lede, flag | the analyst's | the finding, in a sentence; the flag only for what a reader must know first |
 | Confidence | both | the form in code's words, then each caveat: the analyst's clause for what would make it matter, or code's line that it was checked and cannot change the call |
 | Decision | the analyst's | the call and its whys, or for a tradeoff the trade, where it flips, the lean and what would settle it |

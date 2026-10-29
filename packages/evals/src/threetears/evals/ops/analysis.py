@@ -319,6 +319,14 @@ class AnalysisLine(EvalBaseModel):
             "plan's trade-off or no call, or a document recommending no arm or more than one."
         ),
     )
+    draft: bool = Field(
+        default=False,
+        description=(
+            "Whether a `doc` analysis's report is a draft: its editor's review did not clear it, so its page says so "
+            "first and lists the findings left open (EvalReportDoc.draft). False for a finished report, a memo or a "
+            "plan, and for a document that no longer reads, whose line leads with the regenerate line instead."
+        ),
+    )
     generator_model: str
     generated_at: str
     archived: bool
@@ -379,6 +387,14 @@ class ReportDocument(EvalBaseModel):
             "reads (every report-plan analysis; a document that no longer validates, or whose snapshot is gone): the "
             "one regenerate line, which the page's first screen prints too, then why in parentheses. The JSON body "
             "carries it too. None otherwise."
+        ),
+    )
+    draft: bool = Field(
+        default=False,
+        description=(
+            "Whether the report rendered is a draft: its stored document's editor's review did not clear it, so the "
+            "page's first line under its masthead says so and its appendix lists the findings left open. False for a "
+            "finished report and for any report that renders no report document."
         ),
     )
     format: ReportFormat
@@ -732,10 +748,11 @@ def _analysis_line(host: EvalHost, analysis: EvalAnalysis) -> AnalysisLine:
         # NOSILENT: the stored plan no longer validates; the line names why and the regeneration, and the report of
         # this analysis is the code-only page saying the same, so nothing reads it as if it were whole.
         unread = unreadable.fault
+    draft = False
     if analysis.document is not None:
         findings = len(analysis.document.findings)
     elif analysis.report_doc_id is not None:
-        findings, unread = _doc_claims(host, analysis.report_doc_id, analysis.scope_id)
+        findings, draft, unread = _doc_claims(host, analysis.report_doc_id, analysis.scope_id)
     else:
         findings = len(report_plan_of(plan).sections) if plan is not None else 0
     if analysis.report_plan_id is not None or unread is not None:
@@ -751,17 +768,20 @@ def _analysis_line(host: EvalHost, analysis: EvalAnalysis) -> AnalysisLine:
         needs_regeneration=needs_regeneration,
         findings=findings,
         recommendations=0 if analysis.recommended_variant_key is None else 1,
+        draft=draft,
         generator_model=analysis.generation.generator_model,
         generated_at=analysis.generation.generated_at,
         archived=analysis.archived,
     )
 
 
-def _doc_claims(host: EvalHost, report_doc_id: str, scope_id: str) -> tuple[int, str | None]:
-    """How many claims a ``doc`` analysis's document holds, and why it does not read when it does not. Blocking.
+def _doc_claims(host: EvalHost, report_doc_id: str, scope_id: str) -> tuple[int, bool, str | None]:
+    """How many claims a ``doc`` analysis's document holds, whether it is a draft, and why it does not read when it
+    does not. Blocking.
 
-    A document that no longer reads (its shape moved, or it was deleted apart from its analysis) counts no claims and
-    says why, never refusing the listing of every other analysis.
+    A document that no longer reads (its shape moved, or it was deleted apart from its analysis) counts no claims, is
+    no draft (its line leads with the regenerate line) and says why, never refusing the listing of every other
+    analysis.
     """
     try:
         stored = host.storage.load_report_doc(report_doc_id, scope_id)
@@ -769,11 +789,12 @@ def _doc_claims(host: EvalHost, report_doc_id: str, scope_id: str) -> tuple[int,
         # NOSILENT: the line leads with the one regenerate line and counts no claims, so nothing reads it as whole.
         return (
             0,
+            False,
             f"its report document {report_doc_id!r} does not read under this build ({unread.error_count()} fault(s))",
         )
     if stored is None:
-        return 0, f"its report document {report_doc_id!r} was deleted apart from it"
-    return len(ReportDoc.model_validate(stored.doc).claims), None
+        return 0, False, f"its report document {report_doc_id!r} was deleted apart from it"
+    return len(ReportDoc.model_validate(stored.doc).claims), stored.draft, None
 
 
 def analysis_archive(
@@ -1816,6 +1837,7 @@ def report_read(
         analysis_basis=analysis.basis if analysis is not None else None,
         doc=dict(cast("dict[str, Any]", report.report_doc["doc"])) if report.report_doc is not None else None,
         needs_regeneration=report.needs_regeneration,
+        draft=report.doc_page is not None and report.doc_page.draft,
         format=format,
         body=body,
     )

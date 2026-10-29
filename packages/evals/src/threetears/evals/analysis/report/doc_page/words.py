@@ -2,8 +2,9 @@
 
 The analyst writes the page's sentences; code writes its frame: each decision entry's title by its slot word alone,
 the label of each caveat code assigns, the titles of the parts no analyst heads (the options table's, next steps',
-explore's, the appendix's), the explore table's heads, the review findings' severity words, and the lines a page read
-from a stored document adds where part of it no longer reads. The confidence's form words, the options table's role
+explore's, the appendix's), the explore table's heads, the review findings' severity words, the draft line a page its
+editor's review did not clear carries first, and the lines a page read from a stored document adds where part of it no
+longer reads. The confidence's form words, the options table's role
 words and the Full results tables' words are the planned page's
 (:mod:`~threetears.evals.analysis.report.plan_page.words`), so both pages say them alike. Held here so a translation
 replaces them in one place.
@@ -24,6 +25,8 @@ __all__ = [
     "DEGRADED_BLOCK",
     "DEGRADED_TABLE",
     "DEGRADED_PAGE",
+    "DRAFT_OPEN",
+    "DRAFT_UNCLEARED",
     "EXPLORE_HEADERS",
     "EXPLORE_TITLE",
     "FINDINGS_TITLE",
@@ -134,6 +137,13 @@ OMITTED_TITLE = "Left out, and why"
 
 #: Method's heading in the appendix, apart from what was left out.
 METHOD_TITLE = "Method"
+
+#: A draft's line, first on its page under the masthead: its editor's review left findings open, each listed under
+#: :data:`FINDINGS_TITLE`. ``{count}`` is how many, with its noun (``1 finding``, ``6 findings``).
+DRAFT_OPEN = "Draft: its editor's review left {count} open."
+
+#: A draft's line where its editor's review failed on its scores alone and left no finding to list.
+DRAFT_UNCLEARED = "Draft: its editor's review did not pass it."
 
 #: The heading of the editor's findings left unresolved, in Method.
 FINDINGS_TITLE = "Review findings left open"

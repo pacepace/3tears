@@ -419,8 +419,10 @@ def _served(tool: MountedTool) -> list[str]:
 #: examples render money in it. All three moved again when the evals tool gained ``analyst_gaps_list`` (and its
 #: ``since``, its bounded read and its issue text's safeguards), and both analyst cuts' ``capability_gap`` gained
 #: ``kind``, ``figure_keys`` and ``calls``, their bounds, and says who stores the gap. The editor's moved again when a
-#: tool whose only write is an appended note came to say why it is not marked read-only (its description).
-_EVALS_BYTES = "8e46af149f6a39267ec3d88eae176f3b5b016e2020d79044116764ee26fb1529"
+#: tool whose only write is an appended note came to say why it is not marked read-only (its description). The
+#: ``evals`` digest moved again when a report stored with its editor's findings open became a draft (owner ruling
+#: 2026-10-29): ``analyses_list``'s line and ``report_read``'s result each gained ``draft``.
+_EVALS_BYTES = "df185b919a4fd5d4b5605a3935fbd32de7b42f8467559109aea1bb3539c27257"
 _EDITOR_BYTES = "f641099a4794637a3c1d773f6d193260e70e9735e7ac144807832885bd5d2b05"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's

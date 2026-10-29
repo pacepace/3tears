@@ -8,7 +8,10 @@ the page has or their order.
 **Part by part:**
 
 - *Masthead*: code's, as the planned page's (:func:`~threetears.evals.analysis.report_plan_facts.plan_facts`), its
-  keys written out. *Headline*, *lede*, *flag*: the document's prose, every figure key written out with each arm's name
+  keys written out. *Draft*: a page its editor's review did not clear says so first, under the masthead, in code's
+  one line (:func:`~threetears.evals.analysis.report.doc_page.model.draft_line`), its open findings listed in the
+  appendix; the caller says which a page is (``draft``), from the stored document's
+  :attr:`~threetears.evals.kernel.report_doc.EvalReportDoc.draft`. *Headline*, *lede*, *flag*: the document's prose, every figure key written out with each arm's name
   and tag (:func:`~threetears.evals.analysis.report.figure_keys.render`).
 - *Confidence*: the form in code's words, then each caveat in the document's order: its label (code's for a caveat
   code assigns, from :data:`~threetears.evals.analysis.report.doc_page.words.CAVEAT_LABELS`; the analyst's for an
@@ -395,6 +398,7 @@ def build(
     strict: bool,
     findings: Sequence[ReportFinding] = (),
     made: str = "",
+    draft: bool = False,
 ) -> DocPage:
     """Build the page a report document draws (this module's account).
 
@@ -408,6 +412,8 @@ def build(
     :ptype findings: Sequence[ReportFinding]
     :param made: How the page was made, in one line, for its foot; empty for none.
     :ptype made: str
+    :param draft: Whether the page is a draft, its editor's review not cleared, which its first line then says.
+    :ptype draft: bool
     :return: The page.
     :rtype: DocPage
     :raises UnresolvableReference: Strict, and a figure key does not resolve, a block does not complete or draw, a
@@ -482,6 +488,7 @@ def build(
         ],
         findings=_findings(findings, {claim.id: claim.place for claim in claims}),
         made=made,
+        draft=draft,
     )
     if reader.degraded:
         return page.model_copy(update={"degraded": DEGRADED_PAGE})

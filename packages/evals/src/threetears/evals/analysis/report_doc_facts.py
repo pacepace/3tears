@@ -57,6 +57,12 @@ tools already hold:
   a caveat on its evidence could move it is a must_fix) covers what this fact does not. A method-reach caveat landed
   on a Method term is carried too (it may land in Method alone). One fact per claim, contrast and caveat. Whether the
   caveat could move the claim, and which way, is the editor's.
+- ``high_over_open``: the confidence's form is ``high_if_immaterial``, so the page's confidence line reads "High",
+  conditional, above caveats the confidence leaves open: each one listed with its ``material_if`` and none of them one
+  code proves immaterial (an open caveat carries no ``checked``). One fact for the confidence, naming how many and
+  which. Code writes the form's words and checks only that the form matches its caveats (invariant 4); whether a high
+  stands over these caveats, each clause saying what would make it matter and why the call holds until then, is the
+  editor's, and the editor's rubric makes a high that does not stand a must_fix.
 
 **What a fact is.** An :class:`EditorFact` is ``{kind, path, fact, figures}``. ``path`` is the document field the fact
 is about (``recommends[0]``, ``decision[2]``, ``claims[1].text``), or empty for the document as a whole. ``fact`` is the
@@ -118,6 +124,7 @@ EditorFactKind = Literal[
     "undecided_implied",
     "count_in_words",
     "caveat_not_carried",
+    "high_over_open",
 ]
 
 
@@ -161,6 +168,7 @@ def editor_facts(doc: ReportDoc, report_input: ReportInput) -> list[EditorFact]:
     facts += _undecided_facts(doc, report_input, options, keys)
     facts += _count_facts(doc)
     facts += _caveat_facts(doc, report_input)
+    facts += _high_facts(doc, report_input)
     return facts
 
 
@@ -579,3 +587,21 @@ def _caveat_facts(doc: ReportDoc, report_input: ReportInput) -> Iterator[EditorF
                     "carries it.",
                 ]
                 yield _fact("caveat_not_carried", f"claims[{index}].caveats", parts, report_input)
+
+
+# --- a high confidence over caveats it leaves open -----------------------------------------------------------------
+
+
+def _high_facts(doc: ReportDoc, report_input: ReportInput) -> Iterator[EditorFact]:
+    if doc.confidence.form != "high_if_immaterial":
+        return
+    left = [caveat.id for caveat in doc.confidence.caveats if caveat.material_if is not None]
+    if not left:
+        return  # invariant 4's fault, not a fact: the form rests on no open caveat
+    named = ", ".join(f"`{caveat}`" for caveat in left)
+    count = "1 open caveat" if len(left) == 1 else f"{len(left)} open caveats"
+    parts: list[_Part] = [
+        f"The confidence reads high, if the caveats aren't material, over {count}, none of which code proves "
+        f"immaterial: {named}."
+    ]
+    yield _fact("high_over_open", "confidence", parts, report_input)

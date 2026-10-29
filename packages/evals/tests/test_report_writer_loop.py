@@ -7,8 +7,9 @@ invariant on that snapshot; the editor answers scripted reviews.
 
 Contracts held here:
 
-- **rounds**: a review that clears ends ``stored`` in round 1; a failed review or a ``must_fix`` sends the analyst back
-  in its own conversation, at most twice, and three failed reviews end ``stored_with_findings``;
+- **rounds**: a review that passes with no finding open ends ``stored`` in round 1, finished; a failed review, a
+  ``must_fix`` or a ``should_fix`` sends the analyst back in its own conversation, at most twice, and three reviews
+  that do not clear end ``stored_with_findings``, a draft whose page says so first (owner ruling 2026-10-29);
 - **endings** (plan §4.4): ``over_budget`` stores the last reviewed document with its review's findings, or nothing
   when no review was read; ``refused``, ``review_failed`` and ``failed`` store nothing, and the tally keeps every turn;
 - **the editor**: an unreadable answer is asked for once more, and a second ends ``review_failed``; its request
@@ -71,7 +72,7 @@ from threetears.evals.schema.turns import TurnText
 
 #: A finding that sends a report back however it scored.
 MUST_FIX: Final = {"claim": "c2", "severity": "must_fix", "finding": "Say what clearing the margin would buy."}
-#: A finding that does not.
+#: A finding that does not fail a review's scores, and still sends the report back while revisions remain.
 SHOULD_FIX: Final = {"claim": "c1", "severity": "should_fix", "finding": "Name the margin in the first claim."}
 #: Scores that fail: one item at 0.
 FAILING: Final = (2, 2, 0, 2, 2, 2, 2)
@@ -116,9 +117,9 @@ def _stored(host: OpsHost) -> list[Any]:
 # --- rounds -------------------------------------------------------------------------------------------------------
 
 
-async def test_a_review_that_clears_in_round_one_stores_the_report_with_its_should_fix_findings() -> None:
+async def test_a_review_that_clears_in_round_one_stores_the_report_finished() -> None:
     host = off_loop(seeded_host)
-    model = FakeTurnModel(analyst=analyst(), editor_1=editor(reply(review(findings=[SHOULD_FIX]))))
+    model = FakeTurnModel(analyst=analyst(), editor_1=editor(reply(review())))
 
     result = await written(model, host=host)
 
@@ -127,8 +128,8 @@ async def test_a_review_that_clears_in_round_one_stores_the_report_with_its_shou
     assert (result.outcome.analyst_rounds, result.outcome.editor_rounds) == (1, 1)
     (stored,) = _stored(host)
     assert stored.id == result.stored.id and stored.ending == "stored"
+    assert not stored.draft and stored.findings == []
     assert ReportDoc.model_validate(stored.doc) == ReportDoc.model_validate(DOC)
-    assert stored.findings == [SHOULD_FIX]
     generation = stored.generation
     assert generation["model"] == model.model_name
     assert set(generation["tally"]["by_round"]) == {"analyst:1", "editor:1"}
@@ -144,7 +145,29 @@ async def test_a_review_that_clears_in_round_one_stores_the_report_with_its_shou
     assert sessions["editor-1"].session["name"] == "editor-1"
     assert {result["stored"] for result in sessions["editor-1"].session["results"]} == {"rederive"}
     assert result.page is not None and result.page.made.startswith(f"Written by {model.model_name}")
-    assert [finding.finding for finding in result.page.findings] == [SHOULD_FIX["finding"]]
+    assert not result.page.draft and result.page.findings == []
+    assert "Draft" not in doc_page_text(result.page)
+
+
+async def test_a_should_fix_sends_a_review_that_passes_on_its_scores_back_and_a_clean_review_stores_it() -> None:
+    analyst_client = analyst(reply(submitted()), reply(submitted(revised())))
+    model = FakeTurnModel(
+        analyst=analyst_client,
+        editor_1=editor(reply(review(findings=[SHOULD_FIX]))),
+        editor_2=FakeToolTurnClient(reply(review())),
+    )
+
+    result = await written(model)
+
+    assert result.ending == "stored", result.outcome.reason
+    assert model.asked == ["analyst", "editor-1", "editor-2"]
+    first = result.outcome.reviews[0]
+    assert first.passes and not first.must_fix and not first.clears, "a passing review with a should_fix is not clean"
+    asked = _texts({"messages": [analyst_client.requests[-1]["messages"][-1]]})
+    assert "holds findings left open" in asked and SHOULD_FIX["finding"] in asked
+    assert "must_fix and should_fix alike" in asked
+    assert result.stored is not None and result.stored.findings == [] and not result.stored.draft
+    assert result.page is not None and not result.page.draft
 
 
 async def test_a_review_that_fails_sends_the_analyst_back_and_a_review_of_the_revision_clears_it() -> None:
@@ -198,6 +221,48 @@ async def test_three_failing_reviews_end_stored_with_findings_and_no_fourth_roun
     assert len(result.stored.doc["omitted"]) == len(revised()["omitted"]), "the last document is the one stored"
     assert result.page is not None
     assert {shown.finding for shown in result.page.findings} == {MUST_FIX["finding"], SHOULD_FIX["finding"]}
+    assert result.stored.draft and result.page.draft
+
+
+async def test_a_loop_out_of_revisions_with_should_fix_findings_open_stores_a_draft_that_says_so_first() -> None:
+    """The Discodon incident's shape: every review passes on its scores, and should_fix findings stay open."""
+    other = {
+        "claim": "report",
+        "severity": "should_fix",
+        "finding": "Give the options table's cost column its dollars.",
+    }
+    host = off_loop(seeded_host)
+    model = FakeTurnModel(
+        analyst=analyst(reply(submitted()), reply(submitted()), reply(submitted(revised()))),
+        editor_1=editor(reply(review(findings=[SHOULD_FIX, other]))),
+        editor_2=FakeToolTurnClient(reply(review(findings=[SHOULD_FIX, other]))),
+        editor_3=FakeToolTurnClient(reply(review(findings=[SHOULD_FIX, other]))),
+    )
+
+    result = await written(model, host=host)
+
+    assert result.ending == "stored_with_findings", result.outcome.reason
+    assert all(item.passes and not item.must_fix for item in result.outcome.reviews)
+    (stored,) = _stored(host)
+    assert stored.ending == "stored_with_findings" and stored.draft
+    assert stored.findings == [SHOULD_FIX, {**other, "claim": ""}], "a finding on the page as a whole names no claim"
+    page = result.page
+    assert page is not None and page.draft
+    lines = [line for line in doc_page_text(page).splitlines() if line]
+    assert lines[1] == "Draft: its editor's review left 2 findings open.", "first, right under the masthead"
+    assert [finding.finding for finding in page.findings] == [SHOULD_FIX["finding"], other["finding"]]
+
+
+async def test_a_draft_failed_on_its_scores_alone_says_its_review_did_not_pass_it() -> None:
+    model = FakeTurnModel(analyst=analyst(), editor_1=editor(reply(review(FAILING))))
+
+    result = await written(model, limits=WriterLimits(revisions=0))
+
+    assert result.ending == "stored_with_findings"
+    assert result.stored is not None and result.stored.draft and result.stored.findings == []
+    assert result.page is not None
+    lines = [line for line in doc_page_text(result.page).splitlines() if line]
+    assert lines[1] == "Draft: its editor's review did not pass it."
 
 
 async def test_fewer_revisions_end_sooner() -> None:
@@ -241,7 +306,7 @@ async def test_the_budget_running_out_after_a_review_stores_the_reviewed_draft_w
     assert result.ending == "over_budget"
     assert len(analyst_client.requests) == 2, "the revision's turn was refused before it was sent"
     (stored,) = _stored(host)
-    assert stored.ending == "over_budget" and stored.findings == [MUST_FIX]
+    assert stored.ending == "over_budget" and stored.findings == [MUST_FIX] and stored.draft
     assert ReportDoc.model_validate(stored.doc) == ReportDoc.model_validate(DOC)
 
 
@@ -735,7 +800,7 @@ async def test_a_store_that_fails_after_the_run_raises_with_the_runs_record_on_i
         raise failure
 
     monkeypatch.setattr(host.eval_host.storage, "save_report_doc", refuse)
-    model = FakeTurnModel(analyst=analyst(), editor_1=editor(reply(review(findings=[SHOULD_FIX]))))
+    model = FakeTurnModel(analyst=analyst(), editor_1=editor(reply(review())))
 
     with pytest.raises(ReportNotStored, match="the report ended stored and was not stored") as refused:
         await written(model, host=host)
