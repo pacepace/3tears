@@ -16,10 +16,11 @@ with nothing happening. The catalog now writes an entry only when its content ch
 definition was first announced, a status, the publisher mark); the liveness instants alone are not written. They
 still advance in memory on every registration, so routing, discovery and the heartbeat sweep judge staleness from
 the latest heartbeat as before, and per-pod liveness stays in the heartbeat rows. A write that fails is retried on
-the entry's next registration, so a replica out of rotation for failed writes still comes back. An idle
-re-registration makes no write, so during a bucket outage it is answered as registered instead of
-`CATALOG_UNAVAILABLE`, and the write-health streak moves only on a registration that changes something; the
-catalog routes from memory either way. The persisted shape
+the entry's next registration, so a replica out of rotation for failed writes still comes back. Once writes
+have failed enough to take a replica out of rotation, every registration writes its entry again, changed or not, so
+an idle platform's next heartbeat still brings the write that puts it back. Short of that, an idle re-registration
+makes no write, so during a bucket outage it is answered as registered instead of `CATALOG_UNAVAILABLE`; the catalog
+routes from memory either way. The persisted shape
 is unchanged, so replicas on either version share the bucket. Registration stays out of a queue group: each
 replica routes from its own in-memory catalog. `registered tool in catalog`, `tool pod registration authorized` and
 `registration completed` log at INFO only for a registration that changed something, DEBUG otherwise.
@@ -40,12 +41,19 @@ raises an exception carrying close code 1000, 1001, 1005 or 1006 (starlette's `W
 ordinary departure, logged at DEBUG, during authentication and after it. Any other failure, including a close with
 another code, is still contained.
 
+**Added:** `threetears_websocket_peer_disconnects_total{close_code, phase}` counts every peer disconnect, so a mass of
+abnormal drops (1006) shows on a dashboard. `close_code` is the protocol's own code (1000-1015), `4xxx` for a code a
+client application chose, or `other`; `phase` is `authenticating` or `connected`.
+
 ### scheduled-jobs, agent-wake: the drift histograms cover minutes
 
 **Fixed:** `threetears_scheduled_jobs_drift_seconds` used the client library's default buckets, which end at 10 s. A
 fire runs on the next tick, about 30 s apart, so ordinary drift landed in `+Inf` and the dashboard's p95 read 10 s
 whatever the drift was. Its buckets now run from 0.5 s to 600 s, and so do those of
 `threetears_agent_wake_drift_seconds` and `threetears_agent_wake_yield_duration_seconds`, which had the same defaults.
+
+**Added:** `threetears.scheduled_jobs.metrics.TIMING_BUCKETS`, the one bucket tuple both packages use, so their
+dashboards move together.
 
 ## v0.83.0 -- 2026-10-28
 

@@ -944,9 +944,10 @@ class RegistryServer:
                 ),
                 # a replica whose catalog writes keep failing answers every registration with
                 # CATALOG_UNAVAILABLE, so it leaves rotation after a short streak of failed writes
-                # and returns at the next write that lands -- a write that failed is not remembered
-                # as written, so the entry's next registration, on its pod's next heartbeat, writes
-                # it again: a write is always coming while one is owed. NOT liveness, for the reason the two checks above are
+                # and returns at the next write that lands -- while it is out, every registration
+                # writes its entry whether or not it changed, so any pod's next heartbeat brings a
+                # write even on an idle platform (a failed delete is never retried itself: its entry
+                # is gone from memory). NOT liveness, for the reason the two checks above are
                 # not: the usual cause is a NATS outage, which a restart does not fix, and a
                 # terminal close is already the `nats` check's to report -- the catalog's bucket
                 # writes through the client's current connection, so its writes fail on a closed

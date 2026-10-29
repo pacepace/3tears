@@ -1007,7 +1007,7 @@ class ToolCatalog:
 
         with no bucket bound the content is recorded without a write, so the answer still says
         whether the entry changed; binding a bucket forgets every record, so each entry is then
-        written once.
+        written once. while :attr:`persisting` is ``False`` every entry is written, changed or not.
 
         :param entry: the entry to write
         :ptype entry: CatalogEntry
@@ -1017,7 +1017,10 @@ class ToolCatalog:
         """
         key = _sanitize_kv_key(entry.full_name)
         content = _persisted_content(entry.to_dict())
-        if self._written.get(key) == content:
+        # while writes are failing, an unchanged entry is written anyway: a failed delete is never
+        # retried (its entry is gone from memory), so on an idle platform this write is the only one
+        # coming, and the first to land is what puts the registry back in rotation
+        if self._written.get(key) == content and self._write_health.persisting:
             return False
         if self._kv is None:
             self._written[key] = content

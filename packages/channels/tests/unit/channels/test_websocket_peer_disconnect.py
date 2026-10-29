@@ -13,6 +13,7 @@ import json
 import logging
 
 import pytest
+from prometheus_client import REGISTRY
 from starlette.websockets import WebSocketDisconnect
 
 from threetears.channels.websocket import WebSocketHandler
@@ -155,3 +156,53 @@ async def test_a_peer_closing_with_a_protocol_error_is_still_contained(caplog: p
         await handler.handle_connection(ws)
 
     assert len(_contained(caplog)) == 1
+
+
+_DISCONNECTS = "threetears_websocket_peer_disconnects_total"
+
+
+def _disconnects(close_code: str, phase: str) -> float:
+    """how many peer disconnects the process has counted with these labels.
+
+    :param close_code: the ``close_code`` label
+    :ptype close_code: str
+    :param phase: the ``phase`` label
+    :ptype phase: str
+    :return: the counter's value, 0 before its first count
+    :rtype: float
+    """
+    value = REGISTRY.get_sample_value(_DISCONNECTS, {"close_code": close_code, "phase": phase})
+    return value if value is not None else 0.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", [1000, 1006, 1002])
+async def test_a_peer_disconnect_is_counted_by_its_close_code(code: int) -> None:
+    """every disconnect is counted by close code, so a mass abnormal drop (1006) shows on a dashboard."""
+    before = _disconnects(str(code), "connected")
+    ws = _LeavingWebSocket(WebSocketDisconnect(code=code), query_params={"token": "valid-token"})
+    await WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth).handle_connection(ws)
+
+    assert _disconnects(str(code), "connected") == before + 1
+
+
+@pytest.mark.asyncio
+async def test_a_peer_disconnect_before_authenticating_is_counted_in_its_phase() -> None:
+    """a peer gone before it sent its token is counted under the authenticating phase."""
+    before = _disconnects("1001", "authenticating")
+    await WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth).handle_connection(
+        _LeavingWebSocket(WebSocketDisconnect(code=1001))
+    )
+
+    assert _disconnects("1001", "authenticating") == before + 1
+
+
+@pytest.mark.asyncio
+async def test_an_application_close_code_is_counted_as_one_bounded_value() -> None:
+    """a code a client application chose (4000-4999) is counted as ``4xxx``, keeping the series bounded."""
+    before = _disconnects("4xxx", "connected")
+    ws = _LeavingWebSocket(WebSocketDisconnect(code=4321), query_params={"token": "valid-token"})
+    await WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth).handle_connection(ws)
+
+    assert _disconnects("4xxx", "connected") == before + 1
+    assert _disconnects("4321", "connected") == 0.0

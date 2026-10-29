@@ -39,6 +39,7 @@ from threetears.agent.acl import AccessDenied, authorize_on_entity
 from threetears.channels.frames import Frame, OpRejected, RoomAccessRequest
 from threetears.channels.protocol import ChannelMessage, ChannelResponse
 from threetears.observe import contain, get_logger
+from threetears.observe.metrics import counter
 
 if TYPE_CHECKING:
     from threetears.agent.acl import AclCache
@@ -90,6 +91,39 @@ _CREDENTIAL_EXPIRED_MESSAGE: Final = "access token expired"
 #: laptop slept, a network went), which ASGI servers report as 1006. Every connection ends with
 #: one of these sooner or later, so none of them is a failure the server absorbed.
 _ORDINARY_CLOSE_CODES: Final = frozenset({1000, 1001, 1005, 1006})
+
+
+#: every peer disconnect, by close code and by whether the peer had authenticated. one ordinary
+#: departure is not worth a log line, but a mass of abnormal drops (1006) at once is an incident,
+#: and this is where it shows.
+_DISCONNECTS_METRIC: Final = "threetears_websocket_peer_disconnects_total"
+_DISCONNECTS_HELP: Final = "WebSocket peer disconnects, by close code and connection phase"
+
+#: the close codes the protocol itself defines; any of them is counted as itself. a code a client
+#: application chose (4000-4999) is counted as ``4xxx`` and anything else as ``other``, so the
+#: metric's series stay bounded whatever a client sends.
+_PROTOCOL_CLOSE_CODES: Final = frozenset(range(1000, 1016))
+
+
+def _count_disconnect(code: int, phase: str) -> None:
+    """count one peer disconnect.
+
+    :param code: the close code the read reported
+    :ptype code: int
+    :param phase: ``"authenticating"`` before the peer proved who it is, ``"connected"`` after
+    :ptype phase: str
+    :return: nothing
+    :rtype: None
+    """
+    if code in _PROTOCOL_CLOSE_CODES:
+        label = str(code)
+    elif 4000 <= code <= 4999:
+        label = "4xxx"
+    else:
+        label = "other"
+    counter(_DISCONNECTS_METRIC, description=_DISCONNECTS_HELP, label_names=("close_code", "phase")).labels(
+        close_code=label, phase=phase
+    ).inc()
 
 
 def _close_code(exc: Exception) -> int | None:
@@ -980,6 +1014,8 @@ class WebSocketHandler:
                     token = data.get("token")
             except Exception as exc:
                 code = _close_code(exc)
+                if code is not None:
+                    _count_disconnect(code, "authenticating")
                 if code in _ORDINARY_CLOSE_CODES:
                     log.debug(
                         "websocket peer left before authenticating",
@@ -1063,6 +1099,8 @@ class WebSocketHandler:
                 raw = await websocket.receive_text()
             except Exception as exc:
                 code = _close_code(exc)
+                if code is not None:
+                    _count_disconnect(code, "connected")
                 if code in _ORDINARY_CLOSE_CODES:
                     # the peer left: how a connection ends, not a failure
                     log.debug(

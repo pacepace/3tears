@@ -23,7 +23,7 @@ import pytest
 from threetears.agent.tools.server import RegistrationManifest, ToolManifestEntry
 from threetears.core.testing.kv import FakeKvBucket
 from threetears.nats import IncomingMessage, set_default_namespace
-from threetears.registry.catalog import CopyStatus, ToolCatalog
+from threetears.registry.catalog import WRITE_FAILURE_THRESHOLD, CopyStatus, ToolCatalog
 from threetears.registry.registration import RegistrationHandler
 
 from .copy_entries import announced, definition, endpoint, entry
@@ -384,3 +384,31 @@ async def test_a_catalog_with_no_bucket_still_tells_a_change_from_a_repeat() -> 
     assert await catalog.register(
         entry("threetears.calculator", "1.0.0", endpoint(_POD, tool_definition=tool, first=now))
     )
+
+
+@pytest.mark.asyncio
+async def test_a_replica_out_of_rotation_for_failed_deletes_comes_back_on_an_idle_heartbeat() -> None:
+    """a delete that failed is never retried: its entry is gone from memory. so while the catalog is not
+    persisting, a re-registration writes even when nothing changed, and the first one that lands puts the
+    replica back in rotation -- on an idle platform that write is the only one coming."""
+    catalog, bucket = await _bound_catalog()
+    now = datetime.now(UTC)
+    tool = definition()
+    kept = entry("threetears.calculator", "1.0.0", endpoint(_POD, tool_definition=tool, first=now))
+    await catalog.register(kept)
+    for index in range(WRITE_FAILURE_THRESHOLD):
+        await catalog.register(entry(f"threetears.gone{index}", "1.0.0", endpoint("pod-002")))
+    bucket.become_unreachable(RuntimeError("bucket gone"))
+    for index in range(WRITE_FAILURE_THRESHOLD):
+        assert await catalog.deregister(f"threetears.gone{index}@1.0.0") is False
+    assert catalog.persisting is False
+    bucket.become_reachable()
+    before = await _writes(bucket)
+
+    await catalog.register(entry("threetears.calculator", "1.0.0", endpoint(_POD, tool_definition=tool, first=now)))
+
+    assert await _writes(bucket) == before + 1
+    assert catalog.persisting is True
+    # back in rotation, an unchanged re-registration is quiet again
+    await catalog.register(entry("threetears.calculator", "1.0.0", endpoint(_POD, tool_definition=tool, first=now)))
+    assert await _writes(bucket) == before + 1

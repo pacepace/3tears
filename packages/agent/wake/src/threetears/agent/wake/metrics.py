@@ -37,6 +37,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Final
 
 from threetears.observe import BuildOnce, get_logger
+from threetears.scheduled_jobs.metrics import TIMING_BUCKETS
 
 try:
     from prometheus_client import REGISTRY, Counter, Histogram
@@ -115,27 +116,6 @@ WAKE_PROMETHEUS_NAMES: Final[tuple[str, ...]] = (
 # Locked bounded-label sets. Each label value's enum is documented at
 # the emit site. Cardinality budget per OBS-02 (fires_total) = 11 statuses
 # x 7 schedule_types x 2 modes = 154 series. Acceptable.
-#: buckets, in seconds, for the drift and yield histograms. a wake fires on the first tick at or
-#: after its due time, ticks run about half a minute apart, and a yielded run lasts minutes; the
-#: client library's default buckets end at 10 s and put all of that in ``+Inf``.
-_TIMING_BUCKETS: Final[tuple[float, ...]] = (
-    0.5,
-    1.0,
-    2.5,
-    5.0,
-    10.0,
-    15.0,
-    20.0,
-    30.0,
-    45.0,
-    60.0,
-    90.0,
-    120.0,
-    180.0,
-    300.0,
-    600.0,
-)
-
 _LABELS_FIRES: Final[tuple[str, ...]] = ("status", "schedule_type", "execution_mode")
 _LABELS_FAILURES: Final[tuple[str, ...]] = ("reason",)
 _LABELS_RATE_LIMIT: Final[tuple[str, ...]] = ("scope",)
@@ -246,13 +226,13 @@ class WakeMetricsEmitter:
         self._drift = Histogram(
             WAKE_DRIFT_SECONDS,
             "Wake fire drift (actual_fired_at - scheduled_fire_at) in seconds",
-            buckets=_TIMING_BUCKETS,
+            buckets=TIMING_BUCKETS,
             **_kwargs(()),
         )
         self._yield_duration = Histogram(
             WAKE_YIELD_DURATION_SECONDS,
             "Wake-yield duration (actual_fired_at -> yield point) in seconds",
-            buckets=_TIMING_BUCKETS,
+            buckets=TIMING_BUCKETS,
             **_kwargs(()),
         )
         self._webhook_received = Counter(
