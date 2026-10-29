@@ -661,6 +661,8 @@ def _served_facts(doc: ReportDoc, report_input: ReportInput) -> Iterator[EditorF
         parts += ["; and of " if index else "", *_served_said(report_input, arm)]
     parts.append(".")
     yield _fact("cost_served_by", "", parts, report_input)
+
+
 # --- a high confidence over caveats it leaves open -----------------------------------------------------------------
 
 
