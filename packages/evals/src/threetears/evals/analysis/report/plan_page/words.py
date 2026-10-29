@@ -77,6 +77,7 @@ __all__ = [
     "RECOMMENDED_MARK",
     "ROLE_WORDS",
     "SERVED_BY_TEMPLATE",
+    "TOOL_SPEND_TEMPLATE",
     "UPLIFT_NOT_COMPARABLE",
     "MONEY_DRAWN_NOTE",
     "RUN_TEMPLATE",
@@ -204,8 +205,12 @@ PASSES_TEMPLATE = "{passed} of {usable}"
 #: The arms table's column saying what priced each arm's cost: its price sources, and who served its calls beside them.
 PRICED_HEADER = "Priced by"
 
-#: Who served an arm's calls, beside its price sources.
+#: Who served an arm's model calls, beside its price sources: the model's providers, never a tool it called.
 SERVED_BY_TEMPLATE = "served by {providers}"
+
+#: The tools an arm's cost counts spend on, beside who served its model calls: a web-search API it called is tool
+#: spend in the cost, never a provider of the model.
+TOOL_SPEND_TEMPLATE = "tool spend at {providers}"
 
 #: An arm's priced share of the calls its cost counts, beside its cost: all of them, or how many of how many. A partly
 #: priced arm says the second in place of its cost, which would be a smaller total read as whole.

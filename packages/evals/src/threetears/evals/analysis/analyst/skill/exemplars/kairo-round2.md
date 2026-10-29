@@ -6,8 +6,9 @@ The first reasoning note. This is the form every exemplar takes. The point is th
 
 **What I noticed first.**
 - Neither candidate is better on anything.
-- Both cost more per reply, and each paired cost gap against September is clear of zero.
-- That ends the decision before any judged evidence matters. The call rests on measured cost.
+- Both cost more per reply as this run served them, and each paired cost gap against September is clear of zero.
+- Those costs are this run's provider routing's, not the models' own. The snapshot names no provider for any arm, so the routing is unknown, and the cost claim says so.
+- That ends the decision before any judged evidence matters. The call rests on cost measured at this run's routing.
 - Measured is not untouched. The snapshot attaches the reasoning-ratio confound to 1017's cost contrast, not only to its judged ones. 1017 spends less of its output reasoning than September (55% against 76%), so at a matched budget it would likely cost more, not less. The confound's likely direction favours the call, and the cost claim carries it and says so.
 - Cost was read on most trials, not all. The cost claim says how many, and that the order holds even if every missing trial cost nothing.
 
@@ -37,7 +38,7 @@ The first reasoning note. This is the form every exemplar takes. The point is th
 - Find out why qwen3.8-flash cost more than an earlier campaign found: reconciles a prior insight this run contradicts.
 
 **What doesn't transfer.**
-- The call rested on cost because the control was cheaper *and* nothing beat it. Where a candidate is cheaper, the judged evidence decides, and the uncalibrated judge becomes material.
+- The call rested on cost because the control cost less as served here *and* nothing beat it. Another routing could reorder the costs, so a keep that rests on cost holds for the routing measured. Where a candidate is cheaper, the judged evidence decides, and the uncalibrated judge becomes material.
 - Off-lane asks mattered because they were both the largest stratum and the control's weakest. A large stratum that every arm handles well is not a lead.
 - The late margin was checkable only because the call held at every margin. A late aspect or control can't be checked that way and stays open.
 - The confound on 1017's cost pointed the call's way. A caveat on the deciding evidence that points the other way can reverse the call, and then the report may be a diagnosis.

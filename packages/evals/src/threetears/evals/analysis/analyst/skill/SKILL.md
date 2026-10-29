@@ -45,7 +45,7 @@ One tool, `evals_analyst`; each call is `{"action": "<name>", ...}` and, but for
 | Workflow | Action | Key parameters | Use it for |
 |---|---|---|---|
 | snapshot | `report_snapshot_freeze` | `campaign_id` or `analysis_id` | Freeze the evidence, unless you were handed a `snapshot_id` |
-| facts | `campaign_overview` | | Call first: arms, aspects (and whether each two ran the same cases), measure keys, criteria, caveats, prior insights |
+| facts | `campaign_overview` | | Call first: arms (and who served each one's model calls), aspects (and whether each two ran the same cases), measure keys, criteria, caveats, prior insights |
 | | `readings_list` | `aspect_filter`, `arm_filter` | Readings against the control, pairs, floors, bars |
 | | `contrasts_list` | `arm_filter`, `measure_filter`, `aspect_filter` | Corrected contrasts and their families |
 | | `measure_read` | `measure_key`, `by` (arm, stratum, task, cell), `statistics` | One measure's figures; without `statistics`, every one held, its interval (`ci` or `half_width`) and level among them |

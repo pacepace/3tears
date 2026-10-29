@@ -39,7 +39,8 @@ it runs (as the options table says it, where some arm declares it), its quality 
   the calls the cost counts (``all 897 calls priced``), and the arm's unanswered calls. A partly priced arm states
   ``n of m calls priced`` in place of a cost, which would be a smaller total read as whole; an arm none of whose calls
   were priced reads ``unpriced``, never ``$0``;
-- what priced it: its price sources, and the providers that served its calls, where some arm's pricing names one
+- what priced it: its price sources, the providers that served its model calls, where some arm's pricing names one,
+  and the tools its cost spent on as tool spend, never as a provider of the model
   (:class:`~threetears.evals.analysis.report_input.Pricing`).
 
 It reads no plan: which arms and columns it shows is the input's, and only the mark is the document's.
@@ -83,6 +84,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     RECOMMENDED_MARK,
     ROLE_WORDS,
     SERVED_BY_TEMPLATE,
+    TOOL_SPEND_TEMPLATE,
     UPLIFT_NOT_COMPARABLE,
     reading_words,
 )
@@ -475,11 +477,19 @@ def _priced_share(pricing: Pricing | None) -> str | None:
 
 
 def _priced_by(pricing: Pricing | None) -> TableCell:
-    """What priced an arm's cost: its price sources, and who served its calls beside them; empty where unsaid."""
+    """What priced an arm's cost: its price sources, and beside them who served its model calls, then the tools it
+    spent on as tool spend (never as the model's providers); empty where unsaid."""
     if pricing is None:
         return TableCell(value=None)
-    served = SERVED_BY_TEMPLATE.format(providers=", ".join(pricing.providers)) if pricing.providers else None
-    return TableCell(value=", ".join(pricing.sources) or None, flag=served)
+    said = [
+        template.format(providers=", ".join(providers))
+        for template, providers in (
+            (SERVED_BY_TEMPLATE, pricing.providers),
+            (TOOL_SPEND_TEMPLATE, pricing.tool_providers),
+        )
+        if providers
+    ]
+    return TableCell(value=", ".join(pricing.sources) or None, flag="; ".join(said) or None)
 
 
 def _setting_name(report_input: ReportInput, setting: str) -> str:

@@ -1169,7 +1169,12 @@
     "providers": {
      "type": "array",
      "items": {"type": "string"},
-     "description": "Each provider its calls name as serving them (RoleUsage.provider), sorted; empty where none does."
+     "description": "Each provider its model calls name as serving them (RoleUsage.provider on every role but external), sorted; empty where none does."
+    },
+    "tool_providers": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "Each provider its tool calls name (RoleUsage.provider on an external row, such as a web-search API), sorted: tool spend its cost counts, never a provider of the model."
     },
     "calls": {"type": ["integer", "null"], "description": "The calls its cost counts; none where a row did not count its."},
     "priced_calls": {

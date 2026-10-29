@@ -1265,4 +1265,10 @@ def _pricing(held: ArmPricing | None) -> Pricing | None:
     """An arm's pricing as the bundle's census read it, copied into the report input; None where it read none."""
     if held is None:
         return None
-    return Pricing(sources=held.sources, providers=held.providers, calls=held.calls, priced_calls=held.priced_calls)
+    return Pricing(
+        sources=held.sources,
+        providers=held.providers,
+        tool_providers=held.tool_providers,
+        calls=held.calls,
+        priced_calls=held.priced_calls,
+    )

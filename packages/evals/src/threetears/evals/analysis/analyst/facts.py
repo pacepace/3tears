@@ -75,6 +75,7 @@ from threetears.evals.analysis.report_input import (
     LateCriterion,
     Measure,
     PairRead,
+    Pricing,
     PriorInsight,
     Reading,
     ReportInput,
@@ -277,6 +278,19 @@ class ArmRow(_Fact):
         exclude_if=lambda value: not value,
         description="Beside its cost, where any went unanswered: its calls unanswered (`calls.unanswered.<arm>`), "
         "retried and lost, their share of the calls sent, the reasons, and the trials that counted none.",
+    )
+    # Left out when empty, so an arm whose pricing names no provider reads as it did before the fields existed.
+    served_by: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The providers that served its model calls, as its pricing names them: its cost is this routing's, "
+        "not the model's alone, so a cost comparison names them.",
+    )
+    tool_spend: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The tools its cost spent on (a web-search API it called), as its pricing names them: in its cost, "
+        "never a provider of the model.",
     )
 
 
@@ -489,6 +503,12 @@ class CampaignOverview(_Fact):
     next_offset: int | None = Field(description="The offset of the next page of rows; None when this is the last.")
 
 
+def _pricing(report_input: ReportInput, arm_id: str) -> Pricing:
+    """How an arm's cost was priced, as its scoreboard row says; an empty pricing where the input does not say."""
+    row = report_input.scoreboard.get(arm_id)
+    return row.pricing if row is not None and row.pricing is not None else Pricing()
+
+
 def _unanswered(report_input: ReportInput, arm_id: str) -> list[CitedFigure]:
     """An arm's unanswered calls, cited beside its cost where any went unanswered; none where none did or no role
     counted them."""
@@ -655,6 +675,8 @@ def campaign_overview(
                 else []
             ),
             unanswered=_unanswered(report_input, arm.id),
+            served_by=_pricing(report_input, arm.id).providers,
+            tool_spend=_pricing(report_input, arm.id).tool_providers,
         )
         for arm in report_input.arms
     ]

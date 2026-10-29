@@ -191,7 +191,9 @@ class Pricing(_Part):
     As its producer states it for the calls the arm's cost counts, so a reader sees where each cost comes from beside
     it: a cost is the provider routing's, never the model's alone. A partly priced arm (``priced_calls`` under
     ``calls``) has a cost over part of its calls, which no page states as if it were whole. Copied from the bundle's
-    census (``ArmScoreboard.pricing``), which reads it off the arm's production usage rows.
+    census (``ArmScoreboard.pricing``), which reads it off the arm's production usage rows. ``providers`` names who
+    served the model's calls alone; a tool the model called (a web-search API) is in ``tool_providers``, its spend in
+    the cost and its calls in ``calls``.
 
     It is part of a report input's content address (``report_input_digest``, a snapshot's id), so two inputs priced
     differently are two snapshots; it is no part of any fingerprint (owner ruling, 2026-10-28).
@@ -202,7 +204,15 @@ class Pricing(_Part):
     )
     providers: list[str] = Field(
         default_factory=list,
-        description="Each provider its calls name as serving them (RoleUsage.provider), sorted; empty where none does.",
+        description="Each provider its model calls name as serving them (RoleUsage.provider on every role but "
+        "external), sorted; empty where none does.",
+    )
+    # Left out of the document while empty, so an input whose rows named no tool provider digests as it did.
+    tool_providers: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="Each provider its tool calls name (RoleUsage.provider on an external row, such as a web-search "
+        "API), sorted: tool spend its cost counts, never a provider of the model.",
     )
     calls: int | None = Field(
         default=None, description="The calls its cost counts; none where a row did not count its."
