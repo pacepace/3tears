@@ -56,11 +56,11 @@ from threetears.core.collections.generation import (
 from threetears.core.collections.schema_backed import DATETIMETZ_TYPE, STRING_TYPE, Column, TableSchema
 from threetears.core.collections.tier_reads import ReadTier, record_tier_read
 from threetears.core.entities.base import BaseEntity
-from threetears.nats.errors import KvError
 from threetears.observe import contain, get_logger
 
 from threetears.agent.acl.access_shapes import (
     ANY_ROLE,
+    AccessFootprint,
     AccessShape,
     ShapeActors,
     access_footprint,
@@ -69,7 +69,15 @@ from threetears.agent.acl.access_shapes import (
     role_dep,
     table_dep,
 )
-from threetears.agent.acl.access_tables import _GROUP_ID_AT, _ROLE_ID_AT
+from threetears.agent.acl.access_tables import (
+    _GROUP_ID_AT,
+    _ROLE_ID_AT,
+    DegradedEvictions,
+    _column,
+    _key_part,
+    _member_kind,
+    _uuid,
+)
 from threetears.agent.acl.collections import (
     GroupCollection,
     GroupMemberCollection,
@@ -102,23 +110,6 @@ _ROLE_ASSIGNMENTS: Final = RoleAssignmentCollection.schema.name
 _KIND_CHARS: Final = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 
 
-def _uuid(value: str | None) -> UUID | None:
-    """a broadcast's string value as a UUID, or ``None`` when absent or not one.
-
-    :param value: the value as the broadcast carried it
-    :ptype value: str | None
-    :return: the UUID, or ``None``
-    :rtype: UUID | None
-    """
-    result: UUID | None = None
-    if value is not None:
-        try:
-            result = UUID(value)
-        except ValueError:
-            result = None
-    return result
-
-
 def _row_reach(message: CacheInvalidationMessage) -> frozenset[str] | None:
     """the deps one row reaches: none for a person's own membership, ``None`` for the whole table.
 
@@ -134,11 +125,10 @@ def _row_reach(message: CacheInvalidationMessage) -> frozenset[str] | None:
     :return: the deps, or ``None`` for the whole table
     :rtype: frozenset[str] | None
     """
-    columns = message.columns or {}
     reach: frozenset[str] | None = None
     if message.table == _GROUP_MEMBERS:
-        kind = columns.get("member_type")
-        member = _uuid(columns.get("member_id"))
+        kind = _member_kind(_column(message, "member_type"))
+        member = _uuid(_column(message, "member_id"))
         if member is not None and kind == MemberType.USER.value:
             reach = frozenset()
         elif member is not None and kind == MemberType.AGENT.value:
@@ -146,15 +136,19 @@ def _row_reach(message: CacheInvalidationMessage) -> frozenset[str] | None:
         elif member is not None and kind == MemberType.GROUP.value:
             reach = frozenset((group_dep(member),))
     elif message.table == _ROLE_ASSIGNMENTS:
-        group = _uuid(columns.get("group_id"))
+        group = _uuid(_column(message, "group_id"))
         reach = None if group is None else frozenset((group_dep(group),))
     elif message.table == _ROLES:
-        role = _uuid(message.ids[_ROLE_ID_AT] if len(message.ids) > _ROLE_ID_AT else None)
+        role = _uuid(_key_part(message, _ROLE_ID_AT))
         reach = None if role is None else frozenset((role_dep(role), ANY_ROLE))
     elif message.table == _GROUPS:
-        group = _uuid(message.ids[_GROUP_ID_AT] if len(message.ids) > _GROUP_ID_AT else None)
+        group = _uuid(_key_part(message, _GROUP_ID_AT))
         reach = None if group is None else frozenset((group_dep(group),))
     return reach
+
+
+#: the tables whose rows say what they reach; a row of one that does not is counted as degraded
+_PLACED_TABLES: Final = frozenset((_GROUP_MEMBERS, _ROLE_ASSIGNMENTS, _ROLES, _GROUPS))
 
 
 #: a generation as ``(incarnation, count)``
@@ -186,10 +180,15 @@ class ShapeDependencies:
     :ptype registry: CollectionRegistry
     :param tables: every table the answers are derived from
     :ptype tables: Sequence[str]
+    :param degraded: where rows that did not say what they reach are counted; a new record when ``None``
+    :ptype degraded: DegradedEvictions | None
     """
 
-    def __init__(self, registry: CollectionRegistry, tables: Sequence[str]) -> None:
+    def __init__(
+        self, registry: CollectionRegistry, tables: Sequence[str], *, degraded: DegradedEvictions | None = None
+    ) -> None:
         self._registry = registry
+        self._degraded = degraded if degraded is not None else DegradedEvictions()
         self._tables: tuple[str, ...] = tuple(dict.fromkeys(tables))
         self._marks = GenerationMarks()
         self._floor: dict[str, _Generation | None] = dict.fromkeys(self._tables)
@@ -199,6 +198,15 @@ class ShapeDependencies:
         self._listeners: list[Callable[[frozenset[str] | None], None]] = []
         self._watching: Callable[[], bool] | None = None
         self._lock = threading.Lock()
+
+    @property
+    def degraded(self) -> DegradedEvictions:
+        """the rows heard that did not say what they reach, by table: each made its whole table stale.
+
+        :return: the record
+        :rtype: DegradedEvictions
+        """
+        return self._degraded
 
     @property
     def tables(self) -> tuple[str, ...]:
@@ -293,6 +301,8 @@ class ShapeDependencies:
         :rtype: None
         """
         reach = _row_reach(message)
+        if reach is None and table in _PLACED_TABLES:
+            self._degraded.record(table, "a row that does not say what it reaches makes its whole table stale")
         deps = frozenset((table_dep(table),)) if reach is None else reach
         with self._lock:
             if deps:
@@ -441,6 +451,8 @@ class _Pending:
     :ivar compute: derives the answer as the shape's actor; ``None`` when nothing can be answered
     :ivar ran: whether this read derived
     :ivar storable: whether what it derived may be kept
+    :ivar saved: whether what it derived was put in L2
+    :ivar fence: the fence taken before it derived
     """
 
     shape: AccessShape
@@ -449,6 +461,7 @@ class _Pending:
     compute: Callable[[UUID], Awaitable[str | None]]
     ran: bool = False
     storable: bool = False
+    saved: bool = False
     fence: int = 0
 
 
@@ -530,6 +543,7 @@ class AccessShapeAnswers(DerivedCollection[ShapeAnswerRow]):
     ) -> None:
         if acl_cache.membership_loader is not actors:
             raise ValueError("the access cache must read memberships through the shape actors it answers for")
+        self._untrusted_logged = False
         self._table_name = table_name
         self._acl_cache = acl_cache
         self._actors = actors
@@ -563,15 +577,6 @@ class AccessShapeAnswers(DerivedCollection[ShapeAnswerRow]):
         return ShapeAnswerRow
 
     @property
-    def dependencies(self) -> ShapeDependencies:
-        """the generations applied here.
-
-        :return: them
-        :rtype: ShapeDependencies
-        """
-        return self._dependencies
-
-    @property
     def held(self) -> int:
         """how many answers this replica holds in L1.
 
@@ -579,25 +584,6 @@ class AccessShapeAnswers(DerivedCollection[ShapeAnswerRow]):
         :rtype: int
         """
         return len(self._held)
-
-    @property
-    def acl_cache(self) -> AclCache:
-        """the access cache answers are evaluated through.
-
-        :return: it
-        :rtype: AclCache
-        """
-        return self._acl_cache
-
-    def held_row(self, key: tuple[str, str]) -> dict[str, Any] | None:
-        """the row this replica's L1 holds for ``key``, whether or not it is current, for an operator or a test.
-
-        :param key: :meth:`key_of`
-        :ptype key: tuple[str, str]
-        :return: the row, or ``None``
-        :rtype: dict[str, Any] | None
-        """
-        return self._select_from_l1(key)
 
     async def settled(self) -> None:
         """wait for the L2 deletions changes have started here to finish.
@@ -656,16 +642,85 @@ class AccessShapeAnswers(DerivedCollection[ShapeAnswerRow]):
         :rtype: ShapeAnswer | None
         """
         key = self.key_of(kind, customer_id, shape)
-        if not self._dependencies.trusted:
-            # nothing held while a watch could miss a row is served once trust returns
-            if self._held:
-                self._on_change(None)
-            body = await compute(self._actors.actor_for(shape))
-            return None if body is None else ShapeAnswer(body, ShapeAnswerOutcome.UNCACHED)
-        held = self._select_from_l1(key)
-        if held is not None and self._current(held, context):
-            record_tier_read(self.table_name, ReadTier.L1)
-            return ShapeAnswer(str(held["body"]), ShapeAnswerOutcome.L1)
+        given: ShapeAnswer | None
+        if not self.trusted:
+            given = await self._uncached(shape, compute)
+        else:
+            held = self._select_from_l1(key)
+            if held is not None and self._current(held, context):
+                record_tier_read(self.table_name, ReadTier.L1)
+                given = ShapeAnswer(str(held["body"]), ShapeAnswerOutcome.L1)
+            else:
+                given = await self._read_or_derive(key, shape, context, agent_ids, compute)
+        return given
+
+    @property
+    def trusted(self) -> bool:
+        """whether answers are served and kept now: the tables followed, and the access cache followed too.
+
+        An access cache nobody follows holds rows nothing drops, and an answer derived through it would
+        be stamped current and shared with every replica.
+
+        :return: ``True`` when they are
+        :rtype: bool
+        """
+        return self._dependencies.trusted and self._acl_cache.followed and self._acl_cache.trusted
+
+    async def _uncached(
+        self, shape: AccessShape, compute: Callable[[UUID], Awaitable[str | None]]
+    ) -> ShapeAnswer | None:
+        """derive afresh and keep nothing: what a question gets while answers are not trusted.
+
+        Nothing held while a watch could miss a row is served once trust returns, so what this replica
+        holds is dropped.
+
+        :param shape: the shape
+        :ptype shape: AccessShape
+        :param compute: derives the answer as the given actor
+        :ptype compute: Callable[[UUID], Awaitable[str | None]]
+        :return: the answer, or ``None``
+        :rtype: ShapeAnswer | None
+        """
+        if self._held:
+            self._on_change(None)
+        if not self._untrusted_logged:
+            self._untrusted_logged = True
+            log.warning(
+                "access-shape answers are not trusted (a table or the access cache is not followed); each is "
+                "derived afresh and kept nowhere until they are",
+                extra={"extra_data": {"table": self.table_name}},
+            )
+        record_tier_read(self.table_name, ReadTier.L3)
+        body = await compute(self._actors.actor_for(shape))
+        return None if body is None else ShapeAnswer(body, ShapeAnswerOutcome.UNCACHED)
+
+    async def _read_or_derive(
+        self,
+        key: tuple[str, str],
+        shape: AccessShape,
+        context: str,
+        agent_ids: Collection[UUID],
+        compute: Callable[[UUID], Awaitable[str | None]],
+    ) -> ShapeAnswer | None:
+        """the answer from L2, or derived once in the cluster; kept in L1 when current.
+
+        Its outcome says where it is kept: ``derived`` when this read put it in L2, ``l2`` when it read
+        it there, ``uncached`` when it derived and kept it nowhere.
+
+        :param key: the key
+        :ptype key: tuple[str, str]
+        :param shape: the shape
+        :ptype shape: AccessShape
+        :param context: the context asked under
+        :ptype context: str
+        :param agent_ids: the agents whose side the answer evaluates
+        :ptype agent_ids: Collection[UUID]
+        :param compute: derives the answer as the given actor
+        :ptype compute: Callable[[UUID], Awaitable[str | None]]
+        :return: the answer, or ``None`` when ``compute`` answered nothing
+        :rtype: ShapeAnswer | None
+        """
+        self._untrusted_logged = False
         ticket = self.scan_ticket()
         pending = _Pending(shape=shape, context=context, agent_ids=frozenset(agent_ids), compute=compute)
         token = _PENDING.set(pending)
@@ -674,15 +729,19 @@ class AccessShapeAnswers(DerivedCollection[ShapeAnswerRow]):
         finally:
             _PENDING.reset(token)
         record_tier_read(self.table_name, tier)
-        if row is None:
-            return None
-        if pending.ran and not pending.storable:
-            return ShapeAnswer(str(row["body"]), ShapeAnswerOutcome.UNCACHED)
-        if (pending.ran and self._dependencies.fence() != pending.fence) or not self._current(row, context):
-            return ShapeAnswer(str(row["body"]), ShapeAnswerOutcome.UNCACHED)
-        if self.write_to_cache_sync(row, read_since=ticket):
-            self._index(key, frozenset(json.loads(row["deps"])))
-        return ShapeAnswer(str(row["body"]), ShapeAnswerOutcome.DERIVED if pending.ran else ShapeAnswerOutcome.L2)
+        given: ShapeAnswer | None = None
+        if row is not None:
+            if pending.ran:
+                outcome = ShapeAnswerOutcome.DERIVED if pending.saved else ShapeAnswerOutcome.UNCACHED
+            else:
+                outcome = ShapeAnswerOutcome.L2
+            # kept here too only while nothing reaching an answer has landed since and it is current
+            keep = outcome is not ShapeAnswerOutcome.UNCACHED and self._current(row, context)
+            if keep and (not pending.ran or self._dependencies.fence() == pending.fence):
+                if self.write_to_cache_sync(row, read_since=ticket):
+                    self._index(key, frozenset(json.loads(row["deps"])))
+            given = ShapeAnswer(str(row["body"]), outcome)
+        return given
 
     def _current(self, row: Mapping[str, Any], context: str) -> bool:
         """whether a kept answer is for ``context`` and valid by everything applied here.
@@ -779,8 +838,9 @@ class AccessShapeAnswers(DerivedCollection[ShapeAnswerRow]):
                 row = self.deserialize(raw)
                 if not self._current(row, str(row.get("context"))):
                     await kv.delete(key=self.l2_key(key), revision=revision)
-        except KvError as exc:
-            # NOSILENT: an entry left in L2 is still checked against its stamp on every read
+        # prawduct:allow prawduct/broad-except -- background work no caller awaits: whatever it raises is recorded
+        # here or nowhere, and an entry left in L2 is still checked against its stamp on every read
+        except Exception as exc:  # noqa: BLE001
             contain(exc, log=log, what="stale access-shape answers were not deleted from L2", level="warning")
 
     # ------------------------------------------------------------------
@@ -830,7 +890,9 @@ class AccessShapeAnswers(DerivedCollection[ShapeAnswerRow]):
         pending.fence = self._dependencies.fence()
         stamp = self._dependencies.stamp()
         actor = self._actors.actor_for(pending.shape)
-        footprint = await access_footprint(self._acl_cache, shape=pending.shape, agent_ids=pending.agent_ids)
+        footprint: AccessFootprint = await access_footprint(
+            self._acl_cache, shape=pending.shape, agent_ids=pending.agent_ids
+        )
         body = await pending.compute(actor)
         if body is None:
             return None
@@ -863,9 +925,9 @@ class AccessShapeAnswers(DerivedCollection[ShapeAnswerRow]):
         """
         del original_timestamp, conn
         pending = _PENDING.get()
-        if pending is None or not pending.storable or self._dependencies.fence() != pending.fence:
-            return 0
-        return 1 if await self._save_to_l2((data["scope"], data["shape"]), data) else 0
+        if pending is not None and pending.storable and self._dependencies.fence() == pending.fence:
+            pending.saved = await self._save_to_l2((data["scope"], data["shape"]), data)
+        return 1 if pending is not None and pending.saved else 0
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """nothing: there is no durable tier.

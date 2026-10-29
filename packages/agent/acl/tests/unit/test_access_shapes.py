@@ -25,10 +25,10 @@ from threetears.agent.acl import (
     CallerAccessCache,
     CallerKey,
     ShapeActors,
-    access_footprint,
     bind_caller_cache_to_memberships,
     evaluate_many_with_trail,
 )
+from threetears.agent.acl.access_shapes import access_footprint
 from threetears.agent.acl.cache import AclCache
 from threetears.agent.acl.types import (
     EvaluationContext,
@@ -302,3 +302,12 @@ class TestAPerPersonMembershipCache:
         registry, cache, reader, _other = self._filled()
         registry.drop_table("group_members", reason="test")
         assert cache.get(reader) is None
+
+
+def test_an_access_cache_says_whether_anything_follows_it() -> None:
+    cache = AclCache(membership_loader=FakeStore(), grant_loader=FakeStore())
+    assert cache.trusted and not cache.followed, "a scratch cache is trusted, and nothing follows it"
+    cache.followed_by(lambda: True)
+    assert cache.followed
+    cache.followed_by(None)
+    assert not cache.followed

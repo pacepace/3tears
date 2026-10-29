@@ -9,16 +9,19 @@ packages (bumped in lock-step).
 ### agent-acl, core: access answers derived once per membership shape and shared by every replica
 
 **Added:** `AccessShape`, `ShapeActors`, `AccessShapeAnswers`, `ShapeDependencies`, `ShapeAnswer`,
-`ShapeAnswerOutcome`, `bind_caller_cache_to_memberships`, and in `generation_follow`
-`follow_access_shape_answers`, `follow_caller_memberships` and `ShapeAnswersFollowing`; in core,
-`GenerationMarks.highest_heard()` and `adopt()`. A host's per-person access answer (the hub's cache token)
+`ShapeAnswerOutcome`, `bind_caller_cache_to_memberships`, `access_shapes.access_footprint` and
+`AccessFootprint`, `AclCache.followed`, and in `generation_follow` `follow_access_shape_answers`,
+`follow_caller_memberships` and `ShapeAnswersFollowing`; in core, `GenerationMarks.highest_heard()` and
+`adopt()`. A host's per-person access answer (the hub's cache token)
 was derived and kept per person in each process: at a sign-in surge every person was cold, about a dozen
 reads and an evaluation of every candidate namespace each, and one admin change dropped every answer. The
 evaluator reads a person only through their direct membership rows, so the answer is a function of that
 shape. `AccessShapeAnswers` keeps one answer per shape in L1 and L2, derives it once across replicas, and
 serves a hot shape from L1 with no L2 or database read. An answer carries the generations it was derived at
 and its footprint (groups, roles, agents); a change makes stale only the answers it reaches, on every tier
-and every replica that has applied it, and an answer derived while a change landed is kept nowhere. No
+and every replica that has applied it. An answer derived while a change landed is kept in no replica's
+L1; it reaches L2 only when the change landed after it was put there, and is then served only where its
+stamp is current. Nothing is served or kept unless the tables and the access cache are followed. No
 lifetimes.
 
 ## v0.82.0 -- 2026-10-28

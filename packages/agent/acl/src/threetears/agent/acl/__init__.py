@@ -60,7 +60,8 @@ public surface — answers shared per access shape:
 
 - :class:`AccessShape` — a person's direct memberships, which is all of them
   the evaluator reads; :class:`ShapeActors` evaluates as a shape rather than a
-  person, and :func:`access_footprint` names what an answer can reach.
+  person, and :func:`~threetears.agent.acl.access_shapes.access_footprint` names what an
+  answer can reach.
 - :class:`AccessShapeAnswers` — one answer per shape in L1 and L2, derived once
   across replicas and checked on every read against the generations
   :class:`ShapeDependencies` has applied; followed with
@@ -149,7 +150,6 @@ from threetears.agent.acl.builtin_roles import (
 from threetears.agent.acl.access_shapes import (
     AccessShape,
     ShapeActors,
-    access_footprint,
 )
 from threetears.agent.acl.access_tables import ACCESS_TABLES, bind_acl_cache_to_access_tables
 from threetears.agent.acl.caller_cache import (
@@ -267,7 +267,6 @@ __all__ = [
     "ShapeAnswer",
     "ShapeAnswerOutcome",
     "ShapeDependencies",
-    "access_footprint",
     "bind_caller_cache_to_memberships",
     "INTERNAL_AUDIENCE",
     "AccessDenied",

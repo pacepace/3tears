@@ -37,6 +37,7 @@ from threetears.agent.acl import (
     ShapeActors,
     ShapeAnswerOutcome,
     ShapeDependencies,
+    bind_acl_cache_to_access_tables,
     evaluate_many_with_trail,
 )
 from threetears.agent.acl.cache import AclCache
@@ -142,10 +143,20 @@ class _Estate:
 
 
 class _Replica:
-    def __init__(self, registry: CollectionRegistry, answers: AccessShapeAnswers, store: _Store) -> None:
+    def __init__(
+        self,
+        registry: CollectionRegistry,
+        answers: AccessShapeAnswers,
+        store: _Store,
+        *,
+        acl: AclCache,
+        dependencies: ShapeDependencies,
+    ) -> None:
         self.registry = registry
         self.answers = answers
         self.store = store
+        self.acl = acl
+        self.dependencies = dependencies
         self.followed = True
 
     def hear(self, message: CacheInvalidationMessage) -> None:
@@ -169,20 +180,24 @@ async def _replica(bus: FakeNatsClient, store: _Store, *, token: str = "inc:0") 
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
     actors = ShapeActors(store)
+    acl = AclCache(membership_loader=actors, grant_loader=store)
     dependencies = ShapeDependencies(registry, _TABLES)
     answers = AccessShapeAnswers(
         registry,
         DefaultCoreConfig(),
         bus,
         table_name=_TABLE,
-        acl_cache=AclCache(membership_loader=actors, grant_loader=store),
+        acl_cache=acl,
         actors=actors,
         dependencies=dependencies,
     )
     await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
     _sighted(registry, token)
+    # the access cache is bound and followed first, as a host follows it, so a row reaches it first
+    bind_acl_cache_to_access_tables(registry, acl)
     dependencies.bind()
-    replica = _Replica(registry, answers, store)
+    replica = _Replica(registry, answers, store, acl=acl, dependencies=dependencies)
+    acl.followed_by(lambda: replica.followed)
     dependencies.followed_by(lambda: replica.followed)
     return replica
 
@@ -394,7 +409,6 @@ class TestAChangeDropsOnlyWhatItReaches:
         assert one.answers.held == two.answers.held == 1
         assert _l2_keys(bucket) == [one.answers.l2_key(one.answers.key_of(_KIND, estate.customer, untouched))]
         for replica in (one, two):
-            assert replica.answers.held_row(replica.answers.key_of(_KIND, estate.customer, reached)) is None
             kept = await _ask(replica, estate, untouched, _Computer())
             assert kept.outcome is ShapeAnswerOutcome.L1
             again = _Computer()
@@ -423,10 +437,10 @@ class TestAChangeDropsOnlyWhatItReaches:
         replica = await _replica(bus, store)
         shape = await estate.shape(store, estate.reader)
         await _ask(replica, estate, shape, _Computer())
-        fence = replica.answers.dependencies.fence()
+        fence = replica.dependencies.fence()
         replica.hear(_row("group_members", generation="inc:1", member_type="user", member_id=f"{estate.reader}"))
         assert replica.answers.held == 1
-        assert replica.answers.dependencies.fence() == fence
+        assert replica.dependencies.fence() == fence
         assert (await _ask(replica, estate, shape, _Computer())).outcome is ShapeAnswerOutcome.L1
 
     async def test_a_whole_table_change_drops_every_shape(self, bus: FakeNatsClient) -> None:
@@ -513,7 +527,11 @@ class TestAStaleAnswerIsNeverServedByAReplicaThatHeardTheChange:
         given = await _ask(joined, estate, shape, compute)
         assert given.outcome is ShapeAnswerOutcome.DERIVED
         assert compute.calls == 1
-        stamp = json.loads(joined.answers.held_row(joined.answers.key_of(_KIND, estate.customer, shape))["stamp"])
+        raw = await (await _bucket(bus)).get(
+            key=joined.answers.l2_key(joined.answers.key_of(_KIND, estate.customer, shape))
+        )
+        assert raw is not None
+        stamp = json.loads(json.loads(raw)["stamp"])
         assert set(stamp.values()) == {"inc:5"}
 
     async def test_a_row_naming_no_generation_stays_stale_until_a_later_one_is_applied(
@@ -567,7 +585,7 @@ class TestUntrusted:
         estate = _Estate(store)
         replica = await _replica(bus, store)
         await _ask(replica, estate, await estate.shape(store, estate.reader), _Computer())
-        replica.answers.dependencies.followed_by(None)
+        replica.dependencies.followed_by(None)
         assert replica.answers.held == 0
 
     async def test_the_access_cache_must_read_through_the_actors(self, bus: FakeNatsClient) -> None:
@@ -590,7 +608,7 @@ class TestTheAnswerIsEveryonesWithTheShape:
         store = _Store()
         estate = _Estate(store)
         replica = await _replica(bus, store)
-        cache = replica.answers.acl_cache
+        cache = replica.acl
 
         async def visible(as_user: UUID, evaluation_cache: AclCache) -> str:
             contexts = [
@@ -655,3 +673,53 @@ class TestWhatARowReaches:
     )
     def test_each_table(self, message: CacheInvalidationMessage, expected: list[frozenset[str] | None]) -> None:
         assert _reached(message) == expected
+
+
+class TestTheAccessCacheMustBeFollowed:
+    async def test_an_access_cache_nobody_follows_makes_every_answer_uncached(self, bus: FakeNatsClient) -> None:
+        """a scratch access cache drops nothing it holds; an answer derived through it is never shared."""
+        store = _Store()
+        estate = _Estate(store)
+        replica = await _replica(bus, store)
+        replica.acl.followed_by(None)
+        shape = await estate.shape(store, estate.reader)
+        compute = _Computer()
+        assert (await _ask(replica, estate, shape, compute)).outcome is ShapeAnswerOutcome.UNCACHED
+        assert _l2_keys(await _bucket(bus)) == []
+        assert replica.answers.held == 0
+
+
+class TestARowThatDoesNotSayWhatItReaches:
+    async def test_is_counted_and_makes_its_whole_table_stale(self, bus: FakeNatsClient) -> None:
+        store = _Store()
+        estate = _Estate(store)
+        replica = await _replica(bus, store)
+        await _ask(replica, estate, await estate.shape(store, estate.reader), _Computer())
+        replica.hear(_row("role_assignments", generation="inc:1"))
+        assert replica.dependencies.degraded.counts == {"role_assignments": 1}
+        assert replica.answers.held == 0
+        replica.hear(_row("rest_shares", generation="inc:1"))
+        assert replica.dependencies.degraded.counts == {"role_assignments": 1}, "a whole-table row is not degraded"
+
+
+class TestTheOutcomeSaysWhereItIsKept:
+    async def test_a_change_landing_after_the_answer_reached_l2_still_reports_it_kept(
+        self, bus: FakeNatsClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = _Store()
+        estate = _Estate(store)
+        replica = await _replica(bus, store)
+        shape = await estate.shape(store, estate.reader)
+        bucket = await _bucket(bus)
+        put = bucket.put
+
+        async def put_then_change(*args: Any, **kwargs: Any) -> Any:
+            kept = await put(*args, **kwargs)
+            replica.hear(_assignment_row(estate.states[2]))
+            return kept
+
+        monkeypatch.setattr(bucket, "put", put_then_change)
+        given = await _ask(replica, estate, shape, _Computer())
+        assert given.outcome is ShapeAnswerOutcome.DERIVED
+        assert len(_l2_keys(await _bucket(bus))) == 1
+        assert replica.answers.held == 0, "kept in L2 by its stamp, not in this replica's L1 past the fence"

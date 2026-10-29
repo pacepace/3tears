@@ -265,8 +265,7 @@ class TestTwoReplicasOverTheRealTables:
         await two.settle()
 
         for replica in (one, two):
-            assert replica.answers.held_row(key_a) is None
-            assert replica.answers.held_row(key_b) is not None
+            assert replica.answers.held == 1, "only the shape the grant does not reach is held"
         assert one.answers.l2_key(key_a) not in bucket.keys()
         assert one.answers.l2_key(key_b) in bucket.keys()
         again = await _ask(two, seeded, await two.shape_of(seeded.bea))

@@ -283,6 +283,25 @@ class ShapeAnswersFollowing:
 
     follower: TableFollower
     _unbind: Callable[[], None]
+    _degraded: DegradedEvictions
+
+    @property
+    def healthy(self) -> bool:
+        """whether every table's watch is running and pushed since it last failed.
+
+        :return: the follower's health
+        :rtype: bool
+        """
+        return self.follower.healthy
+
+    @property
+    def degraded(self) -> DegradedEvictions:
+        """the rows heard that did not say what they reach, by table.
+
+        :return: the record
+        :rtype: DegradedEvictions
+        """
+        return self._degraded
 
     async def stop(self) -> None:
         """stop the watches, then unbind; nothing is served or kept after. Idempotent.
@@ -342,7 +361,7 @@ def follow_access_shape_answers(
         dependencies.followed_by(None)
         unbind()
 
-    return ShapeAnswersFollowing(follower=follower, _unbind=remove)
+    return ShapeAnswersFollowing(follower=follower, _unbind=remove, _degraded=dependencies.degraded)
 
 
 def _bind_and_follow(

@@ -41,14 +41,10 @@ if TYPE_CHECKING:
     from threetears.agent.acl.cache import AclCache
 
 __all__ = [
-    "ANY_ROLE",
+    "AccessFootprint",
     "AccessShape",
     "ShapeActors",
     "access_footprint",
-    "agent_dep",
-    "group_dep",
-    "role_dep",
-    "table_dep",
 ]
 
 log = get_logger(__name__)
@@ -215,7 +211,7 @@ class ShapeActors:
         :ptype user_id: UUID
         :return: the rows
         :rtype: tuple[GroupMembership, ...]
-        :raises _ShapeActorForgotten: for a shape actor not held
+        :raises LookupError: for a shape actor not held (it is never read from the database as a member of nothing)
         """
         if _is_shape_actor(user_id):
             return self._shape_of(user_id).rows_for(user_id)
@@ -306,7 +302,7 @@ def table_dep(table: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
-class _AccessFootprint:
+class AccessFootprint:
     """the shared rows an answer for one shape can reach.
 
     :ivar groups: every group reachable from the shape's and the agents' direct groups, through
@@ -359,7 +355,7 @@ async def _agent_rows(cache: AclCache, agent_id: UUID) -> tuple[GroupMembership,
     return rows
 
 
-async def access_footprint(cache: AclCache, *, shape: AccessShape, agent_ids: Collection[UUID]) -> _AccessFootprint:
+async def access_footprint(cache: AclCache, *, shape: AccessShape, agent_ids: Collection[UUID]) -> AccessFootprint:
     """the groups, roles and agents an answer for ``shape`` with these signing agents can reach.
 
     Read through the access cache's own layers (and its loaders on a miss), widening the shape's and
@@ -376,7 +372,7 @@ async def access_footprint(cache: AclCache, *, shape: AccessShape, agent_ids: Co
     :param agent_ids: the agents whose side the answer evaluates
     :ptype agent_ids: Collection[UUID]
     :return: the footprint
-    :rtype: _AccessFootprint
+    :rtype: AccessFootprint
     """
     direct: dict[UUID, None] = dict.fromkeys(sorted(shape.group_ids, key=lambda group: group.hex))
     for agent_id in agent_ids:
@@ -402,4 +398,4 @@ async def access_footprint(cache: AclCache, *, shape: AccessShape, agent_ids: Co
     if isinstance(loader, HeldAssignmentsLoader):
         held = await loader.load_assignments_held_by_groups(tuple(seen)) if seen else ()
         roles = frozenset(assignment.role_id for assignment in held)
-    return _AccessFootprint(groups=groups, roles=roles, agents=frozenset(agent_ids))
+    return AccessFootprint(groups=groups, roles=roles, agents=frozenset(agent_ids))
