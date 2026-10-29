@@ -740,6 +740,8 @@ def _with_report(host: EvalHost, line: CampaignLine, campaign: EvalCampaign) -> 
     if analysis is None:
         return line
     listed = _analysis_line(host, analysis, campaign)
+    if not campaign.arms:
+        line = line.model_copy(update={"title": _resolved_title(analysis, campaign)})
     why = listed.needs_regeneration
     if why is None and set(analysis.observation_refs) != set(campaign.run_ids):
         why = "the campaign holds other runs than the report was written over; generate it again (analysis_generate)"
@@ -794,10 +796,11 @@ def _listed(host: EvalHost, campaign: EvalCampaign, every: list[EvalCampaign] | 
     scope (read here when not given). Its runs are read only for a campaign that declares no arm, whose title names
     their candidate models."""
     every = every if every is not None else list_campaigns(host.storage, campaign.scope_id, archived=None)
-    title = _stored_title(host, campaign)
-    return _with_report(host, _campaign_line(campaign), campaign).model_copy(
-        update={"feeds": _feeds(campaign, every), "title": title}
-    )
+    line = _with_report(host, _campaign_line(campaign), campaign)
+    # A campaign declaring no arm is titled by the arms its report resolved, as its page and analysis line are; with
+    # no readable report, by its runs' candidate models.
+    title = line.title or _stored_title(host, campaign)
+    return line.model_copy(update={"feeds": _feeds(campaign, every), "title": title})
 
 
 def _feeds(campaign: EvalCampaign, campaigns: list[EvalCampaign]) -> list[str]:
@@ -1057,6 +1060,19 @@ def campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archive
     :raises StorageError: The write failed.
     """
     return _listed(host, set_campaign_archived(host.storage, campaign_id, scope_id, archived=archived))
+
+
+def _resolved_title(analysis: EvalAnalysis, campaign: EvalCampaign) -> str:
+    """A campaign's title from the arms its report resolved (its frozen bundle's), under the campaign's name and
+    aspects as they stand; empty where that bundle is of a shape this build cannot read."""
+    try:
+        frozen = analysis_campaign_bundle(analysis)
+    except RefusedInput:
+        # NOSILENT: the line's report says it needs regeneration; the title is then read off the campaign's runs.
+        return ""
+    return declared_title(
+        campaign.name, frozen.arms, [(aspect.label, aspect.short_name) for aspect in campaign.aspects]
+    )
 
 
 def _analysis_title(host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampaign | None) -> str:

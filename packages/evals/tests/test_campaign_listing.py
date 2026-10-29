@@ -52,7 +52,14 @@ from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.declaration import CampaignCall, printed_aspect_name
-from threetears.evals.ops import CampaignChanges, CampaignDefinition, campaign_create, campaign_update, campaigns_list
+from threetears.evals.ops import (
+    CampaignChanges,
+    CampaignDefinition,
+    analyses_list,
+    campaign_create,
+    campaign_update,
+    campaigns_list,
+)
 from threetears.evals.ops.analysis import (
     CAMPAIGN_NAME_CHARS,
     QUESTION_SHORT_CHARS,
@@ -111,6 +118,8 @@ def _written_then_stale(host: EvalHost, campaign_id: str, analysis_id: str | Non
 
     assert line.report_state == "written" and line.report is not None
     assert line.report.analysis_id == analysis_id and line.report.why_regenerate is None
+    (analysis_line,) = [a for a in analyses_list(host, campaign_id, TOYHOST_SCOPE).analyses if a.id == analysis_id]
+    assert line.title == analysis_line.title, "a campaign declaring no arm is titled by the arms its report resolved"
     assert line.report.headline and line.report.generator_model
     expected_cost = attempt.token_cost if attempt.unpriced_calls == 0 else None
     assert (line.report.cost_usd, line.report.unpriced_calls) == (expected_cost, attempt.unpriced_calls)
