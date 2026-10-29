@@ -91,6 +91,38 @@ def test_a_chart_is_drawn_at_three_widths_and_a_small_multiple_once_at_a_panel_s
     assert [svg["class"] for svg in drawn] == ["viz-chart viz-panel"], "a panel once; a text card none"
 
 
+def test_a_chart_or_a_panel_given_no_row_draws_nothing_and_the_page_shows_its_table() -> None:
+    forest = _block(chart="forest", data={"rows": [], "domain": [-10, 10], "fmt": "+pts", "level": "95%"})
+    dots = _block(chart="dot_interval", data={"rows": [], "domain": [0, 1], "fmt": "pct"})
+    assert chart_drawing(forest) is None and chart_drawing(dots) is None
+    row = {"label": "a", "value": 0.5, "lo": 0.4, "hi": 0.6}
+    panels = {
+        "domain": [0, 1],
+        "fmt": "pct",
+        "level": "95%",
+        "panels": [{"title": "one", "rows": [row]}, {"title": "two", "rows": []}],
+    }
+    drawn = chart_drawing(_block(chart="dot_interval", data=panels)) or ""
+    assert [svg["class"] for svg in _svgs(drawn)] == ["viz-chart viz-panel"], "the panel with rows is drawn"
+    assert drawn.count(f'<p class="chart-note">{AS_TABLE_NOTE}</p>') == 1, "the panel with none says so"
+    page = report_html(report_of([forest, dots]), static=True)
+    for figure in re.findall(r'<figure class="fig".*?</figure>', page, flags=re.DOTALL):
+        assert figure.count(f'<p class="chart-note">{AS_TABLE_NOTE}</p>') == 1
+
+
+def test_small_multiples_whose_panels_carry_different_columns_tabulate_each_cell_under_its_own_column() -> None:
+    noted = {"title": "noted", "rows": [{"label": "a", "value": 2, "note": "two"}]}
+    spread = {"title": "spread", "rows": [{"label": "b", "value": 3, "lo": 2, "hi": 4}]}
+    data = {"domain": [0, 4], "fmt": "int", "level": "95%", "panels": [noted, spread]}
+
+    headers, rows = _block(chart="bars", data=data).values_table()
+
+    assert headers == ["Panel", "Row", "Value", "Note", "95% interval"], "the widest panel's first, then the rest"
+    by = [dict(zip(headers, row, strict=True)) for row in rows]
+    assert (by[0]["Note"], by[0]["95% interval"]) == ("two", "")
+    assert by[1]["Note"] == "" and by[1]["95% interval"], "each panel's cells sit under their own columns"
+
+
 def test_the_style_shows_the_drawing_nearest_the_chart_s_own_width() -> None:
     assert "container-type: inline-size" in CHART_STYLE
     assert "@container (max-width: 499px)" in CHART_STYLE and "@container (min-width: 800px)" in CHART_STYLE

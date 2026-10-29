@@ -70,7 +70,8 @@ def _lines(page: PlannedPage) -> Iterator[list[str]]:
         yield [inert(f"**{one_line(page.flag.title)}** {one_line(page.flag.text)}")]
     yield _confidence(page.confidence)
     for slot in page.decision:
-        yield [inert(f"**{slot.title}.** {' '.join(one_line(line) for line in slot.text.splitlines())}")]
+        said = " ".join(one_line(line) for line in slot.text.splitlines())
+        yield [inert(f"**{slot.title}.** {said} {slot.note}" if slot.note else f"**{slot.title}.** {said}")]
     for answer in page.answers:
         yield [inert(f"**{answer.warning}** {one_line(answer.text)}")]
     yield table_lines(page.options.table)

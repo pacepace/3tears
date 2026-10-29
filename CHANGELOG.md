@@ -12,7 +12,9 @@ packages (bumped in lock-step).
 over a bundle of another shape (a memo frozen at shape 60 on a build reading 64): the page is the code-only page over
 the campaign's evidence as it stands, in markdown, html, static html and json, led by the one regenerate line with the
 bundle's shape after it, as a report plan's or an unreadable report document's already was. `campaigns_list` and
-`analyses_list` already listed it as needing regeneration. `analysis_report` by id still refuses.
+`analyses_list` already listed it as needing regeneration. `analysis_report` by id still refuses. Only a bundle of
+another shape falls back: a memo's page that refuses what it is laid out over (an aspect with no page, a page keyed by
+a label the campaign does not hold, readings of another campaign) still raises `RefusedInput` to the caller.
 
 **Added:** `CampaignLine.aspect_runs`, each aspect's label to the ids of its runs in the campaign's order.
 
@@ -21,7 +23,8 @@ bundle's shape after it, as a report plan's or an unreadable report document's a
 **Fixed:** a `scatter_frontier` or `gate_scatter` chart draws its y-axis title inside the plot, bottom left, and its
 point labels did not avoid it: at phone width a point near the origin put its label ("M") on the title ("Pass rate"),
 which the render check reported as an overlap. The kit (`kit.js`, in the package and in `docs/eval-report-kit`, byte
-for byte) and the static SVG port now both leave the title's box to the label placer.
+for byte) and the static SVG port now both leave the title's box to the label placer. The five reference pages in
+`docs/eval-report-kit/references/` are rebuilt with `scripts/build.py`, which inlines the kit: only that kit line moves.
 ### evals: after round 1, only a carried-over finding or a must_fix sends a report back; the editor marks what each finding continues
 
 **Changed:** owner ruling 2026-10-29 (option 3), after the re-recorded acceptance runs showed each later review
@@ -64,11 +67,20 @@ one this build cannot read), `report_state` (`none`, `written` or `needs_regener
 verdict line as `headline`, why it needs regeneration, when and on what model it was generated, its attempt's
 `cost_usd`, None while any call is unpriced, and `unpriced_calls`) and `feeds` (for an exploratory campaign, the
 declared campaigns holding any of its runs). A report needs regeneration when this build cannot read it, when it is a
-report plan, or when the campaign holds other runs than it was written over. Each line reads its campaign's reported
-analysis and attempts once.
+report plan, or when the campaign holds other runs than it was written over: the runs it held then are the ones the
+report read and the ones its frozen bundle names as not resolving or archived, so a run id that never resolved does not
+read as a move. Each line reads its campaign's reported analysis and attempts once, and puts its frozen bundle back
+together once for the headline, the title, `verdict_short`, `outcome_short` and the report's state
+(`analysis_verdict` takes it as `bundle=`). One analysis that does not read back together (a corrupt record) lists its
+report as needing regeneration, with why, and fails neither the listing nor the write that lists the campaign. A write
+(create, update, runs added or removed, archive) reads the scope's other campaigns only for an exploratory campaign,
+the one kind `feeds` names any for. `verdict_short` finds the arm by the call's or recommendation's variant key (by
+label only where no key matches) and prints it as the title does (`careful`, never `candidate=careful`).
 
 **Changed:** a campaign's name is at most `CAMPAIGN_NAME_CHARS` (32) characters when it is created or renamed, refused
 past it with the remedy to put the detail in its question or description; a name stored longer still reads and lists.
+The quick path (`Eval.run`, `Result.against`) holds its campaign to the cap too: an eval's name past 32 characters is
+cut at a word there, an ellipsis marking the cut, and kept whole in the campaign's description and as `Result.name`.
 
 **Changed:** a campaign's name is presentation: a campaign bundle's fingerprint is version 3
 (`CAMPAIGN_FINGERPRINT_PREFIX`, `v3:`), which leaves the name out (`CAMPAIGN_PRESENTATION_FIELDS`), as it leaves
@@ -82,7 +94,8 @@ which then records version 3. A new freeze records version 3. An aspect's own bu
 **Changed:** `CampaignLine.title`, code's name for what a campaign compares: `<arms> · <measure> (<name>)`. The arms
 are its declared arms' short names (else labels), control first, joined ` vs `, past three `<control> vs N
 candidates`; a campaign declaring none names its runs' distinct candidate models (a provider's path trimmed), or
-`<model>, N variants` where its runs vary something else, and a judge campaign counts its judges. The measure is its
+`<model>, N variants` where its runs vary something else (each model's lever maps counted apart, so two models each run
+at two settings are `4 variants`), and a judge campaign counts its judges, whether or not it has a report. The measure is its
 aspects' printed names, past two `N aspects`. No call, recommendation or verdict enters it. With it, a campaign's
 name is a qualifier: at most 32 characters (`CAMPAIGN_NAME_CHARS`, the declared-name cap).
 
@@ -125,18 +138,21 @@ scatter, gate scatter, dot interval, range bars, heatmap, difference heatmap, co
 cost/quality chart as the kit's bars and scatter), at three widths the stylesheet picks between by the chart's own
 width, with each mark's tooltip as its `<title>`, and no script, event attribute or URL. Each chart's table of values
 stays under it. A chart the kit lays out as HTML (a gate matrix, a lattice, example cards) and a report's interval
-rows say in one line that they are shown as their table. The default page is unchanged, byte for byte.
+rows say in one line that they are shown as their table, as does a chart given no row (a forest or dot interval chart
+with `rows: []`), and a small multiple given none is a card saying so. The default page is unchanged, byte for byte.
 ### evals: five rendering defects on a production report page: examples read as fields, the worst case on the corrected interval, a recorded scale, one printed name, no blank cost
 
 **Fixed:** the examples table's Details column no longer prints a case's input as truncated JSON: an input or expectation
 that is a JSON object (a world, a payload), whole or cut where the snapshot was frozen, reads as its first four key and
 value pairs (`Input · city: Oslo`), each key by its reader name and each long value cut at a word; any other text stays
-one field as written (`resolve_examples.readable_fields`). The weakest margin (`Margin`, `weakest.*`, Watch) takes a
+one field as written (`resolve_examples.readable_fields`), a text opening on `{` that reads as no pair ("{customer}
+asked for a refund") included. The weakest margin (`Margin`, `weakest.*`, Watch) takes a
 reading's worst case from the multiplicity-corrected interval of the arm's pass-rate contrast wherever the input holds
 one (`report_margins.corrected_interval`), not the plain 95% interval, so Kairo's reads -12.6 (gap 2.4) where it read
 -10.8 (gap 4.2); a floor keeps its own nominal interval. `weakest.interval` (new key) says which interval the worst case
 is read on, the planner's facts line and the editor's `weakest_not_in_watch` fact name it, and a plan page's Watch that
-cites the weakest margin carries code's line saying so. A judged dimension no judge tier covers (the reserved dual-score
+cites the weakest margin carries code's line saying so, after the planner's text (`PageSlot.note`, new), so the text
+the judge reads stays the planner's alone. A judged dimension no judge tier covers (the reserved dual-score
 axes `outcome` and `transcript` among them) keeps the scale the bundle froze beside its scores, so a pass/fail one
 reads as a pass rate and never as a 1 to 5 mean. `reader_name("measure", ...)` names a goal check with no declared
 name as every table header and chart does (its expression as a code span), where it had printed the bare expression as a
@@ -153,9 +169,10 @@ billing reading, which its Watch names), and one scored run plan's R7 quote.
 summary) wraps a long unbroken token such as a dotted metric path, which had pushed the kairo page to 412 px. A
 heatmap, difference heatmap or confusion chart sits in a `.tbl` frame with its values table, so a grid of eighteen
 columns scrolls inside its frame instead of widening the page (the r2 page, 398 px). A small-multiples chart's values
-table now keeps the widest panel's columns and leaves a narrower panel's missing cells empty: a forest panel with a
-Note column beside one without gave rows longer than the header (the r4 reference's "aspects" chart). Layout only; no
-page's words move.
+table now holds every panel's columns, the widest panel's first, each panel's cells under their own column and the rest
+empty: a forest panel with a Note column beside one without gave rows longer than the header (the r4 reference's
+"aspects" chart), and a bars panel with a Note column beside one with an interval column was refused (the r2 plan's
+"Calls per task"). Layout only; no page's words move.
 ### evals: the report writer revises until its editor's review is clean, and a report stored with findings open is a draft
 
 **Changed:** a review clears a report only when it passes on its scores with no finding open: a `should_fix` now sends

@@ -73,6 +73,7 @@ from threetears.evals.kernel import (
     tier_of,
 )
 from threetears.evals.schema import CalibrationRating, EvalResult, RubricScale
+from threetears.evals.schema.models import DECLARED_NAME_CHARS
 from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.text_block import one_line
@@ -929,6 +930,17 @@ def judged_rows(
     return rows
 
 
+def _campaign_name(name: str) -> str:
+    """An eval's name as its campaign holds it: whole within :data:`DECLARED_NAME_CHARS`, else cut at a word to fit,
+    an ellipsis marking the cut (its first characters where its first word alone runs past)."""
+    if len(name) <= DECLARED_NAME_CHARS:
+        return name
+    text = " ".join(name.split())
+    room = text[: DECLARED_NAME_CHARS - 1]
+    cut = room.rsplit(" ", 1)[0] if " " in room else room
+    return cut.rstrip(" ,;:.-") + "…"
+
+
 def declare(
     host: EvalHost,
     arms: Mapping[str, EvalSummary],
@@ -995,9 +1007,21 @@ def declare(
         aspect["template_id"] = arms[control].template_id
     # The control arm is named as the eval names it, so every page reads `hasty (control) vs careful`.
     control_arm = {"label": control, "role": "control", "from_run_ids": [arms[control].run_id]}
+    # The campaign's name is held to the cap every write of one is (a qualifier beside its title): an eval's name that
+    # runs past it is cut at a word there, and kept whole in the campaign's description. The result keeps it whole.
+    stored = _campaign_name(name)
+    defined: dict[str, Any] = {
+        "name": stored,
+        "subject_id": name,
+        "behavior": behavior,
+        "aspects": [aspect],
+        "arms": [control_arm],
+    }
+    if stored != name:
+        defined["description"] = name
     campaign = create_campaign(
         host.storage,
-        {"name": name, "subject_id": name, "behavior": behavior, "aspects": [aspect], "arms": [control_arm]},
+        defined,
         scope_id=scope_id,
         created_by=created_by,
         profile=host.profile,

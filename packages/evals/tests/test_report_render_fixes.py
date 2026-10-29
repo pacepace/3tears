@@ -64,6 +64,15 @@ def test_a_plain_input_stays_one_field_as_written() -> None:
     assert (field.term, field.text) == ("Input", "Where can I park?")
 
 
+def test_a_text_opening_on_a_brace_that_is_not_json_stays_one_field_and_an_empty_object_gives_none() -> None:
+    from threetears.evals.analysis.report.plan_page.resolve_examples import readable_fields
+
+    for text in ("{customer} asked for a refund", "{", '{"cut'):
+        (field,) = readable_fields("Input", text)
+        assert (field.term, field.text) == ("Input", text), "the input never vanishes from its card"
+    assert readable_fields("Input", "{}") == []
+
+
 def test_the_examples_table_details_column_holds_no_json() -> None:
     held = _r5()
     examples = [

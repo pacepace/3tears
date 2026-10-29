@@ -1377,6 +1377,12 @@ def _panel_heading(panel: Any) -> str:
     return f"<h4>{_escape(panel.title or '')}</h4>"
 
 
+def _holds_no_row(chart: Any) -> bool:
+    """Whether a chart or a panel lays its marks out by row and was given none (``rows: []``): there is nothing to
+    draw, so it is shown as its table, never laid out at a width read off its widest label."""
+    return getattr(chart, "rows", None) == []
+
+
 def _panels(chart: Any, draw: _Drawer, title: str) -> str:
     """Small multiples, as the kit lays them out: each panel the chart's fields overlaid with its own, drawn once at
     a panel's width; a panel of text alone a text card."""
@@ -1397,7 +1403,10 @@ def _panels(chart: Any, draw: _Drawer, title: str) -> str:
         if own:
             one = model.model_validate({**shared, **own})
             named = " · ".join(part for part in (title, panel.title, panel.subtitle) if part)
-            card += f'<div class="chart-panel">{_svg(draw(one, width), width, "viz-panel", named)}</div>'
+            if _holds_no_row(one):
+                card += f'<p class="chart-note">{_escape(AS_TABLE_NOTE)}</p>'
+            else:
+                card += f'<div class="chart-panel">{_svg(draw(one, width), width, "viz-panel", named)}</div>'
         cards.append(f'<div class="fig">{card}</div>')
     return f'<div class="mult"{style}>{"".join(cards)}</div>'
 
@@ -1405,8 +1414,9 @@ def _panels(chart: Any, draw: _Drawer, title: str) -> str:
 def chart_drawing(block: ChartBlock) -> str | None:
     """A chart as a static page draws it: its legend, then its picture as inline SVG at each of three widths
     (or its small multiples, each at a panel's width), in a ``div.chart-drawn``; None for a chart not drawn here (a
-    report's interval rows, which the kit does not draw either, and the kinds the kit lays out as HTML: a gate
-    matrix, a lattice, example cards), which the page shows as its table and says so.
+    report's interval rows, which the kit does not draw either, the kinds the kit lays out as HTML: a gate matrix, a
+    lattice, example cards, and a chart of rows given none), which the page shows as its table and says so. A small
+    multiple given no row is a card saying the same.
 
     :param block: The chart.
     :ptype block: ChartBlock
@@ -1418,6 +1428,8 @@ def chart_drawing(block: ChartBlock) -> str | None:
         return None
     kind, data = kit
     chart = KIT_CHARTS[kind].model_validate(data)
+    if _holds_no_row(chart):
+        return None
     draw = _DRAWERS[kind]
     legend: list[LegendItem] | None = getattr(chart, "legend", None)
     parts = [_legend(legend)] if legend else []

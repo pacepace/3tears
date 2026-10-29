@@ -19,7 +19,15 @@ from threetears.evals.analysis.style import arm_display_name, arm_name
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm, printed_aspect_name
 
-__all__ = ["TITLE_ARMS", "TITLE_ASPECTS", "campaign_title", "declared_title", "named_title", "report_input_title"]
+__all__ = [
+    "TITLE_ARMS",
+    "TITLE_ASPECTS",
+    "campaign_title",
+    "declared_title",
+    "named_title",
+    "report_input_title",
+    "title_arm_name",
+]
 
 #: Past this many arms a title counts the candidates rather than naming them; past this many aspects, it counts them.
 TITLE_ARMS = 3
@@ -35,8 +43,10 @@ def campaign_title(
     :ptype campaign: EvalCampaign
     :param candidate_models: The distinct candidate models of its runs, read for a campaign that declares no arm.
     :ptype candidate_models: Sequence[str]
-    :param variants: How many distinct variants its runs ran (their recorded lever maps), read beside the models: a
-        sweep of one model over another lever is titled by the model and its variant count.
+    :param variants: How many distinct variants its runs ran, each model's recorded lever maps counted apart (a
+        model and a lever map is one variant), read beside the models: more variants than models is a sweep of some
+        model over another lever, titled by the model and its variant count where there is one model, else by the
+        count alone. Two models each run at two settings are four variants, never two.
     :ptype variants: int
     :param judges: Whether its runs are judge runs, whose arms are judges.
     :ptype judges: bool
@@ -116,14 +126,22 @@ def report_input_title(report_input: ReportInput) -> str:
 
 
 def _declared_names(arms: Sequence[CampaignArm], given: Collection[str] | None = None) -> tuple[list[str], list[str]]:
-    control = [_printed(arm, given) for arm in arms if arm.role == "control"]
-    candidates = [_printed(arm, given) for arm in arms if arm.role != "control"]
+    control = [title_arm_name(arm, given) for arm in arms if arm.role == "control"]
+    candidates = [title_arm_name(arm, given) for arm in arms if arm.role != "control"]
     return control, candidates
 
 
-def _printed(arm: CampaignArm, given: Collection[str] | None) -> str:
-    """An arm as a title names it: its declared short name, its label as given, or its computed label as pages print
-    it."""
+def title_arm_name(arm: CampaignArm, given: Collection[str] | None = None) -> str:
+    """An arm as a title names it, and as a listing's short verdict names it: its declared short name, its label as
+    given, or its computed label as pages print it.
+
+    :param arm: The arm.
+    :ptype arm: CampaignArm
+    :param given: The labels a person gave (:func:`declared_title`'s ``given``); None reads every label as given.
+    :ptype given: Collection[str] | None
+    :return: The name printed.
+    :rtype: str
+    """
     if arm.short_name:
         return arm.short_name
     if given is None or arm.label in given or not arm.levers:

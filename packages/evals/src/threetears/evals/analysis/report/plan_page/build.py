@@ -121,11 +121,12 @@ def _interval_note(slot: DecisionSlot, report_input: ReportInput) -> str:
 
 
 def _slot(slot: DecisionSlot, mode: str, *, change: bool, written: _Written, report_input: ReportInput) -> PageSlot:
-    note = _interval_note(slot, report_input)
     return PageSlot(
         key=slot.key,
         title=slot_title(slot.key, change=change),
-        text=f"{written(slot.text)} {note}" if note else written(slot.text),
+        # The planner's text alone, as the judge reads it; code's interval line beside it, printed after it.
+        text=written(slot.text),
+        note=_interval_note(slot, report_input),
         highlighted=_SET_APART.get(mode) == slot.key,
     )
 

@@ -101,11 +101,22 @@ def _pairs(text: str) -> Iterator[tuple[str, object]]:
         yield str(key), value
 
 
+def _empty_object(text: str) -> bool:
+    """Whether a text is a JSON object, read whole, with no pair in it."""
+    try:
+        read: object = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    return read == {}
+
+
 def readable_fields(term: str, text: str) -> list[ExampleField]:
     """What a case gave or expected, as fields a reader reads. A text that is a JSON object (a world, a payload),
     whole or cut short where the snapshot was frozen, is its key and value pairs: the first few with something to say,
     each key by its reader name and each long value cut at a word, never the JSON itself; any other text is one field,
-    as it is.
+    as it is. A text that opens on ``{`` and yields no pair (prose, ``{customer} asked for a refund``) is that one
+    field too, so an input never vanishes from its card; only an object that reads whole and holds nothing (``{}``)
+    gives none.
 
     :param term: The field's term, ``Input`` or ``Expected``, which a pair's key follows.
     :ptype term: str
@@ -116,7 +127,10 @@ def readable_fields(term: str, text: str) -> list[ExampleField]:
     """
     if not text.lstrip().startswith("{"):
         return [ExampleField(term=term, text=text)] if text.strip() else []
-    held = [(key, _elided(said)) for key, value in _pairs(text.lstrip()) if (said := _said(value).strip())]
+    pairs = list(_pairs(text.lstrip()))
+    if not pairs:
+        return [] if _empty_object(text) else [ExampleField(term=term, text=text)]
+    held = [(key, _elided(said)) for key, value in pairs if (said := _said(value).strip())]
     return [
         ExampleField(term=f"{term} · {humanize('dimension', key)}", text=said) for key, said in held[:_FIELDS_SHOWN]
     ]

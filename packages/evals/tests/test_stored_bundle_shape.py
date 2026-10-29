@@ -12,6 +12,8 @@ import pytest
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
+from threetears.evals.analysis.service import campaign_report
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.ops.analysis import analyses_list, report_read
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import analysed_aspect, empty_bundle, make_analysis
@@ -83,3 +85,22 @@ def test_the_report_of_a_campaign_whose_newest_analysis_is_frozen_at_the_shipped
     assert f"shape {SHIPPED_SHAPE}" in read.needs_regeneration
     assert "analysis_generate" in read.needs_regeneration
     assert NO_LONGER_READS in read.body
+
+
+def test_a_memo_whose_page_refuses_what_it_is_laid_out_over_reaches_the_caller_rather_than_reading_code_only():
+    fixture = off_loop(ops_fixture)
+    host = fixture.host.eval_host
+    campaign_id = fixture.campaign.id
+    # A bundle of this build's shape, so it is put back together, but read off another campaign: the page refuses
+    # its readings, which is a fault, not a bundle this version no longer reads.
+    other = empty_bundle(campaign_id="another-campaign")
+    held = make_analysis(
+        campaign_id=campaign_id,
+        scope_id=TOYHOST_SCOPE,
+        aspects=[analysed_aspect(other)],
+        campaign_bundle=campaign_bundle(other).frame(),
+    )
+    host.storage.save_analysis(held)
+
+    with pytest.raises(RefusedInput, match="another-campaign"):
+        campaign_report(host, campaign_id, TOYHOST_SCOPE)

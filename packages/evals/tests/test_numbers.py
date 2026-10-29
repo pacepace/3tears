@@ -244,6 +244,12 @@ _NUMERIC_TYPES = frozenset("eEfFgGn%")
 #: type itself says the value is a fraction.
 _PERCENTAGE_TYPE = "%"
 
+#: The static page's chart drawer, and why its kit formats spell as they do.
+_CHART_SVG = "threetears/evals/analysis/report/chart_svg.py"
+_KIT_FORMAT = (
+    "the kit's named format, restated from kit.js for the static page and pinned to number-format-cases.json: "
+)
+
 #: Sites that spell a number at a deliberate fixed precision, keyed by (module, expression, spec) so
 #: a moved line keeps its exemption and a rewritten expression loses it. Each reason says why the
 #: fixed spelling is the right one there; an entry no site matches any more fails the suite.
@@ -254,6 +260,19 @@ _FIXED_SPELLINGS: dict[tuple[str, str, str], str] = {
     ("threetears/evals/analysis/prose_refs.py", "value", ".{}f"): "a figure in a sentence below 1e-4, written out",
     # Money's spelling (cents from ten cents up, three significant figures below) is numbers.spell_dollars, in the
     # rule's own module.
+    # A static page's chart is the kit's drawing made on the server: its ticks and notes are the kit's named formats
+    # (kit.js K_FMTS), restated so the static page reads the number the default page's script draws, and pinned to the
+    # same cases table the kit and format_number are (test_report_chart_svg). The figure's table beside it keeps the one
+    # rule. Its markup spells coordinates and opacities, which no reader reads as a number.
+    (_CHART_SVG, "value", ",.{}f"): _KIT_FORMAT + "grouped dollars at the format's digits",
+    (_CHART_SVG, "_rounded(size)", ","): _KIT_FORMAT + "whole dollars from $10",
+    (_CHART_SVG, "_rounded(value)", ","): _KIT_FORMAT + "a whole amount, grouped",
+    (_CHART_SVG, "n", ",.3f"): _KIT_FORMAT + "a tooltip's count, as toLocaleString writes it",
+    (_CHART_SVG, "value", ".1f"): "an SVG coordinate, to a tenth of a px",
+    (_CHART_SVG, "joined.width or 2", "g"): "an SVG stroke width",
+    (_CHART_SVG, "1 if joined.opacity is None else joined.opacity", "g"): "an SVG opacity",
+    (_CHART_SVG, "1 if item.opacity is None else item.opacity", "g"): "an SVG opacity",
+    (_CHART_SVG, "opacity", "g"): "an SVG opacity",
 }
 
 _PRECISION = re.compile(r"\.(\d+|\{\})")

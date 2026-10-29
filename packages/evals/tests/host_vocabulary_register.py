@@ -165,6 +165,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/report/blocks.py": {},
     "analysis/report/block_spec.py": {},
     "analysis/report/charts.py": {},
+    "analysis/report/chart_svg.py": {},
     "analysis/report/model.py": {},
     "analysis/report/serialize.py": {},
     "analysis/report/serialize_html.py": {},

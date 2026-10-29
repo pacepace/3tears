@@ -25,6 +25,7 @@ from threetears.evals.analysis import (
     variant_key_of_run,
 )
 from threetears.evals import Eval, Result
+from threetears.evals.ops.analysis import CAMPAIGN_NAME_CHARS
 from threetears.evals.quick import as_host
 from threetears.evals.quick.one_call import ARM_LEVER, SHARED_ARM_MODEL
 from packages.evals.tests.off_loop import off_loop
@@ -140,6 +141,22 @@ async def test_the_report_is_titled_by_the_question_its_campaign_asks() -> None:
 
     named = await _compare(name="triage rules", scope="compare-named")
     assert report_markdown(named.report).startswith("# hasty vs careful · classify (triage rules)\n")
+
+
+async def test_an_eval_named_past_the_campaign_name_cap_files_its_campaign_under_the_cap_keeping_the_name_whole() -> (
+    None
+):
+    long = "triage rules for the billing and bug queues, round two"
+    named = await _compare(name=long, scope="compare-long-name")
+    campaign = off_loop(named.host.storage.load_campaign, named.campaign_id, "compare-long-name")
+    assert campaign is not None
+    assert len(campaign.name) <= CAMPAIGN_NAME_CHARS and campaign.name.endswith("…")
+    assert long.startswith(campaign.name[:-1]) and long[len(campaign.name) - 1] == " ", "cut where a word ends"
+    assert campaign.description == long and named.name == long, "the name is kept whole beside the cut one"
+    again = await named.against("careful")
+    held = off_loop(again.host.storage.load_campaign, again.campaign_id, "compare-long-name")
+    assert held is not None and len(held.name) <= CAMPAIGN_NAME_CHARS
+    assert again.name == f"{long}, against careful"
 
 
 async def test_a_report_without_the_campaign_s_name_is_titled_by_its_id() -> None:

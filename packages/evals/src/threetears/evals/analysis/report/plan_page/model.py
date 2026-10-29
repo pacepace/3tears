@@ -89,6 +89,13 @@ class PageSlot(EvalDocumentModel):
     key: str = Field(description="The slot's key, as the plan names it.")
     title: str = Field(description="Its title, by mode and kind (GENERATOR §2.5).")
     text: ModelProse = Field(description="The planner's text, its keys written out.")
+    note: str = Field(
+        default="",
+        description=(
+            "Code's line printed after the planner's text, never part of it: which interval a Watch slot's weakest "
+            "margin is read on; empty for none."
+        ),
+    )
     highlighted: bool = Field(description="Whether it is the recommendation (decide) or the lean (tradeoff).")
 
 

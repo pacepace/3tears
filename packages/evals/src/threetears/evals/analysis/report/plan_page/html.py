@@ -113,7 +113,7 @@ def _slot(slot: PageSlot) -> str:
     css = ' class="rec"' if slot.highlighted else ""
     return (
         f'<div{css} data-slot="{escape(slot.key)}"><span class="k">{escape(slot.title)}</span>'
-        f'<span class="v">{_prose(slot.text)}</span></div>'
+        f'<span class="v">{_prose(slot.text)}{f" {escape(slot.note)}" if slot.note else ""}</span></div>'
     )
 
 

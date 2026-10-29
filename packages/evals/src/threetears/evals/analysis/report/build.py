@@ -492,7 +492,7 @@ def analysis_campaign_bundle(analysis: EvalAnalysis) -> CampaignBundle:
     return CampaignBundle.from_frame(analysis.campaign_bundle, bundles, what=what)
 
 
-def analysis_verdict(analysis: EvalAnalysis) -> str:
+def analysis_verdict(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = None) -> str:
     """The verdict line a stored analysis is listed by, written by code over what was frozen with it — never the
     memo's words.
 
@@ -508,11 +508,14 @@ def analysis_verdict(analysis: EvalAnalysis) -> str:
 
     :param analysis: The analysis.
     :ptype analysis: EvalAnalysis
+    :param bundle: The campaign bundle frozen with it (:func:`analysis_campaign_bundle`), where the caller has put it
+        back together already; None puts it back together here.
+    :ptype bundle: CampaignBundle | None
     :return: The verdict line.
     :rtype: str
     :raises RefusedInput: The analysis was written over a bundle of another shape.
     """
-    campaign = analysis_campaign_bundle(analysis)
+    campaign = bundle if bundle is not None else analysis_campaign_bundle(analysis)
     readings = campaign.readings
     names = AspectNames.of(campaign.aspects)
     warnings = campaign_warnings(readings, names)
@@ -520,8 +523,8 @@ def analysis_verdict(analysis: EvalAnalysis) -> str:
     if len(analysis.aspects) > 1:
         verdict = campaign_verdict(readings, [aspect.label for aspect in analysis.aspects], names)
     else:
-        bundle = campaign.aspects[0]
-        verdict = verdict_line(bundle, _namer(_arm_names(bundle)), case_name=_case_namer(bundle)).text
+        aspect = campaign.aspects[0]
+        verdict = verdict_line(aspect, _namer(_arm_names(aspect)), case_name=_case_namer(aspect)).text
     return " ".join([*warnings, verdict])
 
 

@@ -148,7 +148,9 @@ class WritingOutcome:
 
     :ivar ending: How it ended (:data:`WriterEnding`).
     :ivar doc: The document to store; ``None`` for an ending that stores nothing.
-    :ivar findings: The findings stored with it: the last review's of that document, open; empty for ``stored``.
+    :ivar findings: The findings stored with it, open: the last review's of that document. For ``stored`` they are
+        the ones that review raised without blocking (a new ``should_fix``), often none; empty for an ending that
+        stores nothing.
     :ivar reviews: Every review read, in round order.
     :ivar analyst_rounds: The analyst's rounds begun: the draft, then each revision.
     :ivar editor_rounds: The review rounds begun.

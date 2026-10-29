@@ -296,7 +296,8 @@ class CampaignBundle(EvalDocumentModel):
         :param like: A fingerprint stored earlier, to compute this one in that one's version so the two compare;
             None for the current version.
         :ptype like: str | None
-        :return: ``v2:`` and a 64-character lowercase hex digest, or, ``like`` an unprefixed one, the bare digest.
+        :return: ``v3:`` and a 64-character lowercase hex digest (``like`` an earlier version's, that version's
+            prefix), or, ``like`` an unprefixed one, the bare digest.
         :rtype: str
         """
         return _campaign_digest(self.frame(like=_aspects_like(like)), like=like)

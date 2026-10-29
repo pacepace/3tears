@@ -271,15 +271,20 @@ class _Drawable(_Kind):
                 cards.append(panel)
                 continue
             tables.append((panel, *one.table(legend, read_at)))
-        # panels may not share their columns (a Note column one panel has no use for): the table keeps the widest
-        # panel's columns, and a panel with fewer leaves the rest empty, so no row is longer than its header
+        # panels may not share their columns (a Note column one panel has no use for, an interval column another
+        # has): the table holds every panel's columns, the widest panel's first and then each other one in the order
+        # a panel brings it, and each panel's cells sit under their own column, the rest empty
         widest = max((own for _, own, _ in tables), key=len, default=[])
-        headers = ["Panel", *(widest or [""])]
+        columns = list(dict.fromkeys([*widest, *(column for _, own, _ in tables for column in own)]))
+        headers = ["Panel", *(columns or [""])]
         body: list[list[str]] = []
         for panel, own_headers, rows in tables:
-            if own_headers != widest[: len(own_headers)]:
-                raise ValueError(f"panel {panel.title!r} has columns {own_headers} that do not lead those of {widest}")
-            body += [[_panel_name(panel), *row, *([""] * (len(widest) - len(row)))] for row in rows]
+            at = [columns.index(column) for column in own_headers]
+            for row in rows:
+                cells = [""] * len(columns)
+                for index, cell in zip(at, row, strict=True):
+                    cells[index] = cell
+                body.append([_panel_name(panel), *cells])
         body += [[card.title or "", card.subtitle or "", *([""] * (len(headers) - 2))] for card in cards]
         return headers, body
 

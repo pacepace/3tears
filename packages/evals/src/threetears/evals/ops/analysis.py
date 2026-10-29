@@ -19,7 +19,7 @@ import asyncio
 import json
 import math
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Final, Literal, NamedTuple, Protocol, cast
 
@@ -58,7 +58,14 @@ from threetears.evals.analysis.service import (
     report_doc_report,
     running_analysis_attempt,
 )
-from threetears.evals.analysis.campaign_title import TITLE_ARMS, TITLE_ASPECTS, campaign_title, declared_title
+from threetears.evals.analysis.campaign_title import (
+    TITLE_ARMS,
+    TITLE_ASPECTS,
+    campaign_title,
+    declared_title,
+    title_arm_name,
+)
+from threetears.evals.analysis.style import arm_name
 from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
 from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.schema.base import EvalBaseModel, VerbatimText
@@ -111,7 +118,7 @@ from threetears.evals.ops.report_writer.write import ReportNotStored, ReportWrit
 from threetears.evals.run.curation import delete_analysis, delete_insight, set_analysis_archived, set_campaign_archived
 from threetears.evals.schema.completion import BoundCompletionClient
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
-from threetears.evals.schema.models import DECLARED_NAME_CHARS, utc_now_iso
+from threetears.evals.schema.models import DECLARED_NAME_CHARS, EvalRun, utc_now_iso
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_INSIGHT, FIND_RUN, WRITER_REMEDY
 
@@ -643,14 +650,64 @@ def _campaign_line(campaign: EvalCampaign) -> CampaignLine:
         call=(
             CampaignLineCall(arm=campaign.call.arm, reason=campaign.call.reason) if campaign.call is not None else None
         ),
-        verdict_short=_decided(campaign.call.arm, campaign.arms) if campaign.call is not None else None,
     )
 
 
-def _decided(label: str, arms: Sequence[CampaignArm]) -> str:
-    """``Keep <arm>`` when the arm is the control, else ``Adopt <arm>``."""
-    role = next((arm.role for arm in arms if arm.label == label), "candidate")
-    return f"{'Keep' if role == 'control' else 'Adopt'} {label}"
+class _Frozen(NamedTuple):
+    """A stored analysis's frozen campaign bundle, put back together once for everything a line reads off it: the
+    bundle, or why it does not read (and so why its report needs regeneration)."""
+
+    bundle: CampaignBundle | None
+    unreadable: str | None
+
+
+def _frozen(analysis: EvalAnalysis) -> _Frozen:
+    """Put an analysis's frozen campaign bundle back together, or say why it does not read: a bundle of another shape
+    (refused in the reader's words), or one whose frame and aspects do not belong together (a corrupt record). Either
+    is one analysis's fault, recorded on its line, never a refusal of the listing or the write that lists it."""
+    try:
+        return _Frozen(analysis_campaign_bundle(analysis), None)
+    except RefusedInput as unreadable:
+        # NOSILENT: a bundle of another shape; the line names it and the regeneration in needs_regeneration.
+        why = f"{unreadable.fault}; {unreadable.remedy}" if unreadable.remedy else unreadable.fault
+        return _Frozen(None, why)
+    except ValueError as corrupt:
+        # NOSILENT: the frame names other aspect bundles than the analysis holds, or a frozen bundle fails its own
+        # model; the line names it and the regeneration in needs_regeneration, where an operator reads it.
+        return _Frozen(
+            None,
+            f"analysis {analysis.id}'s frozen evidence does not read back together ({corrupt}); generate the analysis "
+            "again (analysis_generate)",
+        )
+
+
+def _named_arm(
+    variant_key: str | None, label: str | None, campaign: EvalCampaign, frozen: CampaignBundle | None
+) -> str | None:
+    """``Keep <arm>`` when an arm is the control, else ``Adopt <arm>``, the arm printed as the title prints it
+    (:func:`~threetears.evals.analysis.campaign_title.title_arm_name`); None where no arm matches.
+
+    The arm is found by its variant key, which is what a call or a recommendation decided: among the campaign's
+    declared arms, then among the arms its report resolved (the frozen bundle's, each of whose keys names it). Only
+    where no key matches is it found by its label."""
+    given = {arm.label for arm in frozen.declaration.arms} if frozen is not None else None
+    held: list[tuple[CampaignArm, frozenset[str], Collection[str] | None]] = [
+        (arm, frozenset({arm.variant_key}), None) for arm in campaign.arms
+    ]
+    if frozen is not None:
+        held += [(arm, frozen.arm_keys(arm), given) for arm in frozen.arms]
+    found = next(((arm, names) for arm, keys, names in held if variant_key is not None and variant_key in keys), None)
+    found = found or next(((arm, names) for arm, _, names in held if label is not None and arm.label == label), None)
+    if found is None:
+        return None
+    arm, names = found
+    return f"{'Keep' if arm.role == 'control' else 'Adopt'} {title_arm_name(arm, names)}"
+
+
+def _decided(call: CampaignCall, campaign: EvalCampaign, frozen: CampaignBundle | None) -> str:
+    """A recorded call in a few words (:func:`_named_arm`); an arm no longer found reads as a candidate, by its label
+    as pages print a computed one (``careful``, never ``candidate=careful``)."""
+    return _named_arm(call.variant_key, call.arm, campaign, frozen) or f"Adopt {arm_name(call.arm).label}"
 
 
 def _outcome(readings: CampaignReadings, arms: Sequence[CampaignArm]) -> str:
@@ -714,20 +771,14 @@ def _outcome(readings: CampaignReadings, arms: Sequence[CampaignArm]) -> str:
     return qualified(answer, set(better))
 
 
-def _recommended(analysis: EvalAnalysis, campaign: EvalCampaign) -> str:
-    """What a report recommends in a few words: the arm its recommended variant is, or ``No call``."""
+def _recommended(analysis: EvalAnalysis, campaign: EvalCampaign, frozen: CampaignBundle | None) -> str:
+    """What a report recommends in a few words: the arm its recommended variant is (:func:`_named_arm`, by key
+    alone), or ``No call``. A bundle this build cannot read (``frozen`` None) names no arm the campaign does not
+    declare; the line's report says it needs regeneration."""
     key = analysis.recommended_variant_key
     if key is None:
         return "No call"
-    arms: list[CampaignArm] = list(campaign.arms)
-    if not any(arm.variant_key == key for arm in arms):
-        try:
-            arms = list(analysis_campaign_bundle(analysis).arms)
-        except RefusedInput:
-            # NOSILENT: a bundle this build cannot read names no arm; the line's report says it needs regeneration.
-            return "No call"
-    arm = next((arm for arm in arms if arm.variant_key == key), None)
-    return _decided(arm.label, arms) if arm is not None else "No call"
+    return _named_arm(key, None, campaign, frozen) or "No call"
 
 
 def _refuse_long_name(name: str) -> None:
@@ -760,16 +811,28 @@ def question_short(question: str) -> str:
     return cut.rstrip(" ,;:.-") + "…"
 
 
-def _with_report(host: EvalHost, line: CampaignLine, campaign: EvalCampaign) -> CampaignLine:
-    """The line with its reported analysis: what code reads of it, whether it needs regeneration, and its cost."""
-    analysis = host.storage.load_reported_analysis(campaign.id, campaign.scope_id)
-    if analysis is None:
-        return line
-    listed = _analysis_line(host, analysis, campaign)
-    if not campaign.arms:
-        line = line.model_copy(update={"title": _resolved_title(analysis, campaign)})
+def _runs_moved(analysis: EvalAnalysis, campaign: EvalCampaign, frozen: CampaignBundle) -> bool:
+    """Whether the campaign holds other runs than its report was written over.
+
+    The report's ``observation_refs`` are the runs it read: the ones that resolved, not archived. The runs the campaign
+    held then are those and the ones its frozen bundle names as not resolving or archived
+    (``unresolved_run_ids``, ``archived_run_ids``), so a run id that no longer resolves never reads as a move. Compared
+    against what the campaign holds now, off the bundle the line already put back together: no store read. Curating a
+    run in or out since is not a change of what the campaign holds, and does not read as one."""
+    held_then = set(analysis.observation_refs)
+    for aspect in frozen.aspects:
+        held_then |= {*aspect.unresolved_run_ids, *aspect.archived_run_ids}
+    return held_then != set(campaign.run_ids)
+
+
+def _with_report(
+    host: EvalHost, line: CampaignLine, analysis: EvalAnalysis, campaign: EvalCampaign, read: _Frozen
+) -> CampaignLine:
+    """The line with its reported analysis: what code reads of it, whether it needs regeneration, and its cost, all
+    off the one frozen bundle ``read`` holds."""
+    listed = _analysis_line(host, analysis, campaign, read)
     why = listed.needs_regeneration
-    if why is None and set(analysis.observation_refs) != set(campaign.run_ids):
+    if why is None and read.bundle is not None and _runs_moved(analysis, campaign, read.bundle):
         why = "the campaign holds other runs than the report was written over; generate it again (analysis_generate)"
     attempt = next(
         (
@@ -788,51 +851,78 @@ def _with_report(host: EvalHost, line: CampaignLine, campaign: EvalCampaign) -> 
         cost_usd=attempt.token_cost if attempt is not None and attempt.unpriced_calls == 0 else None,
         unpriced_calls=attempt.unpriced_calls if attempt is not None else 0,
     )
-    try:
-        bundle = analysis_campaign_bundle(analysis)
-    except RefusedInput:
-        # NOSILENT: a bundle this build cannot read has no readings to summarise; why_regenerate already says so.
-        outcome = None
-    else:
-        outcome = _outcome(bundle.readings, bundle.arms)
     return line.model_copy(
         update={
             "report_state": "written" if why is None else "needs_regeneration",
             "report": report,
-            "outcome_short": outcome,
-            "verdict_short": line.verdict_short or _recommended(analysis, campaign),
+            "outcome_short": _outcome(read.bundle.readings, read.bundle.arms) if read.bundle is not None else None,
+            "verdict_short": line.verdict_short or _recommended(analysis, campaign, read.bundle),
         }
+    )
+
+
+def _runs_title(campaign: EvalCampaign, runs: Sequence[EvalRun]) -> str:
+    """A campaign's title read off its runs (:func:`campaign_title`): their candidate models, how many variants they
+    ran (a model and a lever map each, so a sweep of each of two models reads as one), and whether they are judges."""
+    return campaign_title(
+        campaign,
+        candidate_models=sorted({run.candidate_model for run in runs}),
+        variants=len(
+            {(run.candidate_model, json.dumps(run.variant_levers, sort_keys=True, default=str)) for run in runs}
+        ),
+        judges=any(run.candidate_kind == JUDGE_KIND for run in runs),
     )
 
 
 def _stored_title(host: EvalHost, campaign: EvalCampaign) -> str:
     """A stored campaign's title (:func:`campaign_title`); its runs are read only for a campaign that declares no arm,
     whose title names their candidate models."""
-    runs = [] if campaign.arms else host.storage.load_eval_runs(campaign.run_ids, campaign.scope_id)
-    return campaign_title(
-        campaign,
-        candidate_models=sorted({run.candidate_model for run in runs}),
-        variants=len({json.dumps(run.variant_levers, sort_keys=True, default=str) for run in runs}),
-        judges=any(run.candidate_kind == JUDGE_KIND for run in runs),
+    return _runs_title(
+        campaign, [] if campaign.arms else host.storage.load_eval_runs(campaign.run_ids, campaign.scope_id)
+    )
+
+
+def _line_title(host: EvalHost, campaign: EvalCampaign, frozen: CampaignBundle | None) -> str:
+    """A listed campaign's title: its declared arms'; else, for a campaign declaring none, the arms its report
+    resolved, as its page and analysis line are titled, where its report reads, and its runs' candidate models where it
+    does not. A judge campaign counts its judges either way (``N judges``), never naming them from a report."""
+    if campaign.arms:
+        return campaign_title(campaign)
+    runs = host.storage.load_eval_runs(campaign.run_ids, campaign.scope_id)
+    if frozen is None or any(run.candidate_kind == JUDGE_KIND for run in runs):
+        return _runs_title(campaign, runs)
+    return declared_title(
+        campaign.name,
+        frozen.arms,
+        [(aspect.label, aspect.short_name) for aspect in campaign.aspects],
+        given={arm.label for arm in frozen.declaration.arms},
     )
 
 
 def _listed(host: EvalHost, campaign: EvalCampaign, every: list[EvalCampaign] | None = None) -> CampaignLine:
     """A campaign's whole line: its title, declared fields, report, and what it feeds among ``every`` campaign of its
-    scope (read here when not given). Its runs are read only for a campaign that declares no arm, whose title names
-    their candidate models."""
-    every = every if every is not None else list_campaigns(host.storage, campaign.scope_id, archived=None)
-    line = _with_report(host, _campaign_line(campaign), campaign)
-    # A campaign declaring no arm is titled by the arms its report resolved, as its page and analysis line are; with
-    # no readable report, by its runs' candidate models.
-    title = line.title or _stored_title(host, campaign)
-    return line.model_copy(update={"feeds": _feeds(campaign, every), "title": title})
+    scope.
+
+    Its reported analysis is read once, and its frozen bundle put back together once, for the verdict, the title, the
+    short verdict, the outcome and the report's state alike. Its runs are read only for a campaign that declares no
+    arm, whose title names their candidate models or counts its judges. ``every`` is read here only where the
+    campaign is exploratory, the one kind that feeds another: a declared campaign feeds none, so a write of one lists
+    nothing else."""
+    line = _campaign_line(campaign)
+    analysis = host.storage.load_reported_analysis(campaign.id, campaign.scope_id)
+    read = _frozen(analysis) if analysis is not None else _Frozen(None, None)
+    if campaign.call is not None:
+        line = line.model_copy(update={"verdict_short": _decided(campaign.call, campaign, read.bundle)})
+    if analysis is not None:
+        line = _with_report(host, line, analysis, campaign, read)
+    if campaign.exploratory and every is None:
+        every = list_campaigns(host.storage, campaign.scope_id, archived=None)
+    feeds = _feeds(campaign, every) if campaign.exploratory and every is not None else []
+    return line.model_copy(update={"feeds": feeds, "title": _line_title(host, campaign, read.bundle)})
 
 
 def _feeds(campaign: EvalCampaign, campaigns: list[EvalCampaign]) -> list[str]:
     """The declared campaigns holding any of an exploratory campaign's runs, oldest first."""
-    if not campaign.exploratory:
-        return []
     runs = set(campaign.run_ids)
     held = [
         other for other in campaigns if other.id != campaign.id and not other.exploratory and runs & set(other.run_ids)
@@ -850,8 +940,12 @@ def campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = Non
     :param archived: Only archived (``True``) or only active (``False``) campaigns; ``None`` for both.
     :ptype archived: bool | None
     :return: The listing: each campaign with its question, declared arms, recorded call, its report's state, headline
-        and cost (one read of its reported analysis and its attempts), and the declared campaigns an exploratory one
-        feeds, read among every campaign of the scope, archived or not.
+        and cost, and the declared campaigns an exploratory one feeds, read among every campaign of the scope,
+        archived or not. The scope's campaigns are read once. Per campaign: one read of its reported analysis, whose
+        frozen bundle is put back together once for everything the line reads off it, and one of its analysis
+        attempts where it has a report; for a campaign declaring no arm, one read of its runs, which its title names.
+        An analysis that does not read back (a bundle of another shape, a corrupt record) lists its report as
+        needing regeneration, with why, and fails nothing else.
     :rtype: CampaignListing
     """
     every = list_campaigns(host.storage, scope_id, archived=None)
@@ -1088,31 +1182,13 @@ def campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archive
     return _listed(host, set_campaign_archived(host.storage, campaign_id, scope_id, archived=archived))
 
 
-def _resolved_title(analysis: EvalAnalysis, campaign: EvalCampaign) -> str:
-    """A campaign's title from the arms its report resolved (its frozen bundle's), under the campaign's name and
-    aspects as they stand; empty where that bundle is of a shape this build cannot read."""
-    try:
-        frozen = analysis_campaign_bundle(analysis)
-    except RefusedInput:
-        # NOSILENT: the line's report says it needs regeneration; the title is then read off the campaign's runs.
-        return ""
-    return declared_title(
-        campaign.name,
-        frozen.arms,
-        [(aspect.label, aspect.short_name) for aspect in campaign.aspects],
-        given={arm.label for arm in frozen.declaration.arms},
-    )
-
-
-def _analysis_title(host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampaign | None) -> str:
+def _analysis_title(host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampaign | None, read: _Frozen) -> str:
     """The title the analysis is listed by: built from the campaign bundle frozen with it, so the line reads what the
-    analysis was written over. Where that bundle is of a shape this build cannot read, the stored campaign's title,
-    else the campaign's id."""
-    try:
-        frozen = analysis_campaign_bundle(analysis)
-    except RefusedInput:
-        # NOSILENT: the line says so in needs_regeneration (analysis_verdict refuses the same bundle); the title is
-        # read from the campaign as it stands, or from its id where the campaign is gone, and is no claim of the bundle.
+    analysis was written over. Where that bundle does not read, the stored campaign's title, else the campaign's id."""
+    frozen = read.bundle
+    if frozen is None:
+        # The line says so in needs_regeneration; the title is read from the campaign as it stands, or from its id
+        # where the campaign is gone, and is no claim of the bundle.
         stored = (
             campaign if campaign is not None else host.storage.load_campaign(analysis.campaign_id, analysis.scope_id)
         )
@@ -1125,15 +1201,21 @@ def _analysis_title(host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampai
     )
 
 
-def _analysis_line(host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampaign | None = None) -> AnalysisLine:
-    # One analysis frozen over a bundle this build cannot read, or whose plan or document no longer reads, is listed as
-    # needing regeneration, never allowed to refuse the listing of every other one. Every plan, and a document that no
-    # longer reads, is one the report read renders code-only: its line leads with the one regenerate line.
-    needs_regeneration: str | None = None
-    try:
-        verdict = analysis_verdict(analysis)
-    except RefusedInput as unreadable:
-        needs_regeneration = f"{unreadable.fault}; {unreadable.remedy}" if unreadable.remedy else unreadable.fault
+def _analysis_line(
+    host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampaign | None = None, read: _Frozen | None = None
+) -> AnalysisLine:
+    # One analysis frozen over a bundle this build cannot read or that does not read back together, or whose plan or
+    # document no longer reads, is listed as needing regeneration, never allowed to refuse the listing of every other
+    # one. Every plan, and a document that no longer reads, is one the report read renders code-only: its line leads
+    # with the one regenerate line. The frozen bundle is put back together once (``read``, where the caller has).
+    read = read if read is not None else _frozen(analysis)
+    needs_regeneration: str | None = read.unreadable
+    if read.bundle is not None:
+        try:
+            verdict = analysis_verdict(analysis, bundle=read.bundle)
+        except RefusedInput as unreadable:
+            needs_regeneration = f"{unreadable.fault}; {unreadable.remedy}" if unreadable.remedy else unreadable.fault
+    if needs_regeneration is not None:
         verdict = f"Needs regeneration: {needs_regeneration}"
     plan: EvalReportPlan | None = None
     unread: str | None = None
@@ -1158,7 +1240,7 @@ def _analysis_line(host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampaig
     return AnalysisLine(
         id=analysis.id,
         campaign_id=analysis.campaign_id,
-        title=_analysis_title(host, analysis, campaign),
+        title=_analysis_title(host, analysis, campaign, read),
         basis=analysis.basis,
         report_plan_id=analysis.report_plan_id,
         report_doc_id=analysis.report_doc_id,
