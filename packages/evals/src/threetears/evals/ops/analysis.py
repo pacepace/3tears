@@ -19,7 +19,7 @@ import asyncio
 import json
 import math
 import uuid
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Final, Literal, NamedTuple, Protocol, cast
 
@@ -137,6 +137,9 @@ CAMPAIGN_NAME_REMEDY = (
 #: The most characters a listing's short question holds, its ellipsis included.
 QUESTION_SHORT_CHARS = 100
 
+#: The longest an outcome with its warnings is spelled out; past it the warnings are counted (`2 warnings`).
+OUTCOME_SHORT_CHARS = 48
+
 #: Where a campaign's report stands, as a listing shows it: ``none``, no live analysis; ``written``, one this build reads
 #: over the runs the campaign holds now; ``needs_regeneration``, one it cannot read, a report plan (rendered code-only),
 #: or one written over other runs than the campaign holds now.
@@ -236,14 +239,17 @@ class CampaignLine(EvalBaseModel):
         description=(
             "What the evidence says in a few words, read by code off its report's frozen readings and never from the "
             "writer's prose or by cutting the headline; distinct from verdict_short, which is the decision. Arms are "
-            "named by their short names (else labels). The first that holds: `<arm> broke a floor` (or `<N> "
-            "candidates broke a floor`), a broken floor leading as the page's warnings do; `<arm> missed a bar` (or "
-            "`<N> arms missed a bar`); then by kind. A change: `<arm> improved` (or `<N> candidates improved`) where "
-            "a candidate is shown better, else `No candidate improved`, whether the candidates are "
-            "equal, not separated or worse. A choice: `<arm> ahead` where one arm is shown ahead of "
-            "another and behind none, else `Arms differ` where any pair separates, else `Not separated`. A "
-            "measurement: `Measured`. `No readings yet` where the readings hold no row of their kind. None with no "
-            "reported analysis, or one this build cannot read."
+            "named by their short names (else labels). The answer leads and a warning only qualifies it. A change: "
+            "`<arm> improved` or `<N> candidates improved` where a candidate is shown better, else `No candidate "
+            "improved`, whether the candidates are equal, not separated or worse. A choice: `<arm> ahead` where one "
+            "arm is shown ahead of another and behind none, else `Arms differ` where any pair separates, else `Not "
+            "separated`. A measurement: `Measured`. `No readings yet` where the readings hold no row of their kind. "
+            "Where the arms the answer names (the improving arms, the leader, the measured arm) broke a floor or "
+            "missed a bar it adds `, broke a floor`, `, missed a bar` or `, broke a floor and missed a bar` (floor "
+            "first; `Measured, <arm> missed a bar` names the arm; several arms count, `2 candidates improved, 1 broke "
+            "a floor`), and past "
+            f"{OUTCOME_SHORT_CHARS} characters counts the warnings (`, 2 warnings`). A warning on an arm the answer "
+            "does not name changes nothing. None with no reported analysis, or one this build cannot read."
         ),
     )
     report_state: ReportState = Field(default="none", description="Where its report stands (`report`).")
@@ -619,23 +625,47 @@ def _decided(label: str, arms: Sequence[CampaignArm]) -> str:
 
 
 def _outcome(readings: CampaignReadings, arms: Sequence[CampaignArm]) -> str:
-    """What the readings show in a few words (:attr:`CampaignLine.outcome_short`), from their structure alone."""
+    """What the readings show in a few words (:attr:`CampaignLine.outcome_short`), from their structure alone: the
+    answer first, then the warnings of the arms the answer names as a qualifier, never in its place."""
     printed = {arm.variant_key: arm.short_name or arm.label for arm in arms}
+    labels = {s.arm: s.arm_label for s in readings.floors}
+    labels |= {s.arm: s.arm_label for s in readings.bars}
+    labels |= {s.arm: s.arm_label for s in readings.readings}
+    labels |= {s.arm: s.arm_label for s in readings.measures}
+    for pair in readings.pairs:
+        labels |= {pair.first: pair.first_label, pair.second: pair.second_label}
 
-    def named(keys: Sequence[str], labels: Mapping[str, str]) -> list[str]:
-        return [printed.get(key, labels[key]) for key in dict.fromkeys(keys)]
+    def named(key: str) -> str:
+        return printed.get(key, labels.get(key, key))
 
-    def count(names: list[str], plural: str, verb: str) -> str:
-        return f"{names[0]} {verb}" if len(names) == 1 else f"{len(names)} {plural} {verb}"
+    def qualified(answer: str, subjects: set[str], *, name: bool = False) -> str:
+        """``answer`` with the floors its subject arms broke and the bars they miss, floors first."""
+        floors = [s for s in readings.broken_floors() if s.arm in subjects]
+        bars = [s for s in readings.missed_bars() if s.arm in subjects]
+        floor_arms, bar_arms = {s.arm for s in floors}, {s.arm for s in bars}
+        if not floors and not bars:
+            return answer
+        if len(subjects) == 1 or (name and len({*floor_arms, *bar_arms}) == 1):
+            who = f"{named(next(iter({*floor_arms, *bar_arms})))} " if name else ""
+            phrases = [f"{who}broke a floor"] if floors else []
+            phrases += [f"{'' if phrases else who}missed a bar"] if bars else []
+        else:
+            phrases = [f"{len(floor_arms)} broke a floor"] if floors else []
+            phrases += [f"{len(bar_arms)} missed a bar"] if bars else []
+        full = f"{answer}, {' and '.join(phrases)}"
+        if len(full) <= OUTCOME_SHORT_CHARS:
+            return full
+        warnings = len(floors) + len(bars)
+        return f"{answer}, {warnings} warning{'s' if warnings != 1 else ''}"
 
-    if broken := readings.broken_floors():
-        return count(
-            named([s.arm for s in broken], {s.arm: s.arm_label for s in broken}), "candidates", "broke a floor"
-        )
-    if missed := readings.missed_bars():
-        return count(named([s.arm for s in missed], {s.arm: s.arm_label for s in missed}), "arms", "missed a bar")
     if readings.kind == "measurement":
-        return "Measured" if readings.measures else "No readings yet"
+        if not readings.measures:
+            return "No readings yet"
+        return qualified(
+            "Measured",
+            {*(s.arm for s in readings.broken_floors()), *(s.arm for s in readings.missed_bars())},
+            name=True,
+        )
     if readings.kind == "choice":
         if not readings.pairs:
             return "No readings yet"
@@ -643,19 +673,16 @@ def _outcome(readings: CampaignReadings, arms: Sequence[CampaignArm]) -> str:
         behind = {
             pair.second if pair.ahead == pair.first else pair.first for pair in readings.pairs if pair.ahead is not None
         }
-        labels = {pair.first: pair.first_label for pair in readings.pairs} | {
-            pair.second: pair.second_label for pair in readings.pairs
-        }
         if len(leaders := ahead - behind) == 1:
-            return f"{named(list(leaders), labels)[0]} ahead"
+            return qualified(f"{named(next(iter(leaders)))} ahead", leaders)
         return "Arms differ" if ahead else "Not separated"
     if not readings.readings:
         return "No readings yet"
-    if better := [row for row in readings.readings if row.reading == "better"]:
-        return count(
-            named([row.arm for row in better], {row.arm: row.arm_label for row in better}), "candidates", "improved"
-        )
-    return "No candidate improved"
+    better = list(dict.fromkeys(row.arm for row in readings.readings if row.reading == "better"))
+    if not better:
+        return "No candidate improved"
+    answer = f"{named(better[0])} improved" if len(better) == 1 else f"{len(better)} candidates improved"
+    return qualified(answer, set(better))
 
 
 def _recommended(analysis: EvalAnalysis, campaign: EvalCampaign) -> str:

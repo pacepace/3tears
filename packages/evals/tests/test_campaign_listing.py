@@ -13,9 +13,10 @@ Contracts held here (``threetears.evals.ops.campaigns_list``, ``CampaignLine``):
   description; renaming moves no fingerprint;
 - **verdict_short** is code's: ``Keep``/``Adopt`` and the arm from the recorded call, else from the report's
   recommendation, ``No call`` for a report recommending none, None with neither;
-- **outcome_short** is code's, read off the report's frozen readings and distinct from the decision: a broken floor
-  leads, then a missed bar, then by kind (a change: which candidate improved, else none did; a
-  choice: which arm leads; a measurement: measured), `No readings yet` for no rows, None with no report;
+- **outcome_short** is code's, read off the report's frozen readings and distinct from the decision: the answer
+  leads (a change: which candidate improved, else none did; a choice: which arm leads; a measurement: measured;
+  `No readings yet` for no rows) and the floors the answer's arms broke and the bars they miss only qualify it, floor
+  first, counted past a length; a warning on an arm the answer does not name changes nothing; None with no report;
 - **the title** is code's: the arms (declared, else the runs' candidate models; judges counted), control first, then
   the aspects, then the name in parentheses, counting past three arms and two aspects;
 - **feeds**: an exploratory campaign names the declared campaigns holding any of its runs; a declared one feeds
@@ -400,14 +401,27 @@ def _outcomes_read(host: EvalHost, campaign_id: str) -> None:
     assert read("measurement") == "No readings yet"
     assert read("measurement", measures=[_measure(aspect, *one)]) == "Measured"
     missed = {"bars": [_bar(aspect, *two)]}
-    assert read("measurement", measures=[_measure(aspect, *one)], **missed) == "fast missed a bar"
-    assert read("change", **missed, readings=[_change_row(aspect, *two, "better")]) == "fast missed a bar"
-    two_missed = {"bars": [_bar(aspect, *one), _bar(aspect, *two), _bar(aspect, *two)]}
-    assert read("change", **two_missed) == "2 arms missed a bar"
-    broke = {"floors": [_floor(aspect, *two)], **missed}
-    assert read("change", **broke, readings=[_change_row(aspect, *two, "better")]) == "fast broke a floor"
-    many = {"floors": [_floor(aspect, *two), _floor(aspect, *third)]}
-    assert read("change", **many) == "2 candidates broke a floor"
+    broke = {"floors": [_floor(aspect, *two)]}
+    win = [_change_row(aspect, *two, "better")]
+    assert read("measurement", measures=[_measure(aspect, *one)], **missed) == "Measured, fast missed a bar"
+    assert read("change", **missed, readings=win) == "fast improved, missed a bar"
+    assert read("change", **broke, readings=win) == "fast improved, broke a floor"
+    assert read("change", **broke, **missed, readings=win) == "fast improved, broke a floor and missed a bar"
+    nothing = [_change_row(aspect, *two, "worse")]
+    assert read("change", **broke, **missed, readings=nothing) == "No candidate improved", "a warning never answers"
+    assert read("change", **broke, readings=[_change_row(aspect, *third, "better")]) == "third improved"
+    wins = [_change_row(aspect, *two, "better"), _change_row(aspect, *third, "better")]
+    assert read("change", **broke, readings=wins) == "2 candidates improved, 1 broke a floor"
+    assert read("change", floors=[_floor(aspect, *two)], bars=[_bar(aspect, *third)], readings=wins) == (
+        "2 candidates improved, 2 warnings"
+    ), "past the length, the warnings are counted"
+    assert read("choice", **broke, pairs=[_pair(aspect, one, two, two[0])]) == "fast ahead, broke a floor"
+    assert read("choice", **broke, pairs=[_pair(aspect, one, two, one[0])]) == f"{one[1]} ahead"
+    lots = {"floors": [_floor(aspect, *two), _floor(aspect, *two)], "bars": [_bar(aspect, *two)]}
+    long_win = [_change_row(aspect, "k", "an arm with a very long printed name", "better")]
+    long = {"floors": [_floor(aspect, "k", "an arm with a very long printed name")], "bars": [_bar(aspect, "k", "x")]}
+    assert read("change", **long, readings=long_win) == "an arm with a very long printed name improved, 2 warnings"
+    assert read("change", **lots, readings=win) == "fast improved, broke a floor and missed a bar"
 
 
 def test_a_campaign_with_no_report_has_no_short_outcome() -> None:
