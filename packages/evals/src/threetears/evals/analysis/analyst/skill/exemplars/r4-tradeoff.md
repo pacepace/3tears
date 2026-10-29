@@ -3,9 +3,10 @@
 **The eval.** A persona chat model in production against three challengers: A (the flash model with 64k output), B (flash with 16k), and Corvid. 300 replayed conversations, 2,400 replies, paired. Four aspects: in character (judged, calibrated on 240 human ratings, agreement 0.82), completes the action, and two standing guardrails, music facts at least 90% and declines to speculate at least 95%. Volume is 12 million replies a month. No exchange rate between cost and personality was declared.
 
 **What I noticed first.**
-- A saves about $7.6k a month (30%) and loses 6.1 points in character (interval 4.9 to 7.3). Every other aspect holds.
+- At this run's routing, A saves about $7.6k a month (30%) and loses 6.1 points in character (interval 4.9 to 7.3). Every other aspect holds.
 - Corvid loses only 2.2 points and saves the most per point lost of any full switch. But it breaks the speculation guardrail at 92%, and its drop there is clear of zero.
-- B is cheapest and breaks the facts guardrail at 89.4%.
+- B cost the least in this run and breaks the facts guardrail at 89.4%.
+- Every saving is this run's provider routing's, not the models' own. The snapshot names no provider for any arm, so the routing is unknown, and the page says so beside the prices.
 - A's loss grows with conversation depth: close for the first turns, 18 points behind past turn ten.
 
 **The trap.** Corvid looks like the sensible middle path: a small personality loss for real savings. Pricing it beside A would put an option that breaks a standing policy into the trade. Guardrail failures remove options before any pricing. The second trap is deciding at all. With no declared price for a point of personality, any recommendation is a business choice. The report prices the trade and says who makes the call.

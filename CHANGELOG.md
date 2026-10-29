@@ -24,7 +24,9 @@ provider named as must_fix, and the editor is handed `cost_served_by` (new): whe
 arms' costs or more, one fact naming those fields and, for each arm compared, the providers its pricing names, that it
 names none, or that the input states no pricing, and its tool spend apart. Which arms' costs a key reads is
 `figure_keys.cost_arms` (new), the reading the partly-priced note beside a cost already used. The skill's digest moves
-with it; the recorded prototype5 replays still pass.
+with it; the recorded prototype5 replays still pass. The shipped reasoning notes (Kairo, r1, r3, r4) and their index
+no longer state a cost as the model's: each cost comparison is this run's routing's, and since no note's snapshot
+names a provider, each says the routing is unknown; their reasoning is unchanged.
 
 ### evals: Discodon's W4 adoption findings: unanswered calls through the ledger, a turn cap on a dollar budget, the report writer's port declared
 
