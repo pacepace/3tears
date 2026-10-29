@@ -580,6 +580,8 @@ module = [
     "threetears.core.backends.sql",
     "threetears.datasources.export_read",
     "threetears.datasources.partitioned_export",
+    # and the CPU-quota helper, which sizes pyarrow's thread pools
+    "threetears.core.utils.cpu_quota",
     "threetears.agent.tools.document",
     "threetears.agent.tools.builtin.calculator",
     # redshift_connector ships no py.typed/stubs; suppress its import-untyped

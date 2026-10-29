@@ -1795,6 +1795,120 @@ arm declaring none takes the computed one. `campaign_create` takes `short_name` 
 `campaign_update` takes `arm_short_names`, which stays editable once runs have joined. No identity, digest or
 fingerprint moves. See `packages/evals/MIGRATIONS.toml`.
 
+### core: an L3 read a stopped hub replica never answered is sent again; a write is not
+
+**Fixed:** `NatsProxyL3Backend` raised the first time a request went unanswered, so a hub rollout that stopped the
+replica holding a request failed it after its 7-second bound (cobalt dev, 2026-10-29: `l3.query` in the registry,
+`l3.tx.rollback` in the reports pod). A request is now sent again, up to three times in all, each attempt encoded
+afresh with its own proof: any request no hub received (`NoRespondersError`), and a read (`fetch`, `fetchrow`,
+`fetchval`, `fetch_arrow`) that timed out or that a leaving replica cut off. A read is a `SELECT` none of whose code
+may write: a data-modifying CTE under a `SELECT`, `nextval`, or `FOR UPDATE` is sent once. A write, a statement inside
+a transaction, `tx.begin` and a commit raise as before on a timeout: each may have run. A reply
+`BROKER_REPLICA_LEAVING` is the code a leaving hub replica answers a request it could not finish with. **Changed:** a rollback nobody answers, on the way out of a transaction an exception ended, is logged
+rather than raised, so the caller sees the error that ended the transaction; the transaction never commits.
+
+## v0.83.0 -- 2026-10-29
+
+### observe, core: a periodic tick sets its next delay only with `NextDelay`, and never below `min_delay`
+
+**Fixed:** `PeriodicTask` read any finite non-negative number a tick returned as the delay before the next tick,
+with no floor. `CollectionRegistry.catch_up_l2_generations()` returns how many tables it dropped, almost always 0,
+so a loop wired straight to it re-ticked with no sleep: about 4-5k NATS KV requests a second and 0.6 of a core per
+pod, on cobalt dev and prod. **Added:** `NextDelay(seconds)`. A tick now steers the loop only by returning
+`NextDelay`; any other value, a bare number included, keeps the interval. A requested delay is floored at the new
+`PeriodicTask(min_delay=)` (one second by default), so even `NextDelay(0)` cannot spin. **Changed:** `TickResult` is
+`NextDelay | None`, and `run_once()` returns the floored seconds as a `float`, or `None`. **Porting:** a tick that
+returned a number to ask for a fast retry or a backoff returns `NextDelay(<seconds>)` instead, and passes
+`min_delay=` if it needs to retry faster than once a second; left as is, it keeps the interval. The hub JWKS
+provider is moved over.
+
+### agent-acl, core: access answers derived once per membership shape and shared by every replica
+
+**Added:** `AccessShape`, `ShapeActors`, `AccessShapeAnswers`, `ShapeDependencies`, `ShapeAnswer`,
+`ShapeAnswerOutcome`, `bind_caller_cache_to_memberships`, `access_shapes.access_footprint` and
+`AccessFootprint`, `AclCache.followed`, and in `generation_follow` `follow_access_shape_answers`,
+`follow_caller_memberships` and `ShapeAnswersFollowing`; in core, `GenerationMarks.highest_heard()` and
+`adopt()`. A host's per-person access answer (the hub's cache token)
+was derived and kept per person in each process: at a sign-in surge every person was cold, about a dozen
+reads and an evaluation of every candidate namespace each, and one admin change dropped every answer. The
+evaluator reads a person only through their direct membership rows, so the answer is a function of that
+shape. `AccessShapeAnswers` keeps one answer per shape in L1 and L2, derives it once across replicas, and
+serves a hot shape from L1 with no L2 or database read. An answer carries the generations it was derived at
+and its footprint (groups, roles, agents); a change makes stale only the answers it reaches, on every tier
+and every replica that has applied it. An answer derived while a change landed is kept in no replica's
+L1; it reaches L2 only when the change landed after it was put there, and is then served only where its
+stamp is current. Nothing is served or kept unless the tables and the access cache are followed. No
+lifetimes.
+
+### core: a new entity keeps the row it was made with until it is saved
+
+**Fixed:** a new entity's working row lived only in L1: `BaseEntity.__init__` wrote it there and kept no copy, and
+`save_entity` reads it back first. A caller that held a new entity across an await (a check, an audit snapshot) lost
+it to any eviction of the key: `to_dict()` raised `L1 cache miss in to_dict()`, or a field set afterwards was saved
+without the rest of the row. The hub's group member add failed that way on cobalt dev during a 24-member
+`group apply`. The entity now keeps the row it was made with and answers from it when L1 misses; L1 still answers
+first, and `mark_clean` drops the copy, so a clean entity with no held row and no L1 row still raises.
+
+## v0.82.0 -- 2026-10-28
+
+### core: a bulk write's CPU work runs off the event loop
+
+**Fixed:** `SqlL3Backend.upsert_many` and `copy_many` built every row's parameters, measured each statement as the
+rail sends it, and (over the rail) converted each value and encoded the request on the event loop. For a page of a
+thousand rows that is tens of milliseconds of Python, and it held every call the process answers for as long, a
+page after a page. A reports tool pod writing a local LSF pull over the rail logged 60 such stalls in 220 s (up to
+0.3 s). The parameters and batches are now built on a thread (`asyncio.to_thread`). The proxy builds and encodes a
+copy page, and any statement binding more than 256 parameters, on a thread too (`nats_request(...,
+offload_encode=True)`). A statement's operation is now read once per statement text, because a page's
+multi-row `INSERT` was tokenized in Python several times per statement. What is sent is unchanged.
+
+### agent-tools, nats: a replica joins its call group when it can answer, and leaves it without dropping a call
+
+**Added:** `ToolServer.hold_calls()`, `open_calls()`, `leave_calls()` and `serving_calls`, plus `NatsClient.drain(sub,
+timeout=)`. A pod's replicas share one queue group on the call subject, and NATS hands each call to any member, so a
+rolling deploy refused calls at both ends. A new replica joined before it could answer and refused its share with
+`TOOL_NOT_READY` (503). An old replica stopped what its tools answer from while it was still in the group. Seen on
+cobalt dev: 54 503s in a few hundred reads while a two-replica pod rolled. A pod that calls `hold_calls()` before
+`serve()` still connects, binds its probe subject and registers, but subscribes the call subject only when it calls
+`open_calls()`; until then its siblings take every call. `leave_calls()` drains the call subscription: the server
+stops routing to the replica, and every call it had already routed there is answered (bounded, 10 s by default).
+`shutdown()` now leaves first. `unsubscribe` cancelled any call still running, so its caller got no answer. The
+tool-pod bootstrap gains a `calls_open` readiness check on `serving_calls`, so a replica that holds its calls, or has
+begun to leave, reports not ready. A pod that never holds its calls joins at once, before it registers, as before.
+
+### core, agent-tools: a tool pod's native pools follow its CPU quota, not the node's cores
+
+**Added:** `threetears.core.utils.cpu_quota`: `effective_cpu_count()` reads the cgroup CPU quota (v2 `cpu.max`,
+else v1 `cpu.cfs_quota_us` / `cpu.cfs_period_us`), rounded up to a whole CPU and capped at the machine's cores;
+with no quota, `os.cpu_count()`. `bound_native_threads(n)` sizes pyarrow's CPU pool to `n` and its I/O pool to
+`2n`, between 2 and 8. `default_executor_workers(n)` is the standard library's executor rule, `min(32, n + 4)`, on
+the quota.
+
+**Fixed:** in a pod, `os.cpu_count()` is the node's cores (32 on cobalt's), and pyarrow, DuckDB and the asyncio
+default executor sized themselves from it. On a 4-CPU limit those threads spend the quota early in each 100 ms
+period, and the kernel then freezes every thread in the pod for the rest of the period, the event loop included.
+The reports tool pod logged 50-100 ms loop stalls during a full LSF pull (401 throttled periods, 53 s throttled).
+`ToolServerBootstrap.run` now sizes pyarrow and installs a bounded default executor at boot, and logs the effective
+count once (`<service> sized to its CPU quota`). The DuckDB L1 backend opens with `threads` set to the quota.
+
+### core: a proven L3 request is encoded once
+
+**Changed:** `NatsProxyL3Backend.encode_request` appended the proof by encoding the whole presented body a second
+time. It now splices the proof field onto the first encoding. The wire bytes are unchanged, and tests pin them
+byte for byte, a 1,000-row copy included. That is one fewer JSON pass per request (about 1 ms of 6 for a
+1,000-row page).
+
+### iam: client-IP resolution can skip every trusted hop
+
+**Added:** `ForwardedForMode.RIGHTMOST_UNTRUSTED`, passed as `mode=` to `resolve_client_ip` and
+`resolve_request_client_ip`. It walks `X-Forwarded-For` from the right, skips every entry inside the trusted
+CIDRs, and returns the first one outside them (nginx's `real_ip_recursive`). The fixed hop count keyed every
+request that crossed one more internal proxy than configured on that proxy, so all its callers shared one rate-limit
+bucket. Entries left of the chosen one are never read, so forged leading entries change nothing. A chain that is all
+trusted resolves to its leftmost entry; a malformed entry resolves to the trusted hop that received it, never to the
+junk string. The trusted CIDRs must cover every internal hop, load balancers included. `HOPS` stays the default, so
+existing callers are unchanged.
+
 ## v0.81.0 -- 2026-10-28
 
 ### core: a DuckDB L1 table can be key-less, its key kept by the backend

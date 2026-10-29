@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-models"
-version = "0.81.0"
+version = "0.83.0"
 description = "LangChain-native AI model factories with capability metadata, circuit breakers, and usage tracking for the 3tears platform"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -12,9 +12,9 @@ authors = [{name = "pace"}]
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
-    "3tears-media-contracts>=0.81.0,<0.82.0",
-    "3tears-observe>=0.81.0,<0.82.0",
-    "3tears-tool-schema>=0.81.0,<0.82.0",
+    "3tears-media-contracts>=0.83.0,<0.84.0",
+    "3tears-observe>=0.83.0,<0.84.0",
+    "3tears-tool-schema>=0.83.0,<0.84.0",
     "pydantic>=2.0",
     "langchain-core>=0.3",
     # direct dependency, not just transitive-via-langchain-anthropic: the
@@ -60,7 +60,7 @@ dependencies = [
 claude-cli = [
     "langchain-claude-code>=0.1.0",
     "claude-agent-sdk>=0.2.163,<0.3",
-    "3tears-langgraph>=0.81.0,<0.82.0",
+    "3tears-langgraph>=0.83.0,<0.84.0",
     "mcp>=1.27,<3",  # CallToolRequest (models.claude_cli_pool); claude-agent-sdk brings it; 1.x or 2.x
     "anyio>=4.0",  # the CLI's process and pipes as the SDK's transport takes them (models._claude_cli_spawn)
 ]

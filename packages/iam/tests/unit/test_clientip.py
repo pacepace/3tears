@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.iam.clientip import parse_trusted_cidrs, resolve_client_ip, resolve_request_client_ip
+from threetears.iam.clientip import (
+    ForwardedForMode,
+    parse_trusted_cidrs,
+    resolve_client_ip,
+    resolve_request_client_ip,
+)
 
 _TRUSTED = parse_trusted_cidrs("10.0.0.0/8,fd00::/8")
 
@@ -70,6 +75,77 @@ def test_unparseable_peer_is_never_trusted() -> None:
 
 def test_blank_forwarded_entries_are_discarded() -> None:
     assert resolve_client_ip(peer="10.0.0.5", forwarded_for=[" , ,198.51.100.7, "], trusted=_TRUSTED) == "198.51.100.7"
+
+
+# -- rightmost-untrusted mode --------------------------------------------------------------
+
+_RU = ForwardedForMode.RIGHTMOST_UNTRUSTED
+
+
+def test_hops_stays_the_default_mode() -> None:
+    # Existing callers are unchanged: one hop lands on the rightmost entry even when it
+    # is itself a trusted (internal) address.
+    assert resolve_client_ip(peer="10.0.0.5", forwarded_for=["198.51.100.7, 10.0.0.9"], trusted=_TRUSTED) == (
+        "10.0.0.9"
+    )
+
+
+def test_rightmost_untrusted_skips_every_internal_hop() -> None:
+    # client, load balancer, ingress pod -- the shape a site's own nginx forwards. A fixed
+    # one hop lands on the ingress pod; this lands on the client.
+    chain = ["198.51.100.7, 10.0.48.12, 10.0.3.4"]
+    assert resolve_client_ip(peer="10.0.0.5", forwarded_for=chain, trusted=_TRUSTED, mode=_RU) == "198.51.100.7"
+
+
+def test_rightmost_untrusted_with_a_single_hop_matches_hops_mode() -> None:
+    chain = ["198.51.100.7, 10.0.48.12"]
+    assert resolve_client_ip(peer="10.0.0.5", forwarded_for=chain, trusted=_TRUSTED, mode=_RU) == "198.51.100.7"
+
+
+def test_rightmost_untrusted_never_chooses_a_spoofed_left_entry() -> None:
+    # Everything left of the first untrusted entry is client-supplied; prepending forged
+    # addresses, including forged trusted-looking ones, changes nothing.
+    for forged in ("1.2.3.4", "10.0.0.1", "1.2.3.4, 5.6.7.8", "10.9.9.9, 1.2.3.4"):
+        chain = [f"{forged}, 198.51.100.7, 10.0.48.12"]
+        assert resolve_client_ip(peer="10.0.0.5", forwarded_for=chain, trusted=_TRUSTED, mode=_RU) == "198.51.100.7"
+
+
+def test_rightmost_untrusted_reads_across_duplicate_header_lines() -> None:
+    chain = ["1.2.3.4", "198.51.100.7", "10.0.48.12, 10.0.3.4"]
+    assert resolve_client_ip(peer="10.0.0.5", forwarded_for=chain, trusted=_TRUSTED, mode=_RU) == "198.51.100.7"
+
+
+def test_rightmost_untrusted_all_trusted_chain_takes_the_leftmost() -> None:
+    # An in-cluster caller: every hop is internal, so the origin is the leftmost entry.
+    chain = ["10.1.2.3, 10.0.48.12"]
+    assert resolve_client_ip(peer="10.0.0.5", forwarded_for=chain, trusted=_TRUSTED, mode=_RU) == "10.1.2.3"
+
+
+def test_rightmost_untrusted_empty_header_uses_the_peer() -> None:
+    assert resolve_client_ip(peer="10.0.0.5", forwarded_for=[], trusted=_TRUSTED, mode=_RU) == "10.0.0.5"
+    assert resolve_client_ip(peer="10.0.0.5", forwarded_for=[" , "], trusted=_TRUSTED, mode=_RU) == "10.0.0.5"
+
+
+def test_rightmost_untrusted_malformed_entry_falls_back_to_the_hop_that_received_it() -> None:
+    # Junk cannot be a key -- returning it would let a client rotate strings into fresh
+    # buckets -- so the trusted hop that received it stands in.
+    chain = ["198.51.100.7, not-an-ip, 10.0.48.12"]
+    assert resolve_client_ip(peer="10.0.0.5", forwarded_for=chain, trusted=_TRUSTED, mode=_RU) == "10.0.48.12"
+    assert resolve_client_ip(peer="10.0.0.5", forwarded_for=["unknown"], trusted=_TRUSTED, mode=_RU) == "10.0.0.5"
+
+
+def test_rightmost_untrusted_untrusted_peer_ignores_the_header() -> None:
+    chain = ["198.51.100.7, 10.0.48.12"]
+    assert resolve_client_ip(peer="203.0.113.9", forwarded_for=chain, trusted=_TRUSTED, mode=_RU) == "203.0.113.9"
+
+
+def test_rightmost_untrusted_unconfigured_trust_uses_the_peer() -> None:
+    assert resolve_client_ip(peer="10.0.0.5", forwarded_for=["198.51.100.7"], mode=_RU) == "10.0.0.5"
+
+
+def test_rightmost_untrusted_handles_ipv6() -> None:
+    chain = ["2001:db8::5, fd00::7, 10.0.3.4"]
+    assert resolve_client_ip(peer="fd00::1", forwarded_for=chain, trusted=_TRUSTED, mode=_RU) == "2001:db8::5"
 
 
 def test_parse_trusted_cidrs_accepts_strings_and_sequences() -> None:
@@ -157,3 +233,11 @@ def test_the_adapter_reads_every_header_line_not_just_the_first() -> None:
 def test_the_adapter_returns_none_when_there_is_no_peer() -> None:
     # An in-process test client. None means "cannot key by IP", never "one shared bucket".
     assert resolve_request_client_ip(_Request(None), trusted=_INGRESS) is None
+
+
+def test_the_adapter_passes_the_mode_through() -> None:
+    request = _Request("10.44.2.103", x_forwarded_for=["1.2.3.4, 203.0.113.9, 10.44.48.1, 10.44.2.50"])
+    assert resolve_request_client_ip(request, trusted=_INGRESS) == "10.44.2.50"
+    assert resolve_request_client_ip(request, trusted=_INGRESS, mode=ForwardedForMode.RIGHTMOST_UNTRUSTED) == (
+        "203.0.113.9"
+    )

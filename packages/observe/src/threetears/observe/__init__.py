@@ -23,7 +23,7 @@ from threetears.observe.background import cancel_and_wait, spawn_background
 from threetears.observe.build_once import BuildOnce
 from threetears.observe.containment import ContainedLevel, contain, contained
 from threetears.observe.erasure import ANONYMIZED_MARKER
-from threetears.observe.periodic import PeriodicTask, TickResult
+from threetears.observe.periodic import NextDelay, PeriodicTask, TickResult
 from threetears.observe.health import HealthCheck, HealthServer, HealthTier
 from threetears.observe.inflight import InflightRequestsGauge
 from threetears.observe.logging import (
@@ -51,6 +51,7 @@ __all__ = [
     "HealthServer",
     "HealthTier",
     "InflightRequestsGauge",
+    "NextDelay",
     "PeriodicTask",
     "ThreeTearsLogger",
     "TickResult",

@@ -22,12 +22,13 @@ none changes nothing.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 import re
 from datetime import UTC, datetime, timedelta
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Literal, NoReturn
+from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn
 from uuid import UUID, uuid7
 
 import asyncpg
@@ -57,7 +58,13 @@ from threetears.core.exceptions import (
 )
 from threetears.core.namespaces import PLURAL_PREFIX_AGENT, build_namespace_name
 from threetears.core.security.delegated_token import L3_DOOR
-from threetears.core.security.door_request import DOOR_TOKEN_FIELD, DoorCredential, PopKey, l3_request_op
+from threetears.core.security.door_request import (
+    DOOR_PROOF_FIELD,
+    DOOR_TOKEN_FIELD,
+    DoorCredential,
+    PopKey,
+    l3_request_op,
+)
 
 # Subject comes from its own module, and NatsClient only under TYPE_CHECKING.
 # `threetears.core.collections` MUST import with nats-py absent -- that is the
@@ -66,7 +73,7 @@ from threetears.core.security.door_request import DOOR_TOKEN_FIELD, DoorCredenti
 # lazy loader and raises at import time on an L1-only install. `subjects` pulls in
 # no client, so it is safe eagerly, as is `errors`; the annotation needs no runtime
 # object because this module has `from __future__ import annotations`.
-from threetears.nats.errors import RequestError
+from threetears.nats.errors import NoRespondersError, RequestError, RequestTimeoutError
 from threetears.nats.subjects import Subject, Subjects
 from threetears.observe import contain, get_logger
 
@@ -111,6 +118,23 @@ DATA_VERSION_SUPERSEDED_ERROR_CODE = "DATA_VERSION_SUPERSEDED"
 #: has not finished. transient: the proxy raises :class:`DataVersionNotReadyError` and the pod
 #: waits. the hub imports this name.
 DATA_VERSION_NOT_READY_ERROR_CODE = "DATA_VERSION_NOT_READY"
+
+#: the broker's ``error_code`` for a request the hub replica running it shut down before finishing: the
+#: replica's bound on leaving its L3 doors ran out with the request still running. Whether a write took
+#: effect is unknown, so a write raises it; a read is sent again. The hub answers it
+#: (``aibots.hub.broker.proxy.REPLICA_LEAVING_ERROR_CODE``); the wire value is the contract.
+_REPLICA_LEAVING_ERROR_CODE = "BROKER_REPLICA_LEAVING"
+
+#: how many times one request is sent, at most, when it may be sent again: unanswered (a hub replica
+#: that received it stopped), routed to no hub, or cut off by a leaving replica. The reply bound applies
+#: to each, so a request is bounded by this many of them.
+_UNANSWERED_ATTEMPTS: Final = 3
+
+#: the pause before a request is sent again, in seconds; doubled before each later attempt
+_UNANSWERED_BACKOFF_SECONDS: Final = 0.2
+
+#: a reply this long or longer is never a refusal, so it is never read for :data:`_REPLICA_LEAVING_ERROR_CODE`
+_REFUSAL_REPLY_MAX_BYTES: Final = 4096
 
 #: SQLSTATE class 23, integrity constraint violation: a deterministic refusal of this statement,
 #: never an infrastructure fault, so it is the one class rebuilt as its asyncpg error rather than
@@ -202,6 +226,61 @@ def _raise_for_failed_reply(
     raise DataLayerUnavailableError(message)
 
 
+#: a statement binding more parameters than this (a multi-row write's page) has its request built and encoded
+#: on a thread: each parameter is converted in Python and the request passes through JSON several times, tens of
+#: milliseconds for a page that on the event loop held every call the process answers
+_OFFLOAD_PARAMS = 256
+
+
+def _offloaded(params: Sequence[Any]) -> bool:
+    """whether a statement's request is built and encoded on a thread rather than the event loop.
+
+    :param params: the statement's parameters
+    :ptype params: Sequence[Any]
+    :return: whether it binds more than :data:`_OFFLOAD_PARAMS`
+    :rtype: bool
+    """
+    return len(params) > _OFFLOAD_PARAMS
+
+
+def _may_send_again(error: RequestError, *, idempotent: bool) -> bool:
+    """whether a request that got no reply may be sent again.
+
+    One no hub received (:class:`NoRespondersError`) ran nowhere, so any request may be. One that timed
+    out may have run on the replica that received it before it stopped, so only a request that changes
+    nothing -- a read -- may be; a write raises, and its caller's own retry decides.
+
+    :param error: why the request got no reply
+    :ptype error: RequestError
+    :param idempotent: whether running the request twice is the same as running it once
+    :ptype idempotent: bool
+    :return: whether to send it again
+    :rtype: bool
+    """
+    return isinstance(error, NoRespondersError) or (idempotent and isinstance(error, RequestTimeoutError))
+
+
+def _cut_off_by_a_leaving_replica(reply: bytes) -> bool:
+    """whether ``reply`` is the broker's :data:`_REPLICA_LEAVING_ERROR_CODE` refusal.
+
+    :param reply: the reply's body
+    :ptype reply: bytes
+    :return: whether the replica running the request stopped before it finished
+    :rtype: bool
+    """
+    if len(reply) >= _REFUSAL_REPLY_MAX_BYTES or _REPLICA_LEAVING_ERROR_CODE.encode() not in reply:
+        return False
+    try:
+        parsed = json.loads(reply)
+    except ValueError:
+        return False
+    return (
+        isinstance(parsed, dict)
+        and parsed.get("success") is False
+        and parsed.get("error_code") == _REPLICA_LEAVING_ERROR_CODE
+    )
+
+
 def _encode_request(payload: dict[str, Any]) -> bytes:
     """encode a request payload as the proxy puts it on the bus.
 
@@ -215,6 +294,37 @@ def _encode_request(payload: dict[str, Any]) -> bytes:
     :rtype: bytes
     """
     return json.dumps(payload, default=json_default).encode("utf-8")
+
+
+def _with_proof(encoded: bytes, body: Mapping[str, Any], sent: Mapping[str, Any]) -> bytes:
+    """the wire bytes of ``sent``: ``body``'s encoding ``encoded``, with the proof ``sent`` adds spliced on its end.
+
+    :meth:`DoorCredential.present` answers ``body`` with its token kept in place and the proof
+    appended as the last key, so ``_encode_request(sent)`` is ``encoded`` up to its closing brace,
+    then the proof field. Splicing it on skips encoding the whole body a second time -- a page of a
+    thousand rows each request. Any other shape of ``sent`` is encoded whole, as before.
+
+    :param encoded: ``_encode_request`` of the request, the bytes ``body`` was parsed from
+    :ptype encoded: bytes
+    :param body: ``encoded`` parsed back to JSON values
+    :ptype body: Mapping[str, Any]
+    :param sent: what the credential presents for ``body``
+    :ptype sent: Mapping[str, Any]
+    :return: the bytes ``_encode_request(sent)`` answers
+    :rtype: bytes
+    """
+    splices = (
+        DOOR_PROOF_FIELD not in body
+        and list(sent) == [*body, DOOR_PROOF_FIELD]
+        and sent.get(DOOR_TOKEN_FIELD) == body.get(DOOR_TOKEN_FIELD)
+        and all(sent[key] is value for key, value in body.items() if key != DOOR_TOKEN_FIELD)
+        and encoded.endswith(b"}")
+    )
+    if not splices:
+        return _encode_request(dict(sent))
+    # the field encoded as ``_encode_request`` encodes a one-key object, braces dropped
+    field = _encode_request({DOOR_PROOF_FIELD: sent[DOOR_PROOF_FIELD]})[1:-1]
+    return encoded[:-1] + b", " + field + b"}"
 
 
 def _deserialize_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -526,8 +636,17 @@ def _main_clause_index(tokens: list[str]) -> int:
     return index
 
 
+#: the statements whose operation is remembered: a bulk write sends one statement text a page after a page
+_DETECTED_STATEMENTS = 64
+
+
+@functools.lru_cache(maxsize=_DETECTED_STATEMENTS)
 def _detect_operation(query: str) -> str:
     """label a statement with its SQL operation, from the verb of its main clause.
+
+    Remembered per statement text: the label is a function of the text alone, and tokenizing a page's
+    multi-row ``INSERT`` in Python, several times a statement, held the event loop for tens of
+    milliseconds a page.
 
     The label tells the broker how to run the statement -- a ``select`` is fetched
     for rows, anything else executed for a count -- and names it in logs. It is the
@@ -549,6 +668,50 @@ def _detect_operation(query: str) -> str:
     ):
         result = "upsert"
     return result
+
+
+#: words whose presence anywhere in a statement's code may make it write, so it is never sent again: a
+#: data-modifying CTE under a ``SELECT``, a sequence moved by ``nextval``/``setval``, a row lock taken by
+#: ``FOR UPDATE``. Conservative on purpose: a read that names one only loses its retry.
+_WRITING_WORDS: Final = frozenset(
+    {
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "MERGE",
+        "TRUNCATE",
+        "COPY",
+        "CALL",
+        "DO",
+        "LOCK",
+        "NEXTVAL",
+        "SETVAL",
+        "REFRESH",
+        "CREATE",
+        "DROP",
+        "ALTER",
+        "GRANT",
+        "REVOKE",
+    }
+)
+
+
+@functools.lru_cache(maxsize=_DETECTED_STATEMENTS)
+def _resendable(query: str) -> bool:
+    """whether a statement only reads, so sending it again after it went unanswered changes nothing.
+
+    Its main clause is a ``SELECT`` (:func:`_detect_operation`) and no word of its code may write
+    (:data:`_WRITING_WORDS`): ``WITH d AS (DELETE ... RETURNING id) SELECT id FROM d`` is labelled a
+    ``select`` but deletes, so it is never resent. A ``SELECT`` calling a function that writes is read as
+    a read; a statement that writes is sent through ``execute``, which is never resent on a timeout.
+    Remembered per statement text, as :func:`_detect_operation` is.
+
+    :param query: the statement
+    :ptype query: str
+    :return: whether it may be sent again
+    :rtype: bool
+    """
+    return _detect_operation(query) == "select" and _WRITING_WORDS.isdisjoint(_code_tokens(query))
 
 
 def _load_result(response: Mapping[str, Any]) -> LoadResult:
@@ -813,7 +976,9 @@ class NatsProxyL3Backend:
         if _detect_operation(query) != "select":
             raise ValueError("fetch_arrow reads: its statement is a SELECT")
         payload = self._query_payload(query, list(params), "select", namespace)
-        reply = await self.nats_request_bytes(Subjects.l3_query(namespace=self.ns).path, payload)
+        reply = await self.nats_request_bytes(
+            Subjects.l3_query(namespace=self.ns).path, payload, idempotent=_resendable(query)
+        )
         parsed = await asyncio.to_thread(reply_rows, reply, types)
         if not parsed.success:
             # a refusal is a short reply: decoded as every other is, and raised as fetch raises it
@@ -1329,9 +1494,19 @@ class NatsProxyL3Backend:
         :rtype: dict[str, Any]
         :raises DataLayerUnavailableError: if broker returns error
         """
-        payload = self._query_payload(query, params, operation, namespace, customer_scope=customer_scope)
+        offload = _offloaded(params)
+        payload = (
+            await asyncio.to_thread(
+                self._query_payload, query, params, operation, namespace, customer_scope=customer_scope
+            )
+            if offload
+            else self._query_payload(query, params, operation, namespace, customer_scope=customer_scope)
+        )
         subject = Subjects.l3_query(namespace=self.ns).path
-        response = await self.nats_request(subject, payload)
+        # a read sent again changes nothing; a statement that may write, ``RETURNING`` and a writing CTE
+        # included, is never resent
+        reads = operation == "select" and _resendable(query)
+        response = await self.nats_request(subject, payload, offload_encode=offload, idempotent=reads)
 
         if not response.get("success", False):
             self.raise_for_failed_reply(response, "L3 query")
@@ -1348,6 +1523,8 @@ class NatsProxyL3Backend:
         payload: dict[str, Any],
         *,
         timeout_s: float | None = None,
+        offload_encode: bool = False,
+        idempotent: bool = False,
     ) -> dict[str, Any]:
         """send raw NATS request and parse JSON response.
 
@@ -1369,12 +1546,20 @@ class NatsProxyL3Backend:
             past one statement's bound (:meth:`load_files`); the backend's ``timeout_ms`` and two
             seconds' grace when None
         :ptype timeout_s: float | None
+        :param offload_encode: encode the request on a thread, for a large one (a page of rows); see
+            :meth:`nats_request_bytes`
+        :ptype offload_encode: bool
+        :param idempotent: whether the request may be sent again when it goes unanswered; see
+            :meth:`nats_request_bytes`
+        :ptype idempotent: bool
         :return: parsed JSON response dict from broker
         :rtype: dict[str, Any]
         :raises DataLayerUnavailableError: if NATS request times out,
             the broker returns malformed JSON, or the client is closed
         """
-        reply = await self.nats_request_bytes(subject, payload, timeout_s=timeout_s)
+        reply = await self.nats_request_bytes(
+            subject, payload, timeout_s=timeout_s, offload_encode=offload_encode, idempotent=idempotent
+        )
         try:
             result: dict[str, Any] = json.loads(reply)
         except ValueError as exc:
@@ -1388,10 +1573,17 @@ class NatsProxyL3Backend:
         payload: dict[str, Any],
         *,
         timeout_s: float | None = None,
+        offload_encode: bool = False,
+        idempotent: bool = False,
     ) -> bytes:
         """send a raw NATS request and answer the reply's bytes, undecoded: :meth:`nats_request` before its parse.
 
         For a reader that parses the reply some other way than ``json`` (:meth:`fetch_arrow`).
+
+        A request is sent again, up to :data:`_UNANSWERED_ATTEMPTS` times in all, when no hub received it
+        (any request), and, when ``idempotent``, when it went unanswered within the bound or the replica
+        running it stopped first (:data:`_REPLICA_LEAVING_ERROR_CODE`) -- a hub rollout, which routes the
+        next attempt to a sibling. Each attempt is encoded afresh, so it carries a proof of its own.
 
         :param subject: NATS subject on which to publish the request
         :ptype subject: str
@@ -1399,23 +1591,47 @@ class NatsProxyL3Backend:
         :ptype payload: dict[str, Any]
         :param timeout_s: how long to wait for the reply, in seconds; as :meth:`nats_request`'s
         :ptype timeout_s: float | None
+        :param offload_encode: encode the request on a thread rather than the event loop: a page of a
+            thousand rows is several JSON passes and a proof (:meth:`encode_request`), which on the loop
+            held every call the process answers for tens of milliseconds a page
+        :ptype offload_encode: bool
+        :param idempotent: whether running the request twice is the same as running it once (a read), so
+            it may be sent again when it goes unanswered
+        :ptype idempotent: bool
         :return: the reply's body
         :rtype: bytes
-        :raises DataLayerUnavailableError: if the NATS request times out or the client is closed
+        :raises DataLayerUnavailableError: if the NATS request times out or the client is closed, on the
+            last attempt it may make
         """
-        payload_bytes = self.encode_request(subject, payload)
         nats_timeout = timeout_s if timeout_s is not None else (self.timeout_ms / 1000) + 2
-
-        try:
-            reply: bytes = await self._nc.request_raw(
-                subject=Subject.raw(subject),
-                payload=payload_bytes,
-                timeout=timedelta(seconds=nats_timeout),
+        attempt = 1
+        while True:
+            payload_bytes = (
+                await asyncio.to_thread(self.encode_request, subject, payload)
+                if offload_encode
+                else self.encode_request(subject, payload)
             )
-        except RequestError as exc:
-            raise DataLayerUnavailableError(f"NATS request failed: subject={subject}: {exc}") from exc
-
-        return reply
+            again: str | None = None
+            try:
+                reply: bytes = await self._nc.request_raw(
+                    subject=Subject.raw(subject),
+                    payload=payload_bytes,
+                    timeout=timedelta(seconds=nats_timeout),
+                )
+            except RequestError as exc:
+                if attempt >= _UNANSWERED_ATTEMPTS or not _may_send_again(exc, idempotent=idempotent):
+                    raise DataLayerUnavailableError(f"NATS request failed: subject={subject}: {exc}") from exc
+                again = f"{type(exc).__name__}: {exc}"
+            else:
+                if not (idempotent and attempt < _UNANSWERED_ATTEMPTS and _cut_off_by_a_leaving_replica(reply)):
+                    return reply
+                again = _REPLICA_LEAVING_ERROR_CODE
+            _logger.warning(
+                "L3 request got no answer; sending it again",
+                extra={"extra_data": {"subject": subject, "attempt": attempt, "reason": again}},
+            )
+            await asyncio.sleep(_UNANSWERED_BACKOFF_SECONDS * 2 ** (attempt - 1))
+            attempt += 1
 
     def current_pop_key(self) -> PopKey | None:
         """the key this backend's requests are proven with, read through its provider now.
@@ -1466,7 +1682,8 @@ class NatsProxyL3Backend:
                 # the operation is the subject's own part (``query``, ``tx.commit``): two subjects that
                 # take one body shape never share a proof
                 op = l3_request_op(subject)
-                encoded = _encode_request(credential.present(json.loads(encoded), door=L3_DOOR, op=op))
+                body = json.loads(encoded)
+                encoded = _with_proof(encoded, body, credential.present(body, door=L3_DOOR, op=op))
         return encoded
 
     def acquire(self) -> "_ProxyAcquireCM":
@@ -1757,9 +1974,12 @@ class _ProxyConnection:
                 "conn.transaction(namespace=...) and bound on the broker "
                 "for the lifetime of the session",
             )
-        payload = self._tx_payload(query, params)
+        offload = _offloaded(params)
+        payload = (
+            await asyncio.to_thread(self._tx_payload, query, params) if offload else self._tx_payload(query, params)
+        )
         subject = Subjects.l3_tx("execute", namespace=self._backend.ns).path
-        response = await self._backend.nats_request(subject, payload)
+        response = await self._backend.nats_request(subject, payload, offload_encode=offload)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.execute")
         return _format_execute_tag(
@@ -1802,9 +2022,12 @@ class _ProxyConnection:
                 "conn.transaction(namespace=...) and bound on the broker "
                 "for the lifetime of the session",
             )
-        payload = self._tx_payload(query, params)
+        offload = _offloaded(params)
+        payload = (
+            await asyncio.to_thread(self._tx_payload, query, params) if offload else self._tx_payload(query, params)
+        )
         subject = Subjects.l3_tx("fetchrow", namespace=self._backend.ns).path
-        response = await self._backend.nats_request(subject, payload)
+        response = await self._backend.nats_request(subject, payload, offload_encode=offload)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.fetchrow")
         row = response.get("row")
@@ -1891,9 +2114,12 @@ class _ProxyConnection:
                 "conn.transaction(namespace=...) and bound on the broker "
                 "for the lifetime of the session",
             )
-        payload = self._tx_payload(query, params)
+        offload = _offloaded(params)
+        payload = (
+            await asyncio.to_thread(self._tx_payload, query, params) if offload else self._tx_payload(query, params)
+        )
         subject = Subjects.l3_tx("fetch", namespace=self._backend.ns).path
-        response = await self._backend.nats_request(subject, payload)
+        response = await self._backend.nats_request(subject, payload, offload_encode=offload)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.fetch")
         raw_rows: list[dict[str, Any]] = response.get("rows", [])
@@ -1987,9 +2213,10 @@ class _ProxyConnection:
                 "schema_name= is not allowed on the L3 rail; the namespace is declared at "
                 "conn.transaction(namespace=...) and bound on the broker for the session"
             )
-        payload = self._copy_payload(table_name, columns, records)
+        # a page of rows: its values converted and the request encoded on a thread, never the loop
+        payload = await asyncio.to_thread(self._copy_payload, table_name, columns, records)
         subject = Subjects.l3_tx("copy", namespace=self._backend.ns).path
-        response = await self._backend.nats_request(subject, payload)
+        response = await self._backend.nats_request(subject, payload, offload_encode=True)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.copy")
         row_count = response.get("row_count")
@@ -2132,7 +2359,8 @@ class _ProxyTransaction:
         :ptype exc_tb: Any
         :return: None
         :rtype: None
-        :raises DataLayerUnavailableError: when commit/rollback fails
+        :raises DataLayerUnavailableError: when the commit fails or goes unanswered; a rollback that
+            fails or goes unanswered is logged, so the exception that ended the transaction is the one raised
         """
         tx_id = self._connection.tx_id
         if tx_id is None:
@@ -2150,8 +2378,22 @@ class _ProxyTransaction:
         try:
             try:
                 response = await self._backend.nats_request(subject, payload)
-            except BaseException:
+            except DataLayerUnavailableError as exc:
                 # no reply, so the commit's outcome is unknown: hand out no earlier commit's token
+                forget_reply_generations(f"its {action} got no reply")
+                if action == "commit":
+                    raise
+                # a rollback no hub answered changes nothing: the session never commits, since the hub
+                # holding it rolls it back when it stops or the session idles out. The exception in
+                # flight is what the caller must see, not this.
+                contain(
+                    exc,
+                    log=_logger,
+                    what="proxy tx.rollback got no answer; the transaction does not commit, and the error that ended it is raised",
+                    extra={"tx_id": str(tx_id)},
+                )
+                return
+            except BaseException:
                 forget_reply_generations(f"its {action} got no reply")
                 raise
             if response.get("success", False) and action == "commit":
