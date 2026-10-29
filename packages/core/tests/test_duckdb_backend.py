@@ -49,6 +49,7 @@ duckdb = pytest.importorskip("duckdb")
 
 from threetears.core.cache.base import UnsupportedL1ColumnError  # noqa: E402
 from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
+from threetears.core.utils.cpu_quota import effective_cpu_count  # noqa: E402
 
 
 @pytest.fixture()
@@ -745,6 +746,10 @@ class TestMemoryAnExportHolds:
     def test_the_database_gives_freed_memory_back_from_a_thread_of_its_own(self, backend: DuckDBBackend) -> None:
         found = backend.execute_query("SELECT current_setting('allocator_background_threads') AS on")
         assert found == [{"on": True}]
+
+    def test_the_database_runs_one_thread_per_cpu_of_the_quota(self, backend: DuckDBBackend) -> None:
+        found = backend.execute_query("SELECT current_setting('threads') AS threads")
+        assert found == [{"threads": effective_cpu_count()}]
 
 
 class TestNumericReadsBackAsDecimal:
