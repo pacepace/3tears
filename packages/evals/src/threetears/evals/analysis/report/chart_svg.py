@@ -972,6 +972,7 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
         out.append(_text((ml + w - mr) / 2, h - 6, d.x_title, anchor="middle"))
     if d.y_title:
         out.append(_text(ml + 6, h - mb - 8, d.y_title))
+        obstacles.append((ml + 6, h - mb - 20, ml + 6 + len(d.y_title) * 6.4, h - mb - 6, 10.0))
     if d.x_reference is not None:
         rx = x(d.x_reference.value)
         out.append(_line(rx, mt, rx, h - mb, "floor"))

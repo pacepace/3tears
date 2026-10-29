@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a scatter's y-axis title is an obstacle to its point labels
+
+**Fixed:** a `scatter_frontier` or `gate_scatter` chart draws its y-axis title inside the plot, bottom left, and its
+point labels did not avoid it: at phone width a point near the origin put its label ("M") on the title ("Pass rate"),
+which the render check reported as an overlap. The kit (`kit.js`, in the package and in `docs/eval-report-kit`, byte
+for byte) and the static SVG port now both leave the title's box to the label placer.
+
 ### evals: a campaign listing carries what a list page shows, a title code builds and a short verdict; a campaign's name is a capped qualifier that moves no fingerprint
 
 **Added:** `CampaignLine` (`campaigns_list`, and every operation returning a campaign's line) carries `created_at`,
