@@ -671,6 +671,50 @@ def _detect_operation(query: str) -> str:
     return result
 
 
+#: words whose presence anywhere in a statement's code may make it write, so it is never sent again: a
+#: data-modifying CTE under a ``SELECT``, a sequence moved by ``nextval``/``setval``, a row lock taken by
+#: ``FOR UPDATE``. Conservative on purpose: a read that names one only loses its retry.
+_WRITING_WORDS: Final = frozenset(
+    {
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "MERGE",
+        "TRUNCATE",
+        "COPY",
+        "CALL",
+        "DO",
+        "LOCK",
+        "NEXTVAL",
+        "SETVAL",
+        "REFRESH",
+        "CREATE",
+        "DROP",
+        "ALTER",
+        "GRANT",
+        "REVOKE",
+    }
+)
+
+
+@functools.lru_cache(maxsize=_DETECTED_STATEMENTS)
+def _resendable(query: str) -> bool:
+    """whether a statement only reads, so sending it again after it went unanswered changes nothing.
+
+    Its main clause is a ``SELECT`` (:func:`_detect_operation`) and no word of its code may write
+    (:data:`_WRITING_WORDS`): ``WITH d AS (DELETE ... RETURNING id) SELECT id FROM d`` is labelled a
+    ``select`` but deletes, so it is never resent. A ``SELECT`` calling a function that writes is read as
+    a read; a statement that writes is sent through ``execute``, which is never resent on a timeout.
+    Remembered per statement text, as :func:`_detect_operation` is.
+
+    :param query: the statement
+    :ptype query: str
+    :return: whether it may be sent again
+    :rtype: bool
+    """
+    return _detect_operation(query) == "select" and _WRITING_WORDS.isdisjoint(_code_tokens(query))
+
+
 def _load_result(response: Mapping[str, Any]) -> LoadResult:
     """the :class:`LoadResult` an ``l3.load_files`` reply carries.
 
@@ -933,7 +977,9 @@ class NatsProxyL3Backend:
         if _detect_operation(query) != "select":
             raise ValueError("fetch_arrow reads: its statement is a SELECT")
         payload = self._query_payload(query, list(params), "select", namespace)
-        reply = await self.nats_request_bytes(Subjects.l3_query(namespace=self.ns).path, payload, idempotent=True)
+        reply = await self.nats_request_bytes(
+            Subjects.l3_query(namespace=self.ns).path, payload, idempotent=_resendable(query)
+        )
         parsed = await asyncio.to_thread(reply_rows, reply, types)
         if not parsed.success:
             # a refusal is a short reply: decoded as every other is, and raised as fetch raises it
@@ -1458,8 +1504,9 @@ class NatsProxyL3Backend:
             else self._query_payload(query, params, operation, namespace, customer_scope=customer_scope)
         )
         subject = Subjects.l3_query(namespace=self.ns).path
-        # a read sent again changes nothing; a statement that writes, ``RETURNING`` included, is never resent
-        reads = operation == "select" and _detect_operation(query) == "select"
+        # a read sent again changes nothing; a statement that may write, ``RETURNING`` and a writing CTE
+        # included, is never resent
+        reads = operation == "select" and _resendable(query)
         response = await self.nats_request(subject, payload, offload_encode=offload, idempotent=reads)
 
         if not response.get("success", False):
@@ -2313,7 +2360,8 @@ class _ProxyTransaction:
         :ptype exc_tb: Any
         :return: None
         :rtype: None
-        :raises DataLayerUnavailableError: when commit/rollback fails
+        :raises DataLayerUnavailableError: when the commit fails or goes unanswered; a rollback that
+            fails or goes unanswered is logged, so the exception that ended the transaction is the one raised
         """
         tx_id = self._connection.tx_id
         if tx_id is None:

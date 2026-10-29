@@ -12,10 +12,11 @@ packages (bumped in lock-step).
 replica holding a request failed it after its 7-second bound (cobalt dev, 2026-10-29: `l3.query` in the registry,
 `l3.tx.rollback` in the reports pod). A request is now sent again, up to three times in all, each attempt encoded
 afresh with its own proof: any request no hub received (`NoRespondersError`), and a read (`fetch`, `fetchrow`,
-`fetchval`, `fetch_arrow`) that timed out or that a leaving replica cut off. A write, a statement inside a
-transaction, `tx.begin` and a commit raise as before on a timeout: each may have run. **Added:**
+`fetchval`, `fetch_arrow`) that timed out or that a leaving replica cut off. A read is a `SELECT` none of whose code
+may write: a data-modifying CTE under a `SELECT`, `nextval`, or `FOR UPDATE` is sent once. A write, a statement inside
+a transaction, `tx.begin` and a commit raise as before on a timeout: each may have run. **Added:**
 `REPLICA_LEAVING_ERROR_CODE` (`BROKER_REPLICA_LEAVING`), the code a leaving hub replica answers a request it could not
-finish with. **Changed:** a rollback nobody answers, on the way out of a transaction an exception ended, is logged
+finish with, and `UNANSWERED_ATTEMPTS`, the most times one request is sent. **Changed:** a rollback nobody answers, on the way out of a transaction an exception ended, is logged
 rather than raised, so the caller sees the error that ended the transaction; the transaction never commits.
 
 ## v0.83.0 -- 2026-10-29

@@ -16,6 +16,7 @@ from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pyarrow as pa
 import pytest
 from threetears.nats import Subject
 from threetears.nats.errors import NoRespondersError, RequestTimeoutError
@@ -54,11 +55,6 @@ def _proxy(*answers: dict[str, Any] | Exception) -> tuple[NatsProxyL3Backend, li
         nats_client=nats, namespace_prefix="test", agent_id="agent-123", identity_token=lambda: "test-identity-token"
     )
     return proxy, sent
-
-
-@pytest.fixture(autouse=True)
-def _no_pause(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(nats_proxy, "_UNANSWERED_BACKOFF_SECONDS", 0.0)
 
 
 def _rows(n: int) -> dict[str, Any]:
@@ -113,6 +109,25 @@ class TestAWriteIsSentAgainOnlyWhenItRanNowhere:
         with pytest.raises(DataLayerUnavailableError, match="timed out"):
             await proxy.fetch("INSERT INTO items (id) VALUES ($1) RETURNING id", 1)
         assert len(sent) == 1
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "WITH d AS (DELETE FROM items WHERE id = $1 RETURNING id) SELECT id FROM d",
+            "SELECT nextval('items_id_seq') AS id",
+            "SELECT id FROM items WHERE id = $1 FOR UPDATE",
+        ],
+    )
+    async def test_a_select_that_may_write_is_sent_once(self, query: str) -> None:
+        for read in ("fetch", "fetch_arrow"):
+            proxy, sent = _proxy(RequestTimeoutError("request timed out"), _rows(1))
+
+            with pytest.raises(DataLayerUnavailableError, match="timed out"):
+                if read == "fetch":
+                    await proxy.fetch(query, 1)
+                else:
+                    await proxy.fetch_arrow(query, 1, types={"id": pa.int64()})
+            assert len(sent) == 1, f"{read} sent a statement that may write again"
 
     async def test_a_write_a_leaving_replica_cut_off_raises_its_refusal(self) -> None:
         proxy, sent = _proxy(_LEFT, {"success": True, "row_count": 1})
