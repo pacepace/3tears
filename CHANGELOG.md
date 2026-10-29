@@ -6,6 +6,41 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: Discodon's W4 adoption findings: unanswered calls through the ledger, a turn cap on a dollar budget, the report writer's port declared
+
+**Added:** `RoleUsageLedger.add_unanswered(model=, served_model=, price_source=, ..., retried=, lost=, reasons=)` counts
+a role's unanswered calls on the row `add` keys on the same fields (model, served model, provider, unit, price source,
+and the simulator's actor and purpose), so a host no longer
+builds a `RoleUsage` row by hand for them. The counts sit beside the row's `call_count` and spend and never in them;
+`None` leaves a count uncounted, 0 counts none; reasons need a count beside them, count at least one call each and
+never outnumber the counts, refused at the call. A ledger that counts none builds its rows as before.
+
+**Changed:** a dollar budget may carry a turn cap (`ReportBudget(usd=10.0, turns=60)`), which admits by both; dollars
+with tokens are still refused. `writer_ceiling_s(limits, request_s=, turns=)` takes the budget's turn cap: under one
+smaller than every turn the limits allow, the ceiling is that many turns, each at the dearer role's request ceiling.
+Dollars bound what a report spends and never how many turns it sends, so without a cap the ceiling is the limits'
+worst case at the host's full request ceiling, which at Discodon's floors (298 turns at 3,530 s) came to about 12
+days and stopped nothing. `analysis_estimate`'s `max_calls` counts the cap where it is fewer.
+
+**Changed:** `analyst_tools(writes=False)`'s description no longer offers the freeze it does not carry, and a mounted
+tool whose actions are all reads but one appends a note says so: "It is not marked read-only: capability_gap stores
+the note it is given, and nothing else it carries writes." A mount whose gap note stores nothing (the report
+writer's) says nothing of it, and is marked read-only.
+
+**Changed:** the report writer's port is declared stable (owner-approved, declared ceiling 541 -> 557): the
+providers' `Pricer` and `AnthropicPublishedRates`; the ops' `ReportBudget`, `WriterLimits`, `AnalystLimits`,
+`EditorLimits` and `SessionLimits`; `actions.analyst_tools`; the schema's `ToolTurnClient`, `TurnCeiling`,
+`TurnMessage`, `TurnReply`, `TurnToolSpec`, `ThinkingBinding` and `ToolResultClearing`; and `schema.RunDisclosure`,
+which `LaunchHost.run_disclosure` returns: the names Discodon's adoption binds to. The block and price types these
+take in turn (`TurnText`, `TurnToolUse`, `TurnThinking`, `TurnToolResult`, `TurnReplyRefused`, `CallPrice`) stay
+provisional for now.
+
+**For hosts (Discodon):** drop the sixteen names from your provisional exemptions; build the unanswered rows with
+`add_unanswered`; declare a turn cap on the report budget and pass it as `writer_ceiling_s(..., turns=)`. The core
+measures `unanswered_retried` and `unanswered_lost` (added with the unanswered calls, below) refuse a host measure of
+either name in `MeasureRegistry`, and a kind's `host_measures` under either name stop the run before judging; rename
+a host measure that used either.
+
 ### evals: analyst skill round 2: the Kairo review's findings, the misfits' and the planner re-record's, in the skill and the editor
 
 **Changed:** the analyst skill and the report editor's rubric carry what the W3 acceptance runs' reviews found, as

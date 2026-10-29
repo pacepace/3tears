@@ -101,13 +101,18 @@ _EDITOR_LEFT_OUT = (
     "freezes nothing; a snapshot that must be frozen again goes back to the analyst that froze it"
 )
 
-#: Each role's tool description.
+#: Each tool's description, by role and, for the analyst, by whether it carries the freeze: a tool describes only the
+#: actions it carries.
 _DESCRIPTIONS = {
-    "analyst": (
+    ("analyst", True): (
         "Investigate a campaign for its report: freeze its evidence as a snapshot, then read every figure from it by "
         "the key that names it."
     ),
-    "editor": (
+    ("analyst", False): (
+        "Investigate a campaign for its report: read every figure from the snapshot frozen for this work by the key "
+        "that names it."
+    ),
+    ("editor", False): (
         "Test a campaign report against the snapshot it was written from: read every figure by the key that names it, "
         "and compute what no single figure states."
     ),
@@ -372,7 +377,7 @@ def analyst_tools(
     return (
         ToolSpec(
             name=f"{prefix}_analyst",
-            description=_DESCRIPTIONS[role],
+            description=_DESCRIPTIONS[role, writes and not editor],
             permissions=classes,
             cut=ANALYST_CUT,
             workflows=_EDITOR_WORKFLOWS if editor else None,

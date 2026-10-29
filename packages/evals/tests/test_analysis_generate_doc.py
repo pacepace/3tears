@@ -864,6 +864,61 @@ def test_writer_ceiling_s_prices_each_session_at_its_own_output_cap() -> None:
     assert asked == {limits.analyst.session.max_tokens, limits.editor.session.max_tokens}
 
 
+def test_a_turn_cap_bounds_the_ceiling_at_its_turns_each_at_the_dearer_request() -> None:
+    limits = WriterLimits()
+
+    def request_s(max_tokens: int) -> float:
+        return 3.0 if max_tokens == limits.analyst.session.max_tokens else 2.0
+
+    uncapped = writer_ceiling_s(limits, request_s=request_s)
+    assert writer_ceiling_s(limits, request_s=request_s, turns=10) == 10 * 3.0, "each capped turn at the dearer role"
+    assert writer_ceiling_s(limits, request_s=request_s, turns=writer_turns(limits) * 10) == uncapped, (
+        "a cap above every turn the limits allow bounds nothing more"
+    )
+    with pytest.raises(ValueError, match="whole number above 0"):
+        writer_ceiling_s(limits, request_s=request_s, turns=0)
+
+
+async def test_a_dollar_budget_with_a_turn_cap_sends_no_more_turns_than_the_ceiling_counts() -> None:
+    limits = WriterLimits(
+        analyst=AnalystLimits(draft_calls=2, revision_calls=1, bounces=1),
+        editor=EditorLimits(calls=1),
+        revisions=2,
+    )
+
+    def tool(n: int) -> TurnReply:
+        return scripted_reply(TurnToolUse(f"toolu_{n:03d}", "nope", {}))
+
+    script: dict[str, list[TurnReply | Exception]] = {"analyst": [tool(n) for n in range(1, 11)]}
+    fixture = off_loop(ops_fixture)
+    tally = Tally()
+    await write_report(
+        fixture.host,
+        CALLER,
+        model=FakeAnalystClient(script),
+        budget=ReportBudget(usd=REPORT_BUDGET_USD, turns=2),
+        campaign_id=fixture.campaign.id,
+        limits=limits,
+        tally=tally,
+    )
+
+    assert len(tally.turns) == 2 == writer_ceiling_s(limits, request_s=_one_second, turns=2)
+
+
+async def test_the_estimate_counts_the_report_budget_s_turn_cap_where_it_is_fewer() -> None:
+    fixture = off_loop(ops_fixture)
+    assert fixture.host.generation is not None
+    generation = dataclasses.replace(
+        fixture.host.generation, report_budget=lambda: ReportBudget(usd=REPORT_BUDGET_USD, turns=7)
+    )
+    host = dataclasses.replace(fixture.host, generation=generation)
+
+    estimate = await analysis_estimate(host, fixture.campaign.id, TOYHOST_SCOPE)
+
+    assert (estimate.max_calls, estimate.cap_usd) == (7, REPORT_BUDGET_USD)
+    assert "7-turn" in estimate.bound and "$" in estimate.bound
+
+
 # -- no planner ---------------------------------------------------------------------------------------------------------
 
 

@@ -276,6 +276,13 @@ class _ModelTotals:
     sent_unverified: bool = False
     #: Each distinct reason a contribution gave for being unpriced, first seen first: the row's ``unpriced_reasons``.
     unpriced_reasons: list[str] = field(default_factory=list)
+    #: The row's unanswered calls (:meth:`RoleUsageLedger.add_unanswered`), beside ``call_count`` and never in it:
+    #: ``None`` until something counts them, on the same missing-is-not-zero rule as every count here.
+    unanswered_retried: int | None = None
+    unanswered_lost: int | None = None
+    #: The host's reason word to the unanswered calls it accounts for, first seen first: the row's
+    #: ``unanswered_reasons``.
+    unanswered_reasons: dict[str, int] = field(default_factory=dict)
 
 
 #: One ledger row's key: ``(model, served_model, provider, provider_unit, price_source, actor_id, purpose)``.
@@ -498,6 +505,81 @@ class RoleUsageLedger:
             ),
         )
 
+    def add_unanswered(
+        self,
+        *,
+        model: str | None,
+        served_model: str | None = None,
+        price_source: str | None = None,
+        provider: str | None = None,
+        provider_unit: str | None = None,
+        actor_id: str | None = None,
+        purpose: KnownSimulatorPurpose | None = None,
+        retried: int | None = None,
+        lost: int | None = None,
+        reasons: dict[str, int] | None = None,
+    ) -> None:
+        """Count calls this role sent that went unanswered, on the row their answered calls are counted on.
+
+        ``retried`` counts calls a forced tool choice was refused on and that were asked again unforced and answered in
+        the same call; ``lost`` counts calls sent and never answered, so the turn they belonged to ended in error
+        (``RoleUsage.unanswered_retried`` and ``unanswered_lost`` say what is counted and what is not). Neither touches
+        the row's ``call_count``, tokens or dollars: what an answered call cost is folded by :meth:`add`, and a call
+        never answered costs nothing the row can state. ``None`` leaves a count as it was, never as 0, so a host that
+        counts only lost calls says nothing of retried ones; 0 says it counted, and none went unanswered.
+
+        The row is the one :meth:`add` keys on ``model``, ``served_model``, ``provider``, ``provider_unit``,
+        ``price_source``, ``actor_id`` and ``purpose``: pass what that call passed for the calls these sit beside, so they land on its row. A lost call named no served model, so its
+        count goes on the row whose ``served_model`` is ``None``; a row that holds only unanswered calls states no
+        spend, and its ``call_count`` stays ``None``.
+
+        :param model: The model the calls were sent to, as :meth:`add` names it.
+        :ptype model: str | None
+        :param served_model: The model the provider named as having answered, for retried calls; ``None`` otherwise.
+        :ptype served_model: str | None
+        :param price_source: The price source :meth:`add` named for the row these sit beside.
+        :ptype price_source: str | None
+        :param provider: The provider :meth:`add` named for that row.
+        :ptype provider: str | None
+        :param provider_unit: The provider's unit :meth:`add` named for that row.
+        :ptype provider_unit: str | None
+        :param actor_id: The simulated actor :meth:`add` named for that row; simulator role only.
+        :ptype actor_id: str | None
+        :param purpose: The simulator purpose :meth:`add` named for that row; simulator role only.
+        :ptype purpose: KnownSimulatorPurpose | None
+        :param retried: Calls refused on a forced tool choice and answered unforced, or ``None`` when not counted.
+        :ptype retried: int | None
+        :param lost: Calls sent and never answered, or ``None`` when not counted.
+        :ptype lost: int | None
+        :param reasons: The host's reason word to the unanswered calls it accounts for, each at least 1, never more
+            than ``retried`` and ``lost`` count here; ``None`` when it gave none.
+        :ptype reasons: dict[str, int] | None
+        :raises ValueError: ``actor_id`` or ``purpose`` given to a role other than ``simulator``; a count below 0;
+            reasons with neither count; a reason counting fewer than one call, or
+            reasons accounting for more calls than the counts.
+        """
+        if (actor_id is not None or purpose is not None) and self.role != "simulator":
+            raise ValueError(f"actor_id and purpose attribute simulator calls, not the {self.role!r} role's")
+        for name, count in (("retried", retried), ("lost", lost)):
+            if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 0):
+                raise ValueError(f"an unanswered {name} count is a whole number of calls, 0 or more, not {count!r}")
+        if reasons:
+            if retried is None and lost is None:
+                raise ValueError("unanswered reasons count the reasons of unanswered calls, and none are counted here")
+            if any(isinstance(count, bool) or not isinstance(count, int) or count < 1 for count in reasons.values()):
+                raise ValueError("each unanswered reason counts the calls it accounts for, at least one")
+            if sum(reasons.values()) > (retried or 0) + (lost or 0):
+                raise ValueError(
+                    f"unanswered reasons account for {sum(reasons.values())} calls, more than the "
+                    f"{(retried or 0) + (lost or 0)} counted unanswered here"
+                )
+        key = (model or None, served_model or None, provider, provider_unit, price_source, actor_id, purpose)
+        totals = self._totals.setdefault(key, _ModelTotals())
+        totals.unanswered_retried = sum_optional_tokens(totals.unanswered_retried, retried)
+        totals.unanswered_lost = sum_optional_tokens(totals.unanswered_lost, lost)
+        for word, count in (reasons or {}).items():
+            totals.unanswered_reasons[word] = totals.unanswered_reasons.get(word, 0) + count
+
     def add_external_unpriced(self, spend: ExternalSpend) -> None:
         """Record an action-seam spend: counted, attributed, never priced.
 
@@ -590,6 +672,9 @@ class RoleUsageLedger:
                     unpriced_reasons=(
                         list(totals.unpriced_reasons) if totals.cost_unpriced and totals.unpriced_reasons else None
                     ),
+                    unanswered_retried=totals.unanswered_retried,
+                    unanswered_lost=totals.unanswered_lost,
+                    unanswered_reasons=dict(totals.unanswered_reasons) or None,
                 )
             )
         return rows

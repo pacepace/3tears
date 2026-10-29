@@ -1024,7 +1024,8 @@ async def analysis_estimate(
     turns can be bounded before they are sent; ``would_start`` is their answer. It reads no run, so the campaign's
     evidence is not checked here but when the job freezes it, and the estimate says so (``unchecked``). The bound is the budget's cap, which
     every turn is admitted against, and ``max_calls`` the most turns the writer can send under the host's
-    ``AnalysisGeneration.limits`` (:func:`~threetears.evals.kernel.inner_ceilings.writer_turns`). No turn is priced here: a turn's price
+    ``AnalysisGeneration.limits`` (:func:`~threetears.evals.kernel.inner_ceilings.writer_turns`), or the report
+    budget's turn cap where that is fewer. No turn is priced here: a turn's price
     depends on the conversation before it.
 
     :param host: The host: its generation settings and its clients.
@@ -1058,7 +1059,7 @@ async def analysis_estimate(
             campaign_id=campaign_id,
             generator_model=client.model_name,
             first_call_ceiling_usd=None,
-            max_calls=writer_turns(generation.limits),
+            max_calls=min(writer_turns(generation.limits), budget.turns or writer_turns(generation.limits)),
             cap_usd=budget.usd,
             would_start=refusal is None,
             refusal=refusal,

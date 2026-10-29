@@ -46,8 +46,9 @@ class Ceilings:
         default_factory=lambda: inner_ceilings.generation_ceiling_s, init=False
     )
     #: The wall-clock ceiling of one report the writer writes (``analysis_generate``'s job), in seconds, from the loop's
-    #: limits and the host's per-request ceiling (``writer_ceiling_s(limits, request_s=...)``, over the same limits the
-    #: host sets as ``AnalysisGeneration.limits``): every turn the loop can send, each at its session's output cap.
+    #: limits and the host's per-request ceiling (``writer_ceiling_s(limits, request_s=..., turns=...)``, over the same
+    #: limits the host sets as ``AnalysisGeneration.limits``): every turn the loop can send, each at its session's
+    #: output cap, or the report budget's turn cap (``ReportBudget.turns``) where that is fewer.
     #: ``AnalysisGeneration.budget_s`` sits above it.
     writer_ceiling_s: Callable[..., float] = field(default_factory=lambda: inner_ceilings.writer_ceiling_s, init=False)
     #: The wall-clock ceiling of one cell's judge phase, in seconds, from the host's per-request ceiling

@@ -22,7 +22,9 @@ turn never lets the budget read more room than there is. A ceiling built on rate
 guarantee still admits the turn, and the turn is tallied as admitted on an estimate (``admitted_on_estimate``), which
 the made line discloses. **A token and turn budget** (``ReportBudget(tokens=, turns=)``) admits a turn by its tokens
 and the turns sent, never by its price, so a model nothing prices (a local model, a subscription) still writes a
-report, tallied unpriced and never as ``$0``. Either way, a refusal sends nothing.
+report, tallied unpriced and never as ``$0``. A turn cap may ride on a dollar budget too (``ReportBudget(usd=,
+turns=)``): it is the one cap that bounds how long a report can run, which a host's job ceiling reads
+(``writer_ceiling_s(..., turns=)``), since dollars bound no count of turns. Either way, a refusal sends nothing.
 """
 
 from __future__ import annotations
@@ -360,19 +362,21 @@ def _sum_cost(turns: Iterable[TurnCost]) -> float | None:
 
 
 class ReportBudget:
-    """The host's cap for one report, shared by every session that writes it: dollars, or tokens and turns.
+    """The host's cap for one report, shared by every session that writes it: dollars, or tokens, and either with turns.
 
     Exactly one form, declared by the host. ``ReportBudget(usd=)`` admits a turn on the client's price ceiling for it,
     and refuses one that could take the spend past the cap, or one the client cannot bound; ``report_write`` refuses a
     model whose turns cannot be bounded before it starts, so that refusal is a backstop. ``ReportBudget(tokens=,
     turns=)``, either cap or both, admits a turn by a bound on its tokens (its prompt's, as its price ceiling bounds it,
-    and its output cap) and by the turns already sent, and never asks for a price. A refused turn is never sent.
+    and its output cap) and by the turns already sent, and never asks for a price. A turn cap may ride on a dollar
+    budget (``ReportBudget(usd=, turns=)``), admitting by both: dollars bound what a report spends and no count of its
+    turns, so the turn cap is what bounds how long it can run. A refused turn is never sent.
     :meth:`charge` counts a sent turn: at what it cost or, unpriced, its ceiling; at the tokens it reported or, where
     it reported none, its bound; and as one turn.
 
     :ivar usd: The dollar cap, or ``None`` for a token and turn budget.
     :ivar tokens: The token cap (prompt and output tokens, cache reads and writes included), or ``None``.
-    :ivar turns: The turn cap, or ``None``.
+    :ivar turns: The turn cap, under either form, or ``None``.
     """
 
     def __init__(self, *, usd: float | None = None, tokens: int | None = None, turns: int | None = None) -> None:
@@ -382,15 +386,15 @@ class ReportBudget:
         :ptype usd: float | None
         :param tokens: The most tokens its turns may use, in all: a whole number above 0.
         :ptype tokens: int | None
-        :param turns: The most turns it may send: a whole number above 0.
+        :param turns: The most turns it may send: a whole number above 0, beside dollars or tokens or alone.
         :ptype turns: int | None
-        :raises ValueError: Both forms, or neither; a dollar cap that is not a finite amount above 0; a token or turn
+        :raises ValueError: Both forms (dollars and tokens), or neither; a dollar cap that is not a finite amount above 0; a token or turn
             cap that is not a whole number above 0.
         """
-        if usd is not None and (tokens is not None or turns is not None):
+        if usd is not None and tokens is not None:
             raise ValueError(
-                "a report's budget is dollars (usd=) or tokens and turns (tokens=, turns=), declared by the host, "
-                "never both"
+                "a report's budget is dollars (usd=) or tokens (tokens=), declared by the host, never both; a turn cap "
+                "(turns=) may ride on either"
             )
         if usd is None and tokens is None and turns is None:
             raise ValueError(
@@ -413,10 +417,9 @@ class ReportBudget:
 
     @property
     def spelled(self) -> str:
-        """The cap in words: ``$20.00``, or ``2,000,000-token, 60-turn``."""
-        if self.usd is not None:
-            return spell_dollars(self.usd)
-        caps = [f"{group_thousands(str(self.tokens))}-token"] if self.tokens is not None else []
+        """The cap in words: ``$20.00``, ``$20.00, 60-turn``, or ``2,000,000-token, 60-turn``."""
+        caps = [spell_dollars(self.usd)] if self.usd is not None else []
+        caps += [f"{group_thousands(str(self.tokens))}-token"] if self.tokens is not None else []
         caps += [f"{self.turns}-turn"] if self.turns is not None else []
         return ", ".join(caps)
 
@@ -439,9 +442,9 @@ class ReportBudget:
         :return: ``None``, or the refusal.
         :rtype: str | None
         """
+        if self.turns is not None and self._sent >= self.turns:
+            return f"the report's {self.turns}-turn budget is spent"
         if self.usd is None:
-            if self.turns is not None and self._sent >= self.turns:
-                return f"the report's {self.turns}-turn budget is spent"
             if self.tokens is not None and self._spent_tokens + tokens > self.tokens:
                 return (
                     f"the next turn can use up to {group_thousands(str(tokens))} tokens, and "

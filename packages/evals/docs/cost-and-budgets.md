@@ -349,8 +349,10 @@ it in the action's job with `propose_draft(client, admitted, budget=..., axis=..
 releases the client. A client admitted and never made is the host's to release.
 
 **A campaign report.** Writing a report (`analysis_generate`) is held to the report budget the host sets, never to
-a figure a caller passes: an action caller cannot raise spend. The budget is dollars, or tokens and turns for a model
-the host has no price for, declared as one or the other. Every turn, the analyst's and the editor's, is admitted on
+a figure a caller passes: an action caller cannot raise spend. The budget is dollars, or tokens for a model the host
+has no price for, declared as one or the other, and either may carry a turn cap (`ReportBudget(usd=10.0, turns=60)`):
+dollars bound what a report spends, never how many turns it sends, so the turn cap is what bounds how long it runs
+and what `writer_ceiling_s(..., turns=)` counts. Every turn, the analyst's and the editor's, is admitted on
 its bound before it is sent, and a refusal sends nothing. On rates the host guarantees the budget can refuse a turn but
 never overshoot on one; on rates it does not, the bound is an estimate, and the report says its cap was checked
 against estimates.

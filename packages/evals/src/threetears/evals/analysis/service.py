@@ -420,7 +420,8 @@ class AnalysisGenerationEstimate(EvalBaseModel):
         it cannot say, and always for the report writer, whose every turn is priced against the budget when it exists
         (a turn's price depends on the conversation before it).
     :ivar max_calls: How many calls a generation can make: for the report writer, the most turns it can send
-        (``writer_turns(WriterLimits())``, the count ``Ceilings().writer_ceiling_s`` multiplies); for the planner, its
+        (``writer_turns`` of the host's limits, or the report budget's turn cap where that is fewer: the count
+        ``Ceilings().writer_ceiling_s`` multiplies); for the planner, its
         structure call and its prose call, and the one repair round-trip a refused reply of either buys.
     :ivar cap_usd: The dollar bound the generation is held to: the report writer's report budget, or the planner's
         out-of-run cap. ``None`` when there is no dollar cap: the planner's host enforces none, or the report budget
