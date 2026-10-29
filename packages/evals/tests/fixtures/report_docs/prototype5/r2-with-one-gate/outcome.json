@@ -1,0 +1,84 @@
+{
+  "ending": "stored",
+  "reason": "",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, decision block and c-frontier give the call: low-reasoning Brisk-S with one retry, the cheapest of five passing settings at $0.302 per thousand calls. They give the reason and name the main risk: it clears the 97% gate by only 0.1 points, and a fresh run would read it below 38.6% of the time. They also say what changes if the gate must hold on its interval: high-reasoning Brisk-S with one retry, at $1,324 more a month. The figures match the snapshot: settle wrong_side 38.6%, gap +0.1, and the cost ratio of 2.1."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "c-frontier gives the pick and c-thin gives its weakness. c-cost-step prices the alternative, c-levers explains why the retry matters, and c-tasks says where the misses are. Each sentence agrees with its block row by row. The threshold sweep confirms the 'What you could change' bands (95.3 to 97.1 for the pick, then 98.0, then 98.6). Two wording slips are listed as findings: the 'only one no other setting beats on both cost and pass rate' line, and two different case counts for settling the clearance. Neither reverses the story."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "The pick's weak axis is the first thing a reader sees. The interval crossing the gate (96.2 to 98.1%), the 38.6% wrong-side rate, the best-of-eighteen caveat and Low confidence are all on the first screen. The pick's sub-gate results on multi-hop (95.6%) and ambiguous entity (96.4%) are shown and labelled descriptive. The high-reasoning lift is correctly called not told apart from zero (-0.4 to +2.1)."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "No latency budget is declared, and the pick is faster than the alternative anyway (513 vs 870 ms p95). Calls per task is close between the two Brisk-S settings (1.539 vs 1.476), so the cost ratio per task barely moves (about 2.0 vs 2.1). Atlas-M and Nano-XS lever effects cannot offer a cheaper passing setting. Outcome and extra calls hold no figures. None of these would change the call."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "Each confound appears in the confidence line, Method or next steps: no control and unpaired comparisons, best-of-n selection, task mix against live traffic (with its own next step), the volume unit not being stated (monthly costs could run about 1.5 times higher if it counts tasks), and the pass rule not being stated."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an action and what it settles. The owner declares whether the gate is read on the interval or the point estimate, which settles low vs high reasoning. A fix-and-retest run settles whether low reasoning clears the gate by more than noise. Declaring the live task mix and volume unit settles whether the eval's figures describe production. The second step leaves out ambiguous-entity handling (see findings)."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "Most blocks fit their claims: the scatter in c-frontier, the intervals against the gate in c-thin, the difference with its interval in c-cost-step, and the per-task bars in c-tasks. Two gaps remain. c-levers states '$0.014 more per thousand calls', but its block holds no cost row. The decision block's Watch cites 111,255 cases to settle the pick, while the c-thin table shows only 38,350 and 54,451 for the same question. A reader sees three different sizes and no explanation of how they differ."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The Recommendation says the pick is 'the only one no other setting beats on both cost and pass rate'. As written this is false. High-reasoning Brisk-S with one retry (98.0%) and high-reasoning Atlas-M with one retry (98.6%) are beaten by no setting on both axes, and neither are the cheap Nano-XS settings. The pick is undominated only when gate-passing is treated as a filter and the passing settings are then compared on cost. That is what options_dominance computes (it weighs gates, then cost). Reword along these lines: 'among the settings that clear the gate, every other one costs more'."
+        },
+        {
+          "claim": "c-thin",
+          "severity": "should_fix",
+          "finding": "Watch and next step 2 say settling the pick 'four times in five needs 111,255 cases'. That is the two-sided, 80%-power size (settle cases_needed_two_sided_80). The c-thin table prints only the 50% sizes, 38,350 one-sided and 54,451 two-sided. A reader sees three numbers for 'cases needed' and none is explained against the others. Add the 80% columns (cases_needed_80 = 87,635 and cases_needed_two_sided_80 = 111,255) to the c-thin table, or say in the caption that the 'Needed' columns are the size at which half of such runs settle it."
+        },
+        {
+          "claim": "c-levers",
+          "severity": "should_fix",
+          "finding": "The claim prices the retry at '$0.014 more per thousand calls' ($0.288 to $0.302), but the block draws only pass-rate effects. Add the cost step to the block, or move the cost figure out of this claim. Also, the high-reasoning retry row prints its lower end as '+0.03535' while every other row is rounded to one decimal place. Print it as '+0.04' or similar so it doesn't read as false precision. Note that this interval only barely excludes zero, so the claim's 'at every reasoning level' rests on that row's thin margin."
+        },
+        {
+          "claim": "c-tasks",
+          "severity": "should_fix",
+          "finding": "'The pick's misses sit in multi-hop and ambiguous-entity queries' overstates what the block shows. Date and unit math reads 97.0%, so it also misses, and one of the three kept failures (TQ-0772, the off-by-one date window, the most common wrong-args pattern at 9 of 17) is from date math. Say the pick sits below the gate line on multi-hop and ambiguous entity and fails in every kind. Next step 2 targets multi-hop decomposition and date-window handling but not the ambiguous-entity clarification failure (TQ-1103), although c-tasks and the task-mix caveat both name ambiguous entity as a weak kind. Add it, or say why it is left out."
+        },
+        {
+          "claim": "c-thin",
+          "severity": "should_fix",
+          "finding": "The reference lines in the c-thin and c-tasks blocks are labelled 'Floor 97%', but the rows and the rest of the page call this criterion a gate ('Pass rate gate, at least 97%'). Use one name so a reader doesn't look for a second criterion."
+        }
+      ],
+      "total": 13,
+      "passes": true,
+      "must_fix": false
+    }
+  ]
+}

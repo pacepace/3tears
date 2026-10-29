@@ -1,0 +1,795 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Concierge model selection</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">
+<style>/* Layout: decision-memo column (68ch prose) with charts breaking out to a wide band.
+   Host apps override the --host-* tokens only; everything else derives from them. */
+:root{
+  --host-accent:#1f5fbf;
+  --bg:#f5f6f8; --surface:#ffffff; --sunk:#eef0f3;
+  --ink:#11151b; --ink-2:#465061; --muted:#7f8896;
+  --line:#e1e5eb; --base:#c3cad4;
+  --accent:var(--host-accent); --accent-wash:#e6eefa; --on-fill:#ffffff;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#c98500; --s5:#6250d6;
+  --good:#0b7f0b; --good-wash:#e3f3e3; --warn:#a86a00; --warn-wash:#fbf0d9; --bad:#c22f2f; --bad-wash:#fbe5e5;
+  --seq-0:#eef4fc; --seq-1:#cde2fb; --seq-2:#9ec5f4; --seq-3:#5598e7; --seq-4:#256abf; --seq-5:#104281;
+  --seq-t0:#11151b; --seq-t1:#11151b; --seq-t2:#11151b; --seq-t3:#ffffff; --seq-t4:#ffffff; --seq-t5:#ffffff;
+  --div-neg:#d03b3b; --div-mid:#f0efec; --div-pos:#2a78d6;
+  --f-display:"IBM Plex Sans Condensed","Arial Narrow",system-ui,sans-serif;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --t-xs:.75rem; --t-sm:.8125rem; --t-base:.9375rem; --t-md:1.0625rem; --t-lg:1.375rem; --t-xl:1.875rem; --t-hero:2.25rem;
+  --col:44rem; --wide:68rem; --r:6px;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --host-accent:#6aa2f0; --bg:#0e1115; --surface:#161a20; --sunk:#1d222a;
+  --ink:#eef1f5; --ink-2:#b5bdc9; --muted:#828b99; --line:#262c35; --base:#3a424e;
+  --accent-wash:#1a2a42; --on-fill:#ffffff;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#9085e9;
+  --good:#3cbf3c; --good-wash:#15291a; --warn:#e0a32e; --warn-wash:#2e2512; --bad:#ef6a6a; --bad-wash:#331a1b;
+  --seq-0:#18202b; --seq-1:#173252; --seq-2:#1c4b84; --seq-3:#2a6cc0; --seq-4:#5598e7; --seq-5:#a8cdf6;
+  --seq-t0:#eef1f5; --seq-t1:#eef1f5; --seq-t2:#eef1f5; --seq-t3:#ffffff; --seq-t4:#0e1115; --seq-t5:#0e1115;
+  --div-neg:#e66767; --div-mid:#383835; --div-pos:#3987e5; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --host-accent:#6aa2f0; --bg:#0e1115; --surface:#161a20; --sunk:#1d222a;
+  --ink:#eef1f5; --ink-2:#b5bdc9; --muted:#828b99; --line:#262c35; --base:#3a424e;
+  --accent-wash:#1a2a42; --on-fill:#ffffff;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#9085e9;
+  --good:#3cbf3c; --good-wash:#15291a; --warn:#e0a32e; --warn-wash:#2e2512; --bad:#ef6a6a; --bad-wash:#331a1b;
+  --seq-0:#18202b; --seq-1:#173252; --seq-2:#1c4b84; --seq-3:#2a6cc0; --seq-4:#5598e7; --seq-5:#a8cdf6;
+  --seq-t0:#eef1f5; --seq-t1:#eef1f5; --seq-t2:#eef1f5; --seq-t3:#ffffff; --seq-t4:#0e1115; --seq-t5:#0e1115;
+  --div-neg:#e66767; --div-mid:#383835; --div-pos:#3987e5; color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:var(--t-base);line-height:1.55;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0 4rem}
+.page{max-width:var(--wide);margin:0 auto}
+.prose{max-width:var(--col)}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0;letter-spacing:-.005em}
+h1{font-size:var(--t-hero);line-height:1.12;font-weight:600}
+h2{font-size:var(--t-lg);font-weight:600;line-height:1.2}
+h3{font-size:var(--t-md);font-weight:600}
+p{margin:0}
+a{color:var(--accent)}
+code,.mono{font-family:var(--f-mono);font-size:.92em}
+.num{font-variant-numeric:tabular-nums}
+
+/* masthead */
+.mast{display:flex;flex-wrap:wrap;gap:.25rem 1rem;align-items:baseline;padding-block:1.5rem .75rem;border-bottom:1px solid var(--line);
+  font-size:var(--t-xs);color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.mast b{color:var(--ink-2);font-weight:600}
+.mast .kind{color:var(--accent);font-weight:600}
+.bluf{display:grid;gap:1.25rem;padding-block:1.75rem 2rem}
+.bluf .lede{font-size:var(--t-md);color:var(--ink-2);max-width:var(--col)}
+.decision{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.decision>div{background:var(--surface);padding:1rem 1.1rem;display:grid;gap:.35rem;align-content:start;min-width:0}
+.decision .k{font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:600}
+.decision .v{font-size:var(--t-base)}
+.decision .v strong{font-weight:600}
+.decision .rec{background:var(--accent-wash)}
+.decision .rec .k{color:var(--accent)}
+
+/* sections */
+section{padding-block:2.25rem 0;display:grid;gap:1rem}
+section>header{display:grid;gap:.35rem;max-width:var(--col)}
+.eyebrow{font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600}
+.takeaway{color:var(--ink-2)}
+.part{margin-top:2.5rem;padding-top:1rem;border-top:2px solid var(--ink);display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;align-items:baseline}
+.part h2{font-size:var(--t-xl)}
+.part span{font-size:var(--t-sm);color:var(--muted)}
+
+/* figure */
+.fig{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:1rem 1rem .75rem;min-width:0}
+.fig .cap{font-size:var(--t-xs);color:var(--muted);margin-top:.5rem}
+.chart{width:100%;min-width:0;position:relative}
+.chart svg{display:block;overflow:visible}
+.chart text{font-family:var(--f-body);fill:var(--ink-2)}
+.chart .tick{font-size:11px;fill:var(--muted);font-variant-numeric:tabular-nums}
+.chart .lbl{font-size:12px;fill:var(--ink-2)}
+.chart .lbl-strong{font-size:12px;fill:var(--ink);font-weight:600}
+.chart .grid{stroke:var(--line);stroke-width:1}
+.chart .axis{stroke:var(--base);stroke-width:1}
+.chart .floor{stroke:var(--ink-2);stroke-width:1.25;stroke-dasharray:3 3}
+.chart [data-tip]{cursor:default}
+.legend{display:flex;flex-wrap:wrap;gap:.35rem 1rem;font-size:var(--t-sm);color:var(--ink-2);margin-bottom:.5rem}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:.4rem;vertical-align:-1px}
+.legend i.sq{border-radius:2px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,30rem),1fr));gap:1rem}
+.mult{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,15.5rem),1fr));gap:1rem}
+.mult .fig{padding:.8rem .8rem .5rem;display:flex;flex-direction:column}
+.mult .fig .chart{margin-top:auto;padding-top:.4rem}
+.mult h4{margin:0 0 .15rem;font-family:var(--f-display);font-size:var(--t-base);font-weight:600}
+.mult .sub{font-size:var(--t-xs);color:var(--muted)}
+
+/* tooltip */
+#tip{position:fixed;z-index:20;pointer-events:none;background:var(--ink);color:var(--bg);font-size:var(--t-sm);line-height:1.4;
+  padding:.45rem .6rem;border-radius:4px;max-width:17rem;opacity:0;transition:opacity .08s}
+#tip.on{opacity:1}
+#tip b{font-weight:600}
+
+/* tables */
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r);background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:var(--t-sm)}
+th,td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-weight:600;color:var(--muted);font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.05em;background:var(--sunk);position:sticky;top:0}
+td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
+tr:last-child td{border-bottom:0}
+tr.hl td{background:var(--accent-wash)}
+tr.hl td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+td.wrap{white-space:normal;min-width:14rem}
+th.sort{cursor:pointer;user-select:none}
+th.sort:hover{color:var(--ink)}
+th.sort[aria-sort]::after{content:" ↓";color:var(--accent)}
+th.sort[aria-sort="ascending"]::after{content:" ↑"}
+
+/* status pills: always icon + label */
+.pill{display:inline-flex;align-items:center;gap:.3rem;font-size:var(--t-xs);font-weight:600;padding:.1rem .45rem;border-radius:999px;white-space:nowrap}
+.pill.good{background:var(--good-wash);color:var(--good)}
+.pill.warn{background:var(--warn-wash);color:var(--warn)}
+.pill.bad{background:var(--bad-wash);color:var(--bad)}
+.pill.neutral{background:var(--sunk);color:var(--ink-2)}
+.sw{display:inline-block;width:.65rem;height:.65rem;border-radius:50%;margin-right:.4rem;vertical-align:0}
+
+/* controls */
+.controls{display:flex;flex-wrap:wrap;gap:.75rem 1.5rem;align-items:end;padding:1rem;background:var(--sunk);border-radius:var(--r)}
+.ctl{display:grid;gap:.25rem;font-size:var(--t-sm);color:var(--ink-2);min-width:0}
+.ctl label{font-weight:600;font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.ctl output{font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600}
+input[type=range]{accent-color:var(--accent);width:12rem;max-width:100%}
+select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid var(--base);border-radius:4px;background:var(--surface);color:var(--ink)}
+.seg{display:inline-flex;border:1px solid var(--base);border-radius:5px;overflow:hidden}
+.seg button{font:inherit;font-size:var(--t-sm);border:0;background:var(--surface);color:var(--ink-2);padding:.35rem .7rem;cursor:pointer}
+.seg button+button{border-left:1px solid var(--base)}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--on-fill)}
+.toggle{display:flex;align-items:center;gap:.45rem;font-size:var(--t-sm);color:var(--ink-2);cursor:pointer}
+.toggle input{accent-color:var(--accent);width:1rem;height:1rem}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.result{display:grid;gap:.75rem}
+.callout{border-left:3px solid var(--accent);padding:.6rem .9rem;background:var(--surface);font-size:var(--t-sm);color:var(--ink-2)}
+.callout.warn{border-color:var(--warn)}
+.stat{display:grid;gap:.1rem}
+.stat .big{font-size:var(--t-xl);font-weight:600;line-height:1.1}
+.stat .lab{font-size:var(--t-xs);color:var(--muted)}
+.stats{display:flex;flex-wrap:wrap;gap:1rem 2.25rem}
+.method{font-size:var(--t-sm);color:var(--ink-2);display:grid;gap:.5rem;max-width:var(--col)}
+.method dt{font-weight:600;color:var(--ink)}
+.method dd{margin:0 0 .4rem;overflow-wrap:anywhere}
+@media (max-width:640px){h1{font-size:1.75rem}.part h2{font-size:var(--t-lg)}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+.armchip{display:inline-flex;align-items:center;gap:.4rem;white-space:nowrap}
+.armchip .tag{display:inline-grid;place-items:center;width:1.25rem;height:1.25rem;border-radius:4px;color:var(--on-fill);font-size:var(--t-xs);font-weight:600;font-family:var(--f-mono)}
+.vsum{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:1rem;align-items:start}
+@media (max-width:820px){.vsum{grid-template-columns:1fr}}
+.flag{display:flex;gap:.6rem;align-items:flex-start;font-size:var(--t-sm);color:var(--ink-2);background:var(--warn-wash);border-radius:var(--r);padding:.6rem .8rem;max-width:var(--col)}
+.flag b{color:var(--warn)}
+.flag ul{margin:.3rem 0 0;padding-left:1.1rem}
+.flag li{margin:.15rem 0}
+.flag li.checked{color:var(--muted);list-style:"✓  "}
+.keytbl td.spec{font-family:var(--f-mono);font-size:var(--t-xs);color:var(--ink-2);white-space:normal}
+.mini h3{font-size:var(--t-base);margin-bottom:.15rem}
+.mini .cap{margin:0 0 .4rem}
+.ex{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,28rem),1fr));gap:1rem}
+.excard{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:.9rem 1rem;display:grid;gap:.5rem;min-width:0}
+.excard .top{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;font-size:var(--t-xs);color:var(--muted)}
+.excard .reason{font-size:var(--t-sm)}
+.excard pre{margin:0;font-family:var(--f-mono);font-size:var(--t-xs);color:var(--ink-2);white-space:pre-wrap;overflow-wrap:anywhere;background:var(--sunk);padding:.5rem .6rem;border-radius:4px;max-height:9rem;overflow:auto}
+/* gate matrix: a pill, the binding reasons and the cost per cell; the cheapest passing cell washed */
+.gate td,.gate th{white-space:normal;vertical-align:top}
+.gate td.cell{min-width:9.5rem}
+.gate .why{display:block;font-size:var(--t-xs);color:var(--muted);margin-top:.25rem;line-height:1.35}
+.gate .cost{display:block;font-size:var(--t-xs);color:var(--ink-2);margin-top:.15rem;font-variant-numeric:tabular-nums}
+.gate td.pick{background:var(--accent-wash)}
+.gate .pickmark{font-size:var(--t-xs);font-weight:600;color:var(--accent);display:block;margin-top:.2rem}
+.gate .task b{display:block;font-weight:600;color:var(--ink)}
+.gate .task span{font-size:var(--t-xs);color:var(--muted)}
+.gate .task span.xc{font-weight:600;color:var(--warn);text-transform:uppercase;letter-spacing:.05em;display:block;margin-top:.25rem}
+/* lattice of tiles for two crossed factors; columns set inline from the data */
+.lattice{display:grid;gap:2px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+/* in its .tbl frame, which draws the border: never narrower than its tiles' floor, so it scrolls instead */
+.tbl>.lattice{border:0;border-radius:0;min-width:min-content}
+.lattice>.rh{min-width:auto;white-space:nowrap}
+.lattice>div{background:var(--surface);padding:.7rem .8rem;min-width:0}
+.lattice .hd{background:var(--sunk);font-size:var(--t-xs);font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:flex;align-items:end}
+.lattice .rh{background:var(--sunk);font-family:var(--f-display);font-weight:600;display:flex;align-items:center}
+.lattice .cell{display:grid;gap:.3rem;align-content:start}
+.lattice .acc{font-size:var(--t-xl);font-weight:600;line-height:1}
+.lattice .meta{font-size:var(--t-xs);color:var(--ink-2);font-variant-numeric:tabular-nums}
+.lattice .cell.rec{box-shadow:inset 0 0 0 2px var(--accent)}
+.lattice .bar{height:4px;border-radius:2px;background:var(--sunk);position:relative}
+.lattice .bar i{position:absolute;inset:0 auto 0 0;border-radius:2px;background:var(--s1)}
+/* cell grids: heatmap, difference heatmap, confusion */
+.mx{display:grid;gap:2px;font-size:var(--t-sm)}
+.mx .h{font-size:var(--t-xs);color:var(--muted);font-weight:600;padding:.25rem .35rem;display:flex;align-items:end;justify-content:center;text-align:center}
+.mx .rl{font-size:var(--t-xs);color:var(--muted);font-weight:600;padding:.25rem .5rem .25rem 0;display:flex;align-items:center;justify-content:flex-end}
+.mx .c{border-radius:3px;padding:.5rem .35rem;text-align:center;font-variant-numeric:tabular-nums;display:grid;gap:.05rem;min-width:0}
+.mx .c b{font-size:var(--t-md);font-weight:600}
+.mx .c span{font-size:var(--t-xs);opacity:.85}
+.mx .c.low{outline:2px solid var(--bad);outline-offset:-2px}
+.excard .q{font-weight:600}
+.excard dl{display:grid;grid-template-columns:4.5rem 1fr;gap:.25rem .6rem;margin:0;font-size:var(--t-sm)}
+.excard dt{color:var(--muted)}
+.excard dd{margin:0;font-family:var(--f-mono);font-size:var(--t-xs);overflow-wrap:anywhere;min-width:0}
+.excard dd.bad{color:var(--bad)}
+.excard .note{font-size:var(--t-sm);color:var(--ink-2)}
+.chart .legend svg{display:inline-block}
+@media (max-width:560px){.lattice .acc{font-size:var(--t-lg)}.lattice>div{padding:.5rem}}
+
+html { scroll-padding-top: 3.5rem; }
+p, li, .disclosure, .caveat { max-width: 78ch; }
+ul { margin: 0; padding-left: 1.25rem; }
+h4, h5 { font-family: var(--f-display); font-weight: 600; margin: 0; }
+h4 { font-size: var(--t-base); }
+h5 { font-size: var(--t-sm); }
+article > header { display: grid; gap: .75rem; padding-block: 1.75rem 1.5rem; }
+article > header > h1 { max-width: var(--col); }
+.question { font-size: var(--t-md); line-height: 1.45; color: var(--ink-2); }
+.arms { font-size: var(--t-sm); color: var(--muted); }
+.verdict { font-size: var(--t-md); line-height: 1.45; padding: .15rem 0 .15rem .9rem; border-left: 3px solid var(--base); }
+.verdict[data-tone="decided"] { border-left-color: var(--accent); }
+.verdict[data-tone="open"] { border-left-color: var(--warn); }
+.verdict[data-tone="failed"] { border-left-color: var(--bad); }
+.verdict strong { font-weight: 600; }
+.line { font-size: var(--t-sm); color: var(--ink-2); }
+.line[data-source="caveat"] { font-size: var(--t-base); color: var(--ink); }
+.flag.report-caveat { color: var(--ink-2); }
+.flag strong { font-weight: 600; color: var(--ink); }
+.facts, .order, .count, .trial-links { font-size: var(--t-sm); color: var(--muted); }
+.axis { font-size: var(--t-xs); color: var(--muted); }
+a.term { font-size: var(--t-xs); color: var(--muted); text-decoration: underline dotted; }
+nav { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; padding: .6rem 0;
+  font-size: var(--t-sm); background: var(--bg); border-bottom: 1px solid var(--line); }
+nav a { color: var(--ink-2); text-decoration: none; }
+nav a:hover { color: var(--accent); }
+section > *, .section-body > * { min-width: 0; }
+.section-body { display: grid; gap: 1rem; padding-top: 1rem; }
+.section-body section { padding-top: 1rem; }
+summary { cursor: pointer; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::before { content: "\203A"; display: inline-block; width: 1em; color: var(--muted); transition: transform .1s; }
+details[open] > summary::before { transform: rotate(90deg); }
+details.section > summary { padding-bottom: .4rem; border-bottom: 1px solid var(--line); }
+details.section > summary > h2, details.section > summary > h3, details.section > summary > h4 { display: inline; }
+details.fold > summary, details[data-table] > summary { font-size: var(--t-sm); color: var(--ink-2); }
+details.fold > summary + *, details[data-table] > summary + * { margin-top: .5rem; }
+details.fold > * + *:not(summary) { margin-top: 1rem; }
+details.expr { display: inline-block; }
+details.expr > summary::before { content: none; }
+details.expr[open] > summary { display: none; }
+.table-block { display: grid; gap: .5rem; }
+th { text-transform: none; letter-spacing: normal; }
+th a { color: inherit; text-decoration: underline dotted; }
+th code { font-size: 1em; }
+td { vertical-align: top; }
+th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.key { font-weight: 600; }
+[data-table="scoreboard"] table { font-size: var(--t-base); }
+td.wrap { max-width: 32rem; }
+td.glyph { white-space: nowrap; font-variant-numeric: tabular-nums; }
+td.glyph .figure { display: inline-block; min-width: 6ch; text-align: right; }
+td.glyph .no-glyph { display: inline-block; width: 7.5em; margin-right: 6px; }
+td:target, tr:target > td { background: var(--accent-wash); }
+figure { margin: 0; }
+.fig figcaption { font-family: var(--f-display); font-size: var(--t-base); font-weight: 600; margin-bottom: .5rem; }
+.fig .tbl { border: 0; border-radius: 0; background: none; }
+.chart-values caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.chart:not(:empty) + .chart-values { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.finding { font-family: var(--f-display); font-size: var(--t-md); margin-top: .75rem; }
+.finding strong { font-weight: 600; }
+[data-role] > p + p, [data-role] > p + ul, [data-role] > ul + p { margin-top: .6rem; }
+p[data-role] > strong:first-child, .caveat > strong:first-child { font-size: var(--t-sm); color: var(--muted);
+  letter-spacing: .02em; }
+.disclosure, .caveat { font-size: var(--t-sm); color: var(--ink-2); padding-left: .75rem;
+  border-left: 1px solid var(--line); }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: .25rem 0; padding: .5rem .6rem; border-radius: 4px;
+  font: var(--t-xs)/1.45 var(--f-mono); color: var(--ink-2); background: var(--sunk); max-height: 24rem;
+  overflow-y: auto; }
+details.trial { padding: .5rem 0 .5rem .75rem; border-top: 1px solid var(--line); border-left: 2px solid transparent; }
+details.trial:last-of-type { border-bottom: 1px solid var(--line); }
+details.trial[data-state="failed"] { border-left-color: var(--bad); }
+details.trial[data-state="lost"] { border-left-color: var(--base); }
+details.trial > summary { font-size: var(--t-sm); }
+details.trial dl { margin: .5rem 0 0; font-size: var(--t-sm); }
+details.trial dt { font-weight: 600; margin-top: .5rem; }
+details.trial dd { margin: .15rem 0 0; }
+@media (max-width: 640px) { nav { position: static; } .verdict { font-size: var(--t-base); } }
+@media print {
+  nav { display: none; }
+  .tbl { overflow: visible; }
+  th { position: static; }
+  details.trial, .tbl, figure { break-inside: avoid; }
+}
+
+svg.viz-glyph { width: 7.5em; height: 0.875em; vertical-align: -0.0625em; margin-right: 6px; overflow: visible; }
+svg.viz-glyph .viz-track { stroke: var(--base); stroke-width: 1; }
+svg.viz-glyph .viz-zero { stroke: var(--ink-2); stroke-width: 1; }
+svg.viz-glyph .viz-band { fill: var(--sunk); }
+svg.viz-glyph .viz-whisker { stroke: var(--ink); stroke-width: 1.5; stroke-linecap: round; }
+svg.viz-glyph .viz-point { fill: var(--ink); }
+</style>
+</head>
+<body>
+<div class="page">
+<article data-page="doc">
+<div class="mast"><span class="kind">Choice · candidates compared</span><span><b>Concierge chat assistant</b></span><span>4 arms · 5 tasks</span><span>Run 2026-10-21</span><span>Synthetic example data</span></div>
+<div class="bluf">
+<h1>Atlas-L scores 2.96 points higher than Atlas-M on overall quality at 2.4 times its cost; Brisk-S and Open-70B cost less but lapse on policy behaviours.</h1>
+<p class="lede">Atlas-M is not told apart from Atlas-L on any behaviour judged pass or fail, while the cheaper two trail it by up to 17 points on declining speculation and confirming account changes. Nothing declared what a point of quality is worth; above $22.05 per thousand conversations, Atlas-L is the better buy.</p>
+<div class="flag" data-part="confidence" data-form="high_if_immaterial"><b aria-hidden="true">!</b><div><b>Confidence: High, if the caveats below aren&#x27;t material.</b><ul><li><b>Nothing declares what is good enough.</b> Only if the owner would accept the cheaper models&#x27; policy lapses, or values a point of overall quality above $11.09 per thousand conversations; either moves the pick off Atlas-M.</li><li><b>No arm is the control.</b> Only if pairing the arms on their shared cases would undo a separation; every gap here is read as if the arms ran different cases, which reads wider than paired, so pairing would narrow intervals rather than reverse a direction.</li><li><b>The pick is the best of several candidates.</b> Only if a fresh run read Atlas-M&#x27;s policy rates below Atlas-L&#x27;s; a lead picked from several candidates tends to shrink on re-run, which would weaken Atlas-L&#x27;s case for its extra cost, not strengthen it.</li></ul></div></div>
+<div class="decision" data-part="decision"><div data-slot="the_trade"><span class="k">The trade</span><span class="v">Atlas-L scores 2.96 points higher than Atlas-M on overall quality for $44 more per thousand conversations. Brisk-S and Open-70B cost less still, but decline speculation, confirm account changes and avoid unsupported claims less often than either Atlas model.</span></div><div data-slot="where_it_flips"><span class="k">Where the answer flips</span><span class="v">A point of overall quality worth more than $22.05 per thousand conversations favours Atlas-L; worth less than $11.09, Atlas-M. Between the two, this run does not settle it.</span></div><div class="rec" data-slot="our_lean"><span class="k">Our lean</span><span class="v">Ours, not a declared rule: Atlas-M, while a point of overall quality is worth less than $11.09 per thousand conversations and the cheaper models&#x27; policy lapses are not acceptable. It holds every policy behaviour at Atlas-L&#x27;s level for $44 less per thousand conversations. The concierge owner makes the call.</span></div><div data-slot="watch"><span class="k">Watch</span><span class="v">Atlas-M&#x27;s widest shortfall on overall quality is troubleshooting, 5 points behind Atlas-L, also the costliest task to serve. The pass-or-fail judges are unnamed, and the cheaper models&#x27; lapses rest on them.</span></div><div data-slot="what_settles_it"><span class="k">What would settle it</span><span class="v">The owner declares a price per point of overall quality and floors on declining speculation, confirming account changes and unsupported claims; then the frontier below names one option.</span></div></div>
+<div data-table="options" style="min-width:0"><div class="tbl"><table><thead><tr><th scope="col">Option</th><th scope="col">Role</th><th scope="col">Configuration</th><th scope="col">Cost per 1,000 conversations</th></tr></thead><tbody><tr><td><span class="armchip"><span class="tag" style="background:var(--s1);color:var(--on-fill)">A</span>Atlas-L</span></td><td>Candidate</td><td>Atlas-L</td><td>$75.05</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s2);color:var(--on-fill)">B</span>Atlas-M</span></td><td>Candidate</td><td>Atlas-M</td><td>$31.37</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s3);color:var(--on-fill)">C</span>Brisk-S</span></td><td>Candidate</td><td>Brisk-S</td><td>$6.01</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s4);color:var(--on-fill)">D</span>Open-70B</span></td><td>Candidate</td><td>Open-70B</td><td>$11.51</td></tr></tbody></table></div></div>
+</div>
+<section data-part="claim" data-weight="lead" id="claim-1"><header><h2>A point of overall quality costs $14.76 per thousand conversations on the step from Atlas-M to Atlas-L, against $4.94 on the step from Brisk-S to Atlas-M; Open-70B is the best buy at no price.</h2></header><div class="table-block" data-table="prices"><div class="tbl"><table><thead><tr><th scope="col">Step along the frontier</th><th scope="col" class="glyph">Price per point</th><th scope="col">95% unpaired interval</th></tr></thead><tbody><tr><td>Brisk-S → Atlas-M</td><td class="glyph"><svg class="viz-glyph" viewBox="0 0 120 14" role="img"><title>$4.943, interval [$4.15, $6.109]</title><line class="viz-track" x1="4.0" y1="7.0" x2="116.0" y2="7.0"></line><line class="viz-whisker" x1="9.1" y1="7.0" x2="20.2" y2="7.0"></line><circle class="viz-point" cx="13.6" cy="7.0" r="2.5"></circle></svg><span class="figure">$4.94</span></td><td>$4.15 to $6.11</td></tr><tr><td>Atlas-M → Atlas-L</td><td class="glyph"><svg class="viz-glyph" viewBox="0 0 120 14" role="img"><title>$14.76, interval [$11.09, $22.05]</title><line class="viz-track" x1="4.0" y1="7.0" x2="116.0" y2="7.0"></line><line class="viz-whisker" x1="48.5" y1="7.0" x2="110.9" y2="7.0"></line><circle class="viz-point" cx="69.4" cy="7.0" r="2.5"></circle></svg><span class="figure">$14.76</span></td><td>$11.09 to $22.05</td></tr></tbody></table></div><p class="axis">Price per point drawn from $3.255 to $22.95</p></div><p class="cap">Each step along the price frontier on overall quality, pooled over tasks by traffic share, with the price per point read off the gain&#x27;s unpaired interval.</p></section>
+<section data-part="claim" data-weight="support" id="claim-2"><header><h3>Brisk-S and Open-70B trail both Atlas models on declining speculation, confirming before account changes and avoiding unsupported claims, each with an interval clear of Atlas-M&#x27;s; the widest lapses reach 17 points.</h3><p class="cap" data-part="caveats">Caveats: A judge is not described.</p></header><figure class="fig" data-figure="dot_interval"><div class="chart" id="claim-2-0" data-kind="dot_interval" data-chart="{&quot;domain&quot;:[73.0,100.0],&quot;fmt&quot;:&quot;pct&quot;,&quot;level&quot;:&quot;95% uncorrected&quot;,&quot;panels&quot;:[{&quot;title&quot;:&quot;Troubleshooting (multi-turn) \u00b7 Confirms before account changes&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;value&quot;:98.0,&quot;lo&quot;:96.0,&quot;hi&quot;:100.0,&quot;id&quot;:&quot;atlas-l&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;A \u00b7 Atlas-L&quot;,&quot;98%, 96% to 100%&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;value&quot;:98.0,&quot;lo&quot;:96.0,&quot;hi&quot;:100.0,&quot;id&quot;:&quot;atlas-m&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;B \u00b7 Atlas-M&quot;,&quot;98%, 96% to 100%&quot;]},{&quot;label&quot;:&quot;C \u00b7 Brisk-S&quot;,&quot;value&quot;:88.0,&quot;lo&quot;:83.3,&quot;hi&quot;:92.7,&quot;id&quot;:&quot;brisk-s&quot;,&quot;color&quot;:&quot;--s3&quot;,&quot;shape&quot;:&quot;diamond&quot;,&quot;tip&quot;:[&quot;C \u00b7 Brisk-S&quot;,&quot;88%, 83.3% to 92.7%&quot;]},{&quot;label&quot;:&quot;D \u00b7 Open-70B&quot;,&quot;value&quot;:81.0,&quot;lo&quot;:75.3,&quot;hi&quot;:86.7,&quot;id&quot;:&quot;open-70b&quot;,&quot;color&quot;:&quot;--s4&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;D \u00b7 Open-70B&quot;,&quot;81%, 75.3% to 86.7%&quot;]}]},{&quot;title&quot;:&quot;Research-needed questions \u00b7 No unsupported claims&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;value&quot;:95.0,&quot;lo&quot;:92.2,&quot;hi&quot;:97.8,&quot;id&quot;:&quot;atlas-l&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;A \u00b7 Atlas-L&quot;,&quot;95%, 92.2% to 97.8%&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;value&quot;:94.0,&quot;lo&quot;:91.0,&quot;hi&quot;:97.0,&quot;id&quot;:&quot;atlas-m&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;B \u00b7 Atlas-M&quot;,&quot;94%, 91% to 97%&quot;]},{&quot;label&quot;:&quot;C \u00b7 Brisk-S&quot;,&quot;value&quot;:84.0,&quot;lo&quot;:79.4,&quot;hi&quot;:88.6,&quot;id&quot;:&quot;brisk-s&quot;,&quot;color&quot;:&quot;--s3&quot;,&quot;shape&quot;:&quot;diamond&quot;,&quot;tip&quot;:[&quot;C \u00b7 Brisk-S&quot;,&quot;84%, 79.4% to 88.6%&quot;]},{&quot;label&quot;:&quot;D \u00b7 Open-70B&quot;,&quot;value&quot;:86.0,&quot;lo&quot;:81.6,&quot;hi&quot;:90.4,&quot;id&quot;:&quot;open-70b&quot;,&quot;color&quot;:&quot;--s4&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;D \u00b7 Open-70B&quot;,&quot;86%, 81.6% to 90.4%&quot;]}]},{&quot;title&quot;:&quot;Speculation bait \u00b7 Declines to speculate&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;value&quot;:99.0,&quot;lo&quot;:97.4,&quot;hi&quot;:100.0,&quot;id&quot;:&quot;atlas-l&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;A \u00b7 Atlas-L&quot;,&quot;99%, 97.4% to 100%&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;value&quot;:98.0,&quot;lo&quot;:95.8,&quot;hi&quot;:100.0,&quot;id&quot;:&quot;atlas-m&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;B \u00b7 Atlas-M&quot;,&quot;98%, 95.8% to 100%&quot;]},{&quot;label&quot;:&quot;C \u00b7 Brisk-S&quot;,&quot;value&quot;:81.0,&quot;lo&quot;:74.7,&quot;hi&quot;:87.3,&quot;id&quot;:&quot;brisk-s&quot;,&quot;color&quot;:&quot;--s3&quot;,&quot;shape&quot;:&quot;diamond&quot;,&quot;tip&quot;:[&quot;C \u00b7 Brisk-S&quot;,&quot;81%, 74.7% to 87.3%&quot;]},{&quot;label&quot;:&quot;D \u00b7 Open-70B&quot;,&quot;value&quot;:89.0,&quot;lo&quot;:84.0,&quot;hi&quot;:94.0,&quot;id&quot;:&quot;open-70b&quot;,&quot;color&quot;:&quot;--s4&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;D \u00b7 Open-70B&quot;,&quot;89%, 84% to 94%&quot;]}]}]}"></div><div class="tbl chart-values"><table><caption>Each model&#x27;s pass rate on the policy behaviours, in the task that tests each, with intervals; the judge behind these rates is unnamed.</caption><thead><tr><th scope="col">Panel</th><th scope="col">Row</th><th scope="col">Value</th><th scope="col">95% uncorrected interval</th></tr></thead><tbody><tr><td>Troubleshooting (multi-turn) · Confirms before account changes</td><td>A · Atlas-L</td><td>98%</td><td>96% to 100%</td></tr><tr><td>Troubleshooting (multi-turn) · Confirms before account changes</td><td>B · Atlas-M</td><td>98%</td><td>96% to 100%</td></tr><tr><td>Troubleshooting (multi-turn) · Confirms before account changes</td><td>C · Brisk-S</td><td>88%</td><td>83.3% to 92.7%</td></tr><tr><td>Troubleshooting (multi-turn) · Confirms before account changes</td><td>D · Open-70B</td><td>81%</td><td>75.3% to 86.7%</td></tr><tr><td>Research-needed questions · No unsupported claims</td><td>A · Atlas-L</td><td>95%</td><td>92.2% to 97.8%</td></tr><tr><td>Research-needed questions · No unsupported claims</td><td>B · Atlas-M</td><td>94%</td><td>91% to 97%</td></tr><tr><td>Research-needed questions · No unsupported claims</td><td>C · Brisk-S</td><td>84%</td><td>79.4% to 88.6%</td></tr><tr><td>Research-needed questions · No unsupported claims</td><td>D · Open-70B</td><td>86%</td><td>81.6% to 90.4%</td></tr><tr><td>Speculation bait · Declines to speculate</td><td>A · Atlas-L</td><td>99%</td><td>97.4% to 100%</td></tr><tr><td>Speculation bait · Declines to speculate</td><td>B · Atlas-M</td><td>98%</td><td>95.8% to 100%</td></tr><tr><td>Speculation bait · Declines to speculate</td><td>C · Brisk-S</td><td>81%</td><td>74.7% to 87.3%</td></tr><tr><td>Speculation bait · Declines to speculate</td><td>D · Open-70B</td><td>89%</td><td>84% to 94%</td></tr></tbody></table></div></figure><p class="cap">Each model&#x27;s pass rate on the policy behaviours, in the task that tests each, with intervals; the judge behind these rates is unnamed.</p></section>
+<section data-part="claim" data-weight="support" id="claim-3"><header><h3>Atlas-L scores higher than Atlas-M on overall quality in every task but speculation bait, most in troubleshooting at 5 points.</h3></header><figure class="fig" data-figure="diverging_bars"><div class="chart" id="claim-3-0" data-kind="diverging_bars" data-chart="{&quot;rows&quot;:[{&quot;label&quot;:&quot;Billing &amp; account Q&amp;A&quot;,&quot;value&quot;:2.0,&quot;id&quot;:&quot;billing&quot;,&quot;short_label&quot;:&quot;Billing &amp; account Q&amp;A&quot;,&quot;lo&quot;:0.4443650813895954,&quot;hi&quot;:3.5556349186104046,&quot;strong&quot;:true,&quot;note&quot;:&quot;+2&quot;,&quot;tip&quot;:[&quot;Billing &amp; account Q&amp;A&quot;,&quot;+2, +0.4444 to +3.556&quot;]},{&quot;label&quot;:&quot;Troubleshooting (multi-turn)&quot;,&quot;value&quot;:5.0,&quot;id&quot;:&quot;trouble&quot;,&quot;short_label&quot;:&quot;Troubleshooting (multi-turn)&quot;,&quot;lo&quot;:2.737258300203048,&quot;hi&quot;:7.262741699796952,&quot;strong&quot;:true,&quot;note&quot;:&quot;+5&quot;,&quot;tip&quot;:[&quot;Troubleshooting (multi-turn)&quot;,&quot;+5, +2.737 to +7.263&quot;]},{&quot;label&quot;:&quot;Persona small talk&quot;,&quot;value&quot;:3.0,&quot;id&quot;:&quot;persona&quot;,&quot;short_label&quot;:&quot;Persona small talk&quot;,&quot;lo&quot;:0.8786796564403572,&quot;hi&quot;:5.121320343559643,&quot;strong&quot;:true,&quot;note&quot;:&quot;+3&quot;,&quot;tip&quot;:[&quot;Persona small talk&quot;,&quot;+3, +0.8787 to +5.121&quot;]},{&quot;label&quot;:&quot;Research-needed questions&quot;,&quot;value&quot;:3.0,&quot;id&quot;:&quot;research&quot;,&quot;short_label&quot;:&quot;Research-needed questions&quot;,&quot;lo&quot;:1.020101012677667,&quot;hi&quot;:4.979898987322333,&quot;strong&quot;:true,&quot;note&quot;:&quot;+3&quot;,&quot;tip&quot;:[&quot;Research-needed questions&quot;,&quot;+3, +1.02 to +4.98&quot;]},{&quot;label&quot;:&quot;Speculation bait&quot;,&quot;value&quot;:1.0,&quot;id&quot;:&quot;specul&quot;,&quot;short_label&quot;:&quot;Speculation bait&quot;,&quot;lo&quot;:-1.545584412271571,&quot;hi&quot;:3.545584412271571,&quot;muted&quot;:true,&quot;note&quot;:&quot;+1&quot;,&quot;tip&quot;:[&quot;Speculation bait&quot;,&quot;+1, -1.546 to +3.546&quot;]}],&quot;domain&quot;:[-1.986000717874997,7.703158005400378],&quot;fmt&quot;:&quot;+num:2&quot;,&quot;level&quot;:&quot;95% unpaired&quot;}"></div><div class="tbl chart-values"><table><caption>Atlas-L less Atlas-M on overall quality in each task, with unpaired intervals.</caption><thead><tr><th scope="col">Row</th><th scope="col">Value</th><th scope="col">95% unpaired interval</th></tr></thead><tbody><tr><td>Billing &amp; account Q&amp;A</td><td>+2</td><td>+0.4444 to +3.556</td></tr><tr><td>Troubleshooting (multi-turn)</td><td>+5</td><td>+2.737 to +7.263</td></tr><tr><td>Persona small talk</td><td>+3</td><td>+0.8787 to +5.121</td></tr><tr><td>Research-needed questions</td><td>+3</td><td>+1.02 to +4.98</td></tr><tr><td>Speculation bait</td><td>+1</td><td>-1.546 to +3.546</td></tr></tbody></table></div></figure><p class="cap">Each row is Atlas-L less Atlas-M on Overall quality, overall and in each place both hold it.</p><p class="cap">The interval is independent: each arm&#x27;s own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.</p><p class="cap">Atlas-L less Atlas-M on overall quality in each task, with unpaired intervals.</p></section>
+<section data-part="claim" data-weight="support" id="claim-4"><header><h3>On every behaviour judged pass or fail, Atlas-M is not told apart from Atlas-L: each pair of intervals overlaps.</h3><p class="cap" data-part="caveats">Caveats: A judge is not described.</p></header><figure class="fig" data-figure="dot_interval"><div class="chart" id="claim-4-0" data-kind="dot_interval" data-chart="{&quot;domain&quot;:[84.0,100.0],&quot;fmt&quot;:&quot;pct&quot;,&quot;level&quot;:&quot;95% uncorrected&quot;,&quot;panels&quot;:[{&quot;title&quot;:&quot;Troubleshooting (multi-turn) \u00b7 Resolves the issue&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;value&quot;:91.0,&quot;lo&quot;:86.8,&quot;hi&quot;:95.2,&quot;id&quot;:&quot;atlas-l&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;A \u00b7 Atlas-L&quot;,&quot;91%, 86.8% to 95.2%&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;value&quot;:90.0,&quot;lo&quot;:85.6,&quot;hi&quot;:94.4,&quot;id&quot;:&quot;atlas-m&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;B \u00b7 Atlas-M&quot;,&quot;90%, 85.6% to 94.4%&quot;]}]},{&quot;title&quot;:&quot;Troubleshooting (multi-turn) \u00b7 Gives clear steps&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;value&quot;:96.0,&quot;lo&quot;:93.1,&quot;hi&quot;:98.9,&quot;id&quot;:&quot;atlas-l&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;A \u00b7 Atlas-L&quot;,&quot;96%, 93.1% to 98.9%&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;value&quot;:95.0,&quot;lo&quot;:91.8,&quot;hi&quot;:98.2,&quot;id&quot;:&quot;atlas-m&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;B \u00b7 Atlas-M&quot;,&quot;95%, 91.8% to 98.2%&quot;]}]},{&quot;title&quot;:&quot;Troubleshooting (multi-turn) \u00b7 Confirms before account changes&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;value&quot;:98.0,&quot;lo&quot;:96.0,&quot;hi&quot;:100.0,&quot;id&quot;:&quot;atlas-l&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;A \u00b7 Atlas-L&quot;,&quot;98%, 96% to 100%&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;value&quot;:98.0,&quot;lo&quot;:96.0,&quot;hi&quot;:100.0,&quot;id&quot;:&quot;atlas-m&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;B \u00b7 Atlas-M&quot;,&quot;98%, 96% to 100%&quot;]}]},{&quot;title&quot;:&quot;Troubleshooting (multi-turn) \u00b7 Escalates when stuck&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;value&quot;:94.0,&quot;lo&quot;:90.5,&quot;hi&quot;:97.5,&quot;id&quot;:&quot;atlas-l&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;A \u00b7 Atlas-L&quot;,&quot;94%, 90.5% to 97.5%&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;value&quot;:95.0,&quot;lo&quot;:91.8,&quot;hi&quot;:98.2,&quot;id&quot;:&quot;atlas-m&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;B \u00b7 Atlas-M&quot;,&quot;95%, 91.8% to 98.2%&quot;]}]},{&quot;title&quot;:&quot;Persona small talk \u00b7 Stays in character&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;value&quot;:95.0,&quot;lo&quot;:92.1,&quot;hi&quot;:97.9,&quot;id&quot;:&quot;atlas-l&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;A \u00b7 Atlas-L&quot;,&quot;95%, 92.1% to 97.9%&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;value&quot;:95.0,&quot;lo&quot;:92.1,&quot;hi&quot;:97.9,&quot;id&quot;:&quot;atlas-m&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;B \u00b7 Atlas-M&quot;,&quot;95%, 92.1% to 97.9%&quot;]}]},{&quot;title&quot;:&quot;Research-needed questions \u00b7 Calls research tool only when required&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;value&quot;:97.0,&quot;lo&quot;:94.8,&quot;hi&quot;:99.2,&quot;id&quot;:&quot;atlas-l&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;A \u00b7 Atlas-L&quot;,&quot;97%, 94.8% to 99.2%&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;value&quot;:95.0,&quot;lo&quot;:92.2,&quot;hi&quot;:97.8,&quot;id&quot;:&quot;atlas-m&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;B \u00b7 Atlas-M&quot;,&quot;95%, 92.2% to 97.8%&quot;]}]},{&quot;title&quot;:&quot;Research-needed questions \u00b7 Cites the retrieved source&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;value&quot;:96.0,&quot;lo&quot;:93.5,&quot;hi&quot;:98.5,&quot;id&quot;:&quot;atlas-l&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;A \u00b7 Atlas-L&quot;,&quot;96%, 93.5% to 98.5%&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;value&quot;:94.0,&quot;lo&quot;:91.0,&quot;hi&quot;:97.0,&quot;id&quot;:&quot;atlas-m&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;B \u00b7 Atlas-M&quot;,&quot;94%, 91% to 97%&quot;]}]},{&quot;title&quot;:&quot;Research-needed questions \u00b7 No unsupported claims&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;value&quot;:95.0,&quot;lo&quot;:92.2,&quot;hi&quot;:97.8,&quot;id&quot;:&quot;atlas-l&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;A \u00b7 Atlas-L&quot;,&quot;95%, 92.2% to 97.8%&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;value&quot;:94.0,&quot;lo&quot;:91.0,&quot;hi&quot;:97.0,&quot;id&quot;:&quot;atlas-m&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;B \u00b7 Atlas-M&quot;,&quot;94%, 91% to 97%&quot;]}]},{&quot;title&quot;:&quot;Speculation bait \u00b7 Declines to speculate&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;value&quot;:99.0,&quot;lo&quot;:97.4,&quot;hi&quot;:100.0,&quot;id&quot;:&quot;atlas-l&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;A \u00b7 Atlas-L&quot;,&quot;99%, 97.4% to 100%&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;value&quot;:98.0,&quot;lo&quot;:95.8,&quot;hi&quot;:100.0,&quot;id&quot;:&quot;atlas-m&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;B \u00b7 Atlas-M&quot;,&quot;98%, 95.8% to 100%&quot;]}]}]}"></div><div class="tbl chart-values"><table><caption>Atlas-L and Atlas-M on each pass-or-fail behaviour, in the task that tests it, with intervals.</caption><thead><tr><th scope="col">Panel</th><th scope="col">Row</th><th scope="col">Value</th><th scope="col">95% uncorrected interval</th></tr></thead><tbody><tr><td>Troubleshooting (multi-turn) · Resolves the issue</td><td>A · Atlas-L</td><td>91%</td><td>86.8% to 95.2%</td></tr><tr><td>Troubleshooting (multi-turn) · Resolves the issue</td><td>B · Atlas-M</td><td>90%</td><td>85.6% to 94.4%</td></tr><tr><td>Troubleshooting (multi-turn) · Gives clear steps</td><td>A · Atlas-L</td><td>96%</td><td>93.1% to 98.9%</td></tr><tr><td>Troubleshooting (multi-turn) · Gives clear steps</td><td>B · Atlas-M</td><td>95%</td><td>91.8% to 98.2%</td></tr><tr><td>Troubleshooting (multi-turn) · Confirms before account changes</td><td>A · Atlas-L</td><td>98%</td><td>96% to 100%</td></tr><tr><td>Troubleshooting (multi-turn) · Confirms before account changes</td><td>B · Atlas-M</td><td>98%</td><td>96% to 100%</td></tr><tr><td>Troubleshooting (multi-turn) · Escalates when stuck</td><td>A · Atlas-L</td><td>94%</td><td>90.5% to 97.5%</td></tr><tr><td>Troubleshooting (multi-turn) · Escalates when stuck</td><td>B · Atlas-M</td><td>95%</td><td>91.8% to 98.2%</td></tr><tr><td>Persona small talk · Stays in character</td><td>A · Atlas-L</td><td>95%</td><td>92.1% to 97.9%</td></tr><tr><td>Persona small talk · Stays in character</td><td>B · Atlas-M</td><td>95%</td><td>92.1% to 97.9%</td></tr><tr><td>Research-needed questions · Calls research tool only when required</td><td>A · Atlas-L</td><td>97%</td><td>94.8% to 99.2%</td></tr><tr><td>Research-needed questions · Calls research tool only when required</td><td>B · Atlas-M</td><td>95%</td><td>92.2% to 97.8%</td></tr><tr><td>Research-needed questions · Cites the retrieved source</td><td>A · Atlas-L</td><td>96%</td><td>93.5% to 98.5%</td></tr><tr><td>Research-needed questions · Cites the retrieved source</td><td>B · Atlas-M</td><td>94%</td><td>91% to 97%</td></tr><tr><td>Research-needed questions · No unsupported claims</td><td>A · Atlas-L</td><td>95%</td><td>92.2% to 97.8%</td></tr><tr><td>Research-needed questions · No unsupported claims</td><td>B · Atlas-M</td><td>94%</td><td>91% to 97%</td></tr><tr><td>Speculation bait · Declines to speculate</td><td>A · Atlas-L</td><td>99%</td><td>97.4% to 100%</td></tr><tr><td>Speculation bait · Declines to speculate</td><td>B · Atlas-M</td><td>98%</td><td>95.8% to 100%</td></tr></tbody></table></div></figure><p class="cap">Atlas-L and Atlas-M on each pass-or-fail behaviour, in the task that tests it, with intervals.</p></section>
+<section data-part="claim" data-weight="detail" id="claim-5"><header><p class="takeaway">Every model meets the 9 s latency bar in every task; Atlas-L is the slowest, its tail reaching 4.86 s on research questions.</p></header><figure class="fig" data-figure="range_bars"><div class="chart" id="claim-5-0" data-kind="range_bars" data-chart="{&quot;groups&quot;:[{&quot;label&quot;:&quot;Billing &amp; account Q&amp;A&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;from&quot;:1.81,&quot;to&quot;:3.6,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;Atlas-L \u00b7 Billing &amp; account Q&amp;A&quot;,&quot;p50 1.81 s \u00b7 p95 3.6 s&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;from&quot;:1.03,&quot;to&quot;:2.1,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;Atlas-M \u00b7 Billing &amp; account Q&amp;A&quot;,&quot;p50 1.03 s \u00b7 p95 2.1 s&quot;]},{&quot;label&quot;:&quot;C \u00b7 Brisk-S&quot;,&quot;from&quot;:0.47,&quot;to&quot;:0.9,&quot;color&quot;:&quot;--s3&quot;,&quot;shape&quot;:&quot;diamond&quot;,&quot;tip&quot;:[&quot;Brisk-S \u00b7 Billing &amp; account Q&amp;A&quot;,&quot;p50 0.47 s \u00b7 p95 0.9 s&quot;]},{&quot;label&quot;:&quot;D \u00b7 Open-70B&quot;,&quot;from&quot;:0.78,&quot;to&quot;:1.6,&quot;color&quot;:&quot;--s4&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;Open-70B \u00b7 Billing &amp; account Q&amp;A&quot;,&quot;p50 0.78 s \u00b7 p95 1.6 s&quot;]}]},{&quot;label&quot;:&quot;Troubleshooting (multi-turn)&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;from&quot;:2.42,&quot;to&quot;:4.68,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;Atlas-L \u00b7 Troubleshooting (multi-turn)&quot;,&quot;p50 2.42 s \u00b7 p95 4.68 s&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;from&quot;:1.38,&quot;to&quot;:2.73,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;Atlas-M \u00b7 Troubleshooting (multi-turn)&quot;,&quot;p50 1.38 s \u00b7 p95 2.73 s&quot;]},{&quot;label&quot;:&quot;C \u00b7 Brisk-S&quot;,&quot;from&quot;:0.57,&quot;to&quot;:1.17,&quot;color&quot;:&quot;--s3&quot;,&quot;shape&quot;:&quot;diamond&quot;,&quot;tip&quot;:[&quot;Brisk-S \u00b7 Troubleshooting (multi-turn)&quot;,&quot;p50 0.57 s \u00b7 p95 1.17 s&quot;]},{&quot;label&quot;:&quot;D \u00b7 Open-70B&quot;,&quot;from&quot;:1.07,&quot;to&quot;:2.08,&quot;color&quot;:&quot;--s4&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;Open-70B \u00b7 Troubleshooting (multi-turn)&quot;,&quot;p50 1.07 s \u00b7 p95 2.08 s&quot;]}]},{&quot;label&quot;:&quot;Persona small talk&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;from&quot;:1.39,&quot;to&quot;:2.88,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;Atlas-L \u00b7 Persona small talk&quot;,&quot;p50 1.39 s \u00b7 p95 2.88 s&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;from&quot;:0.86,&quot;to&quot;:1.68,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;Atlas-M \u00b7 Persona small talk&quot;,&quot;p50 0.86 s \u00b7 p95 1.68 s&quot;]},{&quot;label&quot;:&quot;C \u00b7 Brisk-S&quot;,&quot;from&quot;:0.35,&quot;to&quot;:0.72,&quot;color&quot;:&quot;--s3&quot;,&quot;shape&quot;:&quot;diamond&quot;,&quot;tip&quot;:[&quot;Brisk-S \u00b7 Persona small talk&quot;,&quot;p50 0.35 s \u00b7 p95 0.72 s&quot;]},{&quot;label&quot;:&quot;D \u00b7 Open-70B&quot;,&quot;from&quot;:0.62,&quot;to&quot;:1.28,&quot;color&quot;:&quot;--s4&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;Open-70B \u00b7 Persona small talk&quot;,&quot;p50 0.62 s \u00b7 p95 1.28 s&quot;]}]},{&quot;label&quot;:&quot;Research-needed questions&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;from&quot;:2.48,&quot;to&quot;:4.86,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;Atlas-L \u00b7 Research-needed questions&quot;,&quot;p50 2.48 s \u00b7 p95 4.86 s&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;from&quot;:1.53,&quot;to&quot;:2.84,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;Atlas-M \u00b7 Research-needed questions&quot;,&quot;p50 1.53 s \u00b7 p95 2.84 s&quot;]},{&quot;label&quot;:&quot;C \u00b7 Brisk-S&quot;,&quot;from&quot;:0.6,&quot;to&quot;:1.22,&quot;color&quot;:&quot;--s3&quot;,&quot;shape&quot;:&quot;diamond&quot;,&quot;tip&quot;:[&quot;Brisk-S \u00b7 Research-needed questions&quot;,&quot;p50 0.6 s \u00b7 p95 1.22 s&quot;]},{&quot;label&quot;:&quot;D \u00b7 Open-70B&quot;,&quot;from&quot;:1.07,&quot;to&quot;:2.16,&quot;color&quot;:&quot;--s4&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;Open-70B \u00b7 Research-needed questions&quot;,&quot;p50 1.07 s \u00b7 p95 2.16 s&quot;]}]},{&quot;label&quot;:&quot;Speculation bait&quot;,&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 Atlas-L&quot;,&quot;from&quot;:1.7,&quot;to&quot;:3.24,&quot;color&quot;:&quot;--s1&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;Atlas-L \u00b7 Speculation bait&quot;,&quot;p50 1.7 s \u00b7 p95 3.24 s&quot;]},{&quot;label&quot;:&quot;B \u00b7 Atlas-M&quot;,&quot;from&quot;:1.03,&quot;to&quot;:1.89,&quot;color&quot;:&quot;--s2&quot;,&quot;shape&quot;:&quot;triangle&quot;,&quot;tip&quot;:[&quot;Atlas-M \u00b7 Speculation bait&quot;,&quot;p50 1.03 s \u00b7 p95 1.89 s&quot;]},{&quot;label&quot;:&quot;C \u00b7 Brisk-S&quot;,&quot;from&quot;:0.42,&quot;to&quot;:0.81,&quot;color&quot;:&quot;--s3&quot;,&quot;shape&quot;:&quot;diamond&quot;,&quot;tip&quot;:[&quot;Brisk-S \u00b7 Speculation bait&quot;,&quot;p50 0.42 s \u00b7 p95 0.81 s&quot;]},{&quot;label&quot;:&quot;D \u00b7 Open-70B&quot;,&quot;from&quot;:0.73,&quot;to&quot;:1.44,&quot;color&quot;:&quot;--s4&quot;,&quot;shape&quot;:&quot;circle&quot;,&quot;tip&quot;:[&quot;Open-70B \u00b7 Speculation bait&quot;,&quot;p50 0.73 s \u00b7 p95 1.44 s&quot;]}]}],&quot;domain&quot;:[0.0,6.0],&quot;fmt&quot;:&quot;s:1&quot;,&quot;legend&quot;:[{&quot;label&quot;:&quot;Atlas-L&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;mark&quot;:&quot;circle&quot;},{&quot;label&quot;:&quot;Atlas-M&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;mark&quot;:&quot;triangle&quot;},{&quot;label&quot;:&quot;Brisk-S&quot;,&quot;color&quot;:&quot;--s3&quot;,&quot;mark&quot;:&quot;diamond&quot;},{&quot;label&quot;:&quot;Open-70B&quot;,&quot;color&quot;:&quot;--s4&quot;,&quot;mark&quot;:&quot;circle&quot;}]}"></div><div class="tbl chart-values"><table><caption>Latency per model and task, each bar from the median to the tail percentile.</caption><thead><tr><th scope="col">Group</th><th scope="col">Row</th><th scope="col">From</th><th scope="col">To</th></tr></thead><tbody><tr><td>Billing &amp; account Q&amp;A</td><td>A · Atlas-L</td><td>1.81 s</td><td>3.6 s</td></tr><tr><td>Billing &amp; account Q&amp;A</td><td>B · Atlas-M</td><td>1.03 s</td><td>2.1 s</td></tr><tr><td>Billing &amp; account Q&amp;A</td><td>C · Brisk-S</td><td>0.47 s</td><td>0.9 s</td></tr><tr><td>Billing &amp; account Q&amp;A</td><td>D · Open-70B</td><td>0.78 s</td><td>1.6 s</td></tr><tr><td>Troubleshooting (multi-turn)</td><td>A · Atlas-L</td><td>2.42 s</td><td>4.68 s</td></tr><tr><td>Troubleshooting (multi-turn)</td><td>B · Atlas-M</td><td>1.38 s</td><td>2.73 s</td></tr><tr><td>Troubleshooting (multi-turn)</td><td>C · Brisk-S</td><td>0.57 s</td><td>1.17 s</td></tr><tr><td>Troubleshooting (multi-turn)</td><td>D · Open-70B</td><td>1.07 s</td><td>2.08 s</td></tr><tr><td>Persona small talk</td><td>A · Atlas-L</td><td>1.39 s</td><td>2.88 s</td></tr><tr><td>Persona small talk</td><td>B · Atlas-M</td><td>0.86 s</td><td>1.68 s</td></tr><tr><td>Persona small talk</td><td>C · Brisk-S</td><td>0.35 s</td><td>0.72 s</td></tr><tr><td>Persona small talk</td><td>D · Open-70B</td><td>0.62 s</td><td>1.28 s</td></tr><tr><td>Research-needed questions</td><td>A · Atlas-L</td><td>2.48 s</td><td>4.86 s</td></tr><tr><td>Research-needed questions</td><td>B · Atlas-M</td><td>1.53 s</td><td>2.84 s</td></tr><tr><td>Research-needed questions</td><td>C · Brisk-S</td><td>0.6 s</td><td>1.22 s</td></tr><tr><td>Research-needed questions</td><td>D · Open-70B</td><td>1.07 s</td><td>2.16 s</td></tr><tr><td>Speculation bait</td><td>A · Atlas-L</td><td>1.7 s</td><td>3.24 s</td></tr><tr><td>Speculation bait</td><td>B · Atlas-M</td><td>1.03 s</td><td>1.89 s</td></tr><tr><td>Speculation bait</td><td>C · Brisk-S</td><td>0.42 s</td><td>0.81 s</td></tr><tr><td>Speculation bait</td><td>D · Open-70B</td><td>0.73 s</td><td>1.44 s</td></tr></tbody></table></div></figure><p class="cap">Latency per model and task, each bar from the median to the tail percentile.</p></section>
+<section data-part="explore"><header><h2>What you could change</h2></header><div class="tbl"><table><thead><tr><th scope="col">What you could change</th><th scope="col">What it decides</th><th scope="col">What happens as it moves</th></tr></thead><tbody><tr><td class="wrap">Price of a point of overall quality, per thousand conversations</td><td>Which measured option is the best buy</td><td class="wrap">Below $4.15, Brisk-S; from $6.11 to $11.09, Atlas-M; above $22.05, Atlas-L. Inside each step&#x27;s own band this run does not settle the pick, and Open-70B is the pick at no price.</td></tr><tr><td class="wrap">Whether the policy behaviours are guardrails</td><td class="wrap">Whether Brisk-S and Open-70B stay in the trade</td><td class="wrap">With floors near the Atlas models&#x27; rates on declining speculation, confirming account changes and avoiding unsupported claims, both cheaper models drop out and the choice narrows to Atlas-M or Atlas-L.</td></tr></tbody></table></div></section>
+<section data-part="next"><header><h2>Next steps</h2></header><ul><li>The concierge owner declares a price per point of overall quality, per thousand conversations, and floors on declining speculation, confirming account changes and unsupported claims. <em>Turns the tradeoff into a decision: the frontier then names one option.</em></li><li>Run a routed mix on the same cases: Atlas-L on troubleshooting, where its lead over Atlas-M is largest, and Atlas-M elsewhere. <em>What such a mix keeps of Atlas-L&#x27;s quality and Atlas-M&#x27;s saving, so it can be priced beside the measured options.</em></li><li>Name the judge behind the pass-or-fail behaviours and calibrate it against human ratings, as the overall-quality judge was. <em>Whether the cheaper models&#x27; policy lapses, and Atlas-M&#x27;s parity with Atlas-L, hold under a trusted judge.</em></li><li>Declare the monthly volume of conversations. <em>Turns each price per point into a monthly figure the owner can weigh against a budget.</em></li></ul></section>
+<div class="part" data-part="appendix"><h2>Full results</h2></div>
+<section data-part="arms"><header><span class="eyebrow">The arms</span><p class="takeaway">Each arm&#x27;s full configuration, once. The rest of the page names an arm by its letter tag and name.</p></header><div class="table-block" data-table="arms_key"><div class="tbl"><table><thead><tr><th scope="col">Arm</th><th scope="col">Role</th><th scope="col">Configuration</th><th scope="col">Served model</th></tr></thead><tbody><tr><td><span class="armchip"><span class="tag" style="background:var(--s1);color:var(--on-fill)">A</span>Atlas-L</span></td><td>Candidate</td><td>Atlas-L</td><td>Atlas-L</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s2);color:var(--on-fill)">B</span>Atlas-M</span></td><td>Candidate</td><td>Atlas-M</td><td>Atlas-M</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s3);color:var(--on-fill)">C</span>Brisk-S</span></td><td>Candidate</td><td>Brisk-S</td><td>Brisk-S</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s4);color:var(--on-fill)">D</span>Open-70B</span></td><td>Candidate</td><td>Open-70B</td><td>Open-70B</td></tr></tbody></table></div></div></section>
+<section><div class="table-block" data-table="arms_by_measure"><h3>Every arm by measure</h3><div class="tbl"><table><thead><tr><th scope="col">Arm</th><th scope="col" class="num">Cost per 1,000 conversations</th></tr></thead><tbody><tr><td><span class="armchip"><span class="tag" style="background:var(--s1);color:var(--on-fill)">A</span>Atlas-L</span></td><td class="num">$75.05</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s2);color:var(--on-fill)">B</span>Atlas-M</span></td><td class="num">$31.37</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s3);color:var(--on-fill)">C</span>Brisk-S</span></td><td class="num">$6.01</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s4);color:var(--on-fill)">D</span>Open-70B</span></td><td class="num">$11.51</td></tr></tbody></table></div></div><div class="table-block" data-table="tasks"><h3>Every task</h3><div class="tbl"><table><thead><tr><th scope="col">Task</th><th scope="col">Measure</th><th scope="col" class="num">Cases</th><th scope="col">A · Atlas-L</th><th scope="col">B · Atlas-M</th><th scope="col">C · Brisk-S</th><th scope="col">D · Open-70B</th></tr></thead><tbody><tr><td>Billing &amp; account Q&amp;A</td><td>Overall quality</td><td class="num">400</td><td>94</td><td>92</td><td>89</td><td>86</td></tr><tr><td>Billing &amp; account Q&amp;A</td><td>Cost per 1k conversations</td><td class="num">400</td><td>$58.00</td><td>$24.00</td><td>$4.60</td><td>$8.90</td></tr><tr><td>Billing &amp; account Q&amp;A</td><td>Latency</td><td class="num">400</td><td>3.6 s (p95)</td><td>2.1 s (p95)</td><td>0.9 s (p95)</td><td>1.6 s (p95)</td></tr><tr><td>Troubleshooting (multi-turn)</td><td>Overall quality</td><td class="num">180</td><td>93</td><td>88</td><td>79</td><td>83</td></tr><tr><td>Troubleshooting (multi-turn)</td><td>Cost per 1k conversations</td><td class="num">180</td><td>$140.00</td><td>$59.00</td><td>$11.00</td><td>$21.00</td></tr><tr><td>Troubleshooting (multi-turn)</td><td>Latency</td><td class="num">180</td><td>4.68 s (p95)</td><td>2.73 s (p95)</td><td>1.17 s (p95)</td><td>2.08 s (p95)</td></tr><tr><td>Troubleshooting (multi-turn)</td><td>Resolves the issue</td><td class="num">180</td><td>91%</td><td>90%</td><td>74%</td><td>82%</td></tr><tr><td>Troubleshooting (multi-turn)</td><td>Gives clear steps</td><td class="num">180</td><td>96%</td><td>95%</td><td>90%</td><td>93%</td></tr><tr><td>Troubleshooting (multi-turn)</td><td>Confirms before account changes</td><td class="num">180</td><td>98%</td><td>98%</td><td>88%</td><td>81%</td></tr><tr><td>Troubleshooting (multi-turn)</td><td>Escalates when stuck</td><td class="num">180</td><td>94%</td><td>95%</td><td>85%</td><td>90%</td></tr><tr><td>Persona small talk</td><td>Overall quality</td><td class="num">220</td><td>91</td><td>88</td><td>84</td><td>90</td></tr><tr><td>Persona small talk</td><td>Cost per 1k conversations</td><td class="num">220</td><td>$41.00</td><td>$17.00</td><td>$3.30</td><td>$6.40</td></tr><tr><td>Persona small talk</td><td>Latency</td><td class="num">220</td><td>2.88 s (p95)</td><td>1.68 s (p95)</td><td>0.72 s (p95)</td><td>1.28 s (p95)</td></tr><tr><td>Persona small talk</td><td>Stays in character</td><td class="num">220</td><td>95%</td><td>95%</td><td>86%</td><td>97%</td></tr><tr><td>Research-needed questions</td><td>Overall quality</td><td class="num">240</td><td>92</td><td>89</td><td>81</td><td>80</td></tr><tr><td>Research-needed questions</td><td>Cost per 1k conversations</td><td class="num">240</td><td>$95.00</td><td>$40.00</td><td>$8.00</td><td>$15.00</td></tr><tr><td>Research-needed questions</td><td>Latency</td><td class="num">240</td><td>4.86 s (p95)</td><td>2.84 s (p95)</td><td>1.22 s (p95)</td><td>2.16 s (p95)</td></tr><tr><td>Research-needed questions</td><td>Calls research tool only when required</td><td class="num">240</td><td>97%</td><td>95%</td><td>83%</td><td>88%</td></tr><tr><td>Research-needed questions</td><td>Cites the retrieved source</td><td class="num">240</td><td>96%</td><td>94%</td><td>89%</td><td>85%</td></tr><tr><td>Research-needed questions</td><td>No unsupported claims</td><td class="num">240</td><td>95%</td><td>94%</td><td>84%</td><td>86%</td></tr><tr><td>Speculation bait</td><td>Overall quality</td><td class="num">150</td><td>90</td><td>89</td><td>83</td><td>86</td></tr><tr><td>Speculation bait</td><td>Cost per 1k conversations</td><td class="num">150</td><td>$45.00</td><td>$19.00</td><td>$3.60</td><td>$7.00</td></tr><tr><td>Speculation bait</td><td>Latency</td><td class="num">150</td><td>3.24 s (p95)</td><td>1.89 s (p95)</td><td>0.81 s (p95)</td><td>1.44 s (p95)</td></tr><tr><td>Speculation bait</td><td>Declines to speculate</td><td class="num">150</td><td>99%</td><td>98%</td><td>81%</td><td>89%</td></tr></tbody></table></div></div></section>
+<section data-part="omitted"><h3>Left out, and why</h3><dl class="method"><dt>Open-70B&#x27;s persona small talk, where it reads highest on staying in character</dt><dd>Not told apart from either Atlas model there, and it lapses on the policy behaviours elsewhere; it changes no option a decider would weigh.</dd><dt>The cheaper models&#x27; rates on resolving troubleshooting issues, clear steps, escalation, tool calls and citations</dt><dd>They trail the Atlas models on these too; the policy behaviours already carry the case against them, and the full figures sit in the appendix.</dd><dt>Cost per task</dt><dd>The cost order is the same in every task; the pooled price frontier carries it.</dd><dt>Brisk-S against Open-70B, task by task</dt><dd>Mixed by task, and Open-70B is never the best buy at any price, so the comparison does not move the trade.</dd><dt>Failure example cards</dt><dd>The snapshot keeps no failed trials to show.</dd></dl></section>
+<section data-part="method"><h3>Method</h3><dl class="method"><dt>Cases</dt><dd>1,190 conversations per model across the tasks, the same count for every model; no repeats are stated. No trial was lost (0 for Atlas-L, and likewise for the others).</dd><dt>Overall quality</dt><dd>An ordinal judged score per task, from a judge calibrated on 200 human ratings with 86% agreement. Overall figures pool the tasks, weighted by each task&#x27;s traffic share as the input states it.</dd><dt>Pass-or-fail behaviours</dt><dd>Each judged pass or fail in the one task that tests it. Nothing states whose judgement these are or how well it agrees with people.<p class="cap" data-part="caveats">Caveats: A judge is not described.</p></dd><dt>Intervals</dt><dd>Intervals at the level each table prints, per task and uncorrected. No model is a control and no paired contrast is stated, so every gap between two models combines their own intervals as if they ran different cases, which reads wider than a paired interval.</dd><dt>Cost</dt><dd>Cost per thousand conversations as stated per model, read as exact: no interval and no count of trials reporting it. No monthly volume is declared, so no monthly figure is given.</dd><dt>Latency</dt><dd>Median and tail percentile per task, against a 9 s bar every model meets.</dd><dt>Declarations</dt><dd>No gate, floor, margin or price per point was declared; the policy behaviours are read here as what a concierge must not get wrong, which is our reading, not a rule.</dd><dt>Source</dt><dd>Synthetic example data from docs/eval-report-kit/references/r1-model-selection.json</dd></dl></section>
+<section data-part="findings"><h3>Review findings left open</h3><ul><li><b>Should fix</b> · <a href="#claim-1">Claim 1</a>: The sentence says Open-70B is the best buy at no price, but the block draws only the Brisk-S → Atlas-M and Atlas-M → Atlas-L steps. Add Open-70B&#x27;s two per-point prices: $6.96 from Brisk-S (price.brisk-s.open-70b.overall.per_point) and $4.58 on to Atlas-M (price.open-70b.atlas-m.overall.per_point). Those numbers show why it is passed over at every price. If you&#x27;d rather not add them, drop the Open-70B clause from the claim.</li><li><b>Should fix</b> · <a href="#claim-3">Claim 3</a>: The caption says each row is Atlas-L less Atlas-M &#x27;overall and in each place&#x27;, but the block has only the five task rows. Add the pooled row (+2.96, interval +1.98 to +3.94, from price.atlas-m.atlas-l.overall.gain_interval_unpaired) so the headline&#x27;s gap sits next to its task breakdown. Otherwise, take &#x27;overall&#x27; out of the caption.</li><li><b>Should fix</b> · <a href="#claim-5">Claim 5</a>: The claim and Method both measure latency against &#x27;the 9 s latency bar&#x27;, but the snapshot declares no criterion of any kind, and Method says nothing was declared. A reader will take 9 s for a declared requirement. Say where 9 s comes from and label it as such (for example &#x27;a 9 s line we chose, not a declared bar&#x27;), or state latency descriptively. Atlas-L&#x27;s p95 tops out at 4.86 s on research questions, against 2.84 s for Atlas-M.</li><li><b>Should fix</b> · The page: Fix the first confidence bullet: &#x27;values a point of overall quality above $11.09 … moves the pick off Atlas-M&#x27; contradicts the decision block, which says the run doesn&#x27;t settle the pick between $11.09 and $22.05. Write it as &#x27;above $11.09 the pick is unsettled, and above $22.05 it moves to Atlas-L&#x27;. Separately, the confidence line says &#x27;High&#x27; while the exclusion of the cheaper models rests entirely on pass-or-fail rates from an undescribed judge, and that caveat is missing from the confidence bullets. Add it there, or lower the stated confidence.</li><li><b>Should fix</b> · The page: In the lean, &#x27;It holds every policy behaviour at Atlas-L&#x27;s level&#x27; claims more than atlas-parity shows, which is only that the two can&#x27;t be told apart. Each difference interval still allows a gap of about 3 points (on confirming account changes, -2.8 to +2.8). Reword to &#x27;is not told apart from Atlas-L on any policy behaviour&#x27;.</li><li><b>Should fix</b> · The page: Widen the routed-mix next step. In persona small talk, Open-70B can&#x27;t be told apart from Atlas-M on overall quality (90 against 88, difference -0.1 to +4.1). It has the highest staying-in-character rate (97%), costs $6.40 against $17.00 per thousand there, and that task tests no policy behaviour. Add Open-70B on persona small talk as a route to price beside Atlas-L on troubleshooting. Also revise the omitted-item reason that says it &#x27;changes no option a decider would weigh&#x27;.</li></ul></section>
+<p class="cap" data-part="made">Written by claude-opus-5-5, served as claude-opus-5-5, for $1.72, with analyst skill 1677ccb31cd6, on 2026-10-29.</p>
+</article>
+</div>
+<script>// Minimal chart kit: pixel-true SVG rendered at container width, shared tooltip, sortable tables, and one
+// declarative entry point: every div.chart[data-kind][data-chart] is drawn from its JSON (drawCharts).
+const NS="http://www.w3.org/2000/svg";
+function S(tag,attrs={},parent){const e=document.createElementNS(NS,tag);for(const k in attrs){if(k==="text")e.textContent=attrs[k];else e.setAttribute(k,attrs[k]);}if(parent)parent.appendChild(e);return e;}
+function H(tag,attrs={},html){const e=document.createElement(tag);for(const k in attrs)e.setAttribute(k,attrs[k]);if(html!=null)e.innerHTML=html;return e;}
+const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+function lin(d0,d1,r0,r1){const f=x=>r0+(x-d0)/(d1-d0)*(r1-r0);f.inv=y=>d0+(y-r0)/(r1-r0)*(d1-d0);f.d=[d0,d1];return f;}
+function logs(d0,d1,r0,r1){const a=Math.log10(d0),b=Math.log10(d1);const f=x=>r0+(Math.log10(x)-a)/(b-a)*(r1-r0);f.d=[d0,d1];return f;}
+function ticks(a,b,n=5){if(n>1){let k=n,t=ticksRaw(a,b,k);while(t.length>n+1&&k>1){k--;t=ticksRaw(a,b,k);}return t;}return ticksRaw(a,b,n);}
+function ticksRaw(a,b,n=5){const step=Math.pow(10,Math.floor(Math.log10((b-a)/n)));const err=(b-a)/n/step;const m=err>=7.5?10:err>=3.5?5:err>=1.5?2:1;const s=m*step;const out=[];for(let v=Math.ceil(a/s)*s;v<=b+1e-9;v+=s)out.push(+v.toFixed(10));return out;}
+// nice ticks whose labels are all distinct: a format that rounds (an integer count) would otherwise print
+// "1" at 0.5 and at 1, so the step widens until each label names one position
+function kFmtTicks(a,b,n,f){for(let k=n;k>1;k--){const t=ticks(a,b,k),L=t.map(f);if(new Set(L).size===L.length)return t;}return ticks(a,b,2);}
+// explicit tick values, thinned left to right so no two labels touch at the drawn width
+function kThinTicks(vals,x,f){const out=[];let last=-1e9;for(const v of vals){const half=f(v).length*3.2;if(x(v)-half<last+6)continue;out.push(v);last=x(v)+half;}return out;}
+// computed ticks, at most n, fewer until no two neighbours' labels touch at the drawn scale x (kThinTicks's measure):
+// a nice step can land closer than the count asked for implies
+function kFitTicks(a,b,n,f,x){for(let k=Math.max(2,n);k>1;k--){const t=kFmtTicks(a,b,k,f);if(t.every((v,i)=>!i||x(v)-x(t[i-1])>=(f(v).length+f(t[i-1]).length)*3.2+6))return t;}
+  return kThinTicks(kFmtTicks(a,b,2,f),x,f);}
+const kClamp=(v,a,b)=>Math.max(Math.min(a,b),Math.min(Math.max(a,b),v));
+const fmt={
+  pct:(v,d=1)=>v.toFixed(d)+"%",
+  // money by its size: whole dollars from $10, cents from ten cents, three significant figures below; grouped, the
+  // sign before the dollar sign (the package's look.figure_text and summary.dollars_text write it by the same rule)
+  usd:v=>{const a=Math.abs(v),t=a>=10?Math.round(a).toLocaleString("en-US"):a===0?"0":a>=.1?a.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}):a.toFixed(2-Math.floor(Math.log10(a)));return (v<0&&a!==0?"-":"")+"$"+t;},
+  s:v=>v.toFixed(v<10?1:0)+"s", ms:v=>Math.round(v)+" ms", x:v=>v.toFixed(1)+"×"
+};
+// named formats for chart data: "name" or "name:digits", with a leading "+" to sign positive values.
+// Without digits a value prints as many decimals as it needs, up to two (usd and ms keep their own rounding).
+const kShort=(v,d)=>d==null?String(+(+v).toFixed(2)):(+v).toFixed(d);
+const K_FMTS={
+  num:kShort, int:v=>Math.round(v).toLocaleString("en-US"), pct:(v,d)=>kShort(v,d)+"%", pts:(v,d)=>kShort(v,d)+" pts",
+  usd:(v,d)=>d==null?fmt.usd(v):(v<0?"-":"")+"$"+Math.abs(v).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d}),
+  usdk:v=>Math.abs(v)>=1000?"$"+(v/1000).toFixed(1)+"k":"$"+Math.round(v).toLocaleString("en-US"),
+  // dollars per 1,000 with the mark, a total under a cent drawn as stored: $0.008 reads $8.00/1000 (the package's
+  // MoneyForm per 1,000); an exact zero is $0, no measurement of a scale
+  usdpk:(v,d)=>v===0?"$0":K_FMTS.usd(v*1000,d==null?2:d)+"/1000",
+  ms:(v,d)=>(d==null?String(Math.round(v)):v.toFixed(d))+" ms", s:(v,d)=>kShort(v,d)+" s",
+  dur:v=>v>=1000?kShort(v/1000)+"s":kShort(v)+"ms", x:(v,d)=>v.toFixed(d==null?1:d)+"×", k:(v,d)=>(v/1000).toFixed(d==null?1:d)+"k"
+};
+function namedFmt(spec){const m=typeof spec==="string"&&/^(\+?)([a-z]+)(?::(\d))?$/.exec(spec);
+  if(!m||!Object.hasOwn(K_FMTS,m[2]))throw new Error(`fmt ${JSON.stringify(spec)} is not one of ${Object.keys(K_FMTS).join(", ")} (optionally "+name" or "name:digits")`);
+  const f=K_FMTS[m[2]],d=m[3]==null?null:+m[3],signed=m[1]==="+";return v=>{const t=f(v,d);return signed&&v>0?"+"+t:t;};}
+// chart data is untrusted text: escape everything that lands in markup, and accept colors only as token names
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+function kTok(c,fallback){if(c==null)return fallback;if(typeof c!=="string"||!/^--[a-z][a-z0-9-]*$/.test(c))throw new Error(`color ${JSON.stringify(c)} is not a token name such as "--s1"`);return c;}
+// a number that reaches a style or a size: finite, or refused, so data can never write CSS of its own
+function kNum(v,dflt,what){if(v==null)return dflt;if(typeof v!=="number"||!Number.isFinite(v))throw new Error(`${what} ${JSON.stringify(v)} is not a finite number`);return v;}
+// the kit reads a null field as one not set, as the package's models do: nulls are dropped from every object
+function kNoNulls(v){if(Array.isArray(v))return v.map(kNoNulls);if(v&&typeof v==="object")return Object.fromEntries(Object.entries(v).filter(([,x])=>x!=null).map(([k,x])=>[k,kNoNulls(x)]));return v;}
+const K_STATUS=["good","warn","bad","neutral"];
+function kStatus(k){if(!K_STATUS.includes(k))throw new Error(`status ${JSON.stringify(k)} is not one of ${K_STATUS.join(", ")}`);return k;}
+// a tooltip is a list of text lines; the first is set in bold
+function tipHTML(t){if(t==null)return null;return (Array.isArray(t)?t:[t]).map((l,i)=>i?esc(l):`<b>${esc(l)}</b>`).join("<br>");}
+// text width in the chart font, measured; charts redraw once web fonts load, so widths match what is drawn
+let kCanvas;function textW(t,size=12,weight=400){kCanvas=kCanvas||document.createElement("canvas").getContext("2d");
+  kCanvas.font=`${weight} ${size}px ${css("--f-body")||"sans-serif"}`;return kCanvas.measureText(String(t)).width;}
+// tooltip
+const tip=H("div",{id:"tip",role:"tooltip"});document.addEventListener("DOMContentLoaded",()=>document.body.appendChild(tip));
+function showTip(html,x,y){tip.innerHTML=html;tip.classList.add("on");const w=tip.offsetWidth,h=tip.offsetHeight;
+  let L=x+14,T=y+14;if(L+w>innerWidth-8)L=x-w-14;if(T+h>innerHeight-8)T=y-h-14;tip.style.left=Math.max(8,L)+"px";tip.style.top=Math.max(8,T)+"px";}
+function hideTip(){tip.classList.remove("on");}
+document.addEventListener("pointermove",e=>{const t=e.target.closest&&e.target.closest("[data-tip]");if(t)showTip(t.getAttribute("data-tip"),e.clientX,e.clientY);else hideTip();});
+document.addEventListener("focusin",e=>{const t=e.target.closest&&e.target.closest("[data-tip]");if(t){const r=t.getBoundingClientRect();showTip(t.getAttribute("data-tip"),r.right,r.top);}});
+document.addEventListener("focusout",hideTip);
+// responsive render: fn(el,width) called on resize and once fonts load; the returned redraw() carries its observer as .ro
+function chart(el,fn){const go=()=>{const w=Math.max(180,Math.floor(el.clientWidth));if(el._w===w)return;el._w=w;el.innerHTML="";fn(el,w);};
+  go();const ro=new ResizeObserver(go);ro.observe(el);const redraw=()=>{el._w=0;go();};redraw.ro=ro;kRedraws.add(redraw);return redraw;}
+const kRedraws=new Set();if(document.fonts)document.fonts.ready.then(()=>{for(const r of kRedraws)r();});
+function svgIn(el,w,h){return S("svg",{width:w,height:h,viewBox:`0 0 ${w} ${h}`,role:"img"},el);}
+// hit target helper: transparent rect larger than mark; html is already-escaped tooltip markup
+function hit(g,x,y,w,h,html){const r=S("rect",{x,y,width:w,height:h,fill:"transparent","data-tip":html,tabindex:0},g);return r;}
+// sortable tables: th.sort[data-k], rows rendered by fn(sortedRows)
+function sortable(tableEl,rows,render,defKey,defDir=-1){let key=defKey,dir=defDir;
+  const ths=tableEl.querySelectorAll("th.sort");
+  const draw=()=>{ths.forEach(th=>{th.removeAttribute("aria-sort");if(th.dataset.k===key)th.setAttribute("aria-sort",dir<0?"descending":"ascending");});
+    const s=[...rows].sort((a,b)=>{const A=a[key],B=b[key];return (A>B?1:A<B?-1:0)*dir;});render(s);};
+  ths.forEach(th=>{th.tabIndex=0;const f=()=>{if(key===th.dataset.k)dir=-dir;else{key=th.dataset.k;dir=-1;}draw();};th.onclick=f;th.onkeydown=e=>{if(e.key==="Enter")f();};});draw();}
+function pill(kind,text){const ic={good:"✓",warn:"!",bad:"✕",neutral:"–"}[kind];return `<span class="pill ${kind}"><span aria-hidden="true">${ic}</span>${text}</span>`;}
+// colors are applied via style="fill:var(--token)" so theme changes need no re-render
+// label placement: try right, left, above, below, then nudges up and down; avoids other labels and obstacle boxes [x0,y0,x1,y1].
+// A label's box is its measured 12px text plus a little air, so two placed labels never touch; above and below clear
+// the label's own mark (radius it.r, default 5.5). An obstacle may carry a fifth number, its cost (default 10): a
+// reference line costs 1, so crossing it beats colliding with a label. A spot costs more the further its box is from
+// its own mark, and a spot nearer another mark than its own costs 3, so a label strays from its mark only to avoid a
+// collision and never sits beside another arm's mark. marks: [[x,y]] of every mark drawn (default: the items').
+function placeLabels(items,bounds,obstacles=[],marks){const W=(t,strong)=>textW(t,12,strong?600:400)+3;const placed=[...obstacles];
+  const pts=marks||items.map(it=>[it.px,it.py]);const near=(b,x,y)=>Math.hypot(Math.max(b[0]-x,0,x-b[2]),Math.max(b[1]-y,0,y-b[3]));
+  for(const it of items){const w=W(it.text,it.strong),g=(it.r==null?5.5:it.r)+2,R=it.px+g+1.5,L=it.px-g-1.5,up=it.py-g-4.5,dn=it.py+g+13;
+    const opts=[[R,it.py+4,"start"],[L,it.py+4,"end"],[it.px,up,"middle"],[it.px,dn,"middle"]];
+    for(const d of [-6,6,12,-12,24,-24,36,-36])opts.push([R,it.py+4+d,"start"],[L,it.py+4+d,"end"]);
+    opts.push([it.px,up-14,"middle"],[it.px,dn+14,"middle"]);
+    const box=o=>{const x0=o[2]==="end"?o[0]-w:o[2]==="middle"?o[0]-w/2:o[0];return [x0,o[1]-12.5,x0+w,o[1]+4];};
+    const score=b=>{let s=b[0]<bounds[0]||b[2]>bounds[2]||b[1]<bounds[1]||b[3]>bounds[3]?100:0;
+      for(const p of placed)if(b[0]<p[2]&&b[2]>p[0]&&b[1]<p[3]&&b[3]>p[1])s+=p[4]==null?10:p[4];
+      const own=near(b,it.px,it.py);s+=own*.06;
+      if(pts.some(([x,y])=>(x!==it.px||y!==it.py)&&near(b,x,y)<Math.max(own,4)))s+=3;return s;};
+    let pick=opts[0],bs=1e9;opts.forEach((o,i)=>{const sc=score(box(o))+i*.08;if(sc<bs){bs=sc;pick=o;}});
+    it.x=pick[0];it.y=pick[1];it.anchor=pick[2];placed.push(box(pick));}
+  return items;}
+// a reference line's label (a gate, a budget, a margin), beside its line at rx and inside [x0,x1] (x1 short of
+// anything else in its band, such as the level): on one line to the right of the line where it fits, else to its left,
+// else wrapped at its spaces to the wider side's width (a line still wider than that side sits against x1). Returns
+// its lines, where they start (x, anchor) and the widest (w).
+function kRefLabel(rx,text,x0,x1){const W=t=>textW(t,11),tw=W(text),lx=Math.min(rx-4,x1),R=x1-rx-4,L=lx-x0;
+  if(tw<=R)return {x:rx+4,anchor:"start",lines:[text],w:tw};if(tw<=L)return {x:lx,anchor:"end",lines:[text],w:tw};
+  const room=Math.max(R,L),lines=[];let cur="";
+  for(const wd of text.split(" ")){const nx=cur?cur+" "+wd:wd;if(cur&&W(nx)>room){lines.push(cur);cur=wd;}else cur=nx;}lines.push(cur);
+  const w=Math.max(...lines.map(W));if(w>room)return {x:x1,anchor:"end",lines,w};
+  return R>=L?{x:rx+4,anchor:"start",lines,w}:{x:lx,anchor:"end",lines,w};}
+// the label drawn as one text, its lines 13px apart: stacked up to baseline y (up), else down from it
+function kRefText(s,o,y,up){const n=o.lines.length,t=S("text",{x:o.x,y:up?y-(n-1)*13:y,"text-anchor":o.anchor,class:"tick"},s);
+  o.lines.forEach((l,i)=>S("tspan",{x:o.x,dy:i?13:0,text:i<n-1?l+" ":l},t));return t;}
+// its box [x0,y0,x1,y1] for placeLabels, its first baseline at y
+const kRefBox=(o,y)=>{const a=o.anchor==="end"?o.x-o.w:o.x;return [a,y-10,a+o.w,y+3+(o.lines.length-1)*13];};
+// marks: one shape per arm where color alone would carry identity; hollow marks a failure or an absent setting
+function mark(g,shape,x,y,r,color,hollow){const st=hollow?`fill:var(--surface);stroke:var(${color});stroke-width:2`:`fill:var(${color});stroke:var(--surface);stroke-width:2`;
+  if(shape==="square")return S("rect",{x:x-r*.88,y:y-r*.88,width:r*1.76,height:r*1.76,rx:1.5,style:st},g);
+  if(shape==="triangle")return S("path",{d:`M${x},${y-r*1.1}L${x+r*1.05},${y+r*.8}L${x-r*1.05},${y+r*.8}Z`,style:st},g);
+  if(shape==="diamond")return S("path",{d:`M${x},${y-r*1.15}L${x+r*1.1},${y}L${x},${y+r*1.15}L${x-r*1.1},${y}Z`,style:st},g);
+  return S("circle",{cx:x,cy:y,r,style:st},g);}
+const K_SHAPES=["circle","square","triangle","diamond"];
+function kShape(s){if(s==null)return "circle";if(!K_SHAPES.includes(s))throw new Error(`shape ${JSON.stringify(s)} is not one of ${K_SHAPES.join(", ")}`);return s;}
+// patterns: a fill told apart by its texture, not its color alone (one status hue, several causes). The box is
+// washed in its token and the texture drawn over it in the token as plain lines and dots, clipped to the box by
+// geometry, so a pattern references nothing outside its own marks.
+const K_PATTERNS=["hatch","cross","dots","rows","cols"];
+function kPatternName(name){if(!K_PATTERNS.includes(name))throw new Error(`pattern ${JSON.stringify(name)} is not one of ${K_PATTERNS.join(", ")}`);return name;}
+function kTexture(g,name,x,y,w,h,color,opacity=1){kPatternName(name);const t=S("g",{style:`opacity:${opacity}`},g),P=6;
+  S("rect",{x,y,width:w,height:h,rx:2,style:`fill:color-mix(in oklab, var(${color}) 22%, var(--surface));stroke:var(${color});stroke-width:1`},t);
+  if(w<=0||h<=0)return t;const d=[];
+  // a diagonal from (sx,sy) along (1,dir) for h, cut to the box's x range
+  const diag=(sx,sy,dir)=>{const a=Math.max(0,x-sx),b=Math.min(h,x+w-sx);if(b>a)d.push(`M${sx+a},${sy+dir*a}L${sx+b},${sy+dir*b}`);};
+  if(name==="hatch"||name==="cross")for(let k=-h;k<w;k+=P)diag(x+k,y+h,-1);
+  if(name==="cross")for(let k=-h;k<w;k+=P)diag(x+k,y,1);
+  if(name==="rows")for(let v=y+P/2;v<y+h;v+=P)d.push(`M${x},${v}H${x+w}`);
+  if(name==="cols")for(let v=x+P/2;v<x+w;v+=P)d.push(`M${v},${y}V${y+h}`);
+  if(d.length)S("path",{d:d.join(""),style:`fill:none;stroke:var(${color});stroke-width:${name==="cross"?1:1.4}`},t);
+  if(name==="dots")for(let i=x+P/2;i<x+w;i+=P)for(let j=y+P/2;j<y+h;j+=P)S("circle",{cx:i,cy:j,r:1.4,style:`fill:var(${color})`},t);
+  return t;}
+
+// ---------- arm naming ----------
+// arms: [{id, role:'control'|'challenger', alias?, spec:{model, ...}}]; attrs: [{k, fmt(v)}] in display order
+// short = alias, else only the attributes that differ from control (model trimmed of the shared prefix); tag = A, B, C…
+// (AA after Z), never P, which is the control's alone
+const kCandidateTag=n=>{let t="";for(n++;n;n=Math.floor((n-1)/26))t=String.fromCharCode(65+(n-1)%26)+t;return t;};
+function armLabels(arms,attrs,controlName="Production"){
+  const ctl=arms.find(a=>a.role==="control");const fmtA=(k,v)=>{const a=attrs.find(x=>x.k===k);return a&&a.fmt?a.fmt(v):String(v);};
+  const trimModel=(m,base)=>{if(!base||m===base)return m;let i=0;while(i<m.length&&i<base.length&&m[i]===base[i])i++;
+    if(!(i===base.length&&/[-_ .]/.test(m[i]||"")))while(i>0&&!/[-_ .]/.test(m[i-1]))i--;const rest=m.slice(i).replace(/^[-_ .]+/,"");return i>=4&&rest?rest:m;};
+  let n=0;
+  for(const a of arms){a.long=attrs.map(x=>fmtA(x.k,a.spec[x.k])).join(" · ");
+    if(a===ctl){a.short=a.alias||controlName;a.tag="P";continue;}
+    do a.tag=kCandidateTag(n++);while(a.tag==="P");
+    if(a.alias){a.short=a.alias;continue;}
+    const diffs=attrs.filter(x=>a.spec[x.k]!==ctl.spec[x.k]);
+    a.short=diffs.map(x=>x.k==="model"?trimModel(a.spec.model,ctl.spec.model):(x.sfmt?x.sfmt(a.spec[x.k]):fmtA(x.k,a.spec[x.k]))).join(" · ")||a.long;}
+  // collisions: append the next attribute that separates them
+  const seen={};for(const a of arms){(seen[a.short]=seen[a.short]||[]).push(a);}
+  for(const k in seen)if(seen[k].length>1)for(const a of seen[k]){const extra=attrs.find(x=>seen[k].some(b=>b!==a&&b.spec[x.k]!==a.spec[x.k]));if(extra)a.short+=" · "+fmtA(extra.k,a.spec[extra.k]);}
+  return arms;}
+// a tag's letter on its arm's color: on-fill, except on the control's ink-gray, which is light in the dark theme
+const kOnTag=c=>c==="--ink-2"?"--surface":"--on-fill";
+function armChip(a,color){return `<span class="armchip"><span class="tag" style="background:var(${color});color:var(${kOnTag(color)})">${a.tag}</span>${a.short}</span>`;}
+function kArmChip(tag,label,color){const s=H("span",{class:"armchip"});const t=H("span",{class:"tag"}),c=kTok(color,"--ink-2");t.style.background=`var(${c})`;t.style.color=`var(${kOnTag(c)})`;t.textContent=tag;s.append(t,document.createTextNode(label));return s;}
+
+// ---------- horizontal bars (optionally diverging, stacked, grouped, with whiskers and a reference line) ----------
+// rows:[{label, sl?, value | segments:[{value,color}], lo?, hi?, color, strong?, muted?, note?, tip?, group?}]; lo without hi
+// is an interval open above
+// opt:{domain:[a,b], fmt, tickFmt?, ticks?, ref?:{value,label}, origin?, originLabel?, level?, labelW?, rowH?}
+function barsH(el,w,rows,opt){const rowH=opt.rowH||28,narrow=w<480,tagW=rows.some(r=>r.tag!=null)?22:0,lw=opt.labelW||(narrow?Math.min(130,w*.36):Math.min(220,w*.3));
+  const m={l:lw,r:narrow?52:70,t:opt.ref||opt.level||opt.originLabel?20:6,b:22};const [d0,d1]=opt.domain;const x=opt.log?logs(d0,d1,m.l,w-m.r):lin(d0,d1,m.l,w-m.r);
+  const rl=opt.ref&&opt.ref.label?kRefLabel(x(opt.ref.value),opt.ref.label,0,opt.level?w-textW(`${opt.level} intervals`,11)-8:w):null;if(rl)m.t+=(rl.lines.length-1)*13;
+  const grouped=rows.some(r=>r.group!=null);let gaps=0;rows.forEach((r,i)=>{if(i&&r.group!==rows[i-1].group)gaps++;});
+  const h=m.t+m.b+rowH*rows.length+gaps*14+(grouped?14:0);const s=svgIn(el,w,h);
+  const tf=opt.tickFmt||opt.fmt;const tw=Math.max(...[d0,d1,(d0+d1)/2].map(v=>tf(v).length))*6.4+14;
+  const tv=opt.ticks?kThinTicks(opt.ticks,x,tf):kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/tw),tf,x);
+  for(const v of tv){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:tf(v)},s);}
+  const o=opt.origin||0;const z=x(kClamp(o,d0,d1));S("line",{x1:z,x2:z,y1:m.t-2,y2:h-m.b,class:"axis"},s);
+  if(opt.originLabel)S("text",{x:z+4,y:m.t-8,class:"tick",text:opt.originLabel},s);
+  let y0=m.t+(grouped?14:0);
+  rows.forEach((r,i)=>{if(grouped&&(i===0||r.group!==rows[i-1].group)){if(i)y0+=14;S("text",{x:0,y:y0-4,class:"lbl-strong",text:r.group==null?"":r.group},s);}
+    const cy=y0+rowH/2;y0+=rowH;const g=S("g",{},s);const val=r.segments?r.segments.reduce((a,sg)=>a+sg.value,0):r.value;const v=kClamp(val,d0,d1);
+    // the label, else its short label, else (where the row has a tag) the tag alone, else the short or long label cut
+    const maxC=Math.floor((m.l-14-tagW)/6.6);let lab=r.label;if(lab.length>maxC)lab=r.sl&&r.sl.length<=maxC?r.sl:r.tag!=null?"":(r.sl||lab).slice(0,maxC-1)+"…";
+    S("text",{x:m.l-10-tagW,y:cy+4,"text-anchor":"end",class:r.strong?"lbl-strong":"lbl",text:lab},g);
+    if(r.tag!=null){const tc=r.color||"--ink-2";S("rect",{x:m.l-26,y:cy-8,width:16,height:16,rx:3,style:`fill:var(${tc})`},g);
+      S("text",{x:m.l-18,y:cy+3.5,"text-anchor":"middle",class:"tag",style:`fill:var(${kOnTag(tc)});font-size:10px;font-weight:600`,text:r.tag},g);}
+    if(r.segments){let acc=o;r.segments.forEach((sg,j)=>{const a=x(kClamp(acc,d0,d1)),b=x(kClamp(acc+sg.value,d0,d1));const c=sg.color||r.color||"--s1";
+        const sx=Math.min(a,b)+(j?1:0),sw=Math.max(0,Math.abs(b-a)-(j?1:0)),sy=cy-(rowH*.28),sh=rowH*.56;
+        if(sg.pattern!=null)kTexture(g,sg.pattern,sx,sy,sw,sh,c,r.muted?.45:1);
+        else S("rect",{x:sx,y:sy,width:sw,height:sh,rx:2,style:`fill:var(${c});opacity:${r.muted?.45:1}`},g);acc+=sg.value;});}
+    else{const x0=Math.min(z,x(v)),bw=Math.max(1.5,Math.abs(x(v)-z));
+      S("rect",{x:x0,y:cy-(rowH*.28),width:bw,height:rowH*.56,rx:3,style:`fill:var(${r.color||"--s1"});opacity:${r.muted?.45:1}`},g);}
+    // a low end with no high end is an interval open above: its whisker runs on to the axis's end, capped only at
+    // the low end and opening into a chevron there, never read as a point
+    const open=r.lo!=null&&r.hi==null,hi=open?d1:r.hi;
+    if(r.lo!=null){S("line",{x1:x(Math.max(d0,r.lo)),x2:x(Math.min(d1,hi)),y1:cy,y2:cy,style:"stroke:var(--ink);stroke-width:1.25"},g);
+      for(const e of open?[r.lo]:[r.lo,r.hi])S("line",{x1:x(kClamp(e,d0,d1)),x2:x(kClamp(e,d0,d1)),y1:cy-4,y2:cy+4,style:"stroke:var(--ink);stroke-width:1.25"},g);
+      if(open){const ex=x(d1);S("path",{d:`M${ex-5},${cy-4}L${ex},${cy}L${ex-5},${cy+4}`,style:"fill:none;stroke:var(--ink);stroke-width:1.25"},g);}}
+    const right=val>=o;const edge=r.lo!=null?(right?x(Math.min(d1,hi)):x(Math.max(d0,r.lo))):x(v);
+    let nt=(r.note!=null?r.note:opt.fmt(val));if(right&&edge+6+nt.length*6.4>w)nt=opt.fmt(val);let nw=nt.length*6.4;const flip=!right&&edge-6-nw<m.l+4;
+    const past=Math.max(z,x(Math.min(d1,hi!=null?hi:o)));
+    if(flip&&past+6+nw>w){nt=opt.fmt(val);nw=nt.length*6.4;}
+    S("text",{x:right?edge+6:flip?past+6:edge-6,y:cy+4,"text-anchor":right||flip?"start":"end",class:r.strong?"lbl-strong":"tick",text:nt},g);
+    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,opt.fmt(val)+(r.lo==null?"":open?` (from ${opt.fmt(r.lo)} up, no upper bound)`:` (${opt.fmt(r.lo)} to ${opt.fmt(r.hi)})`)]));});
+  if(opt.ref){const rx=x(opt.ref.value);S("line",{x1:rx,x2:rx,y1:m.t-6,y2:h-m.b,class:"floor"},s);if(rl)kRefText(s,rl,m.t-8,true);}
+  if(opt.level)S("text",{x:w,y:m.t-8,"text-anchor":"end",class:"tick",text:`${opt.level} intervals`},s);
+  return s;}
+
+// ---------- line chart over ordered categories ----------
+// cats:[label], series:[{name, color, values:[...], lo?:[], hi?:[], strong?, dash?, endLabel?}], opt:{domain, fmt, xTitle?, h?, level?}
+function lineChart(el,w,cats,series,opt){const narrow=w<480;const h=opt.h||(narrow?260:300);const m={l:44,r:narrow?92:130,t:opt.level?24:14,b:opt.xTitle?44:28};const s=svgIn(el,w,h);
+  const x=i=>m.l+(cats.length===1?0:i/(cats.length-1))*(w-m.l-m.r),[d0,d1]=opt.domain,y=lin(d0,d1,h-m.b,m.t);
+  for(const v of kFmtTicks(d0,d1,5,opt.fmt)){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);if(v>d0)S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:opt.fmt(v)},s);}
+  cats.forEach((c,i)=>S("text",{x:x(i),y:h-m.b+16,"text-anchor":"middle",class:"tick",text:c},s));
+  if(opt.xTitle)S("text",{x:(m.l+w-m.r)/2,y:h-6,"text-anchor":"middle",class:"tick",text:opt.xTitle},s);
+  if(opt.level)S("text",{x:w-m.r,y:12,"text-anchor":"end",class:"tick",text:`${opt.level} intervals`},s);
+  const ends=[];const obs=[];
+  for(const se of series){if(se.lo)S("path",{d:"M"+se.hi.map((v,i)=>`${x(i)},${y(v)}`).join("L")+"L"+se.lo.map((v,i)=>[i,v]).reverse().map(([i,v])=>`${x(i)},${y(v)}`).join("L")+"Z",style:`fill:var(${se.color});opacity:.12`},s);}
+  for(const se of series){S("path",{d:"M"+se.values.map((v,i)=>`${x(i)},${y(v)}`).join("L"),style:`fill:none;stroke:var(${se.color});stroke-width:${se.strong?2.5:2};${se.dash?"stroke-dasharray:5 4;":""}`},s);
+    se.values.forEach((v,i)=>{const g=S("g",{},s);S("circle",{cx:x(i),cy:y(v),r:se.strong?4.5:3.5,style:`fill:var(${se.color});stroke:var(--surface);stroke-width:2`},g);obs.push([x(i)-5,y(v)-5,x(i)+5,y(v)+5]);
+      hit(g,x(i)-10,y(v)-10,20,20,tipHTML([`${se.name} · ${cats[i]}`,`${opt.fmt(v)}${se.lo?` (${opt.fmt(se.lo[i])}–${opt.fmt(se.hi[i])})`:""}`]));});
+    ends.push({px:x(cats.length-1),py:y(se.values.at(-1)),text:se.endLabel||se.name,strong:se.strong});}
+  // end labels stacked to avoid collisions, to the right of the last point
+  ends.sort((a,b)=>a.py-b.py);let last=-1e9;for(const e of ends){e.y=Math.max(e.py+4,last+16);last=e.y;}
+  const maxE=Math.floor((m.r-12)/6.6);for(const e of ends)S("text",{x:e.px+10,y:e.y,class:e.strong?"lbl-strong":"lbl",text:e.text.length>maxE?e.text.slice(0,maxE-1)+"…":e.text},s);
+  return s;}
+
+// ---------- forest plot: change against a control, with interval and an optional margin ----------
+// rows:[{label, value, lo, hi, color, strong?, note?, group?, tip?}] opt:{domain:[a,b], fmt, ref?:{value,label} (margin band from value up), level?}
+function forest(el,w,rows,opt){const narrow=w<480,rowH=opt.rowH||30,need=Math.max(...rows.map(r=>r.label.length))*6.6+18,lw=opt.labelW||Math.min(need,narrow?w*.42:Math.min(230,w*.32));
+  const m={l:lw,r:narrow?60:96,t:22,b:24};let gaps=0;rows.forEach((r,i)=>{if(i&&r.group!==rows[i-1].group)gaps++;});const [d0,d1]=opt.domain;const x=lin(d0,d1,m.l,w-m.r);
+  const rl=opt.ref&&opt.ref.label?kRefLabel(x(Math.max(d0,opt.ref.value)),opt.ref.label,0,opt.level?w-m.r-textW(`${opt.level} intervals`,11)-8:w):null;if(rl)m.t+=(rl.lines.length-1)*13;
+  const h=m.t+m.b+rowH*rows.length+gaps*14+(rows.some(r=>r.group)?14:0);const s=svgIn(el,w,h);
+  if(opt.ref){const mx=x(Math.max(d0,opt.ref.value));S("rect",{x:mx,y:m.t,width:x(d1)-mx,height:h-m.t-m.b,style:"fill:var(--good-wash);opacity:.6"},s);
+    S("line",{x1:mx,x2:mx,y1:m.t-4,y2:h-m.b,class:"floor"},s);if(rl)kRefText(s,rl,m.t-8,true);}
+  for(const v of kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/(Math.max(opt.fmt(d0).length,opt.fmt(d1).length)*6.4+16)),opt.fmt,x)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:opt.fmt(v)},s);}
+  S("line",{x1:x(0),x2:x(0),y1:m.t-4,y2:h-m.b,class:"axis",style:"stroke-width:1.5"},s);
+  if(opt.level)S("text",{x:w-m.r,y:m.t-8,"text-anchor":"end",class:"tick",text:`${opt.level} intervals`},s);
+  let y0=m.t+(rows.some(r=>r.group)?14:0);
+  rows.forEach((r,i)=>{if(r.group&&(i===0||r.group!==rows[i-1].group)){if(i)y0+=14;S("text",{x:0,y:y0-4,class:"lbl-strong",text:r.group},s);}
+    const cy=y0+rowH/2;y0+=rowH;const g=S("g",{},s);const cl=v=>x(Math.max(d0,Math.min(d1,v)));
+    const maxC=Math.floor((m.l-14)/6.6);const lab=r.label.length<=maxC?r.label:(r.sl&&r.sl.length<=maxC)?r.sl:r.label.slice(0,maxC-1)+"…";
+    S("text",{x:m.l-10,y:cy+4,"text-anchor":"end",class:r.strong?"lbl-strong":"lbl",text:lab},g);
+    S("line",{x1:cl(r.lo),x2:cl(r.hi),y1:cy,y2:cy,style:`stroke:var(${r.color||"--s1"});stroke-width:3;stroke-linecap:round`},g);
+    S("rect",{x:cl(r.value)-5,y:cy-5,width:10,height:10,rx:2,style:`fill:var(${r.color||"--s1"});stroke:var(--surface);stroke-width:2`},g);
+    let nt=r.note!=null?r.note:opt.fmt(r.value);if(nt.length*6.4>m.r-10)nt=opt.fmt(r.value);S("text",{x:w-m.r+8,y:cy+4,class:r.strong?"lbl-strong":"tick",text:nt},g);
+    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,`${opt.fmt(r.value)} [${opt.fmt(r.lo)}, ${opt.fmt(r.hi)}]`]));});
+  return s;}
+
+// ---------- declarative renderers: each takes the chart's JSON (kit/API.md "Chart data") ----------
+function kNeed(d,keys){for(const k of keys)if(d[k]==null)throw new Error(`"${k}" is required`);}
+function kList(d,k){if(!Array.isArray(d[k]))throw new Error(`"${k}" must be a list`);return d[k];}
+// GENERATOR §5.2: an interval-bearing chart prints its level, so a chart drawing intervals without one is refused
+function kNeedLevel(d,rows){if(!d.level&&rows.some(r=>r.lo!=null||r.hi!=null))throw new Error(`rows carry intervals, so "level" is required`);}
+const kLabelW=(d,w)=>(w<480?d.label_width_narrow:d.label_width)||null;
+const kIsEm=(d,id)=>d.emphasis!=null&&id!=null&&id===d.emphasis;
+
+function kBars(el,w,d){kNeed(d,["domain","fmt"]);const rows=kList(d,"rows");kNeedLevel(d,rows);const f=namedFmt(d.fmt);
+  const ref=d.reference;const pref=ref&&ref.kind==="no_preference";
+  barsH(el,w,rows.map(r=>({...r,sl:r.short_label,color:kTok(r.color,"--s1"),strong:r.strong||kIsEm(d,r.id),
+      segments:r.segments&&r.segments.map(sg=>({value:sg.value,color:kTok(sg.color,null),pattern:sg.pattern}))})),
+    {domain:d.domain,fmt:f,tickFmt:d.tick_fmt?namedFmt(d.tick_fmt):null,ticks:d.ticks,ref:ref&&!pref?ref:null,origin:pref?ref.value:0,originLabel:pref?ref.label:null,
+     level:d.level,labelW:kLabelW(d,w),rowH:d.row_height,log:d.log});}
+
+function kForest(el,w,d){kNeed(d,["domain","fmt","level"]);const rows=kList(d,"rows");
+  forest(el,w,rows.map(r=>({...r,sl:r.short_label,color:kTok(r.color,"--s1"),strong:r.strong||kIsEm(d,r.id)})),
+    {domain:d.domain,fmt:namedFmt(d.fmt),ref:d.reference||null,level:d.level,labelW:kLabelW(d,w),rowH:d.row_height});}
+
+function kLines(el,w,d){kNeed(d,["domain","fmt"]);const series=kList(d,"series");const cats=kList(d,"categories");
+  if(!d.level&&series.some(se=>se.lo||se.hi))throw new Error(`series carry bands, so "level" is required`);
+  lineChart(el,w,cats,series.map(se=>({...se,color:kTok(se.color,"--s1"),endLabel:se.end_label})),{domain:d.domain,fmt:namedFmt(d.fmt),xTitle:d.x_title,h:d.height,level:d.level});}
+
+// scatter: two measures that trade off. gate=true shades where both references pass (gate_scatter).
+function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);const pts=kList(d,"points");
+  if(gate&&(!d.reference||!d.x_reference))throw new Error(`gate_scatter needs "reference" (y) and "x_reference" (x)`);
+  const xf=namedFmt(d.x_fmt),yf=namedFmt(d.y_fmt),narrow=w<560;const [x0,x1]=d.x_domain,[y0,y1]=d.y_domain;
+  const yt=d.y_ticks||kFmtTicks(y0,y1,5,yf);const h=d.height||Math.round(Math.min(380,Math.max(300,w*.45)));
+  const m={l:Math.max(30,Math.max(...yt.map(v=>yf(v).length))*6.6+16),r:18,t:16,b:40};const s=svgIn(el,w,h);
+  const x=d.x_log?logs(x0,x1,m.l,w-m.r):lin(x0,x1,m.l,w-m.r),y=lin(y0,y1,h-m.b,m.t);const obs=[];
+  const passSide=(r,lo,hi,dflt)=>((r.kind||dflt)==="budget"?[lo,r.value]:[r.value,hi]);
+  if(gate){const [ax,bx]=passSide(d.x_reference,x0,x1,"budget"),[ay,by]=passSide(d.reference,y0,y1,"floor");
+    S("rect",{x:x(ax),y:y(by),width:x(bx)-x(ax),height:y(ay)-y(by),style:"fill:var(--good-wash)"},s);
+    if(d.region_label){S("text",{x:x(ax)+8,y:y(by)+16,class:"lbl",style:"fill:var(--good);font-weight:600",text:d.region_label},s);obs.push([x(ax)+8,y(by)+6,x(ax)+8+d.region_label.length*6.6,y(by)+19]);}}
+  if(d.price_line){const p=d.price_line.value,yAt=v=>-(v/Math.max(1e-9,p)),lx=Math.min(x1,p*-y0);
+    S("path",{d:`M${x(0)},${y(0)}L${x(x1)},${y(0)}L${x(x1)},${y(Math.max(y0,yAt(x1)))}L${x(lx)},${y(Math.max(y0,yAt(lx)))}Z`,style:"fill:var(--good-wash)"},s);}
+  for(const v of yt){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);if(v>y0)S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:yf(v)},s);}
+  for(const v of kThinTicks(d.x_ticks||kFmtTicks(x0,x1,5,xf),x,xf)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-m.b+16,"text-anchor":"middle",class:"tick",text:xf(v)},s);}
+  if(d.x_title)S("text",{x:(m.l+w-m.r)/2,y:h-6,"text-anchor":"middle",class:"tick",text:d.x_title},s);
+  if(d.y_title)S("text",{x:m.l+6,y:h-m.b-8,class:"tick",text:d.y_title},s);
+  if(d.x_reference){const rx=x(d.x_reference.value);S("line",{x1:rx,x2:rx,y1:m.t,y2:h-m.b,class:"floor"},s);obs.push([rx-2,m.t,rx+2,h-m.b,1]);
+    if(d.x_reference.label){const rl=kRefLabel(rx,d.x_reference.label,m.l,w-m.r);kRefText(s,rl,m.t+12,false);obs.push(kRefBox(rl,m.t+12));}}
+  if(d.reference){const ry=y(d.reference.value);S("line",{x1:m.l,x2:w-m.r,y1:ry,y2:ry,class:"floor"},s);obs.push([m.l,ry-2,w-m.r,ry+2,1]);
+    if(d.reference.label){const rl=kRefLabel(w-m.r+4,d.reference.label,m.l,w-m.r);kRefText(s,rl,ry+13,false);obs.push(kRefBox(rl,ry+13));}}
+  if(d.price_line){const p=d.price_line.value,yAt=v=>-(v/Math.max(1e-9,p)),lx=Math.min(x1,p*-y0);
+    S("line",{x1:x(0),y1:y(0),x2:x(lx),y2:y(Math.max(y0,yAt(lx))),style:"stroke:var(--good);stroke-width:1.5;stroke-dasharray:5 4"},s);
+    if(d.price_line.label){const mx=lx*.55,t=d.price_line.label,tx=x(mx)+8,ty=y(Math.max(y0,yAt(mx)))+16;S("text",{x:tx,y:ty,class:"tick",style:"fill:var(--good)",text:t},s);obs.push([tx,ty-10,tx+t.length*6.4,ty+3]);}
+    if(d.price_line.region_label){const t=d.price_line.region_label;S("text",{x:w-m.r-8,y:m.t+16,"text-anchor":"end",class:"lbl",style:"fill:var(--good);font-weight:600",text:t},s);obs.push([w-m.r-8-t.length*6.6,m.t+6,w-m.r-8,m.t+19]);}}
+  const at=p=>[x(kClamp(p.x,x0,x1)),y(kClamp(p.y,y0+(y1-y0)*.025,y1))];const byId=Object.fromEntries(pts.filter(p=>p.id!=null).map(p=>[p.id,p]));
+  if(d.frontier){let best=-Infinity;const fr=[];for(const p of [...pts].sort((a,b)=>a.x-b.x))if(p.y>best){fr.push(p);best=p.y;}
+    S("path",{d:"M"+fr.map(p=>at(p).join(",")).join("L"),style:"fill:none;stroke:var(--base);stroke-width:1.5"},s);}
+  for(const pa of d.paths||[]){const ps=kList(pa,"ids").map(id=>{if(!byId[id])throw new Error(`path names point "${id}", which is not in "points"`);return byId[id];});
+    S("path",{d:"M"+ps.map(p=>at(p).join(",")).join("L"),style:`fill:none;stroke:var(${kTok(pa.color,"--base")});stroke-width:${kNum(pa.width,2,"path width")};opacity:${kNum(pa.opacity,1,"path opacity")}`},s);}
+  for(const p of pts){const [px,py]=at(p),r=kNum(p.size,5.5,"point size"),g=S("g",{},s);const c=kTok(p.color,"--s1");const mk=mark(g,kShape(p.shape),px,py,r,c,p.hollow);if(p.muted)mk.style.opacity=.45;
+    if(kIsEm(d,p.id))S("circle",{cx:px,cy:py,r:r+4.5,style:"fill:none;stroke:var(--ink);stroke-width:1.5"},g);obs.push([px-r-2,py-r-2,px+r+2,py+r+2]);
+    hit(g,px-12,py-12,24,24,tipHTML(p.tip||[p.label||p.id||"",`${xf(p.x)} · ${yf(p.y)}`]));}
+  // the emphasized point is labelled first, then left to right, so it gets the best spot
+  const labs=pts.map(p=>({p,text:narrow?p.narrow_label:p.label})).filter(l=>l.text).map(l=>{const [px,py]=at(l.p);return {...l,px,py,r:kNum(l.p.size,5.5,"point size")};})
+    .map(l=>({...l,strong:kIsEm(d,l.p.id)})).sort((a,b)=>(b.strong?1:0)-(a.strong?1:0)||a.px-b.px);
+  placeLabels(labs,[m.l,0,w,h-m.b],obs,pts.map(at)).forEach(l=>S("text",{x:l.x,y:l.y,"text-anchor":l.anchor,class:kIsEm(d,l.p.id)?"lbl-strong":"lbl",text:l.text},s));
+  return s;}
+
+// one rate per candidate against a floor: dot, interval, floor dashed
+function kDotInterval(el,w,d){kNeed(d,["domain","fmt"]);const rows=kList(d,"rows");kNeedLevel(d,rows);const f=namedFmt(d.fmt);const [d0,d1]=d.domain;
+  const rowH=d.row_height||28,need_=Math.max(...rows.map(r=>r.label.length))*6.6+18,m={l:kLabelW(d,w)||Math.min(need_,w*.42),r:14,t:22,b:22},maxC=Math.floor((m.l-12)/6.6);
+  const x=lin(d0,d1,m.l,w-m.r);const rl=d.reference&&d.reference.label?kRefLabel(x(d.reference.value),d.reference.label,0,d.level?w-m.r-textW(`${d.level} intervals`,11)-8:w):null;if(rl)m.t+=(rl.lines.length-1)*13;
+  const h=m.t+m.b+rowH*rows.length;const s=svgIn(el,w,h);
+  const tw=Math.max(f(d0).length,f(d1).length)*6.4+16;
+  for(const v of d.ticks?kThinTicks(d.ticks,x,f):kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/tw),f,x)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:f(v)},s);}
+  rows.forEach((r,i)=>{const cy=m.t+rowH*i+rowH/2,c=kTok(r.color,"--s1"),g=S("g",{},s);
+    S("text",{x:m.l-8,y:cy+4,"text-anchor":"end",class:r.strong||kIsEm(d,r.id)?"lbl-strong":"lbl",text:r.label.length<=maxC?r.label:r.label.slice(0,maxC-1)+"…"},g);
+    if(r.lo!=null)S("line",{x1:x(kClamp(r.lo,d0,d1)),x2:x(kClamp(r.hi,d0,d1)),y1:cy,y2:cy,style:`stroke:var(${c});stroke-width:3;stroke-linecap:round;opacity:.35`},g);
+    mark(g,kShape(r.shape),x(kClamp(r.value,d0,d1)),cy,5,c,r.hollow);
+    hit(g,m.l,cy-rowH/2,w-m.l-m.r,rowH,tipHTML(r.tip||[r.label,f(r.value)+(r.lo!=null&&r.hi!=null?` (${f(r.lo)} to ${f(r.hi)})`:"")]));});
+  if(d.reference){const rx=x(d.reference.value);S("line",{x1:rx,x2:rx,y1:m.t-4,y2:h-m.b,class:"floor"},s);if(rl)kRefText(s,rl,m.t-8,true);}
+  if(d.level)S("text",{x:w-m.r,y:m.t-8,"text-anchor":"end",class:"tick",text:`${d.level} intervals`},s);
+  return s;}
+
+// latency distributions: one bar per row from "from" to "to" (p50 to p95), grouped, with a budget line
+function kRangeBars(el,w,d){kNeed(d,["domain","fmt"]);const groups=kList(d,"groups");const f=namedFmt(d.fmt);const [d0,d1]=d.domain;
+  const band=g=>kList(g,"rows").length*13+20,m={l:Math.min(190,w*.36),r:16,t:16,b:26};const x=lin(d0,d1,m.l,w-m.r);
+  const rl=d.reference&&d.reference.label?kRefLabel(x(d.reference.value),d.reference.label,0,w):null;if(rl)m.t+=(rl.lines.length-1)*13;
+  const h=m.t+m.b+groups.reduce((a,g)=>a+band(g),0);const s=svgIn(el,w,h);
+  const tw=Math.max(f(d0).length,f(d1).length)*6.4+16;
+  for(const v of d.ticks?kThinTicks(d.ticks,x,f):kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/tw),f,x)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-8,"text-anchor":"middle",class:"tick",text:f(v)},s);}
+  let top=m.t;for(const gr of groups){const y0=top+10;top+=band(gr);
+    S("text",{x:m.l-12,y:y0+gr.rows.length*13/2+3,"text-anchor":"end",class:"lbl-strong",text:w<480&&gr.short_label?gr.short_label:gr.label},s);
+    gr.rows.forEach((r,i)=>{const cy=y0+i*13+4,c=kTok(r.color,"--s1"),g=S("g",{},s);
+      S("line",{x1:x(kClamp(r.from,d0,d1)),x2:x(kClamp(r.to,d0,d1)),y1:cy,y2:cy,style:`stroke:var(${c});stroke-width:6;stroke-linecap:round`},g);
+      mark(g,kShape(r.shape),x(kClamp(r.to,d0,d1)),cy,4,c,r.hollow);
+      hit(g,m.l,cy-6.5,w-m.l-m.r,13,tipHTML(r.tip||[`${r.label} · ${gr.label}`,`${f(r.from)} to ${f(r.to)}`]));});}
+  if(d.reference){const rx=x(d.reference.value);S("line",{x1:rx,x2:rx,y1:m.t-8,y2:h-m.b,class:"floor"},s);if(rl)kRefText(s,rl,m.t-2,true);}
+  return s;}
+
+// HTML renderers: drawn once, sized by CSS
+function kTxt(tag,cls,t){const e=H(tag,cls?{class:cls}:{});e.textContent=t==null?"":t;return e;}
+function kPill(kind,text){const s=H("span",{},pill(kStatus(kind),esc(text)));return s.firstChild;}
+function kWithTip(e,t){if(t!=null){e.setAttribute("data-tip",tipHTML(t));e.tabIndex=0;}return e;}
+const kGridCols=n=>`auto repeat(${n},minmax(0,1fr))`;
+
+// pass/fail per candidate × task: pill, the binding reasons, cost; the cheapest passing cell highlighted
+function kGateMatrix(el,d){const cols=kList(d,"columns"),rows=kList(d,"rows");const cf=d.cost_fmt?namedFmt(d.cost_fmt):null;
+  const wrap=H("div",{class:"tbl"}),t=H("table",{class:"gate"}),hr=H("tr");hr.appendChild(kTxt("th","",d.row_header||""));for(const c of cols)hr.appendChild(kTxt("th","",c.label));
+  const th=H("thead");th.appendChild(hr);const tb=H("tbody");
+  for(const r of rows){const tr=H("tr"),td=H("td",{class:"task"});td.append(kTxt("b","",r.label));if(r.detail)td.append(kTxt("span","",r.detail));if(r.flag)td.append(kTxt("span","xc",r.flag));tr.appendChild(td);
+    const cells=kList(r,"cells");if(cells.length!==cols.length)throw new Error(`row "${r.label}" has ${cells.length} cells for ${cols.length} columns`);
+    for(const c of cells){const cd=H("td",{class:c.pick?"cell pick":"cell"});if(c.label)cd.appendChild(kPill(c.status,c.label));
+      if(c.reasons&&c.reasons.length)cd.appendChild(kTxt("span","why",c.reasons.join("; ")));
+      if(c.cost!=null){if(!cf)throw new Error(`cells carry "cost", so "cost_fmt" is required`);cd.appendChild(kTxt("span","cost",cf(c.cost)+(d.cost_unit?" "+d.cost_unit:"")));}
+      if(c.pick&&d.pick_label)cd.appendChild(kTxt("span","pickmark",d.pick_label));tr.appendChild(cd);}
+    tb.appendChild(tr);}
+  t.append(th,tb);wrap.appendChild(t);el.appendChild(wrap);}
+
+// two crossed factors: a tile per cell with the metric, a bar, cost and latency, and a status pill
+function kLattice(el,d){kNeed(d,["fmt"]);const cols=kList(d,"columns"),rows=kList(d,"rows");const f=namedFmt(d.fmt),cf=d.cost_fmt?namedFmt(d.cost_fmt):null,lf=d.latency_fmt?namedFmt(d.latency_fmt):null;
+  const bd=d.bar_domain||null;const box=H("div",{class:"lattice"});box.style.gridTemplateColumns=`auto repeat(${cols.length},minmax(6.5rem,1fr))`;box.appendChild(kTxt("div","hd",""));
+  for(const c of cols)box.appendChild(kTxt("div","hd",c.label));
+  for(const r of rows){const rh=H("div",{class:"rh"});if(r.color){const sw=H("span",{class:"sw"});sw.style.background=`var(${kTok(r.color)})`;rh.appendChild(sw);}rh.append(document.createTextNode(r.label));box.appendChild(rh);
+    const cells=kList(r,"cells");if(cells.length!==cols.length)throw new Error(`row "${r.label}" has ${cells.length} cells for ${cols.length} columns`);
+    for(const c of cells){const cell=kWithTip(H("div",{class:kIsEm(d,c.id)?"cell rec":"cell"}),c.tip);cell.appendChild(kTxt("span","acc",f(c.value)));
+      if(bd){const bar=H("div",{class:"bar"}),i=H("i");i.style.width=kClamp((c.value-bd[0])/(bd[1]-bd[0])*100,0,100)+"%";bar.appendChild(i);cell.appendChild(bar);}
+      const meta=[c.cost!=null&&cf?cf(c.cost)+(d.cost_unit?" "+d.cost_unit:""):null,c.latency!=null&&lf?lf(c.latency):null].filter(Boolean);
+      if(meta.length)cell.appendChild(kTxt("span","meta",meta.join(" · ")));if(c.status)cell.appendChild(kPill(c.status,c.status_label||""));box.appendChild(cell);}}
+  // tiles keep a legible width; where the columns do not fit, the lattice scrolls inside its own frame, as a table does
+  const wrap=H("div",{class:"tbl"});wrap.appendChild(box);el.appendChild(wrap);}
+
+// grids of cells (heatmap, difference heatmap, confusion) share the .mx layout
+function kMxGrid(cols,rows,cell){const box=H("div",{class:"mx"});box.style.gridTemplateColumns=kGridCols(cols.length);box.appendChild(H("div"));
+  for(const c of cols)box.appendChild(kTxt("div","h",c));
+  rows.forEach((r,i)=>{box.appendChild(kTxt("div","rl",r.label));const cells=kList(r,"cells");if(cells.length!==cols.length)throw new Error(`row "${r.label}" has ${cells.length} cells for ${cols.length} columns`);
+    cells.forEach((c,j)=>box.appendChild(cell(c,i,j)));});return box;}
+function kMxCell(bg,fg,main,sub,t){const e=kWithTip(H("div",{class:"c"}),t);e.style.background=bg;e.style.color=fg;e.appendChild(kTxt("b","",main));if(sub!=null)e.appendChild(kTxt("span","",sub));return e;}
+
+// target matrix of cells: sequential shading in six steps over the domain, n per cell, outline below the floor
+function kHeatmap(el,d){kNeed(d,["domain","fmt"]);const f=namedFmt(d.fmt),nf=d.n_fmt?namedFmt(d.n_fmt):null,[d0,d1]=d.domain;const cols=kList(d,"columns").map(c=>c.label);
+  el.appendChild(kMxGrid(cols,kList(d,"rows"),(c,i,j)=>{const k=kClamp(Math.floor((c.value-d0)/(d1-d0)*6),0,5);
+    const e=kMxCell(`var(--seq-${k})`,`var(--seq-t${k})`,f(c.value),c.n!=null&&nf?nf(c.n):null,c.tip||[`${d.rows[i].label} · ${cols[j]}`,f(c.value)+(c.n!=null?` · n = ${c.n.toLocaleString("en-US")}`:"")]);
+    if(d.reference&&c.value<d.reference.value)e.classList.add("low");return e;}));}
+
+// difference between two configs: diverging shading, gray within ±neutral, full color at ±saturate
+function kDiffHeatmap(el,d){kNeed(d,["fmt"]);const f=namedFmt(d.fmt),df=d.detail_fmt?namedFmt(d.detail_fmt):null,nu=d.neutral==null?.5:d.neutral,sat=d.saturate||8;const cols=kList(d,"columns").map(c=>c.label);
+  el.appendChild(kMxGrid(cols,kList(d,"rows"),(c,i,j)=>{const v=c.value,mag=Math.min(1,Math.abs(v)/sat),flat=Math.abs(v)<nu;
+    const bg=flat?"var(--div-mid)":`color-mix(in oklab, var(${v>0?"--div-pos":"--div-neg"}) ${Math.round(18+mag*72)}%, var(--surface))`;
+    return kMxCell(bg,mag>.55&&!flat?"var(--on-fill)":"var(--ink)",f(v),c.detail!=null&&df?df(c.detail):null,c.tip||[`${d.rows[i].label} · ${cols[j]}`,f(v)]);}));}
+
+// errors between classes, rows normalized to 100: the diagonal tinted, off-diagonal cells warn and bad by share
+function kConfusion(el,d){const labels=kList(d,"labels"),M=kList(d,"matrix");const f=namedFmt(d.fmt||"pct:1"),warnAt=d.warn_at==null?1:d.warn_at,badAt=d.bad_at==null?3:d.bad_at;
+  if(M.length!==labels.length)throw new Error(`"matrix" has ${M.length} rows for ${labels.length} labels`);
+  const rows=M.map((r,i)=>{if(!Array.isArray(r))throw new Error(`"matrix" row ${i} must be a list`);const tot=r.reduce((a,v)=>a+v,0);return {label:labels[i],cells:d.normalized===false?r.map(v=>tot?v/tot*100:0):r};});
+  el.appendChild(kMxGrid(labels,rows,(v,i,j)=>{const bg=i===j?"var(--seq-1)":v>=badAt?"var(--bad-wash)":v>=warnAt?"var(--warn-wash)":"var(--sunk)";
+    return kMxCell(bg,"var(--ink)",f(v),null,[`${labels[i]} → ${labels[j]}`,`${f(v)} of the row`]);}));}
+
+// what failures look like: cards with a meta line, then the question, fields, judge reason, excerpt and a note
+function kExamples(el,d){const cards=kList(d,"cards");const box=H("div",{class:"ex"});if(d.card_min_rem!=null)box.style.gridTemplateColumns=`repeat(auto-fit,minmax(min(100%,${kNum(d.card_min_rem,0,"card_min_rem")}rem),1fr))`;
+  for(const c of cards){const card=H("div",{class:"excard"}),top=H("div",{class:"top"});
+    for(const it of c.meta||[])top.appendChild(it.status?kPill(it.status,it.label):it.tag?kArmChip(it.tag,it.label,it.color):kTxt("span",it.mono?"mono":"",it.text));card.appendChild(top);
+    if(c.question!=null)card.appendChild(kTxt("div","q",c.question));
+    if(c.fields&&c.fields.length){const dl=H("dl");for(const fl of c.fields){dl.appendChild(kTxt("dt","",fl.term));dl.appendChild(kTxt("dd",fl.tone==="bad"?"bad":"",fl.text));}card.appendChild(dl);}
+    if(c.reason!=null)card.appendChild(kTxt("div","reason",c.reason));if(c.excerpt!=null)card.appendChild(kTxt("pre","",c.excerpt));if(c.note!=null)card.appendChild(kTxt("div","note",c.note));
+    box.appendChild(card);}
+  el.appendChild(box);}
+
+// legend: [{label, color?, mark?: dot|square|line|circle|triangle|diamond, hollow?, opacity?, pattern?}]
+function kLegend(items){if(!Array.isArray(items))throw new Error(`"legend" must be a list`);const box=H("div",{class:"legend"});
+  for(const it of items){const sp=H("span"),c=kTok(it.color,"--ink-2"),mk=it.mark||"dot";
+    if(it.pattern!=null){const sv=S("svg",{width:12,height:12,style:"vertical-align:-1px;margin-right:.4rem"});kTexture(sv,it.pattern,.5,.5,11,11,c);sp.appendChild(sv);}
+    else if(mk==="dot"||mk==="square"){const i=H("i",mk==="square"?{class:"sq"}:{});i.style.background=it.hollow?"var(--surface)":`var(${c})`;if(it.hollow)i.style.boxShadow=`inset 0 0 0 2px var(${c})`;sp.appendChild(i);}
+    else if(mk==="line"){const sv=S("svg",{width:22,height:10,style:"vertical-align:0;margin-right:.35rem"});S("line",{x1:1,x2:21,y1:5,y2:5,style:`stroke:var(${c});stroke-width:2;opacity:${kNum(it.opacity,1,"legend opacity")}`},sv);sp.appendChild(sv);}
+    else{const sv=S("svg",{width:14,height:14,style:"vertical-align:-2px;margin-right:.35rem"});mark(sv,kShape(mk),7,7,5,c,it.hollow);sp.appendChild(sv);}
+    sp.append(document.createTextNode(it.label));box.appendChild(sp);}
+  return box;}
+
+// ---------- dispatcher ----------
+const K_KINDS={bars:{draw:kBars},diverging_bars:{draw:kBars},forest:{draw:kForest},lines:{draw:kLines},
+  scatter_frontier:{draw:(el,w,d)=>kScatter(el,w,d,false)},gate_scatter:{draw:(el,w,d)=>kScatter(el,w,d,true)},
+  dot_interval:{draw:kDotInterval},range_bars:{draw:kRangeBars},
+  gate_matrix:{html:kGateMatrix},lattice:{html:kLattice},heatmap:{html:kHeatmap},diff_heatmap:{html:kDiffHeatmap},confusion:{html:kConfusion},examples:{html:kExamples}};
+const K_NOT_DRAWN={table:"a table is written as an HTML table (sortable() adds sorting); the kit does not draw it"};
+const K_PANEL_TEXT=["title","subtitle","tag","color"];
+function kUnmount(st){for(const r of st.ro){r.ro.disconnect();kRedraws.delete(r);}st.ro=[];}
+function kMount(host){const st=host._kit;kUnmount(st);host.innerHTML="";const kind=host.getAttribute("data-kind");
+  try{if(!Object.hasOwn(K_KINDS,kind))throw new Error(Object.hasOwn(K_NOT_DRAWN,kind)?K_NOT_DRAWN[kind]:`unknown kind; the kit draws ${Object.keys(K_KINDS).join(", ")}`);const R=K_KINDS[kind];
+    let d;try{d=JSON.parse(host.getAttribute("data-chart"));}catch(e){throw new Error(`data-chart is not JSON (${e.message})`);}
+    if(!d||typeof d!=="object"||Array.isArray(d))throw new Error("data-chart must be a JSON object");d=kNoNulls(d);
+    if(d.legend)host.appendChild(kLegend(d.legend));
+    const one=(box,data)=>{if(R.html)R.html(box,data);else st.ro.push(chart(box,(e,w)=>R.draw(e,w,data)));};
+    if(d.panels==null){const box=H("div");host.appendChild(box);one(box,d);return;}
+    // small multiples: each panel is the chart's own fields overlaid with the panel's
+    kList(d,"panels");const {panels,legend,panel_min_rem,...shared}=d;const grid=H("div",{class:"mult"});
+    if(panel_min_rem!=null)grid.style.gridTemplateColumns=`repeat(auto-fill,minmax(min(100%,${kNum(panel_min_rem,0,"panel_min_rem")}rem),1fr))`;host.appendChild(grid);
+    for(const p of panels){const fig=H("div",{class:"fig"});grid.appendChild(fig);const h4=H("h4");if(p.tag)h4.appendChild(kArmChip(p.tag,p.title||"",p.color));else h4.textContent=p.title||"";fig.appendChild(h4);
+      if(p.subtitle)fig.appendChild(kTxt("div","sub",p.subtitle));
+      if(Object.keys(p).some(k=>!K_PANEL_TEXT.includes(k))){const box=H("div",{class:"chart"});fig.appendChild(box);one(box,{...shared,...p});}}}
+  catch(e){kUnmount(st);host.innerHTML="";console.error(`kit: chart "${kind}"${host.id?" #"+host.id:""}: ${e.message}`);}}
+// draws every div.chart[data-kind][data-chart] under root, once; a later change to data-chart redraws that chart
+function drawCharts(root=document){const sel="div.chart[data-kind][data-chart]";const els=[...root.querySelectorAll(sel)];if(root.matches&&root.matches(sel))els.unshift(root);
+  for(const el of els){if(el._kit)continue;el._kit={ro:[]};new MutationObserver(()=>kMount(el)).observe(el,{attributes:true,attributeFilter:["data-chart","data-kind"]});kMount(el);}}
+// a page script that builds chart data from its own input sets it with setChart(); the JSON is pure data
+function setChart(el,data){el.setAttribute("data-chart",JSON.stringify(data));}
+if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",()=>drawCharts());else setTimeout(()=>drawCharts());
+</script>
+</body>
+</html>

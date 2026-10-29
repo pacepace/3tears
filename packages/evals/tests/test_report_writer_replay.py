@@ -14,7 +14,7 @@ not hold ends ``failed`` with the recording's refusal (the session and the turn)
 unasked names each session. The fix is to the code, or to the recorded reply as data (plan §4.7).
 
 The recordings replayed are each directory under ``fixtures/report_writer/`` (hand-scripted, made through the
-recorder from scripted replies) and under ``fixtures/report_docs/prototype4/`` (the acceptance runs,
+recorder from scripted replies) and under ``fixtures/report_docs/prototype5/`` (the acceptance runs,
 ``analyst_cli.py write``) that holds a ``replay.json``.
 """
 

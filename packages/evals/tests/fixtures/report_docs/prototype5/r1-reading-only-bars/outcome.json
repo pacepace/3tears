@@ -1,0 +1,89 @@
+{
+  "ending": "stored",
+  "reason": "",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline gives the trade: Atlas-L is 2.96 points higher on overall quality at 2.4 times the cost, and the two cheaper models lapse on policy. The decision block gives the lean (Atlas-M), the two prices where the answer flips ($11.09 and $22.05 per point, matching price.atlas-m.atlas-l.overall.per_point_low_unpaired and _high_unpaired), the main risk (the unnamed pass-or-fail judge) and who makes the call. The first claim, price-frontier, prices both steps. One snag: the first confidence bullet says a point worth more than $11.09 'moves the pick off Atlas-M', but the decision block says the run doesn't settle the pick between $11.09 and $22.05."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "Each claim matches its values table row by row. In atlas-l-lead, Atlas-L's lead is clear of zero in four tasks, and the speculation bait interval (-1.5 to +3.5) is the stated exception. In cheap-lapses, every cheaper-model interval sits clear of Atlas-M's: Brisk-S on declining speculation is 17 points behind (interval +10.3 to +23.7), and Open-70B on confirming account changes is 81% against 98%. In atlas-parity every Atlas pair overlaps. The pooled frontier (84.7, 89.83, 92.79) reproduces both step prices and puts Open-70B off the frontier. Nothing contradicts the headline."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 1,
+          "reason": "Atlas-M's quality gap to Atlas-L, its weakest task (troubleshooting, -5) and Atlas-L's slower tail all show. But the confidence is 'High' while the lean rests on things nothing declared: a price per point, policy floors that don't exist, and pass-or-fail rates from an undescribed judge. The judge caveat appears in Watch but not in the confidence bullets. The lean also says Atlas-M 'holds every policy behaviour at Atlas-L's level'. What atlas-parity actually shows is 'not told apart'. For example, on confirming account changes the Atlas-L minus Atlas-M interval runs from -2.8 to +2.8 points, so a shortfall of up to about 3 points is not ruled out."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "No omission changes the pick among the measured options. Open-70B is off the frontier (a point from Brisk-S to Open-70B costs $6.96; from Open-70B to Atlas-M, $4.58), and the cheaper models' other behaviours trail too. One omission does bear on the routed-mix next step. In persona small talk Open-70B's overall quality is 90, against 88 for Atlas-M (difference -0.1 to +4.1) and 91 for Atlas-L. Its staying-in-character rate is the highest of the four, at 97%. It costs $6.40 per thousand there, against $17.00 for Atlas-M. And no policy behaviour is tested in that task. So the reason given ('it lapses elsewhere') doesn't rule it out as a route."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "Four confounds are each carried. No control: every interval is read unpaired, and the page says pairing would narrow intervals rather than reverse a direction. The undescribed judge: flagged on cheap-lapses and atlas-parity, named in Watch, and given a next step to calibrate it. Nothing declared: the lean is labelled as the analyst's own, with a declaration as the next step. Best of several candidates: stated with its direction. The 9 s latency bar is a separate problem, under item 7."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an action and what it would settle. Declaring a price per point plus floors makes the frontier name one option. A routed mix, run on the same cases, prices a mix nobody has measured. Calibrating the pass-or-fail judge tests whether the lapses and the parity hold. Declaring monthly volume turns per-point prices into a budget figure."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "price-frontier says 'Open-70B is the best buy at no price', but its block has only the two frontier steps, so nothing on the page supports that part. The atlas-l-lead caption says 'overall and in each place', but the block has no overall row, and the headline's pooled +2.96 (price.atlas-m.atlas-l.overall.gain) doesn't appear in it. The latency claim and Method cite a '9 s latency bar', but the snapshot declares no criterion at all, and Method itself says nothing was declared."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "price-frontier",
+          "severity": "should_fix",
+          "finding": "The sentence says Open-70B is the best buy at no price, but the block draws only the Brisk-S → Atlas-M and Atlas-M → Atlas-L steps. Add Open-70B's two per-point prices: $6.96 from Brisk-S (price.brisk-s.open-70b.overall.per_point) and $4.58 on to Atlas-M (price.open-70b.atlas-m.overall.per_point). Those numbers show why it is passed over at every price. If you'd rather not add them, drop the Open-70B clause from the claim."
+        },
+        {
+          "claim": "atlas-l-lead",
+          "severity": "should_fix",
+          "finding": "The caption says each row is Atlas-L less Atlas-M 'overall and in each place', but the block has only the five task rows. Add the pooled row (+2.96, interval +1.98 to +3.94, from price.atlas-m.atlas-l.overall.gain_interval_unpaired) so the headline's gap sits next to its task breakdown. Otherwise, take 'overall' out of the caption."
+        },
+        {
+          "claim": "latency",
+          "severity": "should_fix",
+          "finding": "The claim and Method both measure latency against 'the 9 s latency bar', but the snapshot declares no criterion of any kind, and Method says nothing was declared. A reader will take 9 s for a declared requirement. Say where 9 s comes from and label it as such (for example 'a 9 s line we chose, not a declared bar'), or state latency descriptively. Atlas-L's p95 tops out at 4.86 s on research questions, against 2.84 s for Atlas-M."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "Fix the first confidence bullet: 'values a point of overall quality above $11.09 … moves the pick off Atlas-M' contradicts the decision block, which says the run doesn't settle the pick between $11.09 and $22.05. Write it as 'above $11.09 the pick is unsettled, and above $22.05 it moves to Atlas-L'. Separately, the confidence line says 'High' while the exclusion of the cheaper models rests entirely on pass-or-fail rates from an undescribed judge, and that caveat is missing from the confidence bullets. Add it there, or lower the stated confidence."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "In the lean, 'It holds every policy behaviour at Atlas-L's level' claims more than atlas-parity shows, which is only that the two can't be told apart. Each difference interval still allows a gap of about 3 points (on confirming account changes, -2.8 to +2.8). Reword to 'is not told apart from Atlas-L on any policy behaviour'."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "Widen the routed-mix next step. In persona small talk, Open-70B can't be told apart from Atlas-M on overall quality (90 against 88, difference -0.1 to +4.1). It has the highest staying-in-character rate (97%), costs $6.40 against $17.00 per thousand there, and that task tests no policy behaviour. Add Open-70B on persona small talk as a route to price beside Atlas-L on troubleshooting. Also revise the omitted-item reason that says it 'changes no option a decider would weigh'."
+        }
+      ],
+      "total": 12,
+      "passes": true,
+      "must_fix": false
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 """The report writer's acceptance runs: Kairo round 2 and the six misfits, each written live and stored.
 
-Each run is a directory under ``fixtures/report_docs/prototype4/`` made by ``analyst_cli.py write`` (its
+Each run is a directory under ``fixtures/report_docs/prototype5/`` made by ``analyst_cli.py write`` (its
 ``replay.json`` names the fixture snapshot it was written on; ``test_report_writer_replay.py`` replays it). Here the
 stored records are held to the plan's bar with no model: one run per acceptance snapshot, each ended stored on the
 snapshot the fixtures still build; the Kairo document makes the reference call with the reference confidence; and
@@ -39,7 +39,7 @@ from threetears.evals.kernel.report_doc import EvalReportDoc, ReportDoc, ReportF
 from threetears.evals.testing import RecordedTurns
 
 #: The acceptance runs.
-_RUNS = Path(__file__).parent / "fixtures" / "report_docs" / "prototype4"
+_RUNS = Path(__file__).parent / "fixtures" / "report_docs" / "prototype5"
 
 #: The snapshots the runs are written on, as ``analyst_cli.py`` names them on the command line.
 _ACCEPTANCE = {"kairo", *MISFITS}

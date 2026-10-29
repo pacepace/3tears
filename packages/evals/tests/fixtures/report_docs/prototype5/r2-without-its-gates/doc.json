@@ -1,0 +1,439 @@
+{
+  "schema": "report-doc/1",
+  "story": "tradeoff",
+  "headline": "No price per point was set: {arm:brisk-s.low.r1} is the knee; the top option passes {compare.atlas-m.high.r1.brisk-s.low.r1.pass_rate.overall.difference|abs} points more at {cost.gap.atlas-m.high.r1.brisk-s.low.r1.multiple} its cost.",
+  "lede": "Every cheaper option passes fewer tasks; the nearest saves only {cost.gap.brisk-s.low.r1.brisk-s.low.r0.monthly|abs} a month and trails by {compare.brisk-s.low.r1.brisk-s.low.r0.pass_rate.overall.difference|abs} points, clear of zero. Above the lean no single step is told apart from it; a declared floor or price per point would turn this trade into a decision.",
+  "flag": null,
+  "recommends": [],
+  "confidence": {
+    "form": "high_if_immaterial",
+    "caveats": [
+      {
+        "id": "no_control",
+        "label": null,
+        "material_if": "Only if pairing the shared cases separated the single steps above {arm:brisk-s.low.r1}. Every interval here is unpaired; pairing would likely narrow them where outcomes correlate across shared cases, which could make the dearer options' small gains real and move the lean up the frontier. The pick-of-many caveat below pulls the other way.",
+        "checked": null
+      },
+      {
+        "id": "nothing_declared",
+        "label": null,
+        "material_if": "Only if the owner prices a point of pass rate below {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} or above {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month, or sets a floor or latency budget the lean misses; then another option is the better buy.",
+        "checked": null
+      },
+      {
+        "id": "best_of_n",
+        "label": null,
+        "material_if": "Only if a fresh run reads {arm:brisk-s.low.r1} lower by about the low end of its lead over {arm:brisk-s.low.r0} ({compare.brisk-s.low.r1.brisk-s.low.r0.pass_rate.overall.interval} points) or more; then nothing separates them and the cheaper one is the better buy. As the pick among {n_candidates|words} options its estimate likely reads somewhat high.",
+        "checked": null
+      },
+      {
+        "id": "analyst:volume_unit",
+        "label": "What the monthly volume counts",
+        "material_if": "Only if the declared volume counts tasks rather than calls: every monthly figure and the price band would then scale by each option's calls per task, from {measure.calls_per_task.atlas-m.high.r1.mean} to {measure.calls_per_task.nano-xs.high.r1.mean} among the frontier options from {arm:nano-xs.high.r1} up, raising the band's dollars by about half. The order of the frontier steps, and so the knee, holds on those point figures.",
+        "checked": null
+      }
+    ]
+  },
+  "decision": [
+    {
+      "slot": "the_trade",
+      "text": "Moving up from {arm:nano-xs.high.r1} to {arm:brisk-s.low.r1} costs {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_cost_gap|abs} more a month for {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.gain} points, clear of zero. Going on to the top option, {arm:atlas-m.high.r1}, costs {cost.gap.atlas-m.high.r1.brisk-s.low.r1.monthly|abs} more a month again for {compare.atlas-m.high.r1.brisk-s.low.r1.pass_rate.overall.difference} points ({compare.atlas-m.high.r1.brisk-s.low.r1.pass_rate.overall.interval}), also clear of zero."
+    },
+    {
+      "slot": "where_it_flips",
+      "text": "{arm:brisk-s.low.r1} is the best buy when a point of pass rate is worth between {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} and {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month, if the declared volume counts calls; both ends are point prices with no interval. Read as a floor on point estimates, it is the cheapest option for any pass-rate floor above {measure.pass_rate.brisk-s.low.r0.mean} up to its own {measure.pass_rate.brisk-s.low.r1.mean}."
+    },
+    {
+      "slot": "our_lean",
+      "text": "Ours, not a rule: run {arm:brisk-s.low.r1}. It is the cheapest option that no single step up beats by a margin this run can separate, and it holds for any price per point in the band above."
+    },
+    {
+      "slot": "watch",
+      "text": "No line was declared, so no margin is weakest. The lean's thinnest separated lead is over {arm:brisk-s.low.r0} ({compare.brisk-s.low.r1.brisk-s.low.r0.pass_rate.overall.interval} points); a fresh run of today's size reads that pair the other way {settle.brisk-s.low.r1.brisk-s.low.r0.pass_rate.overall.wrong_side} of the time. Multi-hop questions are the lean's weakest task, and its p95 latency of {measure.latency_ms.brisk-s.low.r1.p95} has no budget to read against."
+    },
+    {
+      "slot": "what_settles_it",
+      "text": "The planner's owner declares a pass-rate floor, a price per point, a latency budget, and what the monthly volume counts. A paired re-run settles whether the single steps above the lean buy real points."
+    }
+  ],
+  "claims": [
+    {
+      "id": "frontier",
+      "text": "Pass rate rises with cost along a frontier of {count.frontier.pass_rate|words} options, and {arm:brisk-s.low.r1} sits where the curve flattens.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "scatter_frontier",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "cost_per_1k",
+              "pass_rate"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "brisk-s.low.r1",
+          "caption": "Each option's cost per 1k calls (log axis) against its pass rate, the lean marked."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "prices",
+      "text": "Each step up the frontier costs more per point than the one before, reaching {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point} a month per point for the last.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "table",
+          "query": {
+            "source": "prices",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Price of one point of pass rate a month at the declared volume, read as calls, for each step along the frontier; point figures with no interval."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "above",
+      "text": "Above {arm:brisk-s.low.r1}, neither raising reasoning nor swapping Brisk-S for Atlas-M moves pass rate by an amount this run can tell from zero; only both together, the top option, pass more by a separated {compare.atlas-m.high.r1.brisk-s.low.r1.pass_rate.overall.difference} points.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "diverging_bars",
+          "query": {
+            "source": "levers",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
+              "brisk-s.low.r1",
+              "brisk-s.high.r1",
+              "atlas-m.low.r1",
+              "atlas-m.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Change in pass rate from moving one setting among the four options with a retry; the model rows read Brisk-S less Atlas-M, so a negative bar is Brisk-S behind. Unpaired intervals."
+        },
+        {
+          "block": "diverging_bars",
+          "query": {
+            "source": "compare",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
+              "atlas-m.high.r1",
+              "brisk-s.low.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "The top option's pass rate less the lean's, overall with an unpaired interval and in each task, where no count gives an interval."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "below",
+      "text": "Below it, the nearest cheaper option, {arm:brisk-s.low.r0}, passes {compare.brisk-s.low.r1.brisk-s.low.r0.pass_rate.overall.difference|abs} points fewer, the lean's thinnest separated lead; the next frontier option down, {arm:nano-xs.high.r1}, trails by {compare.brisk-s.low.r1.nano-xs.high.r1.pass_rate.overall.difference|abs}.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "diverging_bars",
+          "query": {
+            "source": "compare",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
+              "brisk-s.low.r1",
+              "brisk-s.low.r0"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "The lean's pass rate less the nearest cheaper option's, which sits off the price frontier; overall with an unpaired interval, and in each task, where no count gives an interval."
+        },
+        {
+          "block": "diverging_bars",
+          "query": {
+            "source": "compare",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
+              "brisk-s.low.r1",
+              "nano-xs.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "The lean's pass rate less the frontier option below it, laid out the same way."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "retry",
+      "text": "A retry is the cheapest lift on every model, and it buys most where pass rate starts lowest: {lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.effect} points on {arm:nano-xs.off.r0} for {cost.gap.nano-xs.off.r1.nano-xs.off.r0.monthly|abs} a month.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "diverging_bars",
+          "query": {
+            "source": "levers",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
+              "nano-xs.off.r0",
+              "nano-xs.off.r1",
+              "brisk-s.low.r0",
+              "brisk-s.low.r1",
+              "atlas-m.high.r0",
+              "atlas-m.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Change in pass rate from adding a retry, for one setting of each model; unpaired intervals."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "latency",
+      "text": "The dearer options are also slower: {arm:atlas-m.high.r1} reaches a p95 latency of {measure.latency_ms.atlas-m.high.r1.p95}.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "range_bars",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "latency_ms"
+            ],
+            "arms": [
+              "nano-xs.high.r1",
+              "brisk-s.low.r1",
+              "brisk-s.high.r1",
+              "atlas-m.low.r1",
+              "atlas-m.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Latency from p50 to p95 for the options around the knee; no budget was declared."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "tasks",
+      "text": "Multi-hop questions are the weakest task for the lean and for the frontier options on either side of it.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "heatmap",
+          "query": {
+            "source": "tasks",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
+              "nano-xs.high.r1",
+              "brisk-s.low.r1",
+              "atlas-m.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Pass rate by task for the frontier option below the knee, the lean and the top option; tasks state no case counts, so these figures are descriptive."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "failures",
+      "text": "The lean's kept failures are planning errors: a collapsed hop, an off-by-one date window, and a guess where it should have asked.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "examples",
+          "query": {
+            "source": "examples",
+            "aspect": "",
+            "measures": [],
+            "arms": [
+              "brisk-s.low.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Every failure the snapshot keeps for the lean, one per task where kept; the run's total failures are not counted, so these show kinds, not shares."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    }
+  ],
+  "explore": [
+    {
+      "control": "Price of a point of pass rate a month",
+      "binds": "Which frontier option is the best buy",
+      "outcome": "Below {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} a cheaper option wins; up to {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} the lean holds; up to {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point} {arm:brisk-s.high.r1} does; above that, {arm:atlas-m.high.r1}. Point prices with no interval, on the volume read as calls."
+    },
+    {
+      "control": "A pass-rate floor, read on point estimates",
+      "binds": "The cheapest option that clears it",
+      "outcome": "The lean is cheapest for floors above {measure.pass_rate.brisk-s.low.r0.mean} up to {measure.pass_rate.brisk-s.low.r1.mean}; {arm:brisk-s.high.r1} up to {measure.pass_rate.brisk-s.high.r1.mean}; above that only {arm:atlas-m.high.r1} clears, up to {measure.pass_rate.atlas-m.high.r1.mean}."
+    },
+    {
+      "control": "A p95 latency budget",
+      "binds": "Which options stay in",
+      "outcome": "A budget under {measure.latency_ms.brisk-s.low.r1.p95} rules the lean out; every Atlas-M option reads at or above {measure.latency_ms.atlas-m.off.r0.p95}."
+    }
+  ],
+  "omitted": [
+    {
+      "what": "The other options off the frontier",
+      "why": "Each costs more than another option that passes at least as many tasks; Brisk-S with low reasoning and no retry, off only the price curve, is shown below the lean instead. All are in the full tables."
+    },
+    {
+      "what": "The other retry effects and their interaction with model",
+      "why": "Every model and reasoning setting gains from a retry, all but Atlas-M with high reasoning clear of zero, and the gain is larger on Nano-XS than on Atlas-M; this agrees with the retry claim and changes no option's place."
+    },
+    {
+      "what": "Reasoning effects at off and low",
+      "why": "Reasoning raises pass rate on every model but costs more than a retry; the frontier already prices it."
+    },
+    {
+      "what": "Calls per task as a result",
+      "why": "Describes how options plan, not how often they pass; it enters only through the volume caveat."
+    },
+    {
+      "what": "Outcome and extra calls per task",
+      "why": "The snapshot holds no figures for them."
+    },
+    {
+      "what": "Per-task pass rates of the other options",
+      "why": "No task states its case count, so no task figure has an interval; they stay in the appendix."
+    }
+  ],
+  "next": [
+    {
+      "text": "The planner's owner declares a pass-rate floor, a price per point of pass rate, a p95 latency budget, and what the monthly volume counts.",
+      "settles": "Turns the trade into a decision: each declaration picks one frontier option, and the volume fixes the dollars the price is set in."
+    },
+    {
+      "text": "Re-run {arm:brisk-s.low.r1}, {arm:brisk-s.high.r1} and {arm:atlas-m.low.r1} on fresh cases, paired. Read independently, telling the lean from {arm:atlas-m.low.r1} four times in five needs {settle.brisk-s.low.r1.atlas-m.low.r1.pass_rate.overall.cases_needed_80} cases per arm if today's gap is the truth; pairing needs fewer.",
+      "settles": "Whether the single steps above the lean buy real points, and how far the lean's estimate falls on fresh cases."
+    },
+    {
+      "text": "Target multi-hop planning on Brisk-S and Nano-XS, then re-run the frontier options.",
+      "settles": "Whether cheaper options can close the gap on the weakest task and move the knee down the price curve."
+    }
+  ],
+  "method": [
+    {
+      "term": "Design",
+      "text": "A factorial sweep of {count.levels.model|words} models, {count.levels.reasoning|words} reasoning levels and retry on or off: {n_candidates|words} options, each run on {scoreboard.brisk-s.low.r1.cases} research-planning tasks across {count.tasks|words} task types, none lost. No repeats are stated.",
+      "caveats": []
+    },
+    {
+      "term": "Pass",
+      "text": "The input does not say what makes a task pass. Kept failures are scored against an expected plan of tool calls and their arguments.",
+      "caveats": []
+    },
+    {
+      "term": "Intervals",
+      "text": "{compare.brisk-s.low.r1.nano-xs.high.r1.pass_rate.overall.level}, computed from each option's pass rate and case count, combined as if the options ran different cases. No correction for the many comparisons. Task figures state no counts and carry no interval.",
+      "caveats": []
+    },
+    {
+      "term": "Cost",
+      "text": "Cost per 1k calls, a point figure with no spread. Monthly figures use the declared volume of {meta.volume_per_month} a month, read as calls; the input does not say what that volume counts.",
+      "caveats": []
+    },
+    {
+      "term": "Latency",
+      "text": "p50 and p95 per option; no latency budget was declared.",
+      "caveats": []
+    },
+    {
+      "term": "Not compared",
+      "text": "There is no control and nothing was declared in advance: no gate, floor, margin or exchange rate.",
+      "caveats": []
+    },
+    {
+      "term": "Source",
+      "text": "{meta.provenance}, run {meta.run_date}.",
+      "caveats": []
+    }
+  ]
+}

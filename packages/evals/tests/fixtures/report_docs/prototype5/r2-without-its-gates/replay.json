@@ -1,0 +1,19 @@
+{
+  "snapshot_of": "r2 without its gates",
+  "model": "claude-opus-5-5",
+  "budget_usd": 8.0,
+  "withhold": [
+    "r2-config-sweep.md"
+  ],
+  "ending": "stored",
+  "reason": "",
+  "stored": true,
+  "analyst_rounds": 2,
+  "editor_rounds": 2,
+  "tally": {
+    "turns": 30,
+    "tool_calls": 60,
+    "bounces": 0,
+    "cost_usd": 3.7091369999999997
+  }
+}
