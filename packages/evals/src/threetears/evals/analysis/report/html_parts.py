@@ -45,11 +45,15 @@ _FONT_LINKS = (
 #: columns, a chart's frame, the verdict line's tone, a trial's record and the code-written lines. A column header
 #: keeps the case it was declared in, since a header can be an arm's name or a check's expression. The one measure of
 #: its own is prose's 78ch cap: the page's measure test caps a line in characters, and 78ch at the body size is about
-#: the kit's 44rem column, so prose set smaller still keeps a readable length.
+#: the kit's 44rem column, so prose set smaller still keeps a readable length. Nothing may widen the page at phone
+#: width: a long unbroken token in prose (a dotted metric path) wraps, and a cell grid too narrow for its labels scrolls
+#: inside its own ``.tbl`` frame (a cell-grid chart is written inside one, since the render checks exempt only that frame).
 _PAGE_STYLE = """
 html { scroll-padding-top: 3.5rem; }
 p, li, .disclosure, .caveat { max-width: 78ch; }
 ul { margin: 0; padding-left: 1.25rem; }
+p, li, dd, figcaption, summary, .disclosure, .caveat { overflow-wrap: anywhere; }
+.mx { min-width: max-content; }
 h4, h5 { font-family: var(--f-display); font-weight: 600; margin: 0; }
 h4 { font-size: var(--t-base); }
 h5 { font-size: var(--t-sm); }
@@ -390,6 +394,10 @@ def _column_class(block: TableBlock, key: str) -> str:
     return f' class="num{emphasis}"'
 
 
+#: The kit's chart kinds drawn as a grid of cells (its ``.mx``), whose columns can outnumber what a phone is wide.
+_CELL_GRID_KINDS = frozenset({"heatmap", "diff_heatmap", "confusion"})
+
+
 def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bool = True) -> str:
     """A chart as the kit's ``.fig``: its title, the chart the kit draws, and a table of every value it draws.
 
@@ -420,12 +428,18 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bo
             f'<div class="chart" id="{escape(chart_id)}" data-kind="{escape(kind)}" '
             f'data-chart="{escape(json.dumps(data, separators=(",", ":"), allow_nan=False))}"></div>'
         )
+    framed = block.chart in _CELL_GRID_KINDS
+    values = (
+        f'<div class="tbl chart-values"><table><caption>{escape(block.title)}</caption><thead><tr>{head}</tr></thead>'
+        f"<tbody>{body}</tbody></table></div>"
+    )
+    # a cell grid wider than the phone scrolls inside a frame holding the chart and its table (on every page, drawn or
+    # static, so the static page stays the default less its chart boxes), so the table still follows the chart
+    drawing = f'<div class="tbl">{chart}{values}</div>' if framed else f"{chart}{values}"
     return (
         f'<figure class="fig" data-figure="{escape(block.chart)}">'
         + (f"<figcaption>{escape(block.title)}</figcaption>" if figcaption else "")
-        + f"{chart}"
-        f'<div class="tbl chart-values"><table><caption>{escape(block.title)}</caption><thead><tr>{head}</tr></thead>'
-        f"<tbody>{body}</tbody></table></div></figure>"
+        + f"{drawing}</figure>"
     )
 
 
