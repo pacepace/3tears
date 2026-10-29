@@ -79,6 +79,7 @@ __all__ = [
     "DEFAULT_CALLER_CACHE_MAX_ENTRIES",
     "NamespaceDiscovery",
     "bind_caller_cache_to_access_tables",
+    "bind_caller_cache_to_memberships",
 ]
 
 log = get_logger(__name__)
@@ -359,6 +360,49 @@ def bind_caller_cache_to_access_tables(
             remover()
 
     return remove
+
+
+def bind_caller_cache_to_memberships(
+    registry: CollectionRegistry,
+    cache: CallerAccessCache[V],
+    *,
+    degraded: DegradedEvictions | None = None,
+) -> Callable[[], None]:
+    """make ``cache`` a cache of each caller's own membership rows, derived from ``group_members`` alone.
+
+    For an answer that is a principal's direct memberships and nothing more -- the person's access
+    shape (:class:`threetears.agent.acl.access_shapes.AccessShape`), or the groups a person is in --
+    so no other access table can make it stale, and a nested group's row changes no one's direct
+    rows. A row naming a user or an agent drops that principal's entries; a ``group`` member's row
+    drops nothing; a row that does not say what it names, and a dropped table, drop every entry.
+
+    Followed by :func:`threetears.agent.acl.generation_follow.follow_caller_memberships`.
+
+    :param registry: the registry whose invalidation listener hears ``group_members``' row broadcasts
+    :ptype registry: CollectionRegistry
+    :param cache: the cache to drop from
+    :ptype cache: CallerAccessCache
+    :param degraded: where rows that did not say what they name are counted; a new record when ``None``
+    :ptype degraded: DegradedEvictions | None
+    :return: a call that removes the registration
+    :rtype: Callable[[], None]
+    """
+    record = degraded if degraded is not None else DegradedEvictions()
+
+    def on_group_member(message: CacheInvalidationMessage) -> None:
+        columns = message.columns or {}
+        kind = columns.get("member_type")
+        member = _uuid(columns.get("member_id"))
+        if kind in _CALLER_KINDS and member is not None:
+            cache.evict_principal(kind, member)
+        elif kind != MemberType.GROUP.value or member is None:
+            # a nested group's row moves which groups a group reaches, never anyone's direct rows
+            record.record(_GROUP_MEMBERS, "no member_type and member_id it parses")
+            cache.invalidate_all()
+
+    return registry.register_derived_cache(
+        _GROUP_MEMBERS, on_row=on_group_member, on_table_dropped=cache.invalidate_all
+    )
 
 
 def _uuid(value: str | None) -> UUID | None:

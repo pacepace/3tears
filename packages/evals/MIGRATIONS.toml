@@ -58,6 +58,14 @@
 # callers.
 
 [[release]]
+version = "0.83.0"
+since = "v0.82.0"
+summary = """
+Access answers kept per membership shape, a new entity that keeps its row, and periodic ticks that set their delay only
+explicitly: no 3tears-evals name has moved or been removed since 0.82.0, and no judge wording changed.
+"""
+
+[[release]]
 version = "0.82.0"
 since = "v0.81.0"
 summary = """
