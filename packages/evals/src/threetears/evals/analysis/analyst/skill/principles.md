@@ -39,6 +39,7 @@ Gate reasoning that recurs:
 - Gate the asked aspect on its own readings. If a floor speaks for a different measure than the reading does, show it separately and name the mismatch in Method. Don't merge the two.
 - "Pass" means whatever the campaign defined. If the campaign doesn't say what makes a trial pass, say so plainly. Don't guess.
 - A latency or cost win needs the delivery rate beside it. An arm can buy a shorter tail by declining work.
+- **A cost belongs to the provider routing, not the model.** One model served by two providers (another host, another quantization) can cost several times as much, while its quality barely moves. A cost comparison between models names the provider each was served by (`campaign_overview` gives each arm's `served_by`), and never ranks models on cost alone as if the cost were the model's. Where an arm's pricing names no provider, say the cost's routing is unknown. A tool the model called (`tool_spend`, such as a web-search API) is spend in the cost, never a provider of the model.
 - Rank on the scope that matches what was changed. A subsystem change read on whole-turn figures can pick the wrong arm.
 
 ## Confounds

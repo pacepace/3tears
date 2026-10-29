@@ -2561,14 +2561,26 @@ class ArmPricing(EvalDocumentModel):
     """How one arm's cost was priced, read off the usage rows of the roles its production cost counts.
 
     Beside the arm's cost, so a page says where the cost comes from (the price source, the provider that served the
-    calls) and how much of it was priced: ``priced_calls`` under ``calls`` is a cost over part of the arm's calls, never
-    the whole.
+    model's calls) and how much of it was priced: ``priced_calls`` under ``calls`` is a cost over part of the arm's
+    calls, never the whole.
+
+    **A model's providers are its model rows' alone.** ``providers`` reads the token-metered rows (every role but
+    ``external``), so it names who served the model and never a tool the model called: a web-search API metered as an
+    ``external`` row is in ``tool_providers``, and its spend stays in the cost, its calls in ``calls``, as before.
     """
 
     sources: list[str] = Field(default_factory=list, description="Each price source a priced row names, sorted.")
     providers: list[str] = Field(
         default_factory=list,
-        description="Each provider a row names as serving its calls, sorted; empty where none does.",
+        description="Each provider a model row (every role but external) names as serving its calls, sorted; empty "
+        "where none does.",
+    )
+    # Left out of the document while empty, so an arm whose rows named no tool provider reads as it did before.
+    tool_providers: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="Each provider an external row names (a tool the model called, such as a web-search API), "
+        "sorted: tool spend the cost counts, never a provider of the model.",
     )
     calls: int | None = Field(
         default=None, ge=0, description="The calls the rows counted; None = some row did not count its calls."

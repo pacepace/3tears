@@ -305,10 +305,18 @@ def _census(arm: str, results: Sequence[EvalResult], readings: Mapping[str, Tria
     )
 
 
+#: The usage role a tool the model called is metered under, in its provider's units: every other role is a model's.
+_TOOL_ROLE = "external"
+
+
 def _pricing(results: Sequence[EvalResult]) -> ArmPricing | None:
     """How one arm's production cost was priced, off the rows of the roles a production deployment pays for
     (:func:`~threetears.evals.kernel.usage_capture.production_rows`): the price sources the priced rows name, the
-    providers the rows name, and the calls counted and priced, each None once a row did not count its calls.
+    providers the model rows name (every role but ``external``), the providers the external rows name apart from them,
+    and the calls counted and priced over every row, each None once a row did not count its calls.
+
+    A tool the model called (a web-search API, metered as an ``external`` row) never reads as a provider of the model:
+    its spend is the cost's and its calls are counted, but it is named as tool spend (``tool_providers``).
 
     :param results: The arm's trials.
     :ptype results: Sequence[EvalResult]
@@ -323,7 +331,8 @@ def _pricing(results: Sequence[EvalResult]) -> ArmPricing | None:
     counted = all(row.call_count is not None for row in rows)
     return ArmPricing(
         sources=sorted({row.price_source for row in rows if row.cost_usd is not None and row.price_source}),
-        providers=sorted({row.provider for row in rows if row.provider}),
+        providers=sorted({row.provider for row in rows if row.provider and row.role != _TOOL_ROLE}),
+        tool_providers=sorted({row.provider for row in rows if row.provider and row.role == _TOOL_ROLE}),
         calls=sum(row.call_count or 0 for row in rows) if counted else None,
         priced_calls=sum(row.call_count or 0 for row in rows if row.cost_usd is not None) if counted else None,
     )

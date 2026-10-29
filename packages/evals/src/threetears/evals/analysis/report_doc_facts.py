@@ -57,6 +57,15 @@ tools already hold:
   a caveat on its evidence could move it is a must_fix) covers what this fact does not. A method-reach caveat landed
   on a Method term is carried too (it may land in Method alone). One fact per claim, contrast and caveat. Whether the
   caveat could move the claim, and which way, is the editor's.
+- ``cost_served_by``: the document's prose compares costs: a field cites figure keys reading the costs of two arms or
+  more (:func:`~threetears.evals.analysis.report.figure_keys.cost_arms`: a money figure's arms, a ratio of costs' with
+  the control it is on, every arm for a range over them). The fact states, for each arm compared, the providers its
+  pricing names as serving its model calls (``ScoreboardRow.pricing.providers``), or that it names none, or that the
+  input states no pricing for it, and the tools its cost spent on apart from them (``tool_providers``). A cost is the
+  provider routing's, not the model's alone (owner, 2026-10-25, restated 2026-10-29), so a cost compared between models
+  names who served each; whether the text does is the editor's, never this fact's. One fact for the document, naming
+  the fields that compare costs and each arm they compare once, in the input's order: the routing is an arm's, not a
+  field's.
 
 **What a fact is.** An :class:`EditorFact` is ``{kind, path, fact, figures}``. ``path`` is the document field the fact
 is about (``recommends[0]``, ``decision[2]``, ``claims[1].text``), or empty for the document as a whole. ``fact`` is the
@@ -95,7 +104,13 @@ from threetears.evals.analysis.analyst.analyses import (
 from threetears.evals.analysis.analyst.cited import cite
 from threetears.evals.analysis.analyst.facts import confound_caveat_id, contrast_key
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.figure_keys import WEAKEST_PREFIX, Figure, format_figure, reader_name
+from threetears.evals.analysis.report.figure_keys import (
+    WEAKEST_PREFIX,
+    Figure,
+    cost_arms,
+    format_figure,
+    reader_name,
+)
 from threetears.evals.analysis.report_decision import control_arm, floors_not_held, report_caveats, shown_better
 from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, Reading, ReportInput
 from threetears.evals.analysis.report_margins import Margin, weakest_margin
@@ -118,6 +133,7 @@ EditorFactKind = Literal[
     "undecided_implied",
     "count_in_words",
     "caveat_not_carried",
+    "cost_served_by",
 ]
 
 
@@ -161,6 +177,7 @@ def editor_facts(doc: ReportDoc, report_input: ReportInput) -> list[EditorFact]:
     facts += _undecided_facts(doc, report_input, options, keys)
     facts += _count_facts(doc)
     facts += _caveat_facts(doc, report_input)
+    facts += _served_facts(doc, report_input)
     return facts
 
 
@@ -579,3 +596,58 @@ def _caveat_facts(doc: ReportDoc, report_input: ReportInput) -> Iterator[EditorF
                     "carries it.",
                 ]
                 yield _fact("caveat_not_carried", f"claims[{index}].caveats", parts, report_input)
+
+
+# --- who served the model calls of an arm whose cost the text cites ------------------------------------------------
+
+
+def _cost_arms(text: str, report_input: ReportInput) -> list[str]:
+    """The arms whose cost a prose field's keys read (:func:`~threetears.evals.analysis.report.figure_keys.cost_arms`:
+    a money figure's arms, a ratio of costs' with the control it is on), in the input's order."""
+    named: set[str] = set()
+    for match in _KEY.finditer(text):
+        try:
+            named.update(cost_arms(match.group(1), report_input))
+        except UnresolvableReference:
+            # NOSILENT: an expected condition, not a fault: a key that does not read is invariant 1's to refuse; this
+            # fact reads only what resolves, and never refuses.
+            continue
+    return [arm.id for arm in report_input.arms if arm.id in named]
+
+
+def _served_said(report_input: ReportInput, arm: str) -> list[_Part]:
+    """An arm, then who served its model calls as its pricing names them, and the tools its cost spent on apart from
+    them: ``A (B), its model calls served by DeepInfra, with tool spend at searxng``."""
+    row = report_input.scoreboard.get(arm)
+    pricing = row.pricing if row is not None else None
+    if pricing is None:
+        return [_arm(arm), ", whose pricing the input does not state"]
+    said: list[_Part] = [
+        _arm(arm),
+        f", its model calls served by {', '.join(pricing.providers)}"
+        if pricing.providers
+        else ", whose pricing names no provider of its model calls",
+    ]
+    if pricing.tool_providers:
+        said.append(f", with tool spend at {', '.join(pricing.tool_providers)}")
+    return said
+
+
+def _served_facts(doc: ReportDoc, report_input: ReportInput) -> Iterator[EditorFact]:
+    compared: dict[str, None] = {}
+    where: list[str] = []
+    for path, text in report_doc_prose(doc):
+        arms = _cost_arms(text, report_input)
+        if len(arms) < 2:
+            # One arm's cost alone compares nothing; an uplift reads the control's too, which makes two.
+            continue
+        where.append(path)
+        compared.update(dict.fromkeys(arms))
+    if not compared:
+        return
+    order = [arm.id for arm in report_input.arms if arm.id in compared]
+    parts: list[_Part] = [f"The document compares costs ({', '.join(where)}) of "]
+    for index, arm in enumerate(order):
+        parts += ["; and of " if index else "", *_served_said(report_input, arm)]
+    parts.append(".")
+    yield _fact("cost_served_by", "", parts, report_input)

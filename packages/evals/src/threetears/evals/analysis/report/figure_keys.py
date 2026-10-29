@@ -6247,18 +6247,48 @@ def _priced_in_part(reading: _Reading, report_input: ReportInput) -> str:
     the arm's priced share where the key names one arm, each such arm's by name where it names more (an uplift names
     the control it is on too), and every arm's where a ratio names none (a range over them all); empty where every cost
     counts every call, or the input does not say."""
+    arms = _cost_arms_read(reading, report_input)
+    parts = [(arm, share) for arm in arms if (share := priced_in_part(report_input, arm)) is not None]
+    if len(arms) == 1:
+        return parts[0][1] if parts else ""
+    return "; ".join(f"{_arm(report_input, arm).name or arm}: {share}" for arm, share in parts)
+
+
+def _cost_arms_read(reading: _Reading, report_input: ReportInput) -> list[str]:
+    """The arms whose cost a money or cost-ratio reading reads: the arms it names, the control besides for a ratio of
+    costs (an uplift is on it), and every arm for a ratio naming none (a range over them all)."""
     named = [
         value for slot, value in zip(_value_slots(reading), reading.values, strict=True) if slot.name in _ARM_SLOTS
     ]
     ratio = _family_word(reading) in _COST_RATIOS
     control = _control(report_input)
-    # A ratio of costs reads the control's cost too (an uplift is on it), and a range reads every arm's.
     arms = list(dict.fromkeys([*named, *([control.id] if ratio and control is not None and named else [])]))
-    arms = arms or ([arm.id for arm in report_input.arms] if ratio else [])
-    parts = [(arm, share) for arm in arms if (share := priced_in_part(report_input, arm)) is not None]
-    if len(arms) == 1:
-        return parts[0][1] if parts else ""
-    return "; ".join(f"{_arm(report_input, arm).name or arm}: {share}" for arm, share in parts)
+    return arms or ([arm.id for arm in report_input.arms] if ratio else [])
+
+
+def cost_arms(key: str, report_input: ReportInput) -> list[str]:
+    """The arms whose cost a figure key reads: a money figure's arms, a ratio of costs' with the control it is on (an
+    uplift, a gap), every arm for a range over them all; empty for a key that reads no cost, or no arm's.
+
+    The one reading of which costs a key compares, shared with the words a partly priced cost carries
+    (:class:`Figure`'s ``priced_in_part``), so a surface naming who served each cost reads the arms that note does.
+
+    :param key: The path, without braces or filters.
+    :ptype key: str
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The arms by id, the ones the key names first, in its order.
+    :rtype: list[str]
+    :raises UnresolvableReference: The path names nothing the input holds, reads two ways, or names a figure the
+        input leaves unstated.
+    """
+    figure = resolve(key, report_input)
+    if figure.kind not in ("number", "interval"):
+        return []
+    reading = _one_reading(key, report_input)
+    if figure.scale not in _PER_THOUSAND_FACTORS and _family_word(reading) not in _COST_RATIOS:
+        return []
+    return _cost_arms_read(reading, report_input)
 
 
 def _value_slots(reading: _Reading) -> list[_Ids | _Statistic | _Number]:
@@ -7286,6 +7316,7 @@ def figure_key_pages() -> dict[str, str]:
 
 
 __all__ = [
+    "cost_arms",
     "cost_ruler",
     "FILTER_SPELLINGS",
     "PERCENTILE_NAMES",

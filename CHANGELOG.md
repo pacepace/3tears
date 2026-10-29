@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a model's providers are its model rows', and a cost is the provider routing's: an analyst rule, an editor's must_fix and fact
+
+**Fixed:** an arm's pricing (`ArmPricing`, copied to the report input's `Pricing`) named a tool the model called as a
+provider of the model: a production page printed "served by searxng", the web-search API a candidate called, metered as
+an `external` usage row. `providers` now reads the model rows alone (every role but `external`); the external rows'
+providers are `tool_providers` (new, written only when one names a provider), and the options table prints them beside
+who served the model as tool spend ("served by DeepInfra; tool spend at searxng"). The tool spend stays in the cost and
+its calls in the priced share. The analyst's `campaign_overview` gives each arm's `served_by` and `tool_spend`, left
+out where its pricing names none.
+
+**Changed:** a cost is the provider routing's, not the model's (owner, 2026-10-25, restated 2026-10-29), as the
+priced page's caveat line already said. The analyst skill makes it a rule: a cost comparison between models names the
+provider each was served by and never ranks models on cost alone as if the cost were the model's, and says the routing
+is unknown where an arm's pricing names no provider. The editor's rubric treats a claim that ranks models by cost with no
+provider named as must_fix, and the editor is handed `cost_served_by` (new): where the document's prose compares two
+arms' costs or more, one fact naming those fields and, for each arm compared, the providers its pricing names, that it
+names none, or that the input states no pricing, and its tool spend apart. Which arms' costs a key reads is
+`figure_keys.cost_arms` (new), the reading the partly-priced note beside a cost already used. The skill's digest moves
+with it; the recorded prototype5 replays still pass.
+
 ### evals: Discodon's W4 adoption findings: unanswered calls through the ledger, a turn cap on a dollar budget, the report writer's port declared
 
 **Added:** `RoleUsageLedger.add_unanswered(model=, served_model=, price_source=, ..., retried=, lost=, reasons=)` counts

@@ -8,6 +8,9 @@ Contracts held here:
 
 - **the census** reads pricing off the roles a production deployment pays for, never the judge's; a row that did not
   count its calls leaves the priced share uncounted; an arm assembled without pricing carries no key;
+- **a model's providers are its model rows' alone**: a candidate row served by one provider beside an external
+  web-search row names that provider alone as the model's, on the census, the report input, the options table and the
+  analyst's overview, and the search spend stays in the cost, its calls counted, named as tool spend;
 - **the report input** carries an arm's pricing, and an arm without it carries no key;
 - **the options table** of a real assembled campaign shows each arm's price source, serving provider and priced share;
 - **no fingerprint moves**: two bundles, and two campaign bundles, that differ only in pricing share their fingerprint
@@ -20,15 +23,22 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import pytest
+
 from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle
 from packages.evals.tests.run_facts_support import CASES, aspect_bundle, campaign_over, result_of, run_of
+from threetears.evals.analysis.analyst.facts import campaign_overview
 from threetears.evals.analysis.analyst.snapshot import analyst_input
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmPricing, evidence_digest
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, campaign_evidence_digest
 from threetears.evals.analysis.planned_analysis import report_input_digest
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.plan_page.tables import arms_table
-from threetears.evals.analysis.report.plan_page.words import ALL_PRICED_TEMPLATE, SERVED_BY_TEMPLATE
+from threetears.evals.analysis.report.plan_page.words import (
+    ALL_PRICED_TEMPLATE,
+    SERVED_BY_TEMPLATE,
+    TOOL_SPEND_TEMPLATE,
+)
 from threetears.evals.analysis.report_input import Pricing
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report_plan_facts import fact_arms
@@ -88,18 +98,18 @@ def _unpriced(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
 
 
 def test_the_census_reads_an_arms_pricing_off_its_production_usage_rows() -> None:
-    """Sources from the priced rows only, providers from every row, the calls and priced calls the rows count; the
-    judge's rows, which no production deployment pays for, are no part of it."""
+    """Sources from the priced rows only, the external row's provider as tool spend and never the model's, the calls
+    and priced calls the rows count; the judge's rows, which no production deployment pays for, are no part of it."""
     trials = _trials(_PARTLY)
     _, bundle, _ = aspect_bundle(trials)
-    (pricing,) = [row.pricing for row in bundle.scoreboard if row.pricing is not None and row.pricing.providers]
+    (pricing,) = [row.pricing for row in bundle.scoreboard if row.pricing is not None and row.pricing.tool_providers]
     assert pricing == ArmPricing(
-        sources=["openrouter:reported"], providers=["searx"], calls=4 * CASES, priced_calls=3 * CASES
+        sources=["openrouter:reported"], providers=[], tool_providers=["searx"], calls=4 * CASES, priced_calls=3 * CASES
     )
     built = report_input(campaign_over(trials))
-    (row,) = [row for row in built.scoreboard.values() if row.pricing is not None and row.pricing.providers]
+    (row,) = [row for row in built.scoreboard.values() if row.pricing is not None and row.pricing.tool_providers]
     assert row.pricing == Pricing(
-        sources=["openrouter:reported"], providers=["searx"], calls=4 * CASES, priced_calls=3 * CASES
+        sources=["openrouter:reported"], providers=[], tool_providers=["searx"], calls=4 * CASES, priced_calls=3 * CASES
     )
     table = arms_table(built, block_look(built, fact_arms(built)), ())
     assert any(
@@ -124,6 +134,60 @@ def test_an_arms_pricing_reaches_the_report_input_and_an_arm_without_it_carries_
         assert row.pricing == Pricing(
             sources=["openrouter:reported"], providers=["DeepInfra"], calls=10, priced_calls=9
         )
+
+
+# --- a model's providers are its model rows' alone ----------------------------------------------------------------
+
+#: A candidate served by DeepInfra that called a web-search tool, metered as an external row priced at its own rate.
+_SEARCHED = [
+    [
+        _row_of("candidate", cost=0.002, calls=2, source="openrouter:reported", provider="DeepInfra"),
+        _row_of("external", cost=0.001, calls=1, source="host:declared", provider="searxng"),
+    ]
+    for _ in range(CASES)
+]
+
+
+def test_a_tool_the_model_called_is_tool_spend_and_never_a_provider_of_the_model() -> None:
+    """The census, the report input, the options table and the analyst's overview name DeepInfra alone as serving the
+    model's calls; searxng is named as tool spend, and its spend and calls stay in the cost."""
+    trials = _trials(_SEARCHED)
+    _, bundle, _ = aspect_bundle(trials)
+    (board,) = [row for row in bundle.scoreboard if row.pricing is not None and row.pricing.providers]
+    assert board.pricing == ArmPricing(
+        sources=["host:declared", "openrouter:reported"],
+        providers=["DeepInfra"],
+        tool_providers=["searxng"],
+        calls=3 * CASES,
+        priced_calls=3 * CASES,
+    )
+    assert board.reply_cost_usd == pytest.approx(0.003), "the search spend stays in the cost"
+
+    built = report_input(campaign_over(trials))
+    (row,) = [row for row in built.scoreboard.values() if row.pricing is not None and row.pricing.providers]
+    assert row.pricing is not None
+    assert (row.pricing.providers, row.pricing.tool_providers) == (["DeepInfra"], ["searxng"])
+    assert row.reply_cost_usd == pytest.approx(0.003), "the search spend stays in the report input's cost"
+
+    table = arms_table(built, block_look(built, fact_arms(built)), ())
+    (fast,) = [r for r in table.rows if r["priced_by"].flag and "DeepInfra" in r["priced_by"].flag]
+    assert fast["priced_by"].flag == "; ".join(
+        [SERVED_BY_TEMPLATE.format(providers="DeepInfra"), TOOL_SPEND_TEMPLATE.format(providers="searxng")]
+    )
+    assert ALL_PRICED_TEMPLATE.format(calls=3 * CASES) in (fast["cost_per_1k"].flag or "")
+
+    served = [(arm.served_by, arm.tool_spend) for arm in campaign_overview(built, "snap").arms if arm.served_by]
+    assert served == [(["DeepInfra"], ["searxng"])]
+
+
+def test_an_arm_whose_rows_name_no_provider_carries_no_served_or_tool_key() -> None:
+    """Rows naming no provider: no tool_providers key in the report input, and no served_by or tool_spend in the
+    overview, which read as they did before the fields existed."""
+    usage = [[_row_of("candidate", cost=0.002, calls=2, source="openrouter:reported")] for _ in range(CASES)]
+    built = report_input(campaign_over(_trials(usage)))
+    assert '"pricing"' in built.model_dump_json() and '"tool_providers"' not in built.model_dump_json()
+    for row in campaign_overview(built, "snap").arms:
+        assert not {"served_by", "tool_spend"} & set(row.model_dump())
 
 
 # --- the options table, end to end ---------------------------------------------------------------------------------
