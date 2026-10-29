@@ -423,9 +423,11 @@ def _served(tool: MountedTool) -> list[str]:
 #: tool's moved again when campaign_create's and campaign_update's name came to state its cap and where the detail goes,
 #: and when a campaign's line came to carry its title, outcome_short and the rest a list page shows, and again when a
 #: report stored with its editor's findings open became a draft: analyses_list's line and report_read's result gained draft.
+#: The evals tool's moved again when a campaign's line gained aspect_runs (its runs by aspect), and
+#: analyses_list's needs_regeneration came to say report_read renders a memo over another shape's bundle code-only.
 #: The editor's moved again when the weakest margin's keys gained `weakest.interval`, the interval its worst case is
 #: read on (the figure-key grammar it serves).
-_EVALS_BYTES = "3aa9344263c47cec0cf23acb2599524ba4498e0df291d4d8e3825abe2be11893"
+_EVALS_BYTES = "49c225e153e027aedd04fd75226e892785af730a0d6f84202003f6b3d6e0b638"
 _EDITOR_BYTES = "60cf01b3676e6dda92c5897678d6012062417ae05c8b3f8bdf7a21615cd51aa3"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's

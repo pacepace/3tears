@@ -2050,7 +2050,9 @@ def campaign_report(
       so its page is the code-only page with the one regenerate line on its first screen
       (:data:`~threetears.evals.analysis.report.campaign.memo_blocks.NO_LONGER_READS`,
       :attr:`~threetears.evals.analysis.report.CampaignReport.unread_analysis_id`). No planner page is reached;
-    - a memo's: laid out over what was frozen with it, as :func:`analysis_report` lays it out.
+    - a memo's: laid out over what was frozen with it, as :func:`analysis_report` lays it out; where it was frozen
+      over a bundle of another shape this version no longer reads, as a plan's is (the code-only page, the regenerate
+      line saying the bundle's shape).
 
     A report document this version no longer reads — its record does not validate, its snapshot is gone, holds no
     bundle or no longer reads, or the campaign no longer lays out over it — is laid out as a plan is: the code-only page
@@ -2076,8 +2078,6 @@ def campaign_report(
     :return: The page; its ``basis`` says which it is.
     :rtype: CampaignReport
     :raises NotFoundError: No campaign with that id in the scope.
-    :raises RefusedInput: Its reported analysis is a memo written over a bundle of another shape: the page refuses,
-        naming the regeneration (``analysis_generate``).
     """
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     reported = host.storage.load_reported_analysis(campaign_id, scope_id)
@@ -2094,7 +2094,12 @@ def campaign_report(
     if reported.report_plan_id is not None:
         why = f"analysis {reported.id} was written by the report planner, as report-plan/1"
         return _stands_in(host, campaign, why, trials=trials, unread_analysis_id=reported.id)
-    return _analysis_page(reported, campaign, trials=trials)
+    try:
+        return _analysis_page(reported, campaign, trials=trials)
+    except RefusedInput as unread:
+        # A memo frozen over a bundle of another shape is read as a plan is: the code-only page, led by the one
+        # regenerate line, and why (the shape the bundle was frozen at) after it.
+        return _stands_in(host, campaign, unread.fault, trials=trials, unread_analysis_id=reported.id)
 
 
 def report_doc_report(

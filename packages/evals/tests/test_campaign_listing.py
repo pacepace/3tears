@@ -20,7 +20,8 @@ Contracts held here (``threetears.evals.ops.campaigns_list``, ``CampaignLine``):
 - **the title** is code's: the arms (declared, else the runs' candidate models; judges counted), control first, then
   the aspects, then the name in parentheses, counting past three arms and two aspects;
 - **feeds**: an exploratory campaign names the declared campaigns holding any of its runs; a declared one feeds
-  none.
+  none;
+- **aspect_runs**: each aspect's label to the ids of its runs, in the campaign's order, the same runs ``feeds`` reads.
 """
 
 from __future__ import annotations
@@ -157,6 +158,39 @@ def test_an_exploratory_campaign_names_the_declared_campaign_holding_its_runs() 
     assert not declared.exploratory, "the fixture's campaign is declared"
     assert _line(lines, sweep.id).feeds == [fixture.campaign.id]
     assert declared.feeds == []
+
+
+def test_a_line_maps_each_aspect_to_its_runs_in_the_campaigns_order_and_feeds_reads_the_same_runs() -> None:
+    fixture = ops_fixture()
+    host = fixture.host.eval_host
+    stored = host.storage.load_campaign(fixture.campaign.id, TOYHOST_SCOPE)
+    assert stored is not None
+    runs = fixture.campaign.run_ids
+    sweep = campaign_create(
+        host,
+        CampaignDefinition(
+            name="sweep",
+            subject_id=TOYHOST_SUBJECT.subject_id,
+            behavior="speed",
+            aspects=[{"label": "speed", "run_ids": list(reversed(runs))}],
+            exploratory=True,
+        ),
+        TOYHOST_SCOPE,
+        created_by=CALLER.identity,
+    )
+
+    lines = campaigns_list(host, TOYHOST_SCOPE).campaigns
+
+    declared = _line(lines, fixture.campaign.id)
+    assert declared.aspect_runs == {aspect.label: list(aspect.run_ids) for aspect in stored.aspects}
+    assert [run for ids in declared.aspect_runs.values() for run in ids] == runs
+    assert (
+        list(declared.aspect_runs) == declared.aspects
+        and sum(map(len, declared.aspect_runs.values())) == declared.run_count
+    )
+    assert sweep.aspect_runs == {"speed": list(reversed(runs))}, "the order is the campaign's, as stored"
+    assert _line(lines, sweep.id).aspect_runs == sweep.aspect_runs
+    assert _line(lines, sweep.id).feeds == [fixture.campaign.id], "feeds reads the runs aspect_runs lists"
 
 
 def test_a_name_over_the_cap_is_refused_at_create_and_update_saying_where_the_detail_goes() -> None:

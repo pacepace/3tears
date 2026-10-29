@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a memo over a bundle shape this build no longer reads falls back to the code-only page; a campaign line maps its aspects to their runs
+
+**Changed:** `report_read` and the campaign's report no longer refuse a campaign whose newest analysis is a memo frozen
+over a bundle of another shape (a memo frozen at shape 60 on a build reading 64): the page is the code-only page over
+the campaign's evidence as it stands, in markdown, html, static html and json, led by the one regenerate line with the
+bundle's shape after it, as a report plan's or an unreadable report document's already was. `campaigns_list` and
+`analyses_list` already listed it as needing regeneration. `analysis_report` by id still refuses.
+
+**Added:** `CampaignLine.aspect_runs`, each aspect's label to the ids of its runs in the campaign's order.
+
 ### evals: a scatter's y-axis title is an obstacle to its point labels
 
 **Fixed:** a `scatter_frontier` or `gate_scatter` chart draws its y-axis title inside the plot, bottom left, and its

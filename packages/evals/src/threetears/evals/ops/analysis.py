@@ -252,6 +252,14 @@ class CampaignLine(EvalBaseModel):
     report: CampaignLineReport | None = Field(
         default=None, description="Its reported analysis; None exactly when report_state is `none`."
     )
+    aspect_runs: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "The campaign's runs by aspect: each aspect's label (every one of `aspects`) to the ids of the runs it "
+            "holds, in the campaign's order. Their union is what `feeds` reads an exploratory campaign's runs from, "
+            "and its size is `run_count`."
+        ),
+    )
     feeds: list[str] = Field(
         default_factory=list,
         description=(
@@ -481,7 +489,8 @@ class AnalysisLine(EvalBaseModel):
             "no longer reads (its shape moved, or it was deleted apart from it), is rendered code-only by report_read: "
             "its line is the one regenerate line, then why in parentheses where there is more to say, and a plan or "
             "document it cannot read counts no findings. A memo written over a bundle of another shape says why, and "
-            "its report is refused until it is generated again (analysis_generate). None when it reads."
+            "report_read renders it code-only too, led by the regenerate line with the bundle's shape "
+            "(analysis_generate). None when it reads."
         ),
     )
 
@@ -626,6 +635,7 @@ def _campaign_line(campaign: EvalCampaign) -> CampaignLine:
         archived=campaign.archived,
         exploratory=campaign.exploratory,
         aspects=[aspect.label for aspect in campaign.aspects],
+        aspect_runs={aspect.label: list(aspect.run_ids) for aspect in campaign.aspects},
         created_at=campaign.created_at,
         question=campaign.question,
         question_short=question_short(campaign.question),
@@ -2156,8 +2166,8 @@ def report_read(
     - ``memo`` (an analysis stored before the report planner): laid out as written.
 
     A report document that no longer reads (its version, its model, or a snapshot gone or holding no bundle) reads as a
-    plan does. Neither is ever refused, and ``needs_regeneration`` carries that one line, as the page prints it, then
-    why in parentheses; the JSON body carries it too, so a stand-in never reads as a campaign never analysed.
+    plan does, and so is a memo written over a bundle of another shape (the why names that shape). None is ever
+    refused, and ``needs_regeneration`` carries that one line, as the page prints it, then why in parentheses; the JSON body carries it too, so a stand-in never reads as a campaign never analysed.
 
     **The trials.** By default each aspect's trials section is the census line, the table of its failed and lost
     trials, each row naming its stored result (read one with ``result_get``), and the table of its passed trials;
@@ -2200,8 +2210,6 @@ def report_read(
     :raises NotFoundError: No campaign with that id in the scope; or no report document with ``report_doc_id`` in the
         scope, or one written for another campaign.
     :raises ValidationFailedError: ``include_sessions`` with a form other than ``json``.
-    :raises RefusedInput: The campaign's reported analysis is a memo written over a bundle of another shape: refused
-        with the regeneration that mends it (``analysis_generate``).
     """
     if include_sessions and format != "json":
         raise ValidationFailedError(
