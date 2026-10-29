@@ -7573,8 +7573,23 @@
     },
     "threetears.evals.ops.CampaignLine": {
       "kind": "model",
-      "signature": "CampaignLine(id: str, name: str, subject_id: str, behavior: str, run_count: int, archived: bool, exploratory: bool, aspects: list[str])",
+      "signature": "CampaignLine(id: str, title: str = '', name: str, subject_id: str, behavior: str, run_count: int, archived: bool, exploratory: bool, aspects: list[str], created_at: str = '', question: str = '', question_short: str = '', arms: list[CampaignLineArm] = list(), call: CampaignLineCall | None = None, verdict_short: str | None = None, report_state: ReportState = 'none', report: CampaignLineReport | None = None, feeds: list[str] = list())",
       "tier": "stable"
+    },
+    "threetears.evals.ops.CampaignLineArm": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.ops.CampaignLineCall": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.ops.CampaignLineReport": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.ops.CampaignListing": {
       "kind": "model",

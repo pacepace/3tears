@@ -31,6 +31,7 @@ from threetears.evals.schema import EvalRunStatus
 from threetears.evals.kernel import EvalStorage, ResultOutcome, ValidationFailedError
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema import KnownOutOfRunPurpose
+from threetears.evals.ops.analysis import CAMPAIGN_NAME_CHARS
 from threetears.evals.ops import (
     EXPORT_PAGE_RESULTS,
     SweepArguments,
@@ -200,7 +201,16 @@ ReporterCaseId = Annotated[
     str,
     Field(min_length=1, description="A reporter case's id, as reporter_case_freeze or reporter_cases_list returns it."),
 ]
-Name = Annotated[str, Field(min_length=1, description="The campaign's name, as an operator reads it.")]
+Name = Annotated[
+    str,
+    Field(
+        min_length=1,
+        description=(
+            f"The campaign's name, as an operator reads it in a list: at most {CAMPAIGN_NAME_CHARS} characters. Put the "
+            "detail (the arms, the round, the case count) in question or description, never in the name."
+        ),
+    ),
+]
 Behavior = Annotated[str, Field(min_length=1, description="Which aspect of the subject is under test.")]
 Description = Annotated[str, Field(description="A longer description of the campaign.")]
 RunIds = Annotated[

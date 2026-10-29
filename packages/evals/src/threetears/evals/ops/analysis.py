@@ -37,6 +37,7 @@ from threetears.evals.analysis.campaigns import (
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.planned_analysis import report_plan_of
 from threetears.evals.analysis.report import ReportBasis, TrialDetail, analysis_verdict
+from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
@@ -59,7 +60,15 @@ from threetears.evals.analysis.service import (
 from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
 from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.schema.base import EvalBaseModel, VerbatimText
-from threetears.evals.kernel.declaration import CampaignCall, Margin, OverriddenBar
+from threetears.evals.kernel.declaration import (
+    ArmRole,
+    CampaignArm,
+    CampaignCall,
+    Margin,
+    OverriddenBar,
+    printed_aspect_name,
+)
+from threetears.evals.kernel.judge_cases import JUDGE_KIND
 from threetears.evals.kernel.campaign import (
     AttemptOutcome,
     ConfidenceTier,
@@ -109,10 +118,83 @@ from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_INSIGHT, FIND_R
 log = get_logger(__name__)
 
 
+#: The most characters a campaign's name may hold when it is created or renamed: a qualifier beside the title code
+#: builds (:func:`campaign_title`), as short as any declared short name. A name stored longer before the cap still
+#: reads and lists; only a write is held to it.
+CAMPAIGN_NAME_CHARS = DECLARED_NAME_CHARS
+
+#: Past this many arms a title counts the candidates rather than naming them; past this many aspects, it counts them.
+TITLE_ARMS = 3
+TITLE_ASPECTS = 2
+
+#: What a name over the cap is told to do instead.
+CAMPAIGN_NAME_REMEDY = (
+    f"name the campaign in at most {CAMPAIGN_NAME_CHARS} characters, and put the detail (the arms, the round, the case "
+    "count, sweep or declared) in question or description"
+)
+
+#: The most characters a listing's short question holds, its ellipsis included.
+QUESTION_SHORT_CHARS = 100
+
+#: Where a campaign's report stands, as a listing shows it: ``none``, no live analysis; ``written``, one this build reads
+#: over the runs the campaign holds now; ``needs_regeneration``, one it cannot read, a report plan (rendered code-only),
+#: or one written over other runs than the campaign holds now.
+ReportState = Literal["none", "written", "needs_regeneration"]
+
+
+class CampaignLineArm(EvalBaseModel):
+    """One declared arm of a campaign, as a listing shows it."""
+
+    label: str
+    short_name: str | None = Field(description="The name the arm declares for where space is tight; None when none.")
+    role: ArmRole
+
+
+class CampaignLineCall(EvalBaseModel):
+    """The call recorded over a campaign's readings, as a listing shows it."""
+
+    arm: str = Field(description="The label of the arm the call names.")
+    reason: str = Field(description="Why, in the words it was recorded with.")
+
+
+class CampaignLineReport(EvalBaseModel):
+    """A campaign's reported analysis (its newest live one), as a listing shows it."""
+
+    analysis_id: str
+    headline: str = Field(
+        description="Code's verdict line over the evidence it was written from (AnalysisLine.verdict)."
+    )
+    why_regenerate: str | None = Field(
+        description=(
+            "Why the report needs regeneration (report_state needs_regeneration): this build cannot read it, it is a "
+            "report plan, or the campaign holds other runs than it was written over. None when it is written."
+        )
+    )
+    generated_at: str
+    generator_model: str
+    cost_usd: float | None = Field(
+        description=(
+            "What generating it cost in US dollars, summed over its attempt's calls; None when any call was unpriced "
+            "(unpriced_calls), never 0, or when no attempt records it."
+        )
+    )
+    unpriced_calls: int = Field(ge=0, description="Its attempt's calls whose cost was never observed; 0 with none.")
+
+
 class CampaignLine(EvalBaseModel):
     """One campaign, as a listing shows it."""
 
     id: str
+    title: str = Field(
+        default="",
+        description=(
+            "What the campaign compares, built by code on every read and never stored: `<arms> · <measure> (<name>)`. "
+            "The arms are its declared arms' short names (else labels), control first, joined ` vs `, or, past "
+            f"{TITLE_ARMS}, `<control> vs N candidates`; a campaign declaring none names the distinct candidate models "
+            "of its runs, and a judge campaign counts its judges. The measure is its aspects' printed names, or past "
+            f"{TITLE_ASPECTS} `N aspects`. Nothing from a call, a recommendation or a verdict enters it."
+        ),
+    )
     name: str
     subject_id: str
     behavior: str
@@ -122,6 +204,43 @@ class CampaignLine(EvalBaseModel):
         description="Whether no aspect of the campaign declares a design — derived on every read, never stored"
     )
     aspects: list[str] = Field(description="The labels of the campaign's aspects, in order; at least one.")
+    created_at: str = Field(default="", description="When the campaign was created (ISO-8601).")
+    question: str = Field(default="", description="The question it asks of its arms, as declared; empty asks none.")
+    question_short: str = Field(
+        default="",
+        description=(
+            f"The question cut to at most {QUESTION_SHORT_CHARS} characters at a word boundary, ending in an ellipsis "
+            "where it was cut; empty asks none."
+        ),
+    )
+    arms: list[CampaignLineArm] = Field(
+        default_factory=list,
+        description=(
+            "Its declared arms, control first. A campaign that declares no candidate reads each other variant among "
+            "its runs as one, which only its report lists."
+        ),
+    )
+    call: CampaignLineCall | None = Field(default=None, description="The call recorded over it; None until one is.")
+    verdict_short: str | None = Field(
+        default=None,
+        description=(
+            "Where it stands in a few words, written by code and never by a model: from the recorded call, `Keep "
+            "<arm>` for the control and `Adopt <arm>` for a candidate; else from its report's recommendation, the "
+            "same way; `No call` for a report recommending no arm or more than one; None with neither a call nor a "
+            "report. report.headline is the long form."
+        ),
+    )
+    report_state: ReportState = Field(default="none", description="Where its report stands (`report`).")
+    report: CampaignLineReport | None = Field(
+        default=None, description="Its reported analysis; None exactly when report_state is `none`."
+    )
+    feeds: list[str] = Field(
+        default_factory=list,
+        description=(
+            "For an exploratory campaign, the ids of the declared campaigns of its scope holding any of its runs (the "
+            "ones that adopted its aspects), oldest first; empty for a declared campaign or one no other holds."
+        ),
+    )
 
 
 class CampaignListing(EvalBaseModel):
@@ -466,7 +585,180 @@ def _campaign_line(campaign: EvalCampaign) -> CampaignLine:
         archived=campaign.archived,
         exploratory=campaign.exploratory,
         aspects=[aspect.label for aspect in campaign.aspects],
+        created_at=campaign.created_at,
+        question=campaign.question,
+        question_short=question_short(campaign.question),
+        arms=[CampaignLineArm(label=arm.label, short_name=arm.short_name, role=arm.role) for arm in campaign.arms],
+        call=(
+            CampaignLineCall(arm=campaign.call.arm, reason=campaign.call.reason) if campaign.call is not None else None
+        ),
+        verdict_short=_decided(campaign.call.arm, campaign.arms) if campaign.call is not None else None,
     )
+
+
+def _decided(label: str, arms: Sequence[CampaignArm]) -> str:
+    """``Keep <arm>`` when the arm is the control, else ``Adopt <arm>``."""
+    role = next((arm.role for arm in arms if arm.label == label), "candidate")
+    return f"{'Keep' if role == 'control' else 'Adopt'} {label}"
+
+
+def _recommended(analysis: EvalAnalysis, campaign: EvalCampaign) -> str:
+    """What a report recommends in a few words: the arm its recommended variant is, or ``No call``."""
+    key = analysis.recommended_variant_key
+    if key is None:
+        return "No call"
+    arms: list[CampaignArm] = list(campaign.arms)
+    if not any(arm.variant_key == key for arm in arms):
+        try:
+            arms = list(analysis_campaign_bundle(analysis).arms)
+        except RefusedInput:
+            # NOSILENT: a bundle this build cannot read names no arm; the line's report says it needs regeneration.
+            return "No call"
+    arm = next((arm for arm in arms if arm.variant_key == key), None)
+    return _decided(arm.label, arms) if arm is not None else "No call"
+
+
+def _refuse_long_name(name: str) -> None:
+    """Refuse a campaign name over :data:`CAMPAIGN_NAME_CHARS`, saying where its detail goes.
+
+    :raises ValidationFailedError: The name is longer than the cap.
+    """
+    if len(name) > CAMPAIGN_NAME_CHARS:
+        raise ValidationFailedError(
+            f"a campaign's name is at most {CAMPAIGN_NAME_CHARS} characters; this one is {len(name)}",
+            remedy=CAMPAIGN_NAME_REMEDY,
+            parameters=("name",),
+        )
+
+
+def question_short(question: str) -> str:
+    """A question cut to :data:`QUESTION_SHORT_CHARS` characters at a word boundary, an ellipsis marking the cut.
+
+    :param question: The question, as declared.
+    :ptype question: str
+    :return: It whole when it fits; else its words up to the limit and ``…``, or its first characters and ``…`` when
+        its first word alone is longer.
+    :rtype: str
+    """
+    text = " ".join(question.split())
+    if len(text) <= QUESTION_SHORT_CHARS:
+        return text
+    room = text[: QUESTION_SHORT_CHARS - 1]
+    cut = room.rsplit(" ", 1)[0] if " " in room else room
+    return cut.rstrip(" ,;:.-") + "…"
+
+
+def _with_report(host: EvalHost, line: CampaignLine, campaign: EvalCampaign) -> CampaignLine:
+    """The line with its reported analysis: what code reads of it, whether it needs regeneration, and its cost."""
+    analysis = host.storage.load_reported_analysis(campaign.id, campaign.scope_id)
+    if analysis is None:
+        return line
+    listed = _analysis_line(host, analysis)
+    why = listed.needs_regeneration
+    if why is None and set(analysis.observation_refs) != set(campaign.run_ids):
+        why = "the campaign holds other runs than the report was written over; generate it again (analysis_generate)"
+    attempt = next(
+        (
+            attempt
+            for attempt in host.storage.list_analysis_attempts_by_campaign(campaign.id, campaign.scope_id)
+            if attempt.analysis_id == analysis.id
+        ),
+        None,
+    )
+    report = CampaignLineReport(
+        analysis_id=analysis.id,
+        headline=listed.verdict,
+        why_regenerate=why,
+        generated_at=listed.generated_at,
+        generator_model=listed.generator_model,
+        cost_usd=attempt.token_cost if attempt is not None and attempt.unpriced_calls == 0 else None,
+        unpriced_calls=attempt.unpriced_calls if attempt is not None else 0,
+    )
+    return line.model_copy(
+        update={
+            "report_state": "written" if why is None else "needs_regeneration",
+            "report": report,
+            "verdict_short": line.verdict_short or _recommended(analysis, campaign),
+        }
+    )
+
+
+def _listed(host: EvalHost, campaign: EvalCampaign, every: list[EvalCampaign] | None = None) -> CampaignLine:
+    """A campaign's whole line: its title, declared fields, report, and what it feeds among ``every`` campaign of its
+    scope (read here when not given). Its runs are read only for a campaign that declares no arm, whose title names
+    their candidate models."""
+    every = every if every is not None else list_campaigns(host.storage, campaign.scope_id, archived=None)
+    runs = [] if campaign.arms else host.storage.load_eval_runs(campaign.run_ids, campaign.scope_id)
+    title = campaign_title(
+        campaign,
+        candidate_models=sorted({run.candidate_model for run in runs}),
+        variants=len({json.dumps(run.variant_levers, sort_keys=True, default=str) for run in runs}),
+        judges=any(run.candidate_kind == JUDGE_KIND for run in runs),
+    )
+    return _with_report(host, _campaign_line(campaign), campaign).model_copy(
+        update={"feeds": _feeds(campaign, every), "title": title}
+    )
+
+
+def campaign_title(
+    campaign: EvalCampaign, *, candidate_models: Sequence[str] = (), variants: int = 0, judges: bool = False
+) -> str:
+    """What a campaign compares, in a few words: ``<arms> · <measure> (<name>)`` (:attr:`CampaignLine.title`).
+
+    :param campaign: The campaign.
+    :ptype campaign: EvalCampaign
+    :param candidate_models: The distinct candidate models of its runs, read for a campaign that declares no arm.
+    :ptype candidate_models: Sequence[str]
+    :param variants: How many distinct variants its runs ran (their recorded lever maps), read beside the models: a
+        sweep of one model over another lever is titled by the model and its variant count.
+    :ptype variants: int
+    :param judges: Whether its runs are judge runs, whose arms are judges.
+    :ptype judges: bool
+    :return: The title.
+    :rtype: str
+    """
+    arms = _title_arms(campaign, candidate_models, variants=variants, judges=judges)
+    return f"{arms} · {_title_measure(campaign)} ({campaign.name})"
+
+
+def _title_arms(campaign: EvalCampaign, candidate_models: Sequence[str], *, variants: int, judges: bool) -> str:
+    if campaign.arms:
+        control = [arm.short_name or arm.label for arm in campaign.arms if arm.role == "control"]
+        candidates = [arm.short_name or arm.label for arm in campaign.arms if arm.role != "control"]
+    else:
+        control, candidates = [], [model.rsplit("/", 1)[-1] for model in candidate_models]
+    if judges and not campaign.arms:
+        return (
+            f"{len(candidates)} judge{'s' if len(candidates) != 1 else ''}" if len(candidates) != 1 else candidates[0]
+        )
+    if not campaign.arms and variants > len(candidates):
+        if len(candidates) == 1:
+            return f"{candidates[0]}, {variants} variants"
+        return f"{variants} variants"
+    named = [*control, *candidates]
+    if not named:
+        return "no arms"
+    if len(named) <= TITLE_ARMS:
+        return " vs ".join(named)
+    if control:
+        return f"{control[0]} vs {len(candidates)} candidates"
+    return f"{len(named)} arms"
+
+
+def _title_measure(campaign: EvalCampaign) -> str:
+    names = [printed_aspect_name(aspect.label, aspect.short_name) for aspect in campaign.aspects]
+    return ", ".join(names) if len(names) <= TITLE_ASPECTS else f"{len(names)} aspects"
+
+
+def _feeds(campaign: EvalCampaign, campaigns: list[EvalCampaign]) -> list[str]:
+    """The declared campaigns holding any of an exploratory campaign's runs, oldest first."""
+    if not campaign.exploratory:
+        return []
+    runs = set(campaign.run_ids)
+    held = [
+        other for other in campaigns if other.id != campaign.id and not other.exploratory and runs & set(other.run_ids)
+    ]
+    return [other.id for other in sorted(held, key=lambda other: (other.created_at, other.id))]
 
 
 def campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None) -> CampaignListing:
@@ -478,12 +770,14 @@ def campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = Non
     :ptype scope_id: str
     :param archived: Only archived (``True``) or only active (``False``) campaigns; ``None`` for both.
     :ptype archived: bool | None
-    :return: The listing.
+    :return: The listing: each campaign with its question, declared arms, recorded call, its report's state, headline
+        and cost (one read of its reported analysis and its attempts), and the declared campaigns an exploratory one
+        feeds, read among every campaign of the scope, archived or not.
     :rtype: CampaignListing
     """
-    return CampaignListing(
-        campaigns=[_campaign_line(c) for c in list_campaigns(host.storage, scope_id, archived=archived)]
-    )
+    every = list_campaigns(host.storage, scope_id, archived=None)
+    listed = [c for c in every if archived is None or c.archived == archived]
+    return CampaignListing(campaigns=[_listed(host, campaign, every) for campaign in listed])
 
 
 def campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine:
@@ -505,6 +799,7 @@ def campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: st
         a design this host cannot honour; or names an arm from runs no aspect holds, or that carry two keys.
     :raises StorageError: The campaign failed to persist.
     """
+    _refuse_long_name(definition.name)
     campaign = create_campaign(
         host.storage,
         definition.model_dump(exclude={"aspects_from", "exploratory"}),
@@ -514,7 +809,7 @@ def campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: st
         exploratory=definition.exploratory,
         aspects_from=definition.aspects_from,
     )
-    return _campaign_line(campaign)
+    return _listed(host, campaign)
 
 
 def campaign_update(
@@ -548,6 +843,8 @@ def campaign_update(
         its own registry — whether or not the run has results.
     :raises StorageError: The write failed.
     """
+    if changes.name is not None:
+        _refuse_long_name(changes.name)
     written = changes.model_fields_set - {"exploratory", "control_from_run_id"}
     campaign = update_campaign(
         host.storage,
@@ -560,7 +857,7 @@ def campaign_update(
         control_from_run_id=changes.control_from_run_id,
         clear_control="control_from_run_id" in changes.model_fields_set and changes.control_from_run_id is None,
     )
-    return _campaign_line(campaign)
+    return _listed(host, campaign)
 
 
 def _refuse_no_runs(run_ids: list[str], verb: str) -> None:
@@ -596,7 +893,7 @@ def campaign_runs_add(
     :raises StorageError: The write failed.
     """
     _refuse_no_runs(run_ids, "add")
-    return _campaign_line(add_runs_to_campaign(host.storage, campaign_id, scope_id, run_ids, aspect=aspect))
+    return _listed(host, add_runs_to_campaign(host.storage, campaign_id, scope_id, run_ids, aspect=aspect))
 
 
 def campaign_runs_remove(
@@ -625,7 +922,7 @@ def campaign_runs_remove(
     :raises StorageError: The write failed.
     """
     _refuse_no_runs(run_ids, "remove")
-    return _campaign_line(remove_runs_from_campaign(host.storage, campaign_id, scope_id, run_ids, aspect=aspect))
+    return _listed(host, remove_runs_from_campaign(host.storage, campaign_id, scope_id, run_ids, aspect=aspect))
 
 
 class CampaignCallLine(EvalBaseModel):
@@ -709,7 +1006,7 @@ def campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archive
     :raises NotFoundError: No campaign with that id in the scope.
     :raises StorageError: The write failed.
     """
-    return _campaign_line(set_campaign_archived(host.storage, campaign_id, scope_id, archived=archived))
+    return _listed(host, set_campaign_archived(host.storage, campaign_id, scope_id, archived=archived))
 
 
 def _analysis_line(host: EvalHost, analysis: EvalAnalysis) -> AnalysisLine:

@@ -6,6 +6,39 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a campaign listing carries what a list page shows, a title code builds and a short verdict; a campaign's name is a capped qualifier that moves no fingerprint
+
+**Added:** `CampaignLine` (`campaigns_list`, and every operation returning a campaign's line) carries `created_at`,
+`question` and `question_short` (at most `QUESTION_SHORT_CHARS`, 100, cut at a word, an ellipsis marking the cut),
+the declared `arms` (`CampaignLineArm`: label, short name, role), the recorded `call` (`CampaignLineCall`: arm and
+reason), `verdict_short` (code's few words: `Keep <arm>` for the control and `Adopt <arm>` for a candidate, from the
+recorded call or else the report's recommendation; `No call` for a report recommending none; None with neither),
+`report_state` (`none`, `written` or `needs_regeneration`), `report` (`CampaignLineReport`: the analysis id, code's
+verdict line as `headline`, why it needs regeneration, when and on what model it was generated, its attempt's
+`cost_usd`, None while any call is unpriced, and `unpriced_calls`) and `feeds` (for an exploratory campaign, the
+declared campaigns holding any of its runs). A report needs regeneration when this build cannot read it, when it is a
+report plan, or when the campaign holds other runs than it was written over. Each line reads its campaign's reported
+analysis and attempts once.
+
+**Changed:** a campaign's name is at most `CAMPAIGN_NAME_CHARS` (32) characters when it is created or renamed, refused
+past it with the remedy to put the detail in its question or description; a name stored longer still reads and lists.
+
+**Changed:** a campaign's name is presentation: a campaign bundle's fingerprint is version 3
+(`CAMPAIGN_FINGERPRINT_PREFIX`, `v3:`), which leaves the name out (`CAMPAIGN_PRESENTATION_FIELDS`), as it leaves
+out an aspect's and an arm's short names. Renaming a campaign moves no version 3 fingerprint.
+
+**Fingerprints:** no stored fingerprint moves. A campaign fingerprint stored in version 2 (`v2:`) or 1 (unprefixed)
+is computed again in its own version, the name included, so every analysis and reporter case keeps reproducing; a
+campaign renamed after one was frozen over it reads as other evidence against that one until it is frozen again,
+which then records version 3. A new freeze records version 3. An aspect's own bundle fingerprint is unchanged.
+
+**Changed:** `CampaignLine.title`, code's name for what a campaign compares: `<arms> · <measure> (<name>)`. The arms
+are its declared arms' short names (else labels), control first, joined ` vs `, past three `<control> vs N
+candidates`; a campaign declaring none names its runs' distinct candidate models (a provider's path trimmed), or
+`<model>, N variants` where its runs vary something else, and a judge campaign counts its judges. The measure is its
+aspects' printed names, past two `N aspects`. No call, recommendation or verdict enters it. With it, a campaign's
+name is a qualifier: at most 32 characters (`CAMPAIGN_NAME_CHARS`, the declared-name cap).
+
 ### evals: Discodon's W4 adoption findings: unanswered calls through the ledger, a turn cap on a dollar budget, the report writer's port declared
 
 **Added:** `RoleUsageLedger.add_unanswered(model=, served_model=, price_source=, ..., retried=, lost=, reasons=)` counts

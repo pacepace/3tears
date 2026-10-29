@@ -1729,8 +1729,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `models` | array of `string` | Candidate models, one arm and one run each; empty runs the kind's own default. |
 | `n_test_cases` | `integer` or `null` | A case count to price each planned arm at in place of its plan's, for a what-if grid. |
 | `n_variations` | `integer` | New cases to generate from the template's variation axes; 0 runs its stored cases. |
-| `name` (on `campaign_create`) | `string` | The campaign's name, as an operator reads it. |
-| `name` (on `campaign_update`) | `string` or `null` | The campaign's name, as an operator reads it. |
+| `name` (on `campaign_create`) | `string` | The campaign's name, as an operator reads it in a list: at most 32 characters. Put the detail (the arms, the round, the case count) in question or description, never in the name. |
+| `name` (on `campaign_update`) | `string` or `null` | The campaign's name, as an operator reads it in a list: at most 32 characters. Put the detail (the arms, the round, the case count) in question or description, never in the name. |
 | `note` | `string` | Why the output must get that verdict, in the author's words. |
 | `offset` | `integer` | Skip this many rows; the previous page's next_offset. |
 | `output` | `string` | The output under review, as the judge reads it. |
