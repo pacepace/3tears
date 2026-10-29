@@ -262,8 +262,7 @@ class _Drawable(_Kind):
         if getattr(self, "panels", None) is None:
             return self.table(legend, read_at)
         drawn = _drawn(self)
-        headers: list[str] = []
-        body: list[list[str]] = []
+        tables: list[tuple[_PanelText, list[str], list[list[str]]]] = []
         cards: list[_PanelText] = []
         for panel, one in drawn:
             if panel is None:
@@ -271,10 +270,16 @@ class _Drawable(_Kind):
             if one is None:
                 cards.append(panel)
                 continue
-            own_headers, rows = one.table(legend, read_at)
-            headers = headers or ["Panel", *own_headers]
-            body += [[_panel_name(panel), *row] for row in rows]
-        headers = headers or ["Panel", ""]
+            tables.append((panel, *one.table(legend, read_at)))
+        # panels may not share their columns (a Note column one panel has no use for): the table keeps the widest
+        # panel's columns, and a panel with fewer leaves the rest empty, so no row is longer than its header
+        widest = max((own for _, own, _ in tables), key=len, default=[])
+        headers = ["Panel", *(widest or [""])]
+        body: list[list[str]] = []
+        for panel, own_headers, rows in tables:
+            if own_headers != widest[: len(own_headers)]:
+                raise ValueError(f"panel {panel.title!r} has columns {own_headers} that do not lead those of {widest}")
+            body += [[_panel_name(panel), *row, *([""] * (len(widest) - len(row)))] for row in rows]
         body += [[card.title or "", card.subtitle or "", *([""] * (len(headers) - 2))] for card in cards]
         return headers, body
 

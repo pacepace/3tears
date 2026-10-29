@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: report pages stay inside a phone's width, and a chart's values table keeps every panel's columns
+
+**Fixed:** a report page no longer scrolls sideways at 390 px. Prose (a list item, paragraph, figure caption or fold
+summary) wraps a long unbroken token such as a dotted metric path, which had pushed the kairo page to 412 px. A
+heatmap, difference heatmap or confusion chart sits in a `.tbl` frame with its values table, so a grid of eighteen
+columns scrolls inside its frame instead of widening the page (the r2 page, 398 px). A small-multiples chart's values
+table now keeps the widest panel's columns and leaves a narrower panel's missing cells empty: a forest panel with a
+Note column beside one without gave rows longer than the header (the r4 reference's "aspects" chart). Layout only; no
+page's words move.
+
 ### evals: Discodon's W4 adoption findings: unanswered calls through the ledger, a turn cap on a dollar budget, the report writer's port declared
 
 **Added:** `RoleUsageLedger.add_unanswered(model=, served_model=, price_source=, ..., retried=, lost=, reasons=)` counts
