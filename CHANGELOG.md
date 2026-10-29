@@ -6,35 +6,6 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.83.0 -- 2026-10-28
-
-### agent-acl, core: access answers derived once per membership shape and shared by every replica
-
-**Added:** `AccessShape`, `ShapeActors`, `AccessShapeAnswers`, `ShapeDependencies`, `ShapeAnswer`,
-`ShapeAnswerOutcome`, `bind_caller_cache_to_memberships`, `access_shapes.access_footprint` and
-`AccessFootprint`, `AclCache.followed`, and in `generation_follow` `follow_access_shape_answers`,
-`follow_caller_memberships` and `ShapeAnswersFollowing`; in core, `GenerationMarks.highest_heard()` and
-`adopt()`. A host's per-person access answer (the hub's cache token)
-was derived and kept per person in each process: at a sign-in surge every person was cold, about a dozen
-reads and an evaluation of every candidate namespace each, and one admin change dropped every answer. The
-evaluator reads a person only through their direct membership rows, so the answer is a function of that
-shape. `AccessShapeAnswers` keeps one answer per shape in L1 and L2, derives it once across replicas, and
-serves a hot shape from L1 with no L2 or database read. An answer carries the generations it was derived at
-and its footprint (groups, roles, agents); a change makes stale only the answers it reaches, on every tier
-and every replica that has applied it. An answer derived while a change landed is kept in no replica's
-L1; it reaches L2 only when the change landed after it was put there, and is then served only where its
-stamp is current. Nothing is served or kept unless the tables and the access cache are followed. No
-lifetimes.
-
-### core: a new entity keeps the row it was made with until it is saved
-
-**Fixed:** a new entity's working row lived only in L1: `BaseEntity.__init__` wrote it there and kept no copy, and
-`save_entity` reads it back first. A caller that held a new entity across an await (a check, an audit snapshot) lost
-it to any eviction of the key: `to_dict()` raised `L1 cache miss in to_dict()`, or a field set afterwards was saved
-without the rest of the row. The hub's group member add failed that way on cobalt dev during a 24-member
-`group apply`. The entity now keeps the row it was made with and answers from it when L1 misses; L1 still answers
-first, and `mark_clean` drops the copy, so a clean entity with no held row and no L1 row still raises.
-
 ### registry: an idle platform no longer rewrites the tool catalog on every heartbeat
 
 **Fixed:** every tool pod re-publishes its manifest with each 15 s heartbeat, and every registry replica hears it.
@@ -75,6 +46,35 @@ another code, is still contained.
 fire runs on the next tick, about 30 s apart, so ordinary drift landed in `+Inf` and the dashboard's p95 read 10 s
 whatever the drift was. Its buckets now run from 0.5 s to 600 s, and so do those of
 `threetears_agent_wake_drift_seconds` and `threetears_agent_wake_yield_duration_seconds`, which had the same defaults.
+
+## v0.83.0 -- 2026-10-28
+
+### agent-acl, core: access answers derived once per membership shape and shared by every replica
+
+**Added:** `AccessShape`, `ShapeActors`, `AccessShapeAnswers`, `ShapeDependencies`, `ShapeAnswer`,
+`ShapeAnswerOutcome`, `bind_caller_cache_to_memberships`, `access_shapes.access_footprint` and
+`AccessFootprint`, `AclCache.followed`, and in `generation_follow` `follow_access_shape_answers`,
+`follow_caller_memberships` and `ShapeAnswersFollowing`; in core, `GenerationMarks.highest_heard()` and
+`adopt()`. A host's per-person access answer (the hub's cache token)
+was derived and kept per person in each process: at a sign-in surge every person was cold, about a dozen
+reads and an evaluation of every candidate namespace each, and one admin change dropped every answer. The
+evaluator reads a person only through their direct membership rows, so the answer is a function of that
+shape. `AccessShapeAnswers` keeps one answer per shape in L1 and L2, derives it once across replicas, and
+serves a hot shape from L1 with no L2 or database read. An answer carries the generations it was derived at
+and its footprint (groups, roles, agents); a change makes stale only the answers it reaches, on every tier
+and every replica that has applied it. An answer derived while a change landed is kept in no replica's
+L1; it reaches L2 only when the change landed after it was put there, and is then served only where its
+stamp is current. Nothing is served or kept unless the tables and the access cache are followed. No
+lifetimes.
+
+### core: a new entity keeps the row it was made with until it is saved
+
+**Fixed:** a new entity's working row lived only in L1: `BaseEntity.__init__` wrote it there and kept no copy, and
+`save_entity` reads it back first. A caller that held a new entity across an await (a check, an audit snapshot) lost
+it to any eviction of the key: `to_dict()` raised `L1 cache miss in to_dict()`, or a field set afterwards was saved
+without the rest of the row. The hub's group member add failed that way on cobalt dev during a 24-member
+`group apply`. The entity now keeps the row it was made with and answers from it when L1 misses; L1 still answers
+first, and `mark_clean` drops the copy, so a clean entity with no held row and no L1 row still raises.
 
 ## v0.82.0 -- 2026-10-28
 
