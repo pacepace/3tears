@@ -130,6 +130,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CHUNK_READS_AT_ONCE",
+    "SWEEPS_AT_ONCE",
     "AppendedScope",
     "ScopeChange",
     "ScopedSnapshot",
@@ -192,6 +193,9 @@ _DEFAULT_L2_CONCURRENCY: Final = 16
 #: pending than the server holds for a client (MaxPending, 64 MiB), so the server dropped the pod as a slow consumer
 #: (cobalt dev, 2026-10-29)
 CHUNK_READS_AT_ONCE: Final = 4
+
+#: the moved scopes a publish retires older chunks of, or compacts, at once
+SWEEPS_AT_ONCE: Final = 8
 
 #: how many scopes' fetched chunks a replica holds at once to commit them as one move; a burst of more is
 #: committed in batches of this many
@@ -746,6 +750,29 @@ async def _in_order[T, R](
         raise
     await _abandon([task for _, task in pending], unwinding=False)
     return whole
+
+
+async def _bounded_each[T](items: Sequence[T], each: Callable[[T], Awaitable[Any]], *, at_once: int) -> None:
+    """``each`` over ``items``, at most ``at_once`` at a time, every one awaited; the first failure raised once all
+    have ended.
+
+    :param items: the items
+    :ptype items: Sequence[T]
+    :param each: what is done to one
+    :ptype each: Callable[[T], Awaitable[Any]]
+    :param at_once: how many at a time
+    :ptype at_once: int
+    :return: nothing
+    :rtype: None
+    """
+    gate = asyncio.Semaphore(max(1, at_once))
+
+    async def one(item: T) -> None:
+        async with gate:
+            await each(item)
+
+    results = await asyncio.gather(*(one(item) for item in items), return_exceptions=True)
+    _raise_first(results, log=log, what="a scope's sweep or compaction failed")
 
 
 async def _abandon(tasks: Sequence[asyncio.Task[Any]], *, unwinding: bool) -> None:
@@ -3320,13 +3347,16 @@ class ScopedSnapshot:
                     await scope.claim.release()
             unserved = [name for scope in staged if scope.scope not in moved for name in scope.objects.values()]
             await self._sweeper.retire_names_if_unserved(unserved, what="stages left unpublished")
-            for scope in staged:
-                if scope.scope in moved:
-                    await self._sweeper.retire_older(scope.scope, scope.epoch)
+            # side by side, a few at once: one scope after another was about half a second a scope, 25 s of a
+            # 51-state publish (cobalt dev, 2026-10-29); retire_older never raises
+            await _bounded_each(
+                [scope for scope in staged if scope.scope in moved],
+                lambda scope: self._sweeper.retire_older(scope.scope, scope.epoch),
+                at_once=SWEEPS_AT_ONCE,
+            )
             self._changed.set()
         if self._append:
-            for scope_moved in moved:
-                await self._compact(scope_moved)
+            await _bounded_each(moved, self._compact, at_once=SWEEPS_AT_ONCE)
         if skipped:
             log.warning(
                 "scoped snapshot %s: %d staged scopes left for the catch-up from L3",

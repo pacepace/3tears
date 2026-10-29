@@ -3556,3 +3556,35 @@ async def test_a_cold_load_reads_at_most_a_few_chunks_at_once_however_many_scope
     assert cold.status().source is SnapshotSource.L2
     assert 1 < most <= CHUNK_READS_AT_ONCE, f"{most} chunks read at once"
     await cold.stop()
+
+
+async def test_a_publish_retires_the_moved_scopes_older_chunks_side_by_side() -> None:
+    """each moved scope's older chunks were retired one scope after another, about half a second a scope: 25 s of a
+    51-state publish (cobalt dev, 2026-10-29). They are retired side by side, a few at once."""
+    snapshot, pointers, _store, l3 = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    nevada = await snapshot.stage("NV", 2, _NV_ROWS)
+    texas = await snapshot.stage("TX", 2, _TX_ROWS)
+    l3.epochs.update({"NV": 2, "TX": 2})
+    sweeper = snapshot._sweeper  # noqa: SLF001 -- the retire the publish waits on, timed here
+    retire = sweeper.retire_older
+    running = 0
+    most = 0
+
+    async def slow_retire(scope: str, epoch: int) -> int:
+        nonlocal running, most
+        running += 1
+        most = max(most, running)
+        try:
+            await asyncio.sleep(0.05)
+            return await retire(scope, epoch)
+        finally:
+            running -= 1
+
+    sweeper.retire_older = slow_retire  # type: ignore[method-assign]
+
+    moved, skipped = await snapshot.publish_staged([nevada, texas], carry_at={"NV": 0, "TX": 1})
+
+    assert (sorted(moved), skipped) == (["NV", "TX"], [])
+    assert most == 2, "the moved scopes' older chunks were retired one scope after another"
+    await snapshot.stop()
