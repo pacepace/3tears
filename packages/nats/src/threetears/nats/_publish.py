@@ -107,14 +107,17 @@ async def run_bounded(
         responding to cancellation
     """
     task: asyncio.Task[Any] = asyncio.create_task(make_coro())
-    done, _pending = await asyncio.wait({task}, timeout=timeout)
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=timeout)
+    except BaseException:
+        # the caller was cancelled while it waited: the call is abandoned as at its deadline, its outcome taken
+        _abandon(task)
+        raise
 
     if task in done:
         return task.result()
 
-    task.cancel()
-    _abandoned.add(task)
-    task.add_done_callback(_abandoned.discard)
+    _abandon(task)
     log.error(
         "%s did not finish within %.1fs and did not respond to cancellation; abandoning the "
         "in-flight task so the caller is not wedged behind it. This is nats-py swallowing "
@@ -127,6 +130,40 @@ async def run_bounded(
     raise PublishTimeoutError(
         f"{what} did not complete within {timeout}s and ignored cancellation; it may or may not have taken effect"
     )
+
+
+def _abandon(task: asyncio.Task[Any]) -> None:
+    """cancel a call no one waits for any more and keep it until it ends, its outcome taken then: an abandoned call
+    fails later (nats-py's flush path swallows the cancellation), and an outcome never taken is logged by asyncio as
+    "Task exception was never retrieved" (cobalt dev, 2026-10-29: get_last_msg and add_consumer, after a slow-consumer
+    disconnect).
+
+    :param task: the call
+    :ptype task: asyncio.Task[Any]
+    :return: nothing
+    :rtype: None
+    """
+    task.cancel()
+    _abandoned.add(task)
+    task.add_done_callback(_settle_abandoned)
+
+
+def _settle_abandoned(task: asyncio.Task[Any]) -> None:
+    """an abandoned call's end: forgotten, and its outcome taken.
+
+    :param task: the call
+    :ptype task: asyncio.Task[Any]
+    :return: nothing
+    :rtype: None
+    """
+    _abandoned.discard(task)
+    if not task.cancelled():
+        failure = task.exception()
+        if failure is not None:
+            log.debug(
+                "an abandoned call ended in a failure no one waits for",
+                extra={"extra_data": {"error": f"{type(failure).__name__}: {failure}"}},
+            )
 
 
 async def publish_bounded(
