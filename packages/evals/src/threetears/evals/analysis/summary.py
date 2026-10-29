@@ -1616,6 +1616,9 @@ class _SpendTally:
 
     def add(self, result: EvalResult) -> None:
         for row in result.usage:
+            if row.answers_nothing:
+                # Only unanswered calls: no spend and no answered call to count (RoleUsage.answers_nothing).
+                continue
             role = self._roles.setdefault(row.role, _RoleTally())
             role.calls += row.call_count or 0
             if row.call_count is None:
