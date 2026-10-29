@@ -186,6 +186,13 @@ class CampaignLineReport(EvalBaseModel):
         )
     )
     unpriced_calls: int = Field(ge=0, description="Its attempt's calls whose cost was never observed; 0 with none.")
+    draft: bool = Field(
+        default=False,
+        description=(
+            "Whether the report is a draft: its editor's review left a blocking finding open, so its page says so "
+            "first (AnalysisLine.draft). False for a finished report, a memo or a plan."
+        ),
+    )
 
 
 class CampaignLine(EvalBaseModel):
@@ -390,7 +397,14 @@ class CampaignDefinition(EvalBaseModel):
     falling into it.
     """
 
-    name: str
+    name: str = Field(
+        description=(
+            f"The campaign's name: at most {CAMPAIGN_NAME_CHARS} characters, the qualifier beside the title code builds; "
+            "the detail goes in question or description."
+        ),
+        # Stated in the schema for a host's form; campaign_create enforces it, with the remedy (CAMPAIGN_NAME_REMEDY).
+        json_schema_extra={"maxLength": CAMPAIGN_NAME_CHARS},
+    )
     subject_id: str
     behavior: str
     description: str = ""
@@ -413,7 +427,13 @@ class CampaignChanges(EvalBaseModel):
     caller set.
     """
 
-    name: str | None = Field(default=None, min_length=1, description="The campaign's new name.")
+    name: str | None = Field(
+        default=None,
+        min_length=1,
+        description=f"The campaign's new name, at most {CAMPAIGN_NAME_CHARS} characters.",
+        # Stated in the schema for a host's form; campaign_update enforces it, with the remedy.
+        json_schema_extra={"maxLength": CAMPAIGN_NAME_CHARS},
+    )
     description: str | None = Field(default=None, description="The campaign's new description.")
     question: str | None = Field(default=None, description=QUESTION_DESCRIPTION)
     aspects: list[dict[str, Any]] | None = Field(default=None, description=ASPECTS_DESCRIPTION)
@@ -850,6 +870,7 @@ def _with_report(
         generator_model=listed.generator_model,
         cost_usd=attempt.token_cost if attempt is not None and attempt.unpriced_calls == 0 else None,
         unpriced_calls=attempt.unpriced_calls if attempt is not None else 0,
+        draft=listed.draft,
     )
     return line.model_copy(
         update={

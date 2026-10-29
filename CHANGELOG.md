@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the name caps are in the schema, and a campaign's line says when its report is a draft
+
+**Added:** the JSON schema states each declared name's cap (`maxLength`), so a host's form can read it: a campaign's
+name (`CampaignDefinition.name`, `CampaignChanges.name` and the `campaign_create` / `campaign_update` parameters, 32)
+and an arm's and an aspect's `short_name` (32). The operations still enforce the campaign name's cap with their remedy,
+and the validators the short names'. `CampaignLineReport.draft` says whether the campaign's reported analysis is a draft,
+as `AnalysisLine.draft` does, so a campaign list can show it without listing analyses.
+
 ### evals: an unanswered call never unprices a cell's cost
 
 **Fixed:** `RoleUsageLedger.add_unanswered` on a key no `add` reached (a lost call names no served model, and its host

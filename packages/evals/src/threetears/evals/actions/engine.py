@@ -209,6 +209,8 @@ Name = Annotated[
             f"The campaign's name, as an operator reads it in a list: at most {CAMPAIGN_NAME_CHARS} characters. Put the "
             "detail (the arms, the round, the case count) in question or description, never in the name."
         ),
+        # Stated in the schema for a client's form; the operation enforces it, with its remedy.
+        json_schema_extra={"maxLength": CAMPAIGN_NAME_CHARS},
     ),
 ]
 Behavior = Annotated[str, Field(min_length=1, description="Which aspect of the subject is under test.")]
@@ -498,7 +500,12 @@ class CampaignUpdateParams(EvalBaseModel):
 
     campaign_id: CampaignId
     name: Annotated[
-        str | None, Field(min_length=1, description=CampaignCreateParams.model_fields["name"].description)
+        str | None,
+        Field(
+            min_length=1,
+            description=CampaignCreateParams.model_fields["name"].description,
+            json_schema_extra={"maxLength": CAMPAIGN_NAME_CHARS},
+        ),
     ] = None
     description: Annotated[
         str | None, Field(description=CampaignCreateParams.model_fields["description"].description)
