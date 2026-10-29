@@ -85,6 +85,29 @@ SCHEDULED_JOBS_DRIFT_SECONDS: Final[str] = "threetears_scheduled_jobs_drift_seco
 SCHEDULED_JOBS_FIRES_UNRECORDED_TOTAL: Final[str] = "threetears_scheduled_jobs_fires_unrecorded_total"
 
 
+#: drift buckets, in seconds. a fire runs on the first tick at or after its due time and the ticks
+#: run about half a minute apart, so ordinary drift is tens of seconds, and a backlog that drains
+#: over later ticks reaches minutes. the client library's default buckets end at 10 s, which put
+#: every ordinary fire in ``+Inf`` and pinned the dashboard's p95 to 10 s whatever the drift was.
+_DRIFT_BUCKETS: Final[tuple[float, ...]] = (
+    0.5,
+    1.0,
+    2.5,
+    5.0,
+    10.0,
+    15.0,
+    20.0,
+    30.0,
+    45.0,
+    60.0,
+    90.0,
+    120.0,
+    180.0,
+    300.0,
+    600.0,
+)
+
+
 # Public roll-up of every instrument name. Lets the consumer (and the
 # cardinality drift-guard test) iterate without duplicating the list.
 SCHEDULED_JOBS_PROMETHEUS_NAMES: Final[tuple[str, ...]] = (
@@ -186,6 +209,7 @@ class ScheduledJobsMetricsEmitter:
         self._drift = Histogram(
             SCHEDULED_JOBS_DRIFT_SECONDS,
             "Fire drift (actual_fired_at - scheduled_fire_at) in seconds",
+            buckets=_DRIFT_BUCKETS,
             **_kwargs(()),
         )
         self._unrecorded = Counter(

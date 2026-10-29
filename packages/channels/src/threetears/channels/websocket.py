@@ -85,6 +85,30 @@ _PONG_FRAME_TYPE: Final = "pong"
 #: the client-safe message an expired connection's ``UNAUTHENTICATED`` frame carries.
 _CREDENTIAL_EXPIRED_MESSAGE: Final = "access token expired"
 
+#: the close codes a peer ends a connection with in the ordinary course: closed normally, going
+#: away (a tab closed, a page left), closed with no status, and dropped with no close frame (a
+#: laptop slept, a network went), which ASGI servers report as 1006. Every connection ends with
+#: one of these sooner or later, so none of them is a failure the server absorbed.
+_ORDINARY_CLOSE_CODES: Final = frozenset({1000, 1001, 1005, 1006})
+
+
+def _close_code(exc: Exception) -> int | None:
+    """the WebSocket close code a read's exception carries, when it is the peer's disconnect.
+
+    framework-neutral on purpose: this module imports no web framework. A conforming socket's
+    ``receive_text`` reports a disconnect by raising an exception whose ``code`` is the close
+    code, as starlette's ``WebSocketDisconnect`` does with the ASGI ``websocket.disconnect``
+    event's code.
+
+    :param exc: what the read raised
+    :ptype exc: Exception
+    :return: the close code, or ``None`` when ``exc`` carries none and so is not a disconnect
+    :rtype: int | None
+    """
+    code = getattr(exc, "code", None)
+    result = code if isinstance(code, int) and not isinstance(code, bool) and 1000 <= code <= 4999 else None
+    return result
+
 
 class WebSocketAuthRefused(Exception):
     """an auth validator's refusal of a connection, carried to the client as itself.
@@ -298,7 +322,9 @@ class WebSocketProtocol(Protocol):
 
         :return: text message from client
         :rtype: str
-        :raises Exception: on client disconnect
+        :raises Exception: on client disconnect, carrying the close code as an integer ``code``
+            attribute (starlette's ``WebSocketDisconnect`` does); a disconnect raised without
+            one is recorded as a contained error rather than an ordinary departure
         """
         ...
 
@@ -953,7 +979,14 @@ class WebSocketHandler:
                 if data.get("type") == "auth":
                     token = data.get("token")
             except Exception as exc:
-                contain(exc, log=log, what="websocket disconnected during authentication")
+                code = _close_code(exc)
+                if code in _ORDINARY_CLOSE_CODES:
+                    log.debug(
+                        "websocket peer left before authenticating",
+                        extra={"extra_data": {"close_code": code}},
+                    )
+                else:
+                    contain(exc, log=log, what="websocket disconnected during authentication")
                 await self._close_with_error(websocket, UNAUTHENTICATED, "authentication failed")
                 return None
 
@@ -1029,11 +1062,19 @@ class WebSocketHandler:
             try:
                 raw = await websocket.receive_text()
             except Exception as exc:
-                contain(
-                    exc,
-                    log=log,
-                    what=f"websocket disconnected for user {user_id}",
-                )
+                code = _close_code(exc)
+                if code in _ORDINARY_CLOSE_CODES:
+                    # the peer left: how a connection ends, not a failure
+                    log.debug(
+                        "websocket peer disconnected",
+                        extra={"extra_data": {"user_id": user_id, "close_code": code}},
+                    )
+                else:
+                    contain(
+                        exc,
+                        log=log,
+                        what=f"websocket disconnected for user {user_id}",
+                    )
                 break
             # any frame at all answers the heartbeat; until the loop reads again it is busy, and
             # the heartbeat does not read the peer's silence as absence.

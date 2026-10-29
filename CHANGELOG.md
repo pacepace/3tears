@@ -15,6 +15,47 @@ without the rest of the row. The hub's group member add failed that way on cobal
 `group apply`. The entity now keeps the row it was made with and answers from it when L1 misses; L1 still answers
 first, and `mark_clean` drops the copy, so a clean entity with no held row and no L1 row still raises.
 
+### registry: an idle platform no longer rewrites the tool catalog on every heartbeat
+
+**Fixed:** every tool pod re-publishes its manifest with each 15 s heartbeat, and every registry replica hears it.
+`ToolCatalog.register` wrote each of the pod's tools to `KV_tool_catalog` every time and logged `registered tool in
+catalog` for each, because the value carries when the copy last registered and when each definition was last
+announced, so no two writes were alike. On cobalt dev that was about 91 KV writes/s and 45 log lines/s per replica
+with nothing happening. The catalog now writes an entry only when its content changes (a copy, a definition, when a
+definition was first announced, a status, the publisher mark); the liveness instants alone are not written. They
+still advance in memory on every registration, so routing, discovery and the heartbeat sweep judge staleness from
+the latest heartbeat as before, and per-pod liveness stays in the heartbeat rows. A write that fails is retried on
+the entry's next registration, so a replica out of rotation for failed writes still comes back. An idle
+re-registration makes no write, so during a bucket outage it is answered as registered instead of
+`CATALOG_UNAVAILABLE`, and the write-health streak moves only on a registration that changes something; the
+catalog routes from memory either way. The persisted shape
+is unchanged, so replicas on either version share the bucket. Registration stays out of a queue group: each
+replica routes from its own in-memory catalog. `registered tool in catalog`, `tool pod registration authorized` and
+`registration completed` log at INFO only for a registration that changed something, DEBUG otherwise.
+
+**Changed:** `ToolCatalog.register` returns `bool`, whether the registration changed the entry, which it then writes
+when a bucket is bound (it returned `None`).
+
+**Changed:** a catalog warm-loaded from the bucket carries liveness instants as of each entry's last content change.
+Its copies load unavailable, as before, and its pod's next heartbeat and registration revive them; a definition the
+pod stopped announcing is dead at load rather than living out the window, and a loaded copy whose pod has no heartbeat
+row is swept at the first sweep and re-added by the pod's next registration.
+
+### channels: a WebSocket peer that leaves is not a contained error
+
+**Fixed:** `WebSocketHandler` recorded every client disconnect as a contained error with a traceback (about 3 an hour
+in Grafana's "Contained errors" panel), because a socket reports one by raising from `receive_text`. A read that
+raises an exception carrying close code 1000, 1001, 1005 or 1006 (starlette's `WebSocketDisconnect` does) is now an
+ordinary departure, logged at DEBUG, during authentication and after it. Any other failure, including a close with
+another code, is still contained.
+
+### scheduled-jobs, agent-wake: the drift histograms cover minutes
+
+**Fixed:** `threetears_scheduled_jobs_drift_seconds` used the client library's default buckets, which end at 10 s. A
+fire runs on the next tick, about 30 s apart, so ordinary drift landed in `+Inf` and the dashboard's p95 read 10 s
+whatever the drift was. Its buckets now run from 0.5 s to 600 s, and so do those of
+`threetears_agent_wake_drift_seconds` and `threetears_agent_wake_yield_duration_seconds`, which had the same defaults.
+
 ## v0.82.0 -- 2026-10-28
 
 ### core: a bulk write's CPU work runs off the event loop
