@@ -1103,8 +1103,8 @@
     },
     "threetears.evals.schema.RunDisclosure": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "RunDisclosure(values: dict[str, str | int | float | bool] = dict(), statements: list[str] = list())",
+      "tier": "stable"
     },
     "threetears.evals.schema.RunLifetime": {
       "kind": "model",
@@ -1193,18 +1193,18 @@
     },
     "threetears.evals.schema.ThinkingBinding": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "ThinkingBinding(prefix_mismatch_behavior: Literal['error', 'drop_block'] = 'error')",
+      "tier": "stable"
     },
     "threetears.evals.schema.ToolResultClearing": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "ToolResultClearing(trigger_input_tokens: int = 150000, keep_tool_uses: int = 12, clear_at_least_input_tokens: int = 36000)",
+      "tier": "stable"
     },
     "threetears.evals.schema.ToolTurnClient": {
       "kind": "protocol",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "ToolTurnClient{refresh_prices(self) -> object; turn(self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int, clearing: ToolResultClearing | None = None, binding: ThinkingBinding | None = None) -> TurnReply; turn_price_ceiling(self, *, system: str, messages: Sequence[TurnMessage], tools: Sequence[TurnToolSpec], max_tokens: int) -> TurnCeiling | None}",
+      "tier": "stable"
     },
     "threetears.evals.schema.TraceSink": {
       "kind": "protocol",
@@ -1223,18 +1223,18 @@
     },
     "threetears.evals.schema.TurnCeiling": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "TurnCeiling(usd: float, estimate: bool = False)",
+      "tier": "stable"
     },
     "threetears.evals.schema.TurnMessage": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "TurnMessage(role: Literal['user', 'assistant'], content: tuple[TurnBlock, ...])",
+      "tier": "stable"
     },
     "threetears.evals.schema.TurnReply": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "TurnReply(content: tuple[TurnBlock, ...], stop_reason: TurnStopReason, provider_stop_reason: str | None, model: str, served_model: str | None, input_tokens: int | None, output_tokens: int | None, reasoning_tokens: int | None, cache_read_tokens: int | None, cache_write_tokens: int | None, cost_usd: float | None, price_source: str | None, pricing_failure: str | None, sent_binding: str | None = None, input_transformations: tuple[dict[str, Any], ...] | None = None)",
+      "tier": "stable"
     },
     "threetears.evals.schema.TurnReplyRefused": {
       "kind": "exception",
@@ -1263,8 +1263,8 @@
     },
     "threetears.evals.schema.TurnToolSpec": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "TurnToolSpec(name: str, description: str, input_schema: Mapping[str, Any])",
+      "tier": "stable"
     },
     "threetears.evals.schema.TurnToolUse": {
       "kind": "dataclass",
@@ -7498,8 +7498,8 @@
     },
     "threetears.evals.ops.AnalystLimits": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "AnalystLimits(draft_calls: int = 100, revision_calls: int = 30, bounces: int = 3, session: SessionLimits = SessionLimits())",
+      "tier": "stable"
     },
     "threetears.evals.ops.ArmEstimate": {
       "kind": "model",
@@ -7638,8 +7638,8 @@
     },
     "threetears.evals.ops.EditorLimits": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "EditorLimits(calls: int = 40, session: SessionLimits = SessionLimits())",
+      "tier": "stable"
     },
     "threetears.evals.ops.estimate_text": {
       "kind": "function",
@@ -8003,8 +8003,8 @@
     },
     "threetears.evals.ops.ReportBudget": {
       "kind": "class",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "ReportBudget(*, usd: float | None = None, tokens: int | None = None, turns: int | None = None) -> None",
+      "tier": "stable"
     },
     "threetears.evals.ops.ReportDocument": {
       "kind": "model",
@@ -8253,8 +8253,8 @@
     },
     "threetears.evals.ops.SessionLimits": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "SessionLimits(max_tokens: int = 32000, result_chars: int = 12000, clear_over_tokens: int = 150000, keep_tool_uses: int = 12, clear_at_least_tokens: int = 36000, warn_before: int = 10)",
+      "tier": "stable"
     },
     "threetears.evals.ops.start_action_job": {
       "kind": "async function",
@@ -8363,8 +8363,8 @@
     },
     "threetears.evals.ops.WriterLimits": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "WriterLimits(analyst: AnalystLimits = AnalystLimits(), editor: EditorLimits = EditorLimits(), revisions: int = 2)",
+      "tier": "stable"
     },
     "threetears.evals.actions.Action": {
       "kind": "dataclass",
@@ -8398,8 +8398,8 @@
     },
     "threetears.evals.actions.analyst_tools": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "analyst_tools(prefix: str = 'evals', *, writes: bool = True, role: Literal['analyst', 'editor'] = 'analyst') -> tuple[ToolSpec]",
+      "tier": "stable"
     },
     "threetears.evals.actions.Caller": {
       "kind": "dataclass",
@@ -8689,7 +8689,7 @@
     "threetears.evals.providers.AnthropicPublishedRates": {
       "kind": "class",
       "signature": "",
-      "tier": "provisional"
+      "tier": "stable"
     },
     "threetears.evals.providers.CallPrice": {
       "kind": "dataclass",
@@ -8743,8 +8743,8 @@
     },
     "threetears.evals.providers.Pricer": {
       "kind": "protocol",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "Pricer{price(self, model: str, *, provider: Provider, usage: Mapping[str, Any], served_provider: str | None) -> CallPrice; rates_for(self, model: str, *, provider: Provider) -> HostRates | None}",
+      "tier": "stable"
     },
     "threetears.evals.providers.PriceRefresh": {
       "kind": "dataclass",

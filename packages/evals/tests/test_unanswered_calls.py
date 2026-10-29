@@ -41,6 +41,7 @@ from threetears.evals.analysis.report_input import ReportInput, Unanswered
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CandidateTelemetry, CellSink, VariantConfig
 from threetears.evals.kernel.cassettes import CellCassettes
+from threetears.evals.kernel import RoleUsageLedger
 from threetears.evals.run.runner import RunnerOptions, execute_run
 from threetears.evals.schema.models import EvalResult, EvalRun, JudgedArtifact, RoleUsage
 
@@ -116,6 +117,84 @@ def test_reasons_count_the_calls_the_counts_count(
 def test_a_count_below_zero_is_refused() -> None:
     with pytest.raises(ValidationError):
         _counting(retried=-1, lost=None)
+
+
+# --- the ledger -----------------------------------------------------------------------------------------------------
+
+
+def test_the_ledger_counts_unanswered_calls_on_the_row_of_the_calls_they_sit_beside() -> None:
+    ledger = RoleUsageLedger(role="candidate")
+    ledger.add(
+        model="m",
+        served_model="m-1",
+        price_source="openrouter",
+        prompt_tokens=10,
+        completion_tokens=5,
+        reasoning_tokens=None,
+        cost_usd=0.02,
+        calls=3,
+    )
+    ledger.add_unanswered(model="m", served_model="m-1", price_source="openrouter", retried=1, reasons={"refused": 1})
+    ledger.add_unanswered(model="m", lost=2, reasons={"timeout": 2})
+    ledger.add_unanswered(model="m", lost=0)
+
+    answered, lost = ledger.rows()
+
+    assert (answered.call_count, answered.cost_usd, answered.unanswered_retried, answered.unanswered_lost) == (
+        3,
+        0.02,
+        1,
+        None,
+    ), "a retried count sits beside the answered calls and moves none of their spend"
+    assert answered.unanswered_reasons == {"refused": 1}
+    assert (lost.served_model, lost.call_count, lost.cost_usd, lost.unanswered_retried) == (None, None, None, None)
+    assert (lost.unanswered_lost, lost.unanswered_reasons) == (2, {"timeout": 2}), "a counted zero adds to the count"
+
+
+def test_unanswered_calls_land_on_a_row_keyed_by_provider_and_actor_as_add_keyed_it() -> None:
+    ledger = RoleUsageLedger(role="simulator")
+    ledger.add(
+        model="m",
+        provider="p",
+        provider_unit="call",
+        actor_id="a1",
+        purpose="utterance",
+        prompt_tokens=1,
+        completion_tokens=1,
+        reasoning_tokens=None,
+        cost_usd=0.01,
+    )
+    ledger.add_unanswered(model="m", provider="p", provider_unit="call", actor_id="a1", purpose="utterance", lost=1)
+
+    (row,) = ledger.rows()
+
+    assert (row.actor_id, row.provider, row.call_count, row.unanswered_lost) == ("a1", "p", 1, 1)
+    with pytest.raises(ValueError, match="attribute simulator calls"):
+        RoleUsageLedger(role="candidate").add_unanswered(model="m", actor_id="a1", lost=1)
+
+
+def test_a_ledger_that_counted_no_unanswered_call_builds_its_rows_as_before() -> None:
+    ledger = RoleUsageLedger(role="candidate")
+    ledger.add(model="m", prompt_tokens=1, completion_tokens=1, reasoning_tokens=None, cost_usd=0.01)
+
+    (row,) = ledger.rows()
+
+    assert (row.unanswered_retried, row.unanswered_lost, row.unanswered_reasons) == (None, None, None)
+
+
+@pytest.mark.parametrize(
+    ("given", "says"),
+    [
+        ({"lost": -1}, "0 or more"),
+        ({"reasons": {"timeout": 1}}, "none are counted here"),
+        ({"lost": 1, "reasons": {"timeout": 0}}, "at least one"),
+        ({"lost": 1, "reasons": {"timeout": 2}}, "more than the 1 counted"),
+    ],
+    ids=["negative", "reasons-alone", "zero-reason", "reasons-past-counts"],
+)
+def test_the_ledger_refuses_counts_a_row_could_not_hold(given: dict[str, Any], says: str) -> None:
+    with pytest.raises(ValueError, match=says):
+        RoleUsageLedger(role="candidate").add_unanswered(model="m", **given)
 
 
 # --- the runner -----------------------------------------------------------------------------------------------------

@@ -688,9 +688,18 @@ class MountedTool:
 
     @property
     def description(self) -> str:
-        """The tool's short description, and how to get help from it."""
+        """The tool's short description, why it is not read-only when only an appended note makes it so, and how to
+        get help from it."""
+        appending = [action.name for action in self.actions if action.appends]
+        why_not_read_only = (
+            f" It is not marked read-only: {' and '.join(appending)} {'stores' if len(appending) == 1 else 'store'} "
+            "the note it is given, and nothing else "
+            "it carries writes."
+            if appending and all(action.permission == "read" for action in self.actions)
+            else ""
+        )
         return (
-            f"{self.spec.description} Call action='help' for the actions grouped by workflow, and "
+            f"{self.spec.description}{why_not_read_only} Call action='help' for the actions grouped by workflow, and "
             "action='help', topic='<action>' for one action's parameters and an example."
         )
 

@@ -36,7 +36,15 @@ from packages.evals.tests.report_writer_support import (
 )
 import threetears.evals.ops.analyst as ops_analyst
 import threetears.evals.ops.report_writer.write as report_write_module
-from threetears.evals.actions import MountedTool, analyst_tools, eval_catalogue, read_only_tools, standard_tools
+from threetears.evals.actions import (
+    ActionCatalogue,
+    MountedTool,
+    analyst_actions,
+    analyst_tools,
+    eval_catalogue,
+    read_only_tools,
+    standard_tools,
+)
 from threetears.evals.actions.report_writing import ReportNotStored
 from threetears.evals.analysis.analyst_gaps import gap_digest
 from threetears.evals.kernel import StorageError
@@ -555,6 +563,30 @@ def test_the_analyst_tool_that_stores_gaps_is_no_read_only_tool_and_stays_idempo
         assert (mounted.hints.read_only, mounted.hints.idempotent) == (False, True)
         action = mounted.action("capability_gap")
         assert action is not None and action.permission == "read" and action.appends
+
+
+def test_a_read_only_analyst_tool_names_no_freeze_and_says_why_it_is_not_marked_read_only() -> None:
+    (spec,) = analyst_tools(writes=False)
+    mounted = eval_catalogue().mount(spec)
+
+    assert mounted.action("report_snapshot_freeze") is None
+    assert "freeze" not in mounted.description
+    assert "not marked read-only: capability_gap stores the note it is given" in mounted.description
+    assert not mounted.hints.read_only
+
+
+def test_a_mount_whose_gap_note_stores_nothing_says_nothing_of_read_only() -> None:
+    (spec,) = analyst_tools(writes=False)
+    mounted = ActionCatalogue(analyst_actions(gaps_kept_by="write")).mount(spec)
+
+    assert mounted.hints.read_only
+    assert "read-only" not in mounted.description
+
+
+def test_the_writing_analyst_tool_still_names_its_freeze() -> None:
+    (spec,) = analyst_tools()
+
+    assert "freeze its evidence as a snapshot" in eval_catalogue().mount(spec).description
 
 
 def test_the_read_tool_promises_no_append_it_never_makes() -> None:

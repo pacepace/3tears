@@ -69,9 +69,9 @@ class AnalysisGeneration:
         turn's output cap), passed to the report writer exactly as set; ``WriterLimits()`` unless the host sets it.
     :ivar budget_s: The job's wall-clock ceiling on the writing (the snapshot's freeze, every turn of every session,
         the store); a report that outruns it is recorded ``timed_out``. Derive it from the same :attr:`limits` object,
-        ABOVE the writer's own ceiling (``Ceilings().writer_ceiling_s(limits, request_s=...)`` of
-        :class:`~threetears.evals.run.Ceilings`, over the host's own ceiling for one request on its client) plus the
-        host's headroom: a budget below it cancels a turn still writing inside its cap, after it was billed. The
+        ABOVE the writer's own ceiling (``Ceilings().writer_ceiling_s(limits, request_s=..., turns=...)`` of
+        :class:`~threetears.evals.run.Ceilings`, over the host's own ceiling for one request on its client and the turn
+        cap of the budget :attr:`report_budget` returns, ``ReportBudget.turns``) plus the host's headroom: a budget below it cancels a turn still writing inside its cap, after it was billed. The
         snapshot's freeze (assembling the campaign's evidence) runs inside this budget, not the preparation's, so a
         freeze that hangs reads ``running`` until this budget ends it ``timed_out``.
     :ivar preparation_budget_s: The job's wall-clock ceiling on its preparation (the client, the allowed-writer check

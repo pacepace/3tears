@@ -1424,7 +1424,10 @@ in `threetears.evals.run`) carries them as one value: `Ceilings()` holds `schedu
 `generation_ceiling_s`, `judge_phase_ceiling_s` and `writer_ceiling_s`, which turn your own ceiling for one request
 into the ceiling of a generation, a judge phase, or the writing of a report (every analyst round, revision, bounce
 and editor review its limits allow). `writer_ceiling_s` also takes the writer's limits, the same ones the report is
-written under. A report's job budget is `writer_ceiling_s` plus your headroom. Derive each outer budget from a field, never from a number you copied: a release that
+written under, and the turn cap of your report budget (`turns=`, `ReportBudget.turns`). A report's job budget is
+`writer_ceiling_s` plus your headroom. Declare a turn cap even on a dollar budget (`ReportBudget(usd=10.0,
+turns=60)`): dollars bound what a report spends, never how many turns it sends, so without one the ceiling is every
+turn the limits allow at your full request ceiling, which at a long request ceiling runs to days and stops nothing. Derive each outer budget from a field, never from a number you copied: a release that
 raises an inner ceiling then raises your budget with it, so the budget cannot drift below it. The package exports
 no other name for them: the six separate constants and functions `.32` kept beside `Ceilings` were removed in `.33`.
 
@@ -1585,8 +1588,8 @@ document, linked to the campaign as its analysis. Your host supplies four things
 - **The model**, from your factory's `analyst` role, built on your own key. One model serves the analyst and the
   editor. Its client must take tool turns, or the job is refused before anything is spent, naming what to forward.
 - **The budget and the time**, on your `AnalysisGeneration`, each read on every generation so a value kept in your
-  config changes without a restart: the report budget (dollars, or tokens and turns for a model you have no price
-  for), which no caller can raise; `budget_s`, the job's time, `writer_ceiling_s` plus your headroom
+  config changes without a restart: the report budget (dollars, or tokens for a model you have no price
+  for, either with a turn cap), which no caller can raise; `budget_s`, the job's time, `writer_ceiling_s` plus your headroom
   ([deriving your budgets](#deriving-your-budgets-from-the-engines-ceilings)); and `preparation_budget_s`, the bound
   on its preparation (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s). How the budget admits each turn is in
   [Cost and budgets](cost-and-budgets.md#spend-outside-any-run).

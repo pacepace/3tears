@@ -131,7 +131,7 @@ def _editor_turns(limits: _WriterCaps) -> int:
     return (1 + limits.revisions) * (limits.editor.calls + EDITOR_ANSWERS)
 
 
-def writer_ceiling_s(limits: _WriterCaps, *, request_s: RequestCeiling) -> float:
+def writer_ceiling_s(limits: _WriterCaps, *, request_s: RequestCeiling, turns: int | None = None) -> float:
     """The wall-clock ceiling of one report the writer writes (``analysis_generate``'s job), from the ceilings it wraps.
 
     Every turn the loop can send (:func:`writer_turns`) runs back to back, each bounded by the host's own answer for
@@ -139,6 +139,12 @@ def writer_ceiling_s(limits: _WriterCaps, *, request_s: RequestCeiling) -> float
     ``request_s(limits.editor.session.max_tokens)`` for the editor's), which counts every provider call and retry
     wait the host's client spends on it. A job budget over a report (``AnalysisGeneration.budget_s``) must sit ABOVE
     this: one below it cancels a turn still writing inside its cap, after it was billed.
+
+    The report budget's turn cap (``ReportBudget.turns``, on a dollar budget or a token one) bounds the turns too: under
+    one smaller than :func:`writer_turns`, the ceiling is that many turns, each at the dearer of the two roles' request
+    ceilings, since the cap does not say which role sends them. Without one the loop's limits are the only bound, and at
+    long request ceilings their worst case runs to days: a dollar budget bounds what a report spends, never how many
+    turns it sends, so a host that wants its job ceiling to stop anything declares a turn cap.
 
     Not covered: the tool calls the turns make (reads of the frozen snapshot, in the host's process), the price refresh
     each turn makes before it is priced (``refresh_prices()``, a catalogue read a host's ``request_s`` may not count),
@@ -149,11 +155,17 @@ def writer_ceiling_s(limits: _WriterCaps, *, request_s: RequestCeiling) -> float
     :ptype limits: WriterLimits
     :param request_s: The host's ceiling for one request on its client, by output cap.
     :ptype request_s: RequestCeiling
+    :param turns: The report budget's turn cap (``ReportBudget.turns``), or ``None`` when it declares none.
+    :ptype turns: int | None
     :return: The ceiling in seconds.
     :rtype: float
+    :raises ValueError: ``turns`` is not a whole number above 0.
     """
-    analyst = _analyst_turns(limits) * request_s(limits.analyst.session.max_tokens)
-    return analyst + _editor_turns(limits) * request_s(limits.editor.session.max_tokens)
+    if turns is not None and (isinstance(turns, bool) or not isinstance(turns, int) or turns <= 0):
+        raise ValueError(f"a report's turn cap is a whole number above 0, not {turns!r}")
+    analyst_s, editor_s = request_s(limits.analyst.session.max_tokens), request_s(limits.editor.session.max_tokens)
+    every_turn = _analyst_turns(limits) * analyst_s + _editor_turns(limits) * editor_s
+    return every_turn if turns is None else min(every_turn, turns * max(analyst_s, editor_s))
 
 
 def judge_phase_ceiling_s(

@@ -137,13 +137,21 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`RubricDim`** · *host contract* · model · One judge-scored rubric dimension.
 - **`RubricProposal`** · model · The validated DRAFT the rubric proposer returns for operator review.
 - **`RubricScore`** · model · Outcome of one rubric judge dimension.
+- **`RunDisclosure`** · model · What the launching host discloses about the launch a run came from: the machine, its load, how it measures.
 - **`SecondJudge`** · model · A judge other than the one a run was scored by: a model, the prompt per dimension, and a temperature.
 - **`StoreCalledOnEventLoop`** · *host contract* · exception · A store call was made on a thread that is running an event loop.
 - **`StoreClock`** · *host contract* · protocol · A store's own clock: the optional capability a `DocumentStore` may offer beside its methods.
 - **`StoreConflict`** · *host contract* · exception · A conditional write lost its race: the stored document no longer carries `if_match`.
 - **`SubjectSnapshot`** · *host contract* · model · The subject a set of observations was taken against, frozen at capture.
 - **`SweepableValue`** · *host contract* · model · One level of one swept input: what it *is*, what to call it, and what kind of axis it is on.
+- **`ThinkingBinding`** · dataclass · The provider checking that a replayed thinking block's conversation is unchanged: the Messages API's `thinking.block_binding`, under the `thinking-binding-controls-2026-08-01` beta.
+- **`ToolResultClearing`** · dataclass · The provider clearing old tool results from a long conversation itself: server-side context editing.
+- **`ToolTurnClient`** · protocol · The client a tool-calling loop is handed: one turn at a time, priced before it is sent.
 - **`TraceSink`** · *host contract* · protocol · The engine's whole reach into a host's tracing.
+- **`TurnCeiling`** · dataclass · The most one tool turn can cost, as its client bounds it before it is sent.
+- **`TurnMessage`** · dataclass · One message of the conversation a turn sends.
+- **`TurnReply`** · dataclass · The model's next message, why it stopped, what it used and what it cost.
+- **`TurnToolSpec`** · dataclass · One tool the model may call: its name, what it does, and its arguments' JSON schema.
 - **`VariationAxis`** · model · One axis along which test cases vary for a template.
 - **`VariationCounts`** · model · How many test cases a launch asked generation for, and how many it froze.
 - **`WorldSeed`** · *host contract* · model · Initial state for the eval's stateful world.
@@ -887,12 +895,14 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 **Classes**
 
 - **`AnalysisGeneration`** · dataclass · How this host generates an analysis as a background job: the report writer, on the host's model and budget.
+- **`AnalystLimits`** · dataclass · What the analyst's rounds are held to (plan §4.3).
 - **`CampaignDefinition`** · model · What creating a campaign names: what it is called, its subject and behavior, its question, arms, aspects and floors, and the campaigns whose aspects it adopts.
 - **`CampaignLine`** · model · One campaign, as a listing shows it.
 - **`CampaignListing`** · model · A scope's campaigns, newest first.
 - **`CaseRenamed`** · *host contract* · model · A renamed case: which, and its name before and after.
 - **`CaseSetLine`** · model · One version of a named case set.
 - **`CaseSetMint`** · model · What minting a case set's next version names: the set, its template and its cases in order.
+- **`EditorLimits`** · dataclass · What each review round is held to (plan §4.3).
 - **`JobHandle`** · model · A started job: the id to poll, and what it is working on.
 - **`JobsStarted`** · model · What starting long work returns: one handle per job, in the order the work was asked for.
 - **`JobStatus`** · model · Where one job stands, read from the record its work writes.
@@ -901,10 +911,13 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`LaunchArguments`** · model · What a launch names: the template, the subject, one arm per model, and the run's own limits.
 - **`OpsHost`** · dataclass · The host the operations, and the actions over them, work in.
 - **`RegressionWatch`** · dataclass · Checks a completed run's measures against its contestant's history, and delivers each regression.
+- **`ReportBudget`** · class · The host's cap for one report, shared by every session that writes it: dollars, or tokens, and either with turns.
 - **`ReporterAdmitted`** · dataclass · What `admit_reporter_launch` resolved of a reporter arm it can honour.
 - **`RunLine`** · model · One run, as a listing shows it.
 - **`RunListing`** · model · A scope's runs, newest first as the store lists them.
+- **`SessionLimits`** · dataclass · What every turn of a session is held to (plan §4.3).
 - **`TemplateListing`** · model · A scope's templates.
+- **`WriterLimits`** · dataclass · What the writing loop is held to (plan §4.3).
 
 **Types**
 
@@ -930,6 +943,8 @@ The action catalogue: every eval action, declared once, for any transport to mou
 
 **Functions**
 
+- **`analyst_tools`** · function · The one tool carrying the analyst's actions: `<prefix>_analyst`, cut for the analyst or for its editor.
+  <br>`analyst_tools(prefix: str = 'evals', *, writes: bool = True, role: Literal['analyst', 'editor'] = 'analyst') -> tuple[ToolSpec]`
 - **`definition_drift_actions`** · *host contract* · function · `definitions_drift` and `definitions_reset`, for the host's catalogue.
   <br>`definition_drift_actions(corpus: Callable[[str], SeedCorpus], *, seeded_digests: Callable[[str], Mapping[str, str]] | None = None) -> tuple[Action, Action]`
 - **`eval_catalogue`** · function · The engine's catalogue, the analyst's actions after the engine's, and the host's own after both.
@@ -1031,9 +1046,11 @@ The completion client: a model id in, the engine's completion port out, over eac
 
 **Classes**
 
+- **`AnthropicPublishedRates`** · class · The default pricer: Anthropic's published rates for a direct Anthropic call, the catalogue for anything else.
 - **`Catalogue`** · *host contract* · class · OpenRouter's model catalogue, refreshed every `refresh_after`, and what providers refused, for every model that reads it.
 - **`Clients`** · *host contract* · class · A host's role factory (`EvalHost.clients`): one `Model` per role, model id and temperature.
 - **`Completion`** · dataclass · One reply: the completion port's ten members, and five of the client's own.
+- **`Pricer`** · protocol · What a call is billed at, as the host knows it: the port a `Model` is handed (`pricer=`), or `AnthropicPublishedRates` by default (the module docstring says when).
 - **`PriceRefresh`** · *host contract* · dataclass · What one read of the price catalogue found: what `Model.refresh_prices()` and `Clients.refresh_prices()` return, and `Model.last_price_refresh` keeps.
 - **`PriceSource`** · *host contract* · enum · The words the shipped client writes as a completion's `price_source`: who priced the call.
   <br>values: `'openrouter:reported'`, `'openrouter:reported+upstream'`, `'openrouter-catalogue'`

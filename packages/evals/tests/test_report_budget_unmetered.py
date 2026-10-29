@@ -3,7 +3,7 @@
 A host whose model has no per-token price (a local model, a subscription) declares its report's cap as tokens and
 turns (``ReportBudget(tokens=, turns=)``) rather than dollars. Such a budget admits each turn by a bound on the tokens
 it can use and by the turns already sent, and never asks for a price, so ``report_write`` asks for none before it
-starts either. Exactly one form is declared, never both and never neither. Every turn here is scripted.
+starts either. Exactly one form is declared, never both and never neither; a turn cap may also ride on dollars. Every turn here is scripted.
 """
 
 from __future__ import annotations
@@ -168,12 +168,23 @@ async def test_a_turn_that_reported_no_tokens_is_counted_at_its_bound() -> None:
 
 @pytest.mark.parametrize(
     "caps",
-    [{"usd": 5.0, "tokens": 1_000}, {"usd": 5.0, "turns": 10}, {"usd": 5.0, "tokens": 1_000, "turns": 10}],
-    ids=["usd-and-tokens", "usd-and-turns", "all-three"],
+    [{"usd": 5.0, "tokens": 1_000}, {"usd": 5.0, "tokens": 1_000, "turns": 10}],
+    ids=["usd-and-tokens", "all-three"],
 )
 def test_both_forms_at_once_are_refused(caps: dict[str, Any]) -> None:
     with pytest.raises(ValueError, match="never both"):
         ReportBudget(**caps)
+
+
+async def test_a_turn_cap_rides_on_a_dollar_budget_and_refuses_with_nothing_sent() -> None:
+    client = FakeToolTurnClient(reply(call(1, "campaign_overview", "snap-0001")), reply(TurnText("Done.")))
+    budget = ReportBudget(usd=5.0, turns=1)
+
+    stop = await session(client, budget).send(OPENING)
+
+    assert budget.spelled == "$5.00, 1-turn"
+    assert stop.kind == "over_budget" and stop.reason.endswith("the report's 1-turn budget is spent")
+    assert len(client.requests) == 1, "the refused turn sent nothing"
 
 
 def test_neither_form_is_refused() -> None:
