@@ -499,15 +499,18 @@ Subtract rubric criteria before adding them. Blind human ratings are a separate 
 *Evidence:* analysis writer, a latitude A/B with a pre-stated rule and a 2×2 form × input study, 2026-09: groundedness near 2 in every condition, the latitude arm failing its rule, and judge test–retest noise (0.42–0.46) exceeding every effect ranked; single campaign.
 
 **Code renders every number, and the model's prose references them.** A deterministic gate over prose never
-converges. The verdict line and every count on a report are code's; a recommendation names the findings it rests
-on; a finding's title stating a null its finding established none of is the prompt's rule to prevent, not a phrase code refuses
-([Having a model write the analysis](reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence)).
-Never build a prompt's worked example from real output: it fossilises that output's errors.
-*Evidence:* analysis writer, 2026-07 to 2026-09, 10 of 10 checkable claims in two production memos were false, a prose fact gate grew to 4,099 lines in 33 days and was deleted, and an example taken from a real memo had its false claim reproduced near-verbatim; single program.
+converges. The verdict line and every count on a report are code's, every figure in its prose is a key code
+resolves, and whether a claim overstates its evidence is the editor's to catch, not a phrase code refuses
+([the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence)).
+Never build a prompt's worked example from real output: it fossilises that output's errors. The analyst's reasoning
+notes come from real campaigns, so they carry the same risk: check a note's claims against its evidence as you would
+a report's, and run a campaign blind, with its own note withheld, before reading its report as evidence of the skill.
+*Evidence:* analysis writer, 2026-07 to 2026-09, 10 of 10 checkable claims in two production memos were false, a prose fact gate grew to 4,099 lines in 33 days and was deleted, and an example taken from a real memo had its false claim reproduced near-verbatim; single program. The Kairo round 2 reasoning note (2026-10) called cost a lead "none of the caveats touch" while a confound sat on that very contrast; a blind report on the campaign made the same error, and its editor scored it down for it.
 
-**Runs are cheap; the memo is the bill.** A refused generation is billed and stores nothing. Price analyses
-like runs ([Spend outside any run](cost-and-budgets.md#spend-outside-any-run)).
-*Evidence:* three campaigns, ≈ $34 in total, 2026-09: over 99% of the classifier campaign's spend was memo generation and ≈ $9.4 bought refused or discarded generations; only the multi-turn agent campaign's runs dominated (≈ $11 of $17).
+**Runs are cheap; the report is the bill.** A write that stores nothing is still billed. Give the report a budget
+that covers a revision, since one that runs out keeps only its last reviewed draft
+([a campaign report](cost-and-budgets.md#spend-outside-any-run)).
+*Evidence:* three campaigns, ≈ $34 in total, 2026-09: over 99% of the classifier campaign's spend was memo generation and ≈ $9.4 bought refused or discarded generations; only the multi-turn agent campaign's runs dominated (≈ $11 of $17). Analyst reports, 2026-10: Kairo round 2 cost $1.60 in one analyst round and one editor round; six other campaigns cost $11.33 under a $4 cap each, and the two that needed a revision ended over budget with their first reviewed draft stored.
 
 ## How an eval program drifts
 

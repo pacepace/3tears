@@ -70,22 +70,25 @@ was read under (the way an unpriced cost is a floor the page names), and what a 
 silence, on the first screen, when the one reading a question asks about was withheld. Discodon's G2 (2026-10) hit
 this: 19 of 24 results were concurrent, and the only trace was a memo finding citing no reading.
 
-### A reader cannot ask a memo a follow-up question (deferred)
+### A reader cannot yet question a report's analyst (designed, not built)
 
-Decided in [#629](https://github.com/pacepace/3tears/issues/629): a reader who wants more of the data behind a
-finding follows its trace (each finding links to the readings and trials it cites, drawn by code), and free-text
-questions over the frozen bundle are deferred until readers using the trace still ask for more. Answering one would
-need a new metered generation over one analysis's frozen bundle that may cite only bundle readings, every number in
-it a code-rendered reference as in a memo, stored with its question and the bundle's fingerprint; and its own writer
-evaluation, since an answer is a second way for a model to state a finding and nothing yet measures how well it does.
+Designed in [#1002](https://github.com/pacepace/3tears/issues/1002). A report's analyst had the whole context it
+wrote from, and today that context is only an audit record. Chat would keep it available: a reader asks a stored
+report's analyst a question, and the analyst answers from its own stored session, resumed, with read-only tools on
+the same snapshot. A revision asked for in chat takes a draft's path (the invariants, then the editor) and stores a
+new version, never an edit; and what readers teach it reaches the skill only as an owner-approved proposal in the
+gap loop, never applied automatically. It would ship as an optional extra built on the agent framework, so the core
+install stays as it is, and the host supplies the chat UI: a page or panel beside the report, never inside the
+report's sandboxed frame. Open: how a reader conversation maps onto the framework's sessions, the turn contract
+hosts build against, and whether a reader sees a question's cost before asking.
 
-### The analysis writer may propose a next step naming no reading
+### Reporter cases judge memos and planned reports, not the analyst's report
 
-No issue filed yet. A memo's next step is the writer's words held to the
-page's style, and nothing holds them to a reading: G2's "revisit when at least 20 independent cases confirm whether
-the candidate meets the queue checks and yields lower cost" said nothing about latency, the reading its own finding
-had just said was withheld. The generator should refuse a next step that names no reading the
-surface holds, as it refuses a finding whose evidence names a cell it does not hold. Not built: the next-step model carries no `evidence`, so there is nothing to resolve yet.
+No issue filed yet. The analysis reporter evaluates a writer as a subject: a case is a frozen campaign, and a judge
+reads what the writer read and wrote. Its cases are memos and planned reports. The analyst's report is held instead
+by its editor's rubric before storage, and by acceptance campaigns re-run when the skill changes. Moving the
+reporter's cases onto report documents is calibration work: the editor's thresholds (no 0, at least 11 of 14) are
+starting points until stored reports scored against people's labels set them.
 
 ## Judging
 
@@ -131,6 +134,27 @@ and per run, so concurrent runs, out-of-run calls and the host's live traffic ca
 quota together. Rejected when the ceiling shipped: a credit cap (provider-specific), folding credits into
 the dollar cap (fails open with no rate card), a separate eval provider key. A fix needs a per-provider
 quota the host declares, shared across runs.
+
+### A price bound on rates the host does not guarantee is an estimate (accepted limit)
+
+Decided by the owner, 2026-10-28; no issue filed. A cap is checked against each call's bound, computed from the rates the host's pricer answers. Where the host
+cannot guarantee them (a router that may serve the call from another provider, the host's own key on a router), the
+bound is an estimate, and a call it admits may cost more. Refusing such calls would refuse every routed call, so the
+call is admitted and the estimate disclosed: a report says its cap was checked against estimates.
+
+### Only the report writer has a token and turn budget (accepted limit)
+
+Decided by the owner, 2026-10-28; no issue filed. A host with no price for a model can write reports on it under a budget in tokens and turns, and the page says the
+report is unpriced. A run launch keeps its dollar rule: an arm nobody can price is refused under an enforced cap. No
+host has yet needed an unmetered candidate.
+
+### An aggregate over a scope past 50,000 records is refused (accepted limit)
+
+Decided by the owner, 2026-10-27: refuse now, push the aggregation down later. The aggregating reads (a pivot, a frontier, a history, a budget view) work in Python over every record they read,
+so past `READ_TIER_ROW_BUDGET` they refuse, naming the filters that narrow the call. Answering such a scope in one
+call needs the aggregation pushed down into the store's SQL
+([#996](https://github.com/pacepace/3tears/issues/996)). No run has a size limit: its reads are paged, though a few
+readers still read a run whole (the CHANGELOG lists them).
 
 ## Worlds
 

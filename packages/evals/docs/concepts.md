@@ -102,10 +102,11 @@ An `Eval` builds all of this for you (`as_host`); a host of your own declares it
      v
   analysis bundle   every number code computed about one aspect, frozen and fingerprinted
      |
-     |  optionally, a model reads the bundle and writes findings: an analysis
+     |  optionally, an analyst model investigates a frozen snapshot with tools
+     |  and writes a report document, which code checks and an editor reviews
      v
-  report    one page per campaign, HTML and Markdown, a fold per aspect, beside campaign.json
-            and each aspect's bundle; "code-only" when no analysis was generated
+  report    one page per campaign, HTML and Markdown, beside campaign.json and each
+            aspect's bundle: the analyst's report, or "code-only" when none was written
 ```
 
 Underneath all of it sits your **host**: the one value through which your app tells the engine what it can
@@ -484,13 +485,12 @@ A margin and a relative floor read a candidate against a control, so a campaign 
 with the remedy to declare a bar instead. A bar is absolute, so every kind is held to its bars.
 
 #### Recommendation and call
-**Code reports, the writer recommends, a person decides.** The writer's memo makes at most one recommendation per
-campaign (`Recommendation`): an arm, its reasons, how sure, and the findings it rests on. It answers every warning
-its arm raises: each broken floor in `floors_overridden`, each aspect where another arm is shown ahead in
-`behind_on`, each missed bar in `bars_missed`, each with a why. The person's decision is the **call**
+**Code reports, the analyst recommends, a person decides.** A report names the arms it recommends, as data, with
+the claims and confidence that carry the call; a tradeoff may recommend none and state its lean in prose. When it
+names exactly one, that arm is the campaign's recommended variant. The person's decision is the **call**
 (`CampaignCall`, recorded by `campaign_record`): the arm, why, and each broken floor and missed bar it overrides by
-name. The call is read against code's readings, never the memo, and is matched by variant key, since a derived arm's
-label can shift when a variant joins.
+name. The call is read against code's readings, never the report, and is matched by variant key, since a derived
+arm's label can shift when a variant joins.
 
 #### Control
 The arm every other arm in a campaign is tested against: usually what runs today. It is a variant, not a run,
@@ -539,20 +539,34 @@ to read them.
 
 #### Analysis bundle
 Everything code computed about one aspect of a campaign, assembled once and fingerprinted
-(`AnalysisContextBundle`, its `aspect` naming which), so two analysis prompts run over the same fingerprint are
-comparable. A campaign of several aspects is assembled one aspect at a time (`assemble_context_bundle(...,
-aspect=...)`). Nothing is fetched while an analysis is
-written: the bundle is the whole context. The CLI's `bundle` prints it inside a `BundleInspection` wrapper
-(campaign, scope, fingerprint, and the bundle as its `bundle` field); save the bundle alone with
-`bundle.to_json()`.
+(`AnalysisContextBundle`, its `aspect` naming which), so two reads of the same fingerprint read the same evidence. A
+campaign of several aspects is assembled one aspect at a time (`assemble_context_bundle(..., aspect=...)`). The CLI's
+`bundle` prints it inside a `BundleInspection` wrapper (campaign, scope, fingerprint, and the bundle as its `bundle`
+field); save the bundle alone with `bundle.to_json()`.
+
+#### Report snapshot
+A campaign's bundles, built into the report input and frozen as one stored document the analyst's tools read. It is
+addressed by its content, so the same evidence frozen twice names one snapshot, and every tool is a function of the
+snapshot and its own parameters alone: the analyst, its editor and a replay of either read the same figures, and
+runs added later change nothing under a report.
 
 #### Analysis
-One memo a model wrote over a whole campaign (`EvalAnalysis`): its summary across the aspects, its findings, at
-most one recommendation, a short summary of each aspect and next steps, with every number in its prose replaced by the value code read. It is
-written over the **campaign bundle** (`CampaignBundle`): the campaign's arms, floors and bars, and each aspect's
-readings, each aspect's part held to its own budget of characters, so adding an aspect never crowds out another.
-Each aspect's bundle is stored with it. Optional, and it costs money; the verdict and every count on the report are
-code's either way.
+The campaign's written report (`EvalAnalysis`, linked to the **report document** it stores). An **analyst** model
+investigates the campaign's snapshot with read-only tools, guided by a skill the package ships, and writes the
+document: a headline, the arms it recommends, its confidence and caveats, claims in reading order each with the
+evidence blocks that show it, what it left out and why, next steps and method. Every number in it is a **figure key**
+code resolves; the analyst types none. Code checks the draft mechanically and sends a failing one back; an
+**editor**, the same model in a fresh context, then reviews the page as a reader would before it is stored. Optional,
+and it costs money; the verdict and every count are code's either way. Older analyses were a memo or a planned
+report; a memo still renders as its page, and a planned report reads as the code-only page with a line to regenerate.
+See [the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence).
+
+#### Confidence
+How sure a report's call is, in one of three forms: high, high if the caveats below aren't material, or low. It is
+read from the method and the variance of the evidence (its design, criteria set after the results, the judge's
+standing, confounds, how well the evidence separates the arms), never from the result alone. Each open caveat says what would make it matter; one code
+proves cannot change the call is printed as code's checked line instead. A lead's risk of reading the wrong way is
+stated beside the lead, and does not lower the form by itself.
 
 #### Trial
 One case run once on one arm — one stored result. It is passed, failed (the candidate's failure: its model, its
@@ -568,9 +582,9 @@ A block code adds to a report to say what a reader must know, whoever wrote the 
 was generated, say, or that a stratum holds too few cases to read alone.
 
 #### Out-of-run spend
-Model calls the engine makes outside any run (generating cases, proposing a rubric, writing an analysis,
-repeating judge scores): priced before they are made and ledgered as `OutOfRunSpend`. See
-[cost and budgets](cost-and-budgets.md).
+Model calls the engine makes outside any run (generating cases, proposing a rubric, repeating judge scores):
+priced before they are made and ledgered as `OutOfRunSpend`. Writing a report is held to a budget of its own, which
+the host sets, and its spend is ledgered once, under purpose `analysis`, when the job ends. See [cost and budgets](cost-and-budgets.md).
 
 ### Building a host
 
