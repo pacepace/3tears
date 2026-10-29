@@ -228,8 +228,13 @@ def identities(*, named: bool) -> dict[str, str]:
     # Every reading as 00107a5b7 read it; the figures across aspects came later, read off these readings and the
     # bundles pinned above, and the campaign fingerprint below leaves them out.
     found["readings"] = _sha(built["readings"].model_dump(mode="json", exclude={"aggregate"}))
-    found["campaign fingerprint"] = campaign_bundle.fingerprint()
-    found["campaign_evidence_digest"] = campaign_evidence_digest(campaign_bundle.to_dict())
+    # Version 2, as 00107a5b7 took it, still reproduces when asked in its own version; version 3, the current one,
+    # leaves the campaign's name out and is pinned beside it.
+    v2 = PINNED["campaign fingerprint"]
+    found["campaign fingerprint"] = campaign_bundle.fingerprint(like=v2)
+    found["campaign_evidence_digest"] = campaign_evidence_digest(campaign_bundle.to_dict(), like=v2)
+    found["campaign fingerprint v3"] = campaign_bundle.fingerprint()
+    found["campaign_evidence_digest v3"] = campaign_evidence_digest(campaign_bundle.to_dict())
     return found
 
 
@@ -302,6 +307,8 @@ PINNED: dict[str, str] = {
     "bundle schema_version": "64",
     "campaign fingerprint": "v2:1896767143a9454239aebb4a33710a0d4167bd4fced79c5fd236c217a8f1834b",
     "campaign_evidence_digest": "v2:1896767143a9454239aebb4a33710a0d4167bd4fced79c5fd236c217a8f1834b",
+    "campaign fingerprint v3": "v3:cb6ccb6a69087388493719b47c7035f6763ac2c4e3d90170b3d59fa74bfa85ec",
+    "campaign_evidence_digest v3": "v3:cb6ccb6a69087388493719b47c7035f6763ac2c4e3d90170b3d59fa74bfa85ec",
     "case content hash": "2427afda4a091bccfdeffbdc0ef058b06862b1c310f68df406edf30604604ae2",
     # The one entry that moves with the durable minor: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
     # arm names 16.4, stratum names 16.5, plan reporter cases 16.6, the analyst's gap notes 16.7. It is no part of what

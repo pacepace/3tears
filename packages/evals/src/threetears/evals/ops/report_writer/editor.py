@@ -11,7 +11,7 @@ one user message holds what :func:`review_report` builds from the document and t
 - the document's ``omitted``, what the analyst saw and left out, with why;
 - the computed facts code finds for the editor to weigh
   (:func:`~threetears.evals.analysis.report_doc_facts.editor_facts`), labelled as facts and never as verdicts;
-- from the second round, the editor's own earlier findings.
+- from the second round, the editor's own earlier findings, each with code's stable id (``f<round>.<n>``).
 
 **Nothing of the analyst's session reaches the editor.** :func:`review_report` takes the document, the snapshot's
 report input and the earlier findings, and no message, thinking block or tool result of the analyst's: its signature
@@ -22,6 +22,13 @@ rubric items, each keyed by ``n`` and named as the rubric names it, scored 0, 1 
 each ``{claim, severity, finding}``. :class:`Review` adds the scores up and says whether the review passes (no item
 scores 0 and the total is at least :data:`PASS_TOTAL`); a total or a verdict the editor writes is never read. An
 answer that cannot be read is asked for once more, saying what was wrong; a second ends the round ``review_failed``.
+
+**Carried or new, by structure, never by text.** From the second round each finding says which earlier finding it
+continues (``continues``: that finding's id, or ``"new"``), and the review lists the earlier findings it finds
+resolved (``resolved``). Every earlier finding is accounted for exactly once, continued or resolved, or the answer is
+asked for again. A continued finding keeps its id and the round it was first raised (``ReportFinding.since``); a new
+one gets an id of this round. Code reads which findings block clearance from those marks
+(:attr:`Review.blocking`, owner ruling 2026-10-29), never by comparing what two findings say.
 
 **A session is kept.** Every round's session comes back on its outcome as a stored value
 (``ToolSession.to_json()``), whatever the ending, a client's failure included, so a later question can resume it.
@@ -74,6 +81,9 @@ PASS_TOTAL: Final = 11
 
 #: What a finding about the page as a whole names in place of a claim id.
 _REPORT: Final = "report"
+
+#: How a finding says it was first raised in this review, where it names no earlier finding it continues.
+_NEW: Final = "new"
 
 #: A fenced block: three backticks, an optional language word, the body, three backticks.
 _FENCE = re.compile(r"```[A-Za-z]*[ \t]*\n(?P<body>.*?)\n?```", re.DOTALL)
@@ -140,12 +150,15 @@ class Review:
 
     :ivar round: The round it reviewed.
     :ivar items: The rubric items, in rubric order.
-    :ivar findings: What the editor found for the analyst to change, in its order.
+    :ivar findings: What the editor found for the analyst to change, in its order, each with its id and the round it
+        was first raised.
+    :ivar resolved: The ids of the previous review's findings this one finds resolved; empty in round 1.
     """
 
     round: int
     items: tuple[RubricScore, ...]
     findings: tuple[ReportFinding, ...]
+    resolved: tuple[str, ...] = ()
 
     @property
     def total(self) -> int:
@@ -163,23 +176,38 @@ class Review:
         return any(finding.severity == "must_fix" for finding in self.findings)
 
     @property
+    def blocking(self) -> tuple[ReportFinding, ...]:
+        """The findings that keep the report from clearing (owner ruling 2026-10-29, option 3): in round 1, every
+        finding; after it, every ``must_fix``, and every finding carried over from an earlier review
+        (``since`` before this round), of any severity. A ``should_fix`` first raised in this review blocks nothing:
+        it is stored and listed open, and alone it neither sends a revision nor makes the report a draft."""
+        if self.round <= 1:
+            return self.findings
+        return tuple(
+            finding for finding in self.findings if finding.severity == "must_fix" or finding.since < self.round
+        )
+
+    @property
     def clears(self) -> bool:
-        """Whether the report may be stored as written: the scores pass and no finding is a ``must_fix``."""
-        return self.passes and not self.must_fix
+        """Whether the report may be stored as finished: the scores pass and no finding blocks (:attr:`blocking`)."""
+        return self.passes and not self.blocking
 
     def to_json(self) -> dict[str, Any]:  # Any: a JSON object
         """The review as the stored record keeps it, the total and the pass as code computed them.
 
-        :return: ``{"round", "items", "findings", "total", "passes", "must_fix"}``.
+        :return: ``{"round", "items", "findings", "resolved", "total", "passes", "must_fix", "blocking"}``,
+            ``blocking`` the ids of the findings that block (:attr:`blocking`).
         :rtype: dict[str, Any]
         """
         return {
             "round": self.round,
             "items": [item.to_json() for item in self.items],
             "findings": [finding.model_dump(mode="json") for finding in self.findings],
+            "resolved": list(self.resolved),
             "total": self.total,
             "passes": self.passes,
             "must_fix": self.must_fix,
+            "blocking": [finding.id for finding in self.blocking],
         }
 
 
@@ -302,7 +330,7 @@ async def _reviewed(
             return EditorOutcome(ending="over_budget", round=round, reason=stop.reason)
         if stop.kind == "failed":
             return EditorOutcome(ending="failed", round=round, reason=stop.reason)
-        read = _answer(stop, claims, round, limits)
+        read = _answer(stop, claims, round, earlier, limits)
         if isinstance(read, Review):
             return EditorOutcome(ending="reviewed", round=round, review=read)
         faults = read
@@ -332,7 +360,11 @@ def _request(
         + _facts(editor_facts(doc, report_input)),
     ]
     if earlier:
-        parts.append("Your findings from the previous round, to check against the revised page:\n" + _listed(earlier))
+        parts.append(
+            "Your findings from the previous round, each by its id, to check against the revised page. Mark each "
+            "finding of this review with the id it continues, or new, and list the ids now resolved under resolved, "
+            "as editor.md says:\n" + _listed(earlier)
+        )
     parts.append(
         "Your final message, with no tool call in it, is the review: one fenced JSON object, as editor.md says."
     )
@@ -357,7 +389,8 @@ def _facts(facts: Sequence[EditorFact]) -> str:
 
 def _listed(findings: Sequence[ReportFinding]) -> str:
     return "\n".join(
-        f"- [{finding.severity}] {finding.claim or _REPORT}: {one_line(finding.finding)}" for finding in findings
+        f"- {finding.id} [{finding.severity}] {finding.claim or _REPORT}: {one_line(finding.finding)}"
+        for finding in findings
     )
 
 
@@ -369,7 +402,9 @@ def _ask_again(faults: Sequence[str]) -> str:
     )
 
 
-def _answer(stop: SessionStop, claims: frozenset[str], round: int, limits: EditorLimits) -> Review | tuple[str, ...]:
+def _answer(
+    stop: SessionStop, claims: frozenset[str], round: int, earlier: Sequence[ReportFinding], limits: EditorLimits
+) -> Review | tuple[str, ...]:
     """The review a stop carries, or what kept it from being read."""
     if stop.kind == "cut":
         return (
@@ -378,10 +413,13 @@ def _answer(stop: SessionStop, claims: frozenset[str], round: int, limits: Edito
         )
     if stop.kind == "over_budget":
         return (f"this review's {limits.calls} tool calls are used up, and you called a tool again",)
-    return _read_review(stop.reply.text if stop.reply is not None else "", claims=claims, round=round)
+    text = stop.reply.text if stop.reply is not None else ""
+    return _read_review(text, claims=claims, round=round, earlier=earlier)
 
 
-def _read_review(text: str, *, claims: frozenset[str], round: int) -> Review | tuple[str, ...]:
+def _read_review(
+    text: str, *, claims: frozenset[str], round: int, earlier: Sequence[ReportFinding] = ()
+) -> Review | tuple[str, ...]:
     """The review an editor's answer holds: its last fenced JSON block, read against the rubric.
 
     :param text: The answer's text.
@@ -390,6 +428,8 @@ def _read_review(text: str, *, claims: frozenset[str], round: int) -> Review | t
     :ptype claims: frozenset[str]
     :param round: The round reviewed.
     :ptype round: int
+    :param earlier: The previous review's findings, which each finding continues or the review resolves.
+    :ptype earlier: Sequence[ReportFinding]
     :return: The review, or every fault that keeps it from being read.
     :rtype: Review | tuple[str, ...]
     """
@@ -404,10 +444,11 @@ def _read_review(text: str, *, claims: frozenset[str], round: int) -> Review | t
         return ("the last fenced block is JSON but not an object; answer {items, findings}",)
     faults: list[str] = []
     items = _items(value.get("items"), faults)
-    findings = _findings(value.get("findings"), claims, faults)
+    findings = _findings(value.get("findings"), claims, faults, round=round, earlier=earlier)
+    resolved = _resolved(value, findings, earlier, faults)
     if faults:
         return tuple(faults)
-    return Review(round=round, items=items, findings=findings)
+    return Review(round=round, items=items, findings=findings, resolved=resolved)
 
 
 def _items(value: object, faults: list[str]) -> tuple[RubricScore, ...]:
@@ -452,10 +493,15 @@ def _item(item: object, index: int, faults: list[str]) -> RubricScore | None:
     return RubricScore(n=n, name=expected, score=score, reason=reason.strip())
 
 
-def _findings(value: object, claims: frozenset[str], faults: list[str]) -> tuple[ReportFinding, ...]:
+def _findings(
+    value: object, claims: frozenset[str], faults: list[str], *, round: int, earlier: Sequence[ReportFinding]
+) -> tuple[ReportFinding, ...]:
     if not isinstance(value, list):
         faults.append("findings is not a list; give [] for none")
         return ()
+    held = {finding.id: finding for finding in earlier}
+    continued: set[str] = set()
+    fresh = 0
     read: list[ReportFinding] = []
     for index, finding in enumerate(value):
         where = f"findings[{index}]"
@@ -473,12 +519,80 @@ def _findings(value: object, claims: frozenset[str], faults: list[str]) -> tuple
             faults.append(f"{where}.severity is {severity!r}, not must_fix or should_fix")
         if not isinstance(said, str) or not said.strip():
             faults.append(f"{where}.finding is empty; say what to change, where, and what would fix it")
+        mark = _continues(finding.get("continues", _NEW if not held else None), where, held, continued, faults)
         if len(faults) > fault_count:
             continue
         assert isinstance(claim, str) and isinstance(said, str)
+        if mark is None:
+            fresh += 1
+            identity, since = f"f{round}.{fresh}", round
+        else:
+            identity, since = mark, held[mark].since
         read.append(
             ReportFinding.model_validate(
-                {"claim": "" if claim == _REPORT else claim, "severity": severity, "finding": said.strip()}
+                {
+                    "claim": "" if claim == _REPORT else claim,
+                    "severity": severity,
+                    "finding": said.strip(),
+                    "id": identity,
+                    "since": since,
+                }
             )
         )
     return tuple(read)
+
+
+def _continues(
+    mark: object, where: str, held: Mapping[str, ReportFinding], continued: set[str], faults: list[str]
+) -> str | None:
+    """The earlier finding's id a finding continues, or ``None`` for a new one; a fault for a mark that is neither."""
+    if mark == _NEW:
+        return None
+    if not held:
+        faults.append(f"{where}.continues is {mark!r}: there are no earlier findings, so every finding is {_NEW!r}")
+        return None
+    if not isinstance(mark, str) or mark not in held:
+        faults.append(
+            f"{where}.continues is {mark!r}: name the earlier finding it continues by its id "
+            f"({', '.join(held)}), or {_NEW!r} for one first raised in this review"
+        )
+        return None
+    if mark in continued:
+        faults.append(f"{where}.continues {mark!r}, which another finding already continues: merge the two")
+        return None
+    continued.add(mark)
+    return mark
+
+
+def _resolved(
+    value: Mapping[str, object],
+    findings: Sequence[ReportFinding],
+    earlier: Sequence[ReportFinding],
+    faults: list[str],
+) -> tuple[str, ...]:
+    """The earlier findings' ids the review finds resolved, every earlier finding accounted for exactly once."""
+    given = value.get("resolved", [])
+    held = [finding.id for finding in earlier]
+    if not isinstance(given, list) or not all(isinstance(each, str) for each in given):
+        faults.append("resolved is not a list of earlier finding ids; give [] for none")
+        return ()
+    if not held:
+        if given:
+            faults.append(f"resolved is {given!r}: there are no earlier findings to resolve; give []")
+        return ()
+    unknown = [each for each in given if each not in held]
+    if unknown:
+        faults.append(f"resolved names {unknown}, which are not earlier findings ({', '.join(held)})")
+    if len(set(given)) < len(given):
+        faults.append("resolved names an earlier finding twice")
+    carried = {finding.id for finding in findings}
+    both = [each for each in given if each in carried]
+    if both:
+        faults.append(f"resolved names {both}, which a finding of this review continues: it is one or the other")
+    missing = [each for each in held if each not in carried and each not in given]
+    if missing:
+        faults.append(
+            f"earlier findings {missing} are neither continued nor resolved: continue each still open, by its id, "
+            "and list each now resolved under resolved"
+        )
+    return tuple(each for each in held if each in given)

@@ -19,7 +19,7 @@ import asyncio
 import json
 import math
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Final, Literal, NamedTuple, Protocol, cast
 
@@ -37,9 +37,11 @@ from threetears.evals.analysis.campaigns import (
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.planned_analysis import report_plan_of
 from threetears.evals.analysis.report import ReportBasis, TrialDetail, analysis_verdict
+from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
+from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.doc_analysis import doc_analysis
 from threetears.evals.analysis.generator import GenerationTally
 from threetears.evals.analysis.service import (
@@ -56,10 +58,25 @@ from threetears.evals.analysis.service import (
     report_doc_report,
     running_analysis_attempt,
 )
+from threetears.evals.analysis.campaign_title import (
+    TITLE_ARMS,
+    TITLE_ASPECTS,
+    campaign_title,
+    declared_title,
+    title_arm_name,
+)
+from threetears.evals.analysis.style import arm_name
 from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
 from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.schema.base import EvalBaseModel, VerbatimText
-from threetears.evals.kernel.declaration import CampaignCall, Margin, OverriddenBar
+from threetears.evals.kernel.declaration import (
+    ArmRole,
+    CampaignArm,
+    CampaignCall,
+    Margin,
+    OverriddenBar,
+)
+from threetears.evals.kernel.judge_cases import JUDGE_KIND
 from threetears.evals.kernel.campaign import (
     AttemptOutcome,
     ConfidenceTier,
@@ -101,7 +118,7 @@ from threetears.evals.ops.report_writer.write import ReportNotStored, ReportWrit
 from threetears.evals.run.curation import delete_analysis, delete_insight, set_analysis_archived, set_campaign_archived
 from threetears.evals.schema.completion import BoundCompletionClient
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
-from threetears.evals.schema.models import DECLARED_NAME_CHARS, utc_now_iso
+from threetears.evals.schema.models import DECLARED_NAME_CHARS, EvalRun, utc_now_iso
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_INSIGHT, FIND_RUN, WRITER_REMEDY
 
@@ -109,10 +126,82 @@ from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_INSIGHT, FIND_R
 log = get_logger(__name__)
 
 
+#: The most characters a campaign's name may hold when it is created or renamed: a qualifier beside the title code
+#: builds (:func:`campaign_title`), as short as any declared short name. A name stored longer before the cap still
+#: reads and lists; only a write is held to it.
+CAMPAIGN_NAME_CHARS = DECLARED_NAME_CHARS
+
+#: What a name over the cap is told to do instead.
+CAMPAIGN_NAME_REMEDY = (
+    f"name the campaign in at most {CAMPAIGN_NAME_CHARS} characters, and put the detail (the arms, the round, the case "
+    "count, sweep or declared) in question or description"
+)
+
+#: The most characters a listing's short question holds, its ellipsis included.
+QUESTION_SHORT_CHARS = 100
+
+#: The longest an outcome with its warnings is spelled out; past it the warnings are counted (`2 warnings`).
+OUTCOME_SHORT_CHARS = 48
+
+#: Where a campaign's report stands, as a listing shows it: ``none``, no live analysis; ``written``, one this build reads
+#: over the runs the campaign holds now; ``needs_regeneration``, one it cannot read, a report plan (rendered code-only),
+#: or one written over other runs than the campaign holds now.
+ReportState = Literal["none", "written", "needs_regeneration"]
+
+
+class CampaignLineArm(EvalBaseModel):
+    """One declared arm of a campaign, as a listing shows it."""
+
+    label: str
+    short_name: str | None = Field(description="The name the arm declares for where space is tight; None when none.")
+    role: ArmRole
+
+
+class CampaignLineCall(EvalBaseModel):
+    """The call recorded over a campaign's readings, as a listing shows it."""
+
+    arm: str = Field(description="The label of the arm the call names.")
+    reason: str = Field(description="Why, in the words it was recorded with.")
+
+
+class CampaignLineReport(EvalBaseModel):
+    """A campaign's reported analysis (its newest live one), as a listing shows it."""
+
+    analysis_id: str
+    headline: str = Field(
+        description="Code's verdict line over the evidence it was written from (AnalysisLine.verdict)."
+    )
+    why_regenerate: str | None = Field(
+        description=(
+            "Why the report needs regeneration (report_state needs_regeneration): this build cannot read it, it is a "
+            "report plan, or the campaign holds other runs than it was written over. None when it is written."
+        )
+    )
+    generated_at: str
+    generator_model: str
+    cost_usd: float | None = Field(
+        description=(
+            "What generating it cost in US dollars, summed over its attempt's calls; None when any call was unpriced "
+            "(unpriced_calls), never 0, or when no attempt records it."
+        )
+    )
+    unpriced_calls: int = Field(ge=0, description="Its attempt's calls whose cost was never observed; 0 with none.")
+
+
 class CampaignLine(EvalBaseModel):
     """One campaign, as a listing shows it."""
 
     id: str
+    title: str = Field(
+        default="",
+        description=(
+            "What the campaign compares, built by code on every read and never stored: `<arms> · <measure> (<name>)`. "
+            "The arms are its declared arms' short names (else labels), control first, joined ` vs `, or, past "
+            f"{TITLE_ARMS}, `<control> vs N candidates`; a campaign declaring none names the distinct candidate models "
+            "of its runs, and a judge campaign counts its judges. The measure is its aspects' printed names, or past "
+            f"{TITLE_ASPECTS} `N aspects`. Nothing from a call, a recommendation or a verdict enters it."
+        ),
+    )
     name: str
     subject_id: str
     behavior: str
@@ -122,6 +211,69 @@ class CampaignLine(EvalBaseModel):
         description="Whether no aspect of the campaign declares a design — derived on every read, never stored"
     )
     aspects: list[str] = Field(description="The labels of the campaign's aspects, in order; at least one.")
+    created_at: str = Field(default="", description="When the campaign was created (ISO-8601).")
+    question: str = Field(default="", description="The question it asks of its arms, as declared; empty asks none.")
+    question_short: str = Field(
+        default="",
+        description=(
+            f"The question cut to at most {QUESTION_SHORT_CHARS} characters at a word boundary, ending in an ellipsis "
+            "where it was cut; empty asks none."
+        ),
+    )
+    arms: list[CampaignLineArm] = Field(
+        default_factory=list,
+        description=(
+            "Its declared arms, control first. A campaign that declares no candidate reads each other variant among "
+            "its runs as one, which only its report lists."
+        ),
+    )
+    call: CampaignLineCall | None = Field(default=None, description="The call recorded over it; None until one is.")
+    verdict_short: str | None = Field(
+        default=None,
+        description=(
+            "Where it stands in a few words, written by code and never by a model: from the recorded call, `Keep "
+            "<arm>` for the control and `Adopt <arm>` for a candidate; else from its report's recommendation, the "
+            "same way; `No call` for a report recommending no arm or more than one; None with neither a call nor a "
+            "report. report.headline is the long form."
+        ),
+    )
+    outcome_short: str | None = Field(
+        default=None,
+        description=(
+            "What the evidence says in a few words, read by code off its report's frozen readings and never from the "
+            "writer's prose or by cutting the headline; distinct from verdict_short, which is the decision. Arms are "
+            "named by their short names (else labels). The answer leads and a warning only qualifies it. A change: "
+            "`<arm> improved` or `<N> candidates improved` where a candidate is shown better, else `No candidate "
+            "improved`, whether the candidates are equal, not separated or worse. A choice: `<arm> ahead` where one "
+            "arm is shown ahead of another and behind none, else `Arms differ` where any pair separates, else `Not "
+            "separated`. A measurement: `Measured`. `No readings yet` where the readings hold no row of their kind. "
+            "Where the arms the answer names (the improving arms, the leader, the measured arm) broke a floor or "
+            "missed a bar it adds `, broke a floor`, `, missed a bar` or `, broke a floor and missed a bar` (floor "
+            "first; `Measured, <arm> missed a bar` names the arm; several arms count, `2 candidates improved, 1 broke "
+            "a floor`), and past "
+            f"{OUTCOME_SHORT_CHARS} characters counts the warnings (`, 2 warnings`). A warning on an arm the answer "
+            "does not name changes nothing. None with no reported analysis, or one this build cannot read."
+        ),
+    )
+    report_state: ReportState = Field(default="none", description="Where its report stands (`report`).")
+    report: CampaignLineReport | None = Field(
+        default=None, description="Its reported analysis; None exactly when report_state is `none`."
+    )
+    aspect_runs: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "The campaign's runs by aspect: each aspect's label (every one of `aspects`) to the ids of the runs it "
+            "holds, in the campaign's order. Their union is what `feeds` reads an exploratory campaign's runs from, "
+            "and its size is `run_count`."
+        ),
+    )
+    feeds: list[str] = Field(
+        default_factory=list,
+        description=(
+            "For an exploratory campaign, the ids of the declared campaigns of its scope holding any of its runs (the "
+            "ones that adopted its aspects), oldest first; empty for a declared campaign or one no other holds."
+        ),
+    )
 
 
 class CampaignListing(EvalBaseModel):
@@ -283,6 +435,13 @@ class AnalysisLine(EvalBaseModel):
 
     id: str
     campaign_id: str
+    title: str = Field(
+        description=(
+            "What the analysis compares, in a few words, as the report's first line heads it: `<arms> · <measure> "
+            "(<campaign name>)`, built by code from the campaign bundle frozen with the analysis, never stored and "
+            "never carrying a call, a recommendation or a verdict."
+        )
+    )
     basis: AnalysisBasis = Field(
         description=(
             "What wrote the analysis: `memo` (the memo writer; findings count the memo's findings), `plan` (the "
@@ -319,6 +478,14 @@ class AnalysisLine(EvalBaseModel):
             "plan's trade-off or no call, or a document recommending no arm or more than one."
         ),
     )
+    draft: bool = Field(
+        default=False,
+        description=(
+            "Whether a `doc` analysis's report is a draft: its editor's review did not clear it, so its page says so "
+            "first and lists the findings left open (EvalReportDoc.draft). False for a finished report, a memo or a "
+            "plan, and for a document that no longer reads, whose line leads with the regenerate line instead."
+        ),
+    )
     generator_model: str
     generated_at: str
     archived: bool
@@ -329,7 +496,8 @@ class AnalysisLine(EvalBaseModel):
             "no longer reads (its shape moved, or it was deleted apart from it), is rendered code-only by report_read: "
             "its line is the one regenerate line, then why in parentheses where there is more to say, and a plan or "
             "document it cannot read counts no findings. A memo written over a bundle of another shape says why, and "
-            "its report is refused until it is generated again (analysis_generate). None when it reads."
+            "report_read renders it code-only too, led by the regenerate line with the bundle's shape "
+            "(analysis_generate). None when it reads."
         ),
     )
 
@@ -379,6 +547,14 @@ class ReportDocument(EvalBaseModel):
             "reads (every report-plan analysis; a document that no longer validates, or whose snapshot is gone): the "
             "one regenerate line, which the page's first screen prints too, then why in parentheses. The JSON body "
             "carries it too. None otherwise."
+        ),
+    )
+    draft: bool = Field(
+        default=False,
+        description=(
+            "Whether the report rendered is a draft: its stored document's editor's review did not clear it, so the "
+            "page's first line under its masthead says so and its appendix lists the findings left open. False for a "
+            "finished report and for any report that renders no report document."
         ),
     )
     format: ReportFormat
@@ -466,7 +642,292 @@ def _campaign_line(campaign: EvalCampaign) -> CampaignLine:
         archived=campaign.archived,
         exploratory=campaign.exploratory,
         aspects=[aspect.label for aspect in campaign.aspects],
+        aspect_runs={aspect.label: list(aspect.run_ids) for aspect in campaign.aspects},
+        created_at=campaign.created_at,
+        question=campaign.question,
+        question_short=question_short(campaign.question),
+        arms=[CampaignLineArm(label=arm.label, short_name=arm.short_name, role=arm.role) for arm in campaign.arms],
+        call=(
+            CampaignLineCall(arm=campaign.call.arm, reason=campaign.call.reason) if campaign.call is not None else None
+        ),
     )
+
+
+class _Frozen(NamedTuple):
+    """A stored analysis's frozen campaign bundle, put back together once for everything a line reads off it: the
+    bundle, or why it does not read (and so why its report needs regeneration)."""
+
+    bundle: CampaignBundle | None
+    unreadable: str | None
+
+
+def _frozen(analysis: EvalAnalysis) -> _Frozen:
+    """Put an analysis's frozen campaign bundle back together, or say why it does not read: a bundle of another shape
+    (refused in the reader's words), or one whose frame and aspects do not belong together (a corrupt record). Either
+    is one analysis's fault, recorded on its line, never a refusal of the listing or the write that lists it."""
+    try:
+        return _Frozen(analysis_campaign_bundle(analysis), None)
+    except RefusedInput as unreadable:
+        # NOSILENT: a bundle of another shape; the line names it and the regeneration in needs_regeneration.
+        why = f"{unreadable.fault}; {unreadable.remedy}" if unreadable.remedy else unreadable.fault
+        return _Frozen(None, why)
+    except ValueError as corrupt:
+        # NOSILENT: the frame names other aspect bundles than the analysis holds, or a frozen bundle fails its own
+        # model; the line names it and the regeneration in needs_regeneration, where an operator reads it.
+        return _Frozen(
+            None,
+            f"analysis {analysis.id}'s frozen evidence does not read back together ({corrupt}); generate the analysis "
+            "again (analysis_generate)",
+        )
+
+
+def _named_arm(
+    variant_key: str | None, label: str | None, campaign: EvalCampaign, frozen: CampaignBundle | None
+) -> str | None:
+    """``Keep <arm>`` when an arm is the control, else ``Adopt <arm>``, the arm printed as the title prints it
+    (:func:`~threetears.evals.analysis.campaign_title.title_arm_name`); None where no arm matches.
+
+    The arm is found by its variant key, which is what a call or a recommendation decided: among the campaign's
+    declared arms, then among the arms its report resolved (the frozen bundle's, each of whose keys names it). Only
+    where no key matches is it found by its label."""
+    given = {arm.label for arm in frozen.declaration.arms} if frozen is not None else None
+    held: list[tuple[CampaignArm, frozenset[str], Collection[str] | None]] = [
+        (arm, frozenset({arm.variant_key}), None) for arm in campaign.arms
+    ]
+    if frozen is not None:
+        held += [(arm, frozen.arm_keys(arm), given) for arm in frozen.arms]
+    found = next(((arm, names) for arm, keys, names in held if variant_key is not None and variant_key in keys), None)
+    found = found or next(((arm, names) for arm, _, names in held if label is not None and arm.label == label), None)
+    if found is None:
+        return None
+    arm, names = found
+    return f"{'Keep' if arm.role == 'control' else 'Adopt'} {title_arm_name(arm, names)}"
+
+
+def _decided(call: CampaignCall, campaign: EvalCampaign, frozen: CampaignBundle | None) -> str:
+    """A recorded call in a few words (:func:`_named_arm`); an arm no longer found reads as a candidate, by its label
+    as pages print a computed one (``careful``, never ``candidate=careful``)."""
+    return _named_arm(call.variant_key, call.arm, campaign, frozen) or f"Adopt {arm_name(call.arm).label}"
+
+
+def _outcome(readings: CampaignReadings, arms: Sequence[CampaignArm]) -> str:
+    """What the readings show in a few words (:attr:`CampaignLine.outcome_short`), from their structure alone: the
+    answer first, then the warnings of the arms the answer names as a qualifier, never in its place."""
+    printed = {arm.variant_key: arm.short_name or arm.label for arm in arms}
+    labels = {s.arm: s.arm_label for s in readings.floors}
+    labels |= {s.arm: s.arm_label for s in readings.bars}
+    labels |= {s.arm: s.arm_label for s in readings.readings}
+    labels |= {s.arm: s.arm_label for s in readings.measures}
+    for pair in readings.pairs:
+        labels |= {pair.first: pair.first_label, pair.second: pair.second_label}
+
+    def named(key: str) -> str:
+        return printed.get(key, labels.get(key, key))
+
+    def qualified(answer: str, subjects: set[str], *, name: bool = False) -> str:
+        """``answer`` with the floors its subject arms broke and the bars they miss, floors first."""
+        floors = [s for s in readings.broken_floors() if s.arm in subjects]
+        bars = [s for s in readings.missed_bars() if s.arm in subjects]
+        floor_arms, bar_arms = {s.arm for s in floors}, {s.arm for s in bars}
+        if not floors and not bars:
+            return answer
+        if len(subjects) == 1 or (name and len({*floor_arms, *bar_arms}) == 1):
+            who = f"{named(next(iter({*floor_arms, *bar_arms})))} " if name else ""
+            phrases = [f"{who}broke a floor"] if floors else []
+            phrases += [f"{'' if phrases else who}missed a bar"] if bars else []
+        else:
+            phrases = [f"{len(floor_arms)} broke a floor"] if floors else []
+            phrases += [f"{len(bar_arms)} missed a bar"] if bars else []
+        full = f"{answer}, {' and '.join(phrases)}"
+        if len(full) <= OUTCOME_SHORT_CHARS:
+            return full
+        warnings = len(floors) + len(bars)
+        return f"{answer}, {warnings} warning{'s' if warnings != 1 else ''}"
+
+    if readings.kind == "measurement":
+        if not readings.measures:
+            return "No readings yet"
+        return qualified(
+            "Measured",
+            {*(s.arm for s in readings.broken_floors()), *(s.arm for s in readings.missed_bars())},
+            name=True,
+        )
+    if readings.kind == "choice":
+        if not readings.pairs:
+            return "No readings yet"
+        ahead = {pair.ahead for pair in readings.pairs if pair.ahead is not None}
+        behind = {
+            pair.second if pair.ahead == pair.first else pair.first for pair in readings.pairs if pair.ahead is not None
+        }
+        if len(leaders := ahead - behind) == 1:
+            return qualified(f"{named(next(iter(leaders)))} ahead", leaders)
+        return "Arms differ" if ahead else "Not separated"
+    if not readings.readings:
+        return "No readings yet"
+    better = list(dict.fromkeys(row.arm for row in readings.readings if row.reading == "better"))
+    if not better:
+        return "No candidate improved"
+    answer = f"{named(better[0])} improved" if len(better) == 1 else f"{len(better)} candidates improved"
+    return qualified(answer, set(better))
+
+
+def _recommended(analysis: EvalAnalysis, campaign: EvalCampaign, frozen: CampaignBundle | None) -> str:
+    """What a report recommends in a few words: the arm its recommended variant is (:func:`_named_arm`, by key
+    alone), or ``No call``. A bundle this build cannot read (``frozen`` None) names no arm the campaign does not
+    declare; the line's report says it needs regeneration."""
+    key = analysis.recommended_variant_key
+    if key is None:
+        return "No call"
+    return _named_arm(key, None, campaign, frozen) or "No call"
+
+
+def _refuse_long_name(name: str) -> None:
+    """Refuse a campaign name over :data:`CAMPAIGN_NAME_CHARS`, saying where its detail goes.
+
+    :raises ValidationFailedError: The name is longer than the cap.
+    """
+    if len(name) > CAMPAIGN_NAME_CHARS:
+        raise ValidationFailedError(
+            f"a campaign's name is at most {CAMPAIGN_NAME_CHARS} characters; this one is {len(name)}",
+            remedy=CAMPAIGN_NAME_REMEDY,
+            parameters=("name",),
+        )
+
+
+def question_short(question: str) -> str:
+    """A question cut to :data:`QUESTION_SHORT_CHARS` characters at a word boundary, an ellipsis marking the cut.
+
+    :param question: The question, as declared.
+    :ptype question: str
+    :return: It whole when it fits; else its words up to the limit and ``…``, or its first characters and ``…`` when
+        its first word alone is longer.
+    :rtype: str
+    """
+    text = " ".join(question.split())
+    if len(text) <= QUESTION_SHORT_CHARS:
+        return text
+    room = text[: QUESTION_SHORT_CHARS - 1]
+    cut = room.rsplit(" ", 1)[0] if " " in room else room
+    return cut.rstrip(" ,;:.-") + "…"
+
+
+def _runs_moved(analysis: EvalAnalysis, campaign: EvalCampaign, frozen: CampaignBundle) -> bool:
+    """Whether the campaign holds other runs than its report was written over.
+
+    The report's ``observation_refs`` are the runs it read: the ones that resolved, not archived. The runs the campaign
+    held then are those and the ones its frozen bundle names as not resolving or archived
+    (``unresolved_run_ids``, ``archived_run_ids``), so a run id that no longer resolves never reads as a move. Compared
+    against what the campaign holds now, off the bundle the line already put back together: no store read. Curating a
+    run in or out since is not a change of what the campaign holds, and does not read as one."""
+    held_then = set(analysis.observation_refs)
+    for aspect in frozen.aspects:
+        held_then |= {*aspect.unresolved_run_ids, *aspect.archived_run_ids}
+    return held_then != set(campaign.run_ids)
+
+
+def _with_report(
+    host: EvalHost, line: CampaignLine, analysis: EvalAnalysis, campaign: EvalCampaign, read: _Frozen
+) -> CampaignLine:
+    """The line with its reported analysis: what code reads of it, whether it needs regeneration, and its cost, all
+    off the one frozen bundle ``read`` holds."""
+    listed = _analysis_line(host, analysis, campaign, read)
+    why = listed.needs_regeneration
+    if why is None and read.bundle is not None and _runs_moved(analysis, campaign, read.bundle):
+        why = "the campaign holds other runs than the report was written over; generate it again (analysis_generate)"
+    attempt = next(
+        (
+            attempt
+            for attempt in host.storage.list_analysis_attempts_by_campaign(campaign.id, campaign.scope_id)
+            if attempt.analysis_id == analysis.id
+        ),
+        None,
+    )
+    report = CampaignLineReport(
+        analysis_id=analysis.id,
+        headline=listed.verdict,
+        why_regenerate=why,
+        generated_at=listed.generated_at,
+        generator_model=listed.generator_model,
+        cost_usd=attempt.token_cost if attempt is not None and attempt.unpriced_calls == 0 else None,
+        unpriced_calls=attempt.unpriced_calls if attempt is not None else 0,
+    )
+    return line.model_copy(
+        update={
+            "report_state": "written" if why is None else "needs_regeneration",
+            "report": report,
+            "outcome_short": _outcome(read.bundle.readings, read.bundle.arms) if read.bundle is not None else None,
+            "verdict_short": line.verdict_short or _recommended(analysis, campaign, read.bundle),
+        }
+    )
+
+
+def _runs_title(campaign: EvalCampaign, runs: Sequence[EvalRun]) -> str:
+    """A campaign's title read off its runs (:func:`campaign_title`): their candidate models, how many variants they
+    ran (a model and a lever map each, so a sweep of each of two models reads as one), and whether they are judges."""
+    return campaign_title(
+        campaign,
+        candidate_models=sorted({run.candidate_model for run in runs}),
+        variants=len(
+            {(run.candidate_model, json.dumps(run.variant_levers, sort_keys=True, default=str)) for run in runs}
+        ),
+        judges=any(run.candidate_kind == JUDGE_KIND for run in runs),
+    )
+
+
+def _stored_title(host: EvalHost, campaign: EvalCampaign) -> str:
+    """A stored campaign's title (:func:`campaign_title`); its runs are read only for a campaign that declares no arm,
+    whose title names their candidate models."""
+    return _runs_title(
+        campaign, [] if campaign.arms else host.storage.load_eval_runs(campaign.run_ids, campaign.scope_id)
+    )
+
+
+def _line_title(host: EvalHost, campaign: EvalCampaign, frozen: CampaignBundle | None) -> str:
+    """A listed campaign's title: its declared arms'; else, for a campaign declaring none, the arms its report
+    resolved, as its page and analysis line are titled, where its report reads, and its runs' candidate models where it
+    does not. A judge campaign counts its judges either way (``N judges``), never naming them from a report."""
+    if campaign.arms:
+        return campaign_title(campaign)
+    runs = host.storage.load_eval_runs(campaign.run_ids, campaign.scope_id)
+    if frozen is None or any(run.candidate_kind == JUDGE_KIND for run in runs):
+        return _runs_title(campaign, runs)
+    return declared_title(
+        campaign.name,
+        frozen.arms,
+        [(aspect.label, aspect.short_name) for aspect in campaign.aspects],
+        given={arm.label for arm in frozen.declaration.arms},
+    )
+
+
+def _listed(host: EvalHost, campaign: EvalCampaign, every: list[EvalCampaign] | None = None) -> CampaignLine:
+    """A campaign's whole line: its title, declared fields, report, and what it feeds among ``every`` campaign of its
+    scope.
+
+    Its reported analysis is read once, and its frozen bundle put back together once, for the verdict, the title, the
+    short verdict, the outcome and the report's state alike. Its runs are read only for a campaign that declares no
+    arm, whose title names their candidate models or counts its judges. ``every`` is read here only where the
+    campaign is exploratory, the one kind that feeds another: a declared campaign feeds none, so a write of one lists
+    nothing else."""
+    line = _campaign_line(campaign)
+    analysis = host.storage.load_reported_analysis(campaign.id, campaign.scope_id)
+    read = _frozen(analysis) if analysis is not None else _Frozen(None, None)
+    if campaign.call is not None:
+        line = line.model_copy(update={"verdict_short": _decided(campaign.call, campaign, read.bundle)})
+    if analysis is not None:
+        line = _with_report(host, line, analysis, campaign, read)
+    if campaign.exploratory and every is None:
+        every = list_campaigns(host.storage, campaign.scope_id, archived=None)
+    feeds = _feeds(campaign, every) if campaign.exploratory and every is not None else []
+    return line.model_copy(update={"feeds": feeds, "title": _line_title(host, campaign, read.bundle)})
+
+
+def _feeds(campaign: EvalCampaign, campaigns: list[EvalCampaign]) -> list[str]:
+    """The declared campaigns holding any of an exploratory campaign's runs, oldest first."""
+    runs = set(campaign.run_ids)
+    held = [
+        other for other in campaigns if other.id != campaign.id and not other.exploratory and runs & set(other.run_ids)
+    ]
+    return [other.id for other in sorted(held, key=lambda other: (other.created_at, other.id))]
 
 
 def campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None) -> CampaignListing:
@@ -478,12 +939,18 @@ def campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = Non
     :ptype scope_id: str
     :param archived: Only archived (``True``) or only active (``False``) campaigns; ``None`` for both.
     :ptype archived: bool | None
-    :return: The listing.
+    :return: The listing: each campaign with its question, declared arms, recorded call, its report's state, headline
+        and cost, and the declared campaigns an exploratory one feeds, read among every campaign of the scope,
+        archived or not. The scope's campaigns are read once. Per campaign: one read of its reported analysis, whose
+        frozen bundle is put back together once for everything the line reads off it, and one of its analysis
+        attempts where it has a report; for a campaign declaring no arm, one read of its runs, which its title names.
+        An analysis that does not read back (a bundle of another shape, a corrupt record) lists its report as
+        needing regeneration, with why, and fails nothing else.
     :rtype: CampaignListing
     """
-    return CampaignListing(
-        campaigns=[_campaign_line(c) for c in list_campaigns(host.storage, scope_id, archived=archived)]
-    )
+    every = list_campaigns(host.storage, scope_id, archived=None)
+    listed = [c for c in every if archived is None or c.archived == archived]
+    return CampaignListing(campaigns=[_listed(host, campaign, every) for campaign in listed])
 
 
 def campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine:
@@ -505,6 +972,7 @@ def campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: st
         a design this host cannot honour; or names an arm from runs no aspect holds, or that carry two keys.
     :raises StorageError: The campaign failed to persist.
     """
+    _refuse_long_name(definition.name)
     campaign = create_campaign(
         host.storage,
         definition.model_dump(exclude={"aspects_from", "exploratory"}),
@@ -514,7 +982,7 @@ def campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: st
         exploratory=definition.exploratory,
         aspects_from=definition.aspects_from,
     )
-    return _campaign_line(campaign)
+    return _listed(host, campaign)
 
 
 def campaign_update(
@@ -548,6 +1016,8 @@ def campaign_update(
         its own registry — whether or not the run has results.
     :raises StorageError: The write failed.
     """
+    if changes.name is not None:
+        _refuse_long_name(changes.name)
     written = changes.model_fields_set - {"exploratory", "control_from_run_id"}
     campaign = update_campaign(
         host.storage,
@@ -560,7 +1030,7 @@ def campaign_update(
         control_from_run_id=changes.control_from_run_id,
         clear_control="control_from_run_id" in changes.model_fields_set and changes.control_from_run_id is None,
     )
-    return _campaign_line(campaign)
+    return _listed(host, campaign)
 
 
 def _refuse_no_runs(run_ids: list[str], verb: str) -> None:
@@ -596,7 +1066,7 @@ def campaign_runs_add(
     :raises StorageError: The write failed.
     """
     _refuse_no_runs(run_ids, "add")
-    return _campaign_line(add_runs_to_campaign(host.storage, campaign_id, scope_id, run_ids, aspect=aspect))
+    return _listed(host, add_runs_to_campaign(host.storage, campaign_id, scope_id, run_ids, aspect=aspect))
 
 
 def campaign_runs_remove(
@@ -625,7 +1095,7 @@ def campaign_runs_remove(
     :raises StorageError: The write failed.
     """
     _refuse_no_runs(run_ids, "remove")
-    return _campaign_line(remove_runs_from_campaign(host.storage, campaign_id, scope_id, run_ids, aspect=aspect))
+    return _listed(host, remove_runs_from_campaign(host.storage, campaign_id, scope_id, run_ids, aspect=aspect))
 
 
 class CampaignCallLine(EvalBaseModel):
@@ -709,18 +1179,43 @@ def campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archive
     :raises NotFoundError: No campaign with that id in the scope.
     :raises StorageError: The write failed.
     """
-    return _campaign_line(set_campaign_archived(host.storage, campaign_id, scope_id, archived=archived))
+    return _listed(host, set_campaign_archived(host.storage, campaign_id, scope_id, archived=archived))
 
 
-def _analysis_line(host: EvalHost, analysis: EvalAnalysis) -> AnalysisLine:
-    # One analysis frozen over a bundle this build cannot read, or whose plan or document no longer reads, is listed as
-    # needing regeneration, never allowed to refuse the listing of every other one. Every plan, and a document that no
-    # longer reads, is one the report read renders code-only: its line leads with the one regenerate line.
-    needs_regeneration: str | None = None
-    try:
-        verdict = analysis_verdict(analysis)
-    except RefusedInput as unreadable:
-        needs_regeneration = f"{unreadable.fault}; {unreadable.remedy}" if unreadable.remedy else unreadable.fault
+def _analysis_title(host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampaign | None, read: _Frozen) -> str:
+    """The title the analysis is listed by: built from the campaign bundle frozen with it, so the line reads what the
+    analysis was written over. Where that bundle does not read, the stored campaign's title, else the campaign's id."""
+    frozen = read.bundle
+    if frozen is None:
+        # The line says so in needs_regeneration; the title is read from the campaign as it stands, or from its id
+        # where the campaign is gone, and is no claim of the bundle.
+        stored = (
+            campaign if campaign is not None else host.storage.load_campaign(analysis.campaign_id, analysis.scope_id)
+        )
+        return _stored_title(host, stored) if stored is not None else f"Campaign {analysis.campaign_id}"
+    return declared_title(
+        frozen.name,
+        frozen.arms,
+        [(bundle.aspect, bundle.short_name) for bundle in frozen.aspects],
+        given={arm.label for arm in frozen.declaration.arms},
+    )
+
+
+def _analysis_line(
+    host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampaign | None = None, read: _Frozen | None = None
+) -> AnalysisLine:
+    # One analysis frozen over a bundle this build cannot read or that does not read back together, or whose plan or
+    # document no longer reads, is listed as needing regeneration, never allowed to refuse the listing of every other
+    # one. Every plan, and a document that no longer reads, is one the report read renders code-only: its line leads
+    # with the one regenerate line. The frozen bundle is put back together once (``read``, where the caller has).
+    read = read if read is not None else _frozen(analysis)
+    needs_regeneration: str | None = read.unreadable
+    if read.bundle is not None:
+        try:
+            verdict = analysis_verdict(analysis, bundle=read.bundle)
+        except RefusedInput as unreadable:
+            needs_regeneration = f"{unreadable.fault}; {unreadable.remedy}" if unreadable.remedy else unreadable.fault
+    if needs_regeneration is not None:
         verdict = f"Needs regeneration: {needs_regeneration}"
     plan: EvalReportPlan | None = None
     unread: str | None = None
@@ -732,10 +1227,11 @@ def _analysis_line(host: EvalHost, analysis: EvalAnalysis) -> AnalysisLine:
         # NOSILENT: the stored plan no longer validates; the line names why and the regeneration, and the report of
         # this analysis is the code-only page saying the same, so nothing reads it as if it were whole.
         unread = unreadable.fault
+    draft = False
     if analysis.document is not None:
         findings = len(analysis.document.findings)
     elif analysis.report_doc_id is not None:
-        findings, unread = _doc_claims(host, analysis.report_doc_id, analysis.scope_id)
+        findings, draft, unread = _doc_claims(host, analysis.report_doc_id, analysis.scope_id)
     else:
         findings = len(report_plan_of(plan).sections) if plan is not None else 0
     if analysis.report_plan_id is not None or unread is not None:
@@ -744,6 +1240,7 @@ def _analysis_line(host: EvalHost, analysis: EvalAnalysis) -> AnalysisLine:
     return AnalysisLine(
         id=analysis.id,
         campaign_id=analysis.campaign_id,
+        title=_analysis_title(host, analysis, campaign, read),
         basis=analysis.basis,
         report_plan_id=analysis.report_plan_id,
         report_doc_id=analysis.report_doc_id,
@@ -751,17 +1248,20 @@ def _analysis_line(host: EvalHost, analysis: EvalAnalysis) -> AnalysisLine:
         needs_regeneration=needs_regeneration,
         findings=findings,
         recommendations=0 if analysis.recommended_variant_key is None else 1,
+        draft=draft,
         generator_model=analysis.generation.generator_model,
         generated_at=analysis.generation.generated_at,
         archived=analysis.archived,
     )
 
 
-def _doc_claims(host: EvalHost, report_doc_id: str, scope_id: str) -> tuple[int, str | None]:
-    """How many claims a ``doc`` analysis's document holds, and why it does not read when it does not. Blocking.
+def _doc_claims(host: EvalHost, report_doc_id: str, scope_id: str) -> tuple[int, bool, str | None]:
+    """How many claims a ``doc`` analysis's document holds, whether it is a draft, and why it does not read when it
+    does not. Blocking.
 
-    A document that no longer reads (its shape moved, or it was deleted apart from its analysis) counts no claims and
-    says why, never refusing the listing of every other analysis.
+    A document that no longer reads (its shape moved, or it was deleted apart from its analysis) counts no claims, is
+    no draft (its line leads with the regenerate line) and says why, never refusing the listing of every other
+    analysis.
     """
     try:
         stored = host.storage.load_report_doc(report_doc_id, scope_id)
@@ -769,11 +1269,12 @@ def _doc_claims(host: EvalHost, report_doc_id: str, scope_id: str) -> tuple[int,
         # NOSILENT: the line leads with the one regenerate line and counts no claims, so nothing reads it as whole.
         return (
             0,
+            False,
             f"its report document {report_doc_id!r} does not read under this build ({unread.error_count()} fault(s))",
         )
     if stored is None:
-        return 0, f"its report document {report_doc_id!r} was deleted apart from it"
-    return len(ReportDoc.model_validate(stored.doc).claims), None
+        return 0, False, f"its report document {report_doc_id!r} was deleted apart from it"
+    return len(ReportDoc.model_validate(stored.doc).claims), stored.draft, None
 
 
 def analysis_archive(
@@ -1747,8 +2248,8 @@ def report_read(
     - ``memo`` (an analysis stored before the report planner): laid out as written.
 
     A report document that no longer reads (its version, its model, or a snapshot gone or holding no bundle) reads as a
-    plan does. Neither is ever refused, and ``needs_regeneration`` carries that one line, as the page prints it, then
-    why in parentheses; the JSON body carries it too, so a stand-in never reads as a campaign never analysed.
+    plan does, and so is a memo written over a bundle of another shape (the why names that shape). None is ever
+    refused, and ``needs_regeneration`` carries that one line, as the page prints it, then why in parentheses; the JSON body carries it too, so a stand-in never reads as a campaign never analysed.
 
     **The trials.** By default each aspect's trials section is the census line, the table of its failed and lost
     trials, each row naming its stored result (read one with ``result_get``), and the table of its passed trials;
@@ -1791,8 +2292,6 @@ def report_read(
     :raises NotFoundError: No campaign with that id in the scope; or no report document with ``report_doc_id`` in the
         scope, or one written for another campaign.
     :raises ValidationFailedError: ``include_sessions`` with a form other than ``json``.
-    :raises RefusedInput: The campaign's reported analysis is a memo written over a bundle of another shape: refused
-        with the regeneration that mends it (``analysis_generate``).
     """
     if include_sessions and format != "json":
         raise ValidationFailedError(
@@ -1816,6 +2315,7 @@ def report_read(
         analysis_basis=analysis.basis if analysis is not None else None,
         doc=dict(cast("dict[str, Any]", report.report_doc["doc"])) if report.report_doc is not None else None,
         needs_regeneration=report.needs_regeneration,
+        draft=report.doc_page is not None and report.doc_page.draft,
         format=format,
         body=body,
     )

@@ -185,7 +185,7 @@ This list is fixed. It doesn't grow with new eval types.
 6. **Actionable next steps.** Each names an experiment or a declaration and says what it would settle.
 7. **Evidence fits claims.** Each block is the clearest way to show its claim, and the counterfactual holds: if the values flipped, the claim would have to change.
 
-Each finding carries a severity, and a `must_fix` sends the report back whatever the scores. Code adds the scores and decides the pass, never the model: a report passes when no item scores 0, the total is at least 11 of 14, and no finding is a must-fix. These thresholds are starting points; the calibration dataset sets them.
+Each finding carries a severity, and a `must_fix` sends the report back whatever the scores. Code adds the scores and decides the pass, never the model: a report passes when no item scores 0, the total is at least 11 of 14, and no finding is a must-fix. A report is stored finished only when its review passes with no blocking finding open, and one stored with a blocking finding open is a draft, which its page says first (owner rulings 2026-10-29). In the first review every finding blocks. In a later review every `must_fix` blocks, and so does every earlier finding the review marks still open (each finding names the earlier finding it continues, or says `new`); a `should_fix` first raised in a later review is listed open but blocks nothing. These thresholds are starting points; the calibration dataset sets them.
 
 ## 8. Running it in a host
 
@@ -200,9 +200,9 @@ How a write can end:
 
 | Ending | Stored |
 |---|---|
-| `stored`: a review passed with no must-fix finding | yes |
-| `stored_with_findings`: both revisions used | yes, with the open findings in Method |
-| `over_budget` | the last reviewed draft, with that review's findings; nothing if no draft was reviewed |
+| `stored`: a review passed with no blocking finding open | yes, finished, any new should-fix findings listed open |
+| `stored_with_findings`: both revisions used | yes, a draft, with the open findings in Method |
+| `over_budget` | the last reviewed draft, a draft, with that review's findings; nothing if no draft was reviewed |
 | `refused`: bounces used up | no; the verdicts are returned |
 | `review_failed`: the editor's answer unreadable twice | no |
 | `failed`: a provider error after retries | no; the cost tally is kept |

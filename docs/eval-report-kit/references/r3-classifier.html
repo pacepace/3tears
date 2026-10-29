@@ -580,7 +580,7 @@ function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);
   for(const v of yt){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);if(v>y0)S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:yf(v)},s);}
   for(const v of kThinTicks(d.x_ticks||kFmtTicks(x0,x1,5,xf),x,xf)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-m.b+16,"text-anchor":"middle",class:"tick",text:xf(v)},s);}
   if(d.x_title)S("text",{x:(m.l+w-m.r)/2,y:h-6,"text-anchor":"middle",class:"tick",text:d.x_title},s);
-  if(d.y_title)S("text",{x:m.l+6,y:h-m.b-8,class:"tick",text:d.y_title},s);
+  if(d.y_title){S("text",{x:m.l+6,y:h-m.b-8,class:"tick",text:d.y_title},s);obs.push([m.l+6,h-m.b-20,m.l+6+d.y_title.length*6.4,h-m.b-6]);}
   if(d.x_reference){const rx=x(d.x_reference.value);S("line",{x1:rx,x2:rx,y1:m.t,y2:h-m.b,class:"floor"},s);obs.push([rx-2,m.t,rx+2,h-m.b,1]);
     if(d.x_reference.label){const rl=kRefLabel(rx,d.x_reference.label,m.l,w-m.r);kRefText(s,rl,m.t+12,false);obs.push(kRefBox(rl,m.t+12));}}
   if(d.reference){const ry=y(d.reference.value);S("line",{x1:m.l,x2:w-m.r,y1:ry,y2:ry,class:"floor"},s);obs.push([m.l,ry-2,w-m.r,ry+2,1]);

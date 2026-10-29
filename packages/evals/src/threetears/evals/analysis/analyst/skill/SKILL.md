@@ -19,7 +19,7 @@ Read with this file: `principles.md`, `stories.md`, `charts.md`, `statistics.md`
 5. **Render and check.** Draw each claim's block with `block_render` and read its values table. Then send the whole draft to `report_check`: it returns every mechanical verdict the store would refuse it for, then the page as a reader and the editor will read it. Fix every verdict, reread the page as a reader and fix what is unclear, crowded or misleading, and check again. At most three rounds.
 6. **Submit to the editor.** Mechanical checks run first and return to you before any editor call. Address the editor's findings and resubmit, at most two rounds. Unresolved findings are stored and shown in Method.
 
-**Two kinds of feedback.** *Mechanical* verdicts you fix: an unresolved figure key, a typed digit, a block that doesn't render, a doubled unit, an id above the appendix, a caveat with no landing, a confidence form that doesn't match its caveats, a missing appendix or Method. *Interpretive* facts go to the editor, which judges them in context: the recommendation failed a declared gate, a warning on it is unanswered, your call disagrees with `options_dominance`, the weakest margin is missing from Watch, a caveat code attaches to a claim's evidence is carried nowhere. Overriding one can be right; the page must say why.
+**Two kinds of feedback.** *Mechanical* verdicts you fix: an unresolved figure key, a typed digit, a block that doesn't render, a doubled unit, an id above the appendix, a caveat with no landing, a confidence form that doesn't match its caveats, a missing appendix or Method. *Interpretive* facts go to the editor, which judges them in context: the recommendation failed a declared gate, a warning on it is unanswered, your call disagrees with `options_dominance`, the weakest margin is missing from Watch, a caveat code attaches to a claim's evidence is carried nowhere, your confidence reads high over caveats it leaves open. Overriding one can be right; the page must say why.
 
 ## The report document (`report-doc/1`)
 
@@ -45,7 +45,7 @@ One tool, `evals_analyst`; each call is `{"action": "<name>", ...}` and, but for
 | Workflow | Action | Key parameters | Use it for |
 |---|---|---|---|
 | snapshot | `report_snapshot_freeze` | `campaign_id` or `analysis_id` | Freeze the evidence, unless you were handed a `snapshot_id` |
-| facts | `campaign_overview` | | Call first: arms, aspects (and whether each two ran the same cases), measure keys, criteria, caveats, prior insights |
+| facts | `campaign_overview` | | Call first: arms (and who served each one's model calls), aspects (and whether each two ran the same cases), measure keys, criteria, caveats, prior insights |
 | | `readings_list` | `aspect_filter`, `arm_filter` | Readings against the control, pairs, floors, bars |
 | | `contrasts_list` | `arm_filter`, `measure_filter`, `aspect_filter` | Corrected contrasts and their families |
 | | `measure_read` | `measure_key`, `by` (arm, stratum, task, cell), `statistics` | One measure's figures; without `statistics`, every one held, its interval (`ci` or `half_width`) and level among them |

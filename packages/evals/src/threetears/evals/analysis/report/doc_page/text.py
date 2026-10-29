@@ -29,7 +29,7 @@ from collections.abc import Iterator
 from threetears.evals.analysis.analyst.blocks import values_table
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import ExamplesChart
-from threetears.evals.analysis.report.doc_page.model import DocClaim, DocEvidence, DocPage, caveats_line
+from threetears.evals.analysis.report.doc_page.model import DocClaim, DocEvidence, DocPage, caveats_line, draft_line
 from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
     CHECKED_MARK,
@@ -149,6 +149,8 @@ def _above(page: DocPage, *, editor: bool) -> Iterator[list[str]]:
             if part
         )
     ]
+    if page.draft:
+        yield [draft_line(page)]
     if page.degraded:
         yield [page.degraded]
     yield [f"# {one_line(page.headline)}"]

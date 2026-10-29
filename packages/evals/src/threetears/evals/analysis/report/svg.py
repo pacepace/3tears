@@ -4,7 +4,8 @@ An *interval glyph* is the uncertainty of one figure drawn in the row that state
 track, a zero line where zero is on it, the declared margin as a quiet band, the interval as a whisker and the point
 as a dot, every row of a column in one unit on the same scale, so the rows compare as small multiples and the scale's
 ends are written once under the table. The report's charts are drawn by the eval report kit's script from their data
-(:meth:`~threetears.evals.analysis.report.blocks.ChartBlock.kit_chart`), not here.
+(:meth:`~threetears.evals.analysis.report.blocks.ChartBlock.kit_chart`), or on a static page by
+:mod:`~threetears.evals.analysis.report.chart_svg`, which draws them as this module draws a glyph: not here.
 
 **Legible without colour, a script or a stylesheet of its own.** A glyph is drawn in the page's ink alone, the margin
 band in its one quiet tint, from classes the page's stylesheet sets from the kit's tokens (:data:`GLYPH_STYLE`); its

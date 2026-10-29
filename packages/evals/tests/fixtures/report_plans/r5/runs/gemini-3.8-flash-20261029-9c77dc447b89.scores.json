@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261029-9c77dc447b89",
+  "input": "r5",
+  "input_digest": "72ed0db70b6206625e4d179b4062fc9c8f38c8b5af1b0803f12e288b4ccf4511",
+  "plan_digest": "2ad9c860daae560e57fff2aba1dfafd3238aeda5aa37373c78be82cfc00cc1d5",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+    "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision headline with an instruction and a reason that matches the options table's recommended arm, and the first chart shows both challengers losing ground.",
+      "quote": "Keep September (P). Both candidates increase cost and degrade character adherence.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The first sentence restates the headline (no gain, higher cost) instead of adding the strongest supporting fact, and the second gives only a generic switch condition.",
+      "quote": "Neither challenger improves performance, while 1017 (B) costs 1.3 times and qwen3.8-flash (A) costs 1.3 times the control per reply.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "There is no flag, the report-wide disclosures each appear once in the confidence clauses, and the scoped confounds and short runs appear once in Watch without repeating in Method.",
+      "quote": "Confounding shifts in reasoning ratio between models qualify cost attribution, and two harness drops shortened qwen3.8-flash (A) runs.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The first section's chart shows 1017's change interval running from -5.8 to +1.1, which crosses zero, so the chart does not show that both challengers regress.",
+      "quote": "Both challengers stay within margin but regress adherence",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results, arms, measures and strata use reader names, and no run id, hash or measure key appears.",
+      "quote": "Bars show difference from control on persona holds character across primary strata.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin (qwen3.8-flash at -12.6 against -15, a gap of 2.4), then the scoped confounds and the short runs.",
+      "quote": "Weakest margin sits with qwen3.8-flash (A) on the margin on character adherence (v2) at -12.6 against threshold -15 (the multiplicity-corrected 99.69% interval), leaving a margin gap of +2.4.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "Above the fold, 'adherence' names both the aspect's pass rate and the persona holds character judgment (4.7 and 6 points here, while the table's reading shows 3 and 7.6), and the Watch sentence is long and full of statistician's grammar.",
+      "quote": "1017 (B) regresses adherence by 4.7 points while costing 1.3 times. qwen3.8-flash (A) regresses adherence by 6 points and increases cost to $2.43 per 1,000 replies.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The masthead, headline, lede, decision block and options table together give the instruction (keep September), the reason (cost and adherence) and the main risk (the weakest margin and the confounds).",
+      "quote": "Retain September (P). It delivers the highest adherence at $1.89 per 1,000 replies, outperforming both candidates on cost and quality.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "A cheaper September variant could not overturn the call to keep September over these two candidates, and the slot states no result that would decide anything.",
+      "quote": "Run a cost-optimized variant of September (P) with trimmed reasoning ratios before testing alternative model architectures.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "fail",
+      "reason": "The late-control clause names an intent, not a condition that could change the call, and no clause says that the cost finding behind the call does not rest on its caveat.",
+      "quote": "September (P) was designated as control after runs completed; material only if comparison against alternative baselines was intended.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "Watch reads the margin on the corrected 99.69% interval, where qwen3.8-flash's bound is -12.6, but Explore puts its flip point at 10.8, the uncorrected 95% bound, so the flip figure is not read on the claim's interval.",
+      "quote": "qwen3.8-flash (A) violates margin when tightened below 10.8 points, and 1017 (B) below 5.8 points.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-29T20:49:05.432381+00:00"
+}

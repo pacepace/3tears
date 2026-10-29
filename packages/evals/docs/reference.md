@@ -1123,7 +1123,7 @@ A campaign's report: one page, the bundle it was computed from, and the typed ve
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `basis` | `ReportBasis` | required | `analysis` over a generated memo, `code_only` over the evidence alone. |
-| `title` | `str` | required | The title line, a name: the campaign's, with what it compares where no question was declared (`invoices: does v2 do better than v1?`). |
+| `title` | `str` | required | The title line: what the campaign compares and on what, with its name as a qualifier, built by code (`v1 vs v2 · pass rate (invoices)`); never a call, a recommendation or a verdict. |
 | `finding_count` | `int` | required | How many findings the memo holds. |
 | `source` | `ReportSource` | required | What this is a report of. |
 | `blocks` | `list[ReportBlock]` | required | The report, in reading order. |
@@ -1729,8 +1729,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `models` | array of `string` | Candidate models, one arm and one run each; empty runs the kind's own default. |
 | `n_test_cases` | `integer` or `null` | A case count to price each planned arm at in place of its plan's, for a what-if grid. |
 | `n_variations` | `integer` | New cases to generate from the template's variation axes; 0 runs its stored cases. |
-| `name` (on `campaign_create`) | `string` | The campaign's name, as an operator reads it. |
-| `name` (on `campaign_update`) | `string` or `null` | The campaign's name, as an operator reads it. |
+| `name` (on `campaign_create`) | `string` | The campaign's name, as an operator reads it in a list: at most 32 characters. Put the detail (the arms, the round, the case count) in question or description, never in the name. |
+| `name` (on `campaign_update`) | `string` or `null` | The campaign's name, as an operator reads it in a list: at most 32 characters. Put the detail (the arms, the round, the case count) in question or description, never in the name. |
 | `note` | `string` | Why the output must get that verdict, in the author's words. |
 | `offset` | `integer` | Skip this many rows; the previous page's next_offset. |
 | `output` | `string` | The output under review, as the judge reads it. |

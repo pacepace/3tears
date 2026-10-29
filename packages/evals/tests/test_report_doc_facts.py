@@ -18,6 +18,7 @@ import pytest
 
 from packages.evals.tests.fixtures.report_plans.misfits import MISFITS
 from packages.evals.tests.report_doc_support import LATER_DOCS, converted_doc, snapshot_of
+from threetears.evals.analysis.report.figure_keys import cost_arms
 from threetears.evals.analysis.report_doc_facts import EditorFact, editor_facts
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.report_doc import ReportDoc
@@ -420,30 +421,129 @@ def test_a_contrast_the_input_leaves_untested_is_named_without_its_figures_and_n
     assert facts[0].fact.startswith("The evidence of claim cost reads 1017 (B)'s contrast on Production cost, and code")
 
 
+# --- who served the model calls of the arms whose costs the document compares ----------------------------------
+
+
+def _priced(data: dict[str, Any]) -> None:
+    """Kairo's arms priced: September served by DeepInfra, qwen3.8-flash by Together with a web search it called,
+    1017's pricing naming no provider."""
+    pricings = {
+        "September": {"sources": ["openrouter:reported"], "providers": ["DeepInfra"]},
+        "qwen3.8-flash": {
+            "sources": ["host:declared", "openrouter:reported"],
+            "providers": ["Together"],
+            "tool_providers": ["searxng"],
+        },
+        "1017": {"sources": ["openrouter:reported"], "providers": []},
+    }
+    for arm, pricing in pricings.items():
+        data["scoreboard"][arm]["pricing"] = pricing
+
+
+def test_a_document_comparing_costs_is_told_who_served_each_arms_model_calls() -> None:
+    """The stored Kairo document compares the three arms' costs (the uplift range, each candidate's uplift on
+    September): one fact names the fields and each arm's providers once; the search tool is tool spend, never a
+    provider of qwen3.8-flash's model."""
+    (fact,) = _of(_facts(_STORED_KAIRO, input_change=_priced), _SERVED)
+
+    assert (fact.path, fact.figures) == ("", ["arm:September", "arm:qwen3.8-flash", "arm:1017"])
+    assert fact.fact == (
+        "The document compares costs (headline, decision[1].text, decision[2].text, decision[3].text, "
+        "claims[0].evidence[0].caption) of September (P), its model calls served by DeepInfra; and of qwen3.8-flash "
+        "(A), its model calls served by Together, with tool spend at searxng; and of 1017 (B), whose pricing names no "
+        "provider of its model calls."
+    )
+
+
+def test_a_document_citing_one_arms_cost_alone_is_no_cost_fact() -> None:
+    """Every field of the stored Kairo document but one cleared of cost keys, that one citing September's cost per
+    1,000 alone: one arm's cost compares nothing."""
+
+    def one_cost(doc: dict[str, Any]) -> None:
+        doc["headline"] = "September stays."
+        doc["decision"] = [
+            {**entry, "text": "September costs {cost_per_1k.September}."} if index == 0 else {**entry, "text": "Kept."}
+            for index, entry in enumerate(doc["decision"])
+        ]
+        for claim in doc["claims"]:
+            for evidence in claim["evidence"]:
+                evidence["caption"] = "What the block draws."
+
+    assert not _of(_facts(_STORED_KAIRO, doc_change=one_cost, input_change=_priced), _SERVED)
+
+
+def test_cost_arms_reads_which_arms_costs_a_key_compares() -> None:
+    """A money figure's arm; an uplift's arm and the control it is on; a range over every arm; nothing for a rate."""
+    held = _input(_STORED_KAIRO)
+
+    assert cost_arms("cost_per_1k.September", held) == ["September"]
+    assert cost_arms("cost.uplift.1017", held) == ["1017", "September"]
+    assert cost_arms("cost.uplift_range", held) == ["September", "qwen3.8-flash", "1017"]
+    assert cost_arms("arm:1017", held) == []
+    assert cost_arms(f"{_ON_1017}.persona.holds_character.delta", held) == []
+
+
+# --- a high confidence over open caveats ----------------------------------------------------------------------------
+
+
+def test_a_high_over_open_caveats_is_one_fact_naming_how_many_and_which() -> None:
+    doc = converted_doc(_KAIRO)
+    left = [caveat["id"] for caveat in doc["confidence"]["caveats"] if caveat.get("material_if") is not None]
+    assert doc["confidence"]["form"] == "high_if_immaterial" and left, "the control: Kairo reads high over open caveats"
+
+    (fact,) = _of(_facts(_KAIRO), "high_over_open")
+
+    assert fact.path == "confidence" and fact.figures == []
+    count = "1 open caveat" if len(left) == 1 else f"{len(left)} open caveats"
+    assert fact.fact == (
+        f"The confidence reads high, if the caveats aren't material, over {count}, none of which code proves "
+        f"immaterial: {', '.join(f'`{caveat}`' for caveat in left)}."
+    )
+
+
+@pytest.mark.parametrize("form", ["low", "high"])
+def test_a_confidence_that_does_not_read_high_over_open_caveats_is_no_fact(form: str) -> None:
+    def formed(doc: dict[str, Any]) -> None:
+        doc["confidence"]["form"] = form
+        if form == "high":
+            doc["confidence"]["caveats"] = []
+
+    assert not _of(_facts(_KAIRO, doc_change=formed), "high_over_open")
+
+
 # --- the converted documents ---------------------------------------------------------------------------------------
 
 #: The facts each later converted document triggers, by kind. Every one that fires is real:
 #:
 #: - r2 with its gates read in each task fires nothing: two options are undecided on the p95 gate read in each task,
 #:   their p95 over every case missing it, and the document cites that very figure for each, which answers it.
-#: - s1: the document keeps production where code reads a tradeoff (no option dominates), and the weakest margin, v2's
-#:   tone floor, is one Watch does not name (it discusses v2's billing floor). Both true; whether the call and Watch
-#:   are argued well is the editor's.
+#: - s1: the document keeps production where code reads a tradeoff (no option dominates). True; whether the call and
+#:   Watch are argued well is the editor's. Its weakest margin is no longer a fact: read on the corrected interval, v4's
+#:   billing reading (99.55%) sits past the margin, which is the very reading Watch discusses (it was v2's tone floor
+#:   on the plain interval, which Watch did not name).
 #: - s2: the document recommends beta, at low confidence, where code reads a tradeoff. True.
 #: - Kairo: the weakest margin is qwen3.8-flash's reading against the margin, a candidate the call does not pick, and
 #:   Watch does not name it. True; the editor weighs whether it matters to keeping September.
+#: - cost_served_by on every document but s3: each compares two arms' costs or more somewhere in its prose (an uplift,
+#:   two arms' costs per 1,000, a price gap), and its snapshot, converted before arms carried their pricing, states no
+#:   routing for any of them. True; whether the page says its costs' routing is unknown is the editor's. s3 compares
+#:   no costs.
+#: - Every document but s2 reads high, if the caveats aren't material, over caveats it leaves open (``high_over_open``,
+#:   added 2026-10-29 after a stored page printed that line above four uncleared caveats). True of each: s2 is low,
+#:   and every other one's form is high_if_immaterial; whether each high stands is the editor's.
+_SERVED = "cost_served_by"
 _EXPECTED: dict[str, list[str]] = {
-    "prototype2/r2-with-its-gates-read-in-each-task": [],
-    "prototype2/r2-with-one-gate": [],
-    "prototype2/r3-without-its-configs": [],
-    "prototype2/s1": ["call_vs_dominance", "weakest_not_in_watch"],
-    "prototype2/s2": ["call_vs_dominance"],
-    "prototype2/s3": [],
-    "prototype3/kairo": ["weakest_not_in_watch"],
-    "prototype3/r1": [],
-    "prototype3/r2": [],
-    "prototype3/r3": [],
-    "prototype3/r4": [],
+    "prototype2/r2-with-its-gates-read-in-each-task": [_SERVED, "high_over_open"],
+    "prototype2/r2-with-one-gate": [_SERVED, "high_over_open"],
+    "prototype2/r3-without-its-configs": [_SERVED, "high_over_open"],
+    "prototype2/s1": ["call_vs_dominance", _SERVED, "high_over_open"],
+    "prototype2/s2": ["call_vs_dominance", _SERVED],
+    "prototype2/s3": ["high_over_open"],
+    "prototype3/kairo": ["weakest_not_in_watch", _SERVED, "high_over_open"],
+    "prototype3/r1": [_SERVED, "high_over_open"],
+    "prototype3/r2": [_SERVED, "high_over_open"],
+    "prototype3/r3": [_SERVED, "high_over_open"],
+    "prototype3/r4": [_SERVED, "high_over_open"],
 }
 
 
@@ -477,7 +577,8 @@ def test_no_fact_raises_on_a_misfit_input(misfit: str) -> None:
 def test_an_arm_the_snapshot_does_not_hold_is_written_as_the_document_wrote_it() -> None:
     facts = _facts(_KAIRO, recommends=["ghost"])
 
-    assert [fact.kind for fact in facts] == ["call_vs_dominance", "weakest_not_in_watch"]
+    # Kairo's cost comparisons raise cost_served_by whatever it recommends (the converted documents' pins say why).
+    assert [fact.kind for fact in facts] == ["call_vs_dominance", "weakest_not_in_watch", _SERVED, "high_over_open"]
     assert facts[0].fact.endswith("the document recommends `ghost`.")
 
 
@@ -505,6 +606,7 @@ def test_facts_are_byte_identical_when_only_the_story_changes(name: str, recomme
 def test_no_fact_tells_the_editor_what_to_conclude() -> None:
     """Facts state what holds: none says what should, must or ought to be done."""
     facts = [
+        *_facts(_KAIRO),
         *_facts(_R1, recommends=["atlas-l"]),
         *_facts(_S1, recommends=["v3"]),
         *_facts(_R4, recommends=["f64"]),
@@ -513,7 +615,9 @@ def test_no_fact_tells_the_editor_what_to_conclude() -> None:
     ]
     advice = ("should", "must", "ought", "consider", "needs to")
 
-    assert len({fact.kind for fact in facts}) == 7
+    # The seven planted kinds, cost_served_by, which every one of these documents' cost comparisons raises, and
+    # high_over_open, which every one reading high over open caveats raises.
+    assert len({fact.kind for fact in facts}) == 9
     assert not [fact.fact for fact in facts if any(word in fact.fact.lower() for word in advice)]
 
 

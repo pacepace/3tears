@@ -76,7 +76,8 @@ class ReportWritten:
         its name's ``session``, with no ``ref``), kept whatever the ending. A stored document's own ``generation``
         names each session by ref instead (``stored.generation``), and its sessions are stored beside it.
     :ivar page: The stored document's page as a reader reads it, built strict with its open findings in Method and
-        its made line (:func:`~threetears.evals.analysis.report_doc_store.made_line`); ``None`` when nothing is stored.
+        its made line (:func:`~threetears.evals.analysis.report_doc_store.made_line`), a draft's saying so first
+        (``stored.draft``); ``None`` when nothing is stored.
     :ivar gaps: Every gap and notice the write noted (the module docstring), whatever the ending, each naming the
         stored report or none.
     :ivar gaps_not_stored: Why the gaps were not stored, when they were not (the store refused them, or they could not
@@ -303,7 +304,9 @@ async def report_write(
             written=await noted(None, unstored),
             report_doc_id=report_doc_id,
         ) from exc
-    page = build(outcome.doc, report_input, strict=True, findings=outcome.findings, made=made_line(stored))
+    page = build(
+        outcome.doc, report_input, strict=True, findings=outcome.findings, made=made_line(stored), draft=stored.draft
+    )
     return await noted(report_doc_id, replace(unstored, stored=stored, page=page))
 
 

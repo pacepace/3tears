@@ -39,7 +39,8 @@ it runs (as the options table says it, where some arm declares it), its quality 
   the calls the cost counts (``all 897 calls priced``), and the arm's unanswered calls. A partly priced arm states
   ``n of m calls priced`` in place of a cost, which would be a smaller total read as whole; an arm none of whose calls
   were priced reads ``unpriced``, never ``$0``;
-- what priced it: its price sources, and the providers that served its calls, where some arm's pricing names one
+- what priced it: its price sources, the providers that served its model calls, where some arm's pricing names one,
+  and the tools its cost spent on as tool spend, never as a provider of the model
   (:class:`~threetears.evals.analysis.report_input.Pricing`).
 
 It reads no plan: which arms and columns it shows is the input's, and only the mark is the document's.
@@ -58,6 +59,7 @@ from threetears.evals.analysis.report.blocks import TableBlock, TableCell, Table
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.cost_unit import (
     PRICED_SHARE_TEMPLATE,
+    REPLIES,
     MoneyRuler,
     money_ruler,
     per_one,
@@ -83,6 +85,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     RECOMMENDED_MARK,
     ROLE_WORDS,
     SERVED_BY_TEMPLATE,
+    TOOL_SPEND_TEMPLATE,
     UPLIFT_NOT_COMPARABLE,
     reading_words,
 )
@@ -194,9 +197,12 @@ def _cost(column: str, arm: str, report_input: ReportInput, look: PageLook) -> T
         share = priced_in_part(report_input, arm)
         marks += [share] if share is not None else []
         marks += _unanswered_marks(arm, report_input)
-    # Per the count the column's head names, by the one owner of money's scale (figure_keys.cost_ruler).
+    # Per the count the column's head names, by the one owner of money's scale (figure_keys.cost_ruler). An arm the cost
+    # rule states no cost for says it is unpriced, never a blank.
     said = (
-        cost_ruler(report_input).spell(figure.value) if figure is not None and isinstance(figure.value, float) else None
+        cost_ruler(report_input).spell(figure.value)
+        if figure is not None and isinstance(figure.value, float)
+        else UNPRICED
     )
     return TableCell(value=said, flag="; ".join(marks) or None)
 
@@ -350,6 +356,7 @@ def arms_table(report_input: ReportInput, look: PageLook, recommends: Collection
     rated = any(cell.value is not None for cell in quality.values())
     header, cells = _arm_costs(report_input, look)
     costed = any(cell.value is not None for cell in cells.values())
+    cells = {arm: _unknown_cost(cell) for arm, cell in cells.items()} if costed else cells
     priced = {arm: _priced_by(_pricing(report_input, arm)) for arm in arms}
     sourced = any(cell.value is not None or cell.flag is not None for cell in priced.values())
     columns = [
@@ -427,12 +434,28 @@ def _arm_costs(report_input: ReportInput, look: PageLook) -> tuple[str, dict[str
         for arm, figure in figures.items()
         if figure is not None and isinstance(figure.value, float) and not _part_priced(_pricing(report_input, arm))
     }
+    if cost_basis(report_input).noun == REPLIES:
+        # The cost source the page reads may lack an arm another source holds: the scoreboard's cost per reply is the
+        # same cost over the same count, so an arm it states is not left blank beside arms that carry a dollar figure.
+        per_run |= {
+            arm: row.reply_cost_usd
+            for arm, row in report_input.scoreboard.items()
+            if arm not in per_run
+            and row.reply_cost_usd is not None
+            and not _part_priced(row.pricing)
+            and arm in {held.id for held in report_input.arms}
+        }
     # The one owner of money's scale states the column: per run, or per 1,000 (1,000,000) runs where a cost is under a
     # cent per run (per 1,000).
     ruler = money_ruler(per_run.values(), per=1, start=1)
     header = COST_HEADER.format(per=per_one(noun) if ruler.counted == 1 else ruler.words(noun))
     cells = {arm.id: _arm_cost(arm.id, report_input, look, per_run, ruler) for arm in report_input.arms}
     return header, cells
+
+
+def _unknown_cost(cell: TableCell) -> TableCell:
+    """A cost cell that states nothing (the arm's cost is not known) says so: ``unpriced``, never a blank."""
+    return TableCell(value=UNPRICED, flag=cell.flag) if cell.value is None else cell
 
 
 def _arm_cost(
@@ -475,11 +498,19 @@ def _priced_share(pricing: Pricing | None) -> str | None:
 
 
 def _priced_by(pricing: Pricing | None) -> TableCell:
-    """What priced an arm's cost: its price sources, and who served its calls beside them; empty where unsaid."""
+    """What priced an arm's cost: its price sources, and beside them who served its model calls, then the tools it
+    spent on as tool spend (never as the model's providers); empty where unsaid."""
     if pricing is None:
         return TableCell(value=None)
-    served = SERVED_BY_TEMPLATE.format(providers=", ".join(pricing.providers)) if pricing.providers else None
-    return TableCell(value=", ".join(pricing.sources) or None, flag=served)
+    said = [
+        template.format(providers=", ".join(providers))
+        for template, providers in (
+            (SERVED_BY_TEMPLATE, pricing.providers),
+            (TOOL_SPEND_TEMPLATE, pricing.tool_providers),
+        )
+        if providers
+    ]
+    return TableCell(value=", ".join(pricing.sources) or None, flag="; ".join(said) or None)
 
 
 def _setting_name(report_input: ReportInput, setting: str) -> str:

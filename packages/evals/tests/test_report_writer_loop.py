@@ -7,8 +7,9 @@ invariant on that snapshot; the editor answers scripted reviews.
 
 Contracts held here:
 
-- **rounds**: a review that clears ends ``stored`` in round 1; a failed review or a ``must_fix`` sends the analyst back
-  in its own conversation, at most twice, and three failed reviews end ``stored_with_findings``;
+- **rounds**: a review that passes with no finding open ends ``stored`` in round 1, finished; a failed review, a
+  ``must_fix`` or a ``should_fix`` sends the analyst back in its own conversation, at most twice, and three reviews
+  that do not clear end ``stored_with_findings``, a draft whose page says so first (owner ruling 2026-10-29);
 - **endings** (plan §4.4): ``over_budget`` stores the last reviewed document with its review's findings, or nothing
   when no review was read; ``refused``, ``review_failed`` and ``failed`` store nothing, and the tally keeps every turn;
 - **the editor**: an unreadable answer is asked for once more, and a second ends ``review_failed``; its request
@@ -71,10 +72,22 @@ from threetears.evals.schema.turns import TurnText
 
 #: A finding that sends a report back however it scored.
 MUST_FIX: Final = {"claim": "c2", "severity": "must_fix", "finding": "Say what clearing the margin would buy."}
-#: A finding that does not.
+#: A finding that does not fail a review's scores, and still sends the report back while revisions remain.
 SHOULD_FIX: Final = {"claim": "c1", "severity": "should_fix", "finding": "Name the margin in the first claim."}
 #: Scores that fail: one item at 0.
 FAILING: Final = (2, 2, 0, 2, 2, 2, 2)
+
+
+def marked(finding: Mapping[str, str], continues: str) -> dict[str, str]:
+    """A finding as a later review writes it: marked with the earlier finding's id it continues, or ``new``."""
+    return {**finding, "continues": continues}
+
+
+def kept(finding: Mapping[str, str], id: str, since: int) -> dict[str, Any]:
+    """A finding as the store keeps it: its id and the round it was first raised, a page-wide one naming no claim."""
+    claim = "" if finding["claim"] == "report" else finding["claim"]
+    return {"claim": claim, "severity": finding["severity"], "finding": finding["finding"], "id": id, "since": since}
+
 
 #: What the analyst's first reply holds that no editor may read.
 PRIVATE_THOUGHT: Final = "ANALYST-PRIVATE-THOUGHT: the cost gap is the whole story"
@@ -116,9 +129,9 @@ def _stored(host: OpsHost) -> list[Any]:
 # --- rounds -------------------------------------------------------------------------------------------------------
 
 
-async def test_a_review_that_clears_in_round_one_stores_the_report_with_its_should_fix_findings() -> None:
+async def test_a_review_that_clears_in_round_one_stores_the_report_finished() -> None:
     host = off_loop(seeded_host)
-    model = FakeTurnModel(analyst=analyst(), editor_1=editor(reply(review(findings=[SHOULD_FIX]))))
+    model = FakeTurnModel(analyst=analyst(), editor_1=editor(reply(review())))
 
     result = await written(model, host=host)
 
@@ -127,8 +140,8 @@ async def test_a_review_that_clears_in_round_one_stores_the_report_with_its_shou
     assert (result.outcome.analyst_rounds, result.outcome.editor_rounds) == (1, 1)
     (stored,) = _stored(host)
     assert stored.id == result.stored.id and stored.ending == "stored"
+    assert not stored.draft and stored.findings == []
     assert ReportDoc.model_validate(stored.doc) == ReportDoc.model_validate(DOC)
-    assert stored.findings == [SHOULD_FIX]
     generation = stored.generation
     assert generation["model"] == model.model_name
     assert set(generation["tally"]["by_round"]) == {"analyst:1", "editor:1"}
@@ -144,12 +157,35 @@ async def test_a_review_that_clears_in_round_one_stores_the_report_with_its_shou
     assert sessions["editor-1"].session["name"] == "editor-1"
     assert {result["stored"] for result in sessions["editor-1"].session["results"]} == {"rederive"}
     assert result.page is not None and result.page.made.startswith(f"Written by {model.model_name}")
-    assert [finding.finding for finding in result.page.findings] == [SHOULD_FIX["finding"]]
+    assert not result.page.draft and result.page.findings == []
+    assert "Draft" not in doc_page_text(result.page)
+
+
+async def test_a_should_fix_sends_a_review_that_passes_on_its_scores_back_and_a_clean_review_stores_it() -> None:
+    analyst_client = analyst(reply(submitted()), reply(submitted(revised())))
+    model = FakeTurnModel(
+        analyst=analyst_client,
+        editor_1=editor(reply(review(findings=[SHOULD_FIX]))),
+        editor_2=FakeToolTurnClient(reply(review(resolved=["f1.1"]))),
+    )
+
+    result = await written(model)
+
+    assert result.ending == "stored", result.outcome.reason
+    assert model.asked == ["analyst", "editor-1", "editor-2"]
+    first = result.outcome.reviews[0]
+    assert first.passes and not first.must_fix and not first.clears, "a passing review with a should_fix is not clean"
+    asked = _texts({"messages": [analyst_client.requests[-1]["messages"][-1]]})
+    assert "holds findings that block it" in asked and "f1.1 [should_fix, blocking]" in asked
+    assert SHOULD_FIX["finding"] in asked
+    assert "must_fix and should_fix alike" in asked
+    assert result.stored is not None and result.stored.findings == [] and not result.stored.draft
+    assert result.page is not None and not result.page.draft
 
 
 async def test_a_review_that_fails_sends_the_analyst_back_and_a_review_of_the_revision_clears_it() -> None:
     first = editor(reply(review(FAILING, findings=[SHOULD_FIX])))
-    second = FakeToolTurnClient(reply(review()))
+    second = FakeToolTurnClient(reply(review(resolved=["f1.1"])))
     analyst_client = analyst(reply(submitted()), reply(submitted(revised())))
     model = FakeTurnModel(analyst=analyst_client, editor_1=first, editor_2=second)
 
@@ -163,7 +199,10 @@ async def test_a_review_that_fails_sends_the_analyst_back_and_a_review_of_the_re
     asked = _texts({"messages": [revision]})
     assert "does not pass" in asked and "3. Honest emphasis: 0 of 2" in asked and SHOULD_FIX["finding"] in asked
     assert "This revision has 30 tool calls" in asked
-    assert SHOULD_FIX["finding"] in _texts(second.requests[0]), "round 2 is given its earlier findings"
+    assert f"- f1.1 [should_fix] c1: {SHOULD_FIX['finding']}" in _texts(second.requests[0]), (
+        "round 2 is given its earlier findings, each by its id"
+    )
+    assert result.outcome.reviews[1].resolved == ("f1.1",)
     assert set(result.generation["sessions"]) == {"analyst", "editor-1", "editor-2"}
 
 
@@ -171,7 +210,7 @@ async def test_a_must_fix_sends_a_review_that_passes_on_its_scores_back() -> Non
     model = FakeTurnModel(
         analyst=analyst(reply(submitted()), reply(submitted())),
         editor_1=editor(reply(review(findings=[MUST_FIX]))),
-        editor_2=FakeToolTurnClient(reply(review())),
+        editor_2=FakeToolTurnClient(reply(review(resolved=["f1.1"]))),
     )
 
     result = await written(model)
@@ -184,8 +223,10 @@ async def test_three_failing_reviews_end_stored_with_findings_and_no_fourth_roun
     model = FakeTurnModel(
         analyst=analyst(reply(submitted()), reply(submitted()), reply(submitted(revised()))),
         editor_1=editor(reply(review(FAILING))),
-        editor_2=FakeToolTurnClient(reply(review(findings=[MUST_FIX]))),
-        editor_3=FakeToolTurnClient(reply(review(FAILING, findings=[MUST_FIX, SHOULD_FIX]))),
+        editor_2=FakeToolTurnClient(reply(review(findings=[marked(MUST_FIX, "new")]))),
+        editor_3=FakeToolTurnClient(
+            reply(review(FAILING, findings=[marked(MUST_FIX, "f2.1"), marked(SHOULD_FIX, "new")]))
+        ),
     )
 
     result = await written(model)
@@ -194,10 +235,181 @@ async def test_three_failing_reviews_end_stored_with_findings_and_no_fourth_roun
     assert model.asked == ["analyst", "editor-1", "editor-2", "editor-3"]
     assert (result.outcome.analyst_rounds, result.outcome.editor_rounds) == (3, 3)
     assert result.stored is not None and result.stored.ending == "stored_with_findings"
-    assert result.stored.findings == [MUST_FIX, SHOULD_FIX]
+    assert result.stored.findings == [kept(MUST_FIX, "f2.1", 2), kept(SHOULD_FIX, "f3.1", 3)]
     assert len(result.stored.doc["omitted"]) == len(revised()["omitted"]), "the last document is the one stored"
     assert result.page is not None
     assert {shown.finding for shown in result.page.findings} == {MUST_FIX["finding"], SHOULD_FIX["finding"]}
+    assert result.stored.draft and result.page.draft
+
+
+async def test_a_loop_out_of_revisions_with_should_fix_findings_open_stores_a_draft_that_says_so_first() -> None:
+    """The Discodon incident's shape: every review passes on its scores, and its should_fix findings, raised in round 1,
+    stay open through every revision."""
+    other = {
+        "claim": "report",
+        "severity": "should_fix",
+        "finding": "Give the options table's cost column its dollars.",
+    }
+    host = off_loop(seeded_host)
+    model = FakeTurnModel(
+        analyst=analyst(reply(submitted()), reply(submitted()), reply(submitted(revised()))),
+        editor_1=editor(reply(review(findings=[SHOULD_FIX, other]))),
+        editor_2=FakeToolTurnClient(reply(review(findings=[marked(SHOULD_FIX, "f1.1"), marked(other, "f1.2")]))),
+        editor_3=FakeToolTurnClient(reply(review(findings=[marked(SHOULD_FIX, "f1.1"), marked(other, "f1.2")]))),
+    )
+
+    result = await written(model, host=host)
+
+    assert result.ending == "stored_with_findings", result.outcome.reason
+    assert all(item.passes and not item.must_fix for item in result.outcome.reviews)
+    (stored,) = _stored(host)
+    assert stored.ending == "stored_with_findings" and stored.draft
+    assert stored.findings == [kept(SHOULD_FIX, "f1.1", 1), kept(other, "f1.2", 1)], "carried, they keep their ids"
+    assert [len(review.blocking) for review in result.outcome.reviews] == [2, 2, 2]
+    page = result.page
+    assert page is not None and page.draft
+    lines = [line for line in doc_page_text(page).splitlines() if line]
+    assert lines[1] == "Draft: its editor's review left 2 findings open.", "first, right under the masthead"
+    assert [finding.finding for finding in page.findings] == [SHOULD_FIX["finding"], other["finding"]]
+
+
+# --- carried and new findings after round 1 (owner ruling 2026-10-29, option 3) --------------------------------------
+
+#: A should_fix a later review raises for the first time.
+LATE: Final = {"claim": "report", "severity": "should_fix", "finding": "Say the run's date in the lede."}
+
+
+async def test_a_round_two_review_with_only_new_should_fix_findings_stores_a_finished_report_listing_them() -> None:
+    host = off_loop(seeded_host)
+    model = FakeTurnModel(
+        analyst=analyst(reply(submitted()), reply(submitted(revised()))),
+        editor_1=editor(reply(review(findings=[SHOULD_FIX]))),
+        editor_2=FakeToolTurnClient(reply(review(findings=[marked(LATE, "new")], resolved=["f1.1"]))),
+    )
+
+    result = await written(model, host=host)
+
+    assert result.ending == "stored", result.outcome.reason
+    assert model.asked == ["analyst", "editor-1", "editor-2"], "the new should_fix sends no third round"
+    second = result.outcome.reviews[1]
+    assert second.clears and second.blocking == () and second.findings[0].since == 2
+    (stored,) = _stored(host)
+    assert stored.ending == "stored" and not stored.draft
+    assert stored.findings == [kept(LATE, "f2.1", 2)], "counted in the stored record"
+    page = result.page
+    assert page is not None and not page.draft
+    assert [finding.finding for finding in page.findings] == [LATE["finding"]], "listed open where open findings are"
+    assert "Draft" not in doc_page_text(page)
+
+
+async def test_a_round_two_review_that_keeps_an_earlier_should_fix_open_revises() -> None:
+    model = FakeTurnModel(
+        analyst=analyst(reply(submitted()), reply(submitted()), reply(submitted(revised()))),
+        editor_1=editor(reply(review(findings=[SHOULD_FIX]))),
+        editor_2=FakeToolTurnClient(reply(review(findings=[marked(SHOULD_FIX, "f1.1")]))),
+        editor_3=FakeToolTurnClient(reply(review(resolved=["f1.1"]))),
+    )
+
+    result = await written(model)
+
+    assert result.ending == "stored", result.outcome.reason
+    assert model.asked == ["analyst", "editor-1", "editor-2", "editor-3"]
+    second = result.outcome.reviews[1]
+    assert not second.clears and [finding.id for finding in second.blocking] == ["f1.1"]
+
+
+async def test_a_new_must_fix_in_round_two_revises() -> None:
+    model = FakeTurnModel(
+        analyst=analyst(reply(submitted()), reply(submitted()), reply(submitted(revised()))),
+        editor_1=editor(reply(review(findings=[SHOULD_FIX]))),
+        editor_2=FakeToolTurnClient(reply(review(findings=[marked(MUST_FIX, "new")], resolved=["f1.1"]))),
+        editor_3=FakeToolTurnClient(reply(review(resolved=["f2.1"]))),
+    )
+
+    result = await written(model)
+
+    assert result.ending == "stored" and result.outcome.editor_rounds == 3, result.outcome.reason
+    assert [finding.id for finding in result.outcome.reviews[1].blocking] == ["f2.1"]
+
+
+async def test_out_of_revisions_with_only_new_should_fix_findings_is_no_draft() -> None:
+    model = FakeTurnModel(
+        analyst=analyst(reply(submitted()), reply(submitted(revised()))),
+        editor_1=editor(reply(review(findings=[MUST_FIX]))),
+        editor_2=FakeToolTurnClient(reply(review(findings=[marked(LATE, "new")], resolved=["f1.1"]))),
+    )
+
+    result = await written(model, limits=WriterLimits(revisions=1))
+
+    assert result.ending == "stored", result.outcome.reason
+    assert result.stored is not None and not result.stored.draft and len(result.stored.findings) == 1
+    assert result.page is not None and not result.page.draft
+
+
+async def test_out_of_revisions_with_a_carried_finding_open_stores_a_draft() -> None:
+    model = FakeTurnModel(
+        analyst=analyst(reply(submitted()), reply(submitted(revised()))),
+        editor_1=editor(reply(review(findings=[SHOULD_FIX]))),
+        editor_2=FakeToolTurnClient(reply(review(findings=[marked(SHOULD_FIX, "f1.1"), marked(LATE, "new")]))),
+    )
+
+    result = await written(model, limits=WriterLimits(revisions=1))
+
+    assert result.ending == "stored_with_findings", result.outcome.reason
+    assert result.stored is not None and result.stored.draft
+    assert result.stored.findings == [kept(SHOULD_FIX, "f1.1", 1), kept(LATE, "f2.1", 2)]
+    assert result.page is not None and result.page.draft
+    lines = [line for line in doc_page_text(result.page).splitlines() if line]
+    assert lines[1] == "Draft: its editor's review left 2 findings open."
+
+
+@pytest.mark.parametrize(
+    ("findings", "resolved", "fault"),
+    [
+        ([SHOULD_FIX], [], "findings[0].continues is None"),
+        ([marked(SHOULD_FIX, "f9.9")], [], "findings[0].continues is 'f9.9'"),
+        ([], [], "earlier findings ['f1.1'] are neither continued nor resolved"),
+        ([marked(SHOULD_FIX, "f1.1")], ["f1.1"], "a finding of this review continues"),
+        ([marked(SHOULD_FIX, "f1.1"), marked(LATE, "f1.1")], [], "which another finding already continues"),
+        ([], ["f1.1", "f7.1"], "resolved names ['f7.1']"),
+    ],
+)
+async def test_a_later_review_that_does_not_account_for_each_earlier_finding_once_is_asked_again(
+    findings: list[dict[str, str]], resolved: list[str], fault: str
+) -> None:
+    second = FakeToolTurnClient(reply(review(findings=findings, resolved=resolved)), reply(review(resolved=["f1.1"])))
+    model = FakeTurnModel(
+        analyst=analyst(reply(submitted()), reply(submitted())),
+        editor_1=editor(reply(review(findings=[SHOULD_FIX]))),
+        editor_2=second,
+    )
+
+    result = await written(model)
+
+    assert result.ending == "stored", result.outcome.reason
+    assert fault in _texts({"messages": [second.requests[1]["messages"][-1]]})
+
+
+async def test_a_first_review_that_names_an_earlier_finding_is_asked_again() -> None:
+    first = editor(reply(review(findings=[marked(SHOULD_FIX, "f0.1")])), reply(review()))
+    model = FakeTurnModel(analyst=analyst(), editor_1=first)
+
+    result = await written(model)
+
+    assert result.ending == "stored", result.outcome.reason
+    assert "there are no earlier findings" in _texts({"messages": [first.requests[-1]["messages"][-1]]})
+
+
+async def test_a_draft_failed_on_its_scores_alone_says_its_review_did_not_pass_it() -> None:
+    model = FakeTurnModel(analyst=analyst(), editor_1=editor(reply(review(FAILING))))
+
+    result = await written(model, limits=WriterLimits(revisions=0))
+
+    assert result.ending == "stored_with_findings"
+    assert result.stored is not None and result.stored.draft and result.stored.findings == []
+    assert result.page is not None
+    lines = [line for line in doc_page_text(result.page).splitlines() if line]
+    assert lines[1] == "Draft: its editor's review did not pass it."
 
 
 async def test_fewer_revisions_end_sooner() -> None:
@@ -241,7 +453,7 @@ async def test_the_budget_running_out_after_a_review_stores_the_reviewed_draft_w
     assert result.ending == "over_budget"
     assert len(analyst_client.requests) == 2, "the revision's turn was refused before it was sent"
     (stored,) = _stored(host)
-    assert stored.ending == "over_budget" and stored.findings == [MUST_FIX]
+    assert stored.ending == "over_budget" and stored.findings == [kept(MUST_FIX, "f1.1", 1)] and stored.draft
     assert ReportDoc.model_validate(stored.doc) == ReportDoc.model_validate(DOC)
 
 
@@ -735,7 +947,7 @@ async def test_a_store_that_fails_after_the_run_raises_with_the_runs_record_on_i
         raise failure
 
     monkeypatch.setattr(host.eval_host.storage, "save_report_doc", refuse)
-    model = FakeTurnModel(analyst=analyst(), editor_1=editor(reply(review(findings=[SHOULD_FIX]))))
+    model = FakeTurnModel(analyst=analyst(), editor_1=editor(reply(review())))
 
     with pytest.raises(ReportNotStored, match="the report ended stored and was not stored") as refused:
         await written(model, host=host)

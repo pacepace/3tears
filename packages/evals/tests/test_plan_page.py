@@ -45,7 +45,7 @@ from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.hostile_page_support import HOSTILE, HOSTILE_LINE
 from packages.evals.tests.page_contract_support import what_runs
 from packages.evals.tests.report_kit_support import KIT
-from packages.evals.tests.static_page_support import assert_static, less_what_static_leaves_out
+from packages.evals.tests.static_page_support import assert_static, less_drawings, less_what_static_leaves_out
 from threetears.evals.analysis import (
     BarsChart,
     ChartBlock,
@@ -654,7 +654,7 @@ def test_the_static_page_runs_and_loads_nothing_and_is_the_default_page_less_scr
     page = _page(name, path)
     static = planned_page_html(page, static=True)
     assert_static(static)
-    assert static == less_what_static_leaves_out(planned_page_html(page))
+    assert less_drawings(static) == less_what_static_leaves_out(planned_page_html(page))
     assert planned_page_html(page, static=False) == planned_page_html(page)
 
 

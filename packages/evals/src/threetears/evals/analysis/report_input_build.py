@@ -135,6 +135,9 @@ _QUOTE_TRIM = " \t\n,.;:!?—–-'"
 #: What marks an excerpt's cut end.
 _CUT = "…"
 
+#: The rubric scale a judged measure's frozen measure scale stands for: ``ratio`` a pass rate, ``interval`` a 1 to 5 score.
+_RUBRIC_SCALE_OF: dict[str, Literal["ordinal", "pass_fail"]] = {"ratio": "pass_fail", "interval": "ordinal"}
+
 #: What a measure's definition is cut to, as the writer's view cuts it.
 MEANING_CHARS = 200
 
@@ -704,6 +707,14 @@ class _Builder:
         """Every judged dimension: its scale, tier, judge and calibration, and each arm's mean on the lead aspect and
         on every other."""
         tiers = {tier.rubric_dim: tier for aspect in reversed(self.ordered) for tier in aspect.judge_evidence_tiers}
+        # What a dimension was answered on, as the bundle froze it beside its scores: a ratio scale is a pass rate, an
+        # interval one 1 to 5. A dimension no judge tier covers (the reserved dual-score axes among them) still has it.
+        described = {
+            measure.name: _RUBRIC_SCALE_OF[measure.scale]
+            for aspect in reversed(self.ordered)
+            for measure in aspect.judged_measures
+            if measure.scale in _RUBRIC_SCALE_OF
+        }
         figures: dict[str, dict[str, dict[str, Stat]]] = {}
         evidence: dict[str, str] = {}
         for aspect in self.ordered:
@@ -717,7 +728,7 @@ class _Builder:
         for dimension, by_aspect in figures.items():
             tier = tiers.get(dimension)
             judged[dimension] = Judged(
-                scale=tier.scale if tier is not None else None,
+                scale=tier.scale if tier is not None else described.get(dimension),
                 tier=evidence[dimension],
                 judge_model=tier.judge_model if tier is not None else None,
                 calibration=tier.calibration.state if tier is not None else None,
@@ -1265,4 +1276,10 @@ def _pricing(held: ArmPricing | None) -> Pricing | None:
     """An arm's pricing as the bundle's census read it, copied into the report input; None where it read none."""
     if held is None:
         return None
-    return Pricing(sources=held.sources, providers=held.providers, calls=held.calls, priced_calls=held.priced_calls)
+    return Pricing(
+        sources=held.sources,
+        providers=held.providers,
+        tool_providers=held.tool_providers,
+        calls=held.calls,
+        priced_calls=held.priced_calls,
+    )

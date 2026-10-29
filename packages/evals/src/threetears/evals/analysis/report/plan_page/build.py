@@ -28,7 +28,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from threetears.evals.analysis.report.figure_keys import render
+from threetears.evals.analysis.campaign_title import report_input_title
+from threetears.evals.analysis.report.figure_keys import WEAKEST_PREFIX, keys_in, render, weakest_interval_words
 from threetears.evals.analysis.report.plan_page.charting import measure_words
 from threetears.evals.analysis.report.plan_page.drawable import plan_look
 from threetears.evals.analysis.report.plan_page.explore import explore_part
@@ -47,9 +48,15 @@ from threetears.evals.analysis.report.plan_page.model import (
 )
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report.plan_page.tables import arms_key, options_table
-from threetears.evals.analysis.report.plan_page.words import ANSWER_TEMPLATES, CONFIDENCE_WORDS, slot_title
+from threetears.evals.analysis.report.plan_page.words import (
+    ANSWER_TEMPLATES,
+    CONFIDENCE_WORDS,
+    WEAKEST_INTERVAL_TEMPLATE,
+    slot_title,
+)
 from threetears.evals.analysis.report_decision import report_kind
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_margins import weakest_margin
 from threetears.evals.analysis.report_plan_facts import FactCaveat, PlanFacts, plan_facts
 from threetears.evals.analysis.style import humanize
 from threetears.evals.kernel.report_plan import (
@@ -100,18 +107,33 @@ def _confidence(confidence: DecisionConfidence, facts: PlanFacts, written: _Writ
     )
 
 
-def _slot(slot: DecisionSlot, mode: str, *, change: bool, written: _Written) -> PageSlot:
+def _interval_note(slot: DecisionSlot, report_input: ReportInput) -> str:
+    """Code's line saying which interval a Watch slot's weakest margin is read on, where the slot cites the weakest
+    margin by a key and the margin is read on an interval; empty otherwise, and where the slot already cites the
+    interval's own key."""
+    found = weakest_margin(report_input)
+    if slot.key != "watch" or found is None or found.kind == "criterion":
+        return ""
+    cited = {key.path for key in keys_in(slot.text)}
+    if f"{WEAKEST_PREFIX}interval" in cited or not any(path.startswith(WEAKEST_PREFIX) for path in cited):
+        return ""
+    return WEAKEST_INTERVAL_TEMPLATE.format(interval=weakest_interval_words(found))
+
+
+def _slot(slot: DecisionSlot, mode: str, *, change: bool, written: _Written, report_input: ReportInput) -> PageSlot:
     return PageSlot(
         key=slot.key,
         title=slot_title(slot.key, change=change),
+        # The planner's text alone, as the judge reads it; code's interval line beside it, printed after it.
         text=written(slot.text),
+        note=_interval_note(slot, report_input),
         highlighted=_SET_APART.get(mode) == slot.key,
     )
 
 
 def _decision(decision: Decision, mode: str, report_input: ReportInput, written: _Written) -> list[PageSlot]:
     change = report_kind(report_input) == "change"
-    return [_slot(slot, mode, change=change, written=written) for slot in decision.slots]
+    return [_slot(slot, mode, change=change, written=written, report_input=report_input) for slot in decision.slots]
 
 
 def _warning(warning: WarningRef, report_input: ReportInput, look: PageLook) -> str:
@@ -175,7 +197,7 @@ def plan_page(plan: ReportPlan, report_input: ReportInput, *, made: str = "") ->
             )
         )
     return PlannedPage(
-        title=report_input.meta.campaign,
+        title=report_input_title(report_input),
         masthead=_masthead(plan, written),
         headline=written(plan.headline),
         lede=written(plan.lede),

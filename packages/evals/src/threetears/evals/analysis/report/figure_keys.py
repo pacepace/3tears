@@ -3132,7 +3132,10 @@ def reader_name(kind: NamedKind, identifier: str, report_input: ReportInput) -> 
         aspect = _aspect_by_id(report_input, identifier)
         return aspect.name or humanize("dimension", aspect.id)
     if kind == "measure":
-        return report_input.measures[identifier].label or measure_name(identifier)
+        label = report_input.measures[identifier].label
+        # A goal check the input declares no display name for carries its bare expression as its label: it is named as
+        # the package names an undeclared check (a code span), as every table header and chart names it.
+        return measure_name(identifier) if label is None or label == goal_check_of(identifier) else label
     if kind == "judged":
         return report_input.judged[identifier].label or humanize("dimension", identifier)
     if kind == "stratum":
@@ -3186,7 +3189,7 @@ def printed_arm_name(arm: Arm) -> str:
 
 #: What every weakest-margin key begins with.
 WEAKEST_PREFIX = "weakest."
-_WEAKEST_FIELDS = ("margin", "arm", "criterion", "value", "threshold")
+_WEAKEST_FIELDS = ("margin", "arm", "criterion", "value", "threshold", "interval")
 
 
 def _cell_name(report_input: ReportInput, cell_id: str) -> str:
@@ -3221,6 +3224,24 @@ def _margin_name(margin: Margin, report_input: ReportInput) -> str:
     return f"the margin on {aspect}" if margin.kind == "margin" else f"the floor on {aspect}"
 
 
+def weakest_interval_words(margin: Margin) -> str:
+    """Which interval a weakest margin's worst case is read on, in words: the multiplicity-corrected interval of the
+    arm's pass-rate contrast where the input holds one (with its level), else the plain interval at the nominal level
+    with no correction (a reading's and a floor's); a criterion's figure is read as measured, on no interval.
+
+    :param margin: The weakest margin.
+    :ptype margin: Margin
+    :return: The words ``{weakest.interval}`` prints.
+    :rtype: str
+    """
+    if margin.kind == "criterion":
+        return "the figure as measured, on no interval"
+    if margin.corrected:
+        level = f" {margin.level}" if margin.level else ""
+        return f"the multiplicity-corrected{level} interval"
+    return f"the plain {format_number(INTERVAL_LEVEL * 100)}% interval, uncorrected"
+
+
 def _weakest(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     found = weakest_margin(report_input)
     if found is None:
@@ -3241,6 +3262,8 @@ def _weakest(report_input: ReportInput, values: tuple[str, ...], path: str) -> F
         return Figure(path=path, kind="arm", value=found.arm)
     if field == "criterion":
         return _text(path, _margin_name(found, report_input), "what the weakest margin is read against")
+    if field == "interval":
+        return _text(path, weakest_interval_words(found), "which interval the weakest margin is read on")
     if found.kind != "criterion":
         if field == "margin":
             return _number(path, found.gap, "the weakest margin", "points")
@@ -6247,18 +6270,48 @@ def _priced_in_part(reading: _Reading, report_input: ReportInput) -> str:
     the arm's priced share where the key names one arm, each such arm's by name where it names more (an uplift names
     the control it is on too), and every arm's where a ratio names none (a range over them all); empty where every cost
     counts every call, or the input does not say."""
+    arms = _cost_arms_read(reading, report_input)
+    parts = [(arm, share) for arm in arms if (share := priced_in_part(report_input, arm)) is not None]
+    if len(arms) == 1:
+        return parts[0][1] if parts else ""
+    return "; ".join(f"{_arm(report_input, arm).name or arm}: {share}" for arm, share in parts)
+
+
+def _cost_arms_read(reading: _Reading, report_input: ReportInput) -> list[str]:
+    """The arms whose cost a money or cost-ratio reading reads: the arms it names, the control besides for a ratio of
+    costs (an uplift is on it), and every arm for a ratio naming none (a range over them all)."""
     named = [
         value for slot, value in zip(_value_slots(reading), reading.values, strict=True) if slot.name in _ARM_SLOTS
     ]
     ratio = _family_word(reading) in _COST_RATIOS
     control = _control(report_input)
-    # A ratio of costs reads the control's cost too (an uplift is on it), and a range reads every arm's.
     arms = list(dict.fromkeys([*named, *([control.id] if ratio and control is not None and named else [])]))
-    arms = arms or ([arm.id for arm in report_input.arms] if ratio else [])
-    parts = [(arm, share) for arm in arms if (share := priced_in_part(report_input, arm)) is not None]
-    if len(arms) == 1:
-        return parts[0][1] if parts else ""
-    return "; ".join(f"{_arm(report_input, arm).name or arm}: {share}" for arm, share in parts)
+    return arms or ([arm.id for arm in report_input.arms] if ratio else [])
+
+
+def cost_arms(key: str, report_input: ReportInput) -> list[str]:
+    """The arms whose cost a figure key reads: a money figure's arms, a ratio of costs' with the control it is on (an
+    uplift, a gap), every arm for a range over them all; empty for a key that reads no cost, or no arm's.
+
+    The one reading of which costs a key compares, shared with the words a partly priced cost carries
+    (:class:`Figure`'s ``priced_in_part``), so a surface naming who served each cost reads the arms that note does.
+
+    :param key: The path, without braces or filters.
+    :ptype key: str
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The arms by id, the ones the key names first, in its order.
+    :rtype: list[str]
+    :raises UnresolvableReference: The path names nothing the input holds, reads two ways, or names a figure the
+        input leaves unstated.
+    """
+    figure = resolve(key, report_input)
+    if figure.kind not in ("number", "interval"):
+        return []
+    reading = _one_reading(key, report_input)
+    if figure.scale not in _PER_THOUSAND_FACTORS and _family_word(reading) not in _COST_RATIOS:
+        return []
+    return _cost_arms_read(reading, report_input)
 
 
 def _value_slots(reading: _Reading) -> list[_Ids | _Statistic | _Number]:
@@ -7286,6 +7339,7 @@ def figure_key_pages() -> dict[str, str]:
 
 
 __all__ = [
+    "cost_arms",
     "cost_ruler",
     "FILTER_SPELLINGS",
     "PERCENTILE_NAMES",
@@ -7313,6 +7367,7 @@ __all__ = [
     "key_form",
     "key_subjects",
     "keys_in",
+    "weakest_interval_words",
     "lever_of",
     "literal_numbers",
     "parse_key",

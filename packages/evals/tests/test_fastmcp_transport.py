@@ -127,6 +127,7 @@ async def test_a_report_s_body_is_sent_once_as_the_text_and_every_other_field_as
                 "analysis_basis": expected.analysis_basis,
                 "doc": expected.doc,
                 "needs_regeneration": expected.needs_regeneration,
+                "draft": expected.draft,
                 "format": form,
             }
         # A result whose text is composed from its fields keeps every field.

@@ -25,6 +25,7 @@ from threetears.evals.analysis import (
     variant_key_of_run,
 )
 from threetears.evals import Eval, Result
+from threetears.evals.ops.analysis import CAMPAIGN_NAME_CHARS
 from threetears.evals.quick import as_host
 from threetears.evals.quick.one_call import ARM_LEVER, SHARED_ARM_MODEL
 from packages.evals.tests.off_loop import off_loop
@@ -133,19 +134,37 @@ async def test_the_report_is_titled_by_the_question_its_campaign_asks() -> None:
     assert comparison.name == "hasty vs careful"
     assert comparison.report.source.campaign_name == "hasty vs careful"
     lines = report_markdown(comparison.report).splitlines()
-    # A name that only lists the arms adds nothing to the question it asks.
-    assert lines[0] == "# Does careful do better than hasty?"
+    # The title is code's: what is compared and on what, the name a qualifier. The quick path declares no question, so
+    # none is quoted under it; the arms line follows.
+    assert lines[0] == "# hasty vs careful · classify (hasty vs careful)"
     assert lines[1].startswith("hasty (control) vs careful · ")
 
     named = await _compare(name="triage rules", scope="compare-named")
-    assert report_markdown(named.report).startswith("# triage rules: does careful do better than hasty?\n")
+    assert report_markdown(named.report).startswith("# hasty vs careful · classify (triage rules)\n")
+
+
+async def test_an_eval_named_past_the_campaign_name_cap_files_its_campaign_under_the_cap_keeping_the_name_whole() -> (
+    None
+):
+    long = "triage rules for the billing and bug queues, round two"
+    named = await _compare(name=long, scope="compare-long-name")
+    campaign = off_loop(named.host.storage.load_campaign, named.campaign_id, "compare-long-name")
+    assert campaign is not None
+    assert len(campaign.name) <= CAMPAIGN_NAME_CHARS and campaign.name.endswith("…")
+    assert long.startswith(campaign.name[:-1]) and long[len(campaign.name) - 1] == " ", "cut where a word ends"
+    assert campaign.description == long and named.name == long, "the name is kept whole beside the cut one"
+    again = await named.against("careful")
+    held = off_loop(again.host.storage.load_campaign, again.campaign_id, "compare-long-name")
+    assert held is not None and len(held.name) <= CAMPAIGN_NAME_CHARS
+    assert again.name == f"{long}, against careful"
 
 
 async def test_a_report_without_the_campaign_s_name_is_titled_by_its_id() -> None:
     comparison = await _compare()
     report = comparison.report
     nameless = build_code_only_report(report.bundle, assembled_at=report.source.generated_at)
-    assert report_markdown(nameless).startswith(f"# Campaign {comparison.campaign_id}: does careful do better")
+    # The qualifier reads the id where the page is given no name.
+    assert report_markdown(nameless).startswith(f"# hasty vs careful · classify (Campaign {comparison.campaign_id})\n")
 
 
 async def test_the_arms_share_a_host_the_caller_hands_over() -> None:

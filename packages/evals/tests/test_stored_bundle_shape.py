@@ -2,8 +2,8 @@
 
 A bundle is regenerated across a shape change, never migrated, and a stored read is strict. v0.75.0 and v0.76.0 froze
 analyses over bundle shape 60, which carries fields later shapes dropped. Such an analysis is listed as needing
-regeneration rather than refusing the listing of every other analysis, and its report is refused with the step that
-regenerates it.
+regeneration rather than refusing the listing of every other analysis, and the campaign's report reads code-only, led
+by the regenerate line and the shape (it was refused before; it is a fallback now, as a report plan's is).
 """
 
 from __future__ import annotations
@@ -11,7 +11,9 @@ from __future__ import annotations
 import pytest
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.kernel.errors import RefusedInput, ValidationFailedError
+from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
+from threetears.evals.analysis.service import campaign_report
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.ops.analysis import analyses_list, report_read
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import analysed_aspect, empty_bundle, make_analysis
@@ -62,7 +64,8 @@ def test_a_stored_analysis_frozen_at_the_shipped_shape_is_listed_as_needing_rege
     assert lines[old.id].verdict.startswith("Needs regeneration: ")
 
 
-def test_the_report_of_a_campaign_whose_newest_analysis_is_frozen_at_the_shipped_shape_says_to_regenerate():
+@pytest.mark.parametrize("format", ["markdown", "html", "json"])
+def test_the_report_of_a_campaign_whose_newest_analysis_is_frozen_at_the_shipped_shape_reads_code_only(format: str):
     fixture = off_loop(ops_fixture)
     host = fixture.host.eval_host
     campaign_id = fixture.campaign.id
@@ -70,13 +73,34 @@ def test_the_report_of_a_campaign_whose_newest_analysis_is_frozen_at_the_shipped
         update={"bundle": _frozen_at(SHIPPED_SHAPE, campaign_id)}
     )
     frame = campaign_bundle(empty_bundle(campaign_id=campaign_id)).frame()
-    host.storage.save_analysis(
-        make_analysis(campaign_id=campaign_id, scope_id=TOYHOST_SCOPE, aspects=[old_aspect], campaign_bundle=frame)
+    old = make_analysis(campaign_id=campaign_id, scope_id=TOYHOST_SCOPE, aspects=[old_aspect], campaign_bundle=frame)
+    host.storage.save_analysis(old)
+
+    # A deliberate change: this read raised RefusedInput; it now returns the code-only page, as a plan's does.
+    read = report_read(host, campaign_id, TOYHOST_SCOPE, format=format, static=(format == "html"))
+
+    assert read.basis == "code_only" and read.analysis_id == old.id
+    assert read.needs_regeneration is not None
+    assert read.needs_regeneration.startswith(f"{NO_LONGER_READS} (")
+    assert f"shape {SHIPPED_SHAPE}" in read.needs_regeneration
+    assert "analysis_generate" in read.needs_regeneration
+    assert NO_LONGER_READS in read.body
+
+
+def test_a_memo_whose_page_refuses_what_it_is_laid_out_over_reaches_the_caller_rather_than_reading_code_only():
+    fixture = off_loop(ops_fixture)
+    host = fixture.host.eval_host
+    campaign_id = fixture.campaign.id
+    # A bundle of this build's shape, so it is put back together, but read off another campaign: the page refuses
+    # its readings, which is a fault, not a bundle this version no longer reads.
+    other = empty_bundle(campaign_id="another-campaign")
+    held = make_analysis(
+        campaign_id=campaign_id,
+        scope_id=TOYHOST_SCOPE,
+        aspects=[analysed_aspect(other)],
+        campaign_bundle=campaign_bundle(other).frame(),
     )
+    host.storage.save_analysis(held)
 
-    with pytest.raises((RefusedInput, ValidationFailedError)) as refused:
-        report_read(host, campaign_id, TOYHOST_SCOPE, format="markdown")
-
-    said = str(refused.value)
-    assert f"shape {SHIPPED_SHAPE}" in said
-    assert "generate the analysis again (analysis_generate)" in said
+    with pytest.raises(RefusedInput, match="another-campaign"):
+        campaign_report(host, campaign_id, TOYHOST_SCOPE)

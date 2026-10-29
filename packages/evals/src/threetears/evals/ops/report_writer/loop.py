@@ -8,17 +8,22 @@
 2. The editor reviews the document in a session of its own
    (:func:`~threetears.evals.ops.report_writer.editor.review_report`), given the page, ``omitted``, the computed facts
    and its earlier findings, and nothing of the analyst's session.
-3. A review that passes with no ``must_fix`` finding ends the loop ``stored``. Otherwise the analyst revises in its
-   own conversation, sent the review (each item's score and reason, and every finding), and the editor reviews the
-   revision. :attr:`WriterLimits.revisions` revisions at most (2, so at most 3 reviews); a review that fails after the
-   last ends the loop ``stored_with_findings``.
+3. A review that passes with no blocking finding open (:attr:`~threetears.evals.ops.report_writer.editor.Review.blocking`)
+   ends the loop ``stored``. In round 1 every finding blocks; after it, every ``must_fix`` does, and every finding an
+   earlier review raised and this one marks still open, of any severity, while a ``should_fix`` first raised in this
+   review does not (owner ruling 2026-10-29, option 3). Otherwise the analyst revises in its own conversation, sent
+   the review (each item's score and reason, and every finding, the blocking ones marked), and the editor reviews the
+   revision. :attr:`WriterLimits.revisions` revisions at most (2, so at most 3 reviews); a review that does not clear
+   after the last ends the loop ``stored_with_findings``.
 
 **Endings** (plan §4.4), each a value the caller stores or reports:
 
-- ``stored``: a review cleared the document, which is stored with the review's findings (``should_fix`` ones only);
-- ``stored_with_findings``: the revisions ran out; the last document is stored with its review's findings;
+- ``stored``: a review cleared the document, which is stored finished, with any new ``should_fix`` findings of its
+  last review listed open;
+- ``stored_with_findings``: the revisions ran out; the last document is stored with its review's findings, a draft;
 - ``over_budget``: the report's budget refused a turn, or the analyst called a tool after it was told to
-  submit. The last document a review was read for is stored with that review's findings; with none, nothing;
+  submit. The last document a review was read for is stored with that review's findings, a draft (a review that
+  cleared it would have ended the loop ``stored``); with none, nothing;
 - ``refused``: a submission still had faults after its round's bounces; nothing is stored, the faults are returned;
 - ``review_failed``: the editor's answer could not be read twice; nothing is stored;
 - ``failed``: the model refused, a reply stopped short, or the client failed (the provider, after its own retries);
@@ -26,8 +31,13 @@
 
 **The loop reads no environment and chooses nothing by kind.** The model, its sessions' clients, the mounts, the
 skill texts, the checker and every limit come from the caller, and no condition here reads the document's story, a
-claim, or what kind of eval the snapshot holds: what ends a round is the checks, the review's scores and its findings'
-severities.
+claim, or what kind of eval the snapshot holds: what ends a round is the checks, the review's scores and its
+structured findings.
+
+**A stored document is finished or a draft, and code says which.** Owner rulings 2026-10-29: the loop revises until
+no blocking finding is open, and a page is never served as finished while one is. Only ``stored`` stores a finished
+document; every other ending that stores one stores a draft
+(:attr:`~threetears.evals.kernel.report_doc.EvalReportDoc.draft`), which its page says on its first screen.
 """
 
 from __future__ import annotations
@@ -138,7 +148,9 @@ class WritingOutcome:
 
     :ivar ending: How it ended (:data:`WriterEnding`).
     :ivar doc: The document to store; ``None`` for an ending that stores nothing.
-    :ivar findings: The findings stored with it: the last review's of that document.
+    :ivar findings: The findings stored with it, open: the last review's of that document. For ``stored`` they are
+        the ones that review raised without blocking (a new ``should_fix``), often none; empty for an ending that
+        stores nothing.
     :ivar reviews: Every review read, in round order.
     :ivar analyst_rounds: The analyst's rounds begun: the draft, then each revision.
     :ivar editor_rounds: The review rounds begun.
@@ -324,22 +336,25 @@ def _outcome(
 def _revision_request(review: Review) -> str:
     """What the analyst is sent to revise by: the review as the editor wrote it, its total and pass as code read it."""
     verdict = (
-        "passes on its scores, and holds a must_fix finding"
+        "passes on its scores, and holds findings that block it"
         if review.passes
         else f"does not pass: a report passes with no item at 0 and a total of at least {PASS_TOTAL}"
     )
     scores = "\n".join(_scored(item) for item in review.items)
+    blocking = {finding.id for finding in review.blocking}
     findings = (
         "\n".join(
-            f"- [{finding.severity}] {finding.claim or 'report'}: {one_line(finding.finding)}"
+            f"- {finding.id} [{finding.severity}{', blocking' if finding.id in blocking else ''}] "
+            f"{finding.claim or 'report'}: {one_line(finding.finding)}"
             for finding in review.findings
         )
         or "- none"
     )
     return (
         f"The report editor reviewed your report (round {review.round}). Its review totals {review.total} and "
-        f"{verdict}.\n\nScores:\n{scores}\n\nFindings:\n{findings}\n\nRevise the report: resolve every must_fix "
-        "finding and every item scored 0 or 1 you can, and say in the document what you weighed and kept."
+        f"{verdict}.\n\nScores:\n{scores}\n\nFindings:\n{findings}\n\nRevise the report: resolve every finding, "
+        "must_fix and should_fix alike, and every item scored 0 or 1 you can, and say in the document what you weighed "
+        "and kept. A report stored with a blocking finding open is marked a draft."
     )
 
 

@@ -262,8 +262,7 @@ class _Drawable(_Kind):
         if getattr(self, "panels", None) is None:
             return self.table(legend, read_at)
         drawn = _drawn(self)
-        headers: list[str] = []
-        body: list[list[str]] = []
+        tables: list[tuple[_PanelText, list[str], list[list[str]]]] = []
         cards: list[_PanelText] = []
         for panel, one in drawn:
             if panel is None:
@@ -271,10 +270,21 @@ class _Drawable(_Kind):
             if one is None:
                 cards.append(panel)
                 continue
-            own_headers, rows = one.table(legend, read_at)
-            headers = headers or ["Panel", *own_headers]
-            body += [[_panel_name(panel), *row] for row in rows]
-        headers = headers or ["Panel", ""]
+            tables.append((panel, *one.table(legend, read_at)))
+        # panels may not share their columns (a Note column one panel has no use for, an interval column another
+        # has): the table holds every panel's columns, the widest panel's first and then each other one in the order
+        # a panel brings it, and each panel's cells sit under their own column, the rest empty
+        widest = max((own for _, own, _ in tables), key=len, default=[])
+        columns = list(dict.fromkeys([*widest, *(column for _, own, _ in tables for column in own)]))
+        headers = ["Panel", *(columns or [""])]
+        body: list[list[str]] = []
+        for panel, own_headers, rows in tables:
+            at = [columns.index(column) for column in own_headers]
+            for row in rows:
+                cells = [""] * len(columns)
+                for index, cell in zip(at, row, strict=True):
+                    cells[index] = cell
+                body.append([_panel_name(panel), *cells])
         body += [[card.title or "", card.subtitle or "", *([""] * (len(headers) - 2))] for card in cards]
         return headers, body
 

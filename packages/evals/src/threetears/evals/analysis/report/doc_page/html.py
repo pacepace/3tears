@@ -1,11 +1,13 @@
 """A report document's page as one self-contained HTML page, in the default mode (the kit's one script draws each
-chart) or the static mode (nothing runs or loads; every chart is its table of values).
+chart) or the static mode (nothing runs or loads; every chart is drawn on the server as inline SVG above its table of
+values).
 
 The page is the kit's, as the planned page lays it out (:mod:`~threetears.evals.analysis.report.plan_page.html`),
 with no class, style or script of its own:
 
-- ``.page`` > ``.mast``; where part of a stored document no longer reads, code's note as a ``.callout.warn``
-  (``data-part="degraded"``);
+- ``.page`` > ``.mast``; on a draft, code's one line saying its editor's review left findings open, as a
+  ``.callout.warn`` (``data-part="draft"``), first after the masthead; where part of a stored document no longer
+  reads, code's note as a ``.callout.warn`` (``data-part="degraded"``);
 - ``.bluf``: the ``h1`` headline, the ``.lede``, the amber ``.flag`` where the document has one, the confidence
   (``data-part="confidence"``: amber where caveats stay open or the evidence is weak, a muted ``.callout`` for plain
   high; each caveat its label in bold, then its clause, a checked one as ``li.checked``), the ``.decision`` grid (an
@@ -22,7 +24,8 @@ with no class, style or script of its own:
 **Nothing written into a field can make the page run or load anything**, as on every page this package writes: every
 text node is escaped before any markup is made of it (:mod:`~threetears.evals.analysis.report.html_parts`), and a
 chart's data reaches the page only as JSON escaped into its ``data-chart`` attribute. **The static page** is the
-default page less exactly the kit's script, the font links and each chart's ``div.chart``.
+default page less exactly the kit's script, the font links and each chart's ``div.chart``, plus each chart drawn on
+the server as inline SVG.
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ from threetears.evals.analysis.report.doc_page.model import (
     DocPage,
     DocTerm,
     caveats_line,
+    draft_line,
 )
 from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
@@ -223,7 +227,8 @@ def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] 
 
     :param page: The page.
     :ptype page: DocPage
-    :param static: Write the static page: no ``<script>``, no ``<link>``, every chart as its table of values.
+    :param static: Write the static page: no ``<script>``, no ``<link>``, every chart drawn as inline SVG above its
+        table of values.
     :ptype static: bool
     :param record: Markup this package wrote (the campaign's folds, each failed or lost trial's record in them), laid
         out closed after the document, which it leaves as it is; none by default.
@@ -250,6 +255,7 @@ def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] 
         '<div class="page">',
         '<article data-page="doc">',
         _masthead(page.masthead),
+        *([f'<p class="callout warn" data-part="draft">{escape(draft_line(page))}</p>'] if page.draft else []),
         *([f'<p class="callout warn" data-part="degraded">{escape(page.degraded)}</p>'] if page.degraded else []),
         '<div class="bluf">',
         *bluf,

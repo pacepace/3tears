@@ -210,6 +210,25 @@ def test_the_kairo_note_no_longer_teaches_that_the_caveats_leave_measured_cost_u
     assert "beside both of 1017's readings" in note
 
 
+# Cost belongs to the provider routing (owner, 2026-10-25, restated 2026-10-29)
+
+
+def test_the_analyst_and_the_editor_carry_that_a_cost_is_the_provider_routings() -> None:
+    """The analyst's principles say a cost comparison names who served each model and never ranks models on cost alone;
+    the editor's rubric makes ranking models by cost with no provider named a must_fix, beside the fact that says who
+    served each."""
+    skill = load_skill()
+    principles = skill.files["principles.md"]
+    assert "**A cost belongs to the provider routing, not the model.**" in principles
+    assert "names the provider each was served by" in principles and "`served_by`" in principles
+    assert "never ranks models on cost alone" in principles
+
+    editor = skill.editor().text
+    must_fix = editor[editor.index("These are always must_fix:") : editor.index("- **`should_fix`**")]
+    assert "a claim that ranks models by cost with no provider named" in must_fix
+    assert "`cost_served_by`" in must_fix
+
+
 # The digest
 
 

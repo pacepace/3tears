@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261029-9c77dc447b89",
+  "input": "r2",
+  "input_digest": "3b825233f6120f9deb81f63c4a9c2849c6ba2d388a1db0be780cbe5395add19d",
+  "plan_digest": "79f45d6b7da7f677f710c95a8ddc47d7cc535a7dad6043533de1959bae2efc5f",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+    "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with instruction and reason that names the options table's recommended arm, and the first gate_scatter chart shows it as the only arm clearing both gates.",
+      "quote": "Adopt Brisk-S · reasoning low · 1 retry (J): it meets both quality and latency gates at the lowest cost.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: the supporting fact with its numbers, then a condition that would change the answer.",
+      "quote": "A tighter latency ceiling under 513 ms would eliminate it.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "There is no flag and no caveat is stated twice, and the input carries no caveats or disclosures for decide mode.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The third section's headline claims errors cluster in certain classes, but its chart is four example cards, which cannot show a cluster or a distribution.",
+      "quote": "Errors cluster in query argument math, missing hops, and ambiguous entities.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Prose above Full results uses reader names for arms, measures, criteria and tasks, with no internal ids, hashes or measure keys.",
+      "quote": "Pass rate drops most on Multi-hop (2 to 3 calls) across configurations.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin, Pass rate 0.1 points over the gate, and the sample needed to settle it.",
+      "quote": "The margin is narrowest on Brisk-S · reasoning low · 1 retry (J), where Pass rate sits at 97.1% against the 97% line (+0.1 points away).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "The decision block, above the fold, uses statistician's grammar (statistical power).",
+      "quote": "A fresh run needs 87,635 cases to confirm clearance at eighty percent power.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline, lede and decision block say what to deploy, why (both gates cleared at $0.302), and the main risk (the 0.1-point Pass rate margin) before any section.",
+      "quote": "Deploy Brisk-S · reasoning low · 1 retry (J), which attains a 97.1% Pass rate and a p95 latency of 513 ms for $0.302 per 1,000 calls.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Under the stated lowest-cost rule, getting L under the latency ceiling could not change the call, because L costs about twice as much as J; and the experiment that could change it (rerunning J's 0.1-point Pass rate margin) is not the one named.",
+      "quote": "Profile downstream prompt caching to determine whether Brisk-S · reasoning high · 1 retry (L) can reduce its p95 latency below 600 ms to gain quality.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The plan has no confidence clauses, only the high confidence form.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Each figure measures what its sentence claims: arm figures are that arm's, the 12x is the cost ratio (3.477/0.302), and the 0.1-point margin is the gap to the gate.",
+      "quote": "costs 12 times as much",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-29T20:49:03.680694+00:00"
+}

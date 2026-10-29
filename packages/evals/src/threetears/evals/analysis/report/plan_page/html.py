@@ -1,5 +1,5 @@
 """A planned page as one self-contained HTML page, in the default mode (the kit's one script draws each chart) or the
-static mode (nothing runs or loads; every chart is its table of values).
+static mode (nothing runs or loads; every chart is drawn on the server as inline SVG above its table of values).
 
 The page is the kit's (``docs/eval-report-kit/references/``), part by part in GENERATOR §2 order:
 
@@ -20,7 +20,8 @@ The page is the kit's (``docs/eval-report-kit/references/``), part by part in GE
 markup is made of it (:mod:`~threetears.evals.analysis.report.html_parts`, the writers every page shares), a chart's
 data reaches the page only as JSON escaped into its ``data-chart`` attribute, and the appendix is markup this package
 wrote. **The static page** is the default page less exactly the kit's script, the font links and each chart's
-``div.chart``: it carries no ``<script>`` and no ``<link>``, and every chart is its table, shown.
+``div.chart``, plus each chart drawn on the server as inline SVG: it carries no ``<script>`` and no ``<link>``, and
+every chart is its picture with its table shown under it.
 """
 
 from __future__ import annotations
@@ -112,7 +113,7 @@ def _slot(slot: PageSlot) -> str:
     css = ' class="rec"' if slot.highlighted else ""
     return (
         f'<div{css} data-slot="{escape(slot.key)}"><span class="k">{escape(slot.title)}</span>'
-        f'<span class="v">{_prose(slot.text)}</span></div>'
+        f'<span class="v">{_prose(slot.text)}{f" {escape(slot.note)}" if slot.note else ""}</span></div>'
     )
 
 
@@ -204,7 +205,8 @@ def planned_page_html(page: PlannedPage, *, appendix: Sequence[str] = (), static
     :ptype page: PlannedPage
     :param appendix: Markup this package wrote (the campaign's per-aspect folds), laid out closed after Method.
     :ptype appendix: Sequence[str]
-    :param static: Write the static page: no ``<script>``, no ``<link>``, every chart as its table of values.
+    :param static: Write the static page: no ``<script>``, no ``<link>``, every chart drawn as inline SVG above its
+        table of values.
     :ptype static: bool
     :return: The page.
     :rtype: str

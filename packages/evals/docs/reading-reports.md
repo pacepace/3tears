@@ -395,13 +395,19 @@ dark alike.
 
 Serve the directory `write` produces as static files; or keep a route that returns `report_read(format="html")`.
 The default page carries the package's `kit.js` inline and links the kit's fonts, so it needs a policy that allows
-that one inline script (by its hash, which changes only when the package's `kit.js` does) and the Google Fonts hosts.
+that one inline script (by its hash, which changes only when the package's `kit.js` does) and the Google Fonts hosts:
+`style-src` and `font-src` for `fonts.googleapis.com` and `fonts.gstatic.com`. Without those the page still reads, its
+text in the system faces the kit's stylesheet names after each Plex face.
+
 A host whose policy runs and loads nothing asks for `report_read(format="html", static=True)` (or
-`report_html(report, static=True)`, `campaign_report_html(report, static=True)`): that page has no `<script>`, no
-`<link>`, every chart as its values table and its text in the system faces, and `default-src 'none'; style-src
-'unsafe-inline'` holds over it. Either page can also be shown in an `<iframe sandbox>` with no `allow-scripts`,
-changing the host's own `frame-ancestors` to `'self'`; the default page then reads as its tables. Linking to the route
-needs no change at all.
+`report_html(report, static=True)`, `campaign_report_html(report, static=True)`): that page needs no `script-src` at
+all. It has no `<script>` and no `<link>`, its text is in the system faces, and it carries its charts as inline SVG,
+drawn on the server by the kit's geometry and colour tokens, so they follow the page's light and dark themes; each
+mark's tooltip is its `<title>`, and each chart's values table stays under it for a screen reader and for copying the
+numbers out. A gate matrix, a lattice, example cards and interval rows are shown as their tables, each saying so in
+one line. `default-src 'none'; style-src 'unsafe-inline'` holds over it. Either page can also be shown in an
+`<iframe sandbox>` with no `allow-scripts`, changing the host's own `frame-ancestors` to `'self'`; the default page
+then reads as its tables, the static page with its charts. Linking to the route needs no change at all.
 
 A host that shows the page as an administrative view can frame the static page as an iframe's `srcdoc` with an
 empty `sandbox`: nothing on it needs a script, a link or a URL, so it reads whole there, the analyst's page included.
@@ -686,13 +692,20 @@ branches on what kind of eval it is. The full design is [ANALYST.md](../../../do
 5. **Review.** An editor (the same model, in a fresh context that never sees the analyst's reasoning) reads the page
    as a reader will, with facts code computed for it to weigh, and scores seven items from 0 to 2: the first screen,
    a coherent story, honest emphasis, sound elision, confounds handled, actionable next steps, and evidence that fits
-   its claims. Code adds the scores. A review passes with no 0, at least 11 of 14 and no must-fix finding; otherwise
-   the analyst revises, at most twice.
+   its claims. Code adds the scores. A review passes with no 0, at least 11 of 14 and no must-fix finding. A review
+   that passes with no blocking finding open clears the report; otherwise the analyst revises, at most twice. In the
+   first review every finding blocks. In a later one, each finding says which earlier finding it continues, or that
+   it is new, and lists the earlier ones now resolved; every must-fix blocks, and so does every earlier finding still
+   open, while a should-fix first raised in that review does not: it is listed open on the page, and the report is
+   finished.
 6. **Store.** The document is stored with its snapshot, how the writing ended, the editor's findings left open, the
    cost of each role, round and turn, and each session's transcript.
 
 A write that ends `stored`, or `stored_with_findings` once both revisions are spent, is the campaign's report. One the
 budget stops keeps its last reviewed draft with that review's findings, and stores nothing if no draft was reviewed.
+Only `stored` is a finished report. Any other stored report is a draft: its page says so on its first line under the
+masthead ("Draft: its editor's review left 6 findings open."), its appendix lists those findings, and `draft` is true
+on the stored document, on `report_read`'s result and on its line in `analyses_list`, so a host's list can show it.
 One that runs out of bounces, whose editor's answer cannot be read twice, or that a provider fails, stores nothing,
 and the job fails with its ending and reason.
 
@@ -703,6 +716,7 @@ Top to bottom, simplest first:
 | Part | Whose | What it says |
 |---|---|---|
 | Masthead | code's | what kind of eval it is, the system under test, its counts and when it ran |
+| Draft line | code's | on a draft only: that its editor's review left findings open, and how many |
 | Headline, lede, flag | the analyst's | the finding, in a sentence; the flag only for what a reader must know first |
 | Confidence | both | the form in code's words, then each caveat: the analyst's clause for what would make it matter, or code's line that it was checked and cannot change the call |
 | Decision | the analyst's | the call and its whys, or for a tradeoff the trade, where it flips, the lean and what would settle it |

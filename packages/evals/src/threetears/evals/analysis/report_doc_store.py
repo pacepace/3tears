@@ -365,8 +365,9 @@ class StoredReportPage(NamedTuple):
     def summary(self) -> dict[str, Any]:  # Any: a JSON object
         """The stored document as the report's JSON form carries it: never a session's transcript.
 
-        :return: ``{"id", "snapshot_id", "created_at", "ending", "doc", "findings", "made", "generation"}``, the
-            generation record as stored (each session by ``{digest, turns, ref}``).
+        :return: ``{"id", "snapshot_id", "created_at", "ending", "draft", "doc", "findings", "made", "generation"}``,
+            ``draft`` the record's (:attr:`~threetears.evals.kernel.report_doc.EvalReportDoc.draft`), the generation
+            record as stored (each session by ``{digest, turns, ref}``).
         :rtype: dict[str, Any]
         """
         record = self.record
@@ -375,6 +376,7 @@ class StoredReportPage(NamedTuple):
             "snapshot_id": record.snapshot_id,
             "created_at": record.created_at,
             "ending": record.ending,
+            "draft": record.draft,
             "doc": dict(record.doc),
             "findings": [dict(finding) for finding in record.findings],
             "made": self.made,
@@ -440,5 +442,6 @@ def read_report_doc(
         strict=False,
         findings=[ReportFinding.model_validate(finding) for finding in record.findings],
         made=made,
+        draft=record.draft,
     )
     return StoredReportPage(record=record, page=page, snapshot=snapshot, made=made)

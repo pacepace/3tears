@@ -35,6 +35,7 @@ __all__ = [
     "COMPARE_NOTE",
     "BASIS_NOTE",
     "ANSWER_TEMPLATES",
+    "WEAKEST_INTERVAL_TEMPLATE",
     "APPENDIX_TITLE",
     "ALL_PRICED_TEMPLATE",
     "ARM_HEADERS",
@@ -77,6 +78,7 @@ __all__ = [
     "RECOMMENDED_MARK",
     "ROLE_WORDS",
     "SERVED_BY_TEMPLATE",
+    "TOOL_SPEND_TEMPLATE",
     "UPLIFT_NOT_COMPARABLE",
     "MONEY_DRAWN_NOTE",
     "RUN_TEMPLATE",
@@ -146,6 +148,9 @@ _SLOT_TITLES: dict[str, str] = {
     "what_settles_it": "What would settle it",
 }
 
+#: Code's line under a Watch that cites the weakest margin read on an interval: which interval its worst case is.
+WEAKEST_INTERVAL_TEMPLATE = "The worst case is read on {interval}."
+
 #: The second decide slot's title: why not the candidates against a control, why not the others in a choice.
 _WHY_NOT_TITLES: dict[bool, str] = {True: "Why not the candidates", False: "Why not the others"}
 
@@ -204,8 +209,12 @@ PASSES_TEMPLATE = "{passed} of {usable}"
 #: The arms table's column saying what priced each arm's cost: its price sources, and who served its calls beside them.
 PRICED_HEADER = "Priced by"
 
-#: Who served an arm's calls, beside its price sources.
+#: Who served an arm's model calls, beside its price sources: the model's providers, never a tool it called.
 SERVED_BY_TEMPLATE = "served by {providers}"
+
+#: The tools an arm's cost counts spend on, beside who served its model calls: a web-search API it called is tool
+#: spend in the cost, never a provider of the model.
+TOOL_SPEND_TEMPLATE = "tool spend at {providers}"
 
 #: An arm's priced share of the calls its cost counts, beside its cost: all of them, or how many of how many. A partly
 #: priced arm says the second in place of its cost, which would be a smaller total read as whole.

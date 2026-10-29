@@ -419,9 +419,16 @@ def _served(tool: MountedTool) -> list[str]:
 #: examples render money in it. All three moved again when the evals tool gained ``analyst_gaps_list`` (and its
 #: ``since``, its bounded read and its issue text's safeguards), and both analyst cuts' ``capability_gap`` gained
 #: ``kind``, ``figure_keys`` and ``calls``, their bounds, and says who stores the gap. The editor's moved again when a
-#: tool whose only write is an appended note came to say why it is not marked read-only (its description).
-_EVALS_BYTES = "8e46af149f6a39267ec3d88eae176f3b5b016e2020d79044116764ee26fb1529"
-_EDITOR_BYTES = "f641099a4794637a3c1d773f6d193260e70e9735e7ac144807832885bd5d2b05"
+#: tool whose only write is an appended note came to say why it is not marked read-only (its description). The evals
+#: tool's moved again when campaign_create's and campaign_update's name came to state its cap and where the detail goes,
+#: and when a campaign's line came to carry its title, outcome_short and the rest a list page shows, and again when a
+#: report stored with its editor's findings open became a draft: analyses_list's line and report_read's result gained draft.
+#: The evals tool's moved again when a campaign's line gained aspect_runs (its runs by aspect), and
+#: analyses_list's needs_regeneration came to say report_read renders a memo over another shape's bundle code-only.
+#: The editor's moved again when the weakest margin's keys gained `weakest.interval`, the interval its worst case is
+#: read on (the figure-key grammar it serves).
+_EVALS_BYTES = "49c225e153e027aedd04fd75226e892785af730a0d6f84202003f6b3d6e0b638"
+_EDITOR_BYTES = "60cf01b3676e6dda92c5897678d6012062417ae05c8b3f8bdf7a21615cd51aa3"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's
 #: description and its topics.

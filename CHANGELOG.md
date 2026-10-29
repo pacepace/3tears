@@ -6,6 +6,208 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a memo over a bundle shape this build no longer reads falls back to the code-only page; a campaign line maps its aspects to their runs
+
+**Changed:** `report_read` and the campaign's report no longer refuse a campaign whose newest analysis is a memo frozen
+over a bundle of another shape (a memo frozen at shape 60 on a build reading 64): the page is the code-only page over
+the campaign's evidence as it stands, in markdown, html, static html and json, led by the one regenerate line with the
+bundle's shape after it, as a report plan's or an unreadable report document's already was. `campaigns_list` and
+`analyses_list` already listed it as needing regeneration. `analysis_report` by id still refuses. Only a bundle of
+another shape falls back: a memo's page that refuses what it is laid out over (an aspect with no page, a page keyed by
+a label the campaign does not hold, readings of another campaign) still raises `RefusedInput` to the caller.
+
+**Added:** `CampaignLine.aspect_runs`, each aspect's label to the ids of its runs in the campaign's order.
+
+### evals: a scatter's y-axis title is an obstacle to its point labels
+
+**Fixed:** a `scatter_frontier` or `gate_scatter` chart draws its y-axis title inside the plot, bottom left, and its
+point labels did not avoid it: at phone width a point near the origin put its label ("M") on the title ("Pass rate"),
+which the render check reported as an overlap. The kit (`kit.js`, in the package and in `docs/eval-report-kit`, byte
+for byte) and the static SVG port now both leave the title's box to the label placer. The five reference pages in
+`docs/eval-report-kit/references/` are rebuilt with `scripts/build.py`, which inlines the kit: only that kit line moves.
+### evals: after round 1, only a carried-over finding or a must_fix sends a report back; the editor marks what each finding continues
+
+**Changed:** owner ruling 2026-10-29 (option 3), after the re-recorded acceptance runs showed each later review
+raising new should_fix findings, so four of seven ended drafts. Round 1 is unchanged: every finding sends a revision.
+From round 2, a finding blocks clearance when it is a `must_fix`, new or old, or when it continues a finding an
+earlier review raised, of any severity; a `should_fix` first raised in that review blocks nothing. It is stored with
+the report and listed open on the page, and alone it neither sends a revision nor makes the report a draft. A report
+is a draft only when a blocking finding is open at the end (`Review.blocking`; `Review.clears` is the passing scores
+and no blocking finding; `Review.passes` is unchanged).
+
+**Added:** code tells a carried finding from a new one by structure, never by comparing text. Each finding gets a
+stable id where it is first raised (`f<round>.<n>`) and keeps it while it stays open: `ReportFinding.id` and
+`ReportFinding.since` (the round it was first raised; `""` and `0` on a finding stored before). The editor is given
+the previous review's findings by id, and from round 2 marks each of its findings with the id it continues or
+`"new"` (`continues`), and lists the earlier ids now resolved (`resolved`). Every earlier finding is accounted for
+exactly once, continued or resolved, or the answer is asked for again naming what is missing. `Review.resolved` holds
+them, and the stored review records `resolved` and `blocking` (by id). The editor's rubric explains the marking and
+what blocks; the revision request marks each blocking finding. `EvalReportDoc.draft` is every ending but `stored`,
+plus a `stored` document carrying a finding with no id (stored before this). The skill's digest moves with it.
+
+**Fixtures:** the hand-scripted `hand-revise` recording's round-2 review lists its round-1 finding as resolved
+(edited as data). The seven `prototype5` recordings predate the marking: each round-2 review there names no
+`continues`, so the replays drift until they are recorded again.
+
+### evals: a campaign listing carries what a list page shows, a title code builds and a short verdict; a campaign's name is a capped qualifier that moves no fingerprint
+
+**Added:** `CampaignLine` (`campaigns_list`, and every operation returning a campaign's line) carries `created_at`,
+`question` and `question_short` (at most `QUESTION_SHORT_CHARS`, 100, cut at a word, an ellipsis marking the cut),
+the declared `arms` (`CampaignLineArm`: label, short name, role), the recorded `call` (`CampaignLineCall`: arm and
+reason), `verdict_short` (code's few words: `Keep <arm>` for the control and `Adopt <arm>` for a candidate, from the
+recorded call or else the report's recommendation; `No call` for a report recommending none; None with neither),
+`outcome_short` (what the evidence says in a few words, read by code off the report's frozen readings by their kind,
+never from the writer's prose or the headline's text, and distinct from the decision: the answer leads, a change's
+`<arm> improved`, `<N> candidates improved` or `No candidate improved` (whether the candidates are equal, not separated
+or worse), a choice's `<arm> ahead`, `Arms differ` or `Not separated`, a measurement's `Measured`, or `No readings yet`
+where the readings hold no row; a floor the answer's arms broke or a bar they miss only qualifies it, floor first
+(`1017 improved, broke a floor and missed a bar`, `2 candidates improved, 1 broke a floor`), counted past 48
+characters (`, 2 warnings`), and a warning on an arm the answer does not name changes nothing; None with no report or
+one this build cannot read), `report_state` (`none`, `written` or `needs_regeneration`), `report` (`CampaignLineReport`: the analysis id, code's
+verdict line as `headline`, why it needs regeneration, when and on what model it was generated, its attempt's
+`cost_usd`, None while any call is unpriced, and `unpriced_calls`) and `feeds` (for an exploratory campaign, the
+declared campaigns holding any of its runs). A report needs regeneration when this build cannot read it, when it is a
+report plan, or when the campaign holds other runs than it was written over: the runs it held then are the ones the
+report read and the ones its frozen bundle names as not resolving or archived, so a run id that never resolved does not
+read as a move. Each line reads its campaign's reported analysis and attempts once, and puts its frozen bundle back
+together once for the headline, the title, `verdict_short`, `outcome_short` and the report's state
+(`analysis_verdict` takes it as `bundle=`). One analysis that does not read back together (a corrupt record) lists its
+report as needing regeneration, with why, and fails neither the listing nor the write that lists the campaign. A write
+(create, update, runs added or removed, archive) reads the scope's other campaigns only for an exploratory campaign,
+the one kind `feeds` names any for. `verdict_short` finds the arm by the call's or recommendation's variant key (by
+label only where no key matches) and prints it as the title does (`careful`, never `candidate=careful`).
+
+**Changed:** a campaign's name is at most `CAMPAIGN_NAME_CHARS` (32) characters when it is created or renamed, refused
+past it with the remedy to put the detail in its question or description; a name stored longer still reads and lists.
+The quick path (`Eval.run`, `Result.against`) holds its campaign to the cap too: an eval's name past 32 characters is
+cut at a word there, an ellipsis marking the cut, and kept whole in the campaign's description and as `Result.name`.
+
+**Changed:** a campaign's name is presentation: a campaign bundle's fingerprint is version 3
+(`CAMPAIGN_FINGERPRINT_PREFIX`, `v3:`), which leaves the name out (`CAMPAIGN_PRESENTATION_FIELDS`), as it leaves
+out an aspect's and an arm's short names. Renaming a campaign moves no version 3 fingerprint.
+
+**Fingerprints:** no stored fingerprint moves. A campaign fingerprint stored in version 2 (`v2:`) or 1 (unprefixed)
+is computed again in its own version, the name included, so every analysis and reporter case keeps reproducing; a
+campaign renamed after one was frozen over it reads as other evidence against that one until it is frozen again,
+which then records version 3. A new freeze records version 3. An aspect's own bundle fingerprint is unchanged.
+
+**Changed:** `CampaignLine.title`, code's name for what a campaign compares: `<arms> · <measure> (<name>)`. The arms
+are its declared arms' short names (else labels), control first, joined ` vs `, past three `<control> vs N
+candidates`; a campaign declaring none names its runs' distinct candidate models (a provider's path trimmed), or
+`<model>, N variants` where its runs vary something else (each model's lever maps counted apart, so two models each run
+at two settings are `4 variants`), and a judge campaign counts its judges, whether or not it has a report. The measure is its
+aspects' printed names, past two `N aspects`. No call, recommendation or verdict enters it. With it, a campaign's
+name is a qualifier: at most 32 characters (`CAMPAIGN_NAME_CHARS`, the declared-name cap).
+
+**Changed:** the title heads a campaign wherever a page heads one, built by code on every read and never stored
+(`threetears.evals.analysis.campaign_title`: `campaign_title` moved there with its helpers, `declared_title` over a
+frozen bundle's resolved arms, `named_title`, `report_input_title`). `AnalysisLine.title` (`analyses_list`) is built from
+the campaign bundle frozen with the analysis, the stored campaign's title where that bundle cannot be read. The first
+line of a campaign's page, of an aspect's own page, and the `<title>` of a planned page and of a report document's
+page is the title, in place of the campaign's name (or, on an aspect's page, the name with the question it asks);
+nothing else on a page moves.
+### evals: a model's providers are its model rows', and a cost is the provider routing's: an analyst rule, an editor's must_fix and fact
+
+**Fixed:** an arm's pricing (`ArmPricing`, copied to the report input's `Pricing`) named a tool the model called as a
+provider of the model: a production page printed "served by searxng", the web-search API a candidate called, metered as
+an `external` usage row. `providers` now reads the model rows alone (every role but `external`); the external rows'
+providers are `tool_providers` (new, written only when one names a provider), and the options table prints them beside
+who served the model as tool spend ("served by DeepInfra; tool spend at searxng"). The tool spend stays in the cost and
+its calls in the priced share. The analyst's `campaign_overview` gives each arm's `served_by` and `tool_spend`, left
+out where its pricing names none.
+
+**Changed:** a cost is the provider routing's, not the model's (owner, 2026-10-25, restated 2026-10-29), as the
+priced page's caveat line already said. The analyst skill makes it a rule: a cost comparison between models names the
+provider each was served by and never ranks models on cost alone as if the cost were the model's, and says the routing
+is unknown where an arm's pricing names no provider. The editor's rubric treats a claim that ranks models by cost with no
+provider named as must_fix, and the editor is handed `cost_served_by` (new): where the document's prose compares two
+arms' costs or more, one fact naming those fields and, for each arm compared, the providers its pricing names, that it
+names none, or that the input states no pricing, and its tool spend apart. Which arms' costs a key reads is
+`figure_keys.cost_arms` (new), the reading the partly-priced note beside a cost already used. The skill's digest moves
+with it; the recorded prototype5 replays still pass. The shipped reasoning notes (Kairo, r1, r3, r4) and their index
+no longer state a cost as the model's: each cost comparison is this run's routing's, and since no note's snapshot
+names a provider, each says the routing is unknown; their reasoning is unchanged.
+### evals: a static report page draws its charts as inline SVG
+
+**Changed:** the static page (`report_read(..., static=True)`, `report_html(report, static=True)`,
+`campaign_report_html(report, static=True)`, and a planned or document page asked for static) draws its charts again.
+It showed each chart as its table alone, since the kit draws charts with its script and the static page carries none,
+so a host serving it under `default-src 'none'` or in an empty `sandbox` saw no graphics at all. Each chart is now
+drawn on the server as inline SVG by the kit's own geometry and colour tokens (bars, diverging bars, forest, lines,
+scatter, gate scatter, dot interval, range bars, heatmap, difference heatmap, confusion; an outcome bar and a
+cost/quality chart as the kit's bars and scatter), at three widths the stylesheet picks between by the chart's own
+width, with each mark's tooltip as its `<title>`, and no script, event attribute or URL. Each chart's table of values
+stays under it. A chart the kit lays out as HTML (a gate matrix, a lattice, example cards) and a report's interval
+rows say in one line that they are shown as their table, as does a chart given no row (a forest or dot interval chart
+with `rows: []`), and a small multiple given none is a card saying so. The default page is unchanged, byte for byte.
+### evals: five rendering defects on a production report page: examples read as fields, the worst case on the corrected interval, a recorded scale, one printed name, no blank cost
+
+**Fixed:** the examples table's Details column no longer prints a case's input as truncated JSON: an input or expectation
+that is a JSON object (a world, a payload), whole or cut where the snapshot was frozen, reads as its first four key and
+value pairs (`Input · city: Oslo`), each key by its reader name and each long value cut at a word; any other text stays
+one field as written (`resolve_examples.readable_fields`), a text opening on `{` that reads as no pair ("{customer}
+asked for a refund") included. The weakest margin (`Margin`, `weakest.*`, Watch) takes a
+reading's worst case from the multiplicity-corrected interval of the arm's pass-rate contrast wherever the input holds
+one (`report_margins.corrected_interval`), not the plain 95% interval, so Kairo's reads -12.6 (gap 2.4) where it read
+-10.8 (gap 4.2); a floor keeps its own nominal interval. `weakest.interval` (new key) says which interval the worst case
+is read on, the planner's facts line and the editor's `weakest_not_in_watch` fact name it, and a plan page's Watch that
+cites the weakest margin carries code's line saying so, after the planner's text (`PageSlot.note`, new), so the text
+the judge reads stays the planner's alone. A judged dimension no judge tier covers (the reserved dual-score
+axes `outcome` and `transcript` among them) keeps the scale the bundle froze beside its scores, so a pass/fail one
+reads as a pass rate and never as a 1 to 5 mean. `reader_name("measure", ...)` names a goal check with no declared
+name as every table header and chart does (its expression as a code span), where it had printed the bare expression as a
+gate row's label. An arms (options) table's cost column no longer leaves a cell blank: an arm the page's cost source
+lacks but the scoreboard prices per reply shows that cost in the column's form, and an arm with no known cost reads
+`unpriced`.
+
+**Fingerprints:** no stored document, bundle or report input changes. Rendered text moves where a margin is read on the
+corrected interval: the Kairo fixtures' weakest margin (-10.8 to -12.6, gap 4.2 to 2.4), s1's weakest margin (now v4's
+billing reading, which its Watch names), and one scored run plan's R7 quote.
+### evals: report pages stay inside a phone's width, and a chart's values table keeps every panel's columns
+
+**Fixed:** a report page no longer scrolls sideways at 390 px. Prose (a list item, paragraph, figure caption or fold
+summary) wraps a long unbroken token such as a dotted metric path, which had pushed the kairo page to 412 px. A
+heatmap, difference heatmap or confusion chart sits in a `.tbl` frame with its values table, so a grid of eighteen
+columns scrolls inside its frame instead of widening the page (the r2 page, 398 px). A small-multiples chart's values
+table now holds every panel's columns, the widest panel's first, each panel's cells under their own column and the rest
+empty: a forest panel with a Note column beside one without gave rows longer than the header (the r4 reference's
+"aspects" chart), and a bars panel with a Note column beside one with an interval column was refused (the r2 plan's
+"Calls per task"). Layout only; no page's words move.
+### evals: the report writer revises until its editor's review is clean, and a report stored with findings open is a draft
+
+**Changed:** a review clears a report only when it passes on its scores with no finding open: a `should_fix` now sends
+the report back while revisions remain, as a `must_fix` always did (owner ruling 2026-10-29, after a stored Discodon
+report was served as finished with six of its own editor's should-fix findings open: a lede that misstated an arm's
+result, a cost column with no dollar figures, a claim with no evidence behind it). `Review.clears` is the passing
+scores and no finding. The revision request says the review holds findings left open and asks for every one,
+must_fix and should_fix alike, to be resolved. A loop that ends `stored` stores no finding; `stored_with_findings` and
+`over_budget` keep their findings as before.
+
+**Added:** a stored report document says whether it is a draft, decided by code from its ending and its review's
+structured findings, never from prose: `EvalReportDoc.draft` (a property, not a stored field), true for every ending
+but `stored` and for a `stored` document carrying a finding, as a build before this one stored them. A draft's page
+says so first, under its masthead, in one line of code's ("Draft: its editor's review left 6 findings open.", or "...
+did not pass it." where its review failed on its scores alone), in every format, static HTML included, with its
+findings listed in the appendix where the page already listed them. The flag is carried typed: `DocPage.draft`,
+`build(..., draft=)`, `AnalysisLine.draft` (so a host's list of analyses can show "draft"), `ReportDocument.draft`
+(on `report_read`'s result), and `draft` in the JSON form's `report_doc`. `doc_page.words.DRAFT_OPEN` and
+`DRAFT_UNCLEARED` hold the line's words, and `doc_page.model.draft_line(page)` writes it.
+
+**Added:** the editor is handed one more computed fact, `high_over_open`: the confidence's form is
+`high_if_immaterial`, so the page reads "High, if the caveats below aren't material", over caveats it leaves open,
+none of which code proves immaterial, named by count and id. Code writes the form's words and checks only that the
+form matches its caveats, so whether the high stands is the editor's: its rubric now makes a high over an open caveat
+the page does not stand behind (one that could plausibly be material, or whose clause does not say what would make it
+matter and why the call holds until then) a must_fix, and says every finding left open sends the report back and a
+report stored with one open is served as a draft. The analyst skill's list of the facts the editor weighs names it.
+The skill's digest moves with it.
+
+**Fixtures:** the hand-scripted `hand-pass` recording's editor review no longer carries its one should_fix finding
+(edited as data, so the run still clears in round 1). The seven `prototype5` acceptance recordings are not re-recorded
+and now drift: in six, round 1's review passed with should_fix findings and the loop now asks for a revision the
+recording does not hold; in `r2-with-its-gates-read-in-each-task`, round 3's review left one should_fix open, so the
+run now ends `stored_with_findings` where it recorded `stored`. They need a live re-record.
+
 ### evals: Discodon's W4 adoption findings: unanswered calls through the ledger, a turn cap on a dollar budget, the report writer's port declared
 
 **Added:** `RoleUsageLedger.add_unanswered(model=, served_model=, price_source=, ..., retried=, lost=, reasons=)` counts

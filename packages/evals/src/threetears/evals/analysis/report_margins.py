@@ -50,12 +50,13 @@ from dataclasses import dataclass
 from typing import Literal
 
 from threetears.evals.analysis.cell_mean import NoCellMean, cell_mean_interval
-from threetears.evals.analysis.report_input import Criterion, Judged, Measure, Reading, ReportInput, Stat
+from threetears.evals.analysis.report_input import Aspect, Criterion, Judged, Measure, Reading, ReportInput, Stat
 
 __all__ = [
     "CriterionFigure",
     "CriterionPlace",
     "Margin",
+    "corrected_interval",
     "criterion_aspect",
     "criterion_figures",
     "criterion_misses",
@@ -117,6 +118,10 @@ class Margin:
     :ivar value: The figure read: the criterion's statistic, or the interval's worst end, in points.
     :ivar line: The threshold, or ``-margin``, in the same units.
     :ivar gap: How far the figure clears the line, signed toward passing.
+    :ivar corrected: Whether a margin's worst end is read on the multiplicity-corrected interval of the arm's contrast
+        (the pass-rate contrast, :func:`corrected_interval`) rather than the plain interval at the nominal level.
+    :ivar level: The corrected interval's confidence level, as the input states it (``99.69%``); None for a figure read
+        on the plain interval, a criterion, or a level the input does not state.
     """
 
     arm: str
@@ -129,6 +134,8 @@ class Margin:
     value: float
     line: float
     gap: float
+    corrected: bool = False
+    level: str | None = None
 
     @property
     def relative(self) -> float:
@@ -148,6 +155,46 @@ def flip_margin(reading: Reading) -> float | None:
     if reading.within_interval is None:
         return None
     return max(0.0, -float(reading.within_interval[0]))
+
+
+def corrected_interval(
+    report_input: ReportInput, aspect: Aspect, reading: Reading
+) -> tuple[tuple[float, float], str | None] | None:
+    """The multiplicity-corrected interval on a reading's change, in points, where the input holds one: the pass-rate
+    contrast of the arm against the control (kind ``trial``, how each trial ended) on the reading's aspect, which its
+    family corrected together. The plain interval a reading carries (``within_interval``) is at the nominal level with
+    no correction, so it can end well short of where the corrected one does; where both exist the worst case is read on
+    the corrected one.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param aspect: The aspect the reading is on.
+    :ptype aspect: Aspect
+    :param reading: An arm's reading on that aspect.
+    :ptype reading: Reading
+    :return: The interval's two ends in points and its level as the input states it; None where the input holds no
+        corrected interval for the reading (no such contrast, an untested one, or an end that is not finite).
+    :rtype: tuple[tuple[float, float], str | None] | None
+    """
+    for contrast in report_input.contrasts:
+        if contrast.kind != "trial" or contrast.arm != reading.arm or contrast.interval is None:
+            continue
+        # A contrast naming no aspect speaks for the report's one aspect.
+        if contrast.aspect != aspect.id and not (contrast.aspect is None and len(report_input.aspects) == 1):
+            continue
+        low, high = (float(end) * 100.0 for end in contrast.interval)
+        if not (math.isfinite(low) and math.isfinite(high)):
+            continue
+        level = contrast.level or next(
+            (
+                family.level
+                for family in report_input.contrast_families
+                if family.aspect in (contrast.aspect, None) and family.level
+            ),
+            None,
+        )
+        return (low, high), level
+    return None
 
 
 def criterion_place(criterion: Criterion) -> CriterionPlace:
@@ -433,6 +480,10 @@ def _interval_margins(report_input: ReportInput, surviving: set[str]) -> Iterato
             low = float(reading.within_interval[0])
             if not math.isfinite(low):
                 continue
+            # The worst case is read on the corrected interval wherever the input holds one, and the margin says so.
+            corrected = corrected_interval(report_input, aspect, reading)
+            if corrected is not None:
+                low = corrected[0][0]
             yield Margin(
                 arm=reading.arm,
                 kind="margin",
@@ -444,6 +495,8 @@ def _interval_margins(report_input: ReportInput, surviving: set[str]) -> Iterato
                 value=low,
                 line=-float(margin),
                 gap=low + float(margin),
+                corrected=corrected is not None,
+                level=corrected[1] if corrected is not None else None,
             )
     for floor in report_input.floors:
         if floor.arm not in surviving or floor.interval is None or floor.margin is None:

@@ -1860,6 +1860,7 @@ def _campaign_page(
         report_doc_id=analysis.report_doc_id if analysis is not None else None,
         unread_analysis_id=unread_analysis_id,
         unread_report_doc_id=unread_report_doc_id,
+        arms=bundle.arms,
     )
     if analysis is None:
         return page
@@ -1933,11 +1934,16 @@ def _as_analysed(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> EvalC
 
 
 def _analysis_page(
-    analysis: EvalAnalysis, campaign: EvalCampaign | None, *, trials: TrialDetail, plan: EvalReportPlan | None = None
+    analysis: EvalAnalysis,
+    campaign: EvalCampaign | None,
+    *,
+    trials: TrialDetail,
+    plan: EvalReportPlan | None = None,
+    bundle: CampaignBundle | None = None,
 ) -> CampaignReport:
-    """A stored analysis laid out as its campaign's page, over everything frozen with it: the page its plan draws, for
-    a planned one."""
-    bundle = analysis_campaign_bundle(analysis)
+    """A stored analysis laid out as its campaign's page, over everything frozen with it (``bundle``, where the caller
+    has put it back together already): the page its plan draws, for a planned one."""
+    bundle = bundle if bundle is not None else analysis_campaign_bundle(analysis)
     # Putting the bundle back together refused it unless each aspect's entry in the frame is that aspect's bundle
     # fingerprint in the entry's version, so an entry in the current version is the one each fold's source names.
     entries = analysis.campaign_bundle.get("aspects")
@@ -2049,7 +2055,9 @@ def campaign_report(
       so its page is the code-only page with the one regenerate line on its first screen
       (:data:`~threetears.evals.analysis.report.campaign.memo_blocks.NO_LONGER_READS`,
       :attr:`~threetears.evals.analysis.report.CampaignReport.unread_analysis_id`). No planner page is reached;
-    - a memo's: laid out over what was frozen with it, as :func:`analysis_report` lays it out.
+    - a memo's: laid out over what was frozen with it, as :func:`analysis_report` lays it out; where it was frozen
+      over a bundle of another shape this version no longer reads, as a plan's is (the code-only page, the regenerate
+      line saying the bundle's shape).
 
     A report document this version no longer reads — its record does not validate, its snapshot is gone, holds no
     bundle or no longer reads, or the campaign no longer lays out over it — is laid out as a plan is: the code-only page
@@ -2075,8 +2083,8 @@ def campaign_report(
     :return: The page; its ``basis`` says which it is.
     :rtype: CampaignReport
     :raises NotFoundError: No campaign with that id in the scope.
-    :raises RefusedInput: Its reported analysis is a memo written over a bundle of another shape: the page refuses,
-        naming the regeneration (``analysis_generate``).
+    :raises RefusedInput: A memo's page refuses what it is laid out over: an aspect with no page, a page keyed by a label
+        the campaign does not hold, readings of another campaign. A bundle of another shape is never refused.
     """
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     reported = host.storage.load_reported_analysis(campaign_id, scope_id)
@@ -2093,7 +2101,15 @@ def campaign_report(
     if reported.report_plan_id is not None:
         why = f"analysis {reported.id} was written by the report planner, as report-plan/1"
         return _stands_in(host, campaign, why, trials=trials, unread_analysis_id=reported.id)
-    return _analysis_page(reported, campaign, trials=trials)
+    try:
+        frozen = analysis_campaign_bundle(reported)
+    except RefusedInput as unread:
+        # A memo frozen over a bundle of another shape is read as a plan is: the code-only page, led by the one
+        # regenerate line, and why (the shape the bundle was frozen at) after it. Only putting the bundle back
+        # together is caught: a page that refuses what it is laid out over (an aspect with no page, readings of
+        # another campaign) is a fault, and reaches the caller.
+        return _stands_in(host, campaign, unread.fault, trials=trials, unread_analysis_id=reported.id)
+    return _analysis_page(reported, campaign, trials=trials, bundle=frozen)
 
 
 def report_doc_report(

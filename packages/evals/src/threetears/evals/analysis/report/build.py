@@ -8,8 +8,8 @@ MCP action — adds, drops or reorders a block.
 
 The page, screen by screen:
 
-1. **The first screen.** The title first, nothing above it (the campaign's name, and what it compares where no
-   question was declared); the declared question quoted on its own line, and under it the arms line (each arm named in
+1. **The first screen.** The title first, nothing above it (what the campaign compares and on what, with its name as a
+   qualifier: :func:`~threetears.evals.analysis.campaign_title.named_title`); the declared question quoted on its own line, and under it the arms line (each arm named in
    full once by the version that answered it, the control marked, the date); the verdict line
    (:func:`~threetears.evals.analysis.report.verdict.verdict_line`), result first; one line per candidate breaking a
    floor, and each report-wide caveat once; the scoreboard, a bare table of
@@ -118,6 +118,7 @@ from threetears.evals.analysis.report.decision import (
     projection_note,
     read_floor,
 )
+from threetears.evals.analysis.campaign_title import declared_title, named_title
 from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals.analysis.report.campaign.provenance import (
     aspect_provenance_blocks,
@@ -251,7 +252,7 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, tr
 
     :param analysis: The analysis.
     :ptype analysis: EvalAnalysis
-    :param campaign_name: The campaign's name, which the title reads when no question is declared; ``None`` names the
+    :param campaign_name: The campaign's name, which the title qualifies what it compares with; ``None`` names the
         campaign by its id.
     :ptype campaign_name: str | None
     :param trials: How much of each failed or lost trial the page lays out (:data:`TrialDetail`): every record by
@@ -287,6 +288,12 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, tr
         writer=analysis_writer(analysis),
         arm_short_names=declared_arm_names(arms),
         trials=trials,
+        title=declared_title(
+            campaign_name or f"Campaign {analysis.campaign_id}",
+            arms,
+            [(bundle.aspect, bundle.short_name)],
+            given={arm.label for arm in analysis.design_snapshot.arms},
+        ),
     )
 
 
@@ -377,7 +384,7 @@ def build_code_only_report(
     :ptype bundle: AnalysisContextBundle
     :param assembled_at: When the bundle was assembled (ISO-8601), stated as the report's date.
     :ptype assembled_at: str
-    :param campaign_name: The campaign's name, which the title reads when no question is declared; ``None`` names the
+    :param campaign_name: The campaign's name, which the title qualifies what it compares with; ``None`` names the
         campaign by its id.
     :ptype campaign_name: str | None
     :param arm_labels: The labels the campaign gives its arms, by variant key
@@ -485,7 +492,7 @@ def analysis_campaign_bundle(analysis: EvalAnalysis) -> CampaignBundle:
     return CampaignBundle.from_frame(analysis.campaign_bundle, bundles, what=what)
 
 
-def analysis_verdict(analysis: EvalAnalysis) -> str:
+def analysis_verdict(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = None) -> str:
     """The verdict line a stored analysis is listed by, written by code over what was frozen with it — never the
     memo's words.
 
@@ -501,11 +508,14 @@ def analysis_verdict(analysis: EvalAnalysis) -> str:
 
     :param analysis: The analysis.
     :ptype analysis: EvalAnalysis
+    :param bundle: The campaign bundle frozen with it (:func:`analysis_campaign_bundle`), where the caller has put it
+        back together already; None puts it back together here.
+    :ptype bundle: CampaignBundle | None
     :return: The verdict line.
     :rtype: str
     :raises RefusedInput: The analysis was written over a bundle of another shape.
     """
-    campaign = analysis_campaign_bundle(analysis)
+    campaign = bundle if bundle is not None else analysis_campaign_bundle(analysis)
     readings = campaign.readings
     names = AspectNames.of(campaign.aspects)
     warnings = campaign_warnings(readings, names)
@@ -513,8 +523,8 @@ def analysis_verdict(analysis: EvalAnalysis) -> str:
     if len(analysis.aspects) > 1:
         verdict = campaign_verdict(readings, [aspect.label for aspect in analysis.aspects], names)
     else:
-        bundle = campaign.aspects[0]
-        verdict = verdict_line(bundle, _namer(_arm_names(bundle)), case_name=_case_namer(bundle)).text
+        aspect = campaign.aspects[0]
+        verdict = verdict_line(aspect, _namer(_arm_names(aspect)), case_name=_case_namer(aspect)).text
     return " ".join([*warnings, verdict])
 
 
@@ -530,12 +540,15 @@ def _page(
     tags: Mapping[str, str] | None = None,
     arm_short_names: Mapping[str, str] | None = None,
     trials: TrialDetail = "all",
+    title: str | None = None,
 ) -> Report:
     """The page every door renders: the same screens, from one bundle, whatever wrote the memo.
 
     ``arm_labels`` are a campaign's own labels for its arms, by variant key, which name those arms everywhere on the
     page in place of their variants' names; ``tags`` the campaign's letter tags for them, which tag and colour them on
-    its charts; ``arm_short_names`` the short names its arms declare, which its charts print in tight places. ``trials`` says whether each failed or lost trial's record is laid out.
+    its charts; ``arm_short_names`` the short names its arms declare, which its charts print in tight places. ``trials`` says whether each failed or lost trial's record is laid out. ``title`` is the campaign's title
+    (:func:`~threetears.evals.analysis.campaign_title.declared_title`) where the caller holds the campaign's declared
+    arms; else the page builds it over the arms it names and the one aspect its bundle reads.
 
     The memo and the contrasts are laid out before the scoreboard, though they print after it: each chart they leave
     out is counted on the way, for the scoreboard's one line about what was not charted.
@@ -610,7 +623,7 @@ def _page(
     blocks = [_in_one_form(block) for block in _traced(blocks, bundle)]
     return Report(
         basis=basis,
-        title=_title(bundle, name, arm),
+        title=title if title is not None else _title(bundle, name, arm, arm_short_names or {}),
         finding_count=finding_count,
         source=source,
         blocks=blocks,
@@ -759,25 +772,23 @@ def _namer(names: dict[str, ArmName]) -> Callable[[str], str]:
     return name
 
 
-def _title(bundle: AnalysisContextBundle, name: str, arm: Callable[[str], str]) -> str:
-    """The title, a name: the campaign's, with the question it asks where none was declared.
-
-    A name that is itself a question (the quick path's ``does v2 do better than v1?``) is the title as written. A
-    declared question is never cut down to a title: it is quoted whole on its own line (:func:`_question_line`).
+def _title(bundle: AnalysisContextBundle, name: str, arm: Callable[[str], str], short_names: Mapping[str, str]) -> str:
+    """The title: what the campaign compares and on what, with its name as a qualifier
+    (:func:`~threetears.evals.analysis.campaign_title.named_title`), over the arms the page names and the one aspect
+    this bundle reads. A declared question is never in the title: it is quoted whole on its own line
+    (:func:`_question_line`).
     """
-    if name.rstrip().endswith("?"):
-        return _capitalized(name)
-    if _question(bundle) is not None:
-        return name
     control = _control_key(bundle)
-    others = [arm(board.variant_key) for board in bundle.scoreboard if board.variant_key != control]
-    if control is None or not others:
-        return name
-    asked = f"does {' or '.join(others)} do better than {arm(control)}?"
-    # A name that only lists the arms (the quick path's ``a vs b``) adds nothing to the question it asks.
-    if all(part.strip() in {arm(control), *others} for part in name.split(" vs ")):
-        return asked[:1].upper() + asked[1:]
-    return f"{name}: {asked}"
+
+    def printed(key: str) -> str:
+        return short_names.get(key) or arm(key)
+
+    return named_title(
+        name,
+        control=[printed(control)] if control is not None else [],
+        candidates=[printed(board.variant_key) for board in bundle.scoreboard if board.variant_key != control],
+        aspects=[(bundle.aspect, bundle.short_name)],
+    )
 
 
 #: A first word that is a plain word, which a title may capitalize; an identifier (``queue_v5``, ``v4-flash``) is not.
