@@ -369,7 +369,9 @@ def _weakest_facts(doc: ReportDoc, report_input: ReportInput) -> Iterator[Editor
         return
     where = "no Watch entry cites a key naming it" if watch else "the decision block has no Watch entry"
     whose = "an arm the document recommends" if margin.arm in doc.recommends else "no arm the document recommends"
-    parts = ["The weakest margin is ", *_WEAKEST_SAID, f", on {whose}; {where}."]
+    # A margin read on an interval names the interval it is read on, plain or multiplicity-corrected.
+    read_on: list[_Part] = [", read on ", _Key("weakest.interval")] if margin.kind != "criterion" else []
+    parts = ["The weakest margin is ", *_WEAKEST_SAID, *read_on, f", on {whose}; {where}."]
     yield _fact("weakest_not_in_watch", watch[0][0] if watch else "decision", parts, report_input)
 
 

@@ -62,7 +62,7 @@
       "id": "R7",
       "verdict": "pass",
       "reason": "Watch names the code-given weakest margin with its value, threshold and gap, then the scoped confounds and short runs.",
-      "quote": "The weakest margin is qwen3.8-flash (A) on the margin on character adherence (v2) at -10.8, leaving a gap of 4.2 to threshold -15.",
+      "quote": "The weakest margin is qwen3.8-flash (A) on the margin on character adherence (v2) at -12.6, leaving a gap of 2.4 to threshold -15.",
       "labeled_by": "model"
     },
     {

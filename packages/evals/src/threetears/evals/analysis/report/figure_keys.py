@@ -3132,7 +3132,10 @@ def reader_name(kind: NamedKind, identifier: str, report_input: ReportInput) -> 
         aspect = _aspect_by_id(report_input, identifier)
         return aspect.name or humanize("dimension", aspect.id)
     if kind == "measure":
-        return report_input.measures[identifier].label or measure_name(identifier)
+        label = report_input.measures[identifier].label
+        # A goal check the input declares no display name for carries its bare expression as its label: it is named as
+        # the package names an undeclared check (a code span), as every table header and chart names it.
+        return measure_name(identifier) if label is None or label == goal_check_of(identifier) else label
     if kind == "judged":
         return report_input.judged[identifier].label or humanize("dimension", identifier)
     if kind == "stratum":
@@ -3186,7 +3189,7 @@ def printed_arm_name(arm: Arm) -> str:
 
 #: What every weakest-margin key begins with.
 WEAKEST_PREFIX = "weakest."
-_WEAKEST_FIELDS = ("margin", "arm", "criterion", "value", "threshold")
+_WEAKEST_FIELDS = ("margin", "arm", "criterion", "value", "threshold", "interval")
 
 
 def _cell_name(report_input: ReportInput, cell_id: str) -> str:
@@ -3221,6 +3224,24 @@ def _margin_name(margin: Margin, report_input: ReportInput) -> str:
     return f"the margin on {aspect}" if margin.kind == "margin" else f"the floor on {aspect}"
 
 
+def weakest_interval_words(margin: Margin) -> str:
+    """Which interval a weakest margin's worst case is read on, in words: the multiplicity-corrected interval of the
+    arm's pass-rate contrast where the input holds one (with its level), else the plain interval at the nominal level
+    with no correction (a reading's and a floor's); a criterion's figure is read as measured, on no interval.
+
+    :param margin: The weakest margin.
+    :ptype margin: Margin
+    :return: The words ``{weakest.interval}`` prints.
+    :rtype: str
+    """
+    if margin.kind == "criterion":
+        return "the figure as measured, on no interval"
+    if margin.corrected:
+        level = f" {margin.level}" if margin.level else ""
+        return f"the multiplicity-corrected{level} interval"
+    return f"the plain {format_number(INTERVAL_LEVEL * 100)}% interval, uncorrected"
+
+
 def _weakest(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     found = weakest_margin(report_input)
     if found is None:
@@ -3241,6 +3262,8 @@ def _weakest(report_input: ReportInput, values: tuple[str, ...], path: str) -> F
         return Figure(path=path, kind="arm", value=found.arm)
     if field == "criterion":
         return _text(path, _margin_name(found, report_input), "what the weakest margin is read against")
+    if field == "interval":
+        return _text(path, weakest_interval_words(found), "which interval the weakest margin is read on")
     if found.kind != "criterion":
         if field == "margin":
             return _number(path, found.gap, "the weakest margin", "points")
@@ -7313,6 +7336,7 @@ __all__ = [
     "key_form",
     "key_subjects",
     "keys_in",
+    "weakest_interval_words",
     "lever_of",
     "literal_numbers",
     "parse_key",

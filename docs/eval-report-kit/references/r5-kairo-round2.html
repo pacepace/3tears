@@ -772,8 +772,11 @@ const usd=v=>"$"+v.toFixed(2);
   const conf=cands.filter(a=>Math.abs(a.reasoning_ratio-ctl.reasoning_ratio)>=0.2);
   // Watch opens with the weakest margin (report_margins.weakest_margin): the reading whose worst drop sits nearest the
   // margin, and why the call holds past it.
-  const weak=cands.slice().sort((a,b)=>R[a.id].within_interval[0]-R[b.id].within_interval[0])[0];
-  const one=v=>v.toFixed(1).replace(/\.0$/,"");const drop=-R[weak.id].within_interval[0];
+  // A reading's worst case is read on the multiplicity-corrected interval of the arm's pass-rate contrast where the
+  // input holds one, else on its plain interval (report_margins.corrected_interval).
+  const worstEnd=a=>{const t=D.contrasts.find(c=>c.arm===a.id&&c.kind==="trial"&&c.interval);return t?t.interval[0]*100:R[a.id].within_interval[0];};
+  const weak=cands.slice().sort((a,b)=>worstEnd(a)-worstEnd(b))[0];
+  const one=v=>v.toFixed(1).replace(/\.0$/,"");const drop=-worstEnd(weak);
   const weakText=`The weakest margin: ${weak.name}'s worst drop, ${one(drop)} points, sits ${one(asp.margin-drop)} points inside the margin on ${asp.name}; past that line ${ctl.name} is still cheaper, so the call holds. `;
   document.getElementById("d-watch").innerHTML=`${weakText}${conf.map(a=>`${a.name} spent ${Math.round(a.reasoning_ratio*100)}% of its output reasoning against ${ctl.name}'s ${Math.round(ctl.reasoning_ratio*100)}%, and other swept levers varied with the model, so its result is not the model's alone.`).join(" ")} ${D.caveats.short_runs.length===2?"Two":D.caveats.short_runs.length} of ${D.arms.find(a=>a.id===D.caveats.short_runs[0].arm)?.name??"one candidate"}'s runs each lost one trial to the test setup.`;
   // Next names the experiment that could change the answer, which way, and why off-lane asks are the stratum to oversample.

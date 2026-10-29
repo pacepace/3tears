@@ -426,9 +426,10 @@ def test_a_contrast_the_input_leaves_untested_is_named_without_its_figures_and_n
 #:
 #: - r2 with its gates read in each task fires nothing: two options are undecided on the p95 gate read in each task,
 #:   their p95 over every case missing it, and the document cites that very figure for each, which answers it.
-#: - s1: the document keeps production where code reads a tradeoff (no option dominates), and the weakest margin, v2's
-#:   tone floor, is one Watch does not name (it discusses v2's billing floor). Both true; whether the call and Watch
-#:   are argued well is the editor's.
+#: - s1: the document keeps production where code reads a tradeoff (no option dominates). True; whether the call and
+#:   Watch are argued well is the editor's. Its weakest margin is no longer a fact: read on the corrected interval, v4's
+#:   billing reading (99.55%) sits past the margin, which is the very reading Watch discusses (it was v2's tone floor
+#:   on the plain interval, which Watch did not name).
 #: - s2: the document recommends beta, at low confidence, where code reads a tradeoff. True.
 #: - Kairo: the weakest margin is qwen3.8-flash's reading against the margin, a candidate the call does not pick, and
 #:   Watch does not name it. True; the editor weighs whether it matters to keeping September.
@@ -436,7 +437,7 @@ _EXPECTED: dict[str, list[str]] = {
     "prototype2/r2-with-its-gates-read-in-each-task": [],
     "prototype2/r2-with-one-gate": [],
     "prototype2/r3-without-its-configs": [],
-    "prototype2/s1": ["call_vs_dominance", "weakest_not_in_watch"],
+    "prototype2/s1": ["call_vs_dominance"],
     "prototype2/s2": ["call_vs_dominance"],
     "prototype2/s3": [],
     "prototype3/kairo": ["weakest_not_in_watch"],
@@ -505,6 +506,7 @@ def test_facts_are_byte_identical_when_only_the_story_changes(name: str, recomme
 def test_no_fact_tells_the_editor_what_to_conclude() -> None:
     """Facts state what holds: none says what should, must or ought to be done."""
     facts = [
+        *_facts(_KAIRO),
         *_facts(_R1, recommends=["atlas-l"]),
         *_facts(_S1, recommends=["v3"]),
         *_facts(_R4, recommends=["f64"]),

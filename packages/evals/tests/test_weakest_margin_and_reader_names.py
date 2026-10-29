@@ -75,7 +75,9 @@ def _slot(plan: dict[str, Any], key: str) -> dict[str, Any]:
         ("r2", "brisk-s.low.r1", "pass_rate", None, 0.14),
         ("r3", "brisk-s.few", "overall", None, 0.7),
         ("r4", "f16", "facts", None, -0.6),
-        ("r5", "qwen3.8-flash", "character adherence (v2)", None, 4.21),
+        # Re-pinned from 4.21: the reading's worst case is read on the multiplicity-corrected interval (-12.59, the
+        # arm's pass-rate contrast), not the plain 95% one (-10.79), so it sits 2.41 points from the -15 margin.
+        ("r5", "qwen3.8-flash", "character adherence (v2)", None, 2.41),
     ],
 )
 def test_the_weakest_margin_on_each_fixture(name: str, arm: str, source: str, where: str | None, gap: float) -> None:
@@ -127,16 +129,21 @@ def test_a_reading_interval_end_that_is_not_finite_gives_no_margin() -> None:
     assert all(math.isfinite(margin.gap) for margin in held)
 
 
-def test_a_reading_wins_the_tie_with_the_floor_that_copies_it() -> None:
+def test_a_reading_read_on_its_corrected_interval_is_weaker_than_the_floor_that_copies_its_plain_one() -> None:
+    # Re-pinned from a tie: the floor and the reading used to share the plain interval's worst end (-10.79), so the
+    # reading won the tie. The reading's worst case is now the corrected interval's (-12.59), so it is the weaker of
+    # the two outright, and the floor still reads the plain one at the nominal level, as a floor does.
     found = weakest_margin(_input("r5"))
-    assert found is not None and found.kind == "margin"
-    assert any(margin.kind == "floor" and margin.relative == found.relative for margin in margins(_input("r5")))
+    assert found is not None and found.kind == "margin" and found.corrected
+    floors = [margin for margin in margins(_input("r5")) if margin.kind == "floor" and margin.arm == found.arm]
+    assert floors and all(not margin.corrected and margin.relative > found.relative for margin in floors)
 
 
 def test_the_weakest_keys_render_in_their_lines_units() -> None:
     said = "{weakest.arm}: {weakest.value} against {weakest.criterion} at {weakest.threshold}, gap {weakest.margin}"
+    # Re-pinned from -10.8 and a gap of 4.2: the worst case is the corrected interval's (-12.59), 2.4 from the margin.
     assert render(said, _input("r5"), {}) == (
-        "qwen3.8-flash (A): -10.8 against the margin on character adherence (v2) at -15, gap 4.2"
+        "qwen3.8-flash (A): -12.6 against the margin on character adherence (v2) at -15, gap 2.4"
     )
     assert render(said, _input("r1"), {}) == (
         "Atlas-M (B): 90% against Resolves the issue in Troubleshooting (multi-turn) at 90%, gap 0"
@@ -156,7 +163,8 @@ def test_a_decide_watch_citing_no_weakest_key_is_refused_and_a_tradeoff_plan_is_
     _slot(plan, "watch")["text"] = "{arm:1017} spent {reasoning_ratio.1017|pct} of its output reasoning."
     faults = _faults(plan)
     assert [path for path, _ in faults] == ["decision.slots[2].text"]
-    assert "qwen3.8-flash (A), -10.8 against the margin on character adherence (v2) at -15" in faults[0][1]
+    # Re-pinned from -10.8: the worst case is read on the corrected interval.
+    assert "qwen3.8-flash (A), -12.6 against the margin on character adherence (v2) at -15" in faults[0][1]
     assert _faults(_anchor("r4"), "r4") == []
 
 
@@ -179,7 +187,9 @@ def test_each_id_has_one_reader_name_its_keys_print() -> None:
 def test_the_facts_and_the_planners_message_carry_the_weakest_margin_and_the_reader_names() -> None:
     facts = plan_facts(_input("r5"))
     assert facts.weakest is not None
-    assert facts.weakest.said.startswith("qwen3.8-flash (A): -10.8 against the margin on character adherence (v2)")
+    # Re-pinned from -10.8: the worst case is read on the corrected interval, which the facts' line names.
+    assert facts.weakest.said.startswith("qwen3.8-flash (A): -12.6 against the margin on character adherence (v2)")
+    assert facts.weakest.said.endswith("read on the multiplicity-corrected 99.69% interval")
     assert "weakest.margin" in facts.weakest.keys
     assert facts.names["stratum"]["off_lane"] == "off lane"
     profile = HostProfile(host_id="names", host_sweepables=SHARED_CORE, measures=MeasureRegistry(()))

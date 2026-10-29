@@ -35,6 +35,7 @@ __all__ = [
     "COMPARE_NOTE",
     "BASIS_NOTE",
     "ANSWER_TEMPLATES",
+    "WEAKEST_INTERVAL_TEMPLATE",
     "APPENDIX_TITLE",
     "ALL_PRICED_TEMPLATE",
     "ARM_HEADERS",
@@ -145,6 +146,9 @@ _SLOT_TITLES: dict[str, str] = {
     "our_lean": "Our lean",
     "what_settles_it": "What would settle it",
 }
+
+#: Code's line under a Watch that cites the weakest margin read on an interval: which interval its worst case is.
+WEAKEST_INTERVAL_TEMPLATE = "The worst case is read on {interval}."
 
 #: The second decide slot's title: why not the candidates against a control, why not the others in a choice.
 _WHY_NOT_TITLES: dict[bool, str] = {True: "Why not the candidates", False: "Why not the others"}
