@@ -114,6 +114,30 @@ class TestCachedHubJwksProvider:
         await provider.stop()
 
     @pytest.mark.asyncio
+    async def test_every_cold_start_retry_is_fast_not_only_the_first(self) -> None:
+        # the loop's FIRST sleep is set at start; every later one is the pass's own request. a pass whose
+        # request the loop ignored would fall back to the hour-long steady interval after one failed retry.
+        nc = MagicMock()
+        nc.request_raw = AsyncMock(
+            side_effect=[
+                RequestError("hub responder not up yet"),
+                RequestError("still not up"),
+                RequestError("still not up"),
+                json.dumps(_JWKS).encode("utf-8"),
+            ]
+        )
+        provider = _provider(nc, refresh_interval_seconds=3600, initial_retry_interval_seconds=0.01)
+        await provider.start()
+        try:
+            for _ in range(100):
+                if provider() == _JWKS:
+                    break
+                await asyncio.sleep(0.01)
+            assert provider() == _JWKS, "the third fast retry warmed it, not the hour-long steady loop"
+        finally:
+            await provider.stop()
+
+    @pytest.mark.asyncio
     async def test_steady_interval_after_warm_no_busy_retry(self) -> None:
         # once warmed, the loop uses the long steady interval -- a single fetch is enough and there
         # is no busy fast-retry afterwards (the side_effect would raise StopAsyncIteration on a 2nd).
