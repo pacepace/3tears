@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core, nats: a pod that loads or rebuilds its copy keeps its event loop and its NATS connection
+
+From cobalt dev, 2026-10-29: a reports pod rebuilding its scoped snapshot stalled its loop, was dropped by the NATS
+server as a slow consumer, and logged unretrieved task exceptions; each publish spent 25 s retiring chunks.
+
+**Fixed:**
+- **SQL labelling (core):** a plain statement's operation is labelled in a few C-level searches. A page's multi-row
+  INSERT took about 20 ms to tokenize a character at a time on the loop, and each page's text differs, so the cache
+  never held it; it now takes about 1 ms. A statement with a literal, a dollar-quoted text or a comment is still read
+  as tokens.
+- **Chunk reads (core):** a `ScopedSnapshot` reads at most `CHUNK_READS_AT_ONCE` (4) chunks from the object store at
+  once, whatever the scopes it fetches ahead. Sixteen scopes' chunks at once passed the server's MaxPending, and the
+  server cut the pod's connection.
+- **Sweeps (core):** `publish_staged` retires and compacts its moved scopes `SWEEPS_AT_ONCE` (8) at a time. It did
+  them one after another.
+- **Abandoned calls (nats):** a JetStream call `run_bounded` abandons, at its deadline or because its caller was
+  cancelled, has its outcome taken when it ends. It no longer logs "Task exception was never retrieved".
+
 ## v0.83.0 -- 2026-10-29
 
 ### observe, core: a periodic tick sets its next delay only with `NextDelay`, and never below `min_delay`
