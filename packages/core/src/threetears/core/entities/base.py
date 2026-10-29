@@ -40,6 +40,7 @@ _INTERNAL_ATTRS = frozenset(
         "_dirty",
         "_changes",
         "_held",
+        "_born",
         "original_date_updated",
         "_column_names",
     }
@@ -189,6 +190,10 @@ class BaseEntity:
         # cached could be older than a write that landed meanwhile, with nothing left to evict
         # it. Writing here would bypass the fence for every scan in every package.
         object.__setattr__(self, "_held", None)
+        # a new entity's own copy of the row it was made with: L1 answers for it, but L1 is a cache an
+        # eviction may empty at any await, and a caller holding the entity across one (a check, an audit
+        # snapshot) must still read and save what it made
+        object.__setattr__(self, "_born", dict(data) if is_new and collection is not None else None)
         if collection is None:
             # No collection — transient dict storage for factory-created entities.
             object.__setattr__(self, "_changes", dict(data))
@@ -283,6 +288,9 @@ class BaseEntity:
             return default
         entity_id = object.__getattribute__(self, "_id")
         result = collection.get_field_sync(entity_id, field)
+        if result is MISSING:
+            born = object.__getattribute__(self, "_born")
+            result = born.get(field, MISSING) if born is not None else MISSING
         return result if result is not MISSING else default
 
     def __getattr__(self, name: str) -> Any:
@@ -331,6 +339,9 @@ class BaseEntity:
         entity_id = object.__getattribute__(self, "_id")
         row = collection.get_row_sync(entity_id)
         if row is None:
+            born = object.__getattribute__(self, "_born")
+            if born is not None:
+                return {**born, **changes}
             if changes:
                 return dict(changes)
             raise RuntimeError(
@@ -349,6 +360,8 @@ class BaseEntity:
             # a held row stays held: the edits just persisted become part of it.
             object.__setattr__(self, "_held", {**held, **object.__getattribute__(self, "_changes")})
         object.__setattr__(self, "_changes", {})
+        # no longer new: what it was made with is no fallback for what it now is
+        object.__setattr__(self, "_born", None)
         log.debug(
             "Entity marked clean",
             extra={"extra_data": {"id": str(self._id)}},

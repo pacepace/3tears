@@ -26,7 +26,27 @@ L1; it reaches L2 only when the change landed after it was put there, and is the
 stamp is current. Nothing is served or kept unless the tables and the access cache are followed. No
 lifetimes.
 
+### core: a new entity keeps the row it was made with until it is saved
+
+**Fixed:** a new entity's working row lived only in L1: `BaseEntity.__init__` wrote it there and kept no copy, and
+`save_entity` reads it back first. A caller that held a new entity across an await (a check, an audit snapshot) lost
+it to any eviction of the key: `to_dict()` raised `L1 cache miss in to_dict()`, or a field set afterwards was saved
+without the rest of the row. The hub's group member add failed that way on cobalt dev during a 24-member
+`group apply`. The entity now keeps the row it was made with and answers from it when L1 misses; L1 still answers
+first, and `mark_clean` drops the copy, so a clean entity with no held row and no L1 row still raises.
+
 ## v0.82.0 -- 2026-10-28
+
+### core: a bulk write's CPU work runs off the event loop
+
+**Fixed:** `SqlL3Backend.upsert_many` and `copy_many` built every row's parameters, measured each statement as the
+rail sends it, and (over the rail) converted each value and encoded the request on the event loop. For a page of a
+thousand rows that is tens of milliseconds of Python, and it held every call the process answers for as long, a
+page after a page. A reports tool pod writing a local LSF pull over the rail logged 60 such stalls in 220 s (up to
+0.3 s). The parameters and batches are now built on a thread (`asyncio.to_thread`). The proxy builds and encodes a
+copy page, and any statement binding more than 256 parameters, on a thread too (`nats_request(...,
+offload_encode=True)`). A statement's operation is now read once per statement text, because a page's
+multi-row `INSERT` was tokenized in Python several times per statement. What is sent is unchanged.
 
 ### agent-tools, nats: a replica joins its call group when it can answer, and leaves it without dropping a call
 
