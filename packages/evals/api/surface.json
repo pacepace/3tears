@@ -8081,6 +8081,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.ops.ReportState": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.ops.ReportWriter": {
       "kind": "protocol",
       "signature": "",

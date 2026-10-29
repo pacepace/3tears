@@ -1617,6 +1617,7 @@
 "threetears.evals.ops.ReporterModelResolver": "stable",
 "threetears.evals.ops.ReporterModelRole": "stable",
 "threetears.evals.ops.ReporterPrompts": "provisional",
+"threetears.evals.ops.ReportState": "provisional",
 "threetears.evals.ops.ReportWriter": "provisional",
 "threetears.evals.ops.result_get": "provisional",
 "threetears.evals.ops.result_rate": "provisional",
