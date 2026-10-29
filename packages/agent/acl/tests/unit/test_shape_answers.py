@@ -450,6 +450,23 @@ class TestAChangeDropsOnlyWhatItReaches:
         assert compute.calls == 1
 
 
+class TestADropThatMovedNoMark:
+    async def test_trusts_nothing_until_the_table_applies_a_later_generation(self, bus: FakeNatsClient) -> None:
+        store = _Store()
+        estate = _Estate(store)
+        replica = await _replica(bus, store)
+        shape = await estate.shape(store, estate.reader)
+        await _ask(replica, estate, shape, _Computer())
+        # a table changed with no row to say what (a truncate, a bulk load): dropped, no mark moved
+        replica.registry.drop_table("groups", reason="changed with no row-level mark")
+        compute = _Computer()
+        assert (await _ask(replica, estate, shape, compute)).outcome is ShapeAnswerOutcome.UNCACHED
+        assert compute.calls == 1
+        replica.hear(_row("groups", generation="inc:1", ids=["platform", f"{uuid4()}"]))
+        assert (await _ask(replica, estate, shape, compute)).outcome is ShapeAnswerOutcome.DERIVED
+        assert (await _ask(replica, estate, shape, compute)).outcome is ShapeAnswerOutcome.L1
+
+
 class TestTheReadFence:
     async def test_an_answer_derived_while_a_change_landed_is_kept_nowhere(self, bus: FakeNatsClient) -> None:
         store = _Store()
@@ -529,6 +546,21 @@ class TestUntrusted:
         assert compute.calls == 2
         assert replica.answers.held == 0
         assert _l2_keys(await _bucket(bus)) == []
+
+    async def test_nothing_held_before_a_watch_failed_is_served_once_it_runs_again(self, bus: FakeNatsClient) -> None:
+        store = _Store()
+        estate = _Estate(store)
+        replica = await _replica(bus, store)
+        shape = await estate.shape(store, estate.reader)
+        await _ask(replica, estate, shape, _Computer())
+        replica.followed = False
+        await _ask(replica, estate, shape, _Computer())
+        assert replica.answers.held == 0
+        replica.followed = True
+        compute = _Computer()
+        # L2 still holds it, checked against its stamp: nothing was missed, so it is current
+        assert (await _ask(replica, estate, shape, compute)).outcome is ShapeAnswerOutcome.L2
+        assert compute.calls == 0
 
     async def test_losing_the_follower_drops_what_is_held(self, bus: FakeNatsClient) -> None:
         store = _Store()

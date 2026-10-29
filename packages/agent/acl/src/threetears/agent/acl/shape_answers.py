@@ -265,16 +265,20 @@ class ShapeDependencies:
 
         return remove
 
-    def _adopt(self, table: str) -> None:
+    def _adopt(self, table: str, *, past_now: bool = False) -> None:
         """take the registry's mark for ``table`` and trust the table from the newest generation it heard.
 
         :param table: the table
         :ptype table: str
+        :param past_now: trust only generations after the newest heard: for a drop that moved no mark,
+            whose reach is unknown at the generation this replica is already at
+        :ptype past_now: bool
         :return: nothing
         :rtype: None
         """
         self._marks.adopt(table, self._registry.generation_marks)
-        self._floor[table] = _generation(self._marks.highest_heard(table))
+        floor = _generation(self._marks.highest_heard(table))
+        self._floor[table] = floor if floor is None or not past_now else (floor[0], floor[1] + 1)
         for tables in self._changed.values():
             tables.pop(table, None)
 
@@ -321,7 +325,10 @@ class ShapeDependencies:
         """
         with self._lock:
             self._fence += 1
-            self._adopt(table)
+            # a drop after a judged generation moved the registry's mark past everything this replica
+            # stamped; a drop that moved nothing leaves the reach unknown at the generation it is at
+            unmoved = self._marks.highest_heard(table) == self._registry.generation_marks.highest_heard(table)
+            self._adopt(table, past_now=unmoved and self._marks.recorded(table) is not None)
         self._notify(None)
 
     def _notify(self, deps: frozenset[str] | None) -> None:
@@ -650,6 +657,9 @@ class AccessShapeAnswers(DerivedCollection[ShapeAnswerRow]):
         """
         key = self.key_of(kind, customer_id, shape)
         if not self._dependencies.trusted:
+            # nothing held while a watch could miss a row is served once trust returns
+            if self._held:
+                self._on_change(None)
             body = await compute(self._actors.actor_for(shape))
             return None if body is None else ShapeAnswer(body, ShapeAnswerOutcome.UNCACHED)
         held = self._select_from_l1(key)
