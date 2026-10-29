@@ -133,19 +133,21 @@ async def test_the_report_is_titled_by_the_question_its_campaign_asks() -> None:
     assert comparison.name == "hasty vs careful"
     assert comparison.report.source.campaign_name == "hasty vs careful"
     lines = report_markdown(comparison.report).splitlines()
-    # A name that only lists the arms adds nothing to the question it asks.
-    assert lines[0] == "# Does careful do better than hasty?"
+    # The title is code's: what is compared and on what, the name a qualifier. The quick path declares no question, so
+    # none is quoted under it; the arms line follows.
+    assert lines[0] == "# hasty vs careful · classify (hasty vs careful)"
     assert lines[1].startswith("hasty (control) vs careful · ")
 
     named = await _compare(name="triage rules", scope="compare-named")
-    assert report_markdown(named.report).startswith("# triage rules: does careful do better than hasty?\n")
+    assert report_markdown(named.report).startswith("# hasty vs careful · classify (triage rules)\n")
 
 
 async def test_a_report_without_the_campaign_s_name_is_titled_by_its_id() -> None:
     comparison = await _compare()
     report = comparison.report
     nameless = build_code_only_report(report.bundle, assembled_at=report.source.generated_at)
-    assert report_markdown(nameless).startswith(f"# Campaign {comparison.campaign_id}: does careful do better")
+    # The qualifier reads the id where the page is given no name.
+    assert report_markdown(nameless).startswith(f"# hasty vs careful · classify (Campaign {comparison.campaign_id})\n")
 
 
 async def test_the_arms_share_a_host_the_caller_hands_over() -> None:

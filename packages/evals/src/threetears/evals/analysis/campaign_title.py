@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Collection, Sequence
 
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.style import arm_display_name
+from threetears.evals.analysis.style import arm_display_name, arm_name
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm, printed_aspect_name
 
@@ -128,7 +128,8 @@ def _printed(arm: CampaignArm, given: Collection[str] | None) -> str:
         return arm.short_name
     if given is None or arm.label in given or not arm.levers:
         return arm.label
-    return arm_display_name(arm.label, arm.levers)
+    # A label code spelled as ``axis=level`` is read as every page reads it (``careful``, never ``candidate=careful``).
+    return arm_display_name(arm_name(arm.label).label, arm.levers)
 
 
 def _title_arms(campaign: EvalCampaign, candidate_models: Sequence[str], *, variants: int, judges: bool) -> str:

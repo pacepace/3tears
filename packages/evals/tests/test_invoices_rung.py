@@ -84,7 +84,8 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
     result = await module.invoices.run(store=":memory:")
     # The first screen, golden: the question, the arms with the control marked, the result, a bare scoreboard.
     lines = report_markdown(result.report).splitlines()
-    assert lines[0] == "# invoices: does v2 do better than v1?"
+    # The title is code's: what is compared and on what, the campaign's name the qualifier (no question was declared).
+    assert lines[0] == "# v1 vs v2 · classify (invoices)"
     assert lines[1].startswith("v1 (control) vs v2 · ")
     # Never "no difference": a contrast not separated claims none.
     assert lines[3] == (
@@ -142,7 +143,7 @@ async def test_its_campaign_page_opens_on_the_guardrail_v2_is_not_shown_safe_on(
     result = await module.invoices.run(store=":memory:")
     lines = campaign_report_markdown(result.page).splitlines()
     # A guardrail warns as loudly as a broken floor, under the title and the question, and picks no arm.
-    assert lines[0] == "# invoices"
+    assert lines[0] == "# v1 vs v2 · classify (invoices)"
     warning = "v2 is not yet shown safe on the no invented total guardrail on classify."
     assert f"**{warning}**" in lines[: lines.index(next(line for line in lines if line.startswith("## ")))]
     html = campaign_report_html(result.page)

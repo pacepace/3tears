@@ -110,6 +110,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/aspects.py": {},
     "analysis/campaign_bundle.py": {},
     "analysis/campaign_readings.py": {},
+    "analysis/campaign_title.py": {},
     "analysis/campaigns.py": {},
     "analysis/cell_mean.py": {},
     "analysis/cells.py": {},
