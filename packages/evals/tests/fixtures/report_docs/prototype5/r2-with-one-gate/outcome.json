@@ -10,73 +10,134 @@
           "n": 1,
           "name": "First screen",
           "score": 2,
-          "reason": "The headline, decision block and c-frontier give the call: low-reasoning Brisk-S with one retry, the cheapest of five passing settings at $0.302 per thousand calls. They give the reason and name the main risk: it clears the 97% gate by only 0.1 points, and a fresh run would read it below 38.6% of the time. They also say what changes if the gate must hold on its interval: high-reasoning Brisk-S with one retry, at $1,324 more a month. The figures match the snapshot: settle wrong_side 38.6%, gap +0.1, and the cost ratio of 2.1."
+          "reason": "The headline, lede and decision block tell a reader what to ship (Brisk-S, low reasoning, one retry), why (it costs least of the five that clear, at $0.302 per 1k calls) and the main risk (it clears by only 0.1 points, and a fresh run reads it below the gate 38.6% of the time). They also name the safer pick (high reasoning, at $1,324 more a month). c1 backs this: five of eighteen clear, and the pick sits closest to the line. options_dominance agrees that the pick is the only undominated survivor."
         },
         {
           "n": 2,
           "name": "Coherent story",
-          "score": 2,
-          "reason": "c-frontier gives the pick and c-thin gives its weakness. c-cost-step prices the alternative, c-levers explains why the retry matters, and c-tasks says where the misses are. Each sentence agrees with its block row by row. The threshold sweep confirms the 'What you could change' bands (95.3 to 97.1 for the pick, then 98.0, then 98.6). Two wording slips are listed as findings: the 'only one no other setting beats on both cost and pass rate' line, and two different case counts for settling the clearance. Neither reverses the story."
+          "score": 1,
+          "reason": "The claims follow on from one another. c1 shows who clears, c2 prices them, c3 shows how thin the margin is, and c4 and c5 explain what buys pass rate. Each claim matches its block row by row. The figures check out: settle_cases gives 38.6% and 0.9%, and the threshold sweep gives the pick's band as 95.3% to 97.1%. But the first confidence bullet says the pick's 'true pass rate sits below the gate'. That contradicts the headline and c3, which estimate it at 97.1%, above the line, and only call the clearance inside the noise."
         },
         {
           "n": 3,
           "name": "Honest emphasis",
           "score": 2,
-          "reason": "The pick's weak axis is the first thing a reader sees. The interval crossing the gate (96.2 to 98.1%), the 38.6% wrong-side rate, the best-of-eighteen caveat and Low confidence are all on the first screen. The pick's sub-gate results on multi-hop (95.6%) and ambiguous entity (96.4%) are shown and labelled descriptive. The high-reasoning lift is correctly called not told apart from zero (-0.4 to +2.1)."
+          "reason": "The pick's weak axis, its 0.1-point clearance, is in the headline, Watch, c3 and a Low confidence. c4 says the high-over-low gain of +0.8 (-0.4 to +2.1) does not exclude zero. The only overreach is minor: c4's caption ranks per-task gains that have no interval."
         },
         {
           "n": 4,
           "name": "Sound elision",
           "score": 2,
-          "reason": "No latency budget is declared, and the pick is faster than the alternative anyway (513 vs 870 ms p95). Calls per task is close between the two Brisk-S settings (1.539 vs 1.476), so the cost ratio per task barely moves (about 2.0 vs 2.1). Atlas-M and Nano-XS lever effects cannot offer a cheaper passing setting. Outcome and extra calls hold no figures. None of these would change the call."
+          "reason": "Nothing left out would change the call. Latency favours the pick (513 ms p95, against 870 ms for high reasoning). Calls per task are similar (1.539 against 1.476) and don't reorder the cost. The per-task rates are in the appendix and in a next step."
         },
         {
           "n": 5,
           "name": "Confounds handled",
-          "score": 2,
-          "reason": "Each confound appears in the confidence line, Method or next steps: no control and unpaired comparisons, best-of-n selection, task mix against live traffic (with its own next step), the volume unit not being stated (monthly costs could run about 1.5 times higher if it counts tasks), and the pass rule not being stated."
+          "score": 1,
+          "reason": "No control, best-of-18 selection and unnamed cost routing are each carried in a confidence clause and a next step. The ambiguity over the volume unit is in Method and a next step, but the headline, decision and explore state '$1,324 more a month' flatly. If the 4,000,000 counts tasks, the gap is about $1,880 a month, from each arm's calls per task. A reader pricing the trade could be misled by about 40%."
         },
         {
           "n": 6,
           "name": "Actionable next steps",
-          "score": 2,
-          "reason": "Each step names an action and what it settles. The owner declares whether the gate is read on the interval or the point estimate, which settles low vs high reasoning. A fix-and-retest run settles whether low reasoning clears the gate by more than noise. Declaring the live task mix and volume unit settles whether the eval's figures describe production. The second step leaves out ambiguous-entity handling (see findings)."
+          "score": 1,
+          "reason": "Declaring how the gate reads, re-running high reasoning on 1,660 cases and declaring traffic shares are concrete, and each says what it settles. 'Improve Brisk-S's multi-hop planning and re-run J' names neither the change nor a run size, so it settles nothing in particular."
         },
         {
           "n": 7,
           "name": "Evidence fits claims",
           "score": 1,
-          "reason": "Most blocks fit their claims: the scatter in c-frontier, the intervals against the gate in c-thin, the difference with its interval in c-cost-step, and the per-task bars in c-tasks. Two gaps remain. c-levers states '$0.014 more per thousand calls', but its block holds no cost row. The decision block's Watch cites 111,255 cases to settle the pick, while the c-thin table shows only 38,350 and 54,451 for the same question. A reader sees three different sizes and no explanation of how they differ."
+          "reason": "c1, c2, c4 and c5 each show their claim's figure. But the page's headline settling numbers, 111,255 cases for the pick and 1,660 for high reasoning, are not in c3's block. That block prints 38,350 and 54,451 for the pick, and 572 and 812 for high reasoning. A reader sees two different 'cases to settle' figures for the same arm with no link between them. c5 prints one interval end as '+0.03535'."
         }
       ],
       "findings": [
         {
           "claim": "",
-          "severity": "should_fix",
-          "finding": "The Recommendation says the pick is 'the only one no other setting beats on both cost and pass rate'. As written this is false. High-reasoning Brisk-S with one retry (98.0%) and high-reasoning Atlas-M with one retry (98.6%) are beaten by no setting on both axes, and neither are the cheap Nano-XS settings. The pick is undominated only when gate-passing is treated as a filter and the passing settings are then compared on cost. That is what options_dominance computes (it weighs gates, then cost). Reword along these lines: 'among the settings that clear the gate, every other one costs more'."
+          "severity": "must_fix",
+          "finding": "The first confidence bullet reads 'J's true pass rate sits below the gate'. That asserts the pick fails, which contradicts the headline and c3: the estimate is 97.1%, above the 97% line, and the clearance is only inside its noise. Reword it as a condition, for example: 'If J's true pass rate sits below the gate, which its 0.1-point clearance cannot rule out, then L is the cheapest configuration that clears.'"
         },
         {
-          "claim": "c-thin",
+          "claim": "c3",
           "severity": "should_fix",
-          "finding": "Watch and next step 2 say settling the pick 'four times in five needs 111,255 cases'. That is the two-sided, 80%-power size (settle cases_needed_two_sided_80). The c-thin table prints only the 50% sizes, 38,350 one-sided and 54,451 two-sided. A reader sees three numbers for 'cases needed' and none is explained against the others. Add the 80% columns (cases_needed_80 = 87,635 and cases_needed_two_sided_80 = 111,255) to the c-thin table, or say in the caption that the 'Needed' columns are the size at which half of such runs settle it."
+          "finding": "The confidence line and next steps cite 111,255 cases to settle the pick and 1,660 for high reasoning 'four times in five'. Those are the two-sided sizes at four-in-five, settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided_80 and settle.criteria.pass_rate.brisk-s.high.r1.overall.cases_needed_two_sided_80. c3's block shows only the half-of-runs sizes: 38,350 and 54,451 for the pick, and 572 and 812 for high reasoning. Add the four-in-five columns to c3's table, or label in the text which size each number is, so a reader doesn't see two unexplained case counts for the same arm."
         },
         {
-          "claim": "c-levers",
+          "claim": "",
           "severity": "should_fix",
-          "finding": "The claim prices the retry at '$0.014 more per thousand calls' ($0.288 to $0.302), but the block draws only pass-rate effects. Add the cost step to the block, or move the cost figure out of this claim. Also, the high-reasoning retry row prints its lower end as '+0.03535' while every other row is rounded to one decimal place. Print it as '+0.04' or similar so it doesn't read as false precision. Note that this interval only barely excludes zero, so the claim's 'at every reasoning level' rests on that row's thin margin."
+          "finding": "The headline, decision ('about $1,208 a month', '$1,324 more a month', '$11,376 a month more than L') and the explore row price the trade as if the 4,000,000 monthly volume counts calls. Method says the input doesn't say whether it counts calls or tasks. If it counts tasks, each figure scales by calls per task (1.539 for the pick, 1.476 for high reasoning), and the gap becomes about $1,880 a month. Qualify the monthly figures with 'if the volume counts calls', or give both readings, where the trade is priced."
         },
         {
-          "claim": "c-tasks",
+          "claim": "",
           "severity": "should_fix",
-          "finding": "'The pick's misses sit in multi-hop and ambiguous-entity queries' overstates what the block shows. Date and unit math reads 97.0%, so it also misses, and one of the three kept failures (TQ-0772, the off-by-one date window, the most common wrong-args pattern at 9 of 17) is from date math. Say the pick sits below the gate line on multi-hop and ambiguous entity and fails in every kind. Next step 2 targets multi-hop decomposition and date-window handling but not the ambiguous-entity clarification failure (TQ-1103), although c-tasks and the task-mix caveat both name ambiguous entity as a weak kind. Add it, or say why it is left out."
+          "finding": "The second next step, 'Improve Brisk-S's multi-hop planning, where J reads 95.6%, and re-run J', names no specific change and no run size. Name the intervention, such as a prompt or tool change for multi-hop. Give the cases a re-run would need to show the pick clears with room, and note that per-task case counts are unstated, so the 95.6% has no interval."
         },
         {
-          "claim": "c-thin",
+          "claim": "",
           "severity": "should_fix",
-          "finding": "The reference lines in the c-thin and c-tasks blocks are labelled 'Floor 97%', but the rows and the rest of the page call this criterion a gate ('Pass rate gate, at least 97%'). Use one name so a reader doesn't look for a second criterion."
+          "finding": "The third next step sizes the high-reasoning re-run at 1,660 cases on today's 98.0%. The page itself says best-of-18 selection makes today's figures read high, and if the truth is lower that size settles it less than four times in five. Say that the size assumes today's estimate, or size it on a lower plausible pass rate."
+        },
+        {
+          "claim": "c4",
+          "severity": "should_fix",
+          "finding": "The caption says 'multi-hop gains the most' (+1.7, against +0.1 to +1.2 elsewhere). The per-task rows carry no interval because per-task case counts are unstated. Mark the per-task ordering as descriptive, or drop the ranking from the caption."
+        },
+        {
+          "claim": "c5",
+          "severity": "should_fix",
+          "finding": "The retry effect for Brisk-S at high reasoning prints its interval as '+0.03535 to +2.6'. Every other end is at one decimal place. Round it to match (+0.04 or +0.0) so it doesn't read as false precision."
         }
       ],
-      "total": 13,
+      "total": 10,
+      "passes": false,
+      "must_fix": true
+    },
+    {
+      "round": 2,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, lede and decision block say what to do: ship Brisk-S at low reasoning with 1 retry (J), at $0.302 per 1k calls. They say why: it is the cheapest of the five configurations that clear the gate. And they say the main risk: it clears by only 0.1 points, and a fresh run of today's size would read it below the gate 38.6% of the time. The fallback is named with its price: Brisk-S at high reasoning with 1 retry (L), at $0.633. c1 shows the five that clear, with J closest to the line. options_dominance agrees that J is the only undominated option."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "Each claim leads to the next. c1 shows who clears, c2 shows J costs least among them, and c3 shows J's clearance is inside its noise. c4 shows L's gain over J is not separated from zero, and c5 shows the retry is what lifts J over the line. I checked each sentence against its block, row by row, and found no conflict. The gap +0.8 (-0.4 to +2.1), the retry effect +1.9 (+0.3 to +3.4), the 38.6% and 0.9% wrong-side shares, and the 111,255 and 1,660 two-sided four-in-five sizes all match the snapshot. In the explore row, the gate ranges (J above 95.3% up to 97.1%, L up to 98%, F up to 98.6%) follow from the table. Last round's conflict in the confidence bullet is fixed: it now reads as a condition ('If J's true pass rate sits below the gate...')."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "The pick's weak axis is the headline's own qualifier, and it shows again in Watch, in c3 and in the Low confidence. Best-of-18 selection is named as pushing J's figure high. The monthly figures ('about $1,208', '$1,324 more') now say they assume the volume counts calls and would be larger if it counts tasks. Last round's should_fix on this is resolved. c4's caption now marks the per-task rows as descriptive, which resolves the ranking finding."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "None of the omitted items changes the call. Latency favours J (513 ms p95 against 870 ms for L) and has no gate. Calls per task are close (1.539 against 1.476) and are named in the monthly-cost qualifier. Dropping the high-reasoning retry effect from c5 also removes the badly rounded interval end flagged last round. That row is not on the path to J."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "All three caveats the snapshot lists are carried, each with a statement of when it would matter: point-estimate clearance, best of 18, and no control. Each has a next step: declare whether the gate reads on its interval, and re-run L at a size the page says assumes today's 98.0%. Unknown cost routing is named in the confidence line, in c2's caveat and caption, and in Method, which answers the cost_served_by fact: the snapshot names no provider, and the page says every cost is this run's routing's. Unstated per-task counts and traffic mix have their own declaration step."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an action and what it settles. One is the owner's declaration on reading the gate, which decides J against L. One adds worked multi-hop examples to the planning prompt and re-runs J on 1,660 cases, with the size's reach stated. One re-runs L on 1,660 cases, noting that the size assumes today's estimate. One declares traffic shares and the volume unit. All three next-step findings from last round are resolved."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 2,
+          "reason": "Each block draws its claim's figure. c1 is a dot-interval against the gate line. c2 is cost bars for the configurations that clear, on a log scale, as its caption says. c4 shows the overall gap with its interval and labels the per-task rows descriptive. c5 shows the retry move with its interval. c3's table shows the half-of-runs sizes, and its caption now labels the four-in-five, two-sided sizes the text cites, which answers last round's finding. The counterfactual holds: if J's row fell below 97%, c1 and the headline would have to change."
+        }
+      ],
+      "findings": [],
+      "total": 14,
       "passes": true,
       "must_fix": false
     }

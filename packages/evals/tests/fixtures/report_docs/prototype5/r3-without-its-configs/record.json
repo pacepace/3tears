@@ -1,5 +1,5 @@
 {
-  "id": "01a18527-e2fe-7283-9c25-770ae8682987",
+  "id": "01a18920-2d2f-77d9-98de-362e1c5e11b0",
   "doc_type": "eval_report_doc",
   "schema_version": 14,
   "scope_id": "toyhost-scope",
@@ -8,8 +8,8 @@
   "doc": {
     "schema": "report-doc/1",
     "story": "decision",
-    "headline": "Use {arm:brisk-s.few} for the turn router: of the {n_candidates|words} configurations it is the only one inside every gate, at {cost_per_month.brisk-s.few|usd_whole} a month.",
-    "lede": "It clears balanced accuracy by {criteria.overall.brisk-s.few.gap|abs|pts} points and its weakest cell, Complex × News, by {criteria.cell_floor.brisk-s.few.complex.news.gap|abs|pts} points, both beyond their intervals. The call moves only if its p95 latency, read without an interval, proves slower in production, or if the cell floor were lowered enough to admit the cheaper {arm:nano-xs.few}.",
+    "headline": "Route turns with {arm:brisk-s.few}: it is the only one of {count.arms|words} configurations inside the balanced-accuracy gate, every cell floor and the latency budget.",
+    "lede": "Its balanced accuracy of {measure.balanced_accuracy.brisk-s.few.mean} clears the {criteria.overall.threshold} gate with its whole interval. The call would change if a fresh run read it below that gate, or if {arm:nano-xs.few}, cheaper only as this run served it, lifted Complex × News above the cell floor and held the balanced-accuracy gate on a re-run.",
     "flag": null,
     "recommends": [
       "brisk-s.few"
@@ -18,21 +18,27 @@
       "form": "high_if_immaterial",
       "caveats": [
         {
-          "id": "point_estimate:p95",
-          "label": null,
-          "material_if": "Only if the recommended configuration's true p95 latency sits more than {criteria.p95.brisk-s.few.gap} above today's {criteria.p95.brisk-s.few.value}: then nothing passes every gate and the latency budget itself needs a decision.",
+          "id": "best_of_n",
+          "label": "Picked as the best of many configurations",
+          "material_if": "Matters only if a run on fresh cases reads {arm:brisk-s.few} below the {criteria.overall.threshold} balanced-accuracy gate. It was the one configuration of {count.arms|words} to clear every line, so its estimate reads high; its clearance is {weakest.margin} points with the interval clear of the line, and selection could pull the truth down by an amount no figure states.",
           "checked": null
         },
         {
-          "id": "best_of_n",
-          "label": null,
-          "material_if": "Only if a fresh run reads the recommended configuration's balanced accuracy more than {criteria.overall.brisk-s.few.gap|abs|pts} points lower than today. Its interval clears the gate today, but being the pick of {n_candidates|words} pulls its estimate up.",
+          "id": "point_estimate:p95",
+          "label": "Latency budget passed on one p95 reading",
+          "material_if": "Matters only if the p95 latency varies from run to run by as much as its {criteria.p95.brisk-s.few.gap} clearance under the {criteria.p95.threshold} budget. No spread is stated, so this pass is unsized until the repeated latency runs report; the high confidence applies to the accuracy and cell-floor findings, whose intervals clear their lines, and not to the latency pass.",
+          "checked": null
+        },
+        {
+          "id": "analyst:serving_unnamed",
+          "label": "Provider and serving stack unnamed",
+          "material_if": "Matters only if production serves these models differently from this run: a slower stack could eat the latency clearance, and another provider could reorder the costs. The accuracy findings, and so the gate on balanced accuracy and every cell floor, do not depend on it.",
           "checked": null
         },
         {
           "id": "no_control",
           "label": null,
-          "material_if": "Only for the comparisons between configurations (the cell gaps to {arm:nano-xs.few}, the effects of model and prompt), which are read unpaired and so wider than paired; the call reads each configuration against declared lines and does not rest on them.",
+          "material_if": "Matters only for the comparisons between configurations, which are read unpaired and so err wide; the call reads each option against the declared gate lines, not against another arm, and no production router was measured beside them.",
           "checked": null
         }
       ]
@@ -40,33 +46,36 @@
     "decision": [
       {
         "slot": "recommendation",
-        "text": "Ship {arm:brisk-s.few} on all turns. Balanced accuracy is {measure.balanced_accuracy.brisk-s.few.mean} ({overall_interval.balanced_accuracy.brisk-s.few.interval|interval}, derived), every cell holds its floor and p95 latency is {measure.latency_ms.brisk-s.few.p95}."
+        "text": "Use {arm:brisk-s.few}: balanced accuracy {measure.balanced_accuracy.brisk-s.few.mean} ({overall_interval.balanced_accuracy.brisk-s.few.interval}), every cell at or above {criteria.cell_floor.threshold}, p95 latency {measure.latency_ms.brisk-s.few.p95}, at {cost_per_month.brisk-s.few|usd_whole} a month at the declared volume as this run served it."
       },
       {
         "slot": "why_not",
-        "text": "{arm:nano-xs.few} would cost {cost_per_month.nano-xs.few|usd_whole} a month but misses the floor in Complex × News at {criteria.cell_floor.nano-xs.few.complex.news.value}, clear of its interval. {arm:atlas-m.few}, {arm:atlas-m.rubric} and {arm:brisk-s.rubric} are more accurate but blow the {criteria.p95.threshold} latency budget. The rest miss the accuracy gate."
+        "text": "Every Atlas-M prompt and {arm:brisk-s.rubric} miss the {criteria.p95.threshold} latency budget ({arm:brisk-s.rubric} reads {measure.latency_ms.brisk-s.rubric.p95}). {arm:nano-xs.few} misses the cell floor in Complex × News at {criteria.cell_floor.nano-xs.few.complex.news.value}, its interval clear below the line, so more cases won't rescue it. The zero-shot Brisk-S and the other Nano-XS prompts miss the balanced-accuracy gate."
       },
       {
         "slot": "watch",
-        "text": "The weakest margin is {weakest.arm} on {weakest.criterion}: {weakest.value} against {weakest.threshold}, {weakest.margin|abs|pts} points. Its interval clears the line, but the pick of {n_candidates|words} reads high by chance. The latency headroom of {criteria.p95.brisk-s.few.gap} is relatively larger yet matters as much, because no interval says how firm it is."
+        "text": "The weakest margin is the balanced-accuracy gate for {weakest.arm}: {weakest.value} against {weakest.threshold}, a clearance of {weakest.margin} points, on an option picked as the best of {count.arms|words}. Complex × News, at {cells.complex.news.brisk-s.few.accuracy.mean} against the {criteria.cell_floor.threshold} floor, is the thinnest cell; the latency clearance of {criteria.p95.brisk-s.few.gap} has no interval and was measured on an unnamed serving stack."
       },
       {
         "slot": "next",
-        "text": "Ship now; in parallel, measure the recommended configuration's p95 latency on production traffic with an interval, and re-run it on fresh cases to confirm the accuracy clearance."
+        "text": "Ship {arm:brisk-s.few} and, in parallel, re-run it on fresh cases and measure its p95 over repeated runs on the stack it will use; separately, fix news handling in {arm:nano-xs.few}, the one change that could replace it."
       }
     ],
     "claims": [
       {
-        "id": "c1",
-        "text": "{arm:brisk-s.few} is the only configuration that passes every gate; each other configuration fails at least one.",
+        "id": "only_survivor",
+        "text": "{arm:brisk-s.few} is the only configuration that lands inside both the balanced-accuracy gate and the latency budget and also holds every cell floor.",
         "weight": "lead",
         "evidence": [
           {
-            "block": "gate_matrix",
+            "block": "gate_scatter",
             "query": {
-              "source": "configs",
+              "source": "measures",
               "aspect": "",
-              "measures": [],
+              "measures": [
+                "latency_ms",
+                "balanced_accuracy"
+              ],
               "arms": [],
               "strata": [],
               "limit": 0,
@@ -75,17 +84,70 @@
             },
             "reference": null,
             "emphasis": "brisk-s.few",
-            "caption": "Each configuration against each gate, with the figure that binds where it fails or is borderline."
+            "caption": "Balanced accuracy against p95 latency for every configuration, with the {criteria.overall.threshold} gate and the {criteria.p95.threshold} budget drawn; latency on a log axis. {arm:nano-xs.few} also lands in the box but misses a cell floor."
+          }
+        ],
+        "caveats": [
+          "analyst:serving_unnamed"
+        ],
+        "durable": false
+      },
+      {
+        "id": "news_column",
+        "text": "News is the weak column for both few-shot models; Complex × News is where {arm:brisk-s.few} comes nearest the floor, at {cells.complex.news.brisk-s.few.accuracy.mean} with its interval clear of {criteria.cell_floor.threshold}.",
+        "weight": "support",
+        "evidence": [
+          {
+            "block": "heatmap",
+            "query": {
+              "source": "cells",
+              "aspect": "",
+              "measures": [
+                "accuracy"
+              ],
+              "arms": [
+                "brisk-s.few",
+                "nano-xs.few"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "arm"
+            },
+            "reference": "floor",
+            "emphasis": "",
+            "caption": "Accuracy in each complexity × domain cell, one panel per configuration, with each cell's interval and case count; cells below the {criteria.cell_floor.threshold} floor are outlined."
           }
         ],
         "caveats": [],
         "durable": false
       },
       {
-        "id": "c2",
-        "text": "The cheaper {arm:nano-xs.few} would save {price.nano-xs.few.brisk-s.few.balanced_accuracy.monthly_cost_gap|abs|usd_whole} a month if it passed, but it trails {arm:brisk-s.few} by {compare.brisk-s.few.nano-xs.few.accuracy.cells.complex.news.difference|abs|pts} points in Complex × News, where it misses the floor.",
+        "id": "nano_gap",
+        "text": "As this run served them, by providers the input does not name, {arm:brisk-s.few} costs {cost.gap.brisk-s.few.nano-xs.few.monthly|abs|usd_whole} a month more than {arm:nano-xs.few}, a gap another routing could change. What it buys is {compare.brisk-s.few.nano-xs.few.balanced_accuracy.overall.difference|pts} points of balanced accuracy, chiefly from Complex × News, where it leads by {compare.brisk-s.few.nano-xs.few.accuracy.cells.complex.news.difference|pts}; elsewhere the cell gaps are small or favour the cheaper model.",
         "weight": "support",
         "evidence": [
+          {
+            "block": "diverging_bars",
+            "query": {
+              "source": "compare",
+              "aspect": "",
+              "measures": [
+                "balanced_accuracy"
+              ],
+              "arms": [
+                "brisk-s.few",
+                "nano-xs.few"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Brisk-S few-shot minus Nano-XS few-shot on balanced accuracy overall, with its unpaired interval."
+          },
           {
             "block": "diverging_bars",
             "query": {
@@ -105,43 +167,17 @@
             },
             "reference": null,
             "emphasis": "",
-            "caption": "Accuracy, Brisk-S few-shot minus Nano-XS few-shot, in each cell, with unpaired intervals; positive rows favour Brisk-S few-shot."
+            "caption": "The same difference on accuracy in each cell, with unpaired intervals; the Simple × Science lower bound prints unrounded and sits just below zero."
           }
         ],
-        "caveats": [],
+        "caveats": [
+          "analyst:serving_unnamed"
+        ],
         "durable": false
       },
       {
-        "id": "c3",
-        "text": "The most accurate configurations are out on latency alone: {arm:atlas-m.rubric} reaches {measure.balanced_accuracy.atlas-m.rubric.mean} balanced accuracy at a p95 of {measure.latency_ms.atlas-m.rubric.p95}.",
-        "weight": "support",
-        "evidence": [
-          {
-            "block": "gate_scatter",
-            "query": {
-              "source": "measures",
-              "aspect": "",
-              "measures": [
-                "latency_ms",
-                "balanced_accuracy"
-              ],
-              "arms": [],
-              "strata": [],
-              "limit": 0,
-              "transform": "none",
-              "small_multiples_by": "none"
-            },
-            "reference": null,
-            "emphasis": "brisk-s.few",
-            "caption": "Balanced accuracy against p95 latency (log axis) for every configuration, with both gate lines. Nano-XS few-shot also sits inside both; the cell floor, not drawn here, removes it."
-          }
-        ],
-        "caveats": [],
-        "durable": false
-      },
-      {
-        "id": "c4",
-        "text": "What a prompt buys depends on the model: few-shot examples lift Nano-XS by {lever.prompt.nano-xs.zero.nano-xs.few.balanced_accuracy.effect|pts} points, while rubric + reasoning takes {lever.prompt.nano-xs.few.nano-xs.rubric.balanced_accuracy.effect|abs|pts} points back from it yet adds accuracy for Atlas-M.",
+        "id": "prompt_lever",
+        "text": "Worked examples matter most for the smallest model: moving from zero-shot to few-shot lifts Nano-XS by {lever.prompt.nano-xs.zero.nano-xs.few.balanced_accuracy.effect|pts} points of balanced accuracy against {lever.prompt.brisk-s.zero.brisk-s.few.balanced_accuracy.effect|pts} for Brisk-S, and rubric + reasoning on top of few-shot adds only {lever.prompt.brisk-s.few.brisk-s.rubric.balanced_accuracy.effect|pts} for Brisk-S.",
         "weight": "detail",
         "evidence": [
           {
@@ -153,9 +189,9 @@
                 "balanced_accuracy"
               ],
               "arms": [
-                "atlas-m.zero",
-                "atlas-m.few",
-                "atlas-m.rubric",
+                "brisk-s.zero",
+                "brisk-s.few",
+                "brisk-s.rubric",
                 "nano-xs.zero",
                 "nano-xs.few",
                 "nano-xs.rubric"
@@ -167,34 +203,7 @@
             },
             "reference": null,
             "emphasis": "",
-            "caption": "Change in balanced accuracy from moving one setting, for Atlas-M and Nano-XS, and how each change differs across the other setting; unpaired intervals, descriptive."
-          }
-        ],
-        "caveats": [],
-        "durable": false
-      },
-      {
-        "id": "c5",
-        "text": "Every accuracy clearance of {arm:brisk-s.few} is settled at today's size; the latency budget is the one line no interval reads.",
-        "weight": "detail",
-        "evidence": [
-          {
-            "block": "table",
-            "query": {
-              "source": "settle",
-              "aspect": "",
-              "measures": [],
-              "arms": [
-                "brisk-s.few"
-              ],
-              "strata": [],
-              "limit": 0,
-              "transform": "none",
-              "small_multiples_by": "none"
-            },
-            "reference": null,
-            "emphasis": "",
-            "caption": "Each line Brisk-S few-shot is read against: its distance, the cases that would settle it, and how often a fresh run of today's size would read the other side."
+            "caption": "What changing the model or the prompt alone does to balanced accuracy for Brisk-S and Nano-XS, and how each effect differs across the other setting, with unpaired intervals; descriptive."
           }
         ],
         "caveats": [],
@@ -203,140 +212,112 @@
     ],
     "explore": [
       {
-        "control": "The cell floor, declared at {criteria.cell_floor.threshold}",
-        "binds": "Whether the cheaper Nano-XS few-shot is admitted",
-        "outcome": "Read on point estimates: at or below {criteria.cell_floor.nano-xs.few.complex.news.value} Nano-XS few-shot becomes the call; up to {criteria.cell_floor.brisk-s.few.complex.news.value} Brisk-S few-shot holds; above that nothing passes."
+        "control": "The cell floor",
+        "binds": "Which configurations survive, through Complex × News",
+        "outcome": "At or below {criteria.cell_floor.nano-xs.few.complex.news.value}, {arm:nano-xs.few} would pass the cell floor; it would take over only on cost as this run served it, and only if a re-run holds its balanced accuracy of {criteria.overall.nano-xs.few.value} above the gate, which today's design reads the wrong way {settle.criteria.overall.nano-xs.few.overall.wrong_side} of the time. From there up to {criteria.cell_floor.brisk-s.few.complex.news.value}, {arm:brisk-s.few} holds; above that, nothing passes. Both ends are point estimates of cells whose intervals run {cells.complex.news.nano-xs.few.accuracy.half_width} and {cells.complex.news.brisk-s.few.accuracy.half_width} either side."
       },
       {
-        "control": "The latency budget, declared at {criteria.p95.threshold}",
-        "binds": "Whether any configuration passes, and which",
-        "outcome": "Below {criteria.p95.brisk-s.few.value} nothing passes. Any looser budget admits slower, more accurate configurations, but Brisk-S few-shot stays the call: they cost more and nothing declared prices accuracy above the gate."
+        "control": "The balanced-accuracy gate",
+        "binds": "Whether the pick passes",
+        "outcome": "Raised above {criteria.overall.brisk-s.few.value}, nothing passes; lowered, the pick holds, because every option it would admit misses latency or a cell floor."
       },
       {
-        "control": "The gate on balanced accuracy, declared at {criteria.overall.threshold}",
-        "binds": "Whether any configuration passes",
-        "outcome": "Above {criteria.overall.brisk-s.few.value} nothing passes; at any lower line Brisk-S few-shot stays the call."
+        "control": "The latency budget",
+        "binds": "Whether the pick passes, and whether a more accurate option enters",
+        "outcome": "Tightened below {criteria.p95.brisk-s.few.value}, nothing passes. Loosened to {measure.latency_ms.atlas-m.few.p95} or more, Atlas-M few-shot (and from {measure.latency_ms.brisk-s.rubric.p95}, Brisk-S rubric) passes every gate with {lever.model.atlas-m.few.brisk-s.few.balanced_accuracy.effect|abs|pts} (and {lever.prompt.brisk-s.few.brisk-s.rubric.balanced_accuracy.effect|abs|pts}) more points of balanced accuracy; the pick then holds only if its lower cost, which belongs to this run's unnamed routing, is preferred to those points."
       }
     ],
     "omitted": [
       {
-        "what": "Traffic-weighted accuracy and macro F1",
-        "why": "No gate reads them and the decision has no rule weighing them; they stay in the appendix."
+        "what": "Macro F1 and traffic-weighted accuracy",
+        "why": "No gate reads them and they order the configurations as balanced accuracy does; the appendix holds them."
       },
       {
-        "what": "Confusion tables for each configuration",
-        "why": "They describe which labels get swapped; no gate reads them and they do not change the call."
+        "what": "Cost of every configuration",
+        "why": "Only one option survives the gates, so cost decides nothing; the one cost that frames a choice, against Nano-XS few-shot, is in the body with its routing caveat."
       },
       {
-        "what": "Cost ranking among the configurations that fail a gate",
-        "why": "A failed configuration is out before price; only Nano-XS few-shot is priced, as a labelled what-if."
+        "what": "Atlas-M cell figures and lever rows",
+        "why": "Every Atlas-M prompt misses the latency budget by a wide margin; its cell accuracies can't change the call."
       },
       {
-        "what": "Brisk-S rubric + reasoning's small accuracy gain over few-shot",
-        "why": "It is out on latency, so the gain is unavailable."
+        "what": "Cells of the other configurations",
+        "why": "Each is out on a gate already shown; the full cell table is in the appendix."
       },
       {
-        "what": "Model and prompt effects for Brisk-S",
-        "why": "They follow the same pattern as Atlas-M's; the full lever table is in the appendix."
+        "what": "A lower confidence form over the latency pass",
+        "why": "Weighed and kept high-if-immaterial: the accuracy and cell-floor findings that make the pick unique have intervals clear of their lines; the latency pass is scoped out of the high and sized by a next step instead."
+      },
+      {
+        "what": "A rounded Simple × Science bound in the per-cell comparison",
+        "why": "The cell figures print as the data hold them, so that one bound shows extra digits; dropping the row would hide a cell that favours the cheaper model, so it is kept and its caption says the bound sits just below zero."
       }
     ],
     "next": [
       {
-        "text": "Measure {arm:brisk-s.few}'s p95 latency on production traffic, repeated enough to put an interval on it.",
-        "settles": "Whether its {criteria.p95.brisk-s.few.gap} of headroom under the budget is real; if not, nothing passes every gate and the budget or the accuracy gate needs a decision."
+        "text": "Re-run {arm:brisk-s.few} on a fresh case set of at least {settle.criteria.overall.brisk-s.few.overall.cases_needed_two_sided_80|int} cases.",
+        "settles": "Whether its {weakest.margin}-point clearance of the balanced-accuracy gate survives being picked as the best of {count.arms|words}; that size settles it four times in five if today's estimate holds."
       },
       {
-        "text": "Re-run {arm:brisk-s.few} on {settle.criteria.overall.brisk-s.few.overall.cases_needed_two_sided_80|int} fresh cases, the size that settles its balanced-accuracy clearance four times in five.",
-        "settles": "Whether the clearance survives being the pick of {n_candidates|words} configurations."
+        "text": "Measure p95 latency for {arm:brisk-s.few} over repeated runs on the serving stack and provider it will use in production.",
+        "settles": "Whether its {criteria.p95.brisk-s.few.gap} latency clearance is more than run-to-run noise and holds off this run's unnamed stack; until then the latency pass is unsized."
       },
       {
-        "text": "Add Complex × News examples to {arm:nano-xs.few}'s prompt and re-run the full matrix at today's size.",
-        "settles": "Whether it clears that cell's floor and firms up its borderline balanced accuracy; only then is the saving of {price.nano-xs.few.brisk-s.few.balanced_accuracy.monthly_cost_gap|abs|usd_whole} a month on the table."
+        "text": "Add news examples to the Nano-XS few-shot prompt and re-run Complex × News, where it must gain at least {criteria.cell_floor.nano-xs.few.complex.news.gap|abs|pts} points, and the overall set, where it sits at {criteria.overall.nano-xs.few.value}.",
+        "settles": "Whether a configuration that, as this run served both, cost {cost.gap.brisk-s.few.nano-xs.few.multiple} less than the pick can pass every gate; its balanced-accuracy clearance reads the wrong way {settle.criteria.overall.nano-xs.few.overall.wrong_side} of the time today, so the overall set needs re-reading too."
+      },
+      {
+        "text": "Declare the unit the monthly volume counts and the provider each model is served by.",
+        "settles": "What the monthly cost figures and the cost gap to Nano-XS mean under production routing; the call does not rest on them."
       }
     ],
     "method": [
       {
         "term": "Cases",
-        "text": "Each configuration labelled {scoreboard.brisk-s.few.cases|int} turns once, none lost; the matrix crosses complexity (Simple, Medium, Complex) with domain (Science, Conversational, News), and each cell holds the same count for every configuration.",
+        "text": "{scoreboard.brisk-s.few.cases|int} labelled turns per configuration, each run once, spread over {count.cells|words} cells crossing complexity with domain; Complex × News holds {cells.complex.news.n_cases|int}.",
         "caveats": []
       },
       {
-        "term": "Pass",
-        "text": "A turn is correct when the predicted complexity and domain label matches the gold label. Accuracy is read per cell; balanced accuracy is the plain mean of the cells.",
+        "term": "Correct",
+        "text": "A turn is correct when the predicted class matches its label. Accuracy is read per cell; balanced accuracy is the plain mean of the cell accuracies; traffic-weighted accuracy weights cells by traffic.",
         "caveats": []
       },
       {
         "term": "Intervals",
-        "text": "Cell accuracy carries a stated half-width at {overall_interval.balanced_accuracy.brisk-s.few.level}. Balanced accuracy's interval is derived from its cells (the root of their squared standard errors over their count), so it is called derived. Comparisons between configurations are unpaired and uncorrected for multiplicity.",
+        "text": "Cell accuracies carry their stated intervals, at the level the cells state ({overall_interval.balanced_accuracy.brisk-s.few.level}). The interval on balanced accuracy is derived from the cells, reading them as independent; no multiplicity correction. Comparisons between configurations are unpaired, which errs wide where they ran the same turns.",
         "caveats": []
       },
       {
         "term": "Gates",
-        "text": "None was set after the results: balanced accuracy at least {criteria.overall.threshold}, accuracy at least {criteria.cell_floor.threshold} in every cell, p95 latency at most {criteria.p95.threshold}. A figure on the passing side whose interval crosses its line passes and is called borderline.",
+        "text": "The {count.gates|words} gates were all declared before the run: balanced accuracy at least {criteria.overall.threshold}, each cell's accuracy at least {criteria.cell_floor.threshold}, and p95 latency at most {criteria.p95.threshold}. The gate tables label the first 'Overall accuracy'; it reads balanced accuracy, not traffic-weighted accuracy. Each gate is read on its figure; latency states only a p95, with no spread.",
         "caveats": []
       },
       {
-        "term": "Latency",
-        "text": "One p95 per configuration, stated with no interval and no count of the requests behind it.",
-        "caveats": []
-      },
-      {
-        "term": "Cost",
-        "text": "Measured cost per million routed turns. Monthly figures read the declared volume of {meta.volume_per_month} a month; the input does not say what that volume counts, and it is read here as turns.",
+        "term": "Cost and latency",
+        "text": "Cost per million turns and p95 latency as this run served each model; no provider or serving stack is named for any configuration, so the routing behind both is unknown. Monthly figures use the declared volume of {meta.volume_per_month}, which the input states without a unit; they read it as turns.",
         "caveats": []
       },
       {
         "term": "Not compared",
-        "text": "There is no production router or control, and no mix of configurations by cell was run.",
+        "text": "No production router or control was run, and the run kept no failure examples or confusion counts, so what the Complex × News errors look like is not shown.",
         "caveats": []
       },
       {
         "term": "Source",
-        "text": "{meta.provenance}.",
+        "text": "{meta.campaign}, run {meta.run_date}; {meta.provenance}.",
         "caveats": []
       }
     ]
   },
   "ending": "stored",
-  "findings": [
-    {
-      "claim": "",
-      "severity": "should_fix",
-      "finding": "The same figure appears under two names. The gate is called 'Overall accuracy' (Watch: 'on Overall accuracy: 90.7% against 90%'; c1 and c5 rows). The measure is called 'Balanced accuracy' (recommendation, c3, appendix). The appendix also lists 'Traffic-weighted accuracy', 92.2% for the pick, and that is what most readers would take 'overall accuracy' to mean. Call the gate 'balanced-accuracy gate' or similar everywhere above the appendix."
-    },
-    {
-      "claim": "",
-      "severity": "should_fix",
-      "finding": "The lede says the call moves 'only if' p95 latency proves slower or the cell floor is lowered. The confidence line, Watch and the second next step all name a third way: a fresh run reads balanced accuracy more than 0.7 points lower because the pick was chosen from nine. Add that to the lede or drop 'only'."
-    },
-    {
-      "claim": "c5",
-      "severity": "should_fix",
-      "finding": "c5 says every accuracy clearance is 'settled at today's size', and its fresh-run column (0.0005% for balanced accuracy) assumes the truth equals today's estimate. The best-of-nine caveat says that estimate reads high. Say in the sentence or caption that 'settled' does not account for selection, and point to the re-run in Next steps."
-    },
-    {
-      "claim": "",
-      "severity": "should_fix",
-      "finding": "The 'Left out' reason for the Brisk-S model and prompt effects says 'the full lever table is in the appendix', but the appendix has no lever table. Either add the Brisk-S rows to c4 or the appendix (Brisk-S zero-shot to few-shot is the step that takes the pick from failing to passing; Atlas-M to Brisk-S few-shot is -1.4, -1.8 to -1.0), or correct the reason."
-    },
-    {
-      "claim": "c2",
-      "severity": "should_fix",
-      "finding": "The block note says each row is the difference 'overall and in each place', but the table has only the nine cells. Remove 'overall' or add the balanced-accuracy row (Nano-XS few-shot minus Brisk-S few-shot is -0.6, -1.0 to -0.2). Also round the Simple × Science upper bound, which prints as -0.03699."
-    },
-    {
-      "claim": "c2",
-      "severity": "should_fix",
-      "finding": "The $1,143-a-month saving in c2 and the $1,200 in the headline both assume the declared 30,000,000-a-month volume counts turns, and only Method says so. Add a short qualifier where the monthly figures first appear."
-    }
-  ],
+  "findings": [],
   "generation": {
     "format": 2,
     "model": "claude-opus-5-5",
     "skill": {
-      "analyst": "75714fd9891b13830612c1c744408a212e63ceb8f6449b7581d66feed77bb49b",
-      "editor": "125d0d393ed8699529a6d5a02714be5e950d0e9b794e4ce768ae0221eedef9f5",
-      "package": "1677ccb31cd60fd412548cb09e371c5db7f35b3d3f91f3d4e47e1e979cab6199"
+      "analyst": "acaab487c352d8e38306b577a6a6ad15be82a286bad9f9356427e6b8392901df",
+      "editor": "26690a6042c513420bf670a42e5fe6f168827a9865ffeb9ce8c66f2dd48d38f4",
+      "package": "ed7e2c60b5ad37c8a25d87e1384171c4a7ce2d57e1bb3f3061022ada81dfe439"
     },
     "tally": {
       "turns": [
@@ -347,16 +328,16 @@
           "turn": 0,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 37103,
-          "output_tokens": 666,
-          "reasoning_tokens": 51,
-          "cache_read_tokens": 4474,
-          "cache_write_tokens": 32625,
-          "cost_usd": 0.1773558,
+          "input_tokens": 37537,
+          "output_tokens": 731,
+          "reasoning_tokens": 50,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 37533,
+          "cost_usd": 0.202301,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 7.08907008706592,
+          "wall_s": 5.692480043973774,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -369,16 +350,16 @@
           "turn": 1,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 45044,
-          "output_tokens": 921,
-          "reasoning_tokens": 323,
-          "cache_read_tokens": 37099,
-          "cache_write_tokens": 7943,
-          "cost_usd": 0.0655628,
+          "input_tokens": 45543,
+          "output_tokens": 772,
+          "reasoning_tokens": 318,
+          "cache_read_tokens": 37533,
+          "cache_write_tokens": 8008,
+          "cost_usd": 0.0629946,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 8.953820171067491,
+          "wall_s": 6.936179711017758,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -391,16 +372,16 @@
           "turn": 2,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 58612,
-          "output_tokens": 782,
-          "reasoning_tokens": 209,
-          "cache_read_tokens": 45042,
-          "cache_write_tokens": 13568,
-          "cost_usd": 0.0924964,
+          "input_tokens": 62469,
+          "output_tokens": 677,
+          "reasoning_tokens": 174,
+          "cache_read_tokens": 45541,
+          "cache_write_tokens": 16926,
+          "cost_usd": 0.1072862,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 7.833558253012598,
+          "wall_s": 6.649130128091201,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -413,16 +394,16 @@
           "turn": 3,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 70601,
-          "output_tokens": 976,
-          "reasoning_tokens": 378,
-          "cache_read_tokens": 58610,
-          "cache_write_tokens": 11989,
-          "cost_usd": 0.091195,
+          "input_tokens": 71045,
+          "output_tokens": 937,
+          "reasoning_tokens": 75,
+          "cache_read_tokens": 62467,
+          "cache_write_tokens": 8576,
+          "cost_usd": 0.0741214,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 11.470439546043053,
+          "wall_s": 8.97921208688058,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -435,16 +416,16 @@
           "turn": 4,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 81375,
-          "output_tokens": 1147,
-          "reasoning_tokens": 804,
-          "cache_read_tokens": 70599,
-          "cache_write_tokens": 10774,
-          "cost_usd": 0.0909378,
+          "input_tokens": 80475,
+          "output_tokens": 611,
+          "reasoning_tokens": 291,
+          "cache_read_tokens": 71043,
+          "cache_write_tokens": 9430,
+          "cost_usd": 0.0735866,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 13.38374117296189,
+          "wall_s": 6.690387295093387,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -457,16 +438,16 @@
           "turn": 5,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 94196,
-          "output_tokens": 341,
-          "reasoning_tokens": 27,
-          "cache_read_tokens": 81373,
-          "cache_write_tokens": 12821,
-          "cost_usd": 0.0872076,
+          "input_tokens": 82935,
+          "output_tokens": 885,
+          "reasoning_tokens": 483,
+          "cache_read_tokens": 80473,
+          "cache_write_tokens": 2460,
+          "cost_usd": 0.0461026,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 4.721541044069454,
+          "wall_s": 8.720396003918722,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -479,16 +460,16 @@
           "turn": 6,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 95718,
-          "output_tokens": 467,
-          "reasoning_tokens": 0,
-          "cache_read_tokens": 94194,
-          "cache_write_tokens": 1522,
-          "cost_usd": 0.0357968,
+          "input_tokens": 86516,
+          "output_tokens": 742,
+          "reasoning_tokens": 560,
+          "cache_read_tokens": 82933,
+          "cache_write_tokens": 3581,
+          "cost_usd": 0.0493396,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 5.5303069178480655,
+          "wall_s": 7.531762587139383,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -501,16 +482,16 @@
           "turn": 7,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 98478,
-          "output_tokens": 1626,
-          "reasoning_tokens": 1232,
-          "cache_read_tokens": 95716,
-          "cache_write_tokens": 2760,
-          "cost_usd": 0.0654712,
+          "input_tokens": 96953,
+          "output_tokens": 434,
+          "reasoning_tokens": 104,
+          "cache_read_tokens": 86514,
+          "cache_write_tokens": 10437,
+          "cost_usd": 0.0781758,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 17.85117542487569,
+          "wall_s": 4.4318840021733195,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -523,16 +504,16 @@
           "turn": 8,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 103104,
-          "output_tokens": 305,
-          "reasoning_tokens": 126,
-          "cache_read_tokens": 98476,
-          "cache_write_tokens": 4626,
-          "cost_usd": 0.0489332,
+          "input_tokens": 100147,
+          "output_tokens": 1819,
+          "reasoning_tokens": 1436,
+          "cache_read_tokens": 96951,
+          "cache_write_tokens": 3194,
+          "cost_usd": 0.0717482,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 5.043494293931872,
+          "wall_s": 19.89467913401313,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -545,16 +526,16 @@
           "turn": 9,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 107454,
-          "output_tokens": 1591,
-          "reasoning_tokens": 793,
-          "cache_read_tokens": 103102,
-          "cache_write_tokens": 4350,
-          "cost_usd": 0.0741984,
+          "input_tokens": 103697,
+          "output_tokens": 436,
+          "reasoning_tokens": 201,
+          "cache_read_tokens": 100145,
+          "cache_write_tokens": 3550,
+          "cost_usd": 0.046507,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 18.742036717012525,
+          "wall_s": 4.438361419131979,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -567,16 +548,16 @@
           "turn": 10,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 113221,
-          "output_tokens": 1912,
-          "reasoning_tokens": 1271,
-          "cache_read_tokens": 107452,
-          "cache_write_tokens": 5767,
-          "cost_usd": 0.0885734,
+          "input_tokens": 104959,
+          "output_tokens": 227,
+          "reasoning_tokens": 48,
+          "cache_read_tokens": 103695,
+          "cache_write_tokens": 1262,
+          "cost_usd": 0.031597,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 20.538059384096414,
+          "wall_s": 2.7601489177905023,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -589,16 +570,16 @@
           "turn": 11,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 117854,
-          "output_tokens": 1092,
-          "reasoning_tokens": 201,
-          "cache_read_tokens": 113219,
-          "cache_write_tokens": 4633,
-          "cost_usd": 0.0676568,
+          "input_tokens": 109231,
+          "output_tokens": 492,
+          "reasoning_tokens": 114,
+          "cache_read_tokens": 104957,
+          "cache_write_tokens": 4272,
+          "cost_usd": 0.0521994,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 11.392938630888239,
+          "wall_s": 5.300135168945417,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -611,16 +592,16 @@
           "turn": 12,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 119494,
-          "output_tokens": 9163,
-          "reasoning_tokens": 4863,
-          "cache_read_tokens": 117852,
-          "cache_write_tokens": 1640,
-          "cost_usd": 0.2150384,
+          "input_tokens": 112504,
+          "output_tokens": 708,
+          "reasoning_tokens": 461,
+          "cache_read_tokens": 109229,
+          "cache_write_tokens": 3273,
+          "cost_usd": 0.0523788,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 79.89487016014755,
+          "wall_s": 8.097831837134436,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -633,16 +614,16 @@
           "turn": 13,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 134443,
-          "output_tokens": 5082,
-          "reasoning_tokens": 624,
-          "cache_read_tokens": 119492,
-          "cache_write_tokens": 14949,
-          "cost_usd": 0.2002914,
+          "input_tokens": 114359,
+          "output_tokens": 254,
+          "reasoning_tokens": 48,
+          "cache_read_tokens": 112502,
+          "cache_write_tokens": 1855,
+          "cost_usd": 0.0368634,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 37.19162076595239,
+          "wall_s": 2.7912596680689603,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -655,16 +636,126 @@
           "turn": 14,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 145017,
-          "output_tokens": 5160,
-          "reasoning_tokens": 240,
-          "cache_read_tokens": 134441,
-          "cache_write_tokens": 10496,
-          "cost_usd": 0.1828882,
+          "input_tokens": 115101,
+          "output_tokens": 578,
+          "reasoning_tokens": 169,
+          "cache_read_tokens": 114357,
+          "cache_write_tokens": 742,
+          "cost_usd": 0.0381494,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 5.576668211026117,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 15,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 118946,
+          "output_tokens": 1526,
+          "reasoning_tokens": 239,
+          "cache_read_tokens": 115099,
+          "cache_write_tokens": 3845,
+          "cost_usd": 0.0727728,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 14.525529589969665,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 16,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 121120,
+          "output_tokens": 9686,
+          "reasoning_tokens": 5237,
+          "cache_read_tokens": 118944,
+          "cache_write_tokens": 2174,
+          "cost_usd": 0.2283868,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 87.31449766410515,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 17,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 136419,
+          "output_tokens": 5028,
+          "reasoning_tokens": 416,
+          "cache_read_tokens": 121118,
+          "cache_write_tokens": 15221,
+          "cost_usd": 0.2012086,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 35.300591265782714,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 18,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 146654,
+          "output_tokens": 677,
+          "reasoning_tokens": 533,
+          "cache_read_tokens": 136339,
+          "cache_write_tokens": 10235,
+          "cost_usd": 0.0923028,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 7.205946377012879,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 19,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 147747,
+          "output_tokens": 4488,
+          "reasoning_tokens": 62,
+          "cache_read_tokens": 146574,
+          "cache_write_tokens": 1093,
+          "cost_usd": 0.1248598,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "end_turn",
-          "wall_s": 37.270934058120474,
+          "wall_s": 29.036296472186223,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -677,16 +768,16 @@
           "turn": 0,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 16777,
-          "output_tokens": 3831,
-          "reasoning_tokens": 3486,
-          "cache_read_tokens": 0,
-          "cache_write_tokens": 16773,
-          "cost_usd": 0.160501,
+          "input_tokens": 16176,
+          "output_tokens": 4197,
+          "reasoning_tokens": 3852,
+          "cache_read_tokens": 6232,
+          "cache_write_tokens": 9940,
+          "cost_usd": 0.1349024,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 34.54848747397773,
+          "wall_s": 38.4306315171998,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -699,16 +790,16 @@
           "turn": 1,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 27596,
-          "output_tokens": 656,
-          "reasoning_tokens": 212,
-          "cache_read_tokens": 16773,
-          "cache_write_tokens": 10821,
-          "cost_usd": 0.0705876,
+          "input_tokens": 27361,
+          "output_tokens": 639,
+          "reasoning_tokens": 195,
+          "cache_read_tokens": 16172,
+          "cache_write_tokens": 11187,
+          "cost_usd": 0.0719574,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 5.386349001899362,
+          "wall_s": 5.302443503169343,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -721,16 +812,16 @@
           "turn": 2,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 34430,
-          "output_tokens": 1073,
-          "reasoning_tokens": 615,
-          "cache_read_tokens": 27594,
-          "cache_write_tokens": 6834,
-          "cost_usd": 0.0611568,
+          "input_tokens": 34176,
+          "output_tokens": 443,
+          "reasoning_tokens": 77,
+          "cache_read_tokens": 27359,
+          "cache_write_tokens": 6815,
+          "cost_usd": 0.0484148,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 9.420857588062063,
+          "wall_s": 4.0708101680502295,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -743,16 +834,16 @@
           "turn": 3,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 41819,
-          "output_tokens": 355,
-          "reasoning_tokens": 35,
-          "cache_read_tokens": 34428,
-          "cache_write_tokens": 7389,
-          "cost_usd": 0.0509386,
+          "input_tokens": 36386,
+          "output_tokens": 409,
+          "reasoning_tokens": 63,
+          "cache_read_tokens": 34174,
+          "cache_write_tokens": 2210,
+          "cost_usd": 0.0260728,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 3.358252335106954,
+          "wall_s": 3.9030269600916654,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -765,16 +856,390 @@
           "turn": 4,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 44790,
-          "output_tokens": 3828,
-          "reasoning_tokens": 1496,
-          "cache_read_tokens": 41817,
-          "cache_write_tokens": 2971,
-          "cost_usd": 0.0997864,
+          "input_tokens": 43135,
+          "output_tokens": 844,
+          "reasoning_tokens": 348,
+          "cache_read_tokens": 36384,
+          "cache_write_tokens": 6749,
+          "cost_usd": 0.0579098,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 7.979830296011642,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 5,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 44195,
+          "output_tokens": 4189,
+          "reasoning_tokens": 1594,
+          "cache_read_tokens": 43133,
+          "cache_write_tokens": 1060,
+          "cost_usd": 0.0977146,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "end_turn",
-          "wall_s": 37.21449659997597,
+          "wall_s": 39.56127922516316,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 6,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 48545,
+          "output_tokens": 2657,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 44193,
+          "cache_write_tokens": 4348,
+          "cost_usd": 0.0837346,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 17.724580382928252,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 20,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 96416,
+          "output_tokens": 1764,
+          "reasoning_tokens": 1331,
+          "cache_read_tokens": 29496,
+          "cache_write_tokens": 66916,
+          "cost_usd": 0.3757752,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 19.381594592006877,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 21,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 100857,
+          "output_tokens": 434,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 96412,
+          "cache_write_tokens": 4443,
+          "cost_usd": 0.0501854,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 5.321348043857142,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 22,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 102387,
+          "output_tokens": 615,
+          "reasoning_tokens": 125,
+          "cache_read_tokens": 100855,
+          "cache_write_tokens": 1530,
+          "cost_usd": 0.040129,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 6.377117170020938,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 23,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 103194,
+          "output_tokens": 5461,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 102385,
+          "cache_write_tokens": 807,
+          "cost_usd": 0.13374,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 38.82674176711589,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 24,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 114206,
+          "output_tokens": 6246,
+          "reasoning_tokens": 130,
+          "cache_read_tokens": 103192,
+          "cache_write_tokens": 11012,
+          "cost_usd": 0.2006264,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 42.55902856099419,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 0,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 18378,
+          "output_tokens": 2623,
+          "reasoning_tokens": 2275,
+          "cache_read_tokens": 6232,
+          "cache_write_tokens": 12142,
+          "cost_usd": 0.1144324,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 23.24049034388736,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 1,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 28115,
+          "output_tokens": 529,
+          "reasoning_tokens": 56,
+          "cache_read_tokens": 18374,
+          "cache_write_tokens": 9739,
+          "cost_usd": 0.0629578,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 4.319352418882772,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 2,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 34988,
+          "output_tokens": 3263,
+          "reasoning_tokens": 1453,
+          "cache_read_tokens": 28113,
+          "cache_write_tokens": 6873,
+          "cost_usd": 0.1052556,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 32.8560001400765,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 3,
+          "turn": 25,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 122275,
+          "output_tokens": 6101,
+          "reasoning_tokens": 376,
+          "cache_read_tokens": 114204,
+          "cache_write_tokens": 8067,
+          "cost_usd": 0.1852118,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 42.32648243615404,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 3,
+          "turn": 26,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 130637,
+          "output_tokens": 5964,
+          "reasoning_tokens": 44,
+          "cache_read_tokens": 122271,
+          "cache_write_tokens": 8286,
+          "cost_usd": 0.1854842,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 39.4604590178933,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-3",
+          "role": "editor",
+          "round": 3,
+          "turn": 0,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 17784,
+          "output_tokens": 4747,
+          "reasoning_tokens": 4369,
+          "cache_read_tokens": 6232,
+          "cache_write_tokens": 11548,
+          "cost_usd": 0.1539424,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 42.27189326984808,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-3",
+          "role": "editor",
+          "round": 3,
+          "turn": 1,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 31497,
+          "output_tokens": 520,
+          "reasoning_tokens": 76,
+          "cache_read_tokens": 17780,
+          "cache_write_tokens": 13715,
+          "cost_usd": 0.082539,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 4.344546293839812,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-3",
+          "role": "editor",
+          "round": 3,
+          "turn": 2,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 38193,
+          "output_tokens": 3796,
+          "reasoning_tokens": 3446,
+          "cache_read_tokens": 31495,
+          "cache_write_tokens": 6696,
+          "cost_usd": 0.115707,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 38.13721147598699,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-3",
+          "role": "editor",
+          "round": 3,
+          "turn": 3,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 44934,
+          "output_tokens": 1671,
+          "reasoning_tokens": 1203,
+          "cache_read_tokens": 38191,
+          "cache_write_tokens": 6741,
+          "cost_usd": 0.0747712,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 16.696406258037314,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-3",
+          "role": "editor",
+          "round": 3,
+          "turn": 4,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 46815,
+          "output_tokens": 1879,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 44932,
+          "cache_write_tokens": 1881,
+          "cost_usd": 0.0559794,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 17.061109924921766,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -783,91 +1248,157 @@
       ],
       "by_role": {
         "analyst": {
-          "turns": 15,
-          "input_tokens": 1421714,
-          "output_tokens": 31231,
-          "reasoning_tokens": 11142,
-          "cache_read_tokens": 1281141,
-          "cache_write_tokens": 140463,
-          "cost_usd": 1.5836032,
+          "turns": 27,
+          "input_tokens": 2764329,
+          "output_tokens": 58293,
+          "reasoning_tokens": 13025,
+          "cache_read_tokens": 2515229,
+          "cache_write_tokens": 248728,
+          "cost_usd": 2.9140337999999995,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
-          "tool_calls": 38,
+          "tool_calls": 44,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 286.9076066270936
+          "wall_s": 472.1261491714977
         },
         "editor": {
-          "turns": 5,
-          "input_tokens": 165412,
-          "output_tokens": 9743,
-          "reasoning_tokens": 5844,
-          "cache_read_tokens": 120612,
-          "cache_write_tokens": 44788,
-          "cost_usd": 0.4429704,
+          "turns": 15,
+          "input_tokens": 510678,
+          "output_tokens": 32406,
+          "reasoning_tokens": 19007,
+          "cache_read_tokens": 398996,
+          "cache_write_tokens": 111644,
+          "cost_usd": 1.2862912,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
-          "tool_calls": 11,
+          "tool_calls": 26,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 89.92844299902208
+          "wall_s": 295.8996121780947
         }
       },
       "by_round": {
         "analyst:1": {
-          "turns": 15,
-          "input_tokens": 1421714,
-          "output_tokens": 31231,
-          "reasoning_tokens": 11142,
-          "cache_read_tokens": 1281141,
-          "cache_write_tokens": 140463,
-          "cost_usd": 1.5836032,
+          "turns": 20,
+          "input_tokens": 1994357,
+          "output_tokens": 31708,
+          "reasoning_tokens": 11019,
+          "cache_read_tokens": 1846414,
+          "cache_write_tokens": 147667,
+          "cost_usd": 1.7428818,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
           "tool_calls": 38,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 286.9076066270936
+          "wall_s": 277.8733775834553
+        },
+        "analyst:2": {
+          "turns": 5,
+          "input_tokens": 517060,
+          "output_tokens": 14520,
+          "reasoning_tokens": 1586,
+          "cache_read_tokens": 432340,
+          "cache_write_tokens": 84708,
+          "cost_usd": 0.800456,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 5,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 112.46583013399504
+        },
+        "analyst:3": {
+          "turns": 2,
+          "input_tokens": 252912,
+          "output_tokens": 12065,
+          "reasoning_tokens": 420,
+          "cache_read_tokens": 236475,
+          "cache_write_tokens": 16353,
+          "cost_usd": 0.370696,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 1,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 81.78694145404734
         },
         "editor:1": {
-          "turns": 5,
-          "input_tokens": 165412,
-          "output_tokens": 9743,
-          "reasoning_tokens": 5844,
-          "cache_read_tokens": 120612,
-          "cache_write_tokens": 44788,
-          "cost_usd": 0.4429704,
+          "turns": 7,
+          "input_tokens": 249974,
+          "output_tokens": 13378,
+          "reasoning_tokens": 6129,
+          "cache_read_tokens": 207647,
+          "cache_write_tokens": 42309,
+          "cost_usd": 0.5207064,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
           "tool_calls": 11,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 89.92844299902208
+          "wall_s": 116.97260205261409
+        },
+        "editor:2": {
+          "turns": 3,
+          "input_tokens": 81481,
+          "output_tokens": 6415,
+          "reasoning_tokens": 3784,
+          "cache_read_tokens": 52719,
+          "cache_write_tokens": 28754,
+          "cost_usd": 0.2826458,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 6,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 60.415842902846634
+        },
+        "editor:3": {
+          "turns": 5,
+          "input_tokens": 179223,
+          "output_tokens": 12613,
+          "reasoning_tokens": 9094,
+          "cache_read_tokens": 138630,
+          "cache_write_tokens": 40581,
+          "cost_usd": 0.482939,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 9,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 118.51116722263396
         }
       },
       "total": {
-        "turns": 20,
-        "input_tokens": 1587126,
-        "output_tokens": 40974,
-        "reasoning_tokens": 16986,
-        "cache_read_tokens": 1401753,
-        "cache_write_tokens": 185251,
-        "cost_usd": 2.0265736000000003,
+        "turns": 42,
+        "input_tokens": 3275007,
+        "output_tokens": 90699,
+        "reasoning_tokens": 32032,
+        "cache_read_tokens": 2914225,
+        "cache_write_tokens": 360372,
+        "cost_usd": 4.200325,
         "unpriced_turns": 0,
         "unpriced_reasons": [],
         "admitted_on_estimate": 0,
-        "tool_calls": 49,
+        "tool_calls": 70,
         "bounces": 0,
         "bounce_kinds": {},
-        "wall_s": 376.8360496261157
+        "wall_s": 768.0257613495924
       },
       "transcripts": {
-        "analyst": "56a9f83b733de4c9a3719af428d7d8b47340d7e491eee14c565777ce6cdfa26f",
-        "editor-1": "1d6e1c3e2ea12c02168cb26fc50aed84b799744be788827e49a7244814db0b67"
+        "analyst": "87c57b5df4e26039ce2cbc8856f0ee14ab4f62124c322ccef1f71b4e473a32cd",
+        "editor-1": "fcb17dfde04d234a756ae60db42fb4351b31ff3efbec0dcbc8d7dc89ab400e23",
+        "editor-2": "0a75f1bf8efa2ca2d8ddf512f1b55615c20335f2ff936749253975c2028bcb25",
+        "editor-3": "40be0311df03e0037b2dcccd88e51dcbdaef9f16aefd1bff01f340322f7f9e80"
       }
     },
     "reviews": [
@@ -878,95 +1409,218 @@
             "n": 1,
             "name": "First screen",
             "score": 2,
-            "reason": "The headline, decision block and c1 together say what to do: ship Brisk-S few-shot. They say why: it is the only configuration inside all three gates, at $1,200 a month. They also name the main risk: its 184 ms p95 latency is a single figure with no interval. I checked the call against options_dominance with bars read as gates, and Brisk-S few-shot is the only survivor. The Watch line also flags the thin 0.7-point accuracy margin."
+            "reason": "From the headline, decision block and lead claim (only_survivor), a reader learns what to do: route with Brisk-S few-shot. They learn why: it is the only configuration of nine that passes the balanced-accuracy gate, every cell floor and the latency budget. They also learn the main risk: a 0.7-point clearance on 90.7% against 90%, plus Complex × News at 82.9%. The options check agrees that this arm is the sole survivor and the dominant option."
           },
           {
             "n": 2,
             "name": "Coherent story",
             "score": 2,
-            "reason": "c1 to c3 build the call in order: the gate matrix, then why the cheap Nano-XS few-shot is out, then why the most accurate configurations are out. Every row I checked matches its block. Complex × News is 82.9 minus 76.7, a 6.2-point gap. B, C and F pass both accuracy gates and fail only latency. The three 'What you could change' rows match decision_sensitivity: Nano-XS few-shot becomes the call at a cell floor of 76.7% or lower; nothing passes above an 82.9% floor, above a 90.7% accuracy gate, or below a 184 ms latency budget. One small tension: the lede says the call moves 'only' on latency or the cell floor, but the confidence line and Watch both name an accuracy re-run as a risk."
+            "reason": "The claims build on each other. only_survivor gives the sole survivor. news_column shows where it is thinnest (Complex × News at 82.9%, interval 81.7–84.1%). nano_gap shows that this cell separates it from Nano-XS few-shot (+6.2, +4.4 to +8). I found no row in any values table that contradicts its sentence. The gate table, cell table and the sweeps in 'What you could change' match the threshold checks: Nano-XS few-shot becomes the pick at a floor of 76.7% or lower, and nothing passes above 82.9% or below 184 ms."
           },
           {
             "n": 3,
             "name": "Honest emphasis",
-            "score": 2,
-            "reason": "The pick's weak points are on the first screen. Its accuracy margin is 0.7 points, and Watch calls it the weakest margin. Its 66 ms of latency headroom has no interval. c2 shows the rows where Nano-XS few-shot beats it (the Simple cells) as well as the rows where it loses. c4 calls its intervals descriptive. c5's word 'settled' reads a little strong next to the best-of-nine caveat (see findings)."
+            "score": 1,
+            "reason": "The pick's weak points are on the first screen: a 0.7-point gate clearance, Complex × News as the thinnest cell, and a latency clearance with no spread. But the confidence line reads high over the latency caveat without saying why the 66 ms clearance should hold. The lede and nano_gap also frame Nano-XS few-shot as 'a fraction of the cost' ($1,143 a month, 21 times) without saying that these costs come from provider routing the input never names."
           },
           {
             "n": 4,
             "name": "Sound elision",
-            "score": 1,
-            "reason": "None of the omitted items would change the call. Traffic-weighted accuracy, macro F1 and the confusion tables feed no gate, and the latency gate removes every option that ranks above the pick. But one stated reason is false. It says the Brisk-S model and prompt effects are in 'the full lever table in the appendix', and the appendix has no lever table. Those are the effects for the recommended model; for example, Brisk-S few-shot trails Atlas-M few-shot by 1.4 points (-1.8 to -1.0)."
+            "score": 2,
+            "reason": "Nothing omitted would change the decision. Macro F1 and traffic-weighted accuracy order the arms as balanced accuracy does. Every Atlas-M arm misses latency by at least 170 ms. Every other excluded arm fails a gate already shown, and the options check confirms this. Cost does not move a decision that has one survivor."
           },
           {
             "n": 5,
             "name": "Confounds handled",
-            "score": 2,
-            "reason": "The snapshot attaches three caveats: no control, latency read as a point estimate, and best of nine. Each appears in the confidence line with the condition under which it would matter, and the two that bear on the call each get a next step. The unpaired intervals are labelled as wider than paired ones. One assumption stays in Method only: the monthly volume is read as turns. Both $1,200 and $1,143 depend on it, but the call does not."
+            "score": 1,
+            "reason": "No control, and no production router run beside the arms: the page carries this and reads against gate lines, so it is handled. The unnamed provider and serving stack is not handled well enough. The method section says so, but nano_gap's cost gap and the p95 latency both depend on how each model was served. The body states both figures as properties of the models, and only the fourth next step touches the provider."
           },
           {
             "n": 6,
             "name": "Actionable next steps",
             "score": 2,
-            "reason": "Each step names an experiment and what it would settle: production p95 with an interval, which tests the 66 ms headroom; a fresh run of 19,383 cases, which tests the accuracy margin against the best-of-nine effect; and Complex × News examples for Nano-XS few-shot, which test the floor miss and would open the $1,143 saving. I checked 19,383 with settle_cases: it is the two-sided size that settles four times in five."
+            "reason": "Each step names a run and what it settles. The fresh run of at least 19,383 cases matches the two-sided four-in-five sizing for the 0.7-point clearance. The Nano-XS news step names the 3.3-point gap to the floor and the 26.5% chance that its overall clearance reads the wrong way. The repeated latency runs on the serving stack size the 66 ms clearance. The declaration step covers the volume unit and the providers."
+          },
+          {
+            "n": 7,
+            "name": "Evidence fits claims",
+            "score": 1,
+            "reason": "only_survivor's scatter and news_column's heatmap fit their claims, and both would flip if their values flipped. nano_gap's caption says the block shows 'overall and in each place', but it has no overall row, and one bound prints as -0.03699. prompt_lever's sentence sets +11.9 (Nano-XS, zero-shot to few-shot) against +0.8 (Brisk-S, few-shot to rubric). Those are different moves, so they don't support 'worked examples matter most for the smallest model'. The matching contrast, +4.7 for Brisk-S zero-shot to few-shot, is in the same block."
+          }
+        ],
+        "findings": [
+          {
+            "claim": "nano_gap",
+            "severity": "must_fix",
+            "finding": "nano_gap compares cost by model without naming who served each one: Brisk-S few-shot 'costs $1,143 a month more' than Nano-XS few-shot. The lede ('at a fraction of the cost') and the second next step ('costs 21 times as much as') do the same. The input states no provider or pricing for either arm, and the method section admits the routing is unknown. A cost belongs to the provider routing, not the model. Fix: in nano_gap's sentence, and wherever the 21× or $1,143 appears, say these are the costs as this run served each model, with the provider unknown, so the gap may not hold under another routing."
+          },
+          {
+            "claim": "",
+            "severity": "must_fix",
+            "finding": "The confidence line reads high over three open caveats, and the latency clause does not stand behind its own. It says the call fails 'only if the p95 latency moves from run to run by as much as its 66 ms clearance', but not why the call should hold until that is measured. The serving stack behind the 184 ms p95 is never named, so production could plausibly read differently. The selection clause is also garbled ('The pick is the best of several candidates. only if…'), and its '0.0004972%' is false precision for a figure the page then says selection moves by an unknown amount. Fix: limit the high to the accuracy and cell-floor findings, whose intervals clear their lines, and say the latency pass is unsized until the repeated-run step reports. Either give a reason the 66 ms (about a quarter of the budget) should hold, or lower the confidence form."
+          },
+          {
+            "claim": "prompt_lever",
+            "severity": "should_fix",
+            "finding": "prompt_lever's sentence contrasts different moves: +11.9 is Nano-XS going from zero-shot to few-shot, while +0.8 is Brisk-S going from few-shot to rubric + reasoning. To show that worked examples matter most for the smallest model, compare +11.9 with Brisk-S zero-shot to few-shot (+4.7, +4.2 to +5.2), or cite the interaction row (+7.2, +6.5 to +7.9). Both are already in the block."
+          },
+          {
+            "claim": "nano_gap",
+            "severity": "should_fix",
+            "finding": "nano_gap's caption says each row is the difference 'overall and in each place both hold it', but the block has no overall row. Add the overall row, Brisk-S few-shot less Nano-XS few-shot on balanced accuracy: +0.6, interval +0.2 to +1.0 (the flip of prompt_lever's -0.6, -1.0 to -0.2). Or drop 'overall' from the caption. Round the Simple × Science bound (-0.03699) to -0.04. The sentence 'what that buys is news' overstates the case: Simple × News leans the other way (-0.5) and Medium × News is +1.5. Say 'chiefly Complex × News'."
+          },
+          {
+            "claim": "",
+            "severity": "should_fix",
+            "finding": "One gate goes by two names. Watch and the gate table call it 'Overall accuracy', while the headline, recommendation and method call it the balanced-accuracy gate. A reader could take 'overall accuracy' to mean traffic-weighted accuracy (92.2% for the pick), which would make the 0.7-point margin look like 2.2. Use 'balanced accuracy' everywhere the gate is named."
+          },
+          {
+            "claim": "",
+            "severity": "should_fix",
+            "finding": "In 'What you could change', the latency row says that when the budget is loosened, slower options enter 'but each costs more, and the pick holds'. Above 496 ms, Brisk-S rubric (91.5%) and Atlas-M few-shot (92.1%) would pass every gate with higher balanced accuracy, so the pick would then rest on cost. The page says elsewhere that cost decides nothing and that its routing is unknown. Say the pick holds only if the lower cost is preferred to 0.8–1.4 more points of balanced accuracy."
+          }
+        ],
+        "total": 11,
+        "passes": true,
+        "must_fix": true
+      },
+      {
+        "round": 2,
+        "items": [
+          {
+            "n": 1,
+            "name": "First screen",
+            "score": 2,
+            "reason": "The headline, decision block and only_survivor tell a reader what to do and why. Use Brisk-S few-shot because it is the only one of nine configurations that clears the balanced-accuracy gate (90.7% against 90%), every cell floor and the latency budget (184 ms against 250 ms). The Watch line names the main risks: a 0.7-point clearance on an option picked as the best of nine, the Complex × News cell at 82.9%, and a latency pass with no interval. My earlier finding on the confidence line is resolved. The high is now limited to the accuracy and cell-floor findings, the latency pass is scoped out until the repeated-run step reports, and the garbled selection clause and its false-precision 0.0004972% are gone."
+          },
+          {
+            "n": 2,
+            "name": "Coherent story",
+            "score": 2,
+            "reason": "Each claim matches its block row by row. In news_column, News is the lowest column in every row for both few-shot models, and Brisk-S's Complex × News is 82.9% (81.7–84.1), the smallest of its cell gaps (2.9). In nano_gap, the overall gap is +0.6 (+0.2 to +1) and Complex × News is +6.2 (+4.4 to +8), while the Simple cells lean the other way. My earlier prompt_lever finding is resolved: the sentence now compares like with like, +11.9 for Nano-XS against +4.7 for Brisk-S, both on the zero-shot to few-shot move. The gate-name finding is resolved: Watch now says 'balanced-accuracy gate', and Method explains the 'Overall accuracy' label, which comes from the snapshot's own criterion name."
+          },
+          {
+            "n": 3,
+            "name": "Honest emphasis",
+            "score": 2,
+            "reason": "The pick's weak axes are visible: the thin balanced-accuracy clearance, the thinnest cell and the latency pass with no interval. The latency row in 'What you could change' now says that above 483–496 ms the pick holds only if its lower cost is preferred to 0.8–1.4 more points, which resolves my earlier finding. One small overstatement remains in the cell-floor row (see findings): Nano-XS few-shot is said to 'become the pick' even though its balanced accuracy only borderline clears the gate."
+          },
+          {
+            "n": 4,
+            "name": "Sound elision",
+            "score": 2,
+            "reason": "Nothing left out would change the call. The full results table confirms that macro F1 and traffic-weighted accuracy order the arms as balanced accuracy does. Atlas-M misses latency by 170 ms or more on every prompt. options_dominance with gates as hard lines leaves only Brisk-S few-shot. The omitted lower-confidence option is answered by the scoped high."
+          },
+          {
+            "n": 5,
+            "name": "Confounds handled",
+            "score": 2,
+            "reason": "The unnamed provider and serving stack is carried into only_survivor, nano_gap, the confidence line and a next step. Selection as the best of nine is carried with a fresh-run step, whose size of 19,383 matches settle_cases (two-sided, four in five). The p95 point estimate has a repeated-latency step. The missing control is explained: the call reads each option against the gate lines, not against another arm."
+          },
+          {
+            "n": 6,
+            "name": "Actionable next steps",
+            "score": 2,
+            "reason": "Each step names an experiment or a declaration and what it settles. They are: a fresh run of at least 19,383 cases, repeated p95 runs on the production stack, news examples for Nano-XS few-shot (it needs +3.3 points in Complex × News, and its overall estimate reads the wrong way 26.5% of the time per settle_cases), and declaring the volume unit and the providers."
           },
           {
             "n": 7,
             "name": "Evidence fits claims",
             "score": 2,
-            "reason": "Each block carries its claim's own figure, and the claim would have to change if the values flipped. The gate matrix shows the single all-pass column. c2's Complex × News row is +6.2 (+4.4 to +8), and Nano-XS few-shot's own 76.7% ± 1.4 stays below 80%. The scatter puts Atlas-M rubric + reasoning at 1302 ms and 93.2%. The lever rows match levers_effects. Two small problems: c2's note mentions an 'overall' row the table does not have, and one bound prints as -0.03699."
+            "reason": "My earlier nano_gap finding is mostly resolved. The block now carries the overall row its caption promises, and the sentence says 'chiefly from Complex × News'. Each block shows its claim's figure, and its values would change the claim if they flipped. One leftover: the Simple × Science lower bound is still printed as -0.03699."
           }
         ],
         "findings": [
           {
             "claim": "",
             "severity": "should_fix",
-            "finding": "The same figure appears under two names. The gate is called 'Overall accuracy' (Watch: 'on Overall accuracy: 90.7% against 90%'; c1 and c5 rows). The measure is called 'Balanced accuracy' (recommendation, c3, appendix). The appendix also lists 'Traffic-weighted accuracy', 92.2% for the pick, and that is what most readers would take 'overall accuracy' to mean. Call the gate 'balanced-accuracy gate' or similar everywhere above the appendix."
+            "finding": "In 'What you could change', the cell-floor row says that at a floor of 76.7% or below, Nano-XS few-shot 'becomes the pick'. The lede says the call would change if Nano-XS few-shot lifted Complex × News above the floor. Both leave out two conditions. First, Nano-XS few-shot's balanced accuracy of 90.1% only borderline clears the 90% gate: settle_cases puts the distance at +0.1, and this design would read it on the wrong side 26.5% of the time. Second, it would replace Brisk-S few-shot only on cost, as this run's unnamed routing served it. Fix: in both places, say Nano-XS few-shot would take over only if it also holds the balanced-accuracy gate on a re-run, and only on cost as this run served it. The third next step already says this, so it only needs carrying up."
           },
           {
-            "claim": "",
+            "claim": "nano_gap",
             "severity": "should_fix",
-            "finding": "The lede says the call moves 'only if' p95 latency proves slower or the cell floor is lowered. The confidence line, Watch and the second next step all name a third way: a fresh run reads balanced accuracy more than 0.7 points lower because the pick was chosen from nine. Add that to the lede or drop 'only'."
-          },
-          {
-            "claim": "c5",
-            "severity": "should_fix",
-            "finding": "c5 says every accuracy clearance is 'settled at today's size', and its fresh-run column (0.0005% for balanced accuracy) assumes the truth equals today's estimate. The best-of-nine caveat says that estimate reads high. Say in the sentence or caption that 'settled' does not account for selection, and point to the re-run in Next steps."
-          },
-          {
-            "claim": "",
-            "severity": "should_fix",
-            "finding": "The 'Left out' reason for the Brisk-S model and prompt effects says 'the full lever table is in the appendix', but the appendix has no lever table. Either add the Brisk-S rows to c4 or the appendix (Brisk-S zero-shot to few-shot is the step that takes the pick from failing to passing; Atlas-M to Brisk-S few-shot is -1.4, -1.8 to -1.0), or correct the reason."
-          },
-          {
-            "claim": "c2",
-            "severity": "should_fix",
-            "finding": "The block note says each row is the difference 'overall and in each place', but the table has only the nine cells. Remove 'overall' or add the balanced-accuracy row (Nano-XS few-shot minus Brisk-S few-shot is -0.6, -1.0 to -0.2). Also round the Simple × Science upper bound, which prints as -0.03699."
-          },
-          {
-            "claim": "c2",
-            "severity": "should_fix",
-            "finding": "The $1,143-a-month saving in c2 and the $1,200 in the headline both assume the declared 30,000,000-a-month volume counts turns, and only Method says so. Add a short qualifier where the monthly figures first appear."
+            "finding": "This is left over from my earlier finding. The cell block still prints the Simple × Science lower bound as -0.03699. Round it to -0.04 to match the other bounds."
           }
         ],
-        "total": 13,
+        "total": 14,
+        "passes": true,
+        "must_fix": false
+      },
+      {
+        "round": 3,
+        "items": [
+          {
+            "n": 1,
+            "name": "First screen",
+            "score": 2,
+            "reason": "The headline and decision block say what to do: route turns with Brisk-S few-shot, the only one of nine options that passes the balanced-accuracy gate, every cell floor and the latency budget. They also give the reason, and Watch names the main risk: a 0.7-point clearance on an option picked from nine, and an unsized 66 ms latency clearance. The lead claim (only_survivor) and its scatter confirm it. options_dominance with gates applied gives Brisk-S few-shot as the only survivor. My earlier finding is fixed: the lede now says Nano-XS few-shot would replace the pick only on cost as this run served it, and only if it also holds the balanced-accuracy gate on a re-run."
+          },
+          {
+            "n": 2,
+            "name": "Coherent story",
+            "score": 2,
+            "reason": "I checked each claim against its table row by row. In news_column, News is the lowest column in every row for both few-shot models, and Complex × News for Brisk-S few-shot is 82.9% (81.7–84.1). In nano_gap, the +0.6 (+0.2 to +1) matches compare.brisk-s.few.nano-xs.few.balanced_accuracy.overall. Complex × News at +6.2 accounts for the whole gap once divided across nine cells, and the other cells are small or favour Nano-XS. In prompt_lever, the +11.9, +4.7 and +0.8 rows match. The 'What you could change' rows match decision_sensitivity. The cell-floor sweep flips at 76.7% (Nano-XS few-shot) and at 82.9%. The latency sweep never changes the cost-weighted call, which agrees with the page saying a looser budget changes the pick only if you prefer accuracy to cost."
+          },
+          {
+            "n": 3,
+            "name": "Honest emphasis",
+            "score": 2,
+            "reason": "The pick's weak axes are in plain view. The balanced-accuracy clearance is 0.7 points on a best-of-nine pick. Complex × News is 2.9 points over the floor. The latency pass has no interval, and the confidence block explicitly leaves it out of the high. The cost advantage over Atlas-M and the cost gap to Nano-XS are both tied to this run's unnamed routing. Nothing claims more than its interval supports. Brisk-S few-shot would land on the wrong side of the gate in 0.0005% of runs (settle.criteria.overall.brisk-s.few.overall.wrong_side), so 'clears with its whole interval' is fair."
+          },
+          {
+            "n": 4,
+            "name": "Sound elision",
+            "score": 2,
+            "reason": "None of the omissions changes the decision. Macro F1 and traffic-weighted accuracy order the options as balanced accuracy does, and the appendix holds them. The Atlas-M cells can't matter because every Atlas-M prompt misses latency, and the latency row in 'What you could change' covers the case where the budget loosens. My earlier rounding finding on the Simple × Science bound (-0.03699): the analyst explains the renderer prints the figure as the data hold it, and the caption now says the bound sits just below zero. I accept that and have logged the formatting as a tool gap rather than re-raising it."
+          },
+          {
+            "n": 5,
+            "name": "Confounds handled",
+            "score": 2,
+            "reason": "The unnamed provider and serving stack is carried on only_survivor and nano_gap, scoped in the confidence block (accuracy findings don't depend on it, latency and cost do), and covered by next steps 2 and 4. Best-of-nine selection gets a re-run sized at 19,383 cases, which matches the two-sided four-in-five size from settle_cases. The latency point estimate gets repeated p95 runs. The missing control is scoped to comparisons between options, which the call doesn't rest on. The cost_served_by fact is addressed: every cost comparison says providers are unnamed and that another routing could change the gap. The high_over_open fact is addressed too: each of the four caveats says what would make it matter, and the high is explicitly limited to the accuracy and cell-floor findings."
+          },
+          {
+            "n": 6,
+            "name": "Actionable next steps",
+            "score": 2,
+            "reason": "Each step names an experiment or a declaration and what it settles. Step 1: a fresh run of at least 19,383 cases settles whether the 0.7-point clearance survives selection. Step 2: repeated p95 runs on the production stack size the 66 ms clearance. Step 3: news examples for Nano-XS few-shot need a 3.3-point gain in Complex × News, plus a re-read of the overall set, since its 90.1% balanced accuracy reads on the wrong side 26.5% of the time. Step 4 declares the volume unit and providers behind the cost figures."
+          },
+          {
+            "n": 7,
+            "name": "Evidence fits claims",
+            "score": 2,
+            "reason": "Each block carries its claim's own figure, and every number I spot-checked matches the tool: monthly cost $1,200, gap +$1,143, 21×, 26.5%, 19,383, and interval half-widths of 1.4 and 1.2. The gate scatter shows both gates and its caption flags that Nano-XS few-shot also lands in the box but misses a cell floor. The next claim's heatmap shows that miss with its interval. nano_gap shows the gap itself, overall and per cell, with unpaired intervals. Each counterfactual holds: if Complex × News for Nano-XS few-shot were above 80%, or the pick's lower bound fell below 90%, the claims would have to change."
+          }
+        ],
+        "findings": [],
+        "total": 14,
         "passes": true,
         "must_fix": false
       }
     ],
     "sessions": {
       "analyst": {
-        "digest": "56a9f83b733de4c9a3719af428d7d8b47340d7e491eee14c565777ce6cdfa26f",
-        "turns": 15,
-        "ref": "01a18527-e2fe-7283-9c25-770ae8682987:session:analyst"
+        "digest": "87c57b5df4e26039ce2cbc8856f0ee14ab4f62124c322ccef1f71b4e473a32cd",
+        "turns": 27,
+        "ref": "01a18920-2d2f-77d9-98de-362e1c5e11b0:session:analyst"
       },
       "editor-1": {
-        "digest": "1d6e1c3e2ea12c02168cb26fc50aed84b799744be788827e49a7244814db0b67",
+        "digest": "fcb17dfde04d234a756ae60db42fb4351b31ff3efbec0dcbc8d7dc89ab400e23",
+        "turns": 7,
+        "ref": "01a18920-2d2f-77d9-98de-362e1c5e11b0:session:editor-1"
+      },
+      "editor-2": {
+        "digest": "0a75f1bf8efa2ca2d8ddf512f1b55615c20335f2ff936749253975c2028bcb25",
+        "turns": 3,
+        "ref": "01a18920-2d2f-77d9-98de-362e1c5e11b0:session:editor-2"
+      },
+      "editor-3": {
+        "digest": "40be0311df03e0037b2dcccd88e51dcbdaef9f16aefd1bff01f340322f7f9e80",
         "turns": 5,
-        "ref": "01a18527-e2fe-7283-9c25-770ae8682987:session:editor-1"
+        "ref": "01a18920-2d2f-77d9-98de-362e1c5e11b0:session:editor-3"
       }
     }
   },
   "created_by": "agent:test",
-  "created_at": "2026-10-29T00:55:46.176953+00:00"
+  "created_at": "2026-10-29T19:25:49.745014+00:00"
 }

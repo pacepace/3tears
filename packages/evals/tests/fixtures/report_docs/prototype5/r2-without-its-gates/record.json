@@ -1,5 +1,5 @@
 {
-  "id": "01a18515-bef6-7189-b35e-b0a6d199b5e5",
+  "id": "01a18922-1666-723f-9abc-a3473f04c6ed",
   "doc_type": "eval_report_doc",
   "schema_version": 14,
   "scope_id": "toyhost-scope",
@@ -8,35 +8,35 @@
   "doc": {
     "schema": "report-doc/1",
     "story": "tradeoff",
-    "headline": "No price per point was set: {arm:brisk-s.low.r1} is the knee; the top option passes {compare.atlas-m.high.r1.brisk-s.low.r1.pass_rate.overall.difference|abs} points more at {cost.gap.atlas-m.high.r1.brisk-s.low.r1.multiple} its cost.",
-    "lede": "Every cheaper option passes fewer tasks; the nearest saves only {cost.gap.brisk-s.low.r1.brisk-s.low.r0.monthly|abs} a month and trails by {compare.brisk-s.low.r1.brisk-s.low.r0.pass_rate.overall.difference|abs} points, clear of zero. Above the lean no single step is told apart from it; a declared floor or price per point would turn this trade into a decision.",
+    "headline": "No bar declared, so the pick is a price. Lean: Brisk-S, low reasoning, retry. Atlas-M's best is not told apart from Brisk-S at high reasoning, yet costs {cost.gap.atlas-m.high.r1.brisk-s.high.r1.multiple} as much at this run's routing",
+    "lede": "Brisk-S at low reasoning with retry trails Atlas-M's best by {compare.atlas-m.high.r1.brisk-s.low.r1.pass_rate.overall.difference|abs} points; on point estimates, the next point past it costs about {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month. A declared bar or price per point from the planner's owner would turn this into a decision.",
     "flag": null,
     "recommends": [],
     "confidence": {
       "form": "high_if_immaterial",
       "caveats": [
         {
-          "id": "no_control",
+          "id": "nothing_declared",
           "label": null,
-          "material_if": "Only if pairing the shared cases separated the single steps above {arm:brisk-s.low.r1}. Every interval here is unpaired; pairing would likely narrow them where outcomes correlate across shared cases, which could make the dearer options' small gains real and move the lean up the frontier. The pick-of-many caveat below pulls the other way.",
+          "material_if": "The high covers, at this run's routing, the frontier's shape, the price per point rising at every step, and Atlas-M's premium over Brisk-S at matched reasoning; it does not cover the lean, which stays open until the owner declares a bar or a price per point. The lean is cheapest only for a price between {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} and {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month on point estimates, and that upper edge rests on a gain of {compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.difference} points ({compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.interval})",
           "checked": null
         },
         {
-          "id": "nothing_declared",
+          "id": "no_control",
           "label": null,
-          "material_if": "Only if the owner prices a point of pass rate below {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} or above {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month, or sets a floor or latency budget the lean misses; then another option is the better buy.",
+          "material_if": "Only if the owner needs the move from today's planner. Every option here is a candidate, so choosing among them needs no control; no configuration is marked as the one in production, so nothing here reads a change from it",
           "checked": null
         },
         {
           "id": "best_of_n",
           "label": null,
-          "material_if": "Only if a fresh run reads {arm:brisk-s.low.r1} lower by about the low end of its lead over {arm:brisk-s.low.r0} ({compare.brisk-s.low.r1.brisk-s.low.r0.pass_rate.overall.interval} points) or more; then nothing separates them and the cheaper one is the better buy. As the pick among {n_candidates|words} options its estimate likely reads somewhat high.",
+          "material_if": "Fresh cases read the lean's lead over Nano-XS at high reasoning with retry near zero; that lead's interval is {compare.brisk-s.low.r1.nano-xs.high.r1.pass_rate.overall.interval}, and the best of many configurations tends to read lower on a re-run, which the paired re-run checks",
           "checked": null
         },
         {
-          "id": "analyst:volume_unit",
-          "label": "What the monthly volume counts",
-          "material_if": "Only if the declared volume counts tasks rather than calls: every monthly figure and the price band would then scale by each option's calls per task, from {measure.calls_per_task.atlas-m.high.r1.mean} to {measure.calls_per_task.nano-xs.high.r1.mean} among the frontier options from {arm:nano-xs.high.r1} up, raising the band's dollars by about half. The order of the frontier steps, and so the knee, holds on those point figures.",
+          "id": "analyst:cost_routing",
+          "label": "Cost routing and volume unit unknown",
+          "material_if": "Another provider routing changes the models' prices per call relative to each other, or the declared monthly volume counts tasks rather than calls. The snapshot names no provider for any configuration. Atlas-M's premium over Brisk-S is {cost.gap.atlas-m.low.r1.brisk-s.low.r1.multiple} at low reasoning and {cost.gap.atlas-m.high.r1.brisk-s.high.r1.multiple} at high, so a re-routing would have to cut Atlas-M's price relative to Brisk-S's by about that factor to close it; the price edges between nearer options could move with far smaller shifts. If the volume counts tasks and a call is a tool call, each monthly cost scales by its calls per task ({measure.calls_per_task.brisk-s.low.r1.mean} for the lean, {measure.calls_per_task.atlas-m.high.r1.mean} for Atlas-M at high reasoning with retry, {measure.calls_per_task.nano-xs.high.r1.mean} for Nano-XS at high reasoning with retry), which raises every price edge by about that factor and moves the lean's band up; no figure states the per-task prices",
           "checked": null
         }
       ]
@@ -44,29 +44,29 @@
     "decision": [
       {
         "slot": "the_trade",
-        "text": "Moving up from {arm:nano-xs.high.r1} to {arm:brisk-s.low.r1} costs {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_cost_gap|abs} more a month for {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.gain} points, clear of zero. Going on to the top option, {arm:atlas-m.high.r1}, costs {cost.gap.atlas-m.high.r1.brisk-s.low.r1.monthly|abs} more a month again for {compare.atlas-m.high.r1.brisk-s.low.r1.pass_rate.overall.difference} points ({compare.atlas-m.high.r1.brisk-s.low.r1.pass_rate.overall.interval}), also clear of zero."
+        "text": "Atlas-M at high reasoning with retry passes {compare.atlas-m.high.r1.brisk-s.low.r1.pass_rate.overall.difference|abs} points more than Brisk-S at low reasoning with retry ({compare.atlas-m.high.r1.brisk-s.low.r1.pass_rate.overall.interval}), for {cost.gap.atlas-m.high.r1.brisk-s.low.r1.monthly|abs} more a month at the declared volume, read as calls, at this run's routing. Brisk-S at high reasoning with retry is not told apart from Atlas-M on pass rate at {cost_per_1k.brisk-s.high.r1} per 1k calls against {cost_per_1k.atlas-m.high.r1}. Nothing declared before the run ranks cost against pass rate; the planner's owner makes the call."
       },
       {
         "slot": "where_it_flips",
-        "text": "{arm:brisk-s.low.r1} is the best buy when a point of pass rate is worth between {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} and {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month, if the declared volume counts calls; both ends are point prices with no interval. Read as a floor on point estimates, it is the cheapest option for any pass-rate floor above {measure.pass_rate.brisk-s.low.r0.mean} up to its own {measure.pass_rate.brisk-s.low.r1.mean}."
+        "text": "By price per point a month, on point estimates: below {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point}, a Nano-XS configuration; up to {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point}, Brisk-S at low reasoning with retry; up to {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point}, Brisk-S at high reasoning with retry; above it, Atlas-M at high reasoning with retry. These edges carry no interval, and both upper steps rest on gains not told apart from zero."
       },
       {
         "slot": "our_lean",
-        "text": "Ours, not a rule: run {arm:brisk-s.low.r1}. It is the cheapest option that no single step up beats by a margin this run can separate, and it holds for any price per point in the band above."
+        "text": "Ours, not a rule: Brisk-S at low reasoning with retry, at {cost_per_1k.brisk-s.low.r1} per 1k calls. It holds for a price per point between {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} and {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month."
       },
       {
         "slot": "watch",
-        "text": "No line was declared, so no margin is weakest. The lean's thinnest separated lead is over {arm:brisk-s.low.r0} ({compare.brisk-s.low.r1.brisk-s.low.r0.pass_rate.overall.interval} points); a fresh run of today's size reads that pair the other way {settle.brisk-s.low.r1.brisk-s.low.r0.pass_rate.overall.wrong_side} of the time. Multi-hop questions are the lean's weakest task, and its p95 latency of {measure.latency_ms.brisk-s.low.r1.p95} has no budget to read against."
+        "text": "The next step up, Brisk-S at high reasoning with retry, gains {compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.difference|abs} points on the lean, not told apart from zero ({compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.interval}); a fresh run of today's size reads it the other way {settle.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.wrong_side} of the time. At the top of that interval the price of a point falls well below the lean's upper edge, so the band is soft. The lean is the best of {n_candidates|words} configurations near its price, so its rate may read lower on fresh cases."
       },
       {
         "slot": "what_settles_it",
-        "text": "The planner's owner declares a pass-rate floor, a price per point, a latency budget, and what the monthly volume counts. A paired re-run settles whether the single steps above the lean buy real points."
+        "text": "A pass-rate bar or a price per point, declared by the planner's owner, with the unit the monthly volume counts. Then a paired re-run of the two Brisk-S options with retry settles whether high reasoning's gain is real."
       }
     ],
     "claims": [
       {
         "id": "frontier",
-        "text": "Pass rate rises with cost along a frontier of {count.frontier.pass_rate|words} options, and {arm:brisk-s.low.r1} sits where the curve flattens.",
+        "text": "Along the cost frontier of the {n_candidates|words} configurations, pass rate climbs steeply across the cheapest and flattens past Brisk-S at low reasoning with retry, at {measure.pass_rate.brisk-s.low.r1.mean}.",
         "weight": "lead",
         "evidence": [
           {
@@ -78,7 +78,15 @@
                 "cost_per_1k",
                 "pass_rate"
               ],
-              "arms": [],
+              "arms": [
+                "nano-xs.off.r0",
+                "nano-xs.off.r1",
+                "nano-xs.low.r1",
+                "nano-xs.high.r1",
+                "brisk-s.low.r1",
+                "brisk-s.high.r1",
+                "atlas-m.high.r1"
+              ],
               "strata": [],
               "limit": 0,
               "transform": "none",
@@ -86,15 +94,15 @@
             },
             "reference": null,
             "emphasis": "brisk-s.low.r1",
-            "caption": "Each option's cost per 1k calls (log axis) against its pass rate, the lean marked."
+            "caption": "The {count.frontier.pass_rate|words} configurations on the frontier, cost per 1k calls on a log axis against pass rate, the lean stressed; every other configuration is in the full results."
           }
         ],
         "caveats": [],
         "durable": false
       },
       {
-        "id": "prices",
-        "text": "Each step up the frontier costs more per point than the one before, reaching {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point} a month per point for the last.",
+        "id": "price-steps",
+        "text": "The price of a pass-rate point rises at every step along the frontier, reaching {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point} a month for the last step to Atlas-M.",
         "weight": "support",
         "evidence": [
           {
@@ -113,19 +121,19 @@
             },
             "reference": null,
             "emphasis": "",
-            "caption": "Price of one point of pass rate a month at the declared volume, read as calls, for each step along the frontier; point figures with no interval."
+            "caption": "Monthly price of each pass-rate point gained along the frontier, at the declared volume read as calls and this run's routing; point estimates with no interval."
           }
         ],
         "caveats": [],
         "durable": false
       },
       {
-        "id": "above",
-        "text": "Above {arm:brisk-s.low.r1}, neither raising reasoning nor swapping Brisk-S for Atlas-M moves pass rate by an amount this run can tell from zero; only both together, the top option, pass more by a separated {compare.atlas-m.high.r1.brisk-s.low.r1.pass_rate.overall.difference} points.",
+        "id": "atlas-premium",
+        "text": "At this run's unnamed provider routing, Atlas-M costs {cost.gap.atlas-m.high.r1.brisk-s.high.r1.multiple} as much as Brisk-S at the same reasoning level with retry, yet the two are not told apart on pass rate ({lever.model.atlas-m.high.r1.brisk-s.high.r1.pass_rate.interval} at high reasoning).",
         "weight": "support",
         "evidence": [
           {
-            "block": "diverging_bars",
+            "block": "dot_interval",
             "query": {
               "source": "levers",
               "aspect": "",
@@ -133,31 +141,10 @@
                 "pass_rate"
               ],
               "arms": [
-                "brisk-s.low.r1",
-                "brisk-s.high.r1",
                 "atlas-m.low.r1",
-                "atlas-m.high.r1"
-              ],
-              "strata": [],
-              "limit": 0,
-              "transform": "none",
-              "small_multiples_by": "none"
-            },
-            "reference": null,
-            "emphasis": "",
-            "caption": "Change in pass rate from moving one setting among the four options with a retry; the model rows read Brisk-S less Atlas-M, so a negative bar is Brisk-S behind. Unpaired intervals."
-          },
-          {
-            "block": "diverging_bars",
-            "query": {
-              "source": "compare",
-              "aspect": "",
-              "measures": [
-                "pass_rate"
-              ],
-              "arms": [
+                "brisk-s.low.r1",
                 "atlas-m.high.r1",
-                "brisk-s.low.r1"
+                "brisk-s.high.r1"
               ],
               "strata": [],
               "limit": 0,
@@ -166,49 +153,21 @@
             },
             "reference": null,
             "emphasis": "",
-            "caption": "The top option's pass rate less the lean's, overall with an unpaired interval and in each task, where no count gives an interval."
-          }
-        ],
-        "caveats": [],
-        "durable": false
-      },
-      {
-        "id": "below",
-        "text": "Below it, the nearest cheaper option, {arm:brisk-s.low.r0}, passes {compare.brisk-s.low.r1.brisk-s.low.r0.pass_rate.overall.difference|abs} points fewer, the lean's thinnest separated lead; the next frontier option down, {arm:nano-xs.high.r1}, trails by {compare.brisk-s.low.r1.nano-xs.high.r1.pass_rate.overall.difference|abs}.",
-        "weight": "support",
-        "evidence": [
-          {
-            "block": "diverging_bars",
-            "query": {
-              "source": "compare",
-              "aspect": "",
-              "measures": [
-                "pass_rate"
-              ],
-              "arms": [
-                "brisk-s.low.r1",
-                "brisk-s.low.r0"
-              ],
-              "strata": [],
-              "limit": 0,
-              "transform": "none",
-              "small_multiples_by": "none"
-            },
-            "reference": null,
-            "emphasis": "",
-            "caption": "The lean's pass rate less the nearest cheaper option's, which sits off the price frontier; overall with an unpaired interval, and in each task, where no count gives an interval."
+            "caption": "Change in pass rate from switching Atlas-M to Brisk-S, or low to high reasoning, all with retry; unpaired intervals."
           },
           {
-            "block": "diverging_bars",
+            "block": "bars",
             "query": {
-              "source": "compare",
+              "source": "measures",
               "aspect": "",
               "measures": [
-                "pass_rate"
+                "cost_per_1k"
               ],
               "arms": [
+                "atlas-m.low.r1",
                 "brisk-s.low.r1",
-                "nano-xs.high.r1"
+                "atlas-m.high.r1",
+                "brisk-s.high.r1"
               ],
               "strata": [],
               "limit": 0,
@@ -217,7 +176,7 @@
             },
             "reference": null,
             "emphasis": "",
-            "caption": "The lean's pass rate less the frontier option below it, laid out the same way."
+            "caption": "Cost per 1k calls for the same four configurations, on a log scale."
           }
         ],
         "caveats": [],
@@ -225,11 +184,11 @@
       },
       {
         "id": "retry",
-        "text": "A retry is the cheapest lift on every model, and it buys most where pass rate starts lowest: {lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.effect} points on {arm:nano-xs.off.r0} for {cost.gap.nano-xs.off.r1.nano-xs.off.r0.monthly|abs} a month.",
+        "text": "Retry buys most where pass rate starts lowest: on Brisk-S at low reasoning it adds {lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.effect} points for {cost.gap.brisk-s.low.r1.brisk-s.low.r0.per_1k|abs} more per 1k calls, with calls per task moving from {measure.calls_per_task.brisk-s.low.r0.mean} to {measure.calls_per_task.brisk-s.low.r1.mean}; it adds more on Nano-XS, and on Atlas-M at high reasoning a gain not told apart from zero.",
         "weight": "support",
         "evidence": [
           {
-            "block": "diverging_bars",
+            "block": "dot_interval",
             "query": {
               "source": "levers",
               "aspect": "",
@@ -237,8 +196,8 @@
                 "pass_rate"
               ],
               "arms": [
-                "nano-xs.off.r0",
-                "nano-xs.off.r1",
+                "nano-xs.high.r0",
+                "nano-xs.high.r1",
                 "brisk-s.low.r0",
                 "brisk-s.low.r1",
                 "atlas-m.high.r0",
@@ -251,7 +210,32 @@
             },
             "reference": null,
             "emphasis": "",
-            "caption": "Change in pass rate from adding a retry, for one setting of each model; unpaired intervals."
+            "caption": "Change in pass rate from adding retry to each shortlisted option, beside the Atlas-M to Nano-XS gap with and without retry; unpaired intervals."
+          },
+          {
+            "block": "bars",
+            "query": {
+              "source": "measures",
+              "aspect": "",
+              "measures": [
+                "cost_per_1k"
+              ],
+              "arms": [
+                "nano-xs.high.r0",
+                "nano-xs.high.r1",
+                "brisk-s.low.r0",
+                "brisk-s.low.r1",
+                "atlas-m.high.r0",
+                "atlas-m.high.r1"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Cost per 1k calls without and with retry for the same three options, on a log scale."
           }
         ],
         "caveats": [],
@@ -259,7 +243,7 @@
       },
       {
         "id": "latency",
-        "text": "The dearer options are also slower: {arm:atlas-m.high.r1} reaches a p95 latency of {measure.latency_ms.atlas-m.high.r1.p95}.",
+        "text": "Atlas-M at high reasoning with retry is the slowest option on the shortlist, its p95 latency at {measure.latency_ms.atlas-m.high.r1.p95}; no latency budget was declared, and retry lengthens the tail.",
         "weight": "detail",
         "evidence": [
           {
@@ -272,9 +256,9 @@
               ],
               "arms": [
                 "nano-xs.high.r1",
+                "brisk-s.low.r0",
                 "brisk-s.low.r1",
                 "brisk-s.high.r1",
-                "atlas-m.low.r1",
                 "atlas-m.high.r1"
               ],
               "strata": [],
@@ -284,19 +268,19 @@
             },
             "reference": null,
             "emphasis": "",
-            "caption": "Latency from p50 to p95 for the options around the knee; no budget was declared."
+            "caption": "Latency from p50 to p95 for the options a decider would weigh."
           }
         ],
         "caveats": [],
         "durable": false
       },
       {
-        "id": "tasks",
-        "text": "Multi-hop questions are the weakest task for the lean and for the frontier options on either side of it.",
+        "id": "multihop",
+        "text": "Multi-hop questions are the weakest task for every shortlisted option; the lean passes {task.multihop.brisk-s.low.r1.pass_rate.mean} of them. With no per-task counts this is a lead, not a separated finding.",
         "weight": "detail",
         "evidence": [
           {
-            "block": "heatmap",
+            "block": "table",
             "query": {
               "source": "tasks",
               "aspect": "",
@@ -306,6 +290,7 @@
               "arms": [
                 "nano-xs.high.r1",
                 "brisk-s.low.r1",
+                "brisk-s.high.r1",
                 "atlas-m.high.r1"
               ],
               "strata": [],
@@ -315,17 +300,8 @@
             },
             "reference": null,
             "emphasis": "",
-            "caption": "Pass rate by task for the frontier option below the knee, the lean and the top option; tasks state no case counts, so these figures are descriptive."
-          }
-        ],
-        "caveats": [],
-        "durable": false
-      },
-      {
-        "id": "failures",
-        "text": "The lean's kept failures are planning errors: a collapsed hop, an off-by-one date window, and a guess where it should have asked.",
-        "weight": "detail",
-        "evidence": [
+            "caption": "Pass rate by task for the shortlisted options; point estimates."
+          },
           {
             "block": "examples",
             "query": {
@@ -336,13 +312,13 @@
                 "brisk-s.low.r1"
               ],
               "strata": [],
-              "limit": 0,
+              "limit": 3,
               "transform": "none",
               "small_multiples_by": "none"
             },
             "reference": null,
             "emphasis": "",
-            "caption": "Every failure the snapshot keeps for the lean, one per task where kept; the run's total failures are not counted, so these show kinds, not shares."
+            "caption": "The failures kept for the lean, one per task shown; the multi-hop card collapses two hops into one query. Illustrations, not a count."
           }
         ],
         "caveats": [],
@@ -351,90 +327,92 @@
     ],
     "explore": [
       {
-        "control": "Price of a point of pass rate a month",
-        "binds": "Which frontier option is the best buy",
-        "outcome": "Below {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} a cheaper option wins; up to {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} the lean holds; up to {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point} {arm:brisk-s.high.r1} does; above that, {arm:atlas-m.high.r1}. Point prices with no interval, on the volume read as calls."
+        "control": "Price of a pass-rate point a month",
+        "binds": "Which frontier configuration is worth its cost",
+        "outcome": "On point estimates, with the volume read as calls: below {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point}, a Nano-XS option; up to {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point}, Brisk-S at low reasoning with retry; up to {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point}, Brisk-S at high reasoning with retry; above, Atlas-M at high reasoning with retry. If the volume counts tasks, each edge rises by about the configurations' calls per task."
       },
       {
-        "control": "A pass-rate floor, read on point estimates",
-        "binds": "The cheapest option that clears it",
-        "outcome": "The lean is cheapest for floors above {measure.pass_rate.brisk-s.low.r0.mean} up to {measure.pass_rate.brisk-s.low.r1.mean}; {arm:brisk-s.high.r1} up to {measure.pass_rate.brisk-s.high.r1.mean}; above that only {arm:atlas-m.high.r1} clears, up to {measure.pass_rate.atlas-m.high.r1.mean}."
-      },
-      {
-        "control": "A p95 latency budget",
-        "binds": "Which options stay in",
-        "outcome": "A budget under {measure.latency_ms.brisk-s.low.r1.p95} rules the lean out; every Atlas-M option reads at or above {measure.latency_ms.atlas-m.off.r0.p95}."
+        "control": "A pass-rate bar",
+        "binds": "The cheapest configuration that clears it, read on point estimates",
+        "outcome": "Up to {measure.pass_rate.nano-xs.high.r1.mean}, Nano-XS at high reasoning with retry; up to {measure.pass_rate.brisk-s.low.r0.mean}, Brisk-S at low reasoning without retry; up to {measure.pass_rate.brisk-s.low.r1.mean}, the lean; up to {measure.pass_rate.brisk-s.high.r1.mean}, Brisk-S at high reasoning with retry; up to {measure.pass_rate.atlas-m.high.r1.mean}, Atlas-M at high reasoning with retry; above that, none."
       }
     ],
     "omitted": [
       {
-        "what": "The other options off the frontier",
-        "why": "Each costs more than another option that passes at least as many tasks; Brisk-S with low reasoning and no retry, off only the price curve, is shown below the lean instead. All are in the full tables."
+        "what": "Atlas-M at no and low reasoning",
+        "why": "Each costs more than a Brisk-S option that passes at least as often; none is on the frontier."
       },
       {
-        "what": "The other retry effects and their interaction with model",
-        "why": "Every model and reasoning setting gains from a retry, all but Atlas-M with high reasoning clear of zero, and the gain is larger on Nano-XS than on Atlas-M; this agrees with the retry claim and changes no option's place."
+        "what": "Calls per task as its own claim",
+        "why": "Cost is read per call. Nano-XS and retry make more calls per task and Atlas-M fewer, so per task Nano-XS's cost advantage narrows a little and Atlas-M's premium shrinks a little; the shortlist order holds. How the volume's unit moves the price edges is carried in the confidence."
       },
       {
-        "what": "Reasoning effects at off and low",
-        "why": "Reasoning raises pass rate on every model but costs more than a retry; the frontier already prices it."
+        "what": "Outcome and extra-calls measures",
+        "why": "The snapshot holds no figures for either."
       },
       {
-        "what": "Calls per task as a result",
-        "why": "Describes how options plan, not how often they pass; it enters only through the volume caveat."
+        "what": "The full lever table across all eighteen configurations",
+        "why": "Shown only where it bears on the shortlist; the appendix holds every effect and interaction."
       },
       {
-        "what": "Outcome and extra calls per task",
-        "why": "The snapshot holds no figures for them."
-      },
-      {
-        "what": "Per-task pass rates of the other options",
-        "why": "No task states its case count, so no task figure has an interval; they stay in the appendix."
+        "what": "Per-task pass rates for configurations off the shortlist",
+        "why": "Multi-hop is lowest throughout; the extra rows add no new pattern and carry no counts."
       }
     ],
     "next": [
       {
-        "text": "The planner's owner declares a pass-rate floor, a price per point of pass rate, a p95 latency budget, and what the monthly volume counts.",
-        "settles": "Turns the trade into a decision: each declaration picks one frontier option, and the volume fixes the dollars the price is set in."
+        "text": "The planner's owner declares a pass-rate bar or a price per point of pass rate, and states what the monthly volume counts.",
+        "settles": "Turns the trade into a decision: the cheapest configuration that meets it, priced on the right unit."
       },
       {
-        "text": "Re-run {arm:brisk-s.low.r1}, {arm:brisk-s.high.r1} and {arm:atlas-m.low.r1} on fresh cases, paired. Read independently, telling the lean from {arm:atlas-m.low.r1} four times in five needs {settle.brisk-s.low.r1.atlas-m.low.r1.pass_rate.overall.cases_needed_80} cases per arm if today's gap is the truth; pairing needs fewer.",
-        "settles": "Whether the single steps above the lean buy real points, and how far the lean's estimate falls on fresh cases."
+        "text": "Re-run Brisk-S at low and at high reasoning, both with retry, on the same fresh cases, {settle.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.cases_needed_80} per configuration.",
+        "settles": "Whether high reasoning's gain on Brisk-S is real, four times in five if today's gap holds; also checks the lean's rate against best-of-many optimism."
       },
       {
-        "text": "Target multi-hop planning on Brisk-S and Nano-XS, then re-run the frontier options.",
-        "settles": "Whether cheaper options can close the gap on the weakest task and move the knee down the price curve."
+        "text": "Target hop-collapsing on multi-hop questions in the planner prompt, then re-run the lean on that task with stated case counts.",
+        "settles": "Whether the lean's weakest task can close on the costlier options without paying for them."
+      },
+      {
+        "text": "Record each configuration's provider.",
+        "settles": "Whether the cost gaps, the price edges and Atlas-M's premium hold at production routing."
       }
     ],
     "method": [
       {
-        "term": "Design",
-        "text": "A factorial sweep of {count.levels.model|words} models, {count.levels.reasoning|words} reasoning levels and retry on or off: {n_candidates|words} options, each run on {scoreboard.brisk-s.low.r1.cases} research-planning tasks across {count.tasks|words} task types, none lost. No repeats are stated.",
+        "term": "Configurations",
+        "text": "{n_candidates|words} configurations: three models crossed with three reasoning levels and retry on or off. With retry means {settings.brisk-s.low.r1.retry} retry.",
+        "caveats": []
+      },
+      {
+        "term": "Cases",
+        "text": "{scoreboard.brisk-s.low.r1.cases} cases per configuration, none lost; repeats are not stated, nor whether every configuration ran the same cases.",
         "caveats": []
       },
       {
         "term": "Pass",
-        "text": "The input does not say what makes a task pass. Kept failures are scored against an expected plan of tool calls and their arguments.",
+        "text": "The input does not define what makes a task pass; failed cases are classed as missing call, wrong arguments or wrong tool.",
         "caveats": []
       },
       {
         "term": "Intervals",
-        "text": "{compare.brisk-s.low.r1.nano-xs.high.r1.pass_rate.overall.level}, computed from each option's pass rate and case count, combined as if the options ran different cases. No correction for the many comparisons. Task figures state no counts and carry no interval.",
+        "text": "At {lever.model.atlas-m.high.r1.brisk-s.high.r1.pass_rate.level}, from each rate's binomial spread over its cases, two configurations combined as independent, with no correction for the many comparisons. Where the configurations ran the same cases, a paired interval would be narrower. Task figures carry no counts and so no interval.",
         "caveats": []
       },
       {
+        "term": "Control",
+        "text": "No configuration is marked as production; every comparison is between two configurations' own figures.",
+        "caveats": [
+          "no_control"
+        ]
+      },
+      {
         "term": "Cost",
-        "text": "Cost per 1k calls, a point figure with no spread. Monthly figures use the declared volume of {meta.volume_per_month} a month, read as calls; the input does not say what that volume counts.",
+        "text": "Cost per 1k calls as measured in this run; the provider routing is not named, and the input does not say whether a call is a planner request or a tool call. Monthly figures read the declared volume of {meta.volume_per_month} as calls, which the input does not state.",
         "caveats": []
       },
       {
         "term": "Latency",
-        "text": "p50 and p95 per option; no latency budget was declared.",
-        "caveats": []
-      },
-      {
-        "term": "Not compared",
-        "text": "There is no control and nothing was declared in advance: no gate, floor, margin or exchange rate.",
+        "text": "Median (p50) and p95 per configuration; no latency budget was declared.",
         "caveats": []
       },
       {
@@ -444,36 +422,31 @@
       }
     ]
   },
-  "ending": "stored",
+  "ending": "stored_with_findings",
   "findings": [
     {
       "claim": "",
-      "severity": "should_fix",
-      "finding": "Add Brisk-S with low reasoning and no retry to the paired re-run in Next steps. Watch and the pick-of-many caveat both name the lean's lead over it (+1.9, +0.3 to +3.4) as the thinnest, and that is where the $56-a-month cheaper option could become the better buy. Today's design needs about 1,636 cases per arm to separate them four times in five when read unpaired (settle_cases); pairing needs fewer. Say that this re-run settles whether the lean's lead survives on fresh cases."
+      "severity": "must_fix",
+      "finding": "The confidence clause on the pick being best of several says 'Fresh cases read the lean's lead over Nano-XS at high reasoning with retry near zero; that lead's interval is +0.8 to +4'. No fresh-case reading exists. The measured lead is +2.4 points (+0.8 to +4). A reader would think a re-run had erased the lean's edge over the option $764 a month cheaper. Rewrite it as a risk, not a result. For example: 'The lean's lead over Nano-XS at high reasoning with retry is +2.4 points (+0.8 to +4); as the best of eighteen, it may read lower on fresh cases, and the paired re-run checks it.'"
     },
     {
-      "claim": "frontier",
+      "claim": "price-steps",
       "severity": "should_fix",
-      "finding": "'A frontier of seven options' counts the price curve, which is how price_tradeoff counts it. But Brisk-S with low reasoning and no retry ($0.288, 95.3%) is undominated, and the page calls it 'off only the price curve'. Say 'price curve' in the claim, and mark the seven curve options in the scatter so the block shows the frontier the sentence names."
+      "finding": "'The price of a pass-rate point rises at every step along the frontier' is true by construction. The frontier here is the convex hull, so its steps always get dearer, and the confidence's High covering 'the price per point rising at every step' claims nothing the data could have refuted. Say the frontier is the price-per-point hull and that its steps rise by construction. Put the finding in the size of the steps, for example the jump from $1,595.18 to $17,236.36 for the last step to Atlas-M. Then drop 'rising at every step' from what the High covers. In the frontier claim's caption, note that Brisk-S at low reasoning without retry (95.3% at $0.288) is not beaten by any cheaper option but lies under the hull. It is the pick for a bar between 94.8% and 95.3%, as the bar row in 'What you could change' already says."
     },
     {
-      "claim": "retry",
+      "claim": "multihop",
       "severity": "should_fix",
-      "finding": "The claim says a retry is 'the cheapest lift on every model' and quotes $24 a month for Nano-XS with reasoning off, but the block shows only pass-rate changes. Add each retry step's monthly cost gap, or its price per point, beside the rows, or cut 'cheapest' from the sentence. Also note that a retry raises calls per task (1.698 to 1.888 on Nano-XS with reasoning off), so the $24 grows if the volume counts tasks."
-    },
-    {
-      "claim": "tasks",
-      "severity": "should_fix",
-      "finding": "'The frontier options on either side of it' implies the next step up, Brisk-S with high reasoning and one retry, but the heatmap shows the top option, Atlas-M with high reasoning and one retry. Either swap in Brisk-S with high reasoning and one retry, whose weakest task is also multi-hop at 97.3%, or reword to 'the frontier option below it and the top option'."
+      "finding": "The examples caption says 'one per task shown', but there are three cards for four tasks and none for single lookup. The snapshot keeps only three failures for the lean. Say 'one per task for the three tasks with a kept failure', so a reader doesn't look for a missing single-lookup card."
     }
   ],
   "generation": {
     "format": 2,
     "model": "claude-opus-5-5",
     "skill": {
-      "analyst": "005490921ebeb9723370922c7e531f773a76e4e2f5756fa9492b69e356471b57",
-      "editor": "125d0d393ed8699529a6d5a02714be5e950d0e9b794e4ce768ae0221eedef9f5",
-      "package": "1677ccb31cd60fd412548cb09e371c5db7f35b3d3f91f3d4e47e1e979cab6199"
+      "analyst": "91b0b70e4859932092e2b771214a2e40e56c33027d5a053fa76af6b874edee36",
+      "editor": "26690a6042c513420bf670a42e5fe6f168827a9865ffeb9ce8c66f2dd48d38f4",
+      "package": "ed7e2c60b5ad37c8a25d87e1384171c4a7ce2d57e1bb3f3061022ada81dfe439"
     },
     "tally": {
       "turns": [
@@ -484,16 +457,16 @@
           "turn": 0,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 38883,
-          "output_tokens": 822,
-          "reasoning_tokens": 134,
-          "cache_read_tokens": 29015,
-          "cache_write_tokens": 9864,
-          "cost_usd": 0.071579,
+          "input_tokens": 39418,
+          "output_tokens": 685,
+          "reasoning_tokens": 117,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 39414,
+          "cost_usd": 0.210786,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 6.5574713768437505,
+          "wall_s": 5.73887016903609,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -506,16 +479,16 @@
           "turn": 1,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 48483,
-          "output_tokens": 608,
-          "reasoning_tokens": 34,
-          "cache_read_tokens": 38879,
-          "cache_write_tokens": 9602,
-          "cost_usd": 0.0679538,
+          "input_tokens": 48252,
+          "output_tokens": 609,
+          "reasoning_tokens": 177,
+          "cache_read_tokens": 39414,
+          "cache_write_tokens": 8836,
+          "cost_usd": 0.0642508,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 5.137091002892703,
+          "wall_s": 4.8839130429551005,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -528,16 +501,16 @@
           "turn": 2,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 65640,
-          "output_tokens": 986,
-          "reasoning_tokens": 334,
-          "cache_read_tokens": 48481,
-          "cache_write_tokens": 17157,
-          "cost_usd": 0.1152092,
+          "input_tokens": 59710,
+          "output_tokens": 591,
+          "reasoning_tokens": 265,
+          "cache_read_tokens": 48250,
+          "cache_write_tokens": 11458,
+          "cost_usd": 0.078768,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 10.498435255140066,
+          "wall_s": 5.230052002007142,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -550,16 +523,16 @@
           "turn": 3,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 78148,
-          "output_tokens": 660,
-          "reasoning_tokens": 153,
-          "cache_read_tokens": 65638,
-          "cache_write_tokens": 12508,
-          "cost_usd": 0.0888756,
+          "input_tokens": 66286,
+          "output_tokens": 383,
+          "reasoning_tokens": 68,
+          "cache_read_tokens": 59708,
+          "cache_write_tokens": 6576,
+          "cost_usd": 0.0524896,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 7.398965627886355,
+          "wall_s": 3.9666031270753592,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -572,16 +545,16 @@
           "turn": 4,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 90631,
-          "output_tokens": 2038,
-          "reasoning_tokens": 1579,
-          "cache_read_tokens": 78146,
-          "cache_write_tokens": 12483,
-          "cost_usd": 0.1188122,
+          "input_tokens": 71945,
+          "output_tokens": 371,
+          "reasoning_tokens": 50,
+          "cache_read_tokens": 66284,
+          "cache_write_tokens": 5659,
+          "cost_usd": 0.0489798,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 22.491579802008346,
+          "wall_s": 4.149354167981073,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -594,16 +567,16 @@
           "turn": 5,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 97698,
-          "output_tokens": 885,
-          "reasoning_tokens": 404,
-          "cache_read_tokens": 90629,
-          "cache_write_tokens": 7067,
-          "cost_usd": 0.0711688,
+          "input_tokens": 76374,
+          "output_tokens": 869,
+          "reasoning_tokens": 313,
+          "cache_read_tokens": 71943,
+          "cache_write_tokens": 4429,
+          "cost_usd": 0.0539216,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 8.463505628053099,
+          "wall_s": 8.992457045940682,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -616,16 +589,16 @@
           "turn": 6,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 106459,
-          "output_tokens": 2355,
-          "reasoning_tokens": 1816,
-          "cache_read_tokens": 97696,
-          "cache_write_tokens": 8761,
-          "cost_usd": 0.1104522,
+          "input_tokens": 82396,
+          "output_tokens": 804,
+          "reasoning_tokens": 454,
+          "cache_read_tokens": 76372,
+          "cache_write_tokens": 6022,
+          "cost_usd": 0.0614724,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 23.380997261032462,
+          "wall_s": 8.54232042003423,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -638,16 +611,16 @@
           "turn": 7,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 113076,
-          "output_tokens": 902,
-          "reasoning_tokens": 185,
-          "cache_read_tokens": 106457,
-          "cache_write_tokens": 6617,
-          "cost_usd": 0.0724244,
+          "input_tokens": 87462,
+          "output_tokens": 325,
+          "reasoning_tokens": 214,
+          "cache_read_tokens": 82394,
+          "cache_write_tokens": 5066,
+          "cost_usd": 0.0483168,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 8.168344920035452,
+          "wall_s": 3.852690377039835,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -660,16 +633,16 @@
           "turn": 8,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 118590,
-          "output_tokens": 1211,
-          "reasoning_tokens": 698,
-          "cache_read_tokens": 113074,
-          "cache_write_tokens": 5514,
-          "cost_usd": 0.0744128,
+          "input_tokens": 92916,
+          "output_tokens": 724,
+          "reasoning_tokens": 326,
+          "cache_read_tokens": 87460,
+          "cache_write_tokens": 5454,
+          "cost_usd": 0.05925,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 14.092670799000189,
+          "wall_s": 7.223108003148809,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -682,16 +655,16 @@
           "turn": 9,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 120770,
-          "output_tokens": 1233,
-          "reasoning_tokens": 425,
-          "cache_read_tokens": 118588,
-          "cache_write_tokens": 2180,
-          "cost_usd": 0.0592856,
+          "input_tokens": 96939,
+          "output_tokens": 1414,
+          "reasoning_tokens": 1133,
+          "cache_read_tokens": 92914,
+          "cache_write_tokens": 4023,
+          "cost_usd": 0.0669858,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 10.908579339040443,
+          "wall_s": 14.449501006864011,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -704,16 +677,16 @@
           "turn": 10,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 123527,
-          "output_tokens": 2629,
-          "reasoning_tokens": 2085,
-          "cache_read_tokens": 120768,
-          "cache_write_tokens": 2757,
-          "cost_usd": 0.0905266,
+          "input_tokens": 99637,
+          "output_tokens": 2134,
+          "reasoning_tokens": 1650,
+          "cache_read_tokens": 96937,
+          "cache_write_tokens": 2698,
+          "cost_usd": 0.0755654,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 28.632094722008333,
+          "wall_s": 21.8850610088557,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -726,16 +699,16 @@
           "turn": 11,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 128106,
-          "output_tokens": 5617,
-          "reasoning_tokens": 5146,
-          "cache_read_tokens": 123525,
-          "cache_write_tokens": 4579,
-          "cost_usd": 0.159948,
+          "input_tokens": 105993,
+          "output_tokens": 538,
+          "reasoning_tokens": 55,
+          "cache_read_tokens": 99635,
+          "cache_write_tokens": 6356,
+          "cost_usd": 0.062475,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 55.34176231594756,
+          "wall_s": 4.942550293868408,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -748,16 +721,16 @@
           "turn": 12,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 134821,
-          "output_tokens": 5132,
-          "reasoning_tokens": 44,
-          "cache_read_tokens": 128104,
-          "cache_write_tokens": 6715,
-          "cost_usd": 0.1618438,
+          "input_tokens": 109672,
+          "output_tokens": 793,
+          "reasoning_tokens": 83,
+          "cache_read_tokens": 105991,
+          "cache_write_tokens": 3679,
+          "cost_usd": 0.0554612,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 39.057097600074485,
+          "wall_s": 8.922964420868084,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -770,16 +743,16 @@
           "turn": 13,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 145418,
-          "output_tokens": 5727,
-          "reasoning_tokens": 412,
-          "cache_read_tokens": 134819,
-          "cache_write_tokens": 10519,
-          "cost_usd": 0.1944188,
+          "input_tokens": 110928,
+          "output_tokens": 696,
+          "reasoning_tokens": 52,
+          "cache_read_tokens": 109670,
+          "cache_write_tokens": 1256,
+          "cost_usd": 0.042142,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 39.19788126787171,
+          "wall_s": 6.722574711078778,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -792,16 +765,16 @@
           "turn": 14,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 88308,
-          "output_tokens": 1169,
-          "reasoning_tokens": 981,
-          "cache_read_tokens": 29015,
-          "cache_write_tokens": 59291,
-          "cost_usd": 0.325646,
+          "input_tokens": 113229,
+          "output_tokens": 589,
+          "reasoning_tokens": 332,
+          "cache_read_tokens": 110926,
+          "cache_write_tokens": 2301,
+          "cost_usd": 0.0454782,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 13.959356090053916,
+          "wall_s": 6.495595085900277,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -814,16 +787,16 @@
           "turn": 15,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 91175,
-          "output_tokens": 6439,
-          "reasoning_tokens": 797,
-          "cache_read_tokens": 88306,
-          "cache_write_tokens": 2867,
-          "cost_usd": 0.1607842,
+          "input_tokens": 114489,
+          "output_tokens": 577,
+          "reasoning_tokens": 164,
+          "cache_read_tokens": 113227,
+          "cache_write_tokens": 1260,
+          "cost_usd": 0.0404934,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 46.44601085502654,
+          "wall_s": 5.9191532109398395,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -836,16 +809,16 @@
           "turn": 16,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 98771,
-          "output_tokens": 5901,
-          "reasoning_tokens": 272,
-          "cache_read_tokens": 91173,
-          "cache_write_tokens": 7596,
-          "cost_usd": 0.1742426,
+          "input_tokens": 116622,
+          "output_tokens": 10496,
+          "reasoning_tokens": 5332,
+          "cache_read_tokens": 114487,
+          "cache_write_tokens": 2133,
+          "cost_usd": 0.2434904,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 38.54631543485448,
+          "wall_s": 90.91427137400024,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -858,16 +831,38 @@
           "turn": 17,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 107063,
-          "output_tokens": 5737,
-          "reasoning_tokens": 283,
-          "cache_read_tokens": 98769,
-          "cache_write_tokens": 8292,
-          "cost_usd": 0.1759618,
+          "input_tokens": 132461,
+          "output_tokens": 5688,
+          "reasoning_tokens": 313,
+          "cache_read_tokens": 116620,
+          "cache_write_tokens": 15839,
+          "cost_usd": 0.216287,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 38.18335064104758,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 18,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 144083,
+          "output_tokens": 6357,
+          "reasoning_tokens": 595,
+          "cache_read_tokens": 132459,
+          "cache_write_tokens": 11544,
+          "cost_usd": 0.2116718,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "end_turn",
-          "wall_s": 37.26637060008943,
+          "wall_s": 44.36117218690924,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -880,16 +875,16 @@
           "turn": 0,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 17542,
-          "output_tokens": 6301,
-          "reasoning_tokens": 5975,
-          "cache_read_tokens": 0,
-          "cache_write_tokens": 17538,
-          "cost_usd": 0.213726,
+          "input_tokens": 18157,
+          "output_tokens": 322,
+          "reasoning_tokens": 107,
+          "cache_read_tokens": 6232,
+          "cache_write_tokens": 11921,
+          "cost_usd": 0.0673074,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 58.982572944136336,
+          "wall_s": 3.956915752030909,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -902,16 +897,16 @@
           "turn": 1,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 31954,
-          "output_tokens": 487,
-          "reasoning_tokens": 22,
-          "cache_read_tokens": 17538,
-          "cache_write_tokens": 14414,
-          "cost_usd": 0.0853256,
+          "input_tokens": 23877,
+          "output_tokens": 247,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 18153,
+          "cache_write_tokens": 5722,
+          "cost_usd": 0.0371886,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 5.64415183593519,
+          "wall_s": 2.8103572099935263,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -924,16 +919,16 @@
           "turn": 2,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 38009,
-          "output_tokens": 1207,
-          "reasoning_tokens": 804,
-          "cache_read_tokens": 31952,
-          "cache_write_tokens": 6055,
-          "cost_usd": 0.0608134,
+          "input_tokens": 29441,
+          "output_tokens": 6144,
+          "reasoning_tokens": 5588,
+          "cache_read_tokens": 23875,
+          "cache_write_tokens": 5564,
+          "cost_usd": 0.155483,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 13.759861007099971,
+          "wall_s": 57.16395902610384,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -946,16 +941,16 @@
           "turn": 3,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 42319,
-          "output_tokens": 3581,
-          "reasoning_tokens": 1258,
-          "cache_read_tokens": 38007,
-          "cache_write_tokens": 4310,
-          "cost_usd": 0.1007794,
+          "input_tokens": 41453,
+          "output_tokens": 747,
+          "reasoning_tokens": 287,
+          "cache_read_tokens": 29439,
+          "cache_write_tokens": 12012,
+          "cost_usd": 0.0808958,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
-          "stop_reason": "end_turn",
-          "wall_s": 37.358278185129166,
+          "stop_reason": "tool_use",
+          "wall_s": 9.68449217104353,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -968,38 +963,38 @@
           "turn": 4,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 46025,
-          "output_tokens": 2349,
-          "reasoning_tokens": 30,
-          "cache_read_tokens": 42317,
-          "cache_write_tokens": 3704,
-          "cost_usd": 0.0739794,
+          "input_tokens": 51097,
+          "output_tokens": 5241,
+          "reasoning_tokens": 4822,
+          "cache_read_tokens": 41451,
+          "cache_write_tokens": 9644,
+          "cost_usd": 0.1613382,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
-          "stop_reason": "end_turn",
-          "wall_s": 16.2741571739316,
+          "stop_reason": "tool_use",
+          "wall_s": 52.48622148181312,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
           "input_transformations": []
         },
         {
-          "session": "analyst",
-          "role": "analyst",
-          "round": 2,
-          "turn": 18,
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 5,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 115062,
-          "output_tokens": 1837,
-          "reasoning_tokens": 1000,
-          "cache_read_tokens": 107061,
-          "cache_write_tokens": 7997,
-          "cost_usd": 0.0981532,
+          "input_tokens": 56552,
+          "output_tokens": 2975,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 51095,
+          "cache_write_tokens": 5455,
+          "cost_usd": 0.097002,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
-          "stop_reason": "tool_use",
-          "wall_s": 19.177927383920178,
+          "stop_reason": "end_turn",
+          "wall_s": 25.944962637033314,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1012,16 +1007,16 @@
           "turn": 19,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 122024,
-          "output_tokens": 7974,
-          "reasoning_tokens": 1635,
-          "cache_read_tokens": 115058,
-          "cache_write_tokens": 6964,
-          "cost_usd": 0.2173196,
+          "input_tokens": 98320,
+          "output_tokens": 1691,
+          "reasoning_tokens": 1345,
+          "cache_read_tokens": 29550,
+          "cache_write_tokens": 68766,
+          "cost_usd": 0.383576,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 58.76051273616031,
+          "wall_s": 19.311629340983927,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1034,16 +1029,104 @@
           "turn": 20,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 132114,
-          "output_tokens": 6889,
-          "reasoning_tokens": 132,
-          "cache_read_tokens": 122022,
-          "cache_write_tokens": 10012,
-          "cost_usd": 0.2125644,
+          "input_tokens": 100495,
+          "output_tokens": 1009,
+          "reasoning_tokens": 142,
+          "cache_read_tokens": 98316,
+          "cache_write_tokens": 2177,
+          "cost_usd": 0.0507362,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 9.205991378985345,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 21,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 103018,
+          "output_tokens": 344,
+          "reasoning_tokens": 50,
+          "cache_read_tokens": 100493,
+          "cache_write_tokens": 2523,
+          "cost_usd": 0.0396016,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 3.653407210018486,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 22,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 104720,
+          "output_tokens": 436,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 103016,
+          "cache_write_tokens": 1702,
+          "cost_usd": 0.0378412,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 5.089432544074953,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 23,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 105399,
+          "output_tokens": 9155,
+          "reasoning_tokens": 2892,
+          "cache_read_tokens": 104718,
+          "cache_write_tokens": 679,
+          "cost_usd": 0.2074466,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 66.60705865407363,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 24,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 119772,
+          "output_tokens": 7085,
+          "reasoning_tokens": 265,
+          "cache_read_tokens": 105397,
+          "cache_write_tokens": 14373,
+          "cost_usd": 0.2346524,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "end_turn",
-          "wall_s": 46.49163956288248,
+          "wall_s": 48.89293843903579,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1056,16 +1139,16 @@
           "turn": 0,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 19171,
-          "output_tokens": 4651,
-          "reasoning_tokens": 4265,
-          "cache_read_tokens": 5944,
-          "cache_write_tokens": 13223,
-          "cost_usd": 0.1603398,
+          "input_tokens": 19778,
+          "output_tokens": 5203,
+          "reasoning_tokens": 4845,
+          "cache_read_tokens": 6232,
+          "cache_write_tokens": 13542,
+          "cost_usd": 0.1730324,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 43.15353493602015,
+          "wall_s": 47.85109110502526,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1078,16 +1161,16 @@
           "turn": 1,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 29826,
-          "output_tokens": 511,
-          "reasoning_tokens": 32,
-          "cache_read_tokens": 19167,
-          "cache_write_tokens": 10657,
-          "cost_usd": 0.0673464,
+          "input_tokens": 28667,
+          "output_tokens": 226,
+          "reasoning_tokens": 85,
+          "cache_read_tokens": 19774,
+          "cache_write_tokens": 8891,
+          "cost_usd": 0.0529378,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 3.992474043974653,
+          "wall_s": 2.8099425020627677,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1100,38 +1183,170 @@
           "turn": 2,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 35170,
-          "output_tokens": 383,
-          "reasoning_tokens": 33,
-          "cache_read_tokens": 29824,
-          "cache_write_tokens": 5344,
-          "cost_usd": 0.0403528,
+          "input_tokens": 31949,
+          "output_tokens": 4419,
+          "reasoning_tokens": 1986,
+          "cache_read_tokens": 28665,
+          "cache_write_tokens": 3282,
+          "cost_usd": 0.110531,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
-          "stop_reason": "tool_use",
-          "wall_s": 3.265562542947009,
+          "stop_reason": "end_turn",
+          "wall_s": 41.85967426910065,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
           "input_transformations": []
         },
         {
-          "session": "editor-2",
-          "role": "editor",
-          "round": 2,
-          "turn": 3,
+          "session": "analyst",
+          "role": "analyst",
+          "round": 3,
+          "turn": 25,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 37496,
-          "output_tokens": 3311,
-          "reasoning_tokens": 1106,
-          "cache_read_tokens": 35168,
-          "cache_write_tokens": 2326,
-          "cost_usd": 0.0848916,
+          "input_tokens": 129380,
+          "output_tokens": 7853,
+          "reasoning_tokens": 1145,
+          "cache_read_tokens": 119770,
+          "cache_write_tokens": 9528,
+          "cost_usd": 0.228982,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 54.44192148302682,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 3,
+          "turn": 26,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 142398,
+          "output_tokens": 7105,
+          "reasoning_tokens": 61,
+          "cache_read_tokens": 129298,
+          "cache_write_tokens": 13020,
+          "cost_usd": 0.2333796,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "end_turn",
-          "wall_s": 31.084181597921997,
+          "wall_s": 46.82832256285474,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-3",
+          "role": "editor",
+          "round": 3,
+          "turn": 0,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 19716,
+          "output_tokens": 4644,
+          "reasoning_tokens": 4396,
+          "cache_read_tokens": 6232,
+          "cache_write_tokens": 13480,
+          "cost_usd": 0.1615424,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 45.380885479040444,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-3",
+          "role": "editor",
+          "round": 3,
+          "turn": 1,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 29677,
+          "output_tokens": 698,
+          "reasoning_tokens": 219,
+          "cache_read_tokens": 19712,
+          "cache_write_tokens": 9963,
+          "cost_usd": 0.0677254,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 7.4810870450455695,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-3",
+          "role": "editor",
+          "round": 3,
+          "turn": 2,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 34505,
+          "output_tokens": 900,
+          "reasoning_tokens": 552,
+          "cache_read_tokens": 29675,
+          "cache_write_tokens": 4828,
+          "cost_usd": 0.048083,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 9.61519250413403,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-3",
+          "role": "editor",
+          "round": 3,
+          "turn": 3,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 42552,
+          "output_tokens": 211,
+          "reasoning_tokens": 67,
+          "cache_read_tokens": 34503,
+          "cache_write_tokens": 8047,
+          "cost_usd": 0.0513636,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 5.2344064200297,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-3",
+          "role": "editor",
+          "round": 3,
+          "turn": 4,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 43504,
+          "output_tokens": 3517,
+          "reasoning_tokens": 1333,
+          "cache_read_tokens": 42550,
+          "cache_write_tokens": 952,
+          "cost_usd": 0.083618,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 33.17380234901793,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1140,124 +1355,157 @@
       ],
       "by_role": {
         "analyst": {
-          "turns": 21,
-          "input_tokens": 2164767,
-          "output_tokens": 66751,
-          "reasoning_tokens": 18549,
-          "cache_read_tokens": 1945223,
-          "cache_write_tokens": 219342,
-          "cost_usd": 2.8215826,
+          "turns": 27,
+          "input_tokens": 2672314,
+          "output_tokens": 69321,
+          "reasoning_tokens": 17593,
+          "cache_read_tokens": 2415249,
+          "cache_write_tokens": 256771,
+          "cost_usd": 3.1545007999999997,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
           "tool_calls": 44,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 539.9746095808223
+          "wall_s": 549.4062639086042
         },
         "editor": {
-          "turns": 9,
-          "input_tokens": 297512,
-          "output_tokens": 22781,
-          "reasoning_tokens": 13525,
-          "cache_read_tokens": 219917,
-          "cache_write_tokens": 77571,
-          "cost_usd": 0.8875544,
+          "turns": 14,
+          "input_tokens": 470925,
+          "output_tokens": 35494,
+          "reasoning_tokens": 24287,
+          "cache_read_tokens": 357588,
+          "cache_write_tokens": 113303,
+          "cost_usd": 1.3480486000000003,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
-          "tool_calls": 16,
+          "tool_calls": 23,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 213.51477426709607
+          "wall_s": 345.4529899514746
         }
       },
       "by_round": {
         "analyst:1": {
-          "turns": 18,
-          "input_tokens": 1795567,
-          "output_tokens": 50051,
-          "reasoning_tokens": 15782,
-          "cache_read_tokens": 1601082,
-          "cache_write_tokens": 194369,
-          "cost_usd": 2.2935454,
+          "turns": 19,
+          "input_tokens": 1768812,
+          "output_tokens": 34643,
+          "reasoning_tokens": 11693,
+          "cache_read_tokens": 1624691,
+          "cache_write_tokens": 144003,
+          "cost_usd": 1.7382852,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
-          "tool_calls": 40,
+          "tool_calls": 35,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 415.5445298978593
+          "wall_s": 295.3755622955505
         },
         "analyst:2": {
+          "turns": 6,
+          "input_tokens": 631724,
+          "output_tokens": 19720,
+          "reasoning_tokens": 4694,
+          "cache_read_tokens": 541490,
+          "cache_write_tokens": 90220,
+          "cost_usd": 0.953854,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 8,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 152.76045756717212
+        },
+        "analyst:3": {
+          "turns": 2,
+          "input_tokens": 271778,
+          "output_tokens": 14958,
+          "reasoning_tokens": 1206,
+          "cache_read_tokens": 249068,
+          "cache_write_tokens": 22548,
+          "cost_usd": 0.4623616,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 1,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 101.27024404588155
+        },
+        "editor:1": {
+          "turns": 6,
+          "input_tokens": 220577,
+          "output_tokens": 15676,
+          "reasoning_tokens": 10804,
+          "cache_read_tokens": 170245,
+          "cache_write_tokens": 50318,
+          "cost_usd": 0.599215,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 11,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 152.04690827801824
+        },
+        "editor:2": {
           "turns": 3,
-          "input_tokens": 369200,
-          "output_tokens": 16700,
-          "reasoning_tokens": 2767,
-          "cache_read_tokens": 344141,
-          "cache_write_tokens": 24973,
-          "cost_usd": 0.5280372,
+          "input_tokens": 80394,
+          "output_tokens": 9848,
+          "reasoning_tokens": 6916,
+          "cache_read_tokens": 54671,
+          "cache_write_tokens": 25715,
+          "cost_usd": 0.3365012,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
           "tool_calls": 4,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 124.43007968296297
+          "wall_s": 92.52070787618868
         },
-        "editor:1": {
+        "editor:3": {
           "turns": 5,
-          "input_tokens": 175849,
-          "output_tokens": 13925,
-          "reasoning_tokens": 8089,
-          "cache_read_tokens": 129814,
-          "cache_write_tokens": 46021,
-          "cost_usd": 0.5346238,
+          "input_tokens": 169954,
+          "output_tokens": 9970,
+          "reasoning_tokens": 6567,
+          "cache_read_tokens": 132672,
+          "cache_write_tokens": 37270,
+          "cost_usd": 0.41233240000000004,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
           "tool_calls": 8,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 132.01902114623226
-        },
-        "editor:2": {
-          "turns": 4,
-          "input_tokens": 121663,
-          "output_tokens": 8856,
-          "reasoning_tokens": 5436,
-          "cache_read_tokens": 90103,
-          "cache_write_tokens": 31550,
-          "cost_usd": 0.35293060000000004,
-          "unpriced_turns": 0,
-          "unpriced_reasons": [],
-          "admitted_on_estimate": 0,
-          "tool_calls": 8,
-          "bounces": 0,
-          "bounce_kinds": {},
-          "wall_s": 81.49575312086381
+          "wall_s": 100.88537379726768
         }
       },
       "total": {
-        "turns": 30,
-        "input_tokens": 2462279,
-        "output_tokens": 89532,
-        "reasoning_tokens": 32074,
-        "cache_read_tokens": 2165140,
-        "cache_write_tokens": 296913,
-        "cost_usd": 3.7091369999999997,
+        "turns": 41,
+        "input_tokens": 3143239,
+        "output_tokens": 104815,
+        "reasoning_tokens": 41880,
+        "cache_read_tokens": 2772837,
+        "cache_write_tokens": 370074,
+        "cost_usd": 4.5025493999999995,
         "unpriced_turns": 0,
         "unpriced_reasons": [],
         "admitted_on_estimate": 0,
-        "tool_calls": 60,
+        "tool_calls": 67,
         "bounces": 0,
         "bounce_kinds": {},
-        "wall_s": 753.4893838479184
+        "wall_s": 894.8592538600788
       },
       "transcripts": {
-        "analyst": "d5f309d5a5a350222e3b61bb7f704bd9d10899c08e0072b4236f0882ca227e58",
-        "editor-1": "cad0cc1cc2830e742249f5470d584e88f986883e0118582f0bb0ae5d9f7b0a51",
-        "editor-2": "3f0e0a2ca805ed23188116dcb5f203f1bf6b13863fe97597d135c9b8b7bc8857"
+        "analyst": "91aa41fe6738739947a0f687889babfe630a02d0e09ad523f8f90a4ec6bc75a2",
+        "editor-1": "14aa357363d1ca3eb0958bb907fa2b167851bd743e56d37f27dc8e0b2b4c603b",
+        "editor-2": "3e3bf8f9da0ffdefb097d671fa48ebb1cbde3e8eb003a90d5cb0bdaaf57da0d0",
+        "editor-3": "d8a7131e8df3dba54567b64bae836b0888775e416db074984f93c3111fa7009a"
       }
     },
     "reviews": [
@@ -1268,70 +1516,75 @@
             "n": 1,
             "name": "First screen",
             "score": 2,
-            "reason": "From the headline, the decision block and the frontier claim, a reader knows the lean (Brisk-S, low reasoning, 1 retry), why it is the lean (it is the knee, and above it no single step is separated), and what is unresolved: no floor or price per point was declared. The top option's +1.5 points at about 12 times the cost is stated up front. Watch names multi-hop questions and the unbudgeted 513 ms p95."
+            "reason": "The headline and lede say the decision is open because no pass-rate bar or price per point was declared. The decision block names the lean (Brisk-S at low reasoning with retry, $0.302 per 1k calls), the price band where it holds ($319.67 to $1,595.18 a month), and the next step it rests on (high reasoning on Brisk-S gains +0.8, -0.4 to +2.1). The frontier claim shows where pass rate flattens. A reader can say what is unresolved, why, and what to do next. The wording problems on this screen (the 'High' confidence, 'at least', '12 times') are scored under honest emphasis."
           },
           {
             "n": 2,
             "name": "Coherent story",
-            "score": 1,
-            "reason": "Every block's rows match their sentences. Claim prices rises step by step from $3.20 to $17,236.36. In claim below, J and S differ by 2.6, 2.1, 2.3 and 2.2 points across the four tasks. Claim tasks has multi-hop lowest in all three columns. The tool's price frontier holds 7 options, so the 'seven' is right. But claim below and the lede call Nano-XS high reasoning 1 retry (S, $0.111) 'the nearest cheaper option'. Claim retry's own block shows Brisk-S low reasoning no retry (I) at $0.288: cheaper than the lean by only $56 a month, and 1.9 points behind (+0.3 to +3.4). The page contradicts itself about what sits just below the lean."
+            "score": 2,
+            "reason": "I checked each claim against its own values table, row by row, and no block contradicts its sentence. In frontier, pass rate goes from 81.0% to 97.1% over the cheapest tenth of the cost range, then gains 1.5 points over an 11.5x cost rise. In price-steps, the price per point rises at every step: $3.20, $17.31, $111.22, $319.67, $1,595.18, $17,236.36. In atlas-premium, both Atlas-M vs Brisk-S rows include zero (-2.0 to +0.5 and -1.7 to +0.4). In retry, the gain shrinks as the starting rate rises: +3.4 from 91.3%, +1.9 from 95.3%, +0.9 from 97.7%. In multihop, multi-hop is the lowest task in all four columns. The tool reproduces the figures: +1.5 (+0.3 to +2.6), +2.4 (+0.8 to +4), 9.4% wrong side, 5,432 cases."
           },
           {
             "n": 3,
             "name": "Honest emphasis",
             "score": 1,
-            "reason": "The lean's weak axes are visible: multi-hop, latency, and no budget. Above the lean, the unseparated +0.8 steps are not oversold. But the best-of-eighteen caveat and Watch put the lean's thinnest lead below it at +0.8 (the low end against S). The real thinnest lead is against I, whose low end is +0.3 (compare.brisk-s.low.r1.brisk-s.low.r0.pass_rate.overall.interval). So the margin the lean's place rests on reads stronger than it is. 'Never down' in the pairing caveat is also stated more firmly than an assumption about pairing supports."
+            "reason": "The lean's weak points are on the page. Watch says high reasoning's +0.8 gain over the lean is not told apart from zero, and the best-of-n caveat is there. But the confidence reads High over four open caveats. One of them (nothing declared) is the decision itself, and the lean's upper price edge rests on that unresolved +0.8 step. The lede says each point past the lean costs 'at least $1,595.18' when that is a point estimate on a gain whose interval crosses zero. The headline's '12 times' rounds up 11.5x ($3.477 vs $0.302)."
           },
           {
             "n": 4,
             "name": "Sound elision",
-            "score": 2,
-            "reason": "No omitted item would change the call. The off-frontier options are all dearer and weaker than a frontier option. The retry, reasoning and calls-per-task items agree with the shown claims. Outcome and extra calls have no figures. One small error: the 'off the frontier' note says each left-out option costs more than one that passes as many. That does not fit I, which is off only the price curve, not dominated."
+            "score": 1,
+            "reason": "Leaving out Atlas-M at no and low reasoning is right. Each is beaten by a cheaper Brisk-S option, for example $1.655 at 97.9% against $0.633 at 98.0%. The calls-per-task omission is weaker. It says the shortlist order holds, which is true. But if the declared 4,000,000 counts tasks, every price edge rises about 1.5x and the lean's band becomes roughly $490 to $2,260. That changes the pick for an owner valuing a point at about $1,600 to $2,260 a month. The note also says Atlas-M's per-task cost sits 'further' away, but Atlas-M makes fewer calls per task (1.452 vs 1.539), so it sits closer."
           },
           {
             "n": 5,
             "name": "Confounds handled",
-            "score": 1,
-            "reason": "The unpaired design is carried into the caveats and into a paired re-run. Method admits the snapshot does not say what the 4,000,000-a-month volume counts. Cost is per 1,000 calls, and calls per task run from 1.43 to 1.89 across options. If the volume counts tasks, every monthly figure and the $319.67 to $1,595.18 band shift by roughly half. That never reaches the confidence line or the decision block, where the owner is asked to price a point in those dollars."
+            "score": 2,
+            "reason": "Each confound is carried somewhere. Unnamed provider routing and the unknown volume unit are a confidence caveat and a next step. Not knowing whether arms ran the same cases is in Method, the intervals are labelled unpaired, and the re-run is paired. The missing control and best-of-n optimism are both carried as caveats. The page addresses the cost_served_by fact by saying no provider is named for any configuration. Calls per task is handled under elision."
           },
           {
             "n": 6,
             "name": "Actionable next steps",
             "score": 2,
-            "reason": "Each step names a declaration or an experiment and what it settles. The 6,044 cases per arm to tell the lean from Atlas-M low reasoning 1 retry four times in five checks out (settle.brisk-s.low.r1.atlas-m.low.r1.pass_rate.overall.cases_needed_80). The multi-hop step is looser but says what it would show."
+            "reason": "Each step names an action and what it settles. The owner declares a bar or price, which turns the trade into a decision. A paired re-run of the two Brisk-S retry options at 5,432 each settles high reasoning's gain four times in five and checks best-of-n optimism. A hop-collapsing prompt fix, re-run with stated counts, settles the weakest task. Recording the provider and the volume unit settles whether the monthly prices hold."
           },
           {
             "n": 7,
             "name": "Evidence fits claims",
-            "score": 2,
-            "reason": "Each claim's figure is in its block, and the counterfactual holds: if the J-vs-S or J-vs-F gaps flipped, claims below and above would have to change. Captions describe what is drawn. One weakness: the first block in claim above shows the model rows as Atlas-M to Brisk-S (-0.8, -0.7), while its sentence talks about Atlas-M's gain. The reader has to flip the signs."
+            "score": 1,
+            "reason": "The price-steps, retry, latency and multihop blocks each show their claim's own figures. Two blocks fall short. The frontier block plots all eighteen configurations but does not mark which seven are on the frontier, so the claim's 'seven of eighteen' cannot be read from it. The atlas-premium block shows the pass-rate gaps but not the costs behind '5.5 times as much' ($1.655 vs $0.302, $3.477 vs $0.633), so half of that claim is not in its evidence."
           }
         ],
         "findings": [
           {
-            "claim": "below",
+            "claim": "",
             "severity": "must_fix",
-            "finding": "Claim below, the lede ('the nearest by 2.4 points') and the best-of-eighteen caveat all treat Nano-XS high reasoning 1 retry (S) as the nearest cheaper option. Brisk-S low reasoning no retry (I) is cheaper than the lean by only $56 a month ($0.288 vs $0.302 per 1k calls). It trails by just +1.9 points (+0.3 to +3.4), which is the lean's thinnest separated lead, and claim retry already shows it. Fix: either call S the nearest cheaper option on the price frontier and say I sits between them off that frontier, or name I as the nearest cheaper option. Then rebase the best-of-eighteen caveat and Watch on the +0.3 low end against I. A fresh run that reads the lean about 0.3 points lower, or more, leaves no separated gain over I, and I is $56 a month cheaper."
+            "finding": "The confidence reads 'High, if the caveats below aren't material' over four open caveats, and at least one is plausibly material. The nothing-declared caveat is the decision itself. The lean's upper edge ($1,595.18) rests on a +0.8 gain whose interval is -0.4 to +2.1, which a run of today's size reads the wrong way 9.4% of the time. The best-of-n and routing caveats do not say why the call holds until they are resolved. Fix: say what the High covers (the frontier's shape, the rising price per point, Atlas-M's premium over Brisk-S at the same reasoning level) and that the lean itself stays open until the owner declares a price or bar. Otherwise make the confidence low."
           },
           {
             "claim": "",
             "severity": "should_fix",
-            "finding": "The price band ($319.67 to $1,595.18 a month per point) and the monthly costs assume the 4,000,000 volume counts the same calls that cost per 1k is priced on. Method says the snapshot does not say what the volume counts, and calls per task differ by option (1.45 to 1.57 among the frontier options above Nano-XS low reasoning). Carry this into the 'Where the answer flips' line or the 'Nothing declares' caveat. Also say whether the lean stays the knee if cost is read per task: on point figures it does, but the band rises by about half."
-          },
-          {
-            "claim": "above",
-            "severity": "should_fix",
-            "finding": "The first block in claim above draws the model effect as Atlas-M to Brisk-S (-0.8, -2.0 to +0.5; -0.7, -1.7 to +0.4). The sentence describes Atlas-M's gain over the lean. Flip the rows to Brisk-S to Atlas-M (+0.8, +0.7) so the bars point the way the sentence reads."
+            "finding": "The lede says each point past the lean 'costs at least $1,595.18 a month'. That figure is a point estimate on a +0.8 gain (-0.4 to +2.1). At the top of that interval the price would be about $630 a point. Write 'about $1,595.18, on point estimates', as the decision block already says. In the headline, '12 times the cost' is 11.5x ($3.477 vs $0.302); print the multiple as computed."
           },
           {
             "claim": "",
             "severity": "should_fix",
-            "finding": "The pairing caveat says pairing 'can only narrow' the intervals and would move the lean up 'never down'. Pairing narrows intervals only if outcomes are positively correlated across shared cases. Soften this to 'would likely narrow'. Also note that the best-of-eighteen caveat can move the estimate the other way."
+            "finding": "The headline frames the trade as Atlas-M at high reasoning with retry against the lean. But Atlas-M's lead over Brisk-S at high reasoning with retry is not told apart from zero (atlas-premium: -1.7 to +0.4), and that Brisk-S option costs $0.633, about a fifth of Atlas-M's $3.477. Name the lean in the headline and say the top pass rate is matched, within its interval, at a fifth of Atlas-M's price. Otherwise a first-screen reader takes Atlas-M as the quality ceiling."
           },
           {
-            "claim": "",
+            "claim": "price-steps",
             "severity": "should_fix",
-            "finding": "The 'Left out' note says every option off the frontier costs more than one that passes at least as many tasks. That is untrue for Brisk-S low reasoning no retry (I), which is off only the price curve. Reword the note, or name I as the exception."
+            "finding": "The monthly prices count the declared 4,000,000 as calls. If it counts tasks, every cost scales by calls per task: about 1.54 for the lean, 1.48 for Brisk-S at high reasoning with retry, 1.57 for Nano-XS at high reasoning with retry, 1.45 for Atlas-M. The lean's band then moves from $319.67–$1,595.18 to roughly $490–$2,260, and the last step to Atlas-M from $17,236 to about $24,900. Put these per-task edges in the volume-unit caveat or the Explore price row. Correct the omitted note: Atlas-M makes fewer calls per task, so its per-task cost sits closer to the others, not further. In the retry claim, '$0.014 more per 1k calls' likewise understates retry's cost per task, because retry adds calls (1.492 to 1.539)."
+          },
+          {
+            "claim": "frontier",
+            "severity": "should_fix",
+            "finding": "The claim says seven of the eighteen configurations are on the frontier, but the scatter's table marks only the lean. Mark the seven frontier points (Nano-XS off with and without retry, Nano-XS low with retry, Nano-XS high with retry, the lean, Brisk-S high with retry, Atlas-M high with retry), or draw the frontier line, so a reader can see where pass rate flattens."
+          },
+          {
+            "claim": "atlas-premium",
+            "severity": "should_fix",
+            "finding": "The claim says Atlas-M 'costs 5.5 times as much', but the block shows only pass-rate gaps. Add the cost-per-1k pairs ($1.655 vs $0.302 at low reasoning, $3.477 vs $0.633 at high) so the premium shows in the block. This claim ranks two models by cost, and the snapshot names no provider for any of them, so add 'at this run's unnamed provider routing' to the claim. As written, the multiple reads as a property of the models."
           }
         ],
         "total": 11,
@@ -1345,90 +1598,152 @@
             "n": 1,
             "name": "First screen",
             "score": 2,
-            "reason": "The headline, lede and decision block say what to do and why. The lean is Brisk-S with low reasoning and one retry, the knee of the price curve. The top option passes +1.5 points (+0.3 to +2.6) more at about 12 times the cost. The nearest cheaper option, Brisk-S with low reasoning and no retry, saves $56 a month and trails by +1.9 (+0.3 to +3.4). Nothing was declared, so the decider sets the price. The main risk sits in Watch: that thin lead, the weak multi-hop task and a 513 ms p95 with no budget to read it against. The frontier claim backs this up."
+            "reason": "The headline now names the lean (Brisk-S at low reasoning with retry). It says plainly that no bar was declared, so the pick comes down to a price. It also says Atlas-M's best is not told apart from Brisk-S at high reasoning with retry. The decision block gives the price bands. Watch gives the main risk: the next step up gains +0.8 points (-0.4 to +2.1), and a fresh run reads it the other way 9.4% of the time. The first claim (frontier) shows where pass rate flattens. This resolves last round's headline and lede findings: the cost multiple is 5.5x as computed, and the lede says 'about $1,595.18' on point estimates. The headline's cost multiple has no routing qualifier; that is raised under the confidence finding."
           },
           {
             "n": 2,
             "name": "Coherent story",
             "score": 2,
-            "reason": "The claims agree with their blocks row by row. In the prices claim each step costs more per point than the last: $3.20, $17.31, $111.22, $319.67, $1,595.18 and $17,236.36, which matches the price_tradeoff output. In the above claim none of the single steps over the lean is separated (+0.8, -0.4 to +2.1, and Atlas-M with low reasoning ahead by +0.8, -2.0 to +0.5 read the other way). Only the top option is separated, at +1.5. The below claim's +1.9 and +2.4 match their blocks. In the retry claim, gains rise as the starting pass rate falls (+0.9, +1.9, +7.5). The latency claim rises with cost (450 to 2551 ms). Last round's must_fix is resolved: the below claim, the lede, the pick-of-many caveat and Watch now name the no-retry option as the nearest cheaper option."
+            "reason": "I checked each claim against its block's rows. In frontier, the gains run 7.5, 4.2, 2.0, 2.4, 0.8 and 0.7 points, so the curve flattens past the lean at 97.1%. In price-steps, $3.20, $17.31, $111.22, $319.67, $1,595.18 and $17,236.36 rise at every step; price_tradeoff gives the same frontier of seven and the same edges. In atlas-premium, both model rows straddle zero, and the cost bars show about 5.5x at both reasoning levels. In retry, the gains of +0.9, +1.9 and +3.4 sort by starting rate (97.7%, 95.3%, 91.3%). In multihop, multi-hop is the lowest of the four tasks in every shortlisted row. In latency, Atlas-M at high reasoning with retry is the longest at 2551 ms, and retry raises p95 from 465 to 513 ms. No row contradicts its sentence."
           },
           {
             "n": 3,
             "name": "Honest emphasis",
-            "score": 2,
-            "reason": "The lean's weak axes are on the page: its thinnest separated lead (low end +0.3, and a fresh run of today's size reads it the other way 0.8% of the time, as settle_cases confirms), multi-hop as its weakest task at 95.6%, and its p95 of 513 ms. The pairing caveat now says pairing 'would likely narrow' the intervals, and it notes that the pick-of-many effect pulls the other way. The price band is labelled as point prices with no interval."
+            "score": 1,
+            "reason": "The lean's weak axes are visible. The step above it is not told apart from zero, its band is soft at the top of that interval, and it is the best of eighteen configurations. The confidence now scopes the High away from the lean. But it says the High covers 'Atlas-M's premium over Brisk-S at matched reasoning' and the rising price per point. Both are cost figures read at a provider routing the snapshot does not name, and the page's own routing caveat says another routing could reorder them. The High stands behind exactly what that open caveat could move. The headline's '5.5 times as much' also carries no routing qualifier."
           },
           {
             "n": 4,
             "name": "Sound elision",
             "score": 2,
-            "reason": "None of the left-out items would change the call. Last round's issue with the 'Left out' note is fixed: it now names Brisk-S with low reasoning and no retry as off only the price curve. The off-frontier options, the other retry and reasoning effects, and the per-task rates without counts are all in the appendix or covered by the claims."
+            "reason": "Every omitted Atlas-M configuration at no or low reasoning is beaten by a cheaper Brisk-S configuration that passes at least as often: $1.000 at 94.0% against $0.288 at 95.3%, and $1.655 at 97.9% against $0.633 at 98.0%. The calls-per-task note is now corrected (Atlas-M's premium shrinks per task), and its effect on the price edges is carried in the confidence. The outcome and extra-calls measures have no figures in the snapshot. None of the omissions would change the call."
           },
           {
             "n": 5,
             "name": "Confounds handled",
-            "score": 2,
-            "reason": "All three caveats code lists (no control, nothing declared, pick of eighteen) are carried with what would make each material. The volume-unit confound raised last round now has its own caveat. It gives the calls-per-task range (1.452 to 1.566) and says the band rises by about half while the knee holds. My own per-task arithmetic agrees. Unpaired intervals are named in every block."
+            "score": 1,
+            "reason": "The volume unit is now carried with calls per task for each option: 1.539 for the lean, 1.452 for Atlas-M and 1.566 for Nano-XS. This resolves last round's price-steps finding. Best-of-many is carried into Watch and into the paired re-run. Unknown routing is carried into a next step (record each configuration's provider). But the confidence clause names routing as a condition without saying why the covered cost findings hold until it is resolved. The no-control clause likewise does not say why the call holds without a control."
           },
           {
             "n": 6,
             "name": "Actionable next steps",
-            "score": 1,
-            "reason": "Each next step names an experiment or a declaration and what it would settle. The 6,044 cases per arm for the comparison with Atlas-M with low reasoning matches settle_cases. But the paired re-run leaves out Brisk-S with low reasoning and no retry. That is the comparison Watch and the pick-of-many caveat call the lean's thinnest separated lead, and the reason the cheaper option could be the better buy. No next step tests it directly."
+            "score": 2,
+            "reason": "Each step names an action and what it settles. The owner declares a bar or a price per point, plus the volume unit. A paired re-run of the two Brisk-S options with retry, at 5,432 cases each, has 80% power at today's +0.8 gap; the unpaired arithmetic checks out, so it is conservative for a paired run. A hop-collapsing fix on multi-hop is re-run with stated counts. Recording each configuration's provider checks whether the premium holds at production routing."
           },
           {
             "n": 7,
             "name": "Evidence fits claims",
             "score": 1,
-            "reason": "Most blocks fit their claims, and the caption on the model rows in the above claim now explains the sign, which resolves last round's direction finding. Three blocks fit less well. The retry claim says a retry is 'the cheapest lift on every model' and quotes $24 a month, but its block draws only pass-rate changes with no cost. The frontier claim says 'a frontier of seven options', but its block marks only the lean, so a reader can't see which seven. The no-retry option is undominated, which makes eight on a dominance reading. The tasks claim says 'on either side of it', but the block shows the top option, not Brisk-S with high reasoning and one retry, the frontier step just above the lean."
+            "reason": "Last round's block findings are resolved. The frontier scatter now lists exactly the seven frontier points. atlas-premium now carries the cost bars and the routing qualifier. One gap remains. The retry claim's cost figures, '$0.014 more per 1k calls and a few more calls per task', are not in its block, which shows only pass-rate gaps. 'A few more calls per task' also overstates the change: the snapshot gives 1.492 to 1.539, which is +0.047 calls per task. Otherwise the blocks pass the counterfactual: if the multi-hop rows reordered, or the model intervals excluded zero, the claims would have to change."
           }
         ],
         "findings": [
           {
             "claim": "",
-            "severity": "should_fix",
-            "finding": "Add Brisk-S with low reasoning and no retry to the paired re-run in Next steps. Watch and the pick-of-many caveat both name the lean's lead over it (+1.9, +0.3 to +3.4) as the thinnest, and that is where the $56-a-month cheaper option could become the better buy. Today's design needs about 1,636 cases per arm to separate them four times in five when read unpaired (settle_cases); pairing needs fewer. Say that this re-run settles whether the lean's lead survives on fresh cases."
-          },
-          {
-            "claim": "frontier",
-            "severity": "should_fix",
-            "finding": "'A frontier of seven options' counts the price curve, which is how price_tradeoff counts it. But Brisk-S with low reasoning and no retry ($0.288, 95.3%) is undominated, and the page calls it 'off only the price curve'. Say 'price curve' in the claim, and mark the seven curve options in the scatter so the block shows the frontier the sentence names."
+            "severity": "must_fix",
+            "finding": "The confidence's first clause says the High covers 'the price per point rising at every step, and Atlas-M's premium over Brisk-S at matched reasoning'. Both are cost readings at a provider routing the snapshot never names (cost_served_by: no configuration's pricing is stated). The fourth clause concedes that 'another provider routing reorders the costs per 1k calls', but it does not say why the covered findings hold until the routing is known. The headline also ranks Atlas-M against Brisk-S by cost ('costs 5.5 times as much') with no routing named. Fix: say the High on these findings holds 'at this run's routing'. Then either say why routing is unlikely to undo them (for example, the premium is about 5.5x at both reasoning levels, $1.655 vs $0.302 and $3.477 vs $0.633, so a re-routing would have to cut Atlas-M's price per call relative to Brisk-S's by more than five times to close it) or leave them outside the High. Add 'at this run's routing' to the headline's 5.5x. While there, give the no-control clause its reason the call holds (every option here is a candidate, so the choice among them does not need a control; only the move from today's planner does). Fix the lowercase sentence starts ('. the high covers', '. the owner needs')."
           },
           {
             "claim": "retry",
             "severity": "should_fix",
-            "finding": "The claim says a retry is 'the cheapest lift on every model' and quotes $24 a month for Nano-XS with reasoning off, but the block shows only pass-rate changes. Add each retry step's monthly cost gap, or its price per point, beside the rows, or cut 'cheapest' from the sentence. Also note that a retry raises calls per task (1.698 to 1.888 on Nano-XS with reasoning off), so the $24 grows if the volume counts tasks."
+            "finding": "The claim says retry on Brisk-S at low reasoning adds '+1.9 points for $0.014 more per 1k calls and a few more calls per task'. The snapshot gives calls per task of 1.492 without retry and 1.539 with it, so retry adds 0.047 calls per task, about 3%, not 'a few'. Neither cost figure is in the block, which draws only pass-rate gaps. Replace 'a few more calls per task' with '+0.047 calls per task (1.492 to 1.539)', and add the cost per 1k pair ($0.288 vs $0.302) as a small bars block or a values row. That way the cost side of the retry trade shows next to its gain."
+          }
+        ],
+        "total": 11,
+        "passes": true,
+        "must_fix": true
+      },
+      {
+        "round": 3,
+        "items": [
+          {
+            "n": 1,
+            "name": "First screen",
+            "score": 2,
+            "reason": "The headline, lede and decision block make three things clear. No bar was declared, so the choice is a price. The lean is Brisk-S at low reasoning with retry, and it holds for a price per point between $319.67 and $1,595.18 a month. Atlas-M at high reasoning with retry costs 5.5 times as much as Brisk-S at high reasoning, now stated as at this run's routing, and the two are not told apart on pass rate. The main risk is in Watch: Brisk-S at high reasoning gains +0.8 points (-0.4 to +2.1) on the lean, a gain not told apart from zero. The frontier claim shows where the curve flattens."
           },
           {
-            "claim": "tasks",
+            "n": 2,
+            "name": "Coherent story",
+            "score": 2,
+            "reason": "I checked each claim against its table and found no contradictions. The trade is +1.5 points (+0.3 to +2.6) for $12,700 a month, which matches (3.477-0.302)×4,000. The price edges $319.67, $1,595.18 and $17,236.36 match price_tradeoff. Multi-hop is the lowest task in all four shortlisted rows (93.5, 95.6, 97.3, 97.9). In the retry claim, the gains fall as the starting rate rises (+3.4, +1.9, +0.9), as the claim says. The one broken sentence is in the confidence block, not in a claim, and is raised under Honest emphasis."
+          },
+          {
+            "n": 3,
+            "name": "Honest emphasis",
+            "score": 1,
+            "reason": "The lean's weak axes are visible: the soft upper edge, best-of-many optimism, multi-hop as its weakest task, and the routing and volume-unit caveats. But the best-of-many clause says 'Fresh cases read the lean's lead over Nano-XS at high reasoning with retry near zero'. No fresh cases were run, and the measured lead is +2.4 points (+0.8 to +4). As written, the clause reports a re-run finding that does not exist, and that finding would wipe out the reason to pay $764 a month over Nano-XS."
+          },
+          {
+            "n": 4,
+            "name": "Sound elision",
+            "score": 2,
+            "reason": "Nothing omitted changes the call. Atlas-M at no or low reasoning is beaten by Brisk-S at high reasoning, which costs less and passes as often (Atlas-M low with retry: 97.9% at $1.655; Brisk-S high with retry: 98.0% at $0.633). Per task, the order holds: Atlas-M high with retry is about $5.05 per 1k tasks against $0.93 for Brisk-S high with retry and $0.47 for the lean. The other omissions have no data behind them or sit in the appendix."
+          },
+          {
+            "n": 5,
+            "name": "Confounds handled",
+            "score": 2,
+            "reason": "Each confound is carried into the story and the next steps: the unnamed provider routing (the 5.5x factor a re-routing would have to overcome), the unstated volume unit (calls per task given for each option), no control (explained as not needed to choose among candidates), unpaired intervals (in Method), and best-of-many (the paired re-run)."
+          },
+          {
+            "n": 6,
+            "name": "Actionable next steps",
+            "score": 2,
+            "reason": "Each step names an action and what it settles. The owner declares a bar or a price per point and the volume unit. A paired re-run of the two Brisk-S options with retry, at 5,432 cases each, settles high reasoning's gain with 80% power and checks the lean against optimism. A multi-hop prompt fix is re-run with case counts. Recording each provider settles the routing question."
+          },
+          {
+            "n": 7,
+            "name": "Evidence fits claims",
+            "score": 1,
+            "reason": "Most blocks fit. The Atlas-M premium and retry claims now show cost bars beside the pass-rate gaps. The retry claim gives calls per task as 1.492 to 1.539, which resolves my earlier should_fix. The price-steps claim fails the counterfactual. Its 'frontier' is the convex hull that price_tradeoff draws, and on a hull the price per point rises at every step by construction. So no data could break the claim, and the confidence's High covering it adds nothing. The hull also leaves out Brisk-S at low reasoning without retry (95.3% at $0.288). No cheaper option passes as often, and the bar row in 'What you could change' names it as the pick for a bar between 94.8% and 95.3%."
+          }
+        ],
+        "findings": [
+          {
+            "claim": "",
+            "severity": "must_fix",
+            "finding": "The confidence clause on the pick being best of several says 'Fresh cases read the lean's lead over Nano-XS at high reasoning with retry near zero; that lead's interval is +0.8 to +4'. No fresh-case reading exists. The measured lead is +2.4 points (+0.8 to +4). A reader would think a re-run had erased the lean's edge over the option $764 a month cheaper. Rewrite it as a risk, not a result. For example: 'The lean's lead over Nano-XS at high reasoning with retry is +2.4 points (+0.8 to +4); as the best of eighteen, it may read lower on fresh cases, and the paired re-run checks it.'"
+          },
+          {
+            "claim": "price-steps",
             "severity": "should_fix",
-            "finding": "'The frontier options on either side of it' implies the next step up, Brisk-S with high reasoning and one retry, but the heatmap shows the top option, Atlas-M with high reasoning and one retry. Either swap in Brisk-S with high reasoning and one retry, whose weakest task is also multi-hop at 97.3%, or reword to 'the frontier option below it and the top option'."
+            "finding": "'The price of a pass-rate point rises at every step along the frontier' is true by construction. The frontier here is the convex hull, so its steps always get dearer, and the confidence's High covering 'the price per point rising at every step' claims nothing the data could have refuted. Say the frontier is the price-per-point hull and that its steps rise by construction. Put the finding in the size of the steps, for example the jump from $1,595.18 to $17,236.36 for the last step to Atlas-M. Then drop 'rising at every step' from what the High covers. In the frontier claim's caption, note that Brisk-S at low reasoning without retry (95.3% at $0.288) is not beaten by any cheaper option but lies under the hull. It is the pick for a bar between 94.8% and 95.3%, as the bar row in 'What you could change' already says."
+          },
+          {
+            "claim": "multihop",
+            "severity": "should_fix",
+            "finding": "The examples caption says 'one per task shown', but there are three cards for four tasks and none for single lookup. The snapshot keeps only three failures for the lean. Say 'one per task for the three tasks with a kept failure', so a reader doesn't look for a missing single-lookup card."
           }
         ],
         "total": 12,
         "passes": true,
-        "must_fix": false
+        "must_fix": true
       }
     ],
     "sessions": {
       "analyst": {
-        "digest": "d5f309d5a5a350222e3b61bb7f704bd9d10899c08e0072b4236f0882ca227e58",
-        "turns": 21,
-        "ref": "01a18515-bef6-7189-b35e-b0a6d199b5e5:session:analyst"
+        "digest": "91aa41fe6738739947a0f687889babfe630a02d0e09ad523f8f90a4ec6bc75a2",
+        "turns": 27,
+        "ref": "01a18922-1666-723f-9abc-a3473f04c6ed:session:analyst"
       },
       "editor-1": {
-        "digest": "cad0cc1cc2830e742249f5470d584e88f986883e0118582f0bb0ae5d9f7b0a51",
-        "turns": 5,
-        "ref": "01a18515-bef6-7189-b35e-b0a6d199b5e5:session:editor-1"
+        "digest": "14aa357363d1ca3eb0958bb907fa2b167851bd743e56d37f27dc8e0b2b4c603b",
+        "turns": 6,
+        "ref": "01a18922-1666-723f-9abc-a3473f04c6ed:session:editor-1"
       },
       "editor-2": {
-        "digest": "3f0e0a2ca805ed23188116dcb5f203f1bf6b13863fe97597d135c9b8b7bc8857",
-        "turns": 4,
-        "ref": "01a18515-bef6-7189-b35e-b0a6d199b5e5:session:editor-2"
+        "digest": "3e3bf8f9da0ffdefb097d671fa48ebb1cbde3e8eb003a90d5cb0bdaaf57da0d0",
+        "turns": 3,
+        "ref": "01a18922-1666-723f-9abc-a3473f04c6ed:session:editor-2"
+      },
+      "editor-3": {
+        "digest": "d8a7131e8df3dba54567b64bae836b0888775e416db074984f93c3111fa7009a",
+        "turns": 5,
+        "ref": "01a18922-1666-723f-9abc-a3473f04c6ed:session:editor-3"
       }
     }
   },
   "created_by": "agent:test",
-  "created_at": "2026-10-29T00:35:57.303289+00:00"
+  "created_at": "2026-10-29T19:27:54.984720+00:00"
 }

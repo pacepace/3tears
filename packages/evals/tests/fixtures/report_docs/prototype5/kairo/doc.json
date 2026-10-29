@@ -1,8 +1,8 @@
 {
   "schema": "report-doc/1",
   "story": "decision",
-  "headline": "Keep {arm:September}: neither candidate holds Kairo in character better, and both cost more per reply to run.",
-  "lede": "{arm:qwen3.8-flash} is clearly worse in character, down {reading.qwen3.8-flash.change|abs|pts} points; {arm:1017} is not told apart from {arm:September} ({reading.1017.interval|interval}). Only a candidate that is cheaper, or measurably better in character, would change the answer.",
+  "headline": "Keep {arm:September}: at this run's unrecorded provider routing both candidates cost more per reply, and neither is shown to keep Kairo in character better.",
+  "lede": "At this run's routing {arm:qwen3.8-flash} costs {contrast.qwen3.8-flash.production_replicating_cost.delta|usd_per_1k} more and {arm:1017} {contrast.1017.production_replicating_cost.delta|usd_per_1k} more; both stay within the allowed character loss, so cost alone decides. A recorded routing at which a candidate costs no more would reopen the call.",
   "flag": null,
   "recommends": [
     "September"
@@ -11,27 +11,27 @@
     "form": "high_if_immaterial",
     "caveats": [
       {
+        "id": "analyst:unrecorded-routing",
+        "label": "No provider routing is recorded for any arm",
+        "material_if": "Material if a recorded routing puts either candidate at or below {arm:September}'s {cost_per_1k.September|usd_per_1k}: both sit inside the allowed loss, so the call would turn on character alone or become a trade. The earlier round found {arm:qwen3.8-flash} cheaper. Until a re-pricing says otherwise, the measured gap is the only cost evidence, and it favours {arm:September}.",
+        "checked": null
+      },
+      {
         "id": "judge_uncalibrated",
         "label": null,
-        "material_if": "Only if the judge marks the candidates' style down so that a real character gain is hidden. The keep call also rests on production cost, which no judge reads, so even then a candidate would have to be worth its higher cost.",
+        "material_if": "Only if the uncalibrated judge marks the candidates down for replies a calibrated judge would pass, by enough to put one above {arm:September}. The cost gap is measured telemetry, not judged; its own caveat is the routing above.",
         "checked": null
       },
       {
         "id": "late:aspect",
         "label": null,
-        "material_if": "Only if a different aspect should have been the question; production cost favours {arm:September} whatever aspect is read.",
+        "material_if": "Only if an aspect chosen before the results would favour a candidate; production cost, which decides, is the same whatever aspect is read.",
         "checked": null
       },
       {
         "id": "late:control",
         "label": null,
-        "material_if": "Only if a reference other than the production model was intended; both candidates cost more than {arm:September} and neither is ahead of it in character, whichever arm is called the control.",
-        "checked": null
-      },
-      {
-        "id": "confound:model",
-        "label": null,
-        "material_if": "Only if a gap should be credited to the model alone: each candidate changes the served model together with whatever it brings, such as its reasoning budget. The keep call needs no such split.",
+        "material_if": "Only if an arm other than production should be the baseline; both candidates cost more than {arm:September} whichever is called the control.",
         "checked": null
       },
       {
@@ -45,68 +45,49 @@
         "label": null,
         "material_if": null,
         "checked": "immaterial"
+      },
+      {
+        "id": "confound:model",
+        "label": null,
+        "material_if": "Only if a setting besides the model moved between arms and moved cost or character with it. Two did or may have: {arm:1017}'s reasoning share differed (Watch), and the simulator's request settings went unrecorded (Method). Either could shift a gap in a direction this run cannot read.",
+        "checked": null
       }
     ]
   },
   "decision": [
     {
       "slot": "recommendation",
-      "text": "Keep {arm:September}, the production model, on Kairo. Neither candidate holds character better, and each costs more per 1,000 replies."
+      "text": "Keep {arm:September} (the control) on Kairo. At this run's routing it costs {cost_per_1k.September|usd_per_1k}, less than either candidate, and neither candidate is shown to hold character better."
     },
     {
       "slot": "why_not",
-      "text": "{arm:qwen3.8-flash}: clearly worse in character, down {reading.qwen3.8-flash.change|abs|pts} points, and {contrast.qwen3.8-flash.production_replicating_cost.delta|abs|usd_per_1k} dearer."
+      "text": "{arm:qwen3.8-flash}: costs more at this routing and holds character clearly worse, down {aspects.character adherence (v2).reading.qwen3.8-flash.change|abs|pts} points on the pass rate."
     },
     {
       "slot": "why_not",
-      "text": "{arm:1017}: not told apart on the pass rate, down {contrast.1017.persona.holds_character.delta|abs|pts} points on the judged holds-character rating, and {contrast.1017.production_replicating_cost.delta|abs|usd_per_1k} dearer."
+      "text": "{arm:1017}: costs more at this routing and buys nothing for it; its pass-rate drop of {aspects.character adherence (v2).reading.1017.change|abs|pts} points is not told apart from zero, and on holding character alone it is worse."
     },
     {
       "slot": "watch",
-      "text": "The nearest margin: {weakest.arm} could lose up to {weakest.value|abs|pts} points of character against the {weakest.threshold|abs|int}-point allowance, {weakest.margin|abs|pts} points to spare; it does not bear on keeping {arm:September}. An earlier finding said {arm:qwen3.8-flash} lowers production cost; here it costs more."
+      "text": "The cost order contradicts the earlier finding that {arm:qwen3.8-flash} lowers production cost. No routing is recorded here, so the gap may be the provider's, not the model's; the re-pricing below settles it."
     },
     {
       "slot": "watch",
-      "text": "{arm:1017} spent {reasoning_ratio.1017|pct} of its output reasoning against {reasoning_ratio.September|pct} for {arm:September}, so its figures mix model and reasoning budget. Matching the reasoning would more likely raise its cost than lower it; its character figures could move either way."
+      "text": "The weakest margin is {weakest.arm} on {weakest.criterion}: read on {weakest.interval}, it reaches {weakest.value|pts} against {weakest.threshold|pts}, {weakest.margin|abs|pts} points inside. On the declared {aspects.character adherence (v2).reading.qwen3.8-flash.level} reading its worst drop is {aspects.character adherence (v2).flip_margin.qwen3.8-flash|abs|pts} points. It bears on a rejected arm."
+    },
+    {
+      "slot": "watch",
+      "text": "{arm:1017} spent a different share of its output reasoning ({reasoning_ratio.1017} against {reasoning_ratio.September} for {arm:September}), so its cost and character gaps may partly belong to the reasoning budget, in a direction this run cannot read."
     },
     {
       "slot": "next",
-      "text": "Keep {arm:September} now. In parallel, reconcile the earlier cost finding for {arm:qwen3.8-flash} and rework the off-lane directive, where most of each candidate's loss sits."
+      "text": "Keep {arm:September} now. In parallel, re-price both candidates at a recorded provider routing, including the one the earlier round found cheaper: a candidate re-enters only if it costs no more than {arm:September}."
     }
   ],
   "claims": [
     {
-      "id": "character",
-      "text": "{arm:qwen3.8-flash} passes character adherence less often than {arm:September}, down {reading.qwen3.8-flash.change|abs|pts} points with its interval below zero; {arm:1017} is down {reading.1017.change|abs|pts} points, not told apart from it. Both drops fit inside the {aspects.character adherence (v2).margin|int}-point allowance. {arm:qwen3.8-flash}'s rates leave out {scoreboard.qwen3.8-flash.lost|words} trials lost to harness failures, too few to move a gap this size.",
-      "weight": "lead",
-      "evidence": [
-        {
-          "block": "forest",
-          "query": {
-            "source": "readings",
-            "aspect": "character adherence (v2)",
-            "measures": [],
-            "arms": [],
-            "strata": [],
-            "limit": 0,
-            "transform": "none",
-            "small_multiples_by": "none"
-          },
-          "reference": "margin",
-          "emphasis": "",
-          "caption": "Change in character-adherence pass rate against {arm:September}, in points, at {reading.qwen3.8-flash.level}; the band is the allowed loss."
-        }
-      ],
-      "caveats": [
-        "short_run:01a170ab-d2da-750d-a1e3-f4b43716844d",
-        "short_run:01a17121-6e85-732d-ab3a-cf86aed8cdc6",
-        "confound:observed:reasoning_ratio"
-      ],
-      "durable": false
-    },
-    {
       "id": "cost",
-      "text": "Both candidates cost more per reply than {arm:September}: {arm:qwen3.8-flash} by {contrast.qwen3.8-flash.production_replicating_cost.delta|abs|usd_per_1k} and {arm:1017} by {contrast.1017.production_replicating_cost.delta|abs|usd_per_1k}, each interval clear of zero. The order holds even if every trial with no reported cost was free for the candidates and at its p95 for {arm:September}.",
+      "text": "At this run's unrecorded routing both candidates cost more per reply than {arm:September}: {arm:qwen3.8-flash} by {contrast.qwen3.8-flash.production_replicating_cost.delta|usd_per_1k} and {arm:1017} by {contrast.1017.production_replicating_cost.delta|usd_per_1k}, each interval clear of zero. The gap may belong to the routing rather than the model, which the re-pricing step settles.",
       "weight": "lead",
       "evidence": [
         {
@@ -125,19 +106,36 @@
           },
           "reference": null,
           "emphasis": "",
-          "caption": "Production cost gap against {arm:September}, per 1,000 replies, family-corrected at {family.level}."
+          "caption": "Paired change in production cost against {arm:September}, per 1,000 replies, at the family-corrected {family.level} level. Pairing uses only trials that report a cost, so these gaps differ from the gaps between the options table's means."
         }
       ],
       "caveats": [
+        "analyst:unrecorded-routing",
         "confound:observed:reasoning_ratio"
       ],
       "durable": false
     },
     {
-      "id": "judged",
-      "text": "The judge's holds-character rating falls for both: {arm:qwen3.8-flash} by {contrast.qwen3.8-flash.persona.holds_character.delta|abs|pts} points and {arm:1017} by {contrast.1017.persona.holds_character.delta|abs|pts}, each interval below zero. Keeping the booth offstage is not told apart from {arm:September} for either.",
-      "weight": "support",
+      "id": "character",
+      "text": "{arm:qwen3.8-flash} holds character clearly worse than {arm:September}, down {aspects.character adherence (v2).reading.qwen3.8-flash.change|abs|pts} points; {arm:1017} is down {aspects.character adherence (v2).reading.1017.change|abs|pts}, not told apart from it. Both stay inside the allowed {aspects.character adherence (v2).margin|int}-point loss.",
+      "weight": "lead",
       "evidence": [
+        {
+          "block": "forest",
+          "query": {
+            "source": "readings",
+            "aspect": "character adherence (v2)",
+            "measures": [],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": "margin",
+          "emphasis": "",
+          "caption": "Change in pass rate on character adherence against {arm:September}, in points, with {aspects.character adherence (v2).reading.qwen3.8-flash.level} intervals and the allowed loss marked."
+        },
         {
           "block": "forest",
           "query": {
@@ -155,7 +153,41 @@
           },
           "reference": null,
           "emphasis": "",
-          "caption": "Change against {arm:September} on two judged ratings, in points, family-corrected at {family.level}."
+          "caption": "The two judged persona checks, paired against {arm:September} at the family-corrected {family.level} level: both candidates are worse on holding character."
+        }
+      ],
+      "caveats": [
+        "confound:observed:reasoning_ratio",
+        "short_run:01a170ab-d2da-750d-a1e3-f4b43716844d",
+        "short_run:01a17121-6e85-732d-ab3a-cf86aed8cdc6"
+      ],
+      "durable": false
+    },
+    {
+      "id": "off_lane",
+      "text": "Off-lane asks carry about half of each candidate's loss on holding character: {strata.off_lane.loss_share.qwen3.8-flash.persona.holds_character|pct} for {arm:qwen3.8-flash} and {strata.off_lane.loss_share.1017.persona.holds_character|pct} for {arm:1017}.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "diverging_bars",
+          "query": {
+            "source": "strata",
+            "aspect": "character adherence (v2)",
+            "measures": [
+              "persona.holds_character"
+            ],
+            "arms": [
+              "qwen3.8-flash",
+              "1017"
+            ],
+            "strata": [],
+            "limit": 6,
+            "transform": "arm_minus_control",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Change in holding character against {arm:September} in the six largest slices, in points, uncorrected; read as leads. A slice's share of the loss is its drop times its cases over the arm's whole loss: off-lane asks hold {strata.off_lane.n_cases|int} of {cases|int} cases and have by far the largest drop, so they carry the shares the claim states."
         }
       ],
       "caveats": [
@@ -164,73 +196,8 @@
       "durable": false
     },
     {
-      "id": "offlane",
-      "text": "Off-lane asks, {strata.off_lane.n_cases|int} cases, carry {strata.off_lane.loss_share.qwen3.8-flash.persona.holds_character|pct} of {arm:qwen3.8-flash}'s holds-character loss and {strata.off_lane.loss_share.1017.persona.holds_character|pct} of {arm:1017}'s: a lead found after the fact, not a confirmed result.",
-      "weight": "support",
-      "evidence": [
-        {
-          "block": "diverging_bars",
-          "query": {
-            "source": "compare",
-            "aspect": "",
-            "measures": [
-              "persona.holds_character"
-            ],
-            "arms": [
-              "qwen3.8-flash",
-              "September"
-            ],
-            "strata": [
-              "off_lane",
-              "machinery",
-              "multi",
-              "about",
-              "superlative",
-              "small_talk"
-            ],
-            "limit": 0,
-            "transform": "none",
-            "small_multiples_by": "none"
-          },
-          "reference": null,
-          "emphasis": "",
-          "caption": "{arm:qwen3.8-flash} less {arm:September} on holds character by kind of ask, in points, unpaired and uncorrected at {compare.qwen3.8-flash.September.persona.holds_character.strata.off_lane.level}; repeats are counted, so intervals may be narrow."
-        },
-        {
-          "block": "diverging_bars",
-          "query": {
-            "source": "compare",
-            "aspect": "",
-            "measures": [
-              "persona.holds_character"
-            ],
-            "arms": [
-              "1017",
-              "September"
-            ],
-            "strata": [
-              "off_lane",
-              "machinery",
-              "multi",
-              "about",
-              "superlative",
-              "small_talk"
-            ],
-            "limit": 0,
-            "transform": "none",
-            "small_multiples_by": "none"
-          },
-          "reference": null,
-          "emphasis": "",
-          "caption": "{arm:1017} less {arm:September}, read the same way."
-        }
-      ],
-      "caveats": [],
-      "durable": false
-    },
-    {
-      "id": "cards",
-      "text": "Off-lane failures are not the candidates' alone: {arm:September} failed {count.failures.character adherence (v2).September.off_lane|int} off-lane trials, against {count.failures.character adherence (v2).qwen3.8-flash.off_lane|int} for {arm:qwen3.8-flash} and {count.failures.character adherence (v2).1017.off_lane|int} for {arm:1017}. On the cards, {arm:1017} narrates the listener in the third person, {arm:qwen3.8-flash} gives advice on a landlord email it should brush off, and {arm:September} slips into a customer-service refusal.",
+      "id": "examples",
+      "text": "The control fails off-lane asks the same way the candidates do: {arm:September} drops character on {count.failures.character adherence (v2).September.off_lane|words} off-lane trials, against {count.failures.character adherence (v2).qwen3.8-flash.off_lane|words} and {count.failures.character adherence (v2).1017.off_lane|words} for the candidates, and on the landlord email both {arm:September} and {arm:qwen3.8-flash} brush off the ask, then answer it.",
       "weight": "detail",
       "evidence": [
         {
@@ -239,7 +206,9 @@
             "source": "examples",
             "aspect": "character adherence (v2)",
             "measures": [],
-            "arms": [],
+            "arms": [
+              "September"
+            ],
             "strata": [
               "off_lane"
             ],
@@ -249,7 +218,27 @@
           },
           "reference": null,
           "emphasis": "",
-          "caption": "One off-lane failure per arm, from {count.examples.character adherence (v2).September.off_lane|words} kept per arm."
+          "caption": "Every kept off-lane failure for {arm:September}, {count.examples.character adherence (v2).September.off_lane|words} of {count.failures.character adherence (v2).September.off_lane|words}: the landlord-email and laundry cards brush off the ask and then answer it; the match-score card slips into a customer-service refusal."
+        },
+        {
+          "block": "examples",
+          "query": {
+            "source": "examples",
+            "aspect": "character adherence (v2)",
+            "measures": [],
+            "arms": [
+              "qwen3.8-flash"
+            ],
+            "strata": [
+              "off_lane"
+            ],
+            "limit": 1,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "The first kept off-lane failure for {arm:qwen3.8-flash}, a sample of {count.failures.character adherence (v2).qwen3.8-flash.off_lane|words}: the same landlord-email case, answered with practical advice after the turn to music."
         }
       ],
       "caveats": [],
@@ -258,98 +247,106 @@
   ],
   "explore": [
     {
-      "control": "The allowed loss in character adherence, declared after the results",
+      "control": "The allowed loss on character adherence",
       "binds": "Whether each candidate counts as acceptable on character",
-      "outcome": "Below {flip_margin.1017|abs|pts} points {arm:1017} is no longer shown within it, and below {flip_margin.qwen3.8-flash|abs|pts} points {arm:qwen3.8-flash} is not either. {arm:September} is kept at every allowance, because both candidates cost more."
+      "outcome": "Read on the declared {aspects.character adherence (v2).reading.qwen3.8-flash.level} readings, the pick holds at every allowed loss. {arm:1017} stops counting as acceptable below {aspects.character adherence (v2).flip_margin.1017|abs|pts} points and {arm:qwen3.8-flash} below {aspects.character adherence (v2).flip_margin.qwen3.8-flash|abs|pts}; {arm:September} stays the pick throughout because both cost more at this routing."
     }
   ],
   "omitted": [
     {
+      "what": "The overall outcome and transcript judged scores",
+      "why": "Ordinal scores from the same uncalibrated judge, pointing the same way as the pass rate; they do not change the call."
+    },
+    {
+      "what": "The tool check (a message sent or a voice line queued) and failed-reply notices",
+      "why": "Neither candidate is separated from the control on either; they do not bear on the call."
+    },
+    {
+      "what": "The other slices of holding character and keeping the booth offstage, including qwen3.8-flash's drop on keeping the booth offstage in story asks",
+      "why": "Small slices ({strata.story.n_cases|words} cases for story asks) and uncorrected; none carries as much of the holding-character loss as off-lane asks."
+    },
+    {
+      "what": "The kept off-lane failure cards for {arm:1017}",
+      "why": "The control's and qwen3.8-flash's cards on the same landlord-email case show the shared failure more directly; the cards for {arm:1017} stay in the appendix."
+    },
+    {
       "what": "Measuring spend across all roles",
-      "why": "It is the cost of running the evaluation, not of serving Kairo."
+      "why": "Includes the judge's and simulator's spend; production cost is the cost a deployment pays."
     },
     {
-      "what": "The delivery check (a Discord message or a queued voice line sent)",
-      "why": "Neither candidate is told apart from the control; it does not change the call."
-    },
-    {
-      "what": "Failed-reply notices, tool provider faults, turns that ran over budget, items delivered",
-      "why": "Operational counts with no separated difference that bears on character or cost."
-    },
-    {
-      "what": "The judge's overall outcome and transcript scores",
-      "why": "Ordinal summaries of the same judging; they point the same way as the holds-character rating and add nothing to the call."
-    },
-    {
-      "what": "The other kinds of ask beyond the six shown, including story asks where one candidate keeps the booth offstage less often",
-      "why": "Each has about ten cases or fewer, too few to read; all stay in the appendix tables."
-    },
-    {
-      "what": "A price per point of character",
-      "why": "No candidate is cheaper than the control, so there is no trade to price."
+      "what": "The p95 production cost",
+      "why": "Tail cost points the same way as the mean and does not change the call."
     }
   ],
   "next": [
     {
-      "text": "Reconcile the earlier finding that {arm:qwen3.8-flash} lowers production cost with this run's production cost basis.",
-      "settles": "Whether it is cheaper anywhere. If it is, the call becomes a trade between its cost and its character loss; if not, the earlier finding is retired."
+      "text": "Re-price {arm:qwen3.8-flash} and {arm:1017} at a recorded provider routing, including the one the earlier round measured.",
+      "settles": "Whether the cost order is the models' or this run's routing, and reconciles the earlier finding that {arm:qwen3.8-flash} lowers cost; only a candidate that costs no more than {arm:September} re-enters, and then character decides."
     },
     {
-      "text": "Rework the off-lane directive and rerun all three arms on the off-lane asks.",
-      "settles": "Whether the candidates' main loss closes, and whether {arm:September}'s own off-lane failures fall too."
+      "text": "Rerun {arm:1017} with its reasoning budget matched to {arm:September}.",
+      "settles": "How much of its cost and character gap belongs to the reasoning share rather than the model."
     },
     {
-      "text": "Collect human ratings of holds-character, weighted to off-lane asks, to calibrate the judge.",
-      "settles": "Whether the judged character losses are real or the judge's reading of style."
+      "text": "Tighten the existing brush-off directive so it forbids answering a non-music ask after brushing it off, and rerun the off-lane asks on all three arms.",
+      "settles": "Whether the slice that carries most of the loss can lift for every arm, the control included."
     },
     {
-      "text": "If {arm:1017} stays of interest, rerun it with reasoning matched to {arm:September} on {settle.passed.character adherence (v2).1017.September.cases_needed_80|int} cases per arm.",
-      "settles": "Whether its pass-rate gap is the model's: at that size a run separates today's gap four times in five, if today's gap is true."
+      "text": "Calibrate the judge against human ratings of holding character, starting with off-lane asks.",
+      "settles": "Whether the candidates' character loss is real or the judge's reading of their style."
+    },
+    {
+      "text": "Declare the aspect, control and allowed loss before the next round runs, and record each arm's provider and the simulator's settings.",
+      "settles": "Removes the caveats that these were set after the results and that routing went unrecorded."
     }
   ],
   "method": [
     {
       "term": "Cases and repeats",
-      "text": "{cases|int} conversations, each run {repeats|words} times per arm. The corrected comparisons do not state whether their intervals count conversations or repeats; if repeats, they may be somewhat narrow.",
+      "text": "{cases|int} conversations, each run {repeats|int} times per arm: {scoreboard.September.usable|int} usable trials for {arm:September}, {scoreboard.qwen3.8-flash.usable|int} for {arm:qwen3.8-flash} and {scoreboard.1017.usable|int} for {arm:1017}. Intervals are over cases, not trials.",
       "caveats": []
     },
     {
       "term": "What pass means",
-      "text": "The campaign does not state the rule that makes a trial pass; the pass rate is trials passed over usable trials. The judge's holds-character rating is a separate figure. The floor on character reads the pass rate for {arm:qwen3.8-flash} and the holds-character rating for {arm:1017}; the two are shown apart, never merged.",
+      "text": "The campaign does not state what makes a trial pass on character adherence; the pass rate is trials marked passed over trials usable. Holding character and keeping the booth offstage are separate judged checks.",
       "caveats": []
     },
     {
       "term": "Intervals and correction",
-      "text": "Readings against the control are at {reading.qwen3.8-flash.level}. The {family.family_size|int} contrasts are corrected together by Holm's method, each interval at {family.level}. Breakdowns by kind of ask are unpaired, uncorrected and exploratory.",
+      "text": "Readings against the control are at {aspects.character adherence (v2).reading.qwen3.8-flash.level}. Contrasts are corrected together by Holm's method over {family.family_size|int} comparisons, each interval at {family.level}. The weakest margin is read on the corrected interval, the allowed-loss control on the declared reading.",
       "caveats": []
     },
     {
       "term": "Judge",
-      "text": "{judged.persona.holds_character.model}, with {judged.persona.holds_character.calibration_ratings|int} human calibration ratings; its calibration is insufficient.",
+      "text": "Every judged figure comes from {judged.persona.holds_character.model}, calibration {judged.persona.holds_character.calibration}, with {judged.persona.holds_character.calibration_ratings|int} human ratings.",
       "caveats": []
     },
     {
       "term": "Cost basis",
-      "text": "Production cost replicates what serving Kairo costs, per 1,000 replies. Some trials report no cost: {cost.unreported.September.missing|int} for {arm:September}, {cost.unreported.qwen3.8-flash.missing|int} for {arm:qwen3.8-flash}, {cost.unreported.1017.missing|int} for {arm:1017}. Counted as free, the candidates would still cost {cost.unreported.qwen3.8-flash.free|usd_per_1k} and {cost.unreported.1017.free|usd_per_1k}, above {arm:September} at {cost.unreported.September.at_p95|usd_per_1k} were its missing trials at its p95.",
+      "text": "Production cost per 1,000 replies, at a provider routing not recorded for any arm. Some trials report no cost ({cost.unreported.September.missing|int} for {arm:September}, {cost.unreported.qwen3.8-flash.missing|int} and {cost.unreported.1017.missing|int} for the candidates). Had each candidate's missing trials cost nothing, their means would still be at least {cost.unreported.qwen3.8-flash.free|usd_per_1k} and {cost.unreported.1017.free|usd_per_1k}. Had {arm:September}'s missing trials each cost its p95 of {measure.production_replicating_cost.September.p95|usd_per_1k}, its mean would be {cost.unreported.September.at_p95|usd_per_1k}, still below both, so the order holds at this routing. The paired gaps use only trials both arms costed.",
       "caveats": []
     },
     {
-      "term": "Design",
-      "text": "One setting, the served model, differs between arms; every gap is credited to it and to whatever it brings, such as its reasoning budget.",
+      "term": "Floors",
+      "text": "The floor on {arm:qwen3.8-flash} speaks for the pass rate; the floor on {arm:1017} reads holding character instead. Both held; the page reads the pass rate for the asked aspect and shows holding character separately.",
+      "caveats": []
+    },
+    {
+      "term": "Declared after the results",
+      "text": "The aspect, the control, the allowed loss and the floor were all set on {late_criteria.set_at}, after the runs.",
+      "caveats": []
+    },
+    {
+      "term": "Latency",
+      "text": "{caveats.latency}",
       "caveats": [
-        "confound:model"
+        "latency"
       ]
     },
     {
-      "term": "When the criteria were set",
-      "text": "The asked aspect, the control, the allowed loss and the floor were all declared on {late_criteria.set_at}, the run date, after the results.",
-      "caveats": []
-    },
-    {
-      "term": "Not compared",
-      "text": "Latency, because every cell ran beside others; token counts and call counts, which were not reported; the simulated user's request settings, which were not recorded on every run.",
+      "term": "Not recorded",
+      "text": "Input tokens, output tokens and model-call counts were not reported; the simulator's request settings were not recorded on every run, so whether they varied is unknown.",
       "caveats": [
-        "latency",
         "unreported:input_tokens",
         "unreported:output_tokens",
         "unreported:llm_calls",
@@ -358,7 +355,7 @@
     },
     {
       "term": "Source",
-      "text": "{meta.campaign}, run on {meta.run_date}.",
+      "text": "{meta.campaign}, run {meta.run_date}.",
       "caveats": []
     }
   ]

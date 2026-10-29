@@ -1,25 +1,27 @@
 Choice · candidates compared · Research query planner · 18 arms · 4 tasks · Run 2026-10-23 · Synthetic example data
 
-# No price per point was set: Brisk-S · reasoning low · 1 retry (J) is the knee; the top option passes 1.5 points more at 12 times its cost.
+**Draft: its editor's review left 3 findings open.**
 
-Every cheaper option passes fewer tasks; the nearest saves only $56 a month and trails by 1.9 points, clear of zero. Above the lean no single step is told apart from it; a declared floor or price per point would turn this trade into a decision.
+# No bar declared, so the pick is a price. Lean: Brisk-S, low reasoning, retry. Atlas-M's best is not told apart from Brisk-S at high reasoning, yet costs 5.5 times as much at this run's routing
+
+Brisk-S at low reasoning with retry trails Atlas-M's best by 1.5 points; on point estimates, the next point past it costs about $1,595.18 a month. A declared bar or price per point from the planner's owner would turn this into a decision.
 
 **Confidence: High, if the caveats below aren't material.**
 
-- **No arm is the control.** Only if pairing the shared cases separated the single steps above Brisk-S · reasoning low · 1 retry (J). Every interval here is unpaired; pairing would likely narrow them where outcomes correlate across shared cases, which could make the dearer options' small gains real and move the lean up the frontier. The pick-of-many caveat below pulls the other way.
-- **Nothing declares what is good enough.** Only if the owner prices a point of pass rate below $319.67 or above $1,595.18 a month, or sets a floor or latency budget the lean misses; then another option is the better buy.
-- **The pick is the best of several candidates.** Only if a fresh run reads Brisk-S · reasoning low · 1 retry (J) lower by about the low end of its lead over Brisk-S · reasoning low · no retry (I) (+0.3 to +3.4 points) or more; then nothing separates them and the cheaper one is the better buy. As the pick among eighteen options its estimate likely reads somewhat high.
-- **What the monthly volume counts.** Only if the declared volume counts tasks rather than calls: every monthly figure and the price band would then scale by each option's calls per task, from 1.452 calls to 1.566 calls among the frontier options from Nano-XS · reasoning high · 1 retry (S) up, raising the band's dollars by about half. The order of the frontier steps, and so the knee, holds on those point figures.
+- **Nothing declares what is good enough.** The high covers, at this run's routing, the frontier's shape, the price per point rising at every step, and Atlas-M's premium over Brisk-S at matched reasoning; it does not cover the lean, which stays open until the owner declares a bar or a price per point. The lean is cheapest only for a price between $319.67 and $1,595.18 a month on point estimates, and that upper edge rests on a gain of +0.8 points (-0.4 to +2.1)
+- **No arm is the control.** Only if the owner needs the move from today's planner. Every option here is a candidate, so choosing among them needs no control; no configuration is marked as the one in production, so nothing here reads a change from it
+- **The pick is the best of several candidates.** Fresh cases read the lean's lead over Nano-XS at high reasoning with retry near zero; that lead's interval is +0.8 to +4, and the best of many configurations tends to read lower on a re-run, which the paired re-run checks
+- **Cost routing and volume unit unknown.** Another provider routing changes the models' prices per call relative to each other, or the declared monthly volume counts tasks rather than calls. The snapshot names no provider for any configuration. Atlas-M's premium over Brisk-S is 5.5 times at low reasoning and 5.5 times at high, so a re-routing would have to cut Atlas-M's price relative to Brisk-S's by about that factor to close it; the price edges between nearer options could move with far smaller shifts. If the volume counts tasks and a call is a tool call, each monthly cost scales by its calls per task (1.539 calls for the lean, 1.452 calls for Atlas-M at high reasoning with retry, 1.566 calls for Nano-XS at high reasoning with retry), which raises every price edge by about that factor and moves the lean's band up; no figure states the per-task prices
 
-**The trade.** Moving up from Nano-XS · reasoning high · 1 retry (S) to Brisk-S · reasoning low · 1 retry (J) costs $764 more a month for +2.4 points, clear of zero. Going on to the top option, Atlas-M · reasoning high · 1 retry (F), costs $12,700 more a month again for +1.5 points (+0.3 to +2.6), also clear of zero.
+**The trade.** Atlas-M at high reasoning with retry passes 1.5 points more than Brisk-S at low reasoning with retry (+0.3 to +2.6), for $12,700 more a month at the declared volume, read as calls, at this run's routing. Brisk-S at high reasoning with retry is not told apart from Atlas-M on pass rate at $0.633 per 1k calls against $3.477. Nothing declared before the run ranks cost against pass rate; the planner's owner makes the call.
 
-**Where the answer flips.** Brisk-S · reasoning low · 1 retry (J) is the best buy when a point of pass rate is worth between $319.67 and $1,595.18 a month, if the declared volume counts calls; both ends are point prices with no interval. Read as a floor on point estimates, it is the cheapest option for any pass-rate floor above 95.3% up to its own 97.1%.
+**Where the answer flips.** By price per point a month, on point estimates: below $319.67, a Nano-XS configuration; up to $1,595.18, Brisk-S at low reasoning with retry; up to $17,236.36, Brisk-S at high reasoning with retry; above it, Atlas-M at high reasoning with retry. These edges carry no interval, and both upper steps rest on gains not told apart from zero.
 
-**Our lean.** Ours, not a rule: run Brisk-S · reasoning low · 1 retry (J). It is the cheapest option that no single step up beats by a margin this run can separate, and it holds for any price per point in the band above.
+**Our lean.** Ours, not a rule: Brisk-S at low reasoning with retry, at $0.302 per 1k calls. It holds for a price per point between $319.67 and $1,595.18 a month.
 
-**Watch.** No line was declared, so no margin is weakest. The lean's thinnest separated lead is over Brisk-S · reasoning low · no retry (I) (+0.3 to +3.4 points); a fresh run of today's size reads that pair the other way 0.8% of the time. Multi-hop questions are the lean's weakest task, and its p95 latency of 513 ms has no budget to read against.
+**Watch.** The next step up, Brisk-S at high reasoning with retry, gains 0.8 points on the lean, not told apart from zero (-0.4 to +2.1); a fresh run of today's size reads it the other way 9.4% of the time. At the top of that interval the price of a point falls well below the lean's upper edge, so the band is soft. The lean is the best of eighteen configurations near its price, so its rate may read lower on fresh cases.
 
-**What would settle it.** The planner's owner declares a pass-rate floor, a price per point, a latency budget, and what the monthly volume counts. A paired re-run settles whether the single steps above the lean buy real points.
+**What would settle it.** A pass-rate bar or a price per point, declared by the planner's owner, with the unit the monthly volume counts. Then a paired re-run of the two Brisk-S options with retry settles whether high reasoning's gain is real.
 
 | Option | Role | Configuration | Pass rate | Cost per 1,000 calls |
 |---|---|---|---|---|
@@ -42,34 +44,23 @@ Every cheaper option passes fewer tasks; the nearest saves only $56 a month and 
 | R · Nano-XS · reasoning high · no retry | Candidate | Nano-XS · Reasoning budget high · Retry on failure 0 | 91.3% | $0.102 |
 | S · Nano-XS · reasoning high · 1 retry | Candidate | Nano-XS · Reasoning budget high · Retry on failure 1 | 94.8% | $0.111 |
 
-## Pass rate rises with cost along a frontier of seven options, and Brisk-S · reasoning low · 1 retry (J) sits where the curve flattens.
+## Along the cost frontier of the eighteen configurations, pass rate climbs steeply across the cheapest and flattens past Brisk-S at low reasoning with retry, at 97.1%.
 
 | Point | Cost per 1k calls | Pass rate |
 |---|---|---|
-| Atlas-M · reasoning off · no retry | $1.000 | 94.0% |
-| Atlas-M · reasoning off · 1 retry | $1.060 | 96.4% |
-| Atlas-M · reasoning low · no retry | $1.600 | 96.6% |
-| Atlas-M · reasoning low · 1 retry | $1.655 | 97.9% |
-| Atlas-M · reasoning high · no retry | $3.400 | 97.7% |
-| Atlas-M · reasoning high · 1 retry | $3.477 | 98.6% |
-| Brisk-S · reasoning off · no retry | $0.180 | 91.1% |
-| Brisk-S · reasoning off · 1 retry | $0.196 | 94.6% |
-| Brisk-S · reasoning low · no retry | $0.288 | 95.3% |
+| M · Nano-XS · reasoning off · no retry | $0.030 | 81.0% |
+| N · Nano-XS · reasoning off · 1 retry | $0.036 | 88.5% |
+| Q · Nano-XS · reasoning low · 1 retry | $0.054 | 92.7% |
+| S · Nano-XS · reasoning high · 1 retry | $0.111 | 94.8% |
 | J · Brisk-S · reasoning low · 1 retry | $0.302 | 97.1% |
-| Brisk-S · reasoning high · no retry | $0.612 | 96.6% |
-| Brisk-S · reasoning high · 1 retry | $0.633 | 98.0% |
-| Nano-XS · reasoning off · no retry | $0.030 | 81.0% |
-| Nano-XS · reasoning off · 1 retry | $0.036 | 88.5% |
-| Nano-XS · reasoning low · no retry | $0.048 | 87.9% |
-| Nano-XS · reasoning low · 1 retry | $0.054 | 92.7% |
-| Nano-XS · reasoning high · no retry | $0.102 | 91.3% |
-| Nano-XS · reasoning high · 1 retry | $0.111 | 94.8% |
+| L · Brisk-S · reasoning high · 1 retry | $0.633 | 98.0% |
+| F · Atlas-M · reasoning high · 1 retry | $3.477 | 98.6% |
 
 The horizontal axis is logarithmic: each step is a multiple.
 
-Each option's cost per 1k calls (log axis) against its pass rate, the lean marked.
+The seven configurations on the frontier, cost per 1k calls on a log axis against pass rate, the lean stressed; every other configuration is in the full results.
 
-### Each step up the frontier costs more per point than the one before, reaching $17,236.36 a month per point for the last.
+### The price of a pass-rate point rises at every step along the frontier, reaching $17,236.36 a month for the last step to Atlas-M.
 
 | Step along the frontier | Price per point |
 |---|---|
@@ -80,11 +71,11 @@ Each option's cost per 1k calls (log axis) against its pass rate, the lean marke
 | Brisk-S · reasoning low · 1 retry → Brisk-S · reasoning high · 1 retry | $1,595.18 |
 | Brisk-S · reasoning high · 1 retry → Atlas-M · reasoning high · 1 retry | $17,236.36 |
 
-Price of one point of pass rate a month at the declared volume, read as calls, for each step along the frontier; point figures with no interval.
+Monthly price of each pass-rate point gained along the frontier, at the declared volume read as calls and this run's routing; point estimates with no interval.
 
-### Above Brisk-S · reasoning low · 1 retry (J), neither raising reasoning nor swapping Brisk-S for Atlas-M moves pass rate by an amount this run can tell from zero; only both together, the top option, pass more by a separated +1.5 points.
+### At this run's unnamed provider routing, Atlas-M costs 5.5 times as much as Brisk-S at the same reasoning level with retry, yet the two are not told apart on pass rate (-1.7 to +0.4 at high reasoning).
 
-| Group | Row | Value | 95% unpaired interval |
+| Panel | Row | Value | 95% unpaired interval |
 |---|---|---|---|
 | model | Atlas-M · reasoning low · 1 retry → Brisk-S | -0.8 | -2.0 to +0.5 |
 | model | Atlas-M · reasoning high · 1 retry → Brisk-S | -0.7 | -1.7 to +0.4 |
@@ -94,88 +85,81 @@ Price of one point of pass rate a month at the declared volume, read as calls, f
 
 Each effect is one setting moved between two arms that differ in it alone, on Pass rate; each interaction is the same move's effect in one context less its effect in another, the two contexts differing in one other setting. Descriptive: read as two arms' own spreads, never a test.
 
-Change in pass rate from moving one setting among the four options with a retry; the model rows read Brisk-S less Atlas-M, so a negative bar is Brisk-S behind. Unpaired intervals.
+Change in pass rate from switching Atlas-M to Brisk-S, or low to high reasoning, all with retry; unpaired intervals.
 
-| Row | Value | 95% unpaired interval |
-|---|---|---|
-| Overall | +1.5 | +0.3 to +2.6 |
-| Single lookup | +0.8 |  |
-| Multi-hop (2 to 3 calls) | +2.3 |  |
-| Date and unit math | +1.6 |  |
-| Ambiguous entity | +1.9 |  |
+| Row | Value |
+|---|---|
+| D · Atlas-M · reasoning low · 1 retry | $1.66 |
+| J · Brisk-S · reasoning low · 1 retry | $0.30 |
+| F · Atlas-M · reasoning high · 1 retry | $3.48 |
+| L · Brisk-S · reasoning high · 1 retry | $0.63 |
 
-Each row is Atlas-M · reasoning high · 1 retry less Brisk-S · reasoning low · 1 retry on Pass rate, overall and in each place both hold it.
+The bars are drawn on a log scale: their values span more than ten times, so each step is a multiple.
 
-The interval is independent: each arm's own spread (a pass/fail rate's binomial spread, from the arm's cases), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.
+Cost per 1k calls for the same four configurations, on a log scale.
 
-The top option's pass rate less the lean's, overall with an unpaired interval and in each task, where no count gives an interval.
+### Retry buys most where pass rate starts lowest: on Brisk-S at low reasoning it adds +1.9 points for $0.014 more per 1k calls, with calls per task moving from 1.492 calls to 1.539 calls; it adds more on Nano-XS, and on Atlas-M at high reasoning a gain not told apart from zero.
 
-### Below it, the nearest cheaper option, Brisk-S · reasoning low · no retry (I), passes 1.9 points fewer, the lean's thinnest separated lead; the next frontier option down, Nano-XS · reasoning high · 1 retry (S), trails by 2.4.
+| Panel | Row | Value | 95% unpaired interval |
+|---|---|---|---|
+| model | Atlas-M · reasoning high · no retry → Nano-XS | -6.4 | -8.2 to -4.6 |
+| model | Atlas-M · reasoning high · 1 retry → Nano-XS | -3.9 | -5.3 to -2.5 |
+| retry | Atlas-M · reasoning high · no retry → 1 retry | +0.9 | -0.2 to +2.0 |
+| retry | Brisk-S · reasoning low · no retry → 1 retry | +1.9 | +0.3 to +3.4 |
+| retry | Nano-XS · reasoning high · no retry → 1 retry | +3.4 | +1.4 to +5.5 |
+| model effect, across retry | (Atlas-M · reasoning high · 1 retry → Nano-XS) less (Atlas-M · reasoning high · no retry → Nano-XS) | +2.5 | +0.3 to +4.8 |
 
-| Row | Value | 95% unpaired interval |
-|---|---|---|
-| Overall | +1.9 | +0.3 to +3.4 |
-| Single lookup | +1.0 |  |
-| Multi-hop (2 to 3 calls) | +2.8 |  |
-| Date and unit math | +1.9 |  |
-| Ambiguous entity | +2.3 |  |
+Each effect is one setting moved between two arms that differ in it alone, on Pass rate; each interaction is the same move's effect in one context less its effect in another, the two contexts differing in one other setting. Descriptive: read as two arms' own spreads, never a test.
 
-Each row is Brisk-S · reasoning low · 1 retry less Brisk-S · reasoning low · no retry on Pass rate, overall and in each place both hold it.
+Change in pass rate from adding retry to each shortlisted option, beside the Atlas-M to Nano-XS gap with and without retry; unpaired intervals.
 
-The interval is independent: each arm's own spread (a pass/fail rate's binomial spread, from the arm's cases), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.
+| Row | Value |
+|---|---|
+| R · Nano-XS · reasoning high · no retry | $0.10 |
+| S · Nano-XS · reasoning high · 1 retry | $0.11 |
+| I · Brisk-S · reasoning low · no retry | $0.29 |
+| J · Brisk-S · reasoning low · 1 retry | $0.30 |
+| E · Atlas-M · reasoning high · no retry | $3.40 |
+| F · Atlas-M · reasoning high · 1 retry | $3.48 |
 
-The lean's pass rate less the nearest cheaper option's, which sits off the price frontier; overall with an unpaired interval, and in each task, where no count gives an interval.
+The bars are drawn on a log scale: their values span more than ten times, so each step is a multiple.
 
-| Row | Value | 95% unpaired interval |
-|---|---|---|
-| Overall | +2.4 | +0.8 to +4 |
-| Single lookup | +2.6 |  |
-| Multi-hop (2 to 3 calls) | +2.1 |  |
-| Date and unit math | +2.3 |  |
-| Ambiguous entity | +2.2 |  |
+Cost per 1k calls without and with retry for the same three options, on a log scale.
 
-Each row is Brisk-S · reasoning low · 1 retry less Nano-XS · reasoning high · 1 retry on Pass rate, overall and in each place both hold it.
-
-The interval is independent: each arm's own spread (a pass/fail rate's binomial spread, from the arm's cases), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.
-
-The lean's pass rate less the frontier option below it, laid out the same way.
-
-### A retry is the cheapest lift on every model, and it buys most where pass rate starts lowest: +7.5 points on Nano-XS · reasoning off · no retry (M) for $24 a month.
-
-| Row | Value | 95% unpaired interval |
-|---|---|---|
-| Atlas-M · reasoning high · no retry → 1 retry | +0.9 | -0.2 to +2.0 |
-| Brisk-S · reasoning low · no retry → 1 retry | +1.9 | +0.3 to +3.4 |
-| Nano-XS · reasoning off · no retry → 1 retry | +7.5 | +4.6 to +10.4 |
-
-Each effect is one setting moved between two arms that differ in it alone, on Pass rate. Descriptive: read as two arms' own spreads, never a test.
-
-Change in pass rate from adding a retry, for one setting of each model; unpaired intervals.
-
-#### The dearer options are also slower: Atlas-M · reasoning high · 1 retry (F) reaches a p95 latency of 2551 ms.
+#### Atlas-M at high reasoning with retry is the slowest option on the shortlist, its p95 latency at 2551 ms; no latency budget was declared, and retry lengthens the tail.
 
 | Group | Row | From | To |
 |---|---|---|---|
 | Latency | S · Nano-XS · reasoning high · 1 retry | 170 ms | 450 ms |
+| Latency | I · Brisk-S · reasoning low · no retry | 209 ms | 465 ms |
 | Latency | J · Brisk-S · reasoning low · 1 retry | 209 ms | 513 ms |
 | Latency | L · Brisk-S · reasoning high · 1 retry | 364 ms | 870 ms |
-| Latency | D · Atlas-M · reasoning low · 1 retry | 628 ms | 1500 ms |
 | Latency | F · Atlas-M · reasoning high · 1 retry | 1094 ms | 2551 ms |
 
-Latency from p50 to p95 for the options around the knee; no budget was declared.
+Latency from p50 to p95 for the options a decider would weigh.
 
-#### Multi-hop questions are the weakest task for the lean and for the frontier options on either side of it.
+#### Multi-hop questions are the weakest task for every shortlisted option; the lean passes 95.6% of them. With no per-task counts this is a lead, not a separated finding.
 
-|  | Nano-XS · reasoning high · 1 retry | Brisk-S · reasoning low · 1 retry | Atlas-M · reasoning high · 1 retry |
-|---|---|---|---|
-| Single lookup | 95.8% | 98.4% | 99.2% |
-| Multi-hop (2 to 3 calls) | 93.5% | 95.6% | 97.9% |
-| Date and unit math | 94.7% | 97.0% | 98.6% |
-| Ambiguous entity | 94.2% | 96.4% | 98.3% |
+| Slice | Arm | Pass rate |
+|---|---|---|
+| Single lookup | S · Nano-XS · reasoning high · 1 retry | 95.8% |
+| Single lookup | J · Brisk-S · reasoning low · 1 retry | 98.4% |
+| Single lookup | L · Brisk-S · reasoning high · 1 retry | 98.5% |
+| Single lookup | F · Atlas-M · reasoning high · 1 retry | 99.2% |
+| Multi-hop (2 to 3 calls) | S · Nano-XS · reasoning high · 1 retry | 93.5% |
+| Multi-hop (2 to 3 calls) | J · Brisk-S · reasoning low · 1 retry | 95.6% |
+| Multi-hop (2 to 3 calls) | L · Brisk-S · reasoning high · 1 retry | 97.3% |
+| Multi-hop (2 to 3 calls) | F · Atlas-M · reasoning high · 1 retry | 97.9% |
+| Date and unit math | S · Nano-XS · reasoning high · 1 retry | 94.7% |
+| Date and unit math | J · Brisk-S · reasoning low · 1 retry | 97.0% |
+| Date and unit math | L · Brisk-S · reasoning high · 1 retry | 97.9% |
+| Date and unit math | F · Atlas-M · reasoning high · 1 retry | 98.6% |
+| Ambiguous entity | S · Nano-XS · reasoning high · 1 retry | 94.2% |
+| Ambiguous entity | J · Brisk-S · reasoning low · 1 retry | 96.4% |
+| Ambiguous entity | L · Brisk-S · reasoning high · 1 retry | 97.6% |
+| Ambiguous entity | F · Atlas-M · reasoning high · 1 retry | 98.3% |
 
-Pass rate by task for the frontier option below the knee, the lean and the top option; tasks state no case counts, so these figures are descriptive.
-
-#### The lean's kept failures are planning errors: a collapsed hop, an off-by-one date window, and a guess where it should have asked.
+Pass rate by task for the shortlisted options; point estimates.
 
 | Example | Details | Reason | Excerpt |
 |---|---|---|---|
@@ -183,21 +167,21 @@ Pass rate by task for the frontier option below the knee, the lean and the top o
 | TQ-0772 · Date and unit math · Brisk-S · reasoning low · 1 retry · wrong args | Input: Filings in the 90 days before the March 3 hearing; Expected: date_from=2026-12-03, date_to=2027-03-03 | Off-by-one on the window start. The most common wrong-args pattern (9 of 17). | date_from=2026-12-04, date_to=2027-03-03 |
 | TQ-1103 · Ambiguous entity · Brisk-S · reasoning low · 1 retry · wrong tool | Input: Latest on Mercury's pricing; Expected: ask_clarify(company or planet?) | Picked the company without asking. Scored wrong because the gold answer requires clarification. | search(Mercury pricing) |
 
-Every failure the snapshot keeps for the lean, one per task where kept; the run's total failures are not counted, so these show kinds, not shares.
+The failures kept for the lean, one per task shown; the multi-hop card collapses two hops into one query. Illustrations, not a count.
 
 ## What you could change
 
 | What you could change | What it decides | What happens as it moves |
 |---|---|---|
-| Price of a point of pass rate a month | Which frontier option is the best buy | Below $319.67 a cheaper option wins; up to $1,595.18 the lean holds; up to $17,236.36 Brisk-S · reasoning high · 1 retry (L) does; above that, Atlas-M · reasoning high · 1 retry (F). Point prices with no interval, on the volume read as calls. |
-| A pass-rate floor, read on point estimates | The cheapest option that clears it | The lean is cheapest for floors above 95.3% up to 97.1%; Brisk-S · reasoning high · 1 retry (L) up to 98%; above that only Atlas-M · reasoning high · 1 retry (F) clears, up to 98.6%. |
-| A p95 latency budget | Which options stay in | A budget under 513 ms rules the lean out; every Atlas-M option reads at or above 900 ms. |
+| Price of a pass-rate point a month | Which frontier configuration is worth its cost | On point estimates, with the volume read as calls: below $319.67, a Nano-XS option; up to $1,595.18, Brisk-S at low reasoning with retry; up to $17,236.36, Brisk-S at high reasoning with retry; above, Atlas-M at high reasoning with retry. If the volume counts tasks, each edge rises by about the configurations' calls per task. |
+| A pass-rate bar | The cheapest configuration that clears it, read on point estimates | Up to 94.8%, Nano-XS at high reasoning with retry; up to 95.3%, Brisk-S at low reasoning without retry; up to 97.1%, the lean; up to 98%, Brisk-S at high reasoning with retry; up to 98.6%, Atlas-M at high reasoning with retry; above that, none. |
 
 ## Next steps
 
-- The planner's owner declares a pass-rate floor, a price per point of pass rate, a p95 latency budget, and what the monthly volume counts. _Turns the trade into a decision: each declaration picks one frontier option, and the volume fixes the dollars the price is set in._
-- Re-run Brisk-S · reasoning low · 1 retry (J), Brisk-S · reasoning high · 1 retry (L) and Atlas-M · reasoning low · 1 retry (D) on fresh cases, paired. Read independently, telling the lean from Atlas-M · reasoning low · 1 retry (D) four times in five needs 6,044 cases per arm if today's gap is the truth; pairing needs fewer. _Whether the single steps above the lean buy real points, and how far the lean's estimate falls on fresh cases._
-- Target multi-hop planning on Brisk-S and Nano-XS, then re-run the frontier options. _Whether cheaper options can close the gap on the weakest task and move the knee down the price curve._
+- The planner's owner declares a pass-rate bar or a price per point of pass rate, and states what the monthly volume counts. _Turns the trade into a decision: the cheapest configuration that meets it, priced on the right unit._
+- Re-run Brisk-S at low and at high reasoning, both with retry, on the same fresh cases, 5,432 per configuration. _Whether high reasoning's gain on Brisk-S is real, four times in five if today's gap holds; also checks the lean's rate against best-of-many optimism._
+- Target hop-collapsing on multi-hop questions in the planner prompt, then re-run the lean on that task with stated case counts. _Whether the lean's weakest task can close on the costlier options without paying for them._
+- Record each configuration's provider. _Whether the cost gaps, the price edges and Atlas-M's premium hold at production routing._
 
 ## Full results
 
@@ -283,28 +267,27 @@ Each arm's full configuration, once. The rest of the page names an arm by its le
 
 ### Left out, and why
 
-- **The other options off the frontier** Each costs more than another option that passes at least as many tasks; Brisk-S with low reasoning and no retry, off only the price curve, is shown below the lean instead. All are in the full tables.
-- **The other retry effects and their interaction with model** Every model and reasoning setting gains from a retry, all but Atlas-M with high reasoning clear of zero, and the gain is larger on Nano-XS than on Atlas-M; this agrees with the retry claim and changes no option's place.
-- **Reasoning effects at off and low** Reasoning raises pass rate on every model but costs more than a retry; the frontier already prices it.
-- **Calls per task as a result** Describes how options plan, not how often they pass; it enters only through the volume caveat.
-- **Outcome and extra calls per task** The snapshot holds no figures for them.
-- **Per-task pass rates of the other options** No task states its case count, so no task figure has an interval; they stay in the appendix.
+- **Atlas-M at no and low reasoning** Each costs more than a Brisk-S option that passes at least as often; none is on the frontier.
+- **Calls per task as its own claim** Cost is read per call. Nano-XS and retry make more calls per task and Atlas-M fewer, so per task Nano-XS's cost advantage narrows a little and Atlas-M's premium shrinks a little; the shortlist order holds. How the volume's unit moves the price edges is carried in the confidence.
+- **Outcome and extra-calls measures** The snapshot holds no figures for either.
+- **The full lever table across all eighteen configurations** Shown only where it bears on the shortlist; the appendix holds every effect and interaction.
+- **Per-task pass rates for configurations off the shortlist** Multi-hop is lowest throughout; the extra rows add no new pattern and carry no counts.
 
 ### Method
 
-- **Design** A factorial sweep of three models, three reasoning levels and retry on or off: eighteen options, each run on 1,200 research-planning tasks across four task types, none lost. No repeats are stated.
-- **Pass** The input does not say what makes a task pass. Kept failures are scored against an expected plan of tool calls and their arguments.
-- **Intervals** 95%, computed from each option's pass rate and case count, combined as if the options ran different cases. No correction for the many comparisons. Task figures state no counts and carry no interval.
-- **Cost** Cost per 1k calls, a point figure with no spread. Monthly figures use the declared volume of 4,000,000 a month, read as calls; the input does not say what that volume counts.
-- **Latency** p50 and p95 per option; no latency budget was declared.
-- **Not compared** There is no control and nothing was declared in advance: no gate, floor, margin or exchange rate.
+- **Configurations** eighteen configurations: three models crossed with three reasoning levels and retry on or off. With retry means 1 retry.
+- **Cases** 1,200 cases per configuration, none lost; repeats are not stated, nor whether every configuration ran the same cases.
+- **Pass** The input does not define what makes a task pass; failed cases are classed as missing call, wrong arguments or wrong tool.
+- **Intervals** At 95%, from each rate's binomial spread over its cases, two configurations combined as independent, with no correction for the many comparisons. Where the configurations ran the same cases, a paired interval would be narrower. Task figures carry no counts and so no interval.
+- **Control** No configuration is marked as production; every comparison is between two configurations' own figures. _Caveats: No arm is the control._
+- **Cost** Cost per 1k calls as measured in this run; the provider routing is not named, and the input does not say whether a call is a planner request or a tool call. Monthly figures read the declared volume of 4,000,000 as calls, which the input does not state.
+- **Latency** Median (p50) and p95 per configuration; no latency budget was declared.
 - **Source** Synthetic example data from docs/eval-report-kit/references/r2-config-sweep.json, run 2026-10-23.
 
 ### Review findings left open
 
-- **Should fix** · The page: Add Brisk-S with low reasoning and no retry to the paired re-run in Next steps. Watch and the pick-of-many caveat both name the lean's lead over it (+1.9, +0.3 to +3.4) as the thinnest, and that is where the $56-a-month cheaper option could become the better buy. Today's design needs about 1,636 cases per arm to separate them four times in five when read unpaired (settle_cases); pairing needs fewer. Say that this re-run settles whether the lean's lead survives on fresh cases.
-- **Should fix** · Claim 1: 'A frontier of seven options' counts the price curve, which is how price_tradeoff counts it. But Brisk-S with low reasoning and no retry ($0.288, 95.3%) is undominated, and the page calls it 'off only the price curve'. Say 'price curve' in the claim, and mark the seven curve options in the scatter so the block shows the frontier the sentence names.
-- **Should fix** · Claim 5: The claim says a retry is 'the cheapest lift on every model' and quotes $24 a month for Nano-XS with reasoning off, but the block shows only pass-rate changes. Add each retry step's monthly cost gap, or its price per point, beside the rows, or cut 'cheapest' from the sentence. Also note that a retry raises calls per task (1.698 to 1.888 on Nano-XS with reasoning off), so the $24 grows if the volume counts tasks.
-- **Should fix** · Claim 7: 'The frontier options on either side of it' implies the next step up, Brisk-S with high reasoning and one retry, but the heatmap shows the top option, Atlas-M with high reasoning and one retry. Either swap in Brisk-S with high reasoning and one retry, whose weakest task is also multi-hop at 97.3%, or reword to 'the frontier option below it and the top option'.
+- **Must fix** · The page: The confidence clause on the pick being best of several says 'Fresh cases read the lean's lead over Nano-XS at high reasoning with retry near zero; that lead's interval is +0.8 to +4'. No fresh-case reading exists. The measured lead is +2.4 points (+0.8 to +4). A reader would think a re-run had erased the lean's edge over the option $764 a month cheaper. Rewrite it as a risk, not a result. For example: 'The lean's lead over Nano-XS at high reasoning with retry is +2.4 points (+0.8 to +4); as the best of eighteen, it may read lower on fresh cases, and the paired re-run checks it.'
+- **Should fix** · Claim 2: 'The price of a pass-rate point rises at every step along the frontier' is true by construction. The frontier here is the convex hull, so its steps always get dearer, and the confidence's High covering 'the price per point rising at every step' claims nothing the data could have refuted. Say the frontier is the price-per-point hull and that its steps rise by construction. Put the finding in the size of the steps, for example the jump from $1,595.18 to $17,236.36 for the last step to Atlas-M. Then drop 'rising at every step' from what the High covers. In the frontier claim's caption, note that Brisk-S at low reasoning without retry (95.3% at $0.288) is not beaten by any cheaper option but lies under the hull. It is the pick for a bar between 94.8% and 95.3%, as the bar row in 'What you could change' already says.
+- **Should fix** · Claim 6: The examples caption says 'one per task shown', but there are three cards for four tasks and none for single lookup. The snapshot keeps only three failures for the lean. Say 'one per task for the three tasks with a kept failure', so a reader doesn't look for a missing single-lookup card.
 
-_Written by claude-opus-5-5, served as claude-opus-5-5, for $3.71, with analyst skill 1677ccb31cd6, on 2026-10-29._
+_Written by claude-opus-5-5, served as claude-opus-5-5, for $4.50, with analyst skill ed7e2c60b5ad, on 2026-10-29._

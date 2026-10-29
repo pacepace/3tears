@@ -1,6 +1,6 @@
 {
-  "ending": "stored",
-  "reason": "",
+  "ending": "stored_with_findings",
+  "reason": "the review of round 3 did not clear the report, and its 2 revisions are used",
   "faults": [],
   "reviews": [
     {
@@ -9,81 +9,225 @@
         {
           "n": 1,
           "name": "First screen",
-          "score": 2,
-          "reason": "The headline, the decision block and claim character are enough to act on. They say to keep September (P), the production model. Neither candidate is ahead in character: qwen3.8-flash (A) is down 7.6 points, interval -10.8 to -3.4; 1017 (B) is down 3.0, interval -5.8 to +1.1. Both candidates also cost more. The main risks are named: the judge has no calibration ratings, and 1017's reasoning share differs from September's. options_dominance agrees, with September dominant and the call unchanged at every margin."
+          "score": 1,
+          "reason": "The headline, decision block and the cost claim make the action clear: keep September, because both candidates cost more (+$0.62 and +$0.49 per 1,000 replies, paired and corrected) and neither holds character better. The main risk is missing from the first screen. Under the declared 15-point allowed loss, both candidates are acceptable on character (pass-rate drops of at most 10.8 and 5.8 points at 95%), so cost alone decides. But no provider is recorded for any arm, and the earlier round found qwen3.8-flash cheaper with high confidence. That conflict is tucked into the end of a margin Watch line about a rejected arm. It is not in the headline, the lede or the confidence line."
         },
         {
           "n": 2,
           "name": "Coherent story",
           "score": 2,
-          "reason": "The claims build in order: character, then cost, then the judged ratings, then where the loss sits, then the example cards. I checked every block's rows against its sentence, and none contradicts it. Both cost intervals are clear of zero (+$0.38 to +$0.85 and +$0.17 to +$0.81). The missing-cost bound holds when recomputed: $2.24 and $2.36 for the candidates against $2.02 for September. One wording slip: 'most of each candidate's loss' in Next does not match claim offlane's 48% for qwen3.8-flash (A)."
+          "reason": "The claims follow in order: cost decides, character does not rescue either candidate, off-lane asks carry most of the character loss, and the control fails there too. Each sentence matches its block row by row. The off-lane loss shares (48% and 53%), the off-lane failure counts (39, 64 and 62 trials) and the missing-cost bound in Method ($2.24 and $2.36 against $2.02) all check against the data. One small mismatch: Watch puts qwen3.8-flash's weakest margin at -12.6, 2.4 points inside, using the corrected interval. The 'What you could change' table puts its flip at 10.8, using the declared 95% reading."
         },
         {
           "n": 3,
           "name": "Honest emphasis",
           "score": 1,
-          "reason": "The lede says 1017 (B) is 'not told apart from September (P)' without saying this is the pass rate. On the judged holds-character rating, 1017 is clearly worse: -4.7, interval -8.2 to -1.3. The declared floor for 1017 also reads that rating, at -7.1 to -1.7. The decision block corrects this, but the lede alone makes 1017 look like a tie on character. Next says 'most' of each candidate's loss is off-lane, but for qwen3.8-flash (A) the share is 48%."
+          "reason": "The candidates' character losses are shown plainly. But the cost finding is framed as solid ('The cost finding, which decides, does not rest on the judge') under a High confidence. Yet it rests on a provider routing the run never recorded, and the earlier round said the opposite for qwen3.8-flash. If routing put a candidate at or below $1.89, the call could flip, because both candidates sit inside the allowed loss."
         },
         {
           "n": 4,
           "name": "Sound elision",
           "score": 2,
-          "reason": "None of the omitted items would change the call. The call rests on production cost, and September is cheaper than both candidates with intervals clear of zero. Measuring spend is the cost of running the evaluation. The delivery check and the operational counts are not separated. A price per point of character has nothing to price, because no candidate is cheaper. The small kinds of ask stay in the appendix."
+          "reason": "Nothing left out would change the call. The outcome and transcript scores point the same way as the pass rate. The tool check and failed-reply notices are not separated from zero. Measuring spend includes the judge's and simulator's cost. The p95 cost goes the same way as the mean. Story asks are 10 cases, and their large drop for qwen3.8-flash is on keeping the booth offstage, not on holding character."
         },
         {
           "n": 5,
           "name": "Confounds handled",
           "score": 1,
-          "reason": "The model confound is carried in the confidence line and in Method, and the reasoning-share confound in a Watch line and a matched-reasoning rerun. Claims character, cost and judged also carry the reasoning-share confound. But claim offlane reads 1017 (B)'s holds-character contrast and does not carry that caveat, as the computed fact says. Its off-lane figure for 1017 (-20.2) could partly reflect the reasoning budget."
+          "reason": "The reasoning-share confound is carried on the cost and character claims, in Watch and in a next step. Three gaps remain. The off_lane claim reads 1017's holding-character contrast (-4.7) without that caveat. The model-confound clause says 'each arm's recorded settings name only its model', while the page itself shows reasoning share moving (55% against 76%) and says the simulator's settings went unrecorded. And unrecorded routing, the confound on the deciding measure, is not in the confidence clauses."
         },
         {
           "n": 6,
           "name": "Actionable next steps",
           "score": 2,
-          "reason": "Each step names an experiment and what it would settle. Reconciling the earlier cost finding would show whether this becomes a cost-versus-character trade. Rerunning off-lane asks with a reworked directive would show whether the main loss closes. Human ratings would show whether the judged losses are real. A matched-reasoning rerun of 1017 (B) would show whether the pass-rate gap belongs to the model. One small gap: the 815-case size for that rerun does not say how many repeats it assumes, or that 516 cases beyond today's 299 would be needed."
+          "reason": "Each step names an experiment or a declaration and what it settles: re-price at a recorded routing, match 1017's reasoning budget, add an off-lane directive, calibrate the judge, and declare the criteria before the next run. The first step goes straight at the deciding risk."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 2,
+          "reason": "The cost forest shows the paired gaps and their intervals. The character forest marks the allowed loss. The off-lane bars show the slice changes the loss shares come from. Two smaller problems. The cost block's paired gaps (+$0.62 and +$0.49) differ from the gaps between the options table's means ($0.54 and $0.52) with no note on why. And the examples caption sets the candidates' failures against the control's 'customer-service refusal', but two of the three kept September off-lane failures also answer a non-music ask."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "",
+          "severity": "must_fix",
+          "finding": "The confidence reads High, and its clauses say cost decides and 'does not rest on the judge'. But the cost order rests on a provider routing that was never recorded for any arm, and the earlier round found qwen3.8-flash cheaper with high confidence. Both candidates are inside the 15-point allowed loss (at most 10.8 and 5.8 points), so if routing put either at or below September's $1.89, the call could flip. Add a confidence clause for unrecorded routing: what would make it matter (a recorded routing where a candidate costs no more) and why the call holds until then. Qualify the headline and lede to say the costs are at this run's unrecorded routing. Move the conflict with the earlier round out of the margin Watch line into its own Watch item. If the analyst cannot stand behind that, lower the confidence."
+        },
+        {
+          "claim": "cost",
+          "severity": "must_fix",
+          "finding": "The claim ranks the three models by cost with no provider named. The caption and Method do say no provider was recorded, but the claim sentence and the lede rank the models as if the gap were the models' own. Say in the claim sentence that the gap is at an unrecorded routing, so it may belong to the routing rather than the model, and point to the re-pricing next step."
+        },
+        {
+          "claim": "off_lane",
+          "severity": "should_fix",
+          "finding": "This claim reads 1017's loss on holding character (-4.7 points, corrected), which carries the reasoning-share confound (55% against 76% for September). Neither the claim nor the confidence line carries it. Add the reasoning-ratio caveat to the claim."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The model-confound clause ('each arm's recorded settings name only its model') understates what the page itself shows. 1017's reasoning share differed (55% against 76%), and the simulator's request settings went unrecorded. Reword the clause so it acknowledges both, or point it to the reasoning-share Watch item and the Method note."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "Watch gives qwen3.8-flash's weakest margin as the corrected interval reaching -12.6, 2.4 points inside -15. The 'What you could change' table and the declared reading put its flip at 10.8, from the 95% interval. Use one basis in both places, or say which each uses. Also drop the '+' from '+5.8 points' and '+10.8': they are allowed losses, not gains."
+        },
+        {
+          "claim": "cost",
+          "severity": "should_fix",
+          "finding": "The lede and the cost block give paired gaps of +$0.62 and +$0.49, but the options table's means ($2.43 and $2.41 against $1.89) imply $0.54 and $0.52. The two differ because some trials report no cost and only matched cases are paired. Add a short note to the caption so a reader doesn't take the figures for a mistake."
+        },
+        {
+          "claim": "examples",
+          "severity": "should_fix",
+          "finding": "The caption sets the candidates' failures (answering a question the persona should decline) against September's 'customer-service refusal'. But two of September's three kept off-lane failures (the landlord email and the laundry question) also answer a non-music ask. The cards are also only 3 of 39, 64 and 62 failures. Say they are a sample, and don't imply the control fails differently when its kept failures mostly fail the same way."
+        }
+      ],
+      "total": 11,
+      "passes": true,
+      "must_fix": true
+    },
+    {
+      "round": 2,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, decision block and lead cost claim give the reader the action (keep September), the reason (both candidates cost more at this run's routing, and neither holds character better) and the main risk (routing was never recorded, and the earlier round found qwen3.8-flash cheaper). That risk now has its own Watch item and its own next step. The previous round's must_fix on the headline and lede is resolved: both now say the costs are at this run's unrecorded routing."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "Each claim matches its block row by row. In claim cost, the paired gaps +$0.62 and +$0.49 have intervals clear of zero. In claim character, qwen3.8-flash is at -7.6 (-10.8 to -3.4) and 1017 at -3.0 (-5.8 to +1.1), both inside the 15-point margin, and the second block shows 1017 separated worse on holding character (-4.7). The off_lane shares of 48% and 53% match measure_breakdown's loss shares. options_dominance makes September dominant, and the margin sweep holds at every margin, so the call agrees with code's reading."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "The recommended arm's weak point is in plain view: the confidence line, a Watch item and a next step all say its cost advantage may belong to the routing rather than the model. The candidates' character results are not overstated. 1017's pass-rate drop is called not separated, while its loss on holding character is shown. The weakest-margin Watch line now gives both bases (12.6 corrected, 10.8 declared), which resolves my earlier finding, and the stray plus signs are gone."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "Nothing omitted could change the call. qwen3.8-flash's story-slice drop on keeping the booth offstage (53.3% against 93.3%, ten cases) hurts an arm that is already rejected. The tool check and failed-reply notices are not separated. Measuring spend and p95 cost point the same way as production cost: the candidates' p95s are $6.20 and $8.27 against $5.30."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "1017's reasoning-share difference (55% against 76%) is carried on claims cost, character and off_lane (my earlier should_fix is resolved), with a Watch item and a matched-budget rerun. The model-confound clause now names the reasoning share and the unrecorded simulator settings, which resolves my earlier finding. Unrecorded routing has its own clause, Watch item and re-pricing step."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names what it would settle: re-pricing at a recorded routing, with a re-entry rule; a rerun with matched reasoning budgets; judge calibration on off-lane asks; and declaring the criteria and recording routing before the next round. One wording point is noted below: the off-lane directive step reads as if no directive existed."
         },
         {
           "n": 7,
           "name": "Evidence fits claims",
           "score": 1,
-          "reason": "Blocks for claims character, cost and judged show their claims' own figures. Claim offlane's headline figures, the 48% and 53% loss shares, are not in its blocks: the blocks show per-kind gaps such as -22.9 and -20.2. Its captions also describe an 'overall' row that is not drawn. Claim cards cites 39, 64 and 62 off-lane failures, but its block shows only three example cards. It also does not say these are holds-character failures rather than pass-rate failures."
+          "reason": "The cost and character blocks show their claims' own figures, and the cost caption now explains why paired gaps differ from the gaps between means (resolved). Two claims are less clearly served. Claim examples rests on September's landlord-email and laundry failures answering the non-music ask, but its block shows September's match-score card, a different kind of failure. Claim off_lane states a share of the loss (48% and 53%), but its block draws only slice changes, from which a reader cannot get the share."
         }
       ],
       "findings": [
         {
-          "claim": "offlane",
+          "claim": "examples",
           "severity": "should_fix",
-          "finding": "This claim reads 1017 (B)'s holds-character contrast (-4.7, -8.2 to -1.3), which carries the reasoning-share confound: 1017 spent 55% of its output reasoning against September's 76%. Neither the claim nor the confidence line carries it. Add the reasoning-share caveat to the claim. A short clause would do: 1017's off-lane gap (-20.2) may partly reflect its smaller reasoning budget."
+          "finding": "The claim says September's kept landlord-email and laundry failures answer the non-music ask just as the qwen3.8-flash card does. But the September card in the block is the match-score trial, a customer-service refusal, so the claim's own point is not drawn. Show September's landlord-email failure in its place: the judge's reason is 'supplies a suggested opening for the landlord email'. That puts it directly beside qwen3.8-flash's landlord-email card. Then update the caption so it no longer sets September's card apart as a different failure."
         },
         {
-          "claim": "offlane",
+          "claim": "off_lane",
           "severity": "should_fix",
-          "finding": "The claim rests on loss shares, 48% for qwen3.8-flash (A) and 53% for 1017 (B) (strata.off_lane.loss_share.*.persona.holds_character), but neither block shows them. Add the loss shares to the blocks, or restate the claim in terms of the off-lane gap the blocks draw. Also fix the caption 'overall and in each place both hold it': no overall row is drawn. Either add the overall gap (-6.0 and -4.7) as a reference row or drop 'overall'."
-        },
-        {
-          "claim": "",
-          "severity": "should_fix",
-          "finding": "The lede says 1017 (B) 'is not told apart from September (P) (-5.8 to +1.1)', but that is the pass rate only. On the judged holds-character rating, 1017 is worse (-4.7, -8.2 to -1.3), and the declared floor for 1017 reads that rating. Say 'not told apart on the pass rate, though down 4.7 points on the judged holds-character rating', as the decision block does."
+          "finding": "The sentence states shares of the holding-character loss (48% for qwen3.8-flash, 53% for 1017), but the block draws only each slice's change (-22.9 and -20.2 points on off-lane asks). A reader can't get the share without the case weights and the overall loss. Add the loss share per slice to the block (strata.off_lane.loss_share.*), or say in the caption how the share follows from the drawn changes."
         },
         {
           "claim": "",
           "severity": "should_fix",
-          "finding": "The Next line in the decision block says the off-lane asks are 'where most of each candidate's loss sits', but claim offlane gives 48% for qwen3.8-flash (A). That is under half. Say 'about half', and say it is the holds-character loss, not the pass-rate loss."
-        },
-        {
-          "claim": "cards",
-          "severity": "should_fix",
-          "finding": "'September (P) failed 39 off-lane trials, against 64 and 62' counts holds-character failures. A reader may take them for pass-rate failures, which are 132, 200 and 159 overall. Name the rating in the sentence. Either add the counts to the block, or point to claim offlane's off-lane rates (65.8%, 42.9%, 45.6%) as their source."
+          "finding": "Method, cost basis: 'had its own missing trials cost its p95 ($2.02 per 1,000 replies)' reads as if September's p95 were $2.02. September's p95 is $5.30 per 1,000 replies, and $2.02 is its mean if its 33 missing trials cost that p95. Reword it, for example: 'had its missing trials each cost its p95 of $5.30, its mean would be $2.02, still below the candidates' floors of $2.24 and $2.36'."
         },
         {
           "claim": "",
           "severity": "should_fix",
-          "finding": "The next step for 1017 (B) asks for '815 cases per arm', but the campaign has 299 cases, run three times each. Say whether 815 means distinct cases at three repeats (which needs 516 new cases) or trials, so the step can be costed."
+          "finding": "The third next step says 'Add an off-lane directive'. But the run already used the promoted directives, and the judge's reasons cite a 'directive to brush off non-music asks'. The kept failures brush off the ask and then answer it anyway (laundry 'Cold', the landlord-email opener). Reword the step as tightening the existing brush-off directive so it forbids answering after the brush-off, so a reader doesn't think no directive was in place."
+        }
+      ],
+      "total": 13,
+      "passes": true,
+      "must_fix": false
+    },
+    {
+      "round": 3,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, lede and decision block together say what to do: keep September. They say why: at this run's routing both candidates cost more, +$0.62 and +$0.49 per 1,000 replies, and neither holds character better. They also name the main risk, that no provider routing was recorded for any arm, and say a re-pricing settles it. The first claim (cost) shows the gaps and carries the routing caveat. Because the page says plainly that routing went unrecorded for every arm, it addresses the cost_served_by fact as far as the data allows."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 1,
+          "reason": "Claims cost, off_lane and examples follow from one another. Claim character does not hold up against its own block. Its sentence says qwen3.8-flash 'holds character' 7.6 points worse and 1017 is 'not told apart'. Those are pass-rate figures. The block's second forest reads the judged holding-character check: 1017 is -4.7 (-8.2 to -1.3), separated, and its caption says 'both candidates are worse on holding character'. The routing caveat also contradicts itself. It calls the measured gap 'the only cost evidence', yet the same clause cites the earlier round, which found qwen3.8-flash cheaper."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 1,
+          "reason": "The candidates' weak axes are visible, and the weakest margin is in Watch (-12.6 against -15). The confidence line is the problem. It reads High over the routing caveat, and the page itself says cost alone decides and an earlier round found the opposite cost order for qwen3.8-flash. That caveat could plausibly be material. A cheaper candidate inside the 15-point allowed loss would be picked under the declared criteria. The High isn't scoped to what it covers."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "None of the omitted items would change the decision. The outcome and transcript scores point the same way as the pass rate. The tool check and failed-reply notices are not separated. The p95 cost points the same way: $5.30 for September against $6.20 and $8.27 for the candidates. Measuring spend is not what a deployment pays. The story slice is 10 cases."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "1017's lower reasoning share (55% against 76%) is in Watch, on the cost and character claims, and in a matched-budget rerun step. The unrecorded routing is carried into Watch and the first next step. The unrecorded simulator settings are in Method and the declaration step. Method also handles the missing cost trials: the order holds under worst-case fills ($2.02 against $2.24 and $2.36)."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an experiment or a declaration and says what it settles: re-pricing at a recorded routing, a 1017 rerun with the reasoning budget matched, tightening the existing brush-off directive and rerunning off-lane asks on all three arms, judge calibration, and declaring criteria before the next round. The earlier finding on the directive wording is resolved. One gap remains: what the first step leads to if a candidate prices at or below September (see finding)."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "Both earlier findings here are resolved. The off_lane caption now explains how the 48% and 53% shares follow from the drawn drops and case counts; both figures read as stated. The examples block now shows September's landlord-email and laundry failures beside qwen3.8-flash's landlord-email card. The Method cost-basis wording is also fixed. Claim character still has a block row that its sentence rules out: 1017 separated on holding character at -4.7."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "character",
+          "severity": "must_fix",
+          "finding": "Claim character uses 'holds character' for the pass rate on character adherence. It then says 1017 is 'down 3, not told apart'. But the judged check 'persona holds character' sits in the same block, and there 1017 is -4.7 points (-8.2 to -1.3 at 99.69%), separated and worse, as that block's own caption says. A reader takes the two for one measure, and the sentence then contradicts its own block. Fix: call the 7.6 and 3.0 figures 'the pass rate on character adherence'. Add a sentence on the judged holding-character check: both candidates are separated and worse, qwen3.8-flash -6.0 and 1017 -4.7. The decision block's 'Why not' for qwen3.8-flash should also say 'pass rate' rather than 'holds character'."
+        },
+        {
+          "claim": "",
+          "severity": "must_fix",
+          "finding": "The confidence reads High over the unrecorded-routing caveat. That caveat is plausibly material: the page says cost alone decides, and that the earlier round found qwen3.8-flash cheaper. Its clause also contradicts itself, calling this run's gap 'the only cost evidence' while citing that earlier finding. Fix: scope the High to the character readings and to the cost order at this run's routing. Then say it leaves open whether a candidate costs less at a recorded production routing, which the earlier round suggests it may. Otherwise, make the form low."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The first next step says that if a candidate costs no more than September after re-pricing, 'then character decides'. The routing caveat says the call 'would turn on character alone or become a trade'. Under the declared criteria, a cheaper candidate inside the 15-point allowed loss would be the pick: qwen3.8-flash's worst corrected drop is -12.6, and 1017's is -7.4. Say so. If the team would not accept qwen3.8-flash's 7.6-point pass-rate drop at any price, say the allowed loss should be tightened now (qwen3.8-flash stops counting as acceptable below 10.8, 1017 below 5.8). Then a reader knows what a cheaper re-pricing would actually do to the call."
         }
       ],
       "total": 11,
       "passes": true,
-      "must_fix": false
+      "must_fix": true
     }
   ]
 }

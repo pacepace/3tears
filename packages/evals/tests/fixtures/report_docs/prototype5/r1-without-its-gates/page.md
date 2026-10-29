@@ -1,27 +1,28 @@
 Choice · candidates compared · Concierge chat assistant · 4 arms · 5 tasks · Run 2026-10-21 · Synthetic example data
 
-# The pick is a price nobody set: Atlas-L scores 2.96 points above Atlas-M on overall quality at 2.4 times its cost, and the two cheaper models confirm account changes less often.
+# Atlas-M costs 0.42 times what Atlas-L does at this run's unnamed routing, with no behaviour check separating them; Atlas-L's extra overall quality is the owner's to price.
 
-No behaviour check tells Atlas-M from Atlas-L, while Open-70B confirms before account changes 17 points less often than Atlas-M. A declared price per point of overall quality, or a bar on these checks, would turn the trade into a decision.
+The cheaper models save more but confirm before account changes less often than Atlas-M, and Brisk-S resolves fewer troubleshooting issues. With no price set for a point of overall quality, Atlas-M is the better buy below $11.09 per point per 1,000 conversations, Atlas-L above $22.05.
 
-**No control, gate or exchange rate was declared: every option below is a candidate, and the choice among them is the concierge owner's.**
+**No control, gate or price per point was declared: this run prices the trade, and the concierge owner makes the call.**
 
 **Confidence: High, if the caveats below aren't material.**
 
-- **Nothing declares what is good enough.** Only if this page is read as a decision: with no bar or price per point declared, which side of the trade to take is the owner's call. The measured gaps do not rest on it.
-- **A judge is not described.** Only if the unnamed judge of the behaviour checks is harsher on the smaller models' replies; the gaps on confirming account changes and declining to speculate would then narrow. Overall quality is scored by a judge calibrated on 200 human ratings.
-- **No arm is the control.** Only for the size of a gap: arms compare by their own intervals combined as independent, which reads wider than a paired reading would, so a paired re-run would more likely narrow the intervals than reverse a separated gap.
-- **The pick is the best of several candidates.** Only where the leader's margin is thin, as Atlas-L's over Atlas-M in billing (2 points): picked as the best of four, it would tend to read lower on fresh cases.
+- **Nothing declares what is good enough.** It decides the pick itself, which waits on a price per point of overall quality or floors on the behaviour checks; it does not touch the measured gaps the trade is built from.
+- **No arm is the control.** Only if scoring the arms paired on their shared cases would separate a behaviour-check gap the unpaired intervals leave open, such as Atlas-L's tool-call lead over Atlas-M (from -1.6 to +5.6). Pairing narrows intervals, so it could add a reason to pay for Atlas-L but would not undo a gap already clear of zero.
+- **A judge is not described.** Only if the unnamed judge of the behaviour checks is harsher on the smaller models' style, which would shrink their shortfalls and make Brisk-S a stronger low-price option. The overall-quality judge is calibrated on 200 human ratings at 86% agreement, so the price per point does not rest on the unnamed one.
+- **The pick is the best of several candidates.** Only if Atlas-L's lead in overall quality is partly the luck of the best of several: a fresh run would tend to read it lower, which would cheapen the case for Atlas-L, not Atlas-M. Its unpaired interval, from +1.981 to +3.939, sits clear of zero.
+- **Cost routing and coverage unknown.** Only if another provider serving one of these models, or trials that reported no cost, would reorder the costs: the snapshot names no provider or pricing for any model and does not say how many trials reported a cost, so every price holds for this run's routing only. Open-70B, an open-weights model, is the most exposed, since its price depends on who hosts it.
 
-**The trade.** Each step up costs more per point of overall quality: Brisk-S to Atlas-M at $4.94 per 1,000 conversations a point, Atlas-M to Atlas-L at $14.76. Open-70B is never the cheapest way to a point. Brisk-S, the cheapest, also trails on the safety checks.
+**The trade.** Moving from Atlas-M to Atlas-L costs $44 more per 1,000 conversations and buys 2.96 points of overall quality (from +1.981 to +3.939); on the behaviour checks the two are not told apart. Brisk-S costs 0.19 times what Atlas-M does but trails it clearly on troubleshooting.
 
-**Where the answer flips.** On overall quality alone, Brisk-S is the best buy while a point is worth less than somewhere from $4.15 to $6.11 per 1,000 conversations, Atlas-L once it is worth more than somewhere from $11.09 to $22.05, and Atlas-M between. Inside either band this run does not settle the pick.
+**Where the answer flips.** A point of overall quality worth less than $11.09 per 1,000 conversations favours Atlas-M, more than $22.05 favours Atlas-L; between the two this run does not settle it. On overall quality alone Brisk-S is the better buy below $4.15 a point. On point estimates Open-70B is never the better buy; inside the band from $4.15 to $6.11 this run does not separate it from Brisk-S and Atlas-M.
 
-**Our lean.** Ours, not a declared rule: Atlas-M, at $31.37 per 1,000 conversations against Atlas-L's $75.05. No behaviour check separates it from Atlas-L. The lean holds while a point of overall quality is worth between the two bands.
+**Our lean.** Ours, not a recommendation: Atlas-M, which the price frontier favours from $6.11 to $11.09 a point; no behaviour check separates it from Atlas-L, and its tail latency is shorter in every task. Below that band we would still pass over Brisk-S: in troubleshooting it resolves the issue 74% of the time against 90%, and confirms before account changes 88% against 98%.
 
-**Watch.** Atlas-L's lead over Atlas-M is widest in troubleshooting, 5 points, the task with 19% of traffic. No line was declared, so no margin is the weakest. Speculation bait carries 0% of traffic: its rates test behaviour, not what live traffic meets.
+**What would settle it.** The concierge owner declares a price per point of overall quality, or floors on the behaviour checks that matter (confirming before account changes above all).
 
-**What would settle it.** The concierge owner declares a price per point of overall quality and a bar on confirming account changes and declining to speculate.
+**Watch.** Every cost is this run's provider routing, which the snapshot does not name; another host for any of these models, Open-70B above all, could move the price bands.
 
 | Option | Role | Configuration | Cost per 1,000 conversations |
 |---|---|---|---|
@@ -30,26 +31,20 @@ No behaviour check tells Atlas-M from Atlas-L, while Open-70B confirms before ac
 | C · Brisk-S | Candidate | Brisk-S | $6.01 |
 | D · Open-70B | Candidate | Open-70B | $11.51 |
 
-## Brisk-S and Open-70B fall well behind both Atlas models on confirming account changes and declining to speculate; Brisk-S declines 17 points less often than Atlas-M.
+## On this run's unnamed provider routing, each step up in overall quality costs more per point: Brisk-S to Atlas-M from $4.15 to $6.11 per point per 1,000 conversations, Atlas-M to Atlas-L from $11.09 to $22.05.
 
-_Caveats: A judge is not described._
+_Caveats: No arm is the control; Cost routing and coverage unknown._
 
-| Panel | Row | Value | 95% uncorrected interval |
-|---|---|---|---|
-| Troubleshooting (multi-turn) · Confirms before account changes | A · Atlas-L | 98% | 96.0% to 100.0% |
-| Troubleshooting (multi-turn) · Confirms before account changes | B · Atlas-M | 98% | 96.0% to 100.0% |
-| Troubleshooting (multi-turn) · Confirms before account changes | C · Brisk-S | 88% | 83.3% to 92.7% |
-| Troubleshooting (multi-turn) · Confirms before account changes | D · Open-70B | 81% | 75.3% to 86.7% |
-| Speculation bait · Declines to speculate | A · Atlas-L | 99% | 97.4% to 100.0% |
-| Speculation bait · Declines to speculate | B · Atlas-M | 98% | 95.8% to 100.0% |
-| Speculation bait · Declines to speculate | C · Brisk-S | 81% | 74.7% to 87.3% |
-| Speculation bait · Declines to speculate | D · Open-70B | 89% | 84.0% to 94.0% |
+| Step along the frontier | Price per point | 95% unpaired interval |
+|---|---|---|
+| Brisk-S → Atlas-M | $4.94 | $4.15 to $6.11 |
+| Atlas-M → Atlas-L | $14.76 | $11.09 to $22.05 |
 
-Each model's rate with its interval: confirming before account changes in troubleshooting, and declining to speculate on speculation bait, a test set that carries 0% of live traffic.
+Price per point of overall quality along the frontier, per 1,000 conversations, with unpaired intervals; Open-70B sits off the frontier on point estimates only.
 
-### Atlas-L scores above Atlas-M on overall quality in every task that carries live traffic, most in troubleshooting; on speculation bait the two are not told apart.
+### Atlas-L leads Atlas-M on overall quality in every task that carries traffic, most in troubleshooting at +5 points; on speculation bait, the test slice, the two are not told apart.
 
-_Caveats: The pick is the best of several candidates; No arm is the control._
+_Caveats: The pick is the best of several candidates._
 
 | Row | Value | 95% unpaired interval |
 |---|---|---|
@@ -63,61 +58,125 @@ Each row is Atlas-L less Atlas-M on Overall quality, overall and in each place b
 
 The interval is independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.
 
-Atlas-L less Atlas-M on overall quality per task, with intervals combined as independent.
+Task rows only, no overall row: the gap pooled by traffic share is +2.96 (from +1.981 to +3.939).
 
-### A point of overall quality costs far more on the step from Atlas-M to Atlas-L, $14.76 per 1,000 conversations, than on the step up from Brisk-S.
-
-| Step along the frontier | Price per point | 95% unpaired interval |
-|---|---|---|
-| Brisk-S → Atlas-M | $4.94 | $4.15 to $6.11 |
-| Atlas-M → Atlas-L | $14.76 | $11.09 to $22.05 |
-
-Price per point of overall quality along the frontier, per 1,000 conversations, with intervals read off each step's gain.
-
-#### No model reads clearly above the Atlas pair on the other behaviour checks; Brisk-S resolves the fewest troubleshooting issues, 74% against Atlas-M's 90%.
+### In troubleshooting Atlas-M is not told apart from Atlas-L on any check, while Brisk-S resolves the issue 16 points less often than Atlas-M.
 
 _Caveats: A judge is not described._
 
-| Slice | Arm | Resolves the issue | 95% uncorrected interval | Gives clear steps | 95% uncorrected interval | Escalates when stuck | 95% uncorrected interval | Stays in character | 95% uncorrected interval | Calls research tool only when required | 95% uncorrected interval | Cites the retrieved source | 95% uncorrected interval | No unsupported claims | 95% uncorrected interval |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Troubleshooting (multi-turn) | A · Atlas-L | 91% | 86.8% to 95.2% | 96% | 93.1% to 98.9% | 94% | 90.5% to 97.5% | — | — | — | — | — | — | — | — |
-| Troubleshooting (multi-turn) | B · Atlas-M | 90% | 85.6% to 94.4% | 95% | 91.8% to 98.2% | 95% | 91.8% to 98.2% | — | — | — | — | — | — | — | — |
-| Troubleshooting (multi-turn) | C · Brisk-S | 74% | 67.6% to 80.4% | 90% | 85.6% to 94.4% | 85% | 79.8% to 90.2% | — | — | — | — | — | — | — | — |
-| Troubleshooting (multi-turn) | D · Open-70B | 82% | 76.4% to 87.6% | 93% | 89.3% to 96.7% | 90% | 85.6% to 94.4% | — | — | — | — | — | — | — | — |
-| Persona small talk | A · Atlas-L | — | — | — | — | — | — | 95% | 92.1% to 97.9% | — | — | — | — | — | — |
-| Persona small talk | B · Atlas-M | — | — | — | — | — | — | 95% | 92.1% to 97.9% | — | — | — | — | — | — |
-| Persona small talk | C · Brisk-S | — | — | — | — | — | — | 86% | 81.4% to 90.6% | — | — | — | — | — | — |
-| Persona small talk | D · Open-70B | — | — | — | — | — | — | 97% | 94.7% to 99.3% | — | — | — | — | — | — |
-| Research-needed questions | A · Atlas-L | — | — | — | — | — | — | — | — | 97% | 94.8% to 99.2% | 96% | 93.5% to 98.5% | 95% | 92.2% to 97.8% |
-| Research-needed questions | B · Atlas-M | — | — | — | — | — | — | — | — | 95% | 92.2% to 97.8% | 94% | 91.0% to 97.0% | 94% | 91.0% to 97.0% |
-| Research-needed questions | C · Brisk-S | — | — | — | — | — | — | — | — | 83% | 78.2% to 87.8% | 89% | 85.0% to 93.0% | 84% | 79.4% to 88.6% |
-| Research-needed questions | D · Open-70B | — | — | — | — | — | — | — | — | 88% | 83.9% to 92.1% | 85% | 80.5% to 89.5% | 86% | 81.6% to 90.4% |
+| Slice | Arm | Resolves the issue | 95% uncorrected interval | Gives clear steps | 95% uncorrected interval | Confirms before account changes | 95% uncorrected interval | Escalates when stuck | 95% uncorrected interval |
+|---|---|---|---|---|---|---|---|---|---|
+| Troubleshooting (multi-turn) | A · Atlas-L | 91% | 86.8% to 95.2% | 96% | 93.1% to 98.9% | 98% | 96.0% to 100.0% | 94% | 90.5% to 97.5% |
+| Troubleshooting (multi-turn) | B · Atlas-M | 90% | 85.6% to 94.4% | 95% | 91.8% to 98.2% | 98% | 96.0% to 100.0% | 95% | 91.8% to 98.2% |
+| Troubleshooting (multi-turn) | C · Brisk-S | 74% | 67.6% to 80.4% | 90% | 85.6% to 94.4% | 88% | 83.3% to 92.7% | 85% | 79.8% to 90.2% |
+| Troubleshooting (multi-turn) | D · Open-70B | 82% | 76.4% to 87.6% | 93% | 89.3% to 96.7% | 81% | 75.3% to 86.7% | 90% | 85.6% to 94.4% |
 
-Every other behaviour check in the task it belongs to, with intervals.
+Troubleshooting pass rates on the behaviour checks read there, with their intervals.
 
-#### Atlas-L is also the slowest: its p95 latency on research questions is 4.86 s, against 2.84 s for Atlas-M.
+### Both cheaper models confirm before account changes less often than Atlas-M: Open-70B by 17 points (from +11 to +23), Brisk-S by 10 (from +4.9 to +15.1).
+
+_Caveats: A judge is not described._
+
+| Row | Value | 95% unpaired interval |
+|---|---|---|
+| Troubleshooting (multi-turn) | +17 | +11 to +23 |
+
+Each row is Atlas-M less Open-70B on Confirms before account changes, overall and in each place both hold it.
+
+The interval is independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.
+
+Atlas-M less Open-70B on confirming before account changes in troubleshooting, with its unpaired interval.
+
+| Row | Value | 95% unpaired interval |
+|---|---|---|
+| Troubleshooting (multi-turn) | +10 | +4.9 to +15.1 |
+
+Each row is Atlas-M less Brisk-S on Confirms before account changes, overall and in each place both hold it.
+
+The interval is independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.
+
+Atlas-M less Brisk-S on confirming before account changes in troubleshooting, with its unpaired interval.
+
+### On research questions Atlas-M and Atlas-L are not told apart on tool use, citing or unsupported claims; Brisk-S and Open-70B score lower on all three, though Brisk-S's citing gap to Atlas-M is not separated from zero (from 0 to +10).
+
+_Caveats: A judge is not described._
+
+| Slice | Arm | Calls research tool only when required | 95% uncorrected interval | Cites the retrieved source | 95% uncorrected interval | No unsupported claims | 95% uncorrected interval |
+|---|---|---|---|---|---|---|---|
+| Research-needed questions | A · Atlas-L | 97% | 94.8% to 99.2% | 96% | 93.5% to 98.5% | 95% | 92.2% to 97.8% |
+| Research-needed questions | B · Atlas-M | 95% | 92.2% to 97.8% | 94% | 91.0% to 97.0% | 94% | 91.0% to 97.0% |
+| Research-needed questions | C · Brisk-S | 83% | 78.2% to 87.8% | 89% | 85.0% to 93.0% | 84% | 79.4% to 88.6% |
+| Research-needed questions | D · Open-70B | 88% | 83.9% to 92.1% | 85% | 80.5% to 89.5% | 86% | 81.6% to 90.4% |
+
+Research-question pass rates on the behaviour checks read there, with their intervals.
+
+#### When baited, Brisk-S declines to speculate 17 points less often than Atlas-M; speculation bait carries 0% of traffic, so this is a test of behaviour, not a rate users will meet.
+
+_Caveats: A judge is not described._
+
+| Row | Value | 95% uncorrected interval |
+|---|---|---|
+| A · Atlas-L | 99% | 97.4% to 100.0% |
+| B · Atlas-M | 98% | 95.8% to 100.0% |
+| C · Brisk-S | 81% | 74.7% to 87.3% |
+| D · Open-70B | 89% | 84.0% to 94.0% |
+
+Declines to speculate on speculation bait, each model with its interval.
+
+#### In persona small talk Open-70B is not told apart from Atlas-M on overall quality, 90 against 88 (gap from -0.1213 to +4.121), nor from either Atlas model on staying in character, at $6.40 per 1,000 conversations against $17.00 on this run's unnamed provider routing.
+
+_Caveats: Cost routing and coverage unknown; A judge is not described._
+
+| Slice | Arm | Overall quality | 95% uncorrected interval | Cost per 1k conversations | Stays in character | 95% uncorrected interval |
+|---|---|---|---|---|---|---|
+| Persona small talk | A · Atlas-L | 91 | 89.5 to 92.5 | $41.00 | 95% | 92.1% to 97.9% |
+| Persona small talk | B · Atlas-M | 88 | 86.5 to 89.5 | $17.00 | 95% | 92.1% to 97.9% |
+| Persona small talk | C · Brisk-S | 84 | 82.5 to 85.5 | $3.30 | 86% | 81.4% to 90.6% |
+| Persona small talk | D · Open-70B | 90 | 88.5 to 91.5 | $6.40 | 97% | 94.7% to 99.3% |
+
+Persona small talk: overall quality, cost per 1,000 conversations and staying in character for each model.
+
+#### Atlas-L is the slowest model in every task; on research questions its tail latency reaches 4.86 s against 2.84 s for Atlas-M, and no model dropped a trial to get there.
 
 | Group | Row | From | To |
 |---|---|---|---|
+| Billing & account Q&A | A · Atlas-L | 1.81 s | 3.60 s |
+| Billing & account Q&A | B · Atlas-M | 1.03 s | 2.10 s |
+| Billing & account Q&A | C · Brisk-S | 0.47 s | 0.90 s |
+| Billing & account Q&A | D · Open-70B | 0.78 s | 1.60 s |
+| Troubleshooting (multi-turn) | A · Atlas-L | 2.42 s | 4.68 s |
+| Troubleshooting (multi-turn) | B · Atlas-M | 1.38 s | 2.73 s |
+| Troubleshooting (multi-turn) | C · Brisk-S | 0.57 s | 1.17 s |
+| Troubleshooting (multi-turn) | D · Open-70B | 1.07 s | 2.08 s |
+| Persona small talk | A · Atlas-L | 1.39 s | 2.88 s |
+| Persona small talk | B · Atlas-M | 0.86 s | 1.68 s |
+| Persona small talk | C · Brisk-S | 0.35 s | 0.72 s |
+| Persona small talk | D · Open-70B | 0.62 s | 1.28 s |
 | Research-needed questions | A · Atlas-L | 2.48 s | 4.86 s |
 | Research-needed questions | B · Atlas-M | 1.53 s | 2.84 s |
 | Research-needed questions | C · Brisk-S | 0.60 s | 1.22 s |
 | Research-needed questions | D · Open-70B | 1.07 s | 2.16 s |
+| Speculation bait | A · Atlas-L | 1.70 s | 3.24 s |
+| Speculation bait | B · Atlas-M | 1.03 s | 1.89 s |
+| Speculation bait | C · Brisk-S | 0.42 s | 0.81 s |
+| Speculation bait | D · Open-70B | 0.73 s | 1.44 s |
 
-Latency from p50 to p95 on research questions, the slowest task; no latency budget was declared.
+Latency from median to tail for each model in every task.
 
 ## What you could change
 
 | What you could change | What it decides | What happens as it moves |
 |---|---|---|
-| Price of one point of overall quality, per 1,000 conversations | Which of Brisk-S, Atlas-M and Atlas-L is the best buy on overall quality | Brisk-S below somewhere from $4.15 to $6.11; Atlas-M from there to somewhere from $11.09 to $22.05; Atlas-L above. Open-70B is best at no price. |
+| Price of one point of overall quality, per 1,000 conversations | Which model is the better buy: Brisk-S, Atlas-M or Atlas-L | On overall quality alone: below $4.15 Brisk-S; from $6.11 to $11.09 Atlas-M; above $22.05 Atlas-L. Inside each interval band between those, this run does not settle the pick; in the lower band it does not separate Open-70B from Brisk-S and Atlas-M either, though on point estimates Open-70B is never the better buy. Brisk-S's behaviour-check shortfalls are not priced in. |
+| A floor on confirming before account changes | Whether the cheaper models stay options | A floor near Atlas-M's 98% would remove Brisk-S and Open-70B, whose intervals sit wholly below it; no floor was declared. |
 
 ## Next steps
 
-- The concierge owner declares a price per point of overall quality, and bars on confirming account changes and declining to speculate. _Turns the trade into a decision: the bars rule options out, the price picks among the rest._
-- Name the judge of the behaviour checks and calibrate it on human ratings, as overall quality's judge already is. _Whether Brisk-S and Open-70B really skip account confirmations and speculate more, or the judge reads their style harshly._
-- Run a routed mix, Atlas-L for troubleshooting and Atlas-M elsewhere, on the same cases. _Whether routing keeps most of Atlas-L's lead, which is widest in troubleshooting, at a cost nearer Atlas-M's._
-- Re-run Atlas-M and Atlas-L on fresh cases with one of them as the control, so gaps read paired. _How large Atlas-L's lead really is once the best-of-several optimism and the unpaired intervals are removed._
+- The concierge owner declares a price per point of overall quality, or floors on the behaviour checks. _Turns the trade into a decision between Atlas-M and Atlas-L, and says whether the cheaper models stay options._
+- Re-run Atlas-M and Atlas-L on the same cases with paired scoring. _Whether the small behaviour-check gaps between them separate, and narrows the price band in which this run cannot choose._
+- Run a routed mix as a measured option: Atlas-M for most traffic, Open-70B for persona small talk. _What the mix keeps of Atlas-M's quality and how much it saves, so it can be priced like the others; nobody has run it, so no figure states it yet._
+- Name the judge of the behaviour checks and calibrate it against human ratings. _Whether the cheaper models' shortfalls on the checks are real or a judge's bias, and so whether Brisk-S belongs back on the table at low prices._
+- Record the provider serving each model, the cost coverage and the monthly volume of conversations. _Whether the price bands hold beyond this run's routing, Open-70B's above all, and what the trade is worth a month._
 
 ## Full results
 
@@ -172,28 +231,22 @@ Each arm's full configuration, once. The rest of the page names an arm by its le
 
 ### Left out, and why
 
-- **Latency on the other tasks** The same order as research questions in every task; no latency budget was declared, so it does not move the trade.
-- **Cost per 1,000 conversations by task** The order of the models is the same in every task; the pooled cost carries the trade.
-- **Open-70B staying in character most often in persona small talk** Not told apart from the Atlas pair, and it does not lift Open-70B onto the price frontier.
-- **Failure example cards** The snapshot keeps none.
-- **Speculation bait in the pooled overall quality** It carries no live traffic, so the traffic-weighted pool leaves it out; its own gap is shown in the quality claim.
+- **Cost by task** Every task keeps the same cost order, so it adds nothing to the trade; the appendix holds it, and persona small talk's costs appear with the persona claim.
+- **Overall quality per task for Brisk-S and Open-70B** Brisk-S sits below Atlas-M in every task and Open-70B in every task but persona small talk, where the two are not told apart (shown in the persona claim); the pooled figures behind the price table carry the rest.
+- **An overall row in the per-task gap between Atlas-L and Atlas-M** Overall quality is held only per task, so no overall row can be drawn there; the caption states the gap pooled by traffic share with its interval instead, and the chart's own note promising an overall row should be read that way.
+- **A dominance call weighing quality beside cost** With no model-level quality figure, the computed dominance rested on cost alone and would name Brisk-S; the price frontier weighs cost against quality instead.
+- **Failure examples** None were kept with this run.
 
 ### Method
 
-- **Cases** Each model ran 1,190 cases across the tasks; the input states no repeats. Every model answered every case, with zero lost.
-- **Overall quality** An ordinal score from a judge calibrated on 200 human ratings, agreeing with them 86% of the time.
-- **Behaviour checks** Pass/fail checks, each read only in the task it belongs to; the input does not name their judge. _Caveats: A judge is not described._
-- **Pooling** Overall quality and cost are pooled over the tasks that carry live traffic, weighted by traffic share: billing 42%, persona small talk 24%, troubleshooting 19% and research questions 15%.
-- **Intervals** At 95%, each model's own; gaps between two models combine them as independent, since no control or paired contrast was run. Per-task gaps are uncorrected. _Caveats: No arm is the control._
-- **Cost** Cost per 1,000 conversations. No monthly volume was declared, so no monthly figure is stated.
-- **Latency** p50 and p95 per task; no budget was declared.
+- **Cases** 1,190 conversations per model over the tasks listed under traffic shares, the same count for each; repeats are not stated. No trial was lost or failed for any model.
+- **Overall quality** A judged score per conversation; the judge is calibrated on 200 human ratings with 86% agreement. Overall figures pool the tasks by traffic share.
+- **Behaviour checks** Pass-or-fail judged checks, each read only in the task it applies to. The campaign does not define what passing each means beyond its name, nor who judges them. _Caveats: A judge is not described._
+- **Traffic shares** Billing 42%, persona small talk 24%, troubleshooting 19%, research questions 15%, speculation bait 0%: speculation bait is a test slice and counts toward no overall figure.
+- **Intervals** At the level each block prints, uncorrected. With no control and no paired contrasts, every gap between two models combines each model's own interval as if they ran different cases, which reads wider than a paired interval would. Price bands are read on these unpaired intervals throughout.
+- **Cost** Cost per 1,000 conversations, weighted by traffic share. The provider serving each model and how many trials reported a cost are not stated, and no monthly volume was declared.
+- **Latency** Median and tail percentile per task, in seconds.
+- **Not compared** No model is a control and nothing was declared before the run: no gate, floor, margin or price per point.
 - **Source** Synthetic example data from docs/eval-report-kit/references/r1-model-selection.json, run 2026-10-21.
 
-### Review findings left open
-
-- **Should fix** · The page: The routing next step aims at the wrong task. In the task figures, the Atlas-M to Atlas-L step costs $16.20 per point in troubleshooting, $17.00 in billing and $18.33 in research questions, but only about $8 in persona small talk ($24 more per 1,000 conversations for 3 points). Routing troubleshooting to Atlas-L buys about a third of the lead for about a third of the cost gap. It does not keep 'most of the lead at a cost nearer Atlas-M's'. In persona small talk, Open-70B scores 90 against Atlas-M's 88 (gap −0.1 to +4.1) at $6.40 against $17, and stays in character 97% of the time. Rewrite the step from the task prices: say what a routed mix would test (for example, Open-70B or Atlas-L on persona small talk and Atlas-M elsewhere), and drop the claim that troubleshooting is where routing pays.
-- **Should fix** · The page: 'Open-70B is never the cheapest way to a point' (the trade) and 'Open-70B is best at no price' (explore) are point-estimate statements. Open-70B's pooled overall quality is 85.49 against Brisk-S's 84.70, and each has a half-width of 0.69. Open-70B is off the frontier only if its lead is under about 1.1 points, and the combined interval reaches about +1.8. Qualify both sentences, for example 'on the point estimates; its lead over Brisk-S is not settled'. Or rest Open-70B's exclusion on its safety-check gaps, which are separated.
-- **Should fix** · Claim 2: The caption says each row is Atlas-L less Atlas-M 'overall and in each place', but the block draws only the five task rows. Add the pooled, traffic-weighted row the headline cites (+2.96, +1.98 to +3.94) so the headline's figure is on the page beside its interval. Otherwise, remove 'overall' from the caption.
-- **Should fix** · Claim 2: 'Above Atlas-M in every task that carries live traffic' rests on per-task intervals with no correction across five tasks. Billing's lower end is +0.44. Add the word 'uncorrected', or note that billing's gap is the one a correction could close. The best-of-several caveat already names billing, so this is a small change.
-
-_Written by claude-opus-5-5, served as claude-opus-5-5, for $1.54, with analyst skill 1677ccb31cd6, on 2026-10-29._
+_Written by claude-opus-5-5, served as claude-opus-5-5, for $4.45, with analyst skill ed7e2c60b5ad, on 2026-10-29._

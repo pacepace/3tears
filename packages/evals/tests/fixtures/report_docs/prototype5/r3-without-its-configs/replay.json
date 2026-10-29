@@ -8,12 +8,12 @@
   "ending": "stored",
   "reason": "",
   "stored": true,
-  "analyst_rounds": 1,
-  "editor_rounds": 1,
+  "analyst_rounds": 3,
+  "editor_rounds": 3,
   "tally": {
-    "turns": 20,
-    "tool_calls": 49,
+    "turns": 42,
+    "tool_calls": 70,
     "bounces": 0,
-    "cost_usd": 2.0265736000000003
+    "cost_usd": 4.200325
   }
 }

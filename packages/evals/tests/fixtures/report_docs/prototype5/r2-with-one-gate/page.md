@@ -1,23 +1,23 @@
 Choice · candidates compared · Research query planner · 18 arms · 4 tasks · Run 2026-10-23 · Synthetic example data
 
-# Run the planner on Brisk-S with low reasoning and one retry: the cheapest setting to clear the 97% pass-rate gate, though by only 0.1 points, inside the noise.
+# Use Brisk-S · reasoning low · 1 retry (J): the cheapest configuration to clear the 97% pass-rate gate, though only by 0.1 points.
 
-It passes 97.1% of its cases at $0.302 per thousand calls, but a fresh run of this size would read it below the gate 38.6% of the time. If the gate must hold on its interval, Brisk-S with high reasoning and one retry is the pick, at 2.1 times the cost.
+It costs $0.302 per 1k calls, least of the five that clear, but a fresh run of today's size reads it below the gate 38.6% of the time. If the gate must clear with confidence, high reasoning (L) is the pick, at $0.633 per 1k calls.
 
 **Confidence: Low.**
 
-- **Pass rate is cleared on a point estimate.** Only if the pick's true pass rate sits below the gate: a fresh run of today's size would read it there 38.6% of the time, and then Brisk-S with high reasoning and one retry becomes the pick.
-- **The pick is the best of several candidates.** Only if the pick reads high by luck, being the setting of eighteen that lands nearest above the line; a rerun on fresh cases would likely read it lower, toward or under the gate.
-- **No arm is the control.** Only for the comparison between the two Brisk-S settings, which is read unpaired and so wider than a paired one; the gate reads each setting on its own figure and does not rest on it.
-- **Task mix.** Only if live traffic carries more multi-hop or ambiguous-entity queries than the eval did: the pick sits below the gate on both, so a heavier share of them would pull its overall rate under the line.
+- **Pass rate is cleared on a point estimate.** If J's true pass rate sits below the gate, which its clearance of 0.1 points cannot rule out, then L is the cheapest configuration that clears; settling J four times in five would take 111,255 cases, two-sided.
+- **The pick is the best of several candidates.** J's figure is partly the luck of being picked from 18 configurations: a run on fresh cases tends to read it lower, which pushes it toward or under the gate and leaves L, with 1 points of room, as the pick.
+- **No arm is the control.** Only for a claim that one configuration beats another on pass rate: every gap here is read unpaired and so wider than a paired reading; the call rests on each configuration's own gate reading and its cost.
+- **Cost routing unknown.** Only if another provider's pricing for Brisk-S or Atlas-M reorders them: the snapshot names the model each arm served but no provider, so every cost is this run's routing's, not the model's own.
 
-**Recommendation.** Brisk-S, low reasoning, one retry. It is the cheapest of the five settings that clear the gate, at $1,208 a month at the declared volume, and the only one no other setting beats on both cost and pass rate.
+**Recommendation.** Ship Brisk-S · reasoning low · 1 retry (J). It reads 97.1% against the 97% gate at $0.302 per 1k calls, the least of any configuration that clears: about $1,208 a month if the declared volume counts calls, more if it counts tasks, by each arm's calls per task.
 
-**Why not the others.** Brisk-S with high reasoning and one retry clears the gate with room, but costs 2.1 times as much, and its lead of 0.8 points is not told apart from zero (-0.4 to +2.1). The Atlas-M settings that pass cost 5.5 times as much or more. No Nano-XS setting reaches the gate; its best reads 94.8%.
+**Why not the others.** Brisk-S · reasoning high · 1 retry (L) clears with more room, 98%, but costs $0.633 per 1k calls, $1,324 more a month if the volume counts calls. Every Atlas-M that clears costs more again; the best, Atlas-M · reasoning high · 1 retry (F), reads 98.6% at $3.477 per 1k calls. No Nano-XS configuration clears; its best, Nano-XS · reasoning high · 1 retry (S), falls 2.2 points short.
 
-**Watch.** The weakest margin is the pick's own: Brisk-S · reasoning low · 1 retry (J) reads 97.1% against the 97% gate, 0.1 points clear, and its computed interval (96.2–98.1%) crosses the line. A run that settles it four times in five needs 111,255 cases, so more cases are not a practical way out.
+**Watch.** The weakest margin is the pick's own: Brisk-S · reasoning low · 1 retry (J) reads 97.1% on Pass rate against 97%. A fresh run of today's size reads it below the line 38.6% of the time, against 0.9% for L, and as the best of 18 it likely reads high.
 
-**Next.** The planner owner declares whether the gate must hold on its interval or on its point estimate. On the interval, switch to Brisk-S with high reasoning and one retry, which costs $1,324 more a month.
+**Next.** Ship J now; in parallel the planner's owner declares whether the gate must clear on its interval. If it must, switch to L.
 
 | Option | Role | Configuration | Pass rate | Cost per 1,000 calls |
 |---|---|---|---|---|
@@ -40,48 +40,53 @@ It passes 97.1% of its cases at $0.302 per thousand calls, but a fresh run of th
 | R · Nano-XS · reasoning high · no retry | Candidate | Nano-XS · Reasoning budget high · Retry on failure 0 | 91.3% | $0.102 |
 | S · Nano-XS · reasoning high · 1 retry | Candidate | Nano-XS · Reasoning budget high · Retry on failure 1 | 94.8% | $0.111 |
 
-## Only five of eighteen settings clear the gate, and Brisk-S with low reasoning and one retry is the cheapest of them.
-
-| Point | Cost per 1k calls | Pass rate |
-|---|---|---|
-| Atlas-M · reasoning off · no retry | $1.000 | 94.0% |
-| Atlas-M · reasoning off · 1 retry | $1.060 | 96.4% |
-| Atlas-M · reasoning low · no retry | $1.600 | 96.6% |
-| Atlas-M · reasoning low · 1 retry | $1.655 | 97.9% |
-| Atlas-M · reasoning high · no retry | $3.400 | 97.7% |
-| Atlas-M · reasoning high · 1 retry | $3.477 | 98.6% |
-| Brisk-S · reasoning off · no retry | $0.180 | 91.1% |
-| Brisk-S · reasoning off · 1 retry | $0.196 | 94.6% |
-| Brisk-S · reasoning low · no retry | $0.288 | 95.3% |
-| J · Brisk-S · reasoning low · 1 retry | $0.302 | 97.1% |
-| Brisk-S · reasoning high · no retry | $0.612 | 96.6% |
-| Brisk-S · reasoning high · 1 retry | $0.633 | 98.0% |
-| Nano-XS · reasoning off · no retry | $0.030 | 81.0% |
-| Nano-XS · reasoning off · 1 retry | $0.036 | 88.5% |
-| Nano-XS · reasoning low · no retry | $0.048 | 87.9% |
-| Nano-XS · reasoning low · 1 retry | $0.054 | 92.7% |
-| Nano-XS · reasoning high · no retry | $0.102 | 91.3% |
-| Nano-XS · reasoning high · 1 retry | $0.111 | 94.8% |
-| Pass rate gate, at least 97% |  | 97.0% |
-
-The horizontal axis is logarithmic: each step is a multiple.
-
-Pass rate against cost per thousand calls for every setting, cost on a log axis; the gate sits at 97%.
-
-## The pick's clearance is inside the noise: its computed interval (96.2–98.1%) crosses the gate, while Brisk-S with high reasoning and one retry sits wholly above it (97.2–98.8%).
+## Only five of eighteen configurations clear the 97% gate, and J sits closest to the line at 97.1%.
 
 | Row | Value | 95% computed interval |
 |---|---|---|
-| J · Brisk-S · reasoning low · 1 retry | 97.1% | 96.2% to 98.1% |
-| L · Brisk-S · reasoning high · 1 retry | 98.0% | 97.2% to 98.8% |
+| A · Atlas-M · reasoning off · no retry | 94.0% | 92.7% to 95.3% |
+| B · Atlas-M · reasoning off · 1 retry | 96.4% | 95.3% to 97.4% |
+| C · Atlas-M · reasoning low · no retry | 96.6% | 95.5% to 97.6% |
 | D · Atlas-M · reasoning low · 1 retry | 97.9% | 97.1% to 98.7% |
 | E · Atlas-M · reasoning high · no retry | 97.7% | 96.9% to 98.6% |
 | F · Atlas-M · reasoning high · 1 retry | 98.6% | 98.0% to 99.3% |
+| G · Brisk-S · reasoning off · no retry | 91.1% | 89.5% to 92.7% |
+| H · Brisk-S · reasoning off · 1 retry | 94.6% | 93.3% to 95.9% |
+| I · Brisk-S · reasoning low · no retry | 95.3% | 94.1% to 96.5% |
+| J · Brisk-S · reasoning low · 1 retry | 97.1% | 96.2% to 98.1% |
+| K · Brisk-S · reasoning high · no retry | 96.6% | 95.6% to 97.7% |
+| L · Brisk-S · reasoning high · 1 retry | 98.0% | 97.2% to 98.8% |
+| M · Nano-XS · reasoning off · no retry | 81.0% | 78.8% to 83.3% |
+| N · Nano-XS · reasoning off · 1 retry | 88.5% | 86.7% to 90.3% |
+| O · Nano-XS · reasoning low · no retry | 87.9% | 86.1% to 89.8% |
+| Q · Nano-XS · reasoning low · 1 retry | 92.7% | 91.2% to 94.2% |
+| R · Nano-XS · reasoning high · no retry | 91.3% | 89.7% to 92.9% |
+| S · Nano-XS · reasoning high · 1 retry | 94.8% | 93.5% to 96.0% |
 | Pass rate gate, at least 97% | 97.0% |  |
 
 Each interval is computed here from the rate's binomial spread, by the normal approximation, held to 0 to 100%. A rate of none or all has none.
 
-Pass rate of the settings that clear the gate, each with a computed interval, against the gate line.
+Each configuration's pass rate with a computed interval, against the gate at 97%; J is stressed.
+
+## Of the configurations that clear, J costs least: $0.302 per 1k calls, against $0.633 for L and $1.655 for the cheapest Atlas-M.
+
+_Caveats: Cost routing unknown._
+
+| Row | Value |
+|---|---|
+| J · Brisk-S · reasoning low · 1 retry | $0.30 |
+| L · Brisk-S · reasoning high · 1 retry | $0.63 |
+| D · Atlas-M · reasoning low · 1 retry | $1.66 |
+| E · Atlas-M · reasoning high · no retry | $3.40 |
+| F · Atlas-M · reasoning high · 1 retry | $3.48 |
+
+The bars are drawn on a log scale: their values span more than ten times, so each step is a multiple.
+
+Cost per 1k calls of the configurations that clear the gate, on a log scale, at this run's provider routing, which the snapshot does not name.
+
+### J's clearance is inside its noise: a fresh run of today's size would read it below the gate 38.6% of the time, against 0.9% for L. A two-sided run that settles it four times in five needs 111,255 cases for J and 1,660 for L.
+
+_Caveats: Pass rate is cleared on a point estimate; The pick is the best of several candidates._
 
 | Arm | Against | Today's figure | Line | Distance toward passing | Settles | Sizes count | Needed, one-sided | Needed, two-sided | Today | A fresh run reads the other side | Level |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -90,9 +95,11 @@ Pass rate of the settings that clear the gate, each with a computed interval, ag
 
 In each row, "A fresh run reads the other side" is how often a fresh run of today's size would read the figure on the other side of its line, if the truth is today's estimate (95% one-sided); it plans a run and tests nothing.
 
-How far each Brisk-S setting sits from the gate, how often a fresh run of today's size would read it on the other side, and the cases a settling run needs.
+Distance to the gate, how often a run of today's size reads the other side, and the cases that settle the line half the time; the four-in-five, two-sided sizes cited above are larger: 111,255 for J and 1,660 for L.
 
-### Moving up to high reasoning costs $1,324 more a month for a pass-rate lift not told apart from zero.
+### High reasoning adds +0.8 points over low, an interval of -0.4 to +2.1 that does not exclude zero, for $0.633 against $0.302 per 1k calls.
+
+_Caveats: No arm is the control._
 
 | Row | Value | 95% unpaired interval |
 |---|---|---|
@@ -106,65 +113,37 @@ Each row is Brisk-S · reasoning high · 1 retry less Brisk-S · reasoning low �
 
 The interval is independent: each arm's own spread (a pass/fail rate's binomial spread, from the arm's cases), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.
 
-High-reasoning Brisk-S minus low-reasoning Brisk-S, both with one retry, in pass-rate points; only the overall row carries an interval, unpaired.
+L minus J on pass rate, overall with an unpaired interval; the per-task rows state no case counts, so they carry no interval and are descriptive only.
 
-### A retry lifts Brisk-S's pass rate at every reasoning level, by 1.9 points at low reasoning for $0.014 more per thousand calls; it is what carries the pick over the gate.
+#### The retry is what lifts J over the gate: it adds +1.9 points to Brisk-S at low reasoning, an interval of +0.3 to +3.4.
 
 | Group | Row | Value | 95% unpaired interval |
 |---|---|---|---|
 | reasoning | Brisk-S · reasoning off · no retry → Low | +4.2 | +2.2 to +6.2 |
-| reasoning | Brisk-S · reasoning off · no retry → High | +5.5 | +3.6 to +7.4 |
 | reasoning | Brisk-S · reasoning off · 1 retry → Low | +2.5 | +0.9 to +4.1 |
 | reasoning | Brisk-S · reasoning off · 1 retry → High | +3.3 | +1.8 to +4.9 |
-| reasoning | Brisk-S · reasoning low · no retry → High | +1.4 | -0.2 to +2.9 |
 | reasoning | Brisk-S · reasoning low · 1 retry → High | +0.8 | -0.4 to +2.1 |
 | retry | Brisk-S · reasoning off · no retry → 1 retry | +3.5 | +1.5 to +5.6 |
 | retry | Brisk-S · reasoning low · no retry → 1 retry | +1.9 | +0.3 to +3.4 |
-| retry | Brisk-S · reasoning high · no retry → 1 retry | +1.3 | +0.03535 to +2.6 |
 | reasoning effect, across retry | (Brisk-S · reasoning off · 1 retry → Low) less (Brisk-S · reasoning off · no retry → Low) | -1.7 | -4.2 to +0.9 |
-| reasoning effect, across retry | (Brisk-S · reasoning off · 1 retry → High) less (Brisk-S · reasoning off · no retry → High) | -2.2 | -4.6 to +0.2 |
-| reasoning effect, across retry | (Brisk-S · reasoning low · 1 retry → High) less (Brisk-S · reasoning low · no retry → High) | -0.5 | -2.5 to +1.5 |
 
 Each effect is one setting moved between two arms that differ in it alone, on Pass rate; each interaction is the same move's effect in one context less its effect in another, the two contexts differing in one other setting. Descriptive: read as two arms' own spreads, never a test.
 
-What each Brisk-S setting buys in pass-rate points when it alone changes, with unpaired intervals; the last rows show whether reasoning's lift differs with a retry.
-
-#### The pick's misses sit in multi-hop and ambiguous-entity queries, where it reads 95.6% and 96.4%; this split is descriptive.
-
-| Group | Row | Value |
-|---|---|---|
-| Single lookup | J · Brisk-S · reasoning low · 1 retry | 98.4% |
-| Single lookup | L · Brisk-S · reasoning high · 1 retry | 98.5% |
-| Multi-hop (2 to 3 calls) | J · Brisk-S · reasoning low · 1 retry | 95.6% |
-| Multi-hop (2 to 3 calls) | L · Brisk-S · reasoning high · 1 retry | 97.3% |
-| Date and unit math | J · Brisk-S · reasoning low · 1 retry | 97.0% |
-| Date and unit math | L · Brisk-S · reasoning high · 1 retry | 97.9% |
-| Ambiguous entity | J · Brisk-S · reasoning low · 1 retry | 96.4% |
-| Ambiguous entity | L · Brisk-S · reasoning high · 1 retry | 97.6% |
-|  | Pass rate gate, at least 97% overall | 97.0% |
-
-Pass rate by kind of query for the two Brisk-S settings with one retry; the gate line applies overall, not per kind.
-
-| Example | Details | Reason | Excerpt |
-|---|---|---|---|
-| TQ-0418 · Multi-hop (2 to 3 calls) · Brisk-S · reasoning low · 1 retry · missing call | Input: Who chaired the committee that approved the 2019 grid budget?; Expected: search(committee, grid budget 2019) → lookup(chair) | Collapsed two hops into one query; returned the budget author, not the chair. | search(grid budget 2019 chair) |
-| TQ-0772 · Date and unit math · Brisk-S · reasoning low · 1 retry · wrong args | Input: Filings in the 90 days before the March 3 hearing; Expected: date_from=2026-12-03, date_to=2027-03-03 | Off-by-one on the window start. The most common wrong-args pattern (9 of 17). | date_from=2026-12-04, date_to=2027-03-03 |
-| TQ-1103 · Ambiguous entity · Brisk-S · reasoning low · 1 retry · wrong tool | Input: Latest on Mercury's pricing; Expected: ask_clarify(company or planet?) | Picked the company without asking. Scored wrong because the gold answer requires clarification. | search(Mercury pricing) |
-
-The failed cases kept for the pick, one per kind of query that misses; the snapshot does not say how many failures they were drawn from.
+What reasoning and the retry each add to Brisk-S's pass rate along the moves that lead to J and L, with unpaired intervals; the interaction shown is not separated from zero.
 
 ## What you could change
 
 | What you could change | What it decides | What happens as it moves |
 |---|---|---|
-| How the gate is read: on the point estimate or on the whole interval | Which Brisk-S setting is picked | On the point estimate the pick is low reasoning with one retry, at $0.302 per thousand calls. On the interval its range (96.2–98.1%) crosses the line, and high reasoning with one retry, at $0.633, is the cheapest whose range clears it. |
-| Where the gate's line sits | The pick, read on point estimates | The pick holds for any line above Brisk-S low reasoning without a retry (95.3%) up to its own 97.1%. Above that, Brisk-S high reasoning with one retry holds up to 98%, then Atlas-M high reasoning with one retry up to 98.6%; past it no setting passes. Each of these points carries its own interval, so each switch is a band, not a sharp line. |
+| The pass-rate gate's threshold | Which configuration is the cheapest that clears | J stays the pick for a gate above 95.3% up to 97.1%; L from there up to 98%; Atlas-M · reasoning high · 1 retry (F) up to 98.6%; above that nothing clears. Lower gates admit cheaper Brisk-S and Nano-XS configurations. |
+| Reading the gate on the interval rather than the point estimate | Whether J counts as clearing | J's computed interval crosses the gate while L's sits above it, so on the interval L becomes the pick at $0.633 per 1k calls against $0.302; a month that is $1,324 more if the volume counts calls, more if it counts tasks. |
 
 ## Next steps
 
-- The planner owner declares whether the gate must hold on its interval or its point estimate. _Whether low or high reasoning ships; on the interval reading, high reasoning with one retry is the pick at $1,324 more a month._
-- Fix the pick's multi-hop decomposition and date-window handling, then re-test it on fresh cases. _Whether low reasoning can clear the gate by more than noise; confirming today's thin clearance would need 111,255 cases, so a change to the setting is the practical route._
-- Declare the live share of each kind of query and what the monthly volume counts. _Whether the eval's task mix matches live traffic, and so whether the overall pass rate and the monthly costs describe production._
+- The planner's owner declares whether the gate must clear on its interval or on its point estimate. _Whether J ships or L does: more cases cannot practically settle J, which would need 111,255 cases to settle four times in five, two-sided._
+- Add worked multi-hop examples to Brisk-S's planning prompt, where J reads 95.6% (a figure with no stated case count, so no interval), then re-run J on 1,660 fresh cases. _Whether the change lifts J clear of the gate at its current cost: a run that size settles a clearance as large as L's, 1 points, four times in five; a smaller lift needs more cases._
+- Re-run L on 1,660 fresh cases. _Whether L's clearance survives fresh cases. The size assumes today's estimate of 98%; the best-of-many selection likely reads that high, and a lower true rate needs more cases to settle four times in five._
+- Declare each task's traffic share and case count, and whether the monthly volume counts calls or tasks. _Whether the overall pass rate reflects the production mix, and what the step from J to L costs a month._
 
 ## Full results
 
@@ -256,26 +235,20 @@ Each arm's full configuration, once. The rest of the page names an arm by its le
 
 ### Left out, and why
 
-- **Latency (median and tail per setting)** No latency budget was declared, so it gates nothing and does not change the call.
-- **Calls per task** Varies little across the Brisk-S settings; describes planner behaviour and does not change the call.
-- **Model and reasoning effects for Atlas-M and Nano-XS** In the full lever table; they explain the grid but neither model offers a cheaper passing setting.
-- **Extra calls and outcome measures** Listed for the campaign but hold no figures in the snapshot.
+- **Latency** No latency gate was declared, and latency does not reorder the two Brisk-S options; full figures in the appendix.
+- **Calls per task** Varies little between the options a decider would weigh and changes no gate reading; it matters only to what a month costs if the volume counts tasks, which the cost lines say.
+- **Extra calls per task and outcome** The snapshot holds no figures for either.
+- **Per-task pass rates of the other configurations** The gate reads overall; per-task figures state no case counts, so they are leads, kept in the appendix.
+- **Model and reasoning lever effects across Atlas-M and Nano-XS, and the high-reasoning retry move for Brisk-S** They explain why other configurations fall short or cost more but do not change the pick; all are in the appendix.
 
 ### Method
 
-- **Cases** Each setting ran 1,200 research queries across four kinds (single lookup, multi-hop, date and unit math, ambiguous entity), with no repeats stated and none lost. Per-kind case counts are not stated.
-- **Pass** Each query is graded pass or fail; the campaign does not state the rule that makes a plan pass. Kept failures show a missing call, wrong arguments and a wrong tool.
-- **Gate** One gate, declared for the campaign: overall pass rate at least 97%, read here on each setting's point estimate.
-- **Intervals** The pipeline states no interval on pass rate. Intervals shown are computed here from each setting's binomial spread over its cases, by normal approximation. Comparisons between settings are unpaired, so wider than a paired reading of the same cases; there is no control arm and no correction across comparisons.
-- **Cost** Cost per thousand planner calls as measured. Monthly figures multiply it by the declared volume of 4,000,000, whose unit the input does not state; if it counts tasks rather than calls, monthly costs run higher.
+- **Cases** Each configuration ran 1,200 cases once each across the task types; none was lost or failed to run. Per-task case counts are not stated.
+- **Pass** The input does not define what makes a planner run pass.
+- **The gate** Pass rate at least 97%, declared before the run and read on each configuration's point estimate, as declared.
+- **Intervals** Computed here from each configuration's cases as a binomial spread by the normal approximation, at the level each block prints. Gaps between configurations are unpaired, since no control was run, and uncorrected for the number of comparisons. Run sizes are quoted two-sided, sized to settle four times in five unless a table says otherwise. _Caveats: No arm is the control._
+- **Cost** Cost per 1k calls as measured. Each arm names its model but no provider. Monthly figures use the declared volume of 4,000,000 read as calls; the input does not say whether it counts calls or tasks, and if it counts tasks each monthly figure grows by the arm's calls per task.
+- **Selection** The pick is the cheapest of 18 configurations to clear the gate, so its pass rate likely reads high.
 - **Source** Synthetic example data from docs/eval-report-kit/references/r2-config-sweep.json, run 2026-10-23.
 
-### Review findings left open
-
-- **Should fix** · The page: The Recommendation says the pick is 'the only one no other setting beats on both cost and pass rate'. As written this is false. High-reasoning Brisk-S with one retry (98.0%) and high-reasoning Atlas-M with one retry (98.6%) are beaten by no setting on both axes, and neither are the cheap Nano-XS settings. The pick is undominated only when gate-passing is treated as a filter and the passing settings are then compared on cost. That is what options_dominance computes (it weighs gates, then cost). Reword along these lines: 'among the settings that clear the gate, every other one costs more'.
-- **Should fix** · Claim 2: Watch and next step 2 say settling the pick 'four times in five needs 111,255 cases'. That is the two-sided, 80%-power size (settle cases_needed_two_sided_80). The c-thin table prints only the 50% sizes, 38,350 one-sided and 54,451 two-sided. A reader sees three numbers for 'cases needed' and none is explained against the others. Add the 80% columns (cases_needed_80 = 87,635 and cases_needed_two_sided_80 = 111,255) to the c-thin table, or say in the caption that the 'Needed' columns are the size at which half of such runs settle it.
-- **Should fix** · Claim 4: The claim prices the retry at '$0.014 more per thousand calls' ($0.288 to $0.302), but the block draws only pass-rate effects. Add the cost step to the block, or move the cost figure out of this claim. Also, the high-reasoning retry row prints its lower end as '+0.03535' while every other row is rounded to one decimal place. Print it as '+0.04' or similar so it doesn't read as false precision. Note that this interval only barely excludes zero, so the claim's 'at every reasoning level' rests on that row's thin margin.
-- **Should fix** · Claim 5: 'The pick's misses sit in multi-hop and ambiguous-entity queries' overstates what the block shows. Date and unit math reads 97.0%, so it also misses, and one of the three kept failures (TQ-0772, the off-by-one date window, the most common wrong-args pattern at 9 of 17) is from date math. Say the pick sits below the gate line on multi-hop and ambiguous entity and fails in every kind. Next step 2 targets multi-hop decomposition and date-window handling but not the ambiguous-entity clarification failure (TQ-1103), although c-tasks and the task-mix caveat both name ambiguous entity as a weak kind. Add it, or say why it is left out.
-- **Should fix** · Claim 2: The reference lines in the c-thin and c-tasks blocks are labelled 'Floor 97%', but the rows and the rest of the page call this criterion a gate ('Pass rate gate, at least 97%'). Use one name so a reader doesn't look for a second criterion.
-
-_Written by claude-opus-5-5, served as claude-opus-5-5, for $1.99, with analyst skill 1677ccb31cd6, on 2026-10-29._
+_Written by claude-opus-5-5, served as claude-opus-5-5, for $2.47, with analyst skill ed7e2c60b5ad, on 2026-10-29._
