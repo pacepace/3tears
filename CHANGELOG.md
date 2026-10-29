@@ -6,7 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.83.0 -- 2026-10-28
+## v0.83.0 -- 2026-10-29
+
+### observe, core: a periodic tick sets its next delay only with `NextDelay`, and never below `min_delay`
+
+**Fixed:** `PeriodicTask` read any finite non-negative number a tick returned as the delay before the next tick,
+with no floor. `CollectionRegistry.catch_up_l2_generations()` returns how many tables it dropped, almost always 0,
+so a loop wired straight to it re-ticked with no sleep: about 4-5k NATS KV requests a second and 0.6 of a core per
+pod, on cobalt dev and prod. **Added:** `NextDelay(seconds)`. A tick now steers the loop only by returning
+`NextDelay`; any other value, a bare number included, keeps the interval. A requested delay is floored at the new
+`PeriodicTask(min_delay=)` (one second by default), so even `NextDelay(0)` cannot spin. **Changed:** `TickResult` is
+`NextDelay | None`, and `run_once()` returns the floored seconds as a `float`, or `None`. **Porting:** a tick that
+returned a number to ask for a fast retry or a backoff returns `NextDelay(<seconds>)` instead, and passes
+`min_delay=` if it needs to retry faster than once a second; left as is, it keeps the interval. The hub JWKS
+provider is moved over.
 
 ### agent-acl, core: access answers derived once per membership shape and shared by every replica
 

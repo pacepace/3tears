@@ -22,8 +22,7 @@ the task to end, one bad tick kills some loops and not others.
   retry until a first success, backoff after a failure); anything else it
   returns -- ``None``, a count, a list -- keeps the configured interval. A
   bare number is not a delay: a pass that returns how much it did (almost
-  always ``0``) would otherwise re-tick with no sleep at all, and one did,
-  spinning thousands of NATS requests a second per pod;
+  always ``0``) would otherwise re-tick with no sleep at all;
 - a requested delay is floored at ``min_delay`` (one second by default), so
   even an explicit ``NextDelay(0)`` cannot spin the loop;
 - the task is spawned with ``spawn_background`` so its end is logged
