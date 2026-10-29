@@ -196,7 +196,7 @@ _FORMATS: dict[str, Callable[[float, int | None], str]] = {
 }
 
 
-def kit_format(spec: str) -> Callable[[float], str]:
+def _kit_format(spec: str) -> Callable[[float], str]:
     """A kit format (``name`` or ``name:digits``, ``+`` first to sign a positive value) as the function that writes a
     value in it, as the kit's ``namedFmt`` does, so a drawn tick or note reads as the kit draws it.
 
@@ -528,8 +528,8 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
     """Horizontal bars (``barsH``): plain or stacked, diverging from a no-preference point, grouped, with whiskers and
     a reference line."""
     rows, (d0, d1) = _need(d.rows, "rows"), _need(d.domain, "domain")
-    f = kit_format(_need(d.fmt, "fmt"))
-    tf = kit_format(d.tick_fmt) if d.tick_fmt else f
+    f = _kit_format(_need(d.fmt, "fmt"))
+    tf = _kit_format(d.tick_fmt) if d.tick_fmt else f
     ref = d.reference
     no_preference = ref is not None and ref.kind == "no_preference"
     origin = ref.value if ref is not None and no_preference else 0.0
@@ -689,7 +689,7 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
 
 def _forest(d: ForestChart, w: float) -> _Drawn:
     """A forest plot (``forest``): each change against the control with its interval, and an optional margin band."""
-    rows, (d0, d1), f = d.rows, d.domain, kit_format(d.fmt)
+    rows, (d0, d1), f = d.rows, d.domain, _kit_format(d.fmt)
     narrow, row_h = w < 480, d.row_height or 30
     need = max(len(r.label) for r in rows) * 6.6 + 18
     lw = (d.label_width_narrow if narrow else d.label_width) or min(need, w * 0.42 if narrow else min(230, w * 0.32))
@@ -775,7 +775,7 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
 
 def _lines(d: LinesChart, w: float) -> _Drawn:
     """A line chart over ordered categories (``lineChart``), each series' band where it carries one."""
-    narrow, cats, f = w < 480, d.categories, kit_format(d.fmt)
+    narrow, cats, f = w < 480, d.categories, _kit_format(d.fmt)
     h = d.height or (260 if narrow else 300)
     ml, mr, mt, mb = 44, (92 if narrow else 130), (24 if d.level else 14), (44 if d.x_title else 28)
     d0, d1 = d.domain
@@ -915,7 +915,7 @@ _ScatterLike = ScatterChart | ScatterPanel | GateScatterChart | GateScatterPanel
 def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
     """Two measures that trade off (``kScatter``); ``gate`` shades where both references pass (``gate_scatter``)."""
     points = _need(d.points, "points")
-    xf, yf = kit_format(_need(d.x_fmt, "x_fmt")), kit_format(_need(d.y_fmt, "y_fmt"))
+    xf, yf = _kit_format(_need(d.x_fmt, "x_fmt")), _kit_format(_need(d.y_fmt, "y_fmt"))
     (x0, x1), (y0, y1) = _need(d.x_domain, "x_domain"), _need(d.y_domain, "y_domain")
     narrow = w < 560
     y_ticks = d.y_ticks or _format_ticks(y0, y1, 5, yf)
@@ -1065,7 +1065,7 @@ _DotLike = DotIntervalChart | DotIntervalPanel
 def _dot_interval(d: _DotLike, w: float) -> _Drawn:
     """One rate per row against a floor (``kDotInterval``): a dot in its arm's shape, its interval, the floor
     dashed."""
-    rows, (d0, d1), f = _need(d.rows, "rows"), _need(d.domain, "domain"), kit_format(_need(d.fmt, "fmt"))
+    rows, (d0, d1), f = _need(d.rows, "rows"), _need(d.domain, "domain"), _kit_format(_need(d.fmt, "fmt"))
     row_h = d.row_height or 28
     need = max(len(r.label) for r in rows) * 6.6 + 18
     ml = (d.label_width_narrow if w < 480 else d.label_width) or min(need, w * 0.42)
@@ -1110,7 +1110,7 @@ def _dot_interval(d: _DotLike, w: float) -> _Drawn:
 
 def _range_bars(d: RangeBarsChart, w: float) -> _Drawn:
     """Latency distributions (``kRangeBars``): one bar per row from ``from`` to ``to``, grouped, with a budget line."""
-    groups, (d0, d1), f = d.groups, d.domain, kit_format(d.fmt)
+    groups, (d0, d1), f = d.groups, d.domain, _kit_format(d.fmt)
 
     def band(rows: int) -> float:
         return rows * 13 + 20
@@ -1225,8 +1225,8 @@ def _heatmap(d: _HeatLike, w: float) -> _Drawn:
     """A target matrix (``kHeatmap``): six sequential shades over the domain, n per cell, a cell under the floor
     outlined."""
     columns = [column.label for column in _need(d.columns, "columns")]
-    (d0, d1), f = _need(d.domain, "domain"), kit_format(_need(d.fmt, "fmt"))
-    nf = kit_format(d.n_fmt) if d.n_fmt else None
+    (d0, d1), f = _need(d.domain, "domain"), _kit_format(_need(d.fmt, "fmt"))
+    nf = _kit_format(d.n_fmt) if d.n_fmt else None
     rows = []
     for row in _need(d.rows, "rows"):
         cells = []
@@ -1245,8 +1245,8 @@ def _heatmap(d: _HeatLike, w: float) -> _Drawn:
 def _diff_heatmap(d: DiffHeatmapChart, w: float) -> _Drawn:
     """The difference between two configurations (``kDiffHeatmap``): diverging shades, gray within the neutral
     band, full colour at the saturation point."""
-    columns, f = [column.label for column in d.columns], kit_format(d.fmt)
-    df = kit_format(d.detail_fmt) if d.detail_fmt else None
+    columns, f = [column.label for column in d.columns], _kit_format(d.fmt)
+    df = _kit_format(d.detail_fmt) if d.detail_fmt else None
     neutral, saturate = (0.5 if d.neutral is None else d.neutral), (d.saturate or 8)
     rows = []
     for row in d.rows:
@@ -1272,7 +1272,7 @@ _ConfusionLike = ConfusionChart | ConfusionPanel
 def _confusion(d: _ConfusionLike, w: float) -> _Drawn:
     """Errors between classes (``kConfusion``), each row as shares of 100: the diagonal tinted, an off-diagonal cell
     warned and bad by its share."""
-    labels, f = _need(d.labels, "labels"), kit_format(d.fmt or "pct:1")
+    labels, f = _need(d.labels, "labels"), _kit_format(d.fmt or "pct:1")
     warn_at, bad_at = (1 if d.warn_at is None else d.warn_at), (3 if d.bad_at is None else d.bad_at)
     rows = []
     for i, shares in enumerate(d.shares()):
@@ -1444,5 +1444,4 @@ __all__ = [
     "AS_TABLE_NOTE",
     "CHART_STYLE",
     "chart_drawing",
-    "kit_format",
 ]

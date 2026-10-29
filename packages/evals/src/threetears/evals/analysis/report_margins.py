@@ -56,7 +56,6 @@ __all__ = [
     "CriterionFigure",
     "CriterionPlace",
     "Margin",
-    "corrected_interval",
     "criterion_aspect",
     "criterion_figures",
     "criterion_misses",
@@ -119,7 +118,7 @@ class Margin:
     :ivar line: The threshold, or ``-margin``, in the same units.
     :ivar gap: How far the figure clears the line, signed toward passing.
     :ivar corrected: Whether a margin's worst end is read on the multiplicity-corrected interval of the arm's contrast
-        (the pass-rate contrast, :func:`corrected_interval`) rather than the plain interval at the nominal level.
+        (the pass-rate contrast) rather than the plain interval at the nominal level.
     :ivar level: The corrected interval's confidence level, as the input states it (``99.69%``); None for a figure read
         on the plain interval, a criterion, or a level the input does not state.
     """
@@ -157,7 +156,7 @@ def flip_margin(reading: Reading) -> float | None:
     return max(0.0, -float(reading.within_interval[0]))
 
 
-def corrected_interval(
+def _corrected_interval(
     report_input: ReportInput, aspect: Aspect, reading: Reading
 ) -> tuple[tuple[float, float], str | None] | None:
     """The multiplicity-corrected interval on a reading's change, in points, where the input holds one: the pass-rate
@@ -481,7 +480,7 @@ def _interval_margins(report_input: ReportInput, surviving: set[str]) -> Iterato
             if not math.isfinite(low):
                 continue
             # The worst case is read on the corrected interval wherever the input holds one, and the margin says so.
-            corrected = corrected_interval(report_input, aspect, reading)
+            corrected = _corrected_interval(report_input, aspect, reading)
             if corrected is not None:
                 low = corrected[0][0]
             yield Margin(

@@ -135,7 +135,7 @@ CAMPAIGN_PRESENTATION_FIELDS: frozenset[str] = frozenset({"name"})
 #: A campaign bundle's fingerprint version 3: version 2's digest (floats rounded) over evidence without the campaign's
 #: name. A fingerprint stored in version 2 (``v2:``) or 1 (unprefixed) was taken with the name and is computed again
 #: in its own version, name included, so every stored fingerprint still matches the evidence it was taken over.
-CAMPAIGN_FINGERPRINT_PREFIX: Final[str] = "v3:"
+_CAMPAIGN_FINGERPRINT_PREFIX: Final[str] = "v3:"
 _DERIVED_READINGS = frozenset({"aggregate"})
 
 #: The most characters one aspect's part of the writer's user message may take, as compact JSON. A campaign's message
@@ -286,7 +286,7 @@ class CampaignBundle(EvalDocumentModel):
     def fingerprint(self, *, like: str | None = None) -> str:
         """The campaign bundle's fingerprint: its frame's, which names each aspect's bundle by its fingerprint.
 
-        Version 3 (:data:`CAMPAIGN_FINGERPRINT_PREFIX`), the current one, leaves out the campaign's name
+        Version 3 (prefix ``v3:``), the current one, leaves out the campaign's name
         (:data:`CAMPAIGN_PRESENTATION_FIELDS`); asked ``like`` a version 2 or 1 fingerprint, it is computed in that
         version, the name included, as it was taken.
 
@@ -559,16 +559,16 @@ def campaign_evidence_digest(document: Mapping[str, Any], *, like: str | None = 
 def _aspects_like(like: str | None) -> str | None:
     """The version a campaign fingerprint in ``like``'s version names its aspects' bundles in: their current one under
     version 3 (which changed only the campaign's own evidence), else ``like``'s."""
-    return None if like is None or like.startswith(CAMPAIGN_FINGERPRINT_PREFIX) else like
+    return None if like is None or like.startswith(_CAMPAIGN_FINGERPRINT_PREFIX) else like
 
 
 def _campaign_digest(frame: Mapping[str, Any], *, like: str | None) -> str:
     """A campaign bundle frame's fingerprint in ``like``'s version: version 3 over its evidence without the campaign's
     name, or, ``like`` a version 2 or 1 fingerprint, that version's digest with the name, as it was taken."""
     evidence = _evidence_of(frame)
-    if like is None or like.startswith(CAMPAIGN_FINGERPRINT_PREFIX):
+    if like is None or like.startswith(_CAMPAIGN_FINGERPRINT_PREFIX):
         unnamed = {key: value for key, value in evidence.items() if key not in CAMPAIGN_PRESENTATION_FIELDS}
-        return CAMPAIGN_FINGERPRINT_PREFIX + identity_digest(unnamed)
+        return _CAMPAIGN_FINGERPRINT_PREFIX + identity_digest(unnamed)
     return fingerprint_digest(evidence, like=like)
 
 
@@ -1622,7 +1622,6 @@ def campaign_trial_ids(aspects: Iterable[tuple[str, Sequence[str]]]) -> dict[str
 
 
 __all__ = [
-    "CAMPAIGN_FINGERPRINT_PREFIX",
     "CAMPAIGN_BUNDLE_SHAPE",
     "CAMPAIGN_MESSAGE_CHARS_PER_ASPECT",
     "CAMPAIGN_MESSAGE_HEADING",

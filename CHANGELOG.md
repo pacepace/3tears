@@ -102,7 +102,7 @@ The quick path (`Eval.run`, `Result.against`) holds its campaign to the cap too:
 cut at a word there, an ellipsis marking the cut, and kept whole in the campaign's description and as `Result.name`.
 
 **Changed:** a campaign's name is presentation: a campaign bundle's fingerprint is version 3
-(`CAMPAIGN_FINGERPRINT_PREFIX`, `v3:`), which leaves the name out (`CAMPAIGN_PRESENTATION_FIELDS`), as it leaves
+(`v3:`), which leaves the name out (`CAMPAIGN_PRESENTATION_FIELDS`), as it leaves
 out an aspect's and an arm's short names. Renaming a campaign moves no version 3 fingerprint.
 
 **Fingerprints:** no stored fingerprint moves. A campaign fingerprint stored in version 2 (`v2:`) or 1 (unprefixed)
@@ -164,10 +164,10 @@ with `rows: []`), and a small multiple given none is a card saying so. The defau
 **Fixed:** the examples table's Details column no longer prints a case's input as truncated JSON: an input or expectation
 that is a JSON object (a world, a payload), whole or cut where the snapshot was frozen, reads as its first four key and
 value pairs (`Input · city: Oslo`), each key by its reader name and each long value cut at a word; any other text stays
-one field as written (`resolve_examples.readable_fields`), a text opening on `{` that reads as no pair ("{customer}
+one field as written, a text opening on `{` that reads as no pair ("{customer}
 asked for a refund") included. The weakest margin (`Margin`, `weakest.*`, Watch) takes a
 reading's worst case from the multiplicity-corrected interval of the arm's pass-rate contrast wherever the input holds
-one (`report_margins.corrected_interval`), not the plain 95% interval, so Kairo's reads -12.6 (gap 2.4) where it read
+one, not the plain 95% interval, so Kairo's reads -12.6 (gap 2.4) where it read
 -10.8 (gap 4.2); a floor keeps its own nominal interval. `weakest.interval` (new key) says which interval the worst case
 is read on, the planner's facts line and the editor's `weakest_not_in_watch` fact name it, and a plan page's Watch that
 cites the weakest margin carries code's line saying so, after the planner's text (`PageSlot.note`, new), so the text

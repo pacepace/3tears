@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import re
 from pathlib import Path
@@ -24,7 +25,7 @@ import pytest
 
 from threetears.evals.analysis import ChartBlock, report_html
 from threetears.evals.analysis.report.charts import BarRow, BarsChart
-from threetears.evals.analysis.report.chart_svg import AS_TABLE_NOTE, CHART_STYLE, chart_drawing, kit_format
+from threetears.evals.analysis.report.chart_svg import AS_TABLE_NOTE, CHART_STYLE, chart_drawing
 from packages.evals.tests.hostile_page_support import hostile_kit_charts
 from packages.evals.tests.page_contract_support import parsed
 from packages.evals.tests.report_kit_support import report_of
@@ -175,11 +176,21 @@ def test_a_colour_that_is_not_a_token_name_never_reaches_a_style() -> None:
         chart_drawing(smuggled)
 
 
+def _drawn_in(fmt: str, value: float) -> str:
+    """``value`` as a forest row's tooltip writes it in ``fmt``: its estimate and both ends of its interval."""
+    row = {"label": "row", "value": value, "lo": value, "hi": value}
+    data = {"rows": [row], "domain": [min(value, 0) - 1, max(value, 0) + 1], "fmt": fmt, "level": "95%"}
+    drawing = chart_drawing(_block(chart="forest", data=data))
+    assert drawing is not None
+    (written,) = {match[1] for match in re.finditer(r"([^\n<>\[]+) \[\1, \1\]", html.unescape(drawing))}
+    return written.strip()
+
+
 def test_the_drawn_numbers_are_the_kit_s_named_formats() -> None:
     cases = json.loads(_NUMBER_CASES.read_text(encoding="utf-8"))["kit_money"]["cases"]
-    assert [kit_format(case["fmt"])(case["value"]) for case in cases] == [case["expected"] for case in cases]
+    assert [_drawn_in(case["fmt"], case["value"]) for case in cases] == [case["expected"] for case in cases]
     assert [
-        kit_format(spec)(value) for spec, value in [("pct", 12.5), ("+pts:1", 2), ("int", 1234.5), ("num", 0.125)]
+        _drawn_in(spec, value) for spec, value in [("pct", 12.5), ("+pts:1", 2), ("int", 1234.5), ("num", 0.125)]
     ] == [
         "12.5%",
         "+2.0 pts",
@@ -187,7 +198,7 @@ def test_the_drawn_numbers_are_the_kit_s_named_formats() -> None:
         "0.13",
     ]
     with pytest.raises(ValueError, match="fmt"):
-        kit_format("bogus")
+        _drawn_in("bogus", 1)
 
 
 def test_the_default_page_draws_nothing_on_the_server() -> None:

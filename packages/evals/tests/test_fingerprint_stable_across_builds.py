@@ -37,7 +37,6 @@ import pytest
 from threetears.evals.analysis import assemble_campaign_bundle, assemble_context_bundle, campaign_report
 from threetears.evals.analysis.bundle.schema import BundleInspection, evidence_digest
 from threetears.evals.analysis.campaign_bundle import (
-    CAMPAIGN_FINGERPRINT_PREFIX,
     CAMPAIGN_MESSAGE_HEADING,
     CampaignBundle,
     aspect_view,
@@ -456,8 +455,8 @@ def test_a_reporter_case_frozen_before_the_rounding_still_holds_its_bundle_and_i
     fixture = reporter_fixture()
     storage = fixture.host.eval_host.storage
     receipt = freeze_corpus_campaign(fixture)
-    assert receipt.bundle_fingerprint.startswith(CAMPAIGN_FINGERPRINT_PREFIX), (
-        "a fresh freeze takes the current version"
+    assert receipt.bundle_fingerprint.startswith("v3:"), (
+        "a fresh freeze takes the current version, 3, which leaves the campaign's name out"
     )
     (stored,) = storage.query_test_cases(TOYHOST_SCOPE, template_id=reporter_template().id)
     case = reporter_case_of(stored)

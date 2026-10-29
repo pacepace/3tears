@@ -89,6 +89,10 @@ NOTE_BUILT_AFTER_ON_PURPOSE: dict[str, str] = {
         "no note: a plan check's fault text counting the warnings code raised on the recommended option, which "
         "an answer's position must fall among; the word is the plan field's name, not a note on a body"
     ),
+    "packages/evals/src/threetears/evals/ops/analysis.py:qualified:' warning'": (
+        "no note: a campaign line's outcome_short, a few words a list page shows, leads with the answer and counts "
+        "its warnings after it by owner ruling (2026-10-29); the word counts warnings, it is not a note on a body"
+    ),
     "packages/agent/tools/src/threetears/agent/tools/builtin/analyze_media.py:_handle_document:window_note": (
         "the prompt an analyser model reads, not a tool result: the window note follows the document fence it "
         "describes, as HAND_PLACED records"

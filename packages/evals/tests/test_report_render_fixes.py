@@ -19,7 +19,7 @@ from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.report_shapes_support import SHAPES
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.report.block_spec import block_look
-from threetears.evals.analysis.report.charts import ExamplesChart
+from threetears.evals.analysis.report.charts import ExampleField, ExamplesChart
 from threetears.evals.analysis.report.figure_keys import reader_name, render, resolve
 from threetears.evals.analysis.report.plan_page.build import plan_page
 from threetears.evals.analysis.report.plan_page.charting import measure_words
@@ -45,10 +45,22 @@ def _r5() -> ReportInput:
 # --- 1. the examples' details ---------------------------------------------------------------------------------------
 
 
-def test_a_cut_world_reads_as_key_and_value_pairs_with_long_values_cut_at_a_word() -> None:
-    from threetears.evals.analysis.report.plan_page.resolve_examples import readable_fields
+def _input_fields(text: str) -> list[ExampleField]:
+    """What an example card on a planned page holds for an input ``text`` with no expected answer, every r5 example
+    given it."""
+    held = _r5()
+    moved = held.model_copy(
+        update={"examples": [example.model_copy(update={"input": text, "expected": ""}) for example in held.examples]}
+    )
+    _, _, path = _plans_with_examples()[0]
+    page = plan_page(dataset.load_plan(path), moved)
+    blocks = [*(one.chart for one in page.summary), *(section.chart.chart for section in page.sections)]
+    (chart, *_) = [block.data for block in blocks if isinstance(block.data, ExamplesChart)]
+    return chart.cards[0].fields or []
 
-    fields = readable_fields("Input", _WORLD)
+
+def test_a_cut_world_reads_as_key_and_value_pairs_with_long_values_cut_at_a_word() -> None:
+    fields = _input_fields(_WORLD)
     assert [field.term for field in fields] == ["Input · city", "Input · guests", "Input · dietary", "Input · notes"]
     assert [field.text for field in fields[:3]] == ["Oslo", "4", "vegan, no nuts"]
     notes = fields[3].text
@@ -58,19 +70,15 @@ def test_a_cut_world_reads_as_key_and_value_pairs_with_long_values_cut_at_a_word
 
 
 def test_a_plain_input_stays_one_field_as_written() -> None:
-    from threetears.evals.analysis.report.plan_page.resolve_examples import readable_fields
-
-    (field,) = readable_fields("Input", "Where can I park?")
+    (field,) = _input_fields("Where can I park?")
     assert (field.term, field.text) == ("Input", "Where can I park?")
 
 
 def test_a_text_opening_on_a_brace_that_is_not_json_stays_one_field_and_an_empty_object_gives_none() -> None:
-    from threetears.evals.analysis.report.plan_page.resolve_examples import readable_fields
-
     for text in ("{customer} asked for a refund", "{", '{"cut'):
-        (field,) = readable_fields("Input", text)
+        (field,) = _input_fields(text)
         assert (field.term, field.text) == ("Input", text), "the input never vanishes from its card"
-    assert readable_fields("Input", "{}") == []
+    assert _input_fields("{}") == []
 
 
 def test_the_examples_table_details_column_holds_no_json() -> None:

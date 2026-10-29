@@ -32,7 +32,7 @@ from threetears.evals.analysis.report.plan_page.words import (
 from threetears.evals.analysis.report_input import Example
 from threetears.evals.analysis.style import humanize
 
-__all__ = ["RESOLVERS", "readable_fields"]
+__all__ = ["RESOLVERS"]
 
 #: The most fields one input or expectation gives a card: the few that say what the case was.
 _FIELDS_SHOWN = 4
@@ -110,7 +110,7 @@ def _empty_object(text: str) -> bool:
     return read == {}
 
 
-def readable_fields(term: str, text: str) -> list[ExampleField]:
+def _readable_fields(term: str, text: str) -> list[ExampleField]:
     """What a case gave or expected, as fields a reader reads. A text that is a JSON object (a world, a payload),
     whole or cut short where the snapshot was frozen, is its key and value pairs: the first few with something to say,
     each key by its reader name and each long value cut at a word, never the JSON itself; any other text is one field,
@@ -165,7 +165,7 @@ def _card(context: ChartContext, example: Example) -> ExampleCard:
         field
         for term, text in ((INPUT_TERM, example.input), (EXPECTED_TERM, example.expected))
         if text
-        for field in readable_fields(term, text)
+        for field in _readable_fields(term, text)
     ]
     return ExampleCard(
         meta=meta or None,
