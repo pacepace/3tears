@@ -723,3 +723,58 @@ class TestTheOutcomeSaysWhereItIsKept:
         assert given.outcome is ShapeAnswerOutcome.DERIVED
         assert len(_l2_keys(await _bucket(bus))) == 1
         assert replica.answers.held == 0, "kept in L2 by its stamp, not in this replica's L1 past the fence"
+
+
+class TestWhatIsRecorded:
+    async def test_an_unreadable_l2_entry_is_never_served_and_is_deleted_once_stale(self, bus: FakeNatsClient) -> None:
+        store = _Store()
+        estate = _Estate(store)
+        replica, other = await _replica(bus, store), await _replica(bus, store)
+        shape = await estate.shape(store, estate.reader)
+        await _ask(replica, estate, shape, _Computer())
+        bucket = await _bucket(bus)
+        key = replica.answers.l2_key(replica.answers.key_of(_KIND, estate.customer, shape))
+        await bucket.put(key=key, value=b"{")
+        compute = _Computer()
+        assert (await _ask(other, estate, shape, compute)).outcome is ShapeAnswerOutcome.DERIVED
+        await bucket.put(key=key, value=b"{")
+        replica.hear(_assignment_row(estate.states[0]))
+        await replica.settle()
+        assert key not in bucket.keys()
+
+    async def test_a_failure_while_deleting_stale_entries_is_recorded_not_raised(
+        self, bus: FakeNatsClient, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = _Store()
+        estate = _Estate(store)
+        replica = await _replica(bus, store)
+        await _ask(replica, estate, await estate.shape(store, estate.reader), _Computer())
+        bucket = await _bucket(bus)
+
+        async def unreachable(**_kwargs: Any) -> Any:
+            raise RuntimeError("the bucket went away")
+
+        monkeypatch.setattr(bucket, "get_entry", unreachable)
+        replica.hear(_assignment_row(estate.states[0]))
+        await replica.settle()
+        assert "stale access-shape answers were not deleted from L2" in caplog.text
+
+    async def test_an_untrusted_spell_counts_each_answer_at_the_source_and_says_so_once(
+        self, bus: FakeNatsClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        store = _Store()
+        estate = _Estate(store)
+        replica = await _replica(bus, store)
+        shape = await estate.shape(store, estate.reader)
+        said = "access-shape answers are not trusted"
+        before = tier_reads_total().get(_TABLE, {}).get("l3", 0)
+        replica.followed = False
+        await _ask(replica, estate, shape, _Computer())
+        await _ask(replica, estate, shape, _Computer())
+        assert tier_reads_total()[_TABLE]["l3"] == before + 2
+        assert caplog.text.count(said) == 1
+        replica.followed = True
+        await _ask(replica, estate, shape, _Computer())
+        replica.followed = False
+        await _ask(replica, estate, shape, _Computer())
+        assert caplog.text.count(said) == 2, "a new untrusted spell is said again"

@@ -952,12 +952,19 @@ class AccessShapeAnswers(DerivedCollection[ShapeAnswerRow]):
         )
 
     def deserialize(self, data: bytes) -> dict[str, Any]:
-        """a row back from L2.
+        """a row back from L2; an entry that does not read as one is an empty row, which no read serves.
 
         :param data: JSON bytes
         :ptype data: bytes
-        :return: the row
+        :return: the row, or ``{}`` for an unreadable entry (derived again, and overwritten or deleted)
         :rtype: dict[str, Any]
         """
-        row: dict[str, Any] = json.loads(data)
+        row: dict[str, Any] = {}
+        try:
+            decoded = json.loads(data)
+        except ValueError:
+            # NOSILENT: an entry another release or a torn write left is no answer; the read derives one
+            decoded = None
+        if isinstance(decoded, dict):
+            row = decoded
         return row
