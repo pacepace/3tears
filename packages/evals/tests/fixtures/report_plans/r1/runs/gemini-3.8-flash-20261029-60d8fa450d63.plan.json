@@ -1,0 +1,300 @@
+{
+  "mode": "decide",
+  "headline_kind": "decision",
+  "headline": "Deploy {arm:atlas-m}. It satisfies all eleven quality, safety, and latency gates across every task.",
+  "lede": "{arm:atlas-m} is the only evaluated candidate that clears every quality threshold while remaining within the {criteria.p95.threshold} budget. Relaxing the latency ceiling would allow {arm:atlas-l}, which achieves higher overall quality but exceeds p95 limits.",
+  "decision": {
+    "slots": [
+      {
+        "key": "recommendation",
+        "text": "Adopt {arm:atlas-m}. It clears all quality and behavioral gates across all five tasks while staying under the {criteria.p95.threshold} latency ceiling.",
+        "caveats": []
+      },
+      {
+        "key": "why_not",
+        "text": "{arm:atlas-l} breaches the p95 latency ceiling on multiple tasks, while {arm:brisk-s} and {arm:open-70b} fail core quality and safety gates.",
+        "caveats": []
+      },
+      {
+        "key": "watch",
+        "text": "Watch {weakest.arm}'s {weakest.criterion} in Troubleshooting (multi-turn), which hit {weakest.value} against the {weakest.threshold} threshold with a margin of {weakest.margin} points. Multi-turn troubleshooting volume needs continuous monitoring.",
+        "caveats": []
+      },
+      {
+        "key": "next",
+        "text": "Run an expanded sample of multi-turn troubleshooting cases on {arm:atlas-m} to confirm resolution rates remain securely above {criteria.trouble.resolves.threshold}.",
+        "caveats": []
+      }
+    ],
+    "confidence": {
+      "form": "high",
+      "caveats": []
+    }
+  },
+  "method": [
+    {
+      "term": "Evaluation design",
+      "text": "Benchmarked four candidate models across five representative concierge task suites encompassing {scoreboard.atlas-m.cases} total cases.",
+      "caveats": []
+    },
+    {
+      "term": "Gating criteria",
+      "text": "All candidates had to satisfy the {criteria.overall.threshold}% Overall quality floor and {criteria.p95.threshold} Latency budget (p95) on every task, plus task-specific safety bars.",
+      "caveats": []
+    },
+    {
+      "term": "Judges",
+      "text": "Overall quality evaluated with a calibrated judge with {judged.overall.agreement} agreement against human raters across {judged.overall.calibration_ratings} calibration pairs.",
+      "caveats": []
+    },
+    {
+      "term": "Latency measurement",
+      "text": "Measured end to end from incoming user message to final token completion in staging environments.",
+      "caveats": []
+    }
+  ],
+  "schema": "report-plan/1",
+  "signals": {
+    "candidate_structure": "unordered",
+    "baseline": "none",
+    "score_type": "mixed",
+    "strata": "tasks",
+    "criteria": "hard_gates",
+    "cross_cutting": [
+      "specul"
+    ],
+    "log_cost_axis": true
+  },
+  "shape": "A",
+  "masthead": {
+    "kind": "Choice · candidates compared",
+    "system": "Concierge chat assistant",
+    "counts": "4 arms · 5 tasks",
+    "run_date": "{meta.run_date}",
+    "synthetic": true
+  },
+  "arms": [
+    {
+      "id": "atlas-l",
+      "color_slot": 0
+    },
+    {
+      "id": "atlas-m",
+      "color_slot": 1
+    },
+    {
+      "id": "brisk-s",
+      "color_slot": 2
+    },
+    {
+      "id": "open-70b",
+      "color_slot": 3
+    }
+  ],
+  "show_arms_key": false,
+  "flag": [],
+  "options": {
+    "rows": [
+      {
+        "option": "atlas-m",
+        "role": "recommended"
+      },
+      {
+        "option": "atlas-l",
+        "role": "near_miss"
+      },
+      {
+        "option": "brisk-s",
+        "role": "cheapest"
+      },
+      {
+        "option": "open-70b",
+        "role": "alternative"
+      }
+    ],
+    "columns": [
+      "gate",
+      "cost_per_1k"
+    ]
+  },
+  "summary": [
+    {
+      "kind": "bars",
+      "title": "Cost per 1k conversations in Billing & account Q&A",
+      "query": {
+        "source": "tasks",
+        "aspect": "",
+        "measures": [
+          "cost_per_1k"
+        ],
+        "arms": [
+          "atlas-m",
+          "atlas-l",
+          "brisk-s",
+          "open-70b"
+        ],
+        "strata": [
+          "billing"
+        ],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "atlas-m",
+      "level": "",
+      "unit": "",
+      "domain": []
+    },
+    {
+      "kind": "range_bars",
+      "title": "Latency (p50 to p95) in Billing & account Q&A",
+      "query": {
+        "source": "tasks",
+        "aspect": "",
+        "measures": [
+          "latency_s"
+        ],
+        "arms": [
+          "atlas-m",
+          "atlas-l",
+          "brisk-s",
+          "open-70b"
+        ],
+        "strata": [
+          "billing"
+        ],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [
+        {
+          "kind": "budget",
+          "key": "criteria.p95.threshold"
+        }
+      ],
+      "emphasis": "atlas-m",
+      "level": "",
+      "unit": "",
+      "domain": []
+    }
+  ],
+  "sections": [
+    {
+      "id": "gate_compliance",
+      "eyebrow": "Gate evaluation",
+      "headline": "{arm:atlas-m} clears every operational, behavioral, and latency gate",
+      "takeaway": "Green cells show passed gates; red indicates missed criteria across the evaluated tasks.",
+      "chart": {
+        "kind": "gate_matrix",
+        "title": "",
+        "query": {
+          "source": "tasks",
+          "aspect": "",
+          "measures": [],
+          "arms": [
+            "atlas-m",
+            "atlas-l",
+            "open-70b",
+            "brisk-s"
+          ],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "atlas-m",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "task_quality",
+      "eyebrow": "Quality distribution",
+      "headline": "{arm:atlas-m} maintains high quality across all tasks above the floor",
+      "takeaway": "Points show mean judged quality with confidence intervals against the {criteria.overall.threshold}% floor.",
+      "chart": {
+        "kind": "dot_interval",
+        "title": "",
+        "query": {
+          "source": "tasks",
+          "aspect": "",
+          "measures": [
+            "overall"
+          ],
+          "arms": [
+            "atlas-m",
+            "atlas-l",
+            "open-70b",
+            "brisk-s"
+          ],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [
+          {
+            "kind": "floor",
+            "key": "criteria.overall.threshold"
+          }
+        ],
+        "emphasis": "atlas-m",
+        "level": "95% uncorrected",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    }
+  ],
+  "explore": [
+    {
+      "title": "Explore latency tolerance",
+      "controls": [
+        {
+          "id": "latency_p95_threshold",
+          "kind": "slider",
+          "title": "Latency budget (p95)",
+          "binds": "p95",
+          "min": 1.5,
+          "max": 5.0,
+          "step": 0.1,
+          "default": 3.0,
+          "options": []
+        }
+      ],
+      "recomputes": "Adjusting the p95 latency ceiling shows where {arm:atlas-l} qualifies or where {arm:atlas-m} breaches."
+    }
+  ],
+  "full_results": [
+    "arms_by_measure",
+    "strata",
+    "gate_matrix_full"
+  ],
+  "durable_claims": [
+    {
+      "text": "{arm:atlas-m} meets the {criteria.trouble.resolves.threshold} threshold for Resolves the issue in Troubleshooting (multi-turn) at {task.trouble.atlas-m.resolves.mean}.",
+      "confidence": "high",
+      "keys": [
+        "task.trouble.atlas-m.resolves.mean",
+        "criteria.trouble.resolves.threshold"
+      ]
+    },
+    {
+      "text": "{arm:atlas-l} exceeds the {criteria.p95.threshold} Latency budget (p95) on Billing & account Q&A ({task.billing.atlas-l.latency_s.p95}) and Research-needed questions ({task.research.atlas-l.latency_s.p95}).",
+      "confidence": "high",
+      "keys": [
+        "task.billing.atlas-l.latency_s.p95",
+        "task.research.atlas-l.latency_s.p95",
+        "criteria.p95.threshold"
+      ]
+    }
+  ],
+  "answers": []
+}

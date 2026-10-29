@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261029-60d8fa450d63",
+  "input": "r4",
+  "input_digest": "96d0986057f2da9a09c4bccebf74c51e8c2731a2aab3e4e833b09505ff1fd5a8",
+  "plan_digest": "9a724a89518270f77ce98871c4a5dac49db9a934972d2d4780224773efc25e16",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+    "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A trade matching headline_kind, naming both sides (monthly saving against persona consistency) and where the loss sits (longer conversations), consistent with the lean option and the first cost and persona charts; the sign defect in the figure is scored under R12.",
+      "quote": "Choose between saving -$7,560 monthly or keeping persona consistency on longer conversations.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: the supporting cost and persona fact, then what would settle the choice (a product decision on acceptable loss above depth five); the figure misuse in the first sentence is scored under R12.",
+      "quote": "A product decision on acceptable loss at turn depths above five settles the choice.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "fail",
+      "reason": "The report-wide no-rule flag says only that leadership must weigh cost against persona; it never says what survives (the measured differences and guardrail results stand), so it is silent on what survives.",
+      "quote": "The campaign declared no threshold for acceptable loss in Stays in character, leaving leadership to weigh cost against persona fidelity.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The first section's chart is a forest of differences from Production, which cannot show whether an arm clears the absolute guardrail thresholds, so the guardrail half of its headline is a claim its chart does not show.",
+      "quote": "Challengers reduce persona consistency while only f64 (A) clears both guardrails",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results the prose renders reader names (Production, f64 (A), Stays in character, scenario and depth names); no hash, run id or measure key shows.",
+      "quote": "f64 (A) cuts cost by $7,560 each month, but drops Stays in character from 91.7% to 85.6%.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Tradeoff mode: Where the answer flips names the flip point as a price per point of Stays in character.",
+      "quote": "f64 (A) is favored if saving at least $0.103 per point of Stays in character matters more than the drop.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure goes by several names above the fold: persona consistency, persona retention, persona fidelity, and Stays in character.",
+      "quote": "while persona retention drops 6.1 points (-7.3 to -4.9)",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "Masthead through the decision block say what to do (lean toward f64), why (guardrails hold, cost falls), and the main risk (persona loss beyond five turns) without needing a section.",
+      "quote": "Lean toward f64 (A) because both standing guardrails hold and persona losses remain modest until conversation depth exceeds five turns.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "What would settle it names a concrete human review of long chats whose decisive direction is clear from context: tolerated drift favors f64, untolerated drift favors Production.",
+      "quote": "A human review of turn depth above five to verify whether users tolerate the persona drift on long chats.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The plan has no confidence clauses (confidence form high), so the item passes.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "The lede attaches $1.47 per 1,000 replies to a saving when it is f64's cost (the saving is $0.63), and the headline renders the monthly saving as a negative figure.",
+      "quote": "Switching to f64 (A) saves $1.47 per 1,000 replies against $2.10 per 1,000 replies on Production",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-29T02:31:27.081540+00:00"
+}
