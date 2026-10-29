@@ -79,6 +79,8 @@ _TOKEN = re.compile(r"^--[a-z][a-z0-9-]*$")
 #: its text is drawn near the kit's size wherever the chart sits. Every colour is a kit token.
 CHART_STYLE = """
 .chart-drawn { width: 100%; min-width: 0; margin-bottom: .75rem; container-type: inline-size; }
+.chart-drawn + .chart-values { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap; border: 0; }
 .chart-drawn svg.viz-chart { display: none; width: 100%; height: auto; overflow: visible; }
 .chart-drawn svg.viz-mid, .chart-drawn svg.viz-panel { display: block; }
 @container (max-width: 499px) {

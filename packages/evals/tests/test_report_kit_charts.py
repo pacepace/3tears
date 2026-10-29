@@ -27,8 +27,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import KIT_CHARTS, ChartBlock
-from packages.evals.tests.report_kit_support import KIT, chromium_unavailable, rendered, report_page
+from threetears.evals.analysis import KIT_CHARTS, ChartBlock, report_html
+from packages.evals.tests.report_kit_support import KIT, chromium_unavailable, rendered, report_of, report_page
 
 #: Each reference's built page, by name.
 REFERENCES = sorted(p.stem for p in (KIT / "references").glob("*.html") if not p.name.endswith(".src.html"))
@@ -149,6 +149,49 @@ def test_a_chart_s_table_is_what_a_reader_sees_where_no_chart_is_drawn(tmp_path:
     seen, _ = rendered(without_script, _TABLES)
     assert seen == [
         {"figure": "bars", "seen": True, "drawn": False},
+        {"figure": "interval_rows", "seen": True, "drawn": False},
+    ]
+
+
+#: Each chart figure's table on a static page: whether a reader sees it, and whether the server drew its chart.
+_STATIC_TABLES = """() => [...document.querySelectorAll('figure.fig')].map(f => ({
+  figure: f.dataset.figure, seen: f.querySelector('.chart-values').getBoundingClientRect().width > 1,
+  drawn: !!f.querySelector('div.chart-drawn svg')}))"""
+
+
+@pytest.mark.integration
+def test_a_static_page_hides_a_drawn_chart_s_table_and_shows_an_undrawn_one(tmp_path: Path) -> None:
+    """On a static page, a chart the server drew as SVG has its table visually hidden, as the kit's drawn chart does,
+    and a chart it does not draw (interval rows) shows its table (owner ruling 2026-10-29)."""
+    reason = chromium_unavailable()
+    if reason is not None:
+        pytest.skip(f"headless Chromium cannot launch: {reason}")
+    bars = {"rows": [{"label": "a", "value": 2}], "domain": [0, 4], "fmt": "int"}
+    rows = [{"label": "a", "value": 1.0, "low": 0.5, "high": 1.5, "n_cases": 6}]
+    page = tmp_path / "static.html"
+    page.write_text(
+        report_html(
+            report_of(
+                [
+                    {"kind": "chart", "section": "memo", "finding": 0, "chart": "bars", "title": "Bars", "data": bars},
+                    {
+                        "kind": "chart",
+                        "section": "memo",
+                        "finding": 0,
+                        "chart": "interval_rows",
+                        "title": "Rows",
+                        "rows": rows,
+                    },
+                ]
+            ),
+            static=True,
+        ),
+        encoding="utf-8",
+    )
+    seen, errors = rendered(page, _STATIC_TABLES)
+    assert errors == []
+    assert seen == [
+        {"figure": "bars", "seen": False, "drawn": True},
         {"figure": "interval_rows", "seen": True, "drawn": False},
     ]
 
