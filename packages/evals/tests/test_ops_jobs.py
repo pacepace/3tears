@@ -235,7 +235,7 @@ async def test_a_generation_is_a_job_polled_to_the_analysis_it_stored() -> None:
     assert markdown.doc is not None and markdown.doc["schema"] == "report-doc/1"
     html = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="html")
     assert what_runs(html.body) == [], "the page runs the kit's script and nothing else"
-    assert f"<title>{fixture.campaign.name}</title>" in html.body
+    assert f"<title>{line.title}</title>" in html.body
     canonical = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="json")
     document = json.loads(canonical.body)
     assert (document["kind"], document["campaign_id"], document["analysis_id"]) == (

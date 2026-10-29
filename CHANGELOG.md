@@ -46,6 +46,14 @@ candidates`; a campaign declaring none names its runs' distinct candidate models
 aspects' printed names, past two `N aspects`. No call, recommendation or verdict enters it. With it, a campaign's
 name is a qualifier: at most 32 characters (`CAMPAIGN_NAME_CHARS`, the declared-name cap).
 
+**Changed:** the title heads a campaign wherever a page heads one, built by code on every read and never stored
+(`threetears.evals.analysis.campaign_title`: `campaign_title` moved there with its helpers, `declared_title` over a
+frozen bundle's resolved arms, `named_title`, `report_input_title`). `AnalysisLine.title` (`analyses_list`) is built from
+the campaign bundle frozen with the analysis, the stored campaign's title where that bundle cannot be read. The first
+line of a campaign's page, of an aspect's own page, and the `<title>` of a planned page and of a report document's
+page is the title, in place of the campaign's name (or, on an aspect's page, the name with the question it asks);
+nothing else on a page moves.
+
 ### evals: Discodon's W4 adoption findings: unanswered calls through the ledger, a turn cap on a dollar budget, the report writer's port declared
 
 **Added:** `RoleUsageLedger.add_unanswered(model=, served_model=, price_source=, ..., retried=, lost=, reasons=)` counts

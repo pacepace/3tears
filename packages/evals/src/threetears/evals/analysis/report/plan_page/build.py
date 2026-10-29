@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from threetears.evals.analysis.campaign_title import report_input_title
 from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report.plan_page.charting import measure_words
 from threetears.evals.analysis.report.plan_page.drawable import plan_look
@@ -175,7 +176,7 @@ def plan_page(plan: ReportPlan, report_input: ReportInput, *, made: str = "") ->
             )
         )
     return PlannedPage(
-        title=report_input.meta.campaign,
+        title=report_input_title(report_input),
         masthead=_masthead(plan, written),
         headline=written(plan.headline),
         lede=written(plan.lede),

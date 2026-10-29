@@ -464,10 +464,10 @@ async def test_two_aspects_that_regress_and_improve_are_both_in_the_scorecard_th
     assert readings == {"billing": "worse", "tone": "better"}
     first = _first_screen(page)
     floor = first.index("**Adopting candidate overrides the 10-point floor it breaks on billing.**")
-    assert first.index("# support queue") < floor
+    assert first.index(f"# {page.title}") < floor
     assert "**Adopting candidate overrides the bar it misses on tone.**" in first
     markdown = campaign_report_markdown(page)
-    assert markdown.index("# support queue") < markdown.index("## Scorecard") < markdown.index("**By aspect**")
+    assert markdown.index(f"# {page.title}") < markdown.index("## Scorecard") < markdown.index("**By aspect**")
 
 
 def _record(held: Store, two: EvalCampaign, **call: Any) -> Any:

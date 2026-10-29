@@ -119,7 +119,7 @@ async def test_the_writer_s_why_for_an_overridden_floor_sits_beside_its_warning(
     first = first_screen_markdown(page)
     warning = first.index("**Adopting v2 overrides the 10-point floor it breaks on billing.**")
     why = first.index("**The memo recommends v2 over it:** Billing refunds are rare this quarter.")
-    assert first.index("# support queue") < warning < why
+    assert first.index(f"# {page.title}") < warning < why
     header = header_html(page)
     assert header.index("<h1>") < header.index('<p class="flag warning">') < header.index('data-role="override"')
 
@@ -134,7 +134,7 @@ async def test_a_why_for_a_missed_bar_sits_beside_its_warning() -> None:
     first = first_screen_markdown(page)
     warning = first.index("**Adopting alpha overrides the bar it misses on tone.**")
     why = first.index("**The memo recommends alpha over it:** A cent a reply is affordable at this volume.")
-    assert first.index("# support queue") < warning < why
+    assert first.index(f"# {page.title}") < warning < why
 
 
 async def test_a_why_for_an_overridden_floor_answers_only_the_arm_the_memo_recommends() -> None:

@@ -155,7 +155,9 @@ class PlannedPage(EvalDocumentModel):
     table.
     """
 
-    title: str = Field(description="The campaign's name, the page's title.")
+    title: str = Field(
+        description="What the campaign compares and on what, with its name as a qualifier: the page's title."
+    )
     masthead: PageMasthead
     headline: ModelProse = Field(description="The decision as an instruction with its reason, or the trade.")
     lede: ModelProse
