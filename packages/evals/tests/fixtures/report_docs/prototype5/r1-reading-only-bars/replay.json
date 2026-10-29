@@ -5,15 +5,15 @@
   "withhold": [
     "r1-model-selection.md"
   ],
-  "ending": "stored_with_findings",
-  "reason": "the review of round 3 did not clear the report, and its 2 revisions are used",
+  "ending": "stored",
+  "reason": "",
   "stored": true,
-  "analyst_rounds": 3,
-  "editor_rounds": 3,
+  "analyst_rounds": 2,
+  "editor_rounds": 2,
   "tally": {
-    "turns": 43,
-    "tool_calls": 84,
+    "turns": 32,
+    "tool_calls": 69,
     "bounces": 0,
-    "cost_usd": 3.7534173999999996
+    "cost_usd": 2.8669642
   }
 }

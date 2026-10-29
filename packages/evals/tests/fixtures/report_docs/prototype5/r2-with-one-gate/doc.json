@@ -1,37 +1,37 @@
 {
   "schema": "report-doc/1",
   "story": "decision",
-  "headline": "Use {arm:brisk-s.low.r1}: the cheapest configuration to clear the {criteria.pass_rate.threshold} pass-rate gate, though only by {settle.criteria.pass_rate.brisk-s.low.r1.overall.distance|abs} points.",
-  "lede": "It costs {cost_per_1k.brisk-s.low.r1} per 1k calls, least of the {count.passing.pass_rate|words} that clear, but a fresh run of today's size reads it below the gate {settle.criteria.pass_rate.brisk-s.low.r1.overall.wrong_side} of the time. If the gate must clear with confidence, high reasoning (L) is the pick, at {cost_per_1k.brisk-s.high.r1} per 1k calls.",
-  "flag": null,
+  "headline": "Use {arm:brisk-s.low.r1}: the cheapest configuration to reach the {criteria.pass_rate.threshold} pass-rate gate, though it clears it by only {weakest.margin|abs|pts} points.",
+  "lede": "It costs {cost_per_1k.brisk-s.low.r1} per 1,000 calls as routed in this run, and the next passing option costs {cost.gap.brisk-s.high.r1.brisk-s.low.r1.multiple} as much. A fresh run of today's size would read it below the gate {settle.criteria.pass_rate.brisk-s.low.r1.overall.wrong_side} of the time; then {arm:brisk-s.high.r1} clears with room for {cost.gap.brisk-s.high.r1.brisk-s.low.r1.monthly|abs} more a month.",
+  "flag": "The confidence covers the cost order on declared point estimates only. Whether the pick truly clears the gate is open, near even odds, and the fresh read in Next settles it.",
   "recommends": [
     "brisk-s.low.r1"
   ],
   "confidence": {
-    "form": "low",
+    "form": "high_if_immaterial",
     "caveats": [
       {
         "id": "point_estimate:pass_rate",
         "label": null,
-        "material_if": "If J's true pass rate sits below the gate, which its clearance of {settle.criteria.pass_rate.brisk-s.low.r1.overall.distance|abs} points cannot rule out, then L is the cheapest configuration that clears; settling J four times in five would take {settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided_80} cases, two-sided.",
+        "material_if": "Only if the pick's true pass rate sits below the gate, which today's figures leave open: its computed interval, {spread.brisk-s.low.r1.pass_rate.overall.interval}, crosses the line, and a fresh run of today's size reads it below {settle.criteria.pass_rate.brisk-s.low.r1.overall.wrong_side} of the time. The high covers only that the pick is the cheapest configuration passing on point estimates as declared, with only {arm:brisk-s.high.r1} close behind; it does not cover whether the pick truly clears the gate. The fresh read in Next settles that, and a read below makes {arm:brisk-s.high.r1}, whose interval {spread.brisk-s.high.r1.pass_rate.overall.interval} sits wholly above the line, the pick.",
         "checked": null
       },
       {
         "id": "best_of_n",
         "label": null,
-        "material_if": "J's figure is partly the luck of being picked from {n_candidates} configurations: a run on fresh cases tends to read it lower, which pushes it toward or under the gate and leaves L, with {settle.criteria.pass_rate.brisk-s.high.r1.overall.distance|abs} points of room, as the pick.",
+        "material_if": "Only if the pick's clearance is partly luck: it is the cheapest of {n_candidates|words} configurations read against one line, so a fresh run tends to read it lower. This pushes the same way as the caveat above, toward {arm:brisk-s.high.r1}, never toward a cheaper option.",
         "checked": null
       },
       {
         "id": "no_control",
         "label": null,
-        "material_if": "Only for a claim that one configuration beats another on pass rate: every gap here is read unpaired and so wider than a paired reading; the call rests on each configuration's own gate reading and its cost.",
+        "material_if": "Only for a claim that ranks two passing configurations against each other: the gap between {arm:brisk-s.high.r1} and the pick is read unpaired, and its interval, {compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.interval}, crosses zero. The call reads each option against the gate, not against each other.",
         "checked": null
       },
       {
-        "id": "analyst:cost-routing",
-        "label": "Cost routing unknown",
-        "material_if": "Only if another provider's pricing for Brisk-S or Atlas-M reorders them: the snapshot names the model each arm served but no provider, so every cost is this run's routing's, not the model's own.",
+        "id": "analyst:cost_routing",
+        "label": "Provider routing unknown",
+        "material_if": "Only if another provider's prices reorder the models: no arm names who served it, so the cost order between Brisk-S, Atlas-M and Nano-XS holds for this run's routing. The pick and its fallback share one model and one routing, so the gap between them would likely hold.",
         "checked": null
       }
     ]
@@ -39,26 +39,54 @@
   "decision": [
     {
       "slot": "recommendation",
-      "text": "Ship {arm:brisk-s.low.r1}. It reads {measure.pass_rate.brisk-s.low.r1.mean} against the {criteria.pass_rate.threshold} gate at {cost_per_1k.brisk-s.low.r1} per 1k calls, the least of any configuration that clears: about {cost_per_month.brisk-s.low.r1} a month if the declared volume counts calls, more if it counts tasks, by each arm's calls per task."
+      "text": "Ship {arm:brisk-s.low.r1} on all traffic: of the {count.passing.pass_rate|words} configurations that reach the gate on their point estimates it costs least, at {cost_per_month.brisk-s.low.r1} a month at the declared volume and this run's routing."
     },
     {
       "slot": "why_not",
-      "text": "{arm:brisk-s.high.r1} clears with more room, {measure.pass_rate.brisk-s.high.r1.mean}, but costs {cost_per_1k.brisk-s.high.r1} per 1k calls, {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_cost_gap|abs} more a month if the volume counts calls. Every Atlas-M that clears costs more again; the best, {arm:atlas-m.high.r1}, reads {measure.pass_rate.atlas-m.high.r1.mean} at {cost_per_1k.atlas-m.high.r1} per 1k calls. No Nano-XS configuration clears; its best, {arm:nano-xs.high.r1}, falls {criteria.pass_rate.nano-xs.high.r1.gap|abs} points short."
+      "text": "{arm:brisk-s.high.r1} clears the gate with room but costs {cost.gap.brisk-s.high.r1.brisk-s.low.r1.multiple} as much. As routed in this run, with no provider recorded, every passing Atlas-M configuration costs more again, the cheapest {cost.gap.atlas-m.low.r1.brisk-s.low.r1.multiple} as much as the pick. No Nano-XS configuration reaches the gate; the best reads {criteria.pass_rate.nano-xs.high.r1.value}."
     },
     {
       "slot": "watch",
-      "text": "The weakest margin is the pick's own: {weakest.arm} reads {weakest.value} on {weakest.criterion} against {weakest.threshold}. A fresh run of today's size reads it below the line {settle.criteria.pass_rate.brisk-s.low.r1.overall.wrong_side} of the time, against {settle.criteria.pass_rate.brisk-s.high.r1.overall.wrong_side} for L, and as the best of {n_candidates} it likely reads high."
+      "text": "The weakest margin is the pick's own: {weakest.value} against {weakest.threshold}, {weakest.margin|abs|pts} points clear, read as {weakest.interval}. A run that settles it four times in five, read on a two-sided interval, needs {settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided_80} cases. If a fresh read puts it below the gate, move to {arm:brisk-s.high.r1}, which a run of today's size reads on the wrong side only {settle.criteria.pass_rate.brisk-s.high.r1.overall.wrong_side} of the time."
     },
     {
       "slot": "next",
-      "text": "Ship J now; in parallel the planner's owner declares whether the gate must clear on its interval. If it must, switch to L."
+      "text": "Ship now and confirm in parallel: read the pick's pass rate on {settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided_80} fresh cases or live tasks, and switch to {arm:brisk-s.high.r1} if it lands below the gate."
     }
   ],
   "claims": [
     {
-      "id": "c1",
-      "text": "Only {count.passing.pass_rate|words} of {n_candidates|words} configurations clear the {criteria.pass_rate.threshold} gate, and J sits closest to the line at {measure.pass_rate.brisk-s.low.r1.mean}.",
+      "id": "pick",
+      "text": "Of {n_candidates|words} configurations, {count.passing.pass_rate|words} reach the {criteria.pass_rate.threshold} gate on pass rate, and {arm:brisk-s.low.r1} costs least among them, at {cost_per_1k.brisk-s.low.r1} per 1,000 calls as routed in this run; no provider is recorded for any arm, so the cost order across models is this routing's, not the models' own.",
       "weight": "lead",
+      "evidence": [
+        {
+          "block": "scatter_frontier",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "cost_per_1k",
+              "pass_rate"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "brisk-s.low.r1",
+          "caption": "Cost per 1,000 calls at this run's routing, on a log scale, against pass rate for every configuration, with the gate's line; the pick is marked."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "thin",
+      "text": "The pick clears the gate on its point estimate alone: its computed interval, {spread.brisk-s.low.r1.pass_rate.overall.interval}, crosses the line, while {arm:brisk-s.high.r1} sits wholly above it at {spread.brisk-s.high.r1.pass_rate.overall.interval}.",
+      "weight": "support",
       "evidence": [
         {
           "block": "dot_interval",
@@ -68,7 +96,15 @@
             "measures": [
               "pass_rate"
             ],
-            "arms": [],
+            "arms": [
+              "brisk-s.low.r1",
+              "brisk-s.high.r1",
+              "atlas-m.low.r1",
+              "atlas-m.high.r0",
+              "atlas-m.high.r1",
+              "brisk-s.high.r0",
+              "atlas-m.low.r0"
+            ],
             "strata": [],
             "limit": 0,
             "transform": "none",
@@ -76,50 +112,15 @@
           },
           "reference": "floor",
           "emphasis": "brisk-s.low.r1",
-          "caption": "Each configuration's pass rate with a computed interval, against the gate at {criteria.pass_rate.threshold}; J is stressed."
+          "caption": "Pass rate with its computed interval for the passing configurations and the two nearest misses, against the gate."
         }
       ],
       "caveats": [],
       "durable": false
     },
     {
-      "id": "c2",
-      "text": "Of the configurations that clear, J costs least: {cost_per_1k.brisk-s.low.r1} per 1k calls, against {cost_per_1k.brisk-s.high.r1} for L and {cost_per_1k.atlas-m.low.r1} for the cheapest Atlas-M.",
-      "weight": "lead",
-      "evidence": [
-        {
-          "block": "bars",
-          "query": {
-            "source": "measures",
-            "aspect": "",
-            "measures": [
-              "cost_per_1k"
-            ],
-            "arms": [
-              "brisk-s.low.r1",
-              "brisk-s.high.r1",
-              "atlas-m.low.r1",
-              "atlas-m.high.r0",
-              "atlas-m.high.r1"
-            ],
-            "strata": [],
-            "limit": 0,
-            "transform": "none",
-            "small_multiples_by": "none"
-          },
-          "reference": null,
-          "emphasis": "brisk-s.low.r1",
-          "caption": "Cost per 1k calls of the configurations that clear the gate, on a log scale, at this run's provider routing, which the snapshot does not name."
-        }
-      ],
-      "caveats": [
-        "analyst:cost-routing"
-      ],
-      "durable": false
-    },
-    {
-      "id": "c3",
-      "text": "J's clearance is inside its noise: a fresh run of today's size would read it below the gate {settle.criteria.pass_rate.brisk-s.low.r1.overall.wrong_side} of the time, against {settle.criteria.pass_rate.brisk-s.high.r1.overall.wrong_side} for L. A two-sided run that settles it four times in five needs {settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided_80} cases for J and {settle.criteria.pass_rate.brisk-s.high.r1.overall.cases_needed_two_sided_80} for L.",
+      "id": "settle",
+      "text": "A fresh run of today's size would read the pick below the gate {settle.criteria.pass_rate.brisk-s.low.r1.overall.wrong_side} of the time, against {settle.criteria.pass_rate.brisk-s.high.r1.overall.wrong_side} for {arm:brisk-s.high.r1}. The table's sizes settle each reading only half the time; sized to settle it four times in five on a two-sided interval, a run needs {settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided_80} cases for the pick and {settle.criteria.pass_rate.brisk-s.high.r1.overall.cases_needed_two_sided_80} for the fallback.",
       "weight": "support",
       "evidence": [
         {
@@ -141,22 +142,37 @@
           },
           "reference": null,
           "emphasis": "",
-          "caption": "Distance to the gate, how often a run of today's size reads the other side, and the cases that settle the line half the time; the four-in-five, two-sided sizes cited above are larger: {settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided_80} for J and {settle.criteria.pass_rate.brisk-s.high.r1.overall.cases_needed_two_sided_80} for L."
+          "caption": "Distance to the gate, the cases a run needs to settle it half the time, one- and two-sided, and how often a run of today's size reads the other side; the four-in-five sizes are in the sentence above."
         }
       ],
-      "caveats": [
-        "point_estimate:pass_rate",
-        "best_of_n"
-      ],
+      "caveats": [],
       "durable": false
     },
     {
-      "id": "c4",
-      "text": "High reasoning adds {compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.difference} points over low, an interval of {compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.interval} that does not exclude zero, for {cost_per_1k.brisk-s.high.r1} against {cost_per_1k.brisk-s.low.r1} per 1k calls.",
+      "id": "price",
+      "text": "Headroom over the gate is priced on gains not told apart from zero: moving from the pick to {arm:brisk-s.high.r1} gains {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.gain|pts} points, interval {compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.interval}, at {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month per point; the step beyond, to an Atlas-M configuration as routed in this run with no provider recorded, costs {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point} per point. Neither price has an upper end the data support.",
       "weight": "support",
       "evidence": [
         {
-          "block": "dot_interval",
+          "block": "table",
+          "query": {
+            "source": "prices",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Each step along the cost and pass-rate frontier, priced per point a month at the declared volume, on point estimates; the second step crosses models at this run's unrecorded routing."
+        },
+        {
+          "block": "diverging_bars",
           "query": {
             "source": "compare",
             "aspect": "",
@@ -174,31 +190,56 @@
           },
           "reference": null,
           "emphasis": "",
-          "caption": "L minus J on pass rate, overall with an unpaired interval; the per-task rows state no case counts, so they carry no interval and are descriptive only."
+          "caption": "The first step's gain: the high-reasoning fallback less the pick, overall with an unpaired interval that crosses zero, and by task with none."
         }
       ],
-      "caveats": [
-        "no_control"
-      ],
+      "caveats": [],
       "durable": false
     },
     {
-      "id": "c5",
-      "text": "The retry is what lifts J over the gate: it adds {lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.effect} points to Brisk-S at low reasoning, an interval of {lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.interval}.",
+      "id": "price_atlas",
+      "text": "The step to {arm:atlas-m.high.r1} gains {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.gain|pts} points over the fallback, interval {compare.atlas-m.high.r1.brisk-s.high.r1.pass_rate.overall.interval}, also not told apart from zero.",
       "weight": "detail",
       "evidence": [
         {
           "block": "diverging_bars",
           "query": {
-            "source": "levers",
+            "source": "compare",
             "aspect": "",
             "measures": [
               "pass_rate"
             ],
             "arms": [
-              "brisk-s.off.r0",
-              "brisk-s.off.r1",
-              "brisk-s.low.r0",
+              "atlas-m.high.r1",
+              "brisk-s.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "The second step's gain: the Atlas-M configuration less the fallback, overall with an unpaired interval that crosses zero, and by task with none."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "multihop",
+      "text": "The pick reads lowest on multi-hop questions, at {task.multihop.brisk-s.low.r1.pass_rate.mean} against {task.multihop.brisk-s.high.r1.pass_rate.mean} for the fallback; task figures state no counts, so this ordering is descriptive, a lead for where a fix might aim.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "table",
+          "query": {
+            "source": "tasks",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
               "brisk-s.low.r1",
               "brisk-s.high.r1"
             ],
@@ -209,7 +250,98 @@
           },
           "reference": null,
           "emphasis": "",
-          "caption": "What reasoning and the retry each add to Brisk-S's pass rate along the moves that lead to J and L, with unpaired intervals; the interaction shown is not separated from zero."
+          "caption": "Pass rate by task for the pick and its fallback, with no interval because no task states its count."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "retry",
+      "text": "The retry is what lifts Brisk-S at low reasoning over the line: it adds {lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.effect|pts} points, interval {lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.interval}.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "dot_interval",
+          "query": {
+            "source": "levers",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
+              "brisk-s.off.r0",
+              "brisk-s.off.r1",
+              "brisk-s.low.r0",
+              "brisk-s.low.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "What reasoning and a retry each buy Brisk-S in pass rate at off and low reasoning, with unpaired intervals, and how the reasoning effect changes with a retry."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "latency",
+      "text": "No latency budget was declared, but the fallback's tail is longer: {measure.latency_ms.brisk-s.high.r1.p95} against {measure.latency_ms.brisk-s.low.r1.p95} for the pick.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "range_bars",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "latency_ms"
+            ],
+            "arms": [
+              "brisk-s.low.r1",
+              "brisk-s.high.r1",
+              "atlas-m.low.r1",
+              "atlas-m.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Latency from median to tail for the pick, its fallback and the passing Atlas-M configurations with a retry."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "failures",
+      "text": "The pick's kept failures are planning errors: a collapsed multi-hop query, an off-by-one date window, and a guess where it should have asked which entity was meant.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "examples",
+          "query": {
+            "source": "examples",
+            "aspect": "",
+            "measures": [],
+            "arms": [
+              "brisk-s.low.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Failures the snapshot kept for the pick, from multi-hop, date math and ambiguous entities; it states no count of all its failures, so the cards show kinds, not shares."
         }
       ],
       "caveats": [],
@@ -218,87 +350,112 @@
   ],
   "explore": [
     {
-      "control": "The pass-rate gate's threshold",
-      "binds": "Which configuration is the cheapest that clears",
-      "outcome": "J stays the pick for a gate above {criteria.pass_rate.brisk-s.low.r0.value} up to {criteria.pass_rate.brisk-s.low.r1.value}; L from there up to {criteria.pass_rate.brisk-s.high.r1.value}; {arm:atlas-m.high.r1} up to {criteria.pass_rate.atlas-m.high.r1.value}; above that nothing clears. Lower gates admit cheaper Brisk-S and Nano-XS configurations."
+      "control": "How the gate is read",
+      "binds": "Whether the pick or its fallback ships",
+      "outcome": "Read on the point estimate, as declared, the pick passes. Read on the computed interval's lower end, the pick ({spread.brisk-s.low.r1.pass_rate.overall.interval}) no longer clears and {arm:brisk-s.high.r1} ({spread.brisk-s.high.r1.pass_rate.overall.interval}) is the cheapest that does."
     },
     {
-      "control": "Reading the gate on the interval rather than the point estimate",
-      "binds": "Whether J counts as clearing",
-      "outcome": "J's computed interval crosses the gate while L's sits above it, so on the interval L becomes the pick at {cost_per_1k.brisk-s.high.r1} per 1k calls against {cost_per_1k.brisk-s.low.r1}; a month that is {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_cost_gap|abs} more if the volume counts calls, more if it counts tasks."
+      "control": "The gate's level",
+      "binds": "Which configuration is cheapest to pass",
+      "outcome": "On point estimates, the pick holds for any gate above {criteria.pass_rate.brisk-s.low.r0.value} up to {criteria.pass_rate.brisk-s.low.r1.value}; above that, {arm:brisk-s.high.r1} up to {criteria.pass_rate.brisk-s.high.r1.value}, then {arm:atlas-m.high.r1} up to {criteria.pass_rate.atlas-m.high.r1.value}; past that nothing passes. Lower gates admit cheaper Brisk-S or Nano-XS configurations."
+    },
+    {
+      "control": "Price of a point of pass rate",
+      "binds": "Whether to buy headroom over the gate",
+      "outcome": "On point estimates, valuing a point at {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month or more favours {arm:brisk-s.high.r1}; at {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point} or more, as routed in this run with no provider recorded, {arm:atlas-m.high.r1}. Neither gain is told apart from zero, so these prices have no supported upper end."
     }
   ],
   "omitted": [
     {
-      "what": "Latency",
-      "why": "No latency gate was declared, and latency does not reorder the two Brisk-S options; full figures in the appendix."
-    },
-    {
       "what": "Calls per task",
-      "why": "Varies little between the options a decider would weigh and changes no gate reading; it matters only to what a month costs if the volume counts tasks, which the cost lines say."
+      "why": "Descriptive; the pick and its fallback differ little and it decides nothing the gate and cost don't. It stays in the options table."
     },
     {
-      "what": "Extra calls per task and outcome",
-      "why": "The snapshot holds no figures for either."
+      "what": "Extra calls per task and the outcome measure",
+      "why": "The snapshot holds no figures for them."
     },
     {
-      "what": "Per-task pass rates of the other configurations",
-      "why": "The gate reads overall; per-task figures state no case counts, so they are leads, kept in the appendix."
+      "what": "Model and reasoning effects outside Brisk-S, and the retry and reasoning effects at high reasoning",
+      "why": "They explain why other configurations lose or cost more but don't change the call; the high-reasoning rows also print an unrounded bound."
     },
     {
-      "what": "Model and reasoning lever effects across Atlas-M and Nano-XS, and the high-reasoning retry move for Brisk-S",
-      "why": "They explain why other configurations fall short or cost more but do not change the pick; all are in the appendix."
+      "what": "How the retry's effect differs by model",
+      "why": "Retry helps Nano-XS more than Atlas-M, but no Nano-XS configuration reaches the gate, so it doesn't bear on the call."
+    },
+    {
+      "what": "The retry's cost per call, and the monthly cost gap of each price step",
+      "why": "No block draws them beside the gains; the per-point prices carry the trade, and the pick-to-fallback monthly gap stays in the lede and the options table."
+    },
+    {
+      "what": "Per-task figures for configurations other than the pick and its fallback",
+      "why": "No task gate was declared and tasks state no case counts; they stay in the task table."
+    },
+    {
+      "what": "A four-in-five column in the settle table",
+      "why": "Weighed and kept as prose: the settle table holds only the half-the-time sizes, so the four-in-five sizes Watch and Next use are stated by figure in the settle claim's sentence, beside the table."
+    },
+    {
+      "what": "Reading the confidence as low",
+      "why": "Weighed and not taken: the declared rule reads the gate on the point estimate, and every other part of the call (the cost order, the fallback, the miss of every Nano-XS configuration) is well separated, so the high is scoped to those and the open gate question is named in the flag and the first caveat."
     }
   ],
   "next": [
     {
-      "text": "The planner's owner declares whether the gate must clear on its interval or on its point estimate.",
-      "settles": "Whether J ships or L does: more cases cannot practically settle J, which would need {settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided_80} cases to settle four times in five, two-sided."
+      "text": "Ship the pick and, in parallel, read its pass rate on {settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided_80} fresh cases or live tasks, the size that settles it four times in five on a two-sided interval.",
+      "settles": "Whether its true pass rate holds at the gate; a read below it means switching to the high-reasoning fallback."
     },
     {
-      "text": "Add worked multi-hop examples to Brisk-S's planning prompt, where J reads {task.multihop.brisk-s.low.r1.pass_rate.mean} (a figure with no stated case count, so no interval), then re-run J on {settle.criteria.pass_rate.brisk-s.high.r1.overall.cases_needed_two_sided_80} fresh cases.",
-      "settles": "Whether the change lifts J clear of the gate at its current cost: a run that size settles a clearance as large as L's, {settle.criteria.pass_rate.brisk-s.high.r1.overall.distance|abs} points, four times in five; a smaller lift needs more cases."
+      "text": "The owner declares whether the gate must hold on the point estimate or on the interval's lower end.",
+      "settles": "Which of the pick and its fallback ships, without any further run."
     },
     {
-      "text": "Re-run L on {settle.criteria.pass_rate.brisk-s.high.r1.overall.cases_needed_two_sided_80} fresh cases.",
-      "settles": "Whether L's clearance survives fresh cases. The size assumes today's estimate of {measure.pass_rate.brisk-s.high.r1.mean}; the best-of-many selection likely reads that high, and a lower true rate needs more cases to settle four times in five."
+      "text": "Teach the pick to plan each hop of multi-hop questions and to ask when an entity is ambiguous, then read it on fresh held-out cases, at least {settle.criteria.pass_rate.brisk-s.high.r1.overall.cases_needed_two_sided_80} of them: the size that settles a clearance like the fallback's four times in five.",
+      "settles": "Whether the cheapest model can clear the gate with room on cases it was not tuned on, at roughly the pick's cost."
     },
     {
-      "text": "Declare each task's traffic share and case count, and whether the monthly volume counts calls or tasks.",
-      "settles": "Whether the overall pass rate reflects the production mix, and what the step from J to L costs a month."
+      "text": "Record which provider served each model and what the monthly volume counts.",
+      "settles": "Whether the cost order between models and every monthly figure hold beyond this run's routing."
     }
   ],
   "method": [
     {
       "term": "Cases",
-      "text": "Each configuration ran {scoreboard.brisk-s.low.r1.cases} cases once each across the task types; none was lost or failed to run. Per-task case counts are not stated.",
+      "text": "Each configuration ran {scoreboard.brisk-s.low.r1.cases} research queries across four tasks (single lookup, multi-hop, date and unit math, ambiguous entity); no repeats are stated and none were lost.",
+      "caveats": []
+    },
+    {
+      "term": "Configurations",
+      "text": "A full grid of {count.levels.model|words} models, reasoning off, low or high, and with or without a retry; there is no control.",
       "caveats": []
     },
     {
       "term": "Pass",
-      "text": "The input does not define what makes a planner run pass.",
+      "text": "The input doesn't define what makes a query pass; the kept failures are missing calls, wrong arguments and wrong tools.",
       "caveats": []
     },
     {
-      "term": "The gate",
-      "text": "Pass rate at least {criteria.pass_rate.threshold}, declared before the run and read on each configuration's point estimate, as declared.",
+      "term": "Gate",
+      "text": "Pass rate of at least {criteria.pass_rate.threshold} overall, read on the point estimate as declared.",
       "caveats": []
     },
     {
       "term": "Intervals",
-      "text": "Computed here from each configuration's cases as a binomial spread by the normal approximation, at the level each block prints. Gaps between configurations are unpaired, since no control was run, and uncorrected for the number of comparisons. Run sizes are quoted two-sided, sized to settle four times in five unless a table says otherwise.",
-      "caveats": [
-        "no_control"
-      ]
-    },
-    {
-      "term": "Cost",
-      "text": "Cost per 1k calls as measured. Each arm names its model but no provider. Monthly figures use the declared volume of {meta.volume_per_month} read as calls; the input does not say whether it counts calls or tasks, and if it counts tasks each monthly figure grows by the arm's calls per task.",
+      "text": "Computed here from each rate's binomial spread on its cases, by the normal approximation, at the level each block prints; differences between configurations combine the two spreads as independent and are not corrected for the number of configurations. Task figures state no counts and carry no interval.",
       "caveats": []
     },
     {
-      "term": "Selection",
-      "text": "The pick is the cheapest of {n_candidates} configurations to clear the gate, so its pass rate likely reads high.",
+      "term": "Run sizes",
+      "text": "A run is sized to settle a reading four times in five on a two-sided interval; the settle table's own sizes settle it half the time.",
+      "caveats": []
+    },
+    {
+      "term": "Cost",
+      "text": "Cost per 1,000 calls as measured; no arm names its provider, so the routing is unknown. Monthly figures use the declared volume of {meta.volume_per_month}, whose unit the input doesn't state; they assume it counts what cost is priced per.",
+      "caveats": []
+    },
+    {
+      "term": "Latency",
+      "text": "Median and tail percentiles per configuration; no budget was declared.",
       "caveats": []
     },
     {

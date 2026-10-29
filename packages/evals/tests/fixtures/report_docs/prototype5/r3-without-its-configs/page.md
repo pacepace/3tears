@@ -1,23 +1,22 @@
 Choice · candidates compared · Turn router: complexity × domain · 9 arms · Run 2026-10-24 · Synthetic example data
 
-# Route turns with Brisk-S · Few-shot (12 ex.) (E): it is the only one of nine configurations inside the balanced-accuracy gate, every cell floor and the latency budget.
+# Use Brisk-S · Few-shot (12 ex.) (E): of nine router configurations it alone clears the balanced-accuracy gate, every cell floor and the latency budget.
 
-Its balanced accuracy of 90.7% clears the 90% gate with its whole interval. The call would change if a fresh run read it below that gate, or if Nano-XS · Few-shot (12 ex.) (H), cheaper only as this run served it, lifted Complex × News above the cell floor and held the balanced-accuracy gate on a re-run.
+It clears the 90% balanced-accuracy gate by 0.7 points, interval 90.4–91%. Nano-XS · Few-shot (12 ex.) (H) saves $1,143 a month at this run's unnamed routing (volume read as turns) but fails Complex × News and is borderline on balanced accuracy.
 
 **Confidence: High, if the caveats below aren't material.**
 
-- **The pick is the best of several candidates.** Matters only if a run on fresh cases reads Brisk-S · Few-shot (12 ex.) (E) below the 90% balanced-accuracy gate. It was the one configuration of nine to clear every line, so its estimate reads high; its clearance is 0.7 points with the interval clear of the line, and selection could pull the truth down by an amount no figure states.
-- **Latency budget (p95) is cleared on a point estimate.** Matters only if the p95 latency varies from run to run by as much as its 66 ms clearance under the 250 ms budget. No spread is stated, so this pass is unsized until the repeated latency runs report; the high confidence applies to the accuracy and cell-floor findings, whose intervals clear their lines, and not to the latency pass.
-- **Provider and serving stack unnamed.** Matters only if production serves these models differently from this run: a slower stack could eat the latency clearance, and another provider could reorder the costs. The accuracy findings, and so the gate on balanced accuracy and every cell floor, do not depend on it.
-- **No arm is the control.** Matters only for the comparisons between configurations, which are read unpaired and so err wide; the call reads each option against the declared gate lines, not against another arm, and no production router was measured beside them.
+- **Latency budget (p95) is cleared on a point estimate.** The high applies to the balanced-accuracy and cell-floor readings; the latency gate stays open until Brisk-S · Few-shot (12 ex.) (E)'s p95 is measured in production with an interval. It becomes material if that p95 runs more than 66 ms above today's 184 ms: then no configuration passes every gate and the choice becomes a trade between latency and accuracy.
+- **The pick is the best of several candidates.** Only if a fresh run reads Brisk-S · Few-shot (12 ex.) (E)'s balanced accuracy more than 0.7 points lower: the one pick out of nine reads high by chance, though today's interval sits wholly above the gate.
+- **No arm is the control.** Only for claims that one configuration beats another: with no control, each gap is read from the two configurations' own intervals combined as independent, which reads wider than a paired comparison would. The gates read each configuration on its own figures, so the call does not rest on it.
 
-**Recommendation.** Use Brisk-S · Few-shot (12 ex.) (E): balanced accuracy 90.7% (90.4–91%), every cell at or above 80%, p95 latency 184 ms, at $1,200 a month at the declared volume as this run served it.
+**Recommendation.** Ship Brisk-S · Few-shot (12 ex.) (E) as the turn router's classifier now: balanced accuracy 90.7%, p95 latency 184 ms, its weakest cell 82.9%, $1,200 a month at this run's unnamed routing with the volume read as turns.
 
-**Why not the others.** Every Atlas-M prompt and Brisk-S · Rubric + reasoning (F) miss the 250 ms latency budget (Brisk-S · Rubric + reasoning (F) reads 496 ms). Nano-XS · Few-shot (12 ex.) (H) misses the cell floor in Complex × News at 76.7%, its interval clear below the line, so more cases won't rescue it. The zero-shot Brisk-S and the other Nano-XS prompts miss the balanced-accuracy gate.
+**Why not the others.** Every Atlas-M prompt and Brisk-S · Rubric + reasoning (F) miss the 250 ms latency budget, though most are more accurate. Nano-XS · Few-shot (12 ex.) (H) is the cheapest near-miss but scores 76.7% on Complex × News, below the 80% floor with its interval clear of it, and its balanced accuracy is borderline. The other zero-shot and rubric prompts fall short on balanced accuracy or a cell floor.
 
-**Watch.** The weakest margin is the balanced-accuracy gate for Brisk-S · Few-shot (12 ex.) (E): 90.7% against 90%, a clearance of 0.7 points, on an option picked as the best of nine. Complex × News, at 82.9% against the 80% floor, is the thinnest cell; the latency clearance of 66 ms has no interval and was measured on an unnamed serving stack.
+**Watch.** The weakest margin is the recommendation's own balanced-accuracy gate: 90.7% against 90% for Brisk-S · Few-shot (12 ex.) (E), clear on its interval but picked out of nine. The latency budget is cleared on a point estimate only, 66 ms under it. Complex × News is the nearest cell, 2.9 points above the floor.
 
-**Next.** Ship Brisk-S · Few-shot (12 ex.) (E) and, in parallel, re-run it on fresh cases and measure its p95 over repeated runs on the stack it will use; separately, fix news handling in Nano-XS · Few-shot (12 ex.) (H), the one change that could replace it.
+**Next.** Ship now and measure production p95 with an interval in parallel; also give Nano-XS · Few-shot (12 ex.) (H) Complex × News examples and re-run it, the one result that could move the call to a cheaper option.
 
 | Option | Role | Configuration | Cost per 1,000,000 turns |
 |---|---|---|---|
@@ -31,9 +30,17 @@ Its balanced accuracy of 90.7% clears the 90% gate with its whole interval. The 
 | H · Nano-XS · Few-shot (12 ex.) | Candidate | Nano-XS · Prompt Few-shot (12 ex.) | $1.90 |
 | I · Nano-XS · Rubric + reasoning | Candidate | Nano-XS · Prompt Rubric + reasoning | $4.60 |
 
-## Brisk-S · Few-shot (12 ex.) (E) is the only configuration that lands inside both the balanced-accuracy gate and the latency budget and also holds every cell floor.
+## Brisk-S · Few-shot (12 ex.) (E) is the only configuration that passes all three declared gates; each of the others fails at least one.
 
-_Caveats: Provider and serving stack unnamed._
+| Gate | Atlas-M · Zero-shot | Atlas-M · Few-shot (12 ex.) | Atlas-M · Rubric + reasoning | Brisk-S · Zero-shot | Brisk-S · Few-shot (12 ex.) | Brisk-S · Rubric + reasoning | Nano-XS · Zero-shot | Nano-XS · Few-shot (12 ex.) | Nano-XS · Rubric + reasoning |
+|---|---|---|---|---|---|---|---|---|---|
+| Overall accuracy (at least 90%) | Fails: Overall accuracy 89.8% < 90% | Passes | Passes | Fails: Overall accuracy 86.0% < 90% | Passes | Passes | Fails: Overall accuracy 78.2% < 90% | Borderline: Overall accuracy 90.1%, derived interval 89.8–90.4% | Fails: Overall accuracy 83.9% < 90% |
+| Cell floor (at least 80% in every cell) | Passes | Passes | Passes | Fails: Cell floor 77.9% < 80% in Complex × News | Passes | Passes | Fails: Cell floor 77.8% < 80% in Medium × Science; Cell floor 73.5% < 80% in Medium × News; Cell floor 76.1% < 80% in Complex × Science; Cell floor 77.6% < 80% in Complex × Conversational; Cell floor 65.1% < 80% in Complex × News | Fails: Cell floor 76.7% < 80% in Complex × News | Fails: Cell floor 79.5% < 80% in Medium × News; Cell floor 70.9% < 80% in Complex × News |
+| Latency budget (p95) (p95 at most 250 ms) | Fails: p95 420 ms > 250 ms | Fails: p95 483 ms > 250 ms | Fails: p95 1302 ms > 250 ms | Passes | Passes | Fails: p95 496 ms > 250 ms | Passes | Passes | Passes |
+
+Each configuration against the balanced-accuracy gate (declared under the name Overall accuracy), the cell floor and the latency budget, with the figure that fails it.
+
+### Every configuration with higher balanced accuracy than Brisk-S · Few-shot (12 ex.) (E) misses the latency budget; the most accurate, Atlas-M · Rubric + reasoning (C), runs at 1302 ms.
 
 | Point | Latency (p95) | Balanced accuracy |
 |---|---|---|
@@ -51,24 +58,9 @@ _Caveats: Provider and serving stack unnamed._
 
 The Latency (p95) axis is on a log scale: its values span more than ten times.
 
-Balanced accuracy against p95 latency for every configuration, with the 90% gate and the 250 ms budget drawn; latency on a log axis. Nano-XS · Few-shot (12 ex.) (H) also lands in the box but misses a cell floor.
+Balanced accuracy against p95 latency, latency on a log scale; the horizontal line is the balanced-accuracy gate, printed under its declared name, and the region inside both gates is shaded.
 
-### News is the weak column for both few-shot models; Complex × News is where Brisk-S · Few-shot (12 ex.) (E) comes nearest the floor, at 82.9% with its interval clear of 80%.
-
-| Panel |  | Science | Conversational | News |
-|---|---|---|---|---|
-| E · Brisk-S · Few-shot (12 ex.) | Simple | 95.1% (94.3% to 95.9%; n = 3120) | 97.1% (96.8% to 97.4%; n = 14880) | 94.0% (93.3% to 94.7%; n = 4410) |
-| E · Brisk-S · Few-shot (12 ex.) | Medium | 89.9% (89.0% to 90.8%; n = 4260) | 91.6% (91.0% to 92.2%; n = 7350) | 87.5% (86.6% to 88.4%; n = 5190) |
-| E · Brisk-S · Few-shot (12 ex.) | Complex | 88.5% (87.4% to 89.6%; n = 3440) | 89.4% (88.0% to 90.8%; n = 1960) | 82.9% (81.7% to 84.1%; n = 3600) |
-| H · Nano-XS · Few-shot (12 ex.) | Simple | 96.2% (95.5% to 96.9%; n = 3120) | 98.2% (98.0% to 98.4%; n = 14880) | 94.5% (93.8% to 95.2%; n = 4410) |
-| H · Nano-XS · Few-shot (12 ex.) | Medium | 89.4% (88.5% to 90.3%; n = 4260) | 91.9% (91.3% to 92.5%; n = 7350) | 86.0% (85.1% to 86.9%; n = 5190) |
-| H · Nano-XS · Few-shot (12 ex.) | Complex | 88.2% (87.1% to 89.3%; n = 3440) | 89.8% (88.5% to 91.1%; n = 1960) | 76.7% (75.3% to 78.1%; n = 3600) |
-
-Accuracy in each complexity × domain cell, one panel per configuration, with each cell's interval and case count; cells below the 80% floor are outlined.
-
-### As this run served them, by providers the input does not name, Brisk-S · Few-shot (12 ex.) (E) costs $1,143 a month more than Nano-XS · Few-shot (12 ex.) (H), a gap another routing could change. What it buys is +0.6 points of balanced accuracy, chiefly from Complex × News, where it leads by +6.2; elsewhere the cell gaps are small or favour the cheaper model.
-
-_Caveats: Provider and serving stack unnamed._
+### Nano-XS · Few-shot (12 ex.) (H) trails Brisk-S · Few-shot (12 ex.) (E) by only 0.6 points on balanced accuracy and stays close in most cells, but trails by 6.2 points on Complex × News, which puts it below the cell floor.
 
 | Row | Value | 95% unpaired interval |
 |---|---|---|
@@ -78,27 +70,41 @@ Each row is Brisk-S · Few-shot (12 ex.) less Nano-XS · Few-shot (12 ex.) on Ba
 
 The interval is independent: each arm's own spread (the standard error derived from its target-matrix cells, the figure being their plain mean: the root of the cells' squared standard errors over their count, the cells read as independent, at the cells' stated level; a size read from it counts cases at today's mix of cells), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.
 
-Brisk-S few-shot minus Nano-XS few-shot on balanced accuracy overall, with its unpaired interval.
+Brisk-S few-shot minus Nano-XS few-shot on balanced accuracy, overall, with its unpaired interval.
 
-| Row | Value | 95% unpaired interval |
-|---|---|---|
-| Simple × Science | -1.1 | -2.2 to -0.03699 |
-| Simple × Conversational | -1.1 | -1.5 to -0.7 |
-| Simple × News | -0.5 | -1.5 to +0.5 |
-| Medium × Science | +0.5 | -0.8 to +1.8 |
-| Medium × Conversational | -0.3 | -1.1 to +0.5 |
-| Medium × News | +1.5 | +0.2 to +2.8 |
-| Complex × Science | +0.3 | -1.3 to +1.9 |
-| Complex × Conversational | -0.4 | -2.3 to +1.5 |
-| Complex × News | +6.2 | +4.4 to +8 |
+| Place | First arm | Second arm | Difference | Interval | Level | Read as |
+|---|---|---|---|---|---|---|
+| Simple × Science | 95.1% | 96.2% | -1.1 | -2.2 to -0.03699 | 95.0% | independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same |
+| Simple × Conversational | 97.1% | 98.2% | -1.1 | -1.5 to -0.7 | 95.0% | independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same |
+| Simple × News | 94.0% | 94.5% | -0.5 | -1.5 to +0.5 | 95.0% | independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same |
+| Medium × Science | 89.9% | 89.4% | +0.5 | -0.8 to +1.8 | 95.0% | independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same |
+| Medium × Conversational | 91.6% | 91.9% | -0.3 | -1.1 to +0.5 | 95.0% | independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same |
+| Medium × News | 87.5% | 86.0% | +1.5 | +0.2 to +2.8 | 95.0% | independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same |
+| Complex × Science | 88.5% | 88.2% | +0.3 | -1.3 to +1.9 | 95.0% | independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same |
+| Complex × Conversational | 89.4% | 89.8% | -0.4 | -2.3 to +1.5 | 95.0% | independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same |
+| Complex × News | 82.9% | 76.7% | +6.2 | +4.4 to +8 | 95.0% | independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same |
 
-Each row is Brisk-S · Few-shot (12 ex.) less Nano-XS · Few-shot (12 ex.) on Accuracy, overall and in each place both hold it.
+Each cell's accuracy for Brisk-S few-shot (first) and Nano-XS few-shot (second), their gap and its unpaired interval; the Simple × Science bound prints unrounded and reads as just below zero.
 
-The interval is independent: each arm's own spread (its stated half-width), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.
+### As this run's unnamed provider routing served them, Brisk-S · Few-shot (12 ex.) (E) costs $40.00 per 1,000,000 turns against $1.90 per 1,000,000 turns for Nano-XS · Few-shot (12 ex.) (H); reading the declared volume as turns, that is $1,143 more a month, the price of meeting the Complex × News floor.
 
-The same difference on accuracy in each cell, with unpaired intervals; the Simple × Science lower bound prints unrounded and sits just below zero.
+| Row | Value |
+|---|---|
+| A · Atlas-M · Zero-shot | $180.00 |
+| B · Atlas-M · Few-shot (12 ex.) | $260.00 |
+| C · Atlas-M · Rubric + reasoning | $610.00 |
+| D · Brisk-S · Zero-shot | $28.00 |
+| E · Brisk-S · Few-shot (12 ex.) | $40.00 |
+| F · Brisk-S · Rubric + reasoning | $95.00 |
+| G · Nano-XS · Zero-shot | $1.30 |
+| H · Nano-XS · Few-shot (12 ex.) | $1.90 |
+| I · Nano-XS · Rubric + reasoning | $4.60 |
 
-#### Worked examples matter most for the smallest model: moving from zero-shot to few-shot lifts Nano-XS by +11.9 points of balanced accuracy against +4.7 for Brisk-S, and rubric + reasoning on top of few-shot adds only +0.8 for Brisk-S.
+The bars are drawn on a log scale: their values span more than ten times, so each step is a multiple.
+
+Cost per million turns for each configuration, on a log scale, as this run's provider routing served it; the routing is not named.
+
+#### On Nano-XS, few-shot examples are what lift balanced accuracy: 11.9 points over zero-shot, with the rubric prompt 6.2 points below few-shot. On Brisk-S, the rubric edges few-shot by 0.8 points but takes p95 to 496 ms.
 
 | Group | Row | Value | 95% unpaired interval |
 |---|---|---|---|
@@ -118,22 +124,42 @@ The same difference on accuracy in each cell, with unpaired intervals; the Simpl
 
 Each effect is one setting moved between two arms that differ in it alone, on Balanced accuracy; each interaction is the same move's effect in one context less its effect in another, the two contexts differing in one other setting. Descriptive: read as two arms' own spreads, never a test.
 
-What changing the model or the prompt alone does to balanced accuracy for Brisk-S and Nano-XS, and how each effect differs across the other setting, with unpaired intervals; descriptive.
+Change in balanced accuracy from moving one setting, Brisk-S and Nano-XS only, with unpaired intervals; the model rows include the overall Brisk-S to Nano-XS gap at each prompt, and interactions follow the effects.
+
+#### On balanced accuracy and all nine cell floors, Brisk-S · Few-shot (12 ex.) (E) clears its line on today's interval, Complex × News nearest at 2.9 points; the latency budget is cleared on a point estimate only, 66 ms under it.
+
+| Arm | Against | Today's figure | Line | Distance toward passing | Settles | Sizes count | Needed, one-sided | Needed, two-sided | Today | A fresh run reads the other side | Level |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| E · Brisk-S · Few-shot (12 ex.) | Overall accuracy | 90.7% | 90% | +0.7 | clears | cases | 6,682 | 9,487 | 48,210 | 0.0004972% | 95% one-sided |
+| E · Brisk-S · Few-shot (12 ex.) | Cell floor · Simple × Science | 95.1% | 80% | +15.1 | clears | cases | 7 | 9 | 3,120 | < 0.000001% | 95% one-sided |
+| E · Brisk-S · Few-shot (12 ex.) | Cell floor · Simple × Conversational | 97.1% | 80% | +17.1 | clears | cases | 4 | 5 | 14,880 | 0% | 95% one-sided |
+| E · Brisk-S · Few-shot (12 ex.) | Cell floor · Simple × News | 94% | 80% | +14.0 | clears | cases | 8 | 12 | 4,410 | 0% | 95% one-sided |
+| E · Brisk-S · Few-shot (12 ex.) | Cell floor · Medium × Science | 89.9% | 80% | +9.9 | clears | cases | 25 | 36 | 4,260 | < 0.000001% | 95% one-sided |
+| E · Brisk-S · Few-shot (12 ex.) | Cell floor · Medium × Conversational | 91.6% | 80% | +11.6 | clears | cases | 14 | 20 | 7,350 | < 0.000001% | 95% one-sided |
+| E · Brisk-S · Few-shot (12 ex.) | Cell floor · Medium × News | 87.5% | 80% | +7.5 | clears | cases | 53 | 75 | 5,190 | < 0.000001% | 95% one-sided |
+| E · Brisk-S · Few-shot (12 ex.) | Cell floor · Complex × Science | 88.5% | 80% | +8.5 | clears | cases | 41 | 58 | 3,440 | < 0.000001% | 95% one-sided |
+| E · Brisk-S · Few-shot (12 ex.) | Cell floor · Complex × Conversational | 89.4% | 80% | +9.4 | clears | cases | 31 | 44 | 1,960 | < 0.000001% | 95% one-sided |
+| E · Brisk-S · Few-shot (12 ex.) | Cell floor · Complex × News | 82.9% | 80% | +2.9 | clears | cases | 435 | 617 | 3,600 | 0.0001087% | 95% one-sided |
+| E · Brisk-S · Few-shot (12 ex.) | Latency budget (p95) | 184 ms | 250 ms | — | — | — | — | — | — | — | — |
+
+In each row, "A fresh run reads the other side" is how often a fresh run of today's size would read the figure on the other side of its line, if the truth is today's estimate (95% one-sided); it plans a run and tests nothing.
+
+Each line Brisk-S few-shot is read against: its distance, the cases a fresh run needs to settle it, and how often a run of today's size reads the other side; the latency row carries no interval, so nothing is sized for it.
 
 ## What you could change
 
 | What you could change | What it decides | What happens as it moves |
 |---|---|---|
-| The cell floor | Which configurations survive, through Complex × News | At or below 76.7%, Nano-XS · Few-shot (12 ex.) (H) would pass the cell floor; it would take over only on cost as this run served it, and only if a re-run holds its balanced accuracy of 90.1% above the gate, which today's design reads the wrong way 26.5% of the time. From there up to 82.9%, Brisk-S · Few-shot (12 ex.) (E) holds; above that, nothing passes. Both ends are point estimates of cells whose intervals run 1.4% and 1.2% either side. |
-| The balanced-accuracy gate | Whether the pick passes | Raised above 90.7%, nothing passes; lowered, the pick holds, because every option it would admit misses latency or a cell floor. |
-| The latency budget | Whether the pick passes, and whether a more accurate option enters | Tightened below 184 ms, nothing passes. Loosened to 483 ms or more, Atlas-M few-shot (and from 496 ms, Brisk-S rubric) passes every gate with 1.4 (and 0.8) more points of balanced accuracy; the pick then holds only if its lower cost, which belongs to this run's unnamed routing, is preferred to those points. |
+| Cell floor | Which configuration survives | Read on point estimates: at a floor at or below 76.7%, Nano-XS · Few-shot (12 ex.) (H) becomes the pick, though its balanced accuracy stays borderline; above 82.9%, no configuration passes; in between the call is Brisk-S · Few-shot (12 ex.) (E). |
+| Balanced-accuracy gate | Whether anything passes | Above 90.7% nothing passes; at any lower gate the call stays Brisk-S · Few-shot (12 ex.) (E), since Nano-XS · Few-shot (12 ex.) (H) still misses its cell floor. |
+| Latency budget | How many configurations pass | Below 184 ms nothing passes. A looser budget admits more accurate, costlier configurations, and on cost the call stays Brisk-S · Few-shot (12 ex.) (E). |
 
 ## Next steps
 
-- Re-run Brisk-S · Few-shot (12 ex.) (E) on a fresh case set of at least 19,383 cases. _Whether its 0.7-point clearance of the balanced-accuracy gate survives being picked as the best of nine; that size settles it four times in five if today's estimate holds._
-- Measure p95 latency for Brisk-S · Few-shot (12 ex.) (E) over repeated runs on the serving stack and provider it will use in production. _Whether its 66 ms latency clearance is more than run-to-run noise and holds off this run's unnamed stack; until then the latency pass is unsized._
-- Add news examples to the Nano-XS few-shot prompt and re-run Complex × News, where it must gain at least 3.3 points, and the overall set, where it sits at 90.1%. _Whether a configuration that, as this run served both, cost 21 times less than the pick can pass every gate; its balanced-accuracy clearance reads the wrong way 26.5% of the time today, so the overall set needs re-reading too._
-- Declare the unit the monthly volume counts and the provider each model is served by. _What the monthly cost figures and the cost gap to Nano-XS mean under production routing; the call does not rest on them._
+- Add Complex × News examples to Nano-XS · Few-shot (12 ex.) (H)'s few-shot prompt and re-run every cell. _Whether it clears the cell floor. Its balanced accuracy also sits on the gate (a run of today's size reads it on the wrong side 26.5% of the time, and settling it four times in five takes 955,843 cases), so only a fix that lifts it settles the switch._
+- Measure Brisk-S · Few-shot (12 ex.) (E)'s p95 latency on production hardware and load, with an interval. _Whether the latency budget holds outside the test rig, closing the one gate read on a point estimate._
+- Run Brisk-S · Few-shot (12 ex.) (E) in shadow on fresh traffic, at least 19,383 turns, sampled by cell to keep today's per-cell proportions, so the rarer complex cells and Complex × News (today 3,600 cases) keep their share. _Whether its balanced accuracy holds above the gate once the pick-of-many optimism is gone; that size, at today's mix of cells, settles it four times in five if today's estimate is the truth._
+- Have the provider routing and the unit of the monthly volume declared. _Whether the monthly cost gap is stated in the right units and at the routing production will use._
 
 ## Full results
 
@@ -199,21 +225,21 @@ Each arm's full configuration, once. The rest of the page names an arm by its le
 
 ### Left out, and why
 
-- **Macro F1 and traffic-weighted accuracy** No gate reads them and they order the configurations as balanced accuracy does; the appendix holds them.
-- **Cost of every configuration** Only one option survives the gates, so cost decides nothing; the one cost that frames a choice, against Nano-XS few-shot, is in the body with its routing caveat.
-- **Atlas-M cell figures and lever rows** Every Atlas-M prompt misses the latency budget by a wide margin; its cell accuracies can't change the call.
-- **Cells of the other configurations** Each is out on a gate already shown; the full cell table is in the appendix.
-- **A lower confidence form over the latency pass** Weighed and kept high-if-immaterial: the accuracy and cell-floor findings that make the pick unique have intervals clear of their lines; the latency pass is scoped out of the high and sized by a next step instead.
-- **A rounded Simple × Science bound in the per-cell comparison** The cell figures print as the data hold them, so that one bound shows extra digits; dropping the row would hide a cell that favours the cheaper model, so it is kept and its caption says the bound sits just below zero.
+- **Traffic-weighted accuracy and macro F1 from the body** Not gated, and neither reorders the survivor against the near-misses; both stay in the full tables.
+- **Confusion tables by complexity and by domain** They describe which labels get confused; no gate reads them and they do not change the call.
+- **Atlas-M rows of the prompt-and-model chart** Atlas-M is out on latency at every prompt; the Brisk-S and Nano-XS rows, model rows included, carry the point.
+- **Atlas-M cell figures from the body** They pass every cell floor but miss the latency budget, so the cells do not bear on them; they stay in the full cell table.
+- **Failure examples** The snapshot keeps none.
 
 ### Method
 
-- **Cases** 48,210 labelled turns per configuration, each run once, spread over nine cells crossing complexity with domain; Complex × News holds 3,600.
-- **Correct** A turn is correct when the predicted class matches its label. Accuracy is read per cell; balanced accuracy is the plain mean of the cell accuracies; traffic-weighted accuracy weights cells by traffic.
-- **Intervals** Cell accuracies carry their stated intervals, at the level the cells state (95%). The interval on balanced accuracy is derived from the cells, reading them as independent; no multiplicity correction. Comparisons between configurations are unpaired, which errs wide where they ran the same turns.
-- **Gates** The three gates were all declared before the run: balanced accuracy at least 90%, each cell's accuracy at least 80%, and p95 latency at most 250 ms. The gate tables label the first 'Overall accuracy'; it reads balanced accuracy, not traffic-weighted accuracy. Each gate is read on its figure; latency states only a p95, with no spread.
-- **Cost and latency** Cost per million turns and p95 latency as this run served each model; no provider or serving stack is named for any configuration, so the routing behind both is unknown. Monthly figures use the declared volume of 30,000,000, which the input states without a unit; they read it as turns.
-- **Not compared** No production router or control was run, and the run kept no failure examples or confusion counts, so what the Complex × News errors look like is not shown.
-- **Source** Turn router classifier sweep, run 2026-10-24; Synthetic example data from docs/eval-report-kit/references/r3-classifier.json.
+- **Cases** 48,210 labelled turns per configuration, spread across nine complexity × domain cells; none lost or failed. Repeats are not stated.
+- **Pass** A turn passes when the predicted label matches the gold label. Balanced accuracy is the plain mean of the cells' accuracies, so every cell weighs the same whatever its traffic; it is not the traffic-weighted accuracy in the full tables.
+- **Gates** All three were declared before the run: balanced accuracy at least 90% (declared under the name Overall accuracy, which the charts and tables print), accuracy at least 80% in every cell, p95 latency at most 250 ms. A gate is read on the point estimate; an interval crossing its line marks the option borderline.
+- **Intervals** Cell accuracies carry stated half-widths at the 95% level. Balanced accuracy's interval is derived from its cells: the root of the cells' squared standard errors over their count, the cells read as independent. Gaps between configurations combine each one's own spread as independent, uncorrected for the number of comparisons.
+- **Latency** p95 per configuration on the test setup, with no interval stated.
+- **Cost** Cost per million turns as this run was served; the served model is named for each arm, the provider for none. Monthly figures read the declared volume of 30,000,000 as turns, which the input does not state.
+- **Not compared** No control or production baseline.
+- **Source** Synthetic example data from docs/eval-report-kit/references/r3-classifier.json, run 2026-10-24.
 
-_Written by claude-opus-5-5, served as claude-opus-5-5, for $4.20, with analyst skill ed7e2c60b5ad, on 2026-10-29._
+_Written by claude-opus-5-5, served as claude-opus-5-5, for $4.32, with analyst skill 2a7662d928b0, on 2026-10-29._

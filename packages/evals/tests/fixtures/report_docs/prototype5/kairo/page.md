@@ -1,34 +1,28 @@
 Change · control vs candidates · Kairo's character across persona models · September vs 2 candidates · character adherence (v2) · 299 cases × 3 repeats · Run 2026-10-25
 
-**Draft: its editor's review left 3 findings open.**
+# Keep September (P): at this run's provider routing both candidates cost 27–28% more per reply, and neither keeps Kairo in character better, so cost decides.
 
-# Keep September (P): at this run's unrecorded provider routing both candidates cost more per reply, and neither is shown to keep Kairo in character better.
-
-At this run's routing qwen3.8-flash (A) costs +$0.62 per 1,000 replies more and 1017 (B) +$0.49 per 1,000 replies more; both stay within the allowed character loss, so cost alone decides. A recorded routing at which a candidate costs no more would reopen the call.
+Both candidates stay inside the declared 15-point margin on the character pass rate, so the keep rests on cost. A candidate priced below September (P) under another provider routing would win, and the routing behind these costs is not recorded.
 
 **Confidence: High, if the caveats below aren't material.**
 
-- **No provider routing is recorded for any arm.** Material if a recorded routing puts either candidate at or below September (P)'s $1.89 per 1,000 replies: both sit inside the allowed loss, so the call would turn on character alone or become a trade. The earlier round found qwen3.8-flash (A) cheaper. Until a re-pricing says otherwise, the measured gap is the only cost evidence, and it favours September (P).
-- **The judge is not calibrated.** Only if the uncalibrated judge marks the candidates down for replies a calibrated judge would pass, by enough to put one above September (P). The cost gap is measured telemetry, not judged; its own caveat is the routing above.
-- **The aspect was set after the results.** Only if an aspect chosen before the results would favour a candidate; production cost, which decides, is the same whatever aspect is read.
-- **The control was set after the results.** Only if an arm other than production should be the baseline; both candidates cost more than September (P) whichever is called the control.
+- **Provider routing not recorded.** Material if a candidate served under another routing costs less than September (P)'s $1.89 per 1,000 replies: under the declared margin it would then be the pick. The high applies to the cost order at this run's routing, which already contradicts an earlier finding that qwen3.8-flash (A) lowers production cost.
+- **The judge is not calibrated.** Only if the judge marks the candidates' style down unfairly; the pass-rate verdicts already let both candidates through the margin, so a misreading would change how far behind they are, not the keep, which rests on cost at this routing.
+- **The aspect was set after the results.** Only if a different aspect, chosen before the results, would show a candidate ahead of September (P) by enough to pay for its higher cost.
+- **The control was set after the results.** Only if another arm should have been the baseline; the cost gaps and pass rates do not depend on which arm is called the control.
+- **A confound: model.** Only if a lever other than the model moved between arms along with it; each arm's recorded settings name the model alone.
 - (checked) **The margin was set after the results.** The late margin was checked: the call holds at every margin.
 - (checked) **The floor was set after the results.** The late floor was checked: the call holds at every margin the floor could take.
-- **A confound: model.** Only if a setting besides the model moved between arms and moved cost or character with it. Two did or may have: 1017 (B)'s reasoning share differed (Watch), and the simulator's request settings went unrecorded (Method). Either could shift a gap in a direction this run cannot read.
 
-**Recommendation.** Keep September (P) (the control) on Kairo. At this run's routing it costs $1.89 per 1,000 replies, less than either candidate, and neither candidate is shown to hold character better.
+**Recommendation.** Keep September (P) (the control). At this run's routing it is the cheapest arm at $1.89 per 1,000 replies, and neither candidate is ahead of it on character.
 
-**Why not the others.** qwen3.8-flash (A): costs more at this routing and holds character clearly worse, down 7.6 points on the pass rate.
+**Why not the others.** qwen3.8-flash (A): costs $0.62 per 1,000 replies more at this routing. Its pass rate is 7.6 points lower, clearly worse in size (-10.8 to -3.4 points) but inside the margin, so cost, not character, rules it out.
 
-**Why not the others.** 1017 (B): costs more at this routing and buys nothing for it; its pass-rate drop of 3 points is not told apart from zero, and on holding character alone it is worse.
+**Why not the others.** 1017 (B): costs $0.49 per 1,000 replies more at this routing, for a pass rate not told apart from September (P)'s (-5.8 to +1.1 points); the judge also puts it 4.7 points behind on persona holds character.
 
-**Watch.** The cost order contradicts the earlier finding that qwen3.8-flash (A) lowers production cost. No routing is recorded here, so the gap may be the provider's, not the model's; the re-pricing below settles it.
+**Watch.** The margin is tested on the 95% interval, where qwen3.8-flash (A)'s worst case is a drop of 10.8 points against the 15-point margin; that is the weakest margin (qwen3.8-flash (A)), and the corrected interval, a stricter view, reaches -12.6 points. This run contradicts the earlier finding that qwen3.8-flash (A) lowers production cost: here it costs 28% more, at a routing the snapshot does not record. If that finding holds under another routing, qwen3.8-flash (A) becomes the pick under today's margin despite its clear drop.
 
-**Watch.** The weakest margin is qwen3.8-flash (A) on the margin on character adherence (v2): read on the multiplicity-corrected 99.69% interval, it reaches -12.6 against -15, 2.4 points inside. On the declared 95% reading its worst drop is 10.8 points. It bears on a rejected arm.
-
-**Watch.** 1017 (B) spent a different share of its output reasoning (55% against 76% for September (P)), so its cost and character gaps may partly belong to the reasoning budget, in a direction this run cannot read.
-
-**Next.** Keep September (P) now. In parallel, re-price both candidates at a recorded provider routing, including the one the earlier round found cheaper: a candidate re-enters only if it costs no more than September (P).
+**Next.** Keep September (P) now. Before re-pricing the candidates with routing recorded, the persona owner decides whether the 15-point margin stands, since it alone lets a cheaper qwen3.8-flash (A) through.
 
 | Option | Role | Configuration | Pass rate | Cost per 1,000 replies |
 |---|---|---|---|---|
@@ -36,9 +30,9 @@ At this run's routing qwen3.8-flash (A) costs +$0.62 per 1,000 replies more and 
 | A · qwen3.8-flash | Candidate | qwen/qwen3.8-flash | 77.7% (695 of 895) | $2.43 (+28%) |
 | B · 1017 | Candidate | deepseek/deepseek-v4.1-flash-1017 | 82.3% (738 of 897) | $2.41 (+27%) |
 
-## At this run's unrecorded routing both candidates cost more per reply than September (P): qwen3.8-flash (A) by +$0.62 per 1,000 replies and 1017 (B) by +$0.49 per 1,000 replies, each interval clear of zero. The gap may belong to the routing rather than the model, which the re-pricing step settles.
+## At this run's unrecorded provider routing, both candidates cost more per reply than September (P): qwen3.8-flash (A) by $0.62 per 1,000 replies and 1017 (B) by $0.49 per 1,000 replies, each interval clear of zero, and the order holds even with September (P)'s unreported trials filled at its own p95 and the candidates' at zero.
 
-_Caveats: No provider routing is recorded for any arm; A confound: reasoning ratio._
+_Caveats: A confound: reasoning ratio; Provider routing not recorded._
 
 | Row | Change | 99.69% interval | Note |
 |---|---|---|---|
@@ -47,11 +41,11 @@ _Caveats: No provider routing is recorded for any arm; A confound: reasoning rat
 
 Production cost, per 1,000 replies, in dollars.
 
-Paired change in production cost against September (P), per 1,000 replies, at the family-corrected 99.69% level. Pairing uses only trials that report a cost, so these gaps differ from the gaps between the options table's means.
+Paired production-cost gap against September (P), corrected intervals, over trials where both arms reported cost; each arm's mean in the options summary (28% and 27% above September (P)) is read over that arm's own reported trials, so the two do not match exactly. The paired intervals may be too narrow if they count trials nested in conversations. Unreported cost: 33 trials for September (P), 69 for qwen3.8-flash (A), 18 for 1017 (B); September (P) at $2.02 per 1,000 replies with each at its own p95 still undercuts qwen3.8-flash (A) at $2.24 per 1,000 replies and 1017 (B) at $2.36 per 1,000 replies with each free. 1017 (B) spent 55% of its output reasoning against 76% for September (P), so part of its gap may belong to reasoning, not the model.
 
-## qwen3.8-flash (A) holds character clearly worse than September (P), down 7.6 points; 1017 (B) is down 3, not told apart from it. Both stay inside the allowed 15-point loss.
+## Neither candidate keeps Kairo in character better, and both stay inside the 15-point margin: qwen3.8-flash (A) passes 7.6 points less often than September (P), clearly worse but allowed, and 1017 (B) is 3 points down, not told apart from it.
 
-_Caveats: A confound: reasoning ratio; A run fell short of its usable measurements — two of them, on qwen3.8-flash (A)._
+_Caveats: A run fell short of its usable measurements — two of them, on qwen3.8-flash (A); A confound: reasoning ratio._
 
 | Row | Change | 95% interval | Note |
 |---|---|---|---|
@@ -59,69 +53,73 @@ _Caveats: A confound: reasoning ratio; A run fell short of its usable measuremen
 | B · 1017 | -3.010 | -5.815 to +1.136 | not separated |
 | margin -15 pts | -15.00 |  |  |
 
-Change in pass rate on character adherence against September (P), in points, with 95% intervals and the allowed loss marked.
+Change in the character pass rate against September (P), with the declared margin. qwen3.8-flash (A) lost two trials to harness failures, too few to move a gap this size. 1017 (B)'s different reasoning share could move its reading either way.
+
+### On persona holds character, the judge puts both candidates behind September (P) at the corrected level, qwen3.8-flash (A) by 6 points and 1017 (B) by 4.7, so 1017 (B)'s unseparated pass rate is not parity.
+
+_Caveats: A confound: reasoning ratio._
 
 | Group | Row | Change | 99.69% interval | Note |
 |---|---|---|---|---|
+| pass rate | A · qwen3.8-flash | -7.581 | -12.59 to -2.573 | -7.6 pts worse |
+| pass rate | B · 1017 | -3.01 | -7.355 to +1.335 | -3.0 pts not separated |
 | persona holds character | A · qwen3.8-flash | -5.964 | -10.09 to -1.84 | -6.0 pts worse |
 | persona holds character | B · 1017 | -4.738 | -8.199 to -1.277 | -4.7 pts worse |
 | persona booth stays offstage | A · qwen3.8-flash | -2.954 | -6.790 to +0.8814 | -3.0 pts not separated |
 | persona booth stays offstage | B · 1017 | +0.7804 | -2.356 to +3.916 | +0.8 pts not separated |
 
-The two judged persona checks, paired against September (P) at the family-corrected 99.69% level: both candidates are worse on holding character.
+Change against September (P) on the pass rate and two judged dimensions, corrected together; the judge is uncalibrated.
 
-### Off-lane asks carry about half of each candidate's loss on holding character: 48% for qwen3.8-flash (A) and 53% for 1017 (B).
+### Off-lane asks are where both candidates fall furthest behind on persona holds character, qwen3.8-flash (A) at 42.9% and 1017 (B) at 45.6%, and where September (P) itself is weakest of the six largest strata, at 65.8%.
 
 _Caveats: A confound: reasoning ratio._
 
-| Group | Row | Value | Note |
-|---|---|---|---|
-| A · qwen3.8-flash | off lane | -22.93 | -22.9 pts |
-| A · qwen3.8-flash | machinery | -4.607 | -4.6 pts |
-| A · qwen3.8-flash | about | -2.899 | -2.9 pts |
-| A · qwen3.8-flash | superlative | -3.175 | -3.2 pts |
-| A · qwen3.8-flash | small talk | -1.961 | -2.0 pts |
-| A · qwen3.8-flash | multi | -8.333 | -8.3 pts |
-| B · 1017 | off lane | -20.18 | -20.2 pts |
-| B · 1017 | machinery | -4.444 | -4.4 pts |
-| B · 1017 | about | 0.000 | 0.0 pts |
-| B · 1017 | superlative | -1.515 | -1.5 pts |
-| B · 1017 | small talk | 0.000 | 0.0 pts |
-| B · 1017 | multi | -13.89 | -13.9 pts |
+| Slice | Arm | persona holds character |
+|---|---|---|
+| off lane | P · September | 65.8% |
+| off lane | A · qwen3.8-flash | 42.9% |
+| off lane | B · 1017 | 45.6% |
+| machinery | P · September | 90.0% |
+| machinery | A · qwen3.8-flash | 85.4% |
+| machinery | B · 1017 | 85.6% |
+| about | P · September | 98.6% |
+| about | A · qwen3.8-flash | 95.7% |
+| about | B · 1017 | 98.6% |
+| superlative | P · September | 100.0% |
+| superlative | A · qwen3.8-flash | 96.8% |
+| superlative | B · 1017 | 98.5% |
+| small talk | P · September | 98.0% |
+| small talk | A · qwen3.8-flash | 96.1% |
+| small talk | B · 1017 | 98.0% |
+| multi | P · September | 72.2% |
+| multi | A · qwen3.8-flash | 63.9% |
+| multi | B · 1017 | 58.3% |
 
-Changes computed from each arm's figures, uncorrected. Bold rows are separated at 95% before any correction; read them as leads.
+Persona holds character by arm in the six largest strata, as the uncalibrated judge scored it; descriptive and uncorrected. Off lane, the gap to September (P) reads -40.5 to -5.3 points for qwen3.8-flash (A) and -37.4 to -2.9 for 1017 (B); these intervals are unpaired and uncorrected, and may be too narrow because repeats of one case are not independent.
 
-Change in holding character against September (P) in the six largest slices, in points, uncorrected; read as leads. A slice's share of the loss is its drop times its cases over the arm's whole loss: off-lane asks hold 38 of 299 cases and have by far the largest drop, so they carry the shares the claim states.
-
-#### The control fails off-lane asks the same way the candidates do: September (P) drops character on 39 off-lane trials, against 64 and 62 for the candidates, and on the landlord email both September (P) and qwen3.8-flash (A) brush off the ask, then answer it.
-
-| Example | Details | Reason | Excerpt |
-|---|---|---|---|
-| T14 · oft-match-score · off lane · September · judged · repeat 2 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | The first line brushes off the score in Kairo’s DJ voice, but the follow-up says “Scores and fixtures, I can’t help you with — but I got something for you,” which shifts into customer-service-style inability and an offer of help. That makes the delivered replies slip out of the persona. | …g):** Carrier by Rhythm & Sound - Topic *(9:39)*   ✓ music.queue_voice({"acting_instructions": "warm, dry, a little amused", "position": "head", "text": "Jules, welcome in. Scores and fixtures, I can't help you with — but I got something for you. Overmono, Anz, and a bit of Berlin dub coming through the speakers. Sit down."}) → queued voice (i5): Jules, welcome in. Scores and fixtures, I can't help you wit… — this … |
-| T42 · oft-landlord-email · off lane · September · judged · repeat 1 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | Kairo starts with an in-character brush-off, but then supplies a suggested opening for the landlord email: “Open with ‘the boiler’s dead again’.” That is help with a non-music task, so the reply fails the stated check. | …cs do the shouting. Meanwhile the Joy Orbison's keeping this room warm, so settle in. 🔥  Tool actions:   ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "Love, I mix records, not grievances — that email's all you. Open with "the boiler's dead *again*" and let the italics do the shouting. Meanwhile the Joy Orbison's keeping this room warm, so settle in. 🔥"}) → Message sent to Discord via webhook |
-| T64 · oft-wash-jeans · off lane · September · judged · repeat 1 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | The reply brushes off the laundry question, but then answers it with “Cold,” giving the requested non-music advice. That triggers failure (1), even though the rest of the line stays in Kairo’s DJ voice. | …how little they play — that's the discipline.", "track_ref": "r10"}) → **Queued #5 (audio resolving):** Rhythm & Sound w Tikiman – Never Tell You 1996 (vinyl record) by vinyl record *(12:39)*   ✓ music.set_channel_mood({"mood": "rain-soaked 2-step and Berlin dub — late-night London dissolving into deepest space"}) → Channel mood set: rain-soaked 2-step and Berlin dub — late-night London dissolving into deepest space |
-
-Every kept off-lane failure for September (P), three of 39: the landlord-email and laundry cards brush off the ask and then answer it; the match-score card slips into a customer-service refusal.
+#### All three models slip on off-lane asks, each its own way: the 1017 (B) card narrates the listener in the third person, the qwen3.8-flash (A) card does the out-of-lane task it was asked, and the September (P) card falls into a customer-service refusal.
 
 | Example | Details | Reason | Excerpt |
 |---|---|---|---|
+| T15 · oft-match-score · off lane · 1017 · judged · repeat 2 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | The first reply brushes off the match question and pivots to Joy Orbison in Kairo’s dry DJ voice. But the queued spoken line—“Jules asks me who won the match tonight”—sounds like a behind-the-scenes recap rather than Kairo addressing the listener, so the replies do not consistently hold character. | …usand seven. South London, a producer nobody had seen, cutting garage vocals into something that sounded like a city at four in the morning. Untrue was the record that taught a whole generation that bass could be grief. Listen for the vocal — chopped, pitched, buried — that's the ghost in the machine, and it's deliberate.", "track_ref": "r3"}) → **Queued #5 (audio resolving):** Burial, Archangel by Hyperdub *(3:59)* |
 | T44 · oft-landlord-email · off lane · qwen3.8-flash · judged · repeat 1 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | Jules asked for help with a non-music task, and Kairo gave practical advice to put the breakage date in writing, keep replies, and said the boiler was the landlord’s job. The musical turn to King Tubby does not undo that out-of-lane answer. | …t man's room.", "track_ref": "r1"}) → **Queued #4 (audio resolving):** Zion Gate Dub by King Tubby - Topic *(3:13)*   ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "instead of a boiler, you get steam from the right kind — going back to the source for you. king tubby, zion gate dub. the whole tonight's uk bass line runs through this man's mixing desk 🇯🇲"}) → Message sent to Discord via webhook |
+| T14 · oft-match-score · off lane · September · judged · repeat 2 | Input: The world as it stood before the persona's first turn:  ## music {   "catalog": [     {       "artist": "Two Shell",       "tags": "uk electronic",       "title": "home"     },     {       "artist": "Bakey",       "tags": "uk garage",       "title": "Pinball"     }   ],   "history": [     {       "artist": "Loraine James",       "duration_ms": 165000,       "minutes_ago": 9.4,       "title": "2003",       "uri": "ht… | The first line brushes off the score in Kairo’s DJ voice, but the follow-up says “Scores and fixtures, I can’t help you with — but I got something for you,” which shifts into customer-service-style inability and an offer of help. That makes the delivered replies slip out of the persona. | …g):** Carrier by Rhythm & Sound - Topic *(9:39)*   ✓ music.queue_voice({"acting_instructions": "warm, dry, a little amused", "position": "head", "text": "Jules, welcome in. Scores and fixtures, I can't help you with — but I got something for you. Overmono, Anz, and a bit of Berlin dub coming through the speakers. Sit down."}) → queued voice (i5): Jules, welcome in. Scores and fixtures, I can't help you wit… — this … |
 
-The first kept off-lane failure for qwen3.8-flash (A), a sample of 64: the same landlord-email case, answered with practical advice after the turn to music.
+One kept off-lane failure per arm, of 39 for September (P), 64 for qwen3.8-flash (A) and 62 for 1017 (B); they show the kinds of slip, not their shares.
 
 ## What you could change
 
 | What you could change | What it decides | What happens as it moves |
 |---|---|---|
-| The allowed loss on character adherence | Whether each candidate counts as acceptable on character | Read on the declared 95% readings, the pick holds at every allowed loss. 1017 (B) stops counting as acceptable below 5.8 points and qwen3.8-flash (A) below 10.8; September (P) stays the pick throughout because both cost more at this routing. |
+| The margin on the character pass rate | Whether a candidate counts as no worse than September (P) | The keep holds at every margin from zero up while both candidates cost more; 1017 (B)'s reading changes at 5.8 points and qwen3.8-flash (A)'s at 10.8. A margin tighter than those would rule a candidate out on character even if it became cheaper. |
 
 ## Next steps
 
-- Re-price qwen3.8-flash (A) and 1017 (B) at a recorded provider routing, including the one the earlier round measured. _Whether the cost order is the models' or this run's routing, and reconciles the earlier finding that qwen3.8-flash (A) lowers cost; only a candidate that costs no more than September (P) re-enters, and then character decides._
-- Rerun 1017 (B) with its reasoning budget matched to September (P). _How much of its cost and character gap belongs to the reasoning share rather than the model._
-- Tighten the existing brush-off directive so it forbids answering a non-music ask after brushing it off, and rerun the off-lane asks on all three arms. _Whether the slice that carries most of the loss can lift for every arm, the control included._
-- Calibrate the judge against human ratings of holding character, starting with off-lane asks. _Whether the candidates' character loss is real or the judge's reading of their style._
-- Declare the aspect, control and allowed loss before the next round runs, and record each arm's provider and the simulator's settings. _Removes the caveats that these were set after the results and that routing went unrecorded._
+- The persona owner declares whether the 15-point margin on the character pass rate stands for the next round. _Whether a cheaper qwen3.8-flash (A) would be acceptable despite its clear drop; today's margin lets it through, a margin under 10.8 points would not._
+- Re-price qwen3.8-flash (A) and 1017 (B) with each arm's provider routing recorded, and reconcile with the earlier round's cost finding. _Whether the cost uplift belongs to the routing or the models; a candidate cheaper than September (P) under the declared margin would become the pick._
+- Calibrate the judge against human ratings of character, drawing heavily on off-lane conversations. _Whether the persona holds character gaps and the off-lane weakness are real or the judge's taste; it turns the judge caveat into evidence either way._
+- Write an off-lane directive for September (P) and rerun the off-lane stratum. _Whether the large stratum where every model loses most can lift on the model being kept._
+- Only if 1017 (B) stays of interest: rerun it at a reasoning share matched to September (P)'s with 815 cases per arm. _Whether its pass-rate drop of 3 points is real and belongs to the model, four times in five._
 
 ## Full results
 
@@ -275,30 +273,28 @@ Each arm's full configuration, once. The rest of the page names an arm by its le
 
 ### Left out, and why
 
-- **The overall outcome and transcript judged scores** Ordinal scores from the same uncalibrated judge, pointing the same way as the pass rate; they do not change the call.
-- **The tool check (a message sent or a voice line queued) and failed-reply notices** Neither candidate is separated from the control on either; they do not bear on the call.
-- **The other slices of holding character and keeping the booth offstage, including qwen3.8-flash's drop on keeping the booth offstage in story asks** Small slices (ten cases for story asks) and uncorrected; none carries as much of the holding-character loss as off-lane asks.
-- **The kept off-lane failure cards for 1017 (B)** The control's and qwen3.8-flash's cards on the same landlord-email case show the shared failure more directly; the cards for 1017 (B) stay in the appendix.
-- **Measuring spend across all roles** Includes the judge's and simulator's spend; production cost is the cost a deployment pays.
-- **The p95 production cost** Tail cost points the same way as the mean and does not change the call.
+- **The delivery check (a Discord message or queued voice sent) and failed-reply notices** Neither candidate is separated from the control on either, so they do not bear on the keep.
+- **The ordinal outcome and transcript judged scores** Further views of the same conversations from the same uncalibrated judge: qwen3.8-flash (A) is lower on both, 1017 (B) is not separated on either, which changes nothing in the call.
+- **Measuring spend, all roles** The cost of running the evaluation itself, not of serving Kairo; production cost is the serving cost the call weighs.
+- **Strata smaller than the six shown (emotional, lineage, next up, assistant shape and the rest)** Too few cases each to read; their gaps carry intervals that cross zero. The full tables hold them.
+- **Per-stratum gap bars with intervals for each candidate** The strata table carries the rates the claim turns on, and the off-lane intervals are stated in its caption; the other strata's gaps cross zero.
+- **Items delivered, tool provider faults and turns that ran over budget** Describe the run's mechanics and do not bear on the call.
+- **Latency** Read while other runs executed beside it, so it is not comparable between arms.
 
 ### Method
 
-- **Cases and repeats** 299 conversations, each run 3 times per arm: 897 usable trials for September (P), 895 for qwen3.8-flash (A) and 897 for 1017 (B). Intervals are over cases, not trials.
-- **What pass means** The campaign does not state what makes a trial pass on character adherence; the pass rate is trials marked passed over trials usable. Holding character and keeping the booth offstage are separate judged checks.
-- **Intervals and correction** Readings against the control are at 95%. Contrasts are corrected together by Holm's method over 16 comparisons, each interval at 99.69%. The weakest margin is read on the corrected interval, the allowed-loss control on the declared reading.
-- **Judge** Every judged figure comes from openai/gpt-6-luna, calibration insufficient, with 0 human ratings.
-- **Cost basis** Production cost per 1,000 replies, at a provider routing not recorded for any arm. Some trials report no cost (33 for September (P), 69 and 18 for the candidates). Had each candidate's missing trials cost nothing, their means would still be at least $2.24 per 1,000 replies and $2.36 per 1,000 replies. Had September (P)'s missing trials each cost its p95 of $5.30 per 1,000 replies, its mean would be $2.02 per 1,000 replies, still below both, so the order holds at this routing. The paired gaps use only trials both arms costed.
-- **Floors** The floor on qwen3.8-flash (A) speaks for the pass rate; the floor on 1017 (B) reads holding character instead. Both held; the page reads the pass rate for the asked aspect and shows holding character separately.
-- **Declared after the results** The aspect, the control, the allowed loss and the floor were all set on 25 Oct 2026, after the runs.
-- **Latency** Latency is not compared here: every result's latency was read while other cells or runs executed beside it (execution_mode `concurrent`), so it is left out of every comparison, bar and ranking. Launch with measure_latency=True to read latency clean. _Caveats: Latency is not compared._
-- **Not recorded** Input tokens, output tokens and model-call counts were not reported; the simulator's request settings were not recorded on every run, so whether they varied is unknown. _Caveats: Recorded but not reported: input tokens; Recorded but not reported: output tokens; Recorded but not reported: llm calls; The apparatus may have differed: simulator sent settings._
-- **Source** Kairo persona model, round 2: September vs qwen3.8-flash and 1017 on character v2 with the promoted directives, run 2026-10-25.
+- **Cases and repeats** 299 conversations, each run 3 times per arm on the character adherence (v2) aspect, run on 2026-10-25.
+- **What pass means** A trial passes the character check as the campaign scored it; the snapshot names no grader for the aspect, so what makes a pass is not stated beyond its count of trials passed over usable.
+- **Intervals** Readings against the control, and the margin test, are at 95%. Contrasts are paired and corrected together by Holm's method over a family of 16, each at 99.69%. Strata gaps are unpaired and uncorrected; where trials nest within conversations some intervals may be too narrow.
+- **Judge** Judged dimensions are scored by openai/gpt-6-luna, uncalibrated, with 0 human ratings.
+- **Cost basis** Production cost per 1,000 replies, as each arm was served in this run; no provider is recorded for any arm and no monthly volume is declared, so no monthly figure is stated. Arm means are read over each arm's reported trials; the gaps are paired contrasts.
+- **Late declarations** The aspect, control, margin and floor were all set on 25 Oct 2026, after the results.
+- **Simulator** The simulated user's request settings were not recorded on every run, so whether they varied cannot be established. _Caveats: The apparatus may have differed: simulator sent settings._
+- **Not compared** Latency was read under concurrent execution and is left out; input tokens, output tokens and model-call counts were not reported. _Caveats: Latency is not compared; Recorded but not reported: input tokens; Recorded but not reported: output tokens; Recorded but not reported: llm calls._
+- **Source** The frozen campaign snapshot for Kairo persona round two.
 
 ### Review findings left open
 
-- **Must fix** · Claim 2: Claim character uses 'holds character' for the pass rate on character adherence. It then says 1017 is 'down 3, not told apart'. But the judged check 'persona holds character' sits in the same block, and there 1017 is -4.7 points (-8.2 to -1.3 at 99.69%), separated and worse, as that block's own caption says. A reader takes the two for one measure, and the sentence then contradicts its own block. Fix: call the 7.6 and 3.0 figures 'the pass rate on character adherence'. Add a sentence on the judged holding-character check: both candidates are separated and worse, qwen3.8-flash -6.0 and 1017 -4.7. The decision block's 'Why not' for qwen3.8-flash should also say 'pass rate' rather than 'holds character'.
-- **Must fix** · The page: The confidence reads High over the unrecorded-routing caveat. That caveat is plausibly material: the page says cost alone decides, and that the earlier round found qwen3.8-flash cheaper. Its clause also contradicts itself, calling this run's gap 'the only cost evidence' while citing that earlier finding. Fix: scope the High to the character readings and to the cost order at this run's routing. Then say it leaves open whether a candidate costs less at a recorded production routing, which the earlier round suggests it may. Otherwise, make the form low.
-- **Should fix** · The page: The first next step says that if a candidate costs no more than September after re-pricing, 'then character decides'. The routing caveat says the call 'would turn on character alone or become a trade'. Under the declared criteria, a cheaper candidate inside the 15-point allowed loss would be the pick: qwen3.8-flash's worst corrected drop is -12.6, and 1017's is -7.4. Say so. If the team would not accept qwen3.8-flash's 7.6-point pass-rate drop at any price, say the allowed loss should be tightened now (qwen3.8-flash stops counting as acceptable below 10.8, 1017 below 5.8). Then a reader knows what a cheaper re-pricing would actually do to the call.
+- **Should fix** · The page: The 'What you could change' row and the margin next step put the point where 1017 (B) is ruled out on character at 5.8 points, its pass-rate reading. But the declared floor reads 1017 on persona holds character, and there its worst drop is 7.1 points (95% interval -7.1 to -1.7, against the same 15-point margin). So any margin under 7.1 rules 1017 out, not only one under 5.8. The keep does not change. But the persona owner deciding the margin should see both lines. Fix: in that row, say 1017 is ruled out below 7.1 points on persona holds character (its declared floor) and below 5.8 on the pass rate.
 
-_Written by claude-opus-5-5, served as claude-opus-5-5, for $3.48, with analyst skill ed7e2c60b5ad, on 2026-10-29._
+_Written by claude-opus-5-5, served as claude-opus-5-5, for $4.14, with analyst skill 2a7662d928b0, on 2026-10-29._

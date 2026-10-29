@@ -1,6 +1,6 @@
 {
-  "ending": "stored",
-  "reason": "",
+  "ending": "stored_with_findings",
+  "reason": "the review of round 3 did not clear the report, and its 2 revisions are used",
   "faults": [],
   "reviews": [
     {
@@ -10,80 +10,93 @@
           "n": 1,
           "name": "First screen",
           "score": 2,
-          "reason": "The headline, decision block and price-frontier claim answer the reader's questions. Nothing was declared, so the owner prices the trade. Atlas-M is a third of Atlas-L's cost ($31.37 against $75.05), and no behaviour check tells them apart. A point of overall quality has to be worth more than $22.05 before Atlas-L is the better buy, and below $11.09 Atlas-M is. The main risks are both on the first screen: the cheaper models fall short on the behaviour checks, and the provider routing is unknown (in Watch). I recomputed the price bands with price_tradeoff and they match: a gain of 2.96 (+1.981 to +3.939) for $44, so $14.76 a point ($11.09 to $22.05)."
+          "reason": "The headline, decision block and c1 tell a reader what is unresolved: no price per point of quality was set. They also give the two bands where the pick flips ($4.15 to $6.11 and $11.09 to $22.05, both checked against the price trade-off) and the lean, Atlas-M, labelled as the analyst's own. The main risks are on the first screen too: Atlas-M's troubleshooting gap, and declining to speculate being read on a test set with no live traffic."
         },
         {
           "n": 2,
           "name": "Coherent story",
           "score": 2,
-          "reason": "Each claim matches its block row by row. troubleshooting-checks: Brisk-S resolves the issue 90 - 74 = 16 points less often than Atlas-M. confirms-gap: 98 - 81 = 17 (+11 to +23). speculation-test: 98 - 81 = 17. persona: 97 against 95, inside overlapping intervals. atlas-gap-by-task: all four traffic-bearing tasks clear zero, and speculation bait does not (-1.5 to +3.5). latency: Atlas-L has the highest p95 in every task in the appendix. No row contradicts its sentence or the headline."
+          "reason": "Each claim matches its own table row by row. c2: Atlas-M leads Brisk-S in all five tasks, by the most in troubleshooting (+9). c4: Atlas-L leads Atlas-M in the four tasks that carry traffic, and speculation bait crosses zero (-1.5 to +3.5). c5: latency rises in cost order in every task shown. The dismissal of Open-70B matches the price trade-off ($6.96 per point from Brisk-S, which no price makes the buy). Small slip: c5 says 'every task', but its block draws only the four tasks that carry traffic."
         },
         {
           "n": 3,
           "name": "Honest emphasis",
           "score": 1,
-          "reason": "Atlas-M's weak axis, 2.96 points of overall quality, is up front. Two statements go further than their intervals. First, the decision block says 'Open-70B is the better buy at no price', and the price-frontier caption says it is 'never the cheapest way to a point'. That holds only on point estimates. Its pooled quality (85.49, ±0.69) is just 0.79 above Brisk-S's (about -0.2 to +1.8 unpaired). Near the top of its interval it would be the best buy from about $3.7 to $5.4 a point, which overlaps the $4.15 to $6.11 band the page already calls unsettled. Second, research-checks says Brisk-S 'scores lower on all three' as if separated, but its citing gap to Atlas-M is +5 with an interval of 0 to +10."
+          "reason": "Atlas-M's weak sides are visible: it trails Atlas-L by 5 points in troubleshooting and adds latency. But the confidence reads High without a word on the unnamed judge of the behaviour checks. Next steps say those checks 'carry the lean', and the lean's reasons are confirming account changes (98% vs 88%) and declining to speculate (98% vs 81%). The page also says Atlas-L is 'not told apart' on any check. All of that rests on a judge nobody describes."
         },
         {
           "n": 4,
           "name": "Sound elision",
           "score": 2,
-          "reason": "Nothing left out would change the decision. Cost by task and latency by task keep the same order, and both are in the appendix. options_dominance confirms the code withheld a dominance call because cost is the only declared axis, so dropping it is right. Per-task quality for Open-70B is in the appendix, including persona small talk, where it scores 90 against Atlas-M's 88. One correction: the reason given ('both sit below Atlas-M in most tasks') hides that Open-70B is level with or above Atlas-M on persona small talk. The routed-mix next step covers it."
+          "reason": "The omitted checks don't move a band. For example, Atlas-L against Atlas-M on calling the research tool only when required is +2, interval -1.6 to +5.6. The appendix still lists every check. Leaving out per-task costs and failure examples is harmless. The note on dominance is slightly off: the dominance computation withheld its call rather than naming Brisk-S. That changes nothing for a reader."
         },
         {
           "n": 5,
           "name": "Confounds handled",
           "score": 2,
-          "reason": "Every open caveat says when it would matter and why the trade holds until then. The unnamed behaviour-check judge does not touch the overall-quality judge, which is calibrated on 200 ratings at 86% agreement. Unpaired scoring could only narrow the intervals. Best-of-several could only cheapen Atlas-L. Unknown routing appears in the confidence block, in Watch and in a next step. Each confound has a next step: paired re-run, judge calibration, recording the provider. The routing caveat could sit closer to the cost claims (see findings)."
+          "reason": "The confidence carries no control, unknown cost routing and best-of-several, each with when it would matter. The routing clause also answers the computed fact that no provider is named for any model's cost. The unnamed judge is carried on c3 and into a next step that calibrates it, though not into the confidence (see item 3). Behaviour-check traffic is handled: confirming account changes is read only in troubleshooting, and the routed-mix next step adds it on billing."
         },
         {
           "n": 6,
           "name": "Actionable next steps",
-          "score": 2,
-          "reason": "Each step names a declaration or an experiment and what it would settle. The price per point or floors decide between Atlas-M and Atlas-L and whether the cheaper models stay in. The paired re-run narrows the unsettled band. A routed Atlas-M plus Open-70B mix is offered as an unmeasured option to run, not priced. Judge calibration tests whether the check shortfalls are real. Recording provider, cost coverage and volume makes the bands portable and lets the trade be priced per month."
+          "score": 1,
+          "reason": "The price or floor declaration, the monthly volume, the routed billing mix and the judge calibration each say what they would settle. The paired Atlas-L vs Atlas-M run is aimed at the research-tool check, which the page itself says 'changes no band'. It is sized at 1,555 cases per model, which is the size for unpaired arms, yet the step says 'on the same cases', where fewer would do. That is not the gap the upper band rests on."
         },
         {
           "n": 7,
           "name": "Evidence fits claims",
           "score": 1,
-          "reason": "The price-frontier, troubleshooting-checks, confirms-gap, speculation-test and atlas-gap-by-task blocks each show their claim's own figure. Four blocks fall short. persona: the claim's cost comparison ($6.40 against $17.00) is not in its block. latency: the claim says 'slowest in every task' but the block draws only research questions. atlas-gap-by-task: the caption says 'overall and in each place', but no overall row is drawn. price-frontier: the caption asserts something about Open-70B that the block does not draw."
+          "reason": "c1's caption says quality is pooled, but its block shows only the price per point. The pooled quality levels behind 'closes most of the gap' (84.7, 89.83, 92.79) and the gains (+5.13, +2.96) appear nowhere on the page, not even in the appendix's 'Every arm by measure'. c3 claims a 10-point gap but shows only each arm's rate, not the gap (+10, interval +4.9 to +15.1). c2, c4 and c5 draw their claims well."
         }
       ],
       "findings": [
         {
           "claim": "",
-          "severity": "should_fix",
-          "finding": "The decision block's 'Open-70B is the better buy at no price' and the price-frontier caption's 'Open-70B is never the cheapest way to a point' hold on point estimates only. Open-70B's pooled overall quality is 85.49 ±0.69, against Brisk-S's 84.70 ±0.69. A point bought from Brisk-S to Open-70B costs $6.96 and one from Open-70B to Atlas-M costs $4.58, on gaps whose intervals are about ±1 point. Within those intervals Open-70B could be the best buy for a band of roughly $3.7 to $5.4 a point. Say 'on point estimates Open-70B is never the better buy; within the $4.15 to $6.11 band this run does not separate it from Brisk-S and Atlas-M'. Apply the same wording to the explore row on price per point."
+          "severity": "must_fix",
+          "finding": "The confidence reads High but never mentions the unnamed judge of the behaviour checks. Next steps say those checks 'carry the lean'. The lean's stated reasons are confirming account changes and declining to speculate, and so is the claim that Atlas-L is not told apart from Atlas-M on any check. A judge that is lenient or harsh toward one model would move all of these. Fix: add a clause to the confidence saying High applies to the priced bands, which rest on the calibrated overall-quality judge (86% agreement on 200 ratings). The clause should also say the behaviour-check reasons for the lean rest on an undescribed judge until the calibration next step is done. Or make the form low for the lean.",
+          "id": "f1.1",
+          "since": 1
         },
         {
-          "claim": "research-checks",
+          "claim": "c1",
           "severity": "should_fix",
-          "finding": "'Brisk-S and Open-70B score lower on all three' reads as a separation, set against 'not told apart' for the Atlas pair. Brisk-S's citing gap to Atlas-M is +5 with an unpaired interval of 0 to +10, which does not clear zero. Open-70B's three gaps and Brisk-S's tool-use and unsupported-claims gaps do clear it. Say that Brisk-S's citing shortfall is not separated."
+          "finding": "The headline says Atlas-M 'closes most of the gap', but no pooled quality figure appears on the page. Add each frontier model's pooled overall quality (Brisk-S 84.7, Atlas-M 89.83, Atlas-L 92.79) and each step's gain (+5.13, +2.96, with unpaired intervals) to c1's block. Also add pooled quality to the appendix's 'Every arm by measure', which lists only cost.",
+          "id": "f1.2",
+          "since": 1
         },
         {
-          "claim": "price-frontier",
+          "claim": "c3",
           "severity": "should_fix",
-          "finding": "The lead claim, the headline's '0.42 times' and the persona claim's $6.40 against $17.00 all compare costs. None of them carries the unknown-routing caveat at the claim. The cost_served_by fact says no provider or pricing is stated for any of the four models. The confidence block and Watch disclose it, but the claims that rank models by cost should too. Attach the routing caveat to price-frontier and persona. Add 'on this run's unnamed provider routing' to the headline's cost ratio and the persona cost comparison. This matters most for Open-70B, an open-weights model whose price depends on who hosts it."
+          "finding": "The claim states a gap ('10 points more often'), but the block shows only each arm's rate. Show the gap itself: Atlas-M minus Brisk-S on confirming account changes is +10, 95% unpaired interval +4.9 to +15.1. The gap on declining to speculate would help too, since the lean leans on it.",
+          "id": "f1.3",
+          "since": 1
         },
         {
-          "claim": "persona",
+          "claim": "",
           "severity": "should_fix",
-          "finding": "The claim's cost comparison, Open-70B at $6.40 against $17.00 for Atlas-M per 1,000 persona conversations, is not in its block, which draws only staying in character. Add the persona cost per model to the block, or move the cost half to a claim whose block shows it. Also consider noting that Open-70B's persona overall quality (90) is not below Atlas-M's (88). That is the evidence behind the routed-mix next step, and the omitted note 'both sit below Atlas-M in most tasks' hides it."
+          "finding": "The next step on the paired Atlas-L vs Atlas-M run targets the research-tool check, which the page itself says changes no band. Aim it at the gap the upper band rests on instead: Atlas-L against Atlas-M on pooled overall quality, or the behaviour checks the lean cites. Also, 1,555 cases per model is the size for unpaired arms. On the same cases fewer are needed, so either say that or drop 'same cases' from the sizing.",
+          "id": "f1.4",
+          "since": 1
         },
         {
-          "claim": "latency",
+          "claim": "c5",
           "severity": "should_fix",
-          "finding": "The claim says Atlas-L is 'the slowest model in every task', but the block draws only research questions. Draw p50 to p95 for every task (the appendix has them: Atlas-L's p95 is highest in all five) or limit the sentence to research questions."
-        },
-        {
-          "claim": "atlas-gap-by-task",
-          "severity": "should_fix",
-          "finding": "The caption says each row is the gap 'overall and in each place both hold it', but the block has no overall row, only the five tasks. Add the pooled overall gap (+2.96, +1.981 to +3.939) as a row, or drop 'overall' from the caption. Also merge the three captions into one."
+          "finding": "The claim says Brisk-S is fastest and Atlas-L slowest 'in every task', but the block draws only the four tasks that carry traffic. Either add speculation bait (p95 0.81 s for Brisk-S to 3.24 s for Atlas-L, as the appendix shows) or say 'every task that carries traffic'.",
+          "id": "f1.5",
+          "since": 1
         }
       ],
-      "total": 12,
+      "resolved": [],
+      "total": 11,
       "passes": true,
-      "must_fix": false
+      "must_fix": true,
+      "blocking": [
+        "f1.1",
+        "f1.2",
+        "f1.3",
+        "f1.4",
+        "f1.5"
+      ]
     },
     {
       "round": 2,
@@ -92,70 +105,73 @@
           "n": 1,
           "name": "First screen",
           "score": 2,
-          "reason": "The headline, decision block and lead claim say what is unresolved and why. No price per point was declared, so the owner must choose between Atlas-M and Atlas-L. Below $11.09 a point Atlas-M is the better buy, above $22.05 Atlas-L, and between the two the run does not choose. The main risk is visible: every cost comes from this run's unnamed provider routing, Open-70B's most of all. The headline's 0.42 ratio checks against cost_per_1k ($31.37 against $75.05). The band ends check against price.atlas-m.atlas-l.overall.per_point_low_unpaired and per_point_high_unpaired."
+          "reason": "The headline, the decision block and c1 tell a reader what to do. No price per point was declared, so the call is a priced trade: Brisk-S below $4.15 to $6.11 per point, Atlas-M up to $11.09 to $22.05, Atlas-L above that. The analyst's lean is Atlas-M in the middle band, with its reasons given. The risk is stated too: the lean's reasons rest on a judge nobody has described. Watch flags Atlas-M's weak spot, troubleshooting, where it trails Atlas-L by 5 points."
         },
         {
           "n": 2,
           "name": "Coherent story",
           "score": 2,
-          "reason": "Each claim matches its block row by row. In atlas-gap-by-task, every task that carries traffic clears zero and speculation bait does not (-1.546 to +3.546). Troubleshooting-checks and research-checks show the Atlas pair level on every check. The latency block now draws all five tasks, and Atlas-L is slowest in each. Last round's Open-70B wording is fixed in the decision and in the explore row: 'on point estimates never the better buy; inside $4.15 to $6.11 not separated'. One loose end: the lean says 'Atlas-M while a point is worth less than $11.09', but the same block and the explore row name Brisk-S the better buy below $4.15 a point. The lean does not say why it passes over Brisk-S there (see findings)."
+          "reason": "Each claim matches its block row by row. In c2 every Atlas-M minus Brisk-S gap on overall quality is clear of zero, and troubleshooting is the largest at +9. In c4 all four tasks with traffic are clear of zero and speculation bait is not (-1.546 to +3.546). c3 shows +10 on confirming account changes and +17 on declining to speculate. c5 is now scoped to the tasks that carry traffic. c1's steps and prices match what the price tool gives (+5.13 and +2.96; $4.94 and $14.76)."
         },
         {
           "n": 3,
           "name": "Honest emphasis",
           "score": 1,
-          "reason": "Atlas-M's weak axis, 2.96 points of overall quality behind Atlas-L (+1.981 to +3.939), is stated in full. Research-checks now says Brisk-S's citing gap (0 to +10) is not separated. Two framings still run ahead of their intervals. The persona claim says Open-70B 'scores 90 on overall quality against 88 for Atlas-M', which reads as a lead. The unpaired gap is +2 (-0.12 to +4.12) and does not clear zero. The lede says both cheaper models 'fall clearly behind' on resolving troubleshooting issues. Open-70B's gap to Atlas-M there is +8 (+0.9 to +15.1), which clears zero only barely."
+          "reason": "Atlas-M's weak sides are visible: it trails Atlas-L in troubleshooting, it is slower than Brisk-S, and its behaviour reasons rest on an undescribed judge. One exception. The page rules out Open-70B flatly ('never the best buy', and 'the buy at no price' in the explore table) on point estimates alone. Open-70B's pooled gain over Brisk-S is +0.79, interval -0.19 to +1.77, so it is not told apart from zero. Within that interval Open-70B could take part of the lower band. Meanwhile the page gives every other band an interval."
         },
         {
           "n": 4,
           "name": "Sound elision",
           "score": 2,
-          "reason": "Nothing left out would change the decision. Cost by task keeps the same order in every task, and the appendix holds it. The per-task quality note now says Open-70B is level with or above Atlas-M in persona small talk, and the persona claim shows it. The dominance call left out ranked on cost alone and would mislead. price_tradeoff confirms Open-70B is off the frontier on point estimates ($6.96 a point to reach it from Brisk-S, $4.58 from it on to Atlas-M), and the page now says so with the right hedge."
+          "reason": "Nothing omitted would change the decision. Atlas-L and Atlas-M are not told apart on the other checks: on calling the research tool only when required, Atlas-L leads by +2 (-1.6 to +5.6). The appendix holds every rate. The dominance computation weighs only cost, so leaving it out is fine."
         },
         {
           "n": 5,
           "name": "Confounds handled",
           "score": 2,
-          "reason": "Each open caveat has a clause saying what would make it matter and why the trade holds until then. Unknown routing is now attached to price-frontier and persona and named in the headline. The unpaired intervals have a paired re-run as a next step. The judge of the behaviour checks has a calibration next step. The best-of-several caveat is shown to cut against Atlas-L. 'High' is scoped to the measured gaps and leaves the pick to the owner, which answers the high_over_open fact. The cost_served_by fact is met as far as the snapshot allows: no provider is known, and every cost claim says the routing is unnamed."
+          "reason": "Each caveat says when it would matter and why the call holds until then. The undescribed judge is now scoped to the lean's reasons and kept apart from the priced bands. The unpaired reads, the best-of-several pick and the unknown cost routing are all handled. The page names no provider, says so, and limits every cost to this run's routing. The two next steps (calibrate the judge, run a paired read) carry these caveats forward."
         },
         {
           "n": 6,
           "name": "Actionable next steps",
           "score": 2,
-          "reason": "Each step names an action and what it settles. A declared price per point or floors would turn the trade into a pick. A paired re-run would separate the small check gaps and narrow the band. A measured routed mix, with Open-70B on persona small talk, could then be priced like the other options. Naming and calibrating the judge would test the shortfalls on the checks. Recording provider, cost coverage and volume would show whether the bands hold and what the trade is worth a month."
+          "reason": "Each step names an action and what it settles. Declaring a price per point or a floor turns the trade into a decision. Calibrating the behaviour-check judge tests the lean's reasons. Declaring monthly volume turns per-thousand prices into a monthly cost. A paired run of Atlas-L against Atlas-M now targets pooled overall quality, the gap the upper band rests on. The routed billing mix is the last step. The billing figure checks out: a +2 lead with half-width 1.556 reads the wrong way about 0.6% of the time."
         },
         {
           "n": 7,
           "name": "Evidence fits claims",
           "score": 1,
-          "reason": "Last round's fixes landed: the persona block now carries cost and overall quality, and the latency block draws every task. The atlas-gap-by-task caption still promises an overall row, but the next caption line states the pooled gap and says there is no overall row, so a reader is not misled. One block still misses its claim. Confirms-gap states a gap, 17 points (+11 to +23), but its block draws only each model's level. It repeats the troubleshooting-checks column exactly, and the claim's own interval appears nowhere in the block."
+          "reason": "c2 to c5 now draw what they claim: c3 shows the gaps themselves and c5 is scoped to its rows. c1's sentence, though, rests on the pooled scores (84.7, 89.83, 92.79) and the step gains (+5.13, +2.96, with intervals), and its block draws only the price per point. The appendix's 'Every arm by measure' still lists cost alone, so the headline's 'closes most of the gap' has no figure in any block or table."
         }
       ],
       "findings": [
         {
+          "claim": "c1",
+          "severity": "should_fix",
+          "finding": "Partly fixed. c1's sentence now gives each model's pooled overall quality and each step's gain, but its block still draws only the price per point. The appendix's 'Every arm by measure' still lists only cost. Add to c1's block, or as a second block, each frontier model's pooled overall quality (84.7, 89.83, 92.79) and each step's gain (+5.13, +4.151 to +6.109; +2.96, +1.981 to +3.939). Also add pooled overall quality, including Open-70B's 85.49, to 'Every arm by measure'.",
+          "id": "f1.2",
+          "since": 1
+        },
+        {
           "claim": "",
           "severity": "should_fix",
-          "finding": "The lean says 'Atlas-M, while a point of overall quality is worth less than $11.09 per 1,000 conversations'. Its only reason given is that no behaviour check separates Atlas-M from Atlas-L. But the same decision block and the explore row name Brisk-S the better buy below $4.15 a point. Either bound the lean ('from $6.11 to $11.09 a point'), or say outright that it passes over Brisk-S at low prices because of its behaviour-check shortfalls (resolves 74% against 90%, confirms 88% against 98% in troubleshooting)."
-        },
-        {
-          "claim": "persona",
-          "severity": "should_fix",
-          "finding": "'Open-70B scores 90 on overall quality against 88 for Atlas-M' reads as a lead. The unpaired gap is +2 (-0.12 to +4.12, compare.open-70b.atlas-m.overall.task.persona.interval) and does not clear zero. Say Open-70B is not told apart from Atlas-M on persona overall quality, 90 against 88. That is still the evidence the routed-mix next step needs."
-        },
-        {
-          "claim": "confirms-gap",
-          "severity": "should_fix",
-          "finding": "The claim states a gap: Open-70B confirms before account changes 17 points less often than Atlas-M (+11 to +23). The block draws only the four levels, which repeat the troubleshooting-checks column, and the claim's interval is nowhere on it. Draw the gap itself, each model less Atlas-M with its unpaired interval, so the +11 to +23 a reader is told is the figure they see."
-        },
-        {
-          "claim": "confirms-gap",
-          "severity": "should_fix",
-          "finding": "The unstated-judge caveat covers every behaviour check: confirms, cites, toolcall, unsupported, declines and character among them. Only troubleshooting-checks carries it. Confirms-gap, research-checks, speculation-test and persona (staying in character) all read those checks without it, and the lede's 'fall clearly behind ... confirming before account changes' rests on them. Attach the judge caveat to these four claims. In the lede, soften 'clearly' for Open-70B on resolving, whose gap to Atlas-M is +8 (+0.9 to +15.1)."
+          "finding": "'Why not the others' and the explore row ('Open-70B is the buy at no price') rule out Open-70B on point estimates alone. Its pooled gain over Brisk-S is +0.79, unpaired interval -0.19 to +1.77, so it is not told apart from zero. At the top of that interval it would sit on the frontier at roughly $3 to $4.60 per point, which overlaps the lower band. Say that its being off the frontier holds on point estimates, and give its gain interval. Let its 81% on confirming account changes (lowest of all) carry the case against it, as the sentence already partly does.",
+          "id": "f2.1",
+          "since": 2
         }
+      ],
+      "resolved": [
+        "f1.1",
+        "f1.3",
+        "f1.4",
+        "f1.5"
       ],
       "total": 12,
       "passes": true,
-      "must_fix": false
+      "must_fix": false,
+      "blocking": [
+        "f1.2"
+      ]
     },
     {
       "round": 3,
@@ -164,49 +180,70 @@
           "n": 1,
           "name": "First screen",
           "score": 2,
-          "reason": "The headline, lede and decision block give the open question: Atlas-M at 0.42 times Atlas-L's cost, with Atlas-L's 2.96 extra points of overall quality left for the owner to price. They give the price bands ($11.09 and $22.05 per point), the lean (Atlas-M from $6.11 to $11.09 a point) and the main risks (the cheaper models' shortfall on confirming before account changes, and the unnamed routing behind every cost). The lead claim, price-frontier, shows the two steps behind those bands. Last round's finding is resolved: the lean is now bounded to $6.11 to $11.09, and the page says why it passes over Brisk-S below that (resolves 74% against 90%, confirms 88% against 98%)."
+          "reason": "The headline, decision block and c1 give the call. No price per point was set. Brisk-S is the buy below $4.15 to $6.11 per point, Atlas-M up to $11.09 to $22.05, and Atlas-L above that. The page leans to Atlas-M in the middle band. The main risk is named too: the lean's reasons rest on behaviour checks whose judge is not described. Every price-tradeoff figure on the page matches the tool: $4.94, $14.76, the unpaired ends, and pooled scores of 84.7, 89.83 and 92.79."
         },
         {
           "n": 2,
           "name": "Coherent story",
           "score": 2,
-          "reason": "I checked each sentence against its own block's rows and found no contradiction. price-frontier's $4.94 ($4.15 to $6.11) and $14.76 ($11.09 to $22.05) match price_tradeoff. atlas-gap-by-task's +5 in troubleshooting and the speculation-bait row that crosses zero (-1.546 to +3.546) match the sentence. In confirms-gap, both drawn gaps (+17, +11 to +23; +10, +4.9 to +15.1) clear zero. research-checks correctly says Brisk-S's citing gap is not separated (0 to +10). Open-70B being off the frontier on point estimates matches price_tradeoff ($6.96 a point from Brisk-S against $4.58 a point onward to Atlas-M)."
+          "reason": "Each claim agrees with its block row by row. c2 shows Atlas-M ahead of Brisk-S in all five tasks, most in troubleshooting (+9). c3's +10 (+4.9 to +15.1) and +17 match the tool. c4 shows Atlas-L ahead in all four tasks with traffic, with speculation bait at -1.546 to +3.546. c5's p50 and p95 rows hold in every task with traffic. The lean's reason, that Atlas-L is not told apart on any behaviour check, holds: confirming is 0 (-2.8 to +2.8) and the research-tool check is +2 (-1.6 to +5.6). The billing wrong-side figure of 0.6% matches settle_cases. One small slip, Open-70B's $3.11 called 'inside the lower band', is raised as a finding."
         },
         {
           "n": 3,
           "name": "Honest emphasis",
           "score": 2,
-          "reason": "Atlas-M's weak axis, 2.96 points less overall quality than Atlas-L (+1.981 to +3.939), is in the headline and the trade. Last round's finding on persona is resolved: Open-70B is now 'not told apart' from Atlas-M, 90 against 88, with the gap from -0.1213 to +4.121. The lede no longer says the cheaper models are 'clearly' behind on resolving; it names Brisk-S alone, whose gap of +16 (+8.2 to +23.8) clears zero. The page avoids saying 'no difference' where intervals overlap and says 'not told apart'."
+          "reason": "Atlas-M's weak side is shown in Watch: it trails Atlas-L by 5 points in troubleshooting. The latency cost appears in the trade line and in c5. Declining to speculate is labelled as read on a test set with no live traffic. Open-70B's exclusion now states that it holds on point estimates only and gives the gain interval."
         },
         {
           "n": 4,
           "name": "Sound elision",
           "score": 2,
-          "reason": "Nothing left out would change the decision. Per-task cost keeps the same order and sits in the appendix. Brisk-S trails Atlas-M on overall quality in every task, and every gap clears zero (smallest: billing, +1.444 to +4.556). Open-70B trails Atlas-M everywhere except persona, which the persona claim shows. The dominance note matches options_dominance, which withholds a call because cost is its only axis and its rule would name Brisk-S. No failure examples were kept."
+          "reason": "Nothing left out would move the call. The dominance computation adds nothing to the priced trade. The behaviour checks left out of the claims are all in the appendix, and Atlas-L and Atlas-M are not told apart on any of them. Per-task costs follow the same order as the overall costs."
         },
         {
           "n": 5,
           "name": "Confounds handled",
           "score": 2,
-          "reason": "Each of the four caveats in the snapshot, plus the analyst's routing caveat, gets a clause that says what would make it matter and which way it would move the call. Last round's finding is resolved: the unstated-judge caveat now sits on troubleshooting-checks, confirms-gap, research-checks, speculation-test and persona. The page also notes that the overall-quality judge is calibrated (200 ratings, 86% agreement), so the price bands don't rest on the unnamed judge. Routing goes into Watch and a next step, and Open-70B is named as the most exposed. The high confidence names which findings it stands behind and what each open caveat leaves open."
+          "reason": "Each open caveat says when it would matter and why the call holds until then. The judge caveat limits High to the priced bands. Unpaired reads are said to err wide. The best-of-several effect is said to favour the lean. Routing is unknown, and costs are said to hold for this run's routing only. That answers the cost_served_by fact, since the snapshot names no provider. The judge caveat and the paired read are both carried into next steps."
         },
         {
           "n": 6,
           "name": "Actionable next steps",
           "score": 2,
-          "reason": "There are five next steps, and each says what it would settle. Declaring a price per point or floors turns the trade into a pick. Paired re-scoring of the Atlas models would separate their small check gaps and narrow the band the run can't settle. A measured routed mix would price the persona finding. Calibrating the behaviour-check judge would show whether Brisk-S's shortfalls are real. Recording each model's provider, the cost coverage and monthly volume would show whether the price bands hold beyond this run's routing."
+          "reason": "Each step names an action and what it settles: a declared price or floor, judge calibration, monthly volume, a paired read of Atlas-L against Atlas-M, and a routed billing mix. The mix step rightly notes that confirming account changes is measured only in troubleshooting today."
         },
         {
           "n": 7,
           "name": "Evidence fits claims",
-          "score": 2,
-          "reason": "Last round's confirms-gap finding is resolved: the block now draws each gap to Atlas-M with the unpaired interval the claim quotes (+11 to +23, +4.9 to +15.1). The other blocks show their claims' own figures. troubleshooting-checks and speculation-test state gaps (+16, +17) over level tables, but the intervals don't overlap, and arms_compare puts the gaps at +8.2 to +23.8 and +10.3 to +23.7, so the levels carry the claims. The template caption 'overall and in each place' on the diverging bars is corrected by the analyst's added line and omitted note. I logged it as a tool gap, not a finding."
+          "score": 1,
+          "reason": "c2 to c5 each draw their own figures. c1's sentence rests on pooled overall quality of 84.7, 89.83 and 92.79, and step gains of +5.13 (+4.151 to +6.109) and +2.96 (+1.981 to +3.939). Its block still draws only the price per point. 'Every arm by measure' in the appendix still lists cost alone, so no table on the page shows any model's pooled quality."
         }
       ],
-      "findings": [],
-      "total": 14,
+      "findings": [
+        {
+          "claim": "c1",
+          "severity": "should_fix",
+          "finding": "This is still open from last round. c1's block draws only the price per point, but its sentence and the whole frontier rest on pooled overall quality. Add a second block, or columns in this one, showing each frontier model's pooled overall quality (Brisk-S 84.7, Atlas-M 89.83, Atlas-L 92.79) and each step's gain with its unpaired interval (+5.13, +4.151 to +6.109; +2.96, +1.981 to +3.939). Also add a pooled overall quality column to 'Every arm by measure', including Open-70B's 85.49. That way a reader can find each model's quality in a table, not only in prose.",
+          "id": "f1.2",
+          "since": 1
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "'Why not the others' says Open-70B costs 'as little as $3.11 at the interval's top, inside the lower band.' But $3.11 is below the lower band ($4.15 to $6.11), not inside it. At that end of its gain, the move from Open-70B on to Atlas-M would cost about $5.91 per point. So Open-70B could be the buy from about $3.11 to $5.91. That range overlaps the lower band and part of the region where 'Where the answer flips' calls Brisk-S the buy without condition. Change 'inside the lower band' to say it reaches below the band. Add a short clause to the flip line: below the lower band, Brisk-S is the buy on point estimates, and Open-70B could contest it there because its gain over Brisk-S is not told apart from zero. Open-70B's 81% on confirming account changes still argues against it.",
+          "id": "f3.1",
+          "since": 3
+        }
+      ],
+      "resolved": [
+        "f2.1"
+      ],
+      "total": 13,
       "passes": true,
-      "must_fix": false
+      "must_fix": false,
+      "blocking": [
+        "f1.2"
+      ]
     }
   ]
 }

@@ -1,5 +1,5 @@
 {
-  "id": "01a18920-31d7-7377-bb57-533e801b529a",
+  "id": "01a18943-a4e9-72b6-a1f6-9c57dd1e6efa",
   "doc_type": "eval_report_doc",
   "schema_version": 14,
   "scope_id": "toyhost-scope",
@@ -8,8 +8,8 @@
   "doc": {
     "schema": "report-doc/1",
     "story": "decision",
-    "headline": "Keep {arm:September}: at this run's unrecorded provider routing both candidates cost more per reply, and neither is shown to keep Kairo in character better.",
-    "lede": "At this run's routing {arm:qwen3.8-flash} costs {contrast.qwen3.8-flash.production_replicating_cost.delta|usd_per_1k} more and {arm:1017} {contrast.1017.production_replicating_cost.delta|usd_per_1k} more; both stay within the allowed character loss, so cost alone decides. A recorded routing at which a candidate costs no more would reopen the call.",
+    "headline": "Keep {arm:September}: at this run's provider routing both candidates cost {cost.uplift_range} more per reply, and neither keeps Kairo in character better, so cost decides.",
+    "lede": "Both candidates stay inside the declared {aspects.character adherence (v2).margin|int}-point margin on the character pass rate, so the keep rests on cost. A candidate priced below {arm:September} under another provider routing would win, and the routing behind these costs is not recorded.",
     "flag": null,
     "recommends": [
       "September"
@@ -18,27 +18,33 @@
       "form": "high_if_immaterial",
       "caveats": [
         {
-          "id": "analyst:unrecorded-routing",
-          "label": "No provider routing is recorded for any arm",
-          "material_if": "Material if a recorded routing puts either candidate at or below {arm:September}'s {cost_per_1k.September|usd_per_1k}: both sit inside the allowed loss, so the call would turn on character alone or become a trade. The earlier round found {arm:qwen3.8-flash} cheaper. Until a re-pricing says otherwise, the measured gap is the only cost evidence, and it favours {arm:September}.",
+          "id": "analyst:provider_routing",
+          "label": "Provider routing not recorded",
+          "material_if": "Material if a candidate served under another routing costs less than {arm:September}'s {cost_per_1k.September|usd_per_1k}: under the declared margin it would then be the pick. The high applies to the cost order at this run's routing, which already contradicts an earlier finding that {arm:qwen3.8-flash} lowers production cost.",
           "checked": null
         },
         {
           "id": "judge_uncalibrated",
           "label": null,
-          "material_if": "Only if the uncalibrated judge marks the candidates down for replies a calibrated judge would pass, by enough to put one above {arm:September}. The cost gap is measured telemetry, not judged; its own caveat is the routing above.",
+          "material_if": "Only if the judge marks the candidates' style down unfairly; the pass-rate verdicts already let both candidates through the margin, so a misreading would change how far behind they are, not the keep, which rests on cost at this routing.",
           "checked": null
         },
         {
           "id": "late:aspect",
           "label": null,
-          "material_if": "Only if an aspect chosen before the results would favour a candidate; production cost, which decides, is the same whatever aspect is read.",
+          "material_if": "Only if a different aspect, chosen before the results, would show a candidate ahead of {arm:September} by enough to pay for its higher cost.",
           "checked": null
         },
         {
           "id": "late:control",
           "label": null,
-          "material_if": "Only if an arm other than production should be the baseline; both candidates cost more than {arm:September} whichever is called the control.",
+          "material_if": "Only if another arm should have been the baseline; the cost gaps and pass rates do not depend on which arm is called the control.",
+          "checked": null
+        },
+        {
+          "id": "confound:model",
+          "label": null,
+          "material_if": "Only if a lever other than the model moved between arms along with it; each arm's recorded settings name the model alone.",
           "checked": null
         },
         {
@@ -52,49 +58,35 @@
           "label": null,
           "material_if": null,
           "checked": "immaterial"
-        },
-        {
-          "id": "confound:model",
-          "label": null,
-          "material_if": "Only if a setting besides the model moved between arms and moved cost or character with it. Two did or may have: {arm:1017}'s reasoning share differed (Watch), and the simulator's request settings went unrecorded (Method). Either could shift a gap in a direction this run cannot read.",
-          "checked": null
         }
       ]
     },
     "decision": [
       {
         "slot": "recommendation",
-        "text": "Keep {arm:September} (the control) on Kairo. At this run's routing it costs {cost_per_1k.September|usd_per_1k}, less than either candidate, and neither candidate is shown to hold character better."
+        "text": "Keep {arm:September} (the control). At this run's routing it is the cheapest arm at {cost_per_1k.September|usd_per_1k}, and neither candidate is ahead of it on character."
       },
       {
         "slot": "why_not",
-        "text": "{arm:qwen3.8-flash}: costs more at this routing and holds character clearly worse, down {aspects.character adherence (v2).reading.qwen3.8-flash.change|abs|pts} points on the pass rate."
+        "text": "{arm:qwen3.8-flash}: costs {contrast.qwen3.8-flash.production_replicating_cost.delta|abs|usd_per_1k} more at this routing. Its pass rate is {aspects.character adherence (v2).reading.qwen3.8-flash.change|abs|pts} points lower, clearly worse in size ({aspects.character adherence (v2).reading.qwen3.8-flash.interval|interval} points) but inside the margin, so cost, not character, rules it out."
       },
       {
         "slot": "why_not",
-        "text": "{arm:1017}: costs more at this routing and buys nothing for it; its pass-rate drop of {aspects.character adherence (v2).reading.1017.change|abs|pts} points is not told apart from zero, and on holding character alone it is worse."
+        "text": "{arm:1017}: costs {contrast.1017.production_replicating_cost.delta|abs|usd_per_1k} more at this routing, for a pass rate not told apart from {arm:September}'s ({aspects.character adherence (v2).reading.1017.interval|interval} points); the judge also puts it {contrast.1017.persona.holds_character.delta|abs|pts} points behind on persona holds character."
       },
       {
         "slot": "watch",
-        "text": "The cost order contradicts the earlier finding that {arm:qwen3.8-flash} lowers production cost. No routing is recorded here, so the gap may be the provider's, not the model's; the re-pricing below settles it."
-      },
-      {
-        "slot": "watch",
-        "text": "The weakest margin is {weakest.arm} on {weakest.criterion}: read on {weakest.interval}, it reaches {weakest.value|pts} against {weakest.threshold|pts}, {weakest.margin|abs|pts} points inside. On the declared {aspects.character adherence (v2).reading.qwen3.8-flash.level} reading its worst drop is {aspects.character adherence (v2).flip_margin.qwen3.8-flash|abs|pts} points. It bears on a rejected arm."
-      },
-      {
-        "slot": "watch",
-        "text": "{arm:1017} spent a different share of its output reasoning ({reasoning_ratio.1017} against {reasoning_ratio.September} for {arm:September}), so its cost and character gaps may partly belong to the reasoning budget, in a direction this run cannot read."
+        "text": "The margin is tested on the {aspects.character adherence (v2).reading.qwen3.8-flash.level} interval, where {arm:qwen3.8-flash}'s worst case is a drop of {aspects.character adherence (v2).flip_margin.qwen3.8-flash} points against the {aspects.character adherence (v2).margin|int}-point margin; that is the weakest margin ({weakest.arm}), and the corrected interval, a stricter view, reaches {weakest.value|pts} points. This run contradicts the earlier finding that {arm:qwen3.8-flash} lowers production cost: here it costs {cost.uplift.qwen3.8-flash} more, at a routing the snapshot does not record. If that finding holds under another routing, {arm:qwen3.8-flash} becomes the pick under today's margin despite its clear drop."
       },
       {
         "slot": "next",
-        "text": "Keep {arm:September} now. In parallel, re-price both candidates at a recorded provider routing, including the one the earlier round found cheaper: a candidate re-enters only if it costs no more than {arm:September}."
+        "text": "Keep {arm:September} now. Before re-pricing the candidates with routing recorded, the persona owner decides whether the {aspects.character adherence (v2).margin|int}-point margin stands, since it alone lets a cheaper {arm:qwen3.8-flash} through."
       }
     ],
     "claims": [
       {
         "id": "cost",
-        "text": "At this run's unrecorded routing both candidates cost more per reply than {arm:September}: {arm:qwen3.8-flash} by {contrast.qwen3.8-flash.production_replicating_cost.delta|usd_per_1k} and {arm:1017} by {contrast.1017.production_replicating_cost.delta|usd_per_1k}, each interval clear of zero. The gap may belong to the routing rather than the model, which the re-pricing step settles.",
+        "text": "At this run's unrecorded provider routing, both candidates cost more per reply than {arm:September}: {arm:qwen3.8-flash} by {contrast.qwen3.8-flash.production_replicating_cost.delta|abs|usd_per_1k} and {arm:1017} by {contrast.1017.production_replicating_cost.delta|abs|usd_per_1k}, each interval clear of zero, and the order holds even with {arm:September}'s unreported trials filled at its own p95 and the candidates' at zero.",
         "weight": "lead",
         "evidence": [
           {
@@ -113,18 +105,18 @@
             },
             "reference": null,
             "emphasis": "",
-            "caption": "Paired change in production cost against {arm:September}, per 1,000 replies, at the family-corrected {family.level} level. Pairing uses only trials that report a cost, so these gaps differ from the gaps between the options table's means."
+            "caption": "Paired production-cost gap against {arm:September}, corrected intervals, over trials where both arms reported cost; each arm's mean in the options summary ({cost.uplift.qwen3.8-flash} and {cost.uplift.1017} above {arm:September}) is read over that arm's own reported trials, so the two do not match exactly. The paired intervals may be too narrow if they count trials nested in conversations. Unreported cost: {cost.unreported.September.missing|int} trials for {arm:September}, {cost.unreported.qwen3.8-flash.missing|int} for {arm:qwen3.8-flash}, {cost.unreported.1017.missing|int} for {arm:1017}; {arm:September} at {cost.unreported.September.at_p95|usd_per_1k} with each at its own p95 still undercuts {arm:qwen3.8-flash} at {cost.unreported.qwen3.8-flash.free|usd_per_1k} and {arm:1017} at {cost.unreported.1017.free|usd_per_1k} with each free. {arm:1017} spent {reasoning_ratio.1017} of its output reasoning against {reasoning_ratio.September} for {arm:September}, so part of its gap may belong to reasoning, not the model."
           }
         ],
         "caveats": [
-          "analyst:unrecorded-routing",
-          "confound:observed:reasoning_ratio"
+          "confound:observed:reasoning_ratio",
+          "analyst:provider_routing"
         ],
         "durable": false
       },
       {
         "id": "character",
-        "text": "{arm:qwen3.8-flash} holds character clearly worse than {arm:September}, down {aspects.character adherence (v2).reading.qwen3.8-flash.change|abs|pts} points; {arm:1017} is down {aspects.character adherence (v2).reading.1017.change|abs|pts}, not told apart from it. Both stay inside the allowed {aspects.character adherence (v2).margin|int}-point loss.",
+        "text": "Neither candidate keeps Kairo in character better, and both stay inside the {aspects.character adherence (v2).margin|int}-point margin: {arm:qwen3.8-flash} passes {aspects.character adherence (v2).reading.qwen3.8-flash.change|abs|pts} points less often than {arm:September}, clearly worse but allowed, and {arm:1017} is {aspects.character adherence (v2).reading.1017.change|abs|pts} points down, not told apart from it.",
         "weight": "lead",
         "evidence": [
           {
@@ -141,14 +133,28 @@
             },
             "reference": "margin",
             "emphasis": "",
-            "caption": "Change in pass rate on character adherence against {arm:September}, in points, with {aspects.character adherence (v2).reading.qwen3.8-flash.level} intervals and the allowed loss marked."
-          },
+            "caption": "Change in the character pass rate against {arm:September}, with the declared margin. {arm:qwen3.8-flash} lost {scoreboard.qwen3.8-flash.lost|words} trials to harness failures, too few to move a gap this size. {arm:1017}'s different reasoning share could move its reading either way."
+          }
+        ],
+        "caveats": [
+          "short_run:01a170ab-d2da-750d-a1e3-f4b43716844d",
+          "short_run:01a17121-6e85-732d-ab3a-cf86aed8cdc6",
+          "confound:observed:reasoning_ratio"
+        ],
+        "durable": false
+      },
+      {
+        "id": "judged",
+        "text": "On persona holds character, the judge puts both candidates behind {arm:September} at the corrected level, {arm:qwen3.8-flash} by {contrast.qwen3.8-flash.persona.holds_character.delta|abs|pts} points and {arm:1017} by {contrast.1017.persona.holds_character.delta|abs|pts}, so {arm:1017}'s unseparated pass rate is not parity.",
+        "weight": "support",
+        "evidence": [
           {
             "block": "forest",
             "query": {
               "source": "contrasts",
               "aspect": "character adherence (v2)",
               "measures": [
+                "passed",
                 "persona.holds_character",
                 "persona.booth_stays_offstage"
               ],
@@ -160,41 +166,7 @@
             },
             "reference": null,
             "emphasis": "",
-            "caption": "The two judged persona checks, paired against {arm:September} at the family-corrected {family.level} level: both candidates are worse on holding character."
-          }
-        ],
-        "caveats": [
-          "confound:observed:reasoning_ratio",
-          "short_run:01a170ab-d2da-750d-a1e3-f4b43716844d",
-          "short_run:01a17121-6e85-732d-ab3a-cf86aed8cdc6"
-        ],
-        "durable": false
-      },
-      {
-        "id": "off_lane",
-        "text": "Off-lane asks carry about half of each candidate's loss on holding character: {strata.off_lane.loss_share.qwen3.8-flash.persona.holds_character|pct} for {arm:qwen3.8-flash} and {strata.off_lane.loss_share.1017.persona.holds_character|pct} for {arm:1017}.",
-        "weight": "support",
-        "evidence": [
-          {
-            "block": "diverging_bars",
-            "query": {
-              "source": "strata",
-              "aspect": "character adherence (v2)",
-              "measures": [
-                "persona.holds_character"
-              ],
-              "arms": [
-                "qwen3.8-flash",
-                "1017"
-              ],
-              "strata": [],
-              "limit": 6,
-              "transform": "arm_minus_control",
-              "small_multiples_by": "none"
-            },
-            "reference": null,
-            "emphasis": "",
-            "caption": "Change in holding character against {arm:September} in the six largest slices, in points, uncorrected; read as leads. A slice's share of the loss is its drop times its cases over the arm's whole loss: off-lane asks hold {strata.off_lane.n_cases|int} of {cases|int} cases and have by far the largest drop, so they carry the shares the claim states."
+            "caption": "Change against {arm:September} on the pass rate and two judged dimensions, corrected together; the judge is uncalibrated."
           }
         ],
         "caveats": [
@@ -203,8 +175,44 @@
         "durable": false
       },
       {
-        "id": "examples",
-        "text": "The control fails off-lane asks the same way the candidates do: {arm:September} drops character on {count.failures.character adherence (v2).September.off_lane|words} off-lane trials, against {count.failures.character adherence (v2).qwen3.8-flash.off_lane|words} and {count.failures.character adherence (v2).1017.off_lane|words} for the candidates, and on the landlord email both {arm:September} and {arm:qwen3.8-flash} brush off the ask, then answer it.",
+        "id": "offlane",
+        "text": "Off-lane asks are where both candidates fall furthest behind on persona holds character, {arm:qwen3.8-flash} at {strata.off_lane.qwen3.8-flash.persona.holds_character.mean} and {arm:1017} at {strata.off_lane.1017.persona.holds_character.mean}, and where {arm:September} itself is weakest of the six largest strata, at {strata.off_lane.September.persona.holds_character.mean}.",
+        "weight": "support",
+        "evidence": [
+          {
+            "block": "table",
+            "query": {
+              "source": "strata",
+              "aspect": "character adherence (v2)",
+              "measures": [
+                "persona.holds_character"
+              ],
+              "arms": [],
+              "strata": [
+                "off_lane",
+                "machinery",
+                "about",
+                "superlative",
+                "small_talk",
+                "multi"
+              ],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Persona holds character by arm in the six largest strata, as the uncalibrated judge scored it; descriptive and uncorrected. Off lane, the gap to {arm:September} reads {compare.qwen3.8-flash.September.persona.holds_character.strata.off_lane.interval|interval} points for {arm:qwen3.8-flash} and {compare.1017.September.persona.holds_character.strata.off_lane.interval|interval} for {arm:1017}; these intervals are unpaired and uncorrected, and may be too narrow because repeats of one case are not independent."
+          }
+        ],
+        "caveats": [
+          "confound:observed:reasoning_ratio"
+        ],
+        "durable": false
+      },
+      {
+        "id": "cards",
+        "text": "All three models slip on off-lane asks, each its own way: the {arm:1017} card narrates the listener in the third person, the {arm:qwen3.8-flash} card does the out-of-lane task it was asked, and the {arm:September} card falls into a customer-service refusal.",
         "weight": "detail",
         "evidence": [
           {
@@ -213,9 +221,7 @@
               "source": "examples",
               "aspect": "character adherence (v2)",
               "measures": [],
-              "arms": [
-                "September"
-              ],
+              "arms": [],
               "strata": [
                 "off_lane"
               ],
@@ -225,27 +231,7 @@
             },
             "reference": null,
             "emphasis": "",
-            "caption": "Every kept off-lane failure for {arm:September}, {count.examples.character adherence (v2).September.off_lane|words} of {count.failures.character adherence (v2).September.off_lane|words}: the landlord-email and laundry cards brush off the ask and then answer it; the match-score card slips into a customer-service refusal."
-          },
-          {
-            "block": "examples",
-            "query": {
-              "source": "examples",
-              "aspect": "character adherence (v2)",
-              "measures": [],
-              "arms": [
-                "qwen3.8-flash"
-              ],
-              "strata": [
-                "off_lane"
-              ],
-              "limit": 1,
-              "transform": "none",
-              "small_multiples_by": "none"
-            },
-            "reference": null,
-            "emphasis": "",
-            "caption": "The first kept off-lane failure for {arm:qwen3.8-flash}, a sample of {count.failures.character adherence (v2).qwen3.8-flash.off_lane|words}: the same landlord-email case, answered with practical advice after the turn to music."
+            "caption": "One kept off-lane failure per arm, of {count.failures.character adherence (v2).September.off_lane|int} for {arm:September}, {count.failures.character adherence (v2).qwen3.8-flash.off_lane|int} for {arm:qwen3.8-flash} and {count.failures.character adherence (v2).1017.off_lane|int} for {arm:1017}; they show the kinds of slip, not their shares."
           }
         ],
         "caveats": [],
@@ -254,135 +240,126 @@
     ],
     "explore": [
       {
-        "control": "The allowed loss on character adherence",
-        "binds": "Whether each candidate counts as acceptable on character",
-        "outcome": "Read on the declared {aspects.character adherence (v2).reading.qwen3.8-flash.level} readings, the pick holds at every allowed loss. {arm:1017} stops counting as acceptable below {aspects.character adherence (v2).flip_margin.1017|abs|pts} points and {arm:qwen3.8-flash} below {aspects.character adherence (v2).flip_margin.qwen3.8-flash|abs|pts}; {arm:September} stays the pick throughout because both cost more at this routing."
+        "control": "The margin on the character pass rate",
+        "binds": "Whether a candidate counts as no worse than {arm:September}",
+        "outcome": "The keep holds at every margin from zero up while both candidates cost more; {arm:1017}'s reading changes at {aspects.character adherence (v2).flip_margin.1017} points and {arm:qwen3.8-flash}'s at {aspects.character adherence (v2).flip_margin.qwen3.8-flash}. A margin tighter than those would rule a candidate out on character even if it became cheaper."
       }
     ],
     "omitted": [
       {
-        "what": "The overall outcome and transcript judged scores",
-        "why": "Ordinal scores from the same uncalibrated judge, pointing the same way as the pass rate; they do not change the call."
+        "what": "The delivery check (a Discord message or queued voice sent) and failed-reply notices",
+        "why": "Neither candidate is separated from the control on either, so they do not bear on the keep."
       },
       {
-        "what": "The tool check (a message sent or a voice line queued) and failed-reply notices",
-        "why": "Neither candidate is separated from the control on either; they do not bear on the call."
+        "what": "The ordinal outcome and transcript judged scores",
+        "why": "Further views of the same conversations from the same uncalibrated judge: {arm:qwen3.8-flash} is lower on both, {arm:1017} is not separated on either, which changes nothing in the call."
       },
       {
-        "what": "The other slices of holding character and keeping the booth offstage, including qwen3.8-flash's drop on keeping the booth offstage in story asks",
-        "why": "Small slices ({strata.story.n_cases|words} cases for story asks) and uncorrected; none carries as much of the holding-character loss as off-lane asks."
+        "what": "Measuring spend, all roles",
+        "why": "The cost of running the evaluation itself, not of serving Kairo; production cost is the serving cost the call weighs."
       },
       {
-        "what": "The kept off-lane failure cards for {arm:1017}",
-        "why": "The control's and qwen3.8-flash's cards on the same landlord-email case show the shared failure more directly; the cards for {arm:1017} stay in the appendix."
+        "what": "Strata smaller than the six shown (emotional, lineage, next up, assistant shape and the rest)",
+        "why": "Too few cases each to read; their gaps carry intervals that cross zero. The full tables hold them."
       },
       {
-        "what": "Measuring spend across all roles",
-        "why": "Includes the judge's and simulator's spend; production cost is the cost a deployment pays."
+        "what": "Per-stratum gap bars with intervals for each candidate",
+        "why": "The strata table carries the rates the claim turns on, and the off-lane intervals are stated in its caption; the other strata's gaps cross zero."
       },
       {
-        "what": "The p95 production cost",
-        "why": "Tail cost points the same way as the mean and does not change the call."
+        "what": "Items delivered, tool provider faults and turns that ran over budget",
+        "why": "Describe the run's mechanics and do not bear on the call."
+      },
+      {
+        "what": "Latency",
+        "why": "Read while other runs executed beside it, so it is not comparable between arms."
       }
     ],
     "next": [
       {
-        "text": "Re-price {arm:qwen3.8-flash} and {arm:1017} at a recorded provider routing, including the one the earlier round measured.",
-        "settles": "Whether the cost order is the models' or this run's routing, and reconciles the earlier finding that {arm:qwen3.8-flash} lowers cost; only a candidate that costs no more than {arm:September} re-enters, and then character decides."
+        "text": "The persona owner declares whether the {aspects.character adherence (v2).margin|int}-point margin on the character pass rate stands for the next round.",
+        "settles": "Whether a cheaper {arm:qwen3.8-flash} would be acceptable despite its clear drop; today's margin lets it through, a margin under {aspects.character adherence (v2).flip_margin.qwen3.8-flash} points would not."
       },
       {
-        "text": "Rerun {arm:1017} with its reasoning budget matched to {arm:September}.",
-        "settles": "How much of its cost and character gap belongs to the reasoning share rather than the model."
+        "text": "Re-price {arm:qwen3.8-flash} and {arm:1017} with each arm's provider routing recorded, and reconcile with the earlier round's cost finding.",
+        "settles": "Whether the cost uplift belongs to the routing or the models; a candidate cheaper than {arm:September} under the declared margin would become the pick."
       },
       {
-        "text": "Tighten the existing brush-off directive so it forbids answering a non-music ask after brushing it off, and rerun the off-lane asks on all three arms.",
-        "settles": "Whether the slice that carries most of the loss can lift for every arm, the control included."
+        "text": "Calibrate the judge against human ratings of character, drawing heavily on off-lane conversations.",
+        "settles": "Whether the persona holds character gaps and the off-lane weakness are real or the judge's taste; it turns the judge caveat into evidence either way."
       },
       {
-        "text": "Calibrate the judge against human ratings of holding character, starting with off-lane asks.",
-        "settles": "Whether the candidates' character loss is real or the judge's reading of their style."
+        "text": "Write an off-lane directive for {arm:September} and rerun the off-lane stratum.",
+        "settles": "Whether the large stratum where every model loses most can lift on the model being kept."
       },
       {
-        "text": "Declare the aspect, control and allowed loss before the next round runs, and record each arm's provider and the simulator's settings.",
-        "settles": "Removes the caveats that these were set after the results and that routing went unrecorded."
+        "text": "Only if {arm:1017} stays of interest: rerun it at a reasoning share matched to {arm:September}'s with {settle.passed.character adherence (v2).1017.September.cases_needed_80|int} cases per arm.",
+        "settles": "Whether its pass-rate drop of {settle.passed.character adherence (v2).1017.September.difference|abs|pts} points is real and belongs to the model, four times in five."
       }
     ],
     "method": [
       {
         "term": "Cases and repeats",
-        "text": "{cases|int} conversations, each run {repeats|int} times per arm: {scoreboard.September.usable|int} usable trials for {arm:September}, {scoreboard.qwen3.8-flash.usable|int} for {arm:qwen3.8-flash} and {scoreboard.1017.usable|int} for {arm:1017}. Intervals are over cases, not trials.",
+        "text": "{cases} conversations, each run {repeats} times per arm on the character adherence (v2) aspect, run on {meta.run_date}.",
         "caveats": []
       },
       {
         "term": "What pass means",
-        "text": "The campaign does not state what makes a trial pass on character adherence; the pass rate is trials marked passed over trials usable. Holding character and keeping the booth offstage are separate judged checks.",
+        "text": "A trial passes the character check as the campaign scored it; the snapshot names no grader for the aspect, so what makes a pass is not stated beyond its count of trials passed over usable.",
         "caveats": []
       },
       {
-        "term": "Intervals and correction",
-        "text": "Readings against the control are at {aspects.character adherence (v2).reading.qwen3.8-flash.level}. Contrasts are corrected together by Holm's method over {family.family_size|int} comparisons, each interval at {family.level}. The weakest margin is read on the corrected interval, the allowed-loss control on the declared reading.",
+        "term": "Intervals",
+        "text": "Readings against the control, and the margin test, are at {aspects.character adherence (v2).reading.qwen3.8-flash.level}. Contrasts are paired and corrected together by Holm's method over a family of {family.family_size}, each at {family.level}. Strata gaps are unpaired and uncorrected; where trials nest within conversations some intervals may be too narrow.",
         "caveats": []
       },
       {
         "term": "Judge",
-        "text": "Every judged figure comes from {judged.persona.holds_character.model}, calibration {judged.persona.holds_character.calibration}, with {judged.persona.holds_character.calibration_ratings|int} human ratings.",
+        "text": "Judged dimensions are scored by {judged.persona.holds_character.model}, uncalibrated, with {judged.persona.holds_character.calibration_ratings|int} human ratings.",
         "caveats": []
       },
       {
         "term": "Cost basis",
-        "text": "Production cost per 1,000 replies, at a provider routing not recorded for any arm. Some trials report no cost ({cost.unreported.September.missing|int} for {arm:September}, {cost.unreported.qwen3.8-flash.missing|int} and {cost.unreported.1017.missing|int} for the candidates). Had each candidate's missing trials cost nothing, their means would still be at least {cost.unreported.qwen3.8-flash.free|usd_per_1k} and {cost.unreported.1017.free|usd_per_1k}. Had {arm:September}'s missing trials each cost its p95 of {measure.production_replicating_cost.September.p95|usd_per_1k}, its mean would be {cost.unreported.September.at_p95|usd_per_1k}, still below both, so the order holds at this routing. The paired gaps use only trials both arms costed.",
+        "text": "Production cost per 1,000 replies, as each arm was served in this run; no provider is recorded for any arm and no monthly volume is declared, so no monthly figure is stated. Arm means are read over each arm's reported trials; the gaps are paired contrasts.",
         "caveats": []
       },
       {
-        "term": "Floors",
-        "text": "The floor on {arm:qwen3.8-flash} speaks for the pass rate; the floor on {arm:1017} reads holding character instead. Both held; the page reads the pass rate for the asked aspect and shows holding character separately.",
+        "term": "Late declarations",
+        "text": "The aspect, control, margin and floor were all set on {late_criteria.set_at}, after the results.",
         "caveats": []
       },
       {
-        "term": "Declared after the results",
-        "text": "The aspect, the control, the allowed loss and the floor were all set on {late_criteria.set_at}, after the runs.",
-        "caveats": []
-      },
-      {
-        "term": "Latency",
-        "text": "{caveats.latency}",
+        "term": "Simulator",
+        "text": "The simulated user's request settings were not recorded on every run, so whether they varied cannot be established.",
         "caveats": [
-          "latency"
-        ]
-      },
-      {
-        "term": "Not recorded",
-        "text": "Input tokens, output tokens and model-call counts were not reported; the simulator's request settings were not recorded on every run, so whether they varied is unknown.",
-        "caveats": [
-          "unreported:input_tokens",
-          "unreported:output_tokens",
-          "unreported:llm_calls",
           "apparatus:simulator_sent_settings"
         ]
       },
       {
+        "term": "Not compared",
+        "text": "Latency was read under concurrent execution and is left out; input tokens, output tokens and model-call counts were not reported.",
+        "caveats": [
+          "latency",
+          "unreported:input_tokens",
+          "unreported:output_tokens",
+          "unreported:llm_calls"
+        ]
+      },
+      {
         "term": "Source",
-        "text": "{meta.campaign}, run {meta.run_date}.",
+        "text": "The frozen campaign snapshot for Kairo persona round two.",
         "caveats": []
       }
     ]
   },
-  "ending": "stored_with_findings",
+  "ending": "stored",
   "findings": [
-    {
-      "claim": "character",
-      "severity": "must_fix",
-      "finding": "Claim character uses 'holds character' for the pass rate on character adherence. It then says 1017 is 'down 3, not told apart'. But the judged check 'persona holds character' sits in the same block, and there 1017 is -4.7 points (-8.2 to -1.3 at 99.69%), separated and worse, as that block's own caption says. A reader takes the two for one measure, and the sentence then contradicts its own block. Fix: call the 7.6 and 3.0 figures 'the pass rate on character adherence'. Add a sentence on the judged holding-character check: both candidates are separated and worse, qwen3.8-flash -6.0 and 1017 -4.7. The decision block's 'Why not' for qwen3.8-flash should also say 'pass rate' rather than 'holds character'."
-    },
-    {
-      "claim": "",
-      "severity": "must_fix",
-      "finding": "The confidence reads High over the unrecorded-routing caveat. That caveat is plausibly material: the page says cost alone decides, and that the earlier round found qwen3.8-flash cheaper. Its clause also contradicts itself, calling this run's gap 'the only cost evidence' while citing that earlier finding. Fix: scope the High to the character readings and to the cost order at this run's routing. Then say it leaves open whether a candidate costs less at a recorded production routing, which the earlier round suggests it may. Otherwise, make the form low."
-    },
     {
       "claim": "",
       "severity": "should_fix",
-      "finding": "The first next step says that if a candidate costs no more than September after re-pricing, 'then character decides'. The routing caveat says the call 'would turn on character alone or become a trade'. Under the declared criteria, a cheaper candidate inside the 15-point allowed loss would be the pick: qwen3.8-flash's worst corrected drop is -12.6, and 1017's is -7.4. Say so. If the team would not accept qwen3.8-flash's 7.6-point pass-rate drop at any price, say the allowed loss should be tightened now (qwen3.8-flash stops counting as acceptable below 10.8, 1017 below 5.8). Then a reader knows what a cheaper re-pricing would actually do to the call."
+      "finding": "The 'What you could change' row and the margin next step put the point where 1017 (B) is ruled out on character at 5.8 points, its pass-rate reading. But the declared floor reads 1017 on persona holds character, and there its worst drop is 7.1 points (95% interval -7.1 to -1.7, against the same 15-point margin). So any margin under 7.1 rules 1017 out, not only one under 5.8. The keep does not change. But the persona owner deciding the margin should see both lines. Fix: in that row, say 1017 is ruled out below 7.1 points on persona holds character (its declared floor) and below 5.8 on the pass rate.",
+      "id": "f3.1",
+      "since": 3
     }
   ],
   "generation": {
@@ -390,8 +367,8 @@
     "model": "claude-opus-5-5",
     "skill": {
       "analyst": "e198143a9cf958a137b39183a8b050c512fa72920bc9d4faafbff5f4cf8a1e97",
-      "editor": "26690a6042c513420bf670a42e5fe6f168827a9865ffeb9ce8c66f2dd48d38f4",
-      "package": "ed7e2c60b5ad37c8a25d87e1384171c4a7ce2d57e1bb3f3061022ada81dfe439"
+      "editor": "07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611",
+      "package": "2a7662d928b0a734f76e2e75cef229af1160ef58b8c4e2face59f9b12bb4647a"
     },
     "tally": {
       "turns": [
@@ -403,15 +380,15 @@
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
           "input_tokens": 39064,
-          "output_tokens": 508,
-          "reasoning_tokens": 64,
-          "cache_read_tokens": 4464,
-          "cache_write_tokens": 34596,
-          "cost_usd": 0.1840488,
+          "output_tokens": 506,
+          "reasoning_tokens": 62,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 39060,
+          "cost_usd": 0.205436,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 5.528705127071589,
+          "wall_s": 4.104195002000779,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -424,16 +401,16 @@
           "turn": 1,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 49508,
-          "output_tokens": 747,
-          "reasoning_tokens": 325,
+          "input_tokens": 49506,
+          "output_tokens": 619,
+          "reasoning_tokens": 197,
           "cache_read_tokens": 39060,
-          "cache_write_tokens": 10446,
-          "cost_usd": 0.07499,
+          "cache_write_tokens": 10444,
+          "cost_usd": 0.07242,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 7.497394043952227,
+          "wall_s": 5.271149419946596,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -446,16 +423,16 @@
           "turn": 2,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 51584,
-          "output_tokens": 301,
-          "reasoning_tokens": 61,
-          "cache_read_tokens": 49506,
-          "cache_write_tokens": 2076,
-          "cost_usd": 0.0263092,
+          "input_tokens": 51454,
+          "output_tokens": 283,
+          "reasoning_tokens": 38,
+          "cache_read_tokens": 49504,
+          "cache_write_tokens": 1948,
+          "cost_usd": 0.0253088,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 3.125796542968601,
+          "wall_s": 2.650741958990693,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -468,16 +445,16 @@
           "turn": 3,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 56785,
-          "output_tokens": 606,
-          "reasoning_tokens": 0,
-          "cache_read_tokens": 51582,
-          "cache_write_tokens": 5201,
-          "cost_usd": 0.0484494,
+          "input_tokens": 60246,
+          "output_tokens": 710,
+          "reasoning_tokens": 143,
+          "cache_read_tokens": 51452,
+          "cache_write_tokens": 8792,
+          "cost_usd": 0.0684584,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 5.803403210826218,
+          "wall_s": 6.242976502981037,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -490,16 +467,16 @@
           "turn": 4,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 65448,
-          "output_tokens": 780,
-          "reasoning_tokens": 366,
-          "cache_read_tokens": 56783,
-          "cache_write_tokens": 8663,
-          "cost_usd": 0.0702796,
+          "input_tokens": 65024,
+          "output_tokens": 452,
+          "reasoning_tokens": 107,
+          "cache_read_tokens": 60244,
+          "cache_write_tokens": 4778,
+          "cost_usd": 0.0449868,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 10.284156047040597,
+          "wall_s": 4.617910044034943,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -512,16 +489,16 @@
           "turn": 5,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 72042,
-          "output_tokens": 1070,
-          "reasoning_tokens": 956,
-          "cache_read_tokens": 65446,
-          "cache_write_tokens": 6594,
-          "cost_usd": 0.0674672,
+          "input_tokens": 68417,
+          "output_tokens": 1763,
+          "reasoning_tokens": 1431,
+          "cache_read_tokens": 65022,
+          "cache_write_tokens": 3393,
+          "cost_usd": 0.0652374,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 13.074859087821096,
+          "wall_s": 18.263900550082326,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -534,16 +511,16 @@
           "turn": 6,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 78244,
-          "output_tokens": 743,
-          "reasoning_tokens": 0,
-          "cache_read_tokens": 72040,
-          "cache_write_tokens": 6202,
-          "cost_usd": 0.060286,
+          "input_tokens": 77880,
+          "output_tokens": 776,
+          "reasoning_tokens": 662,
+          "cache_read_tokens": 68415,
+          "cache_write_tokens": 9463,
+          "cost_usd": 0.076526,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 8.14412537892349,
+          "wall_s": 8.735695961862803,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -556,16 +533,16 @@
           "turn": 7,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 80196,
-          "output_tokens": 831,
-          "reasoning_tokens": 99,
-          "cache_read_tokens": 78242,
-          "cache_write_tokens": 1952,
-          "cost_usd": 0.0420364,
+          "input_tokens": 83788,
+          "output_tokens": 733,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 77878,
+          "cache_write_tokens": 5908,
+          "cost_usd": 0.0597836,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 10.187992755090818,
+          "wall_s": 7.344325460959226,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -578,16 +555,16 @@
           "turn": 8,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 83803,
-          "output_tokens": 1918,
-          "reasoning_tokens": 1165,
-          "cache_read_tokens": 80194,
-          "cache_write_tokens": 3607,
-          "cost_usd": 0.0724418,
+          "input_tokens": 85939,
+          "output_tokens": 348,
+          "reasoning_tokens": 172,
+          "cache_read_tokens": 83786,
+          "cache_write_tokens": 2151,
+          "cost_usd": 0.0344802,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 22.920321051962674,
+          "wall_s": 3.8691103351302445,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -600,16 +577,16 @@
           "turn": 9,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 86180,
-          "output_tokens": 7946,
-          "reasoning_tokens": 3402,
-          "cache_read_tokens": 83801,
-          "cache_write_tokens": 2377,
-          "cost_usd": 0.1875732,
+          "input_tokens": 90464,
+          "output_tokens": 737,
+          "reasoning_tokens": 322,
+          "cache_read_tokens": 85937,
+          "cache_write_tokens": 4525,
+          "cost_usd": 0.0545604,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 72.26713561499491,
+          "wall_s": 7.475276336772367,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -622,16 +599,16 @@
           "turn": 10,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 98910,
-          "output_tokens": 5453,
-          "reasoning_tokens": 732,
-          "cache_read_tokens": 86178,
-          "cache_write_tokens": 12730,
-          "cost_usd": 0.1899536,
+          "input_tokens": 93466,
+          "output_tokens": 515,
+          "reasoning_tokens": 252,
+          "cache_read_tokens": 90462,
+          "cache_write_tokens": 3002,
+          "cost_usd": 0.0434104,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 40.10714793414809,
+          "wall_s": 5.69975546002388,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -644,192 +621,16 @@
           "turn": 11,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 110313,
-          "output_tokens": 5431,
-          "reasoning_tokens": 226,
-          "cache_read_tokens": 98908,
-          "cache_write_tokens": 11403,
-          "cost_usd": 0.1854246,
-          "price_source": "anthropic-published:2026-10-28",
-          "pricing_failure": null,
-          "stop_reason": "end_turn",
-          "wall_s": 38.587472768034786,
-          "refused": null,
-          "admitted_on_estimate": false,
-          "sent_binding": "error",
-          "input_transformations": []
-        },
-        {
-          "session": "editor-1",
-          "role": "editor",
-          "round": 1,
-          "turn": 0,
-          "model": "claude-opus-5-5",
-          "served_model": "claude-opus-5-5",
-          "input_tokens": 18298,
-          "output_tokens": 417,
-          "reasoning_tokens": 80,
-          "cache_read_tokens": 0,
-          "cache_write_tokens": 18294,
-          "cost_usd": 0.099826,
-          "price_source": "anthropic-published:2026-10-28",
-          "pricing_failure": null,
-          "stop_reason": "tool_use",
-          "wall_s": 4.454177252016962,
-          "refused": null,
-          "admitted_on_estimate": false,
-          "sent_binding": "error",
-          "input_transformations": []
-        },
-        {
-          "session": "editor-1",
-          "role": "editor",
-          "round": 1,
-          "turn": 1,
-          "model": "claude-opus-5-5",
-          "served_model": "claude-opus-5-5",
-          "input_tokens": 22927,
-          "output_tokens": 3435,
-          "reasoning_tokens": 3036,
-          "cache_read_tokens": 18294,
-          "cache_write_tokens": 4631,
-          "cost_usd": 0.0955218,
-          "price_source": "anthropic-published:2026-10-28",
-          "pricing_failure": null,
-          "stop_reason": "tool_use",
-          "wall_s": 33.33471755706705,
-          "refused": null,
-          "admitted_on_estimate": false,
-          "sent_binding": "error",
-          "input_transformations": []
-        },
-        {
-          "session": "editor-1",
-          "role": "editor",
-          "round": 1,
-          "turn": 2,
-          "model": "claude-opus-5-5",
-          "served_model": "claude-opus-5-5",
-          "input_tokens": 29390,
-          "output_tokens": 864,
-          "reasoning_tokens": 520,
-          "cache_read_tokens": 22925,
-          "cache_write_tokens": 6463,
-          "cost_usd": 0.054188,
-          "price_source": "anthropic-published:2026-10-28",
-          "pricing_failure": null,
-          "stop_reason": "tool_use",
-          "wall_s": 9.594368213089183,
-          "refused": null,
-          "admitted_on_estimate": false,
-          "sent_binding": "error",
-          "input_transformations": []
-        },
-        {
-          "session": "editor-1",
-          "role": "editor",
-          "round": 1,
-          "turn": 3,
-          "model": "claude-opus-5-5",
-          "served_model": "claude-opus-5-5",
-          "input_tokens": 31618,
-          "output_tokens": 193,
+          "input_tokens": 94206,
+          "output_tokens": 532,
           "reasoning_tokens": 0,
-          "cache_read_tokens": 29388,
-          "cache_write_tokens": 2228,
-          "cost_usd": 0.0208856,
+          "cache_read_tokens": 93464,
+          "cache_write_tokens": 740,
+          "cost_usd": 0.0330408,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 2.596347959013656,
-          "refused": null,
-          "admitted_on_estimate": false,
-          "sent_binding": "error",
-          "input_transformations": []
-        },
-        {
-          "session": "editor-1",
-          "role": "editor",
-          "round": 1,
-          "turn": 4,
-          "model": "claude-opus-5-5",
-          "served_model": "claude-opus-5-5",
-          "input_tokens": 35189,
-          "output_tokens": 396,
-          "reasoning_tokens": 70,
-          "cache_read_tokens": 31616,
-          "cache_write_tokens": 3571,
-          "cost_usd": 0.0321062,
-          "price_source": "anthropic-published:2026-10-28",
-          "pricing_failure": null,
-          "stop_reason": "tool_use",
-          "wall_s": 4.776237960904837,
-          "refused": null,
-          "admitted_on_estimate": false,
-          "sent_binding": "error",
-          "input_transformations": []
-        },
-        {
-          "session": "editor-1",
-          "role": "editor",
-          "round": 1,
-          "turn": 5,
-          "model": "claude-opus-5-5",
-          "served_model": "claude-opus-5-5",
-          "input_tokens": 39237,
-          "output_tokens": 636,
-          "reasoning_tokens": 380,
-          "cache_read_tokens": 35187,
-          "cache_write_tokens": 4048,
-          "cost_usd": 0.0400054,
-          "price_source": "anthropic-published:2026-10-28",
-          "pricing_failure": null,
-          "stop_reason": "tool_use",
-          "wall_s": 7.517257837112993,
-          "refused": null,
-          "admitted_on_estimate": false,
-          "sent_binding": "error",
-          "input_transformations": []
-        },
-        {
-          "session": "editor-1",
-          "role": "editor",
-          "round": 1,
-          "turn": 6,
-          "model": "claude-opus-5-5",
-          "served_model": "claude-opus-5-5",
-          "input_tokens": 41639,
-          "output_tokens": 401,
-          "reasoning_tokens": 145,
-          "cache_read_tokens": 39235,
-          "cache_write_tokens": 2402,
-          "cost_usd": 0.027885,
-          "price_source": "anthropic-published:2026-10-28",
-          "pricing_failure": null,
-          "stop_reason": "tool_use",
-          "wall_s": 5.252120001940057,
-          "refused": null,
-          "admitted_on_estimate": false,
-          "sent_binding": "error",
-          "input_transformations": []
-        },
-        {
-          "session": "editor-1",
-          "role": "editor",
-          "round": 1,
-          "turn": 7,
-          "model": "claude-opus-5-5",
-          "served_model": "claude-opus-5-5",
-          "input_tokens": 48426,
-          "output_tokens": 4843,
-          "reasoning_tokens": 2332,
-          "cache_read_tokens": 41637,
-          "cache_write_tokens": 6787,
-          "cost_usd": 0.1391304,
-          "price_source": "anthropic-published:2026-10-28",
-          "pricing_failure": null,
-          "stop_reason": "end_turn",
-          "wall_s": 46.84737247880548,
+          "wall_s": 5.2762984610162675,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -838,20 +639,20 @@
         {
           "session": "analyst",
           "role": "analyst",
-          "round": 2,
+          "round": 1,
           "turn": 12,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 118188,
-          "output_tokens": 667,
-          "reasoning_tokens": 500,
-          "cache_read_tokens": 110311,
-          "cache_write_tokens": 7873,
-          "cost_usd": 0.0747832,
+          "input_tokens": 95853,
+          "output_tokens": 773,
+          "reasoning_tokens": 269,
+          "cache_read_tokens": 94204,
+          "cache_write_tokens": 1647,
+          "cost_usd": 0.0425438,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 12.222464297199622,
+          "wall_s": 7.326453628949821,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -860,20 +661,20 @@
         {
           "session": "analyst",
           "role": "analyst",
-          "round": 2,
+          "round": 1,
           "turn": 13,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 122013,
-          "output_tokens": 6161,
-          "reasoning_tokens": 694,
-          "cache_read_tokens": 118184,
-          "cache_write_tokens": 3827,
-          "cost_usd": 0.1659998,
+          "input_tokens": 98860,
+          "output_tokens": 1767,
+          "reasoning_tokens": 1596,
+          "cache_read_tokens": 95851,
+          "cache_write_tokens": 3007,
+          "cost_usd": 0.0695532,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 46.90031497995369,
+          "wall_s": 18.773986508138478,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -882,108 +683,20 @@
         {
           "session": "analyst",
           "role": "analyst",
-          "round": 2,
+          "round": 1,
           "turn": 14,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 132887,
-          "output_tokens": 6168,
-          "reasoning_tokens": 254,
-          "cache_read_tokens": 122011,
-          "cache_write_tokens": 10874,
-          "cost_usd": 0.2021402,
-          "price_source": "anthropic-published:2026-10-28",
-          "pricing_failure": null,
-          "stop_reason": "end_turn",
-          "wall_s": 43.620799478841946,
-          "refused": null,
-          "admitted_on_estimate": false,
-          "sent_binding": "error",
-          "input_transformations": []
-        },
-        {
-          "session": "editor-2",
-          "role": "editor",
-          "round": 2,
-          "turn": 0,
-          "model": "claude-opus-5-5",
-          "served_model": "claude-opus-5-5",
-          "input_tokens": 19756,
-          "output_tokens": 4276,
-          "reasoning_tokens": 3886,
-          "cache_read_tokens": 6232,
-          "cache_write_tokens": 13520,
-          "cost_usd": 0.1543824,
+          "input_tokens": 101832,
+          "output_tokens": 3149,
+          "reasoning_tokens": 2713,
+          "cache_read_tokens": 98858,
+          "cache_write_tokens": 2972,
+          "cost_usd": 0.0976196,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 40.46583497594111,
-          "refused": null,
-          "admitted_on_estimate": false,
-          "sent_binding": "error",
-          "input_transformations": []
-        },
-        {
-          "session": "editor-2",
-          "role": "editor",
-          "round": 2,
-          "turn": 1,
-          "model": "claude-opus-5-5",
-          "served_model": "claude-opus-5-5",
-          "input_tokens": 28909,
-          "output_tokens": 616,
-          "reasoning_tokens": 216,
-          "cache_read_tokens": 19752,
-          "cache_write_tokens": 9155,
-          "cost_usd": 0.0620534,
-          "price_source": "anthropic-published:2026-10-28",
-          "pricing_failure": null,
-          "stop_reason": "tool_use",
-          "wall_s": 6.292640920029953,
-          "refused": null,
-          "admitted_on_estimate": false,
-          "sent_binding": "error",
-          "input_transformations": []
-        },
-        {
-          "session": "editor-2",
-          "role": "editor",
-          "round": 2,
-          "turn": 2,
-          "model": "claude-opus-5-5",
-          "served_model": "claude-opus-5-5",
-          "input_tokens": 33153,
-          "output_tokens": 628,
-          "reasoning_tokens": 434,
-          "cache_read_tokens": 28907,
-          "cache_write_tokens": 4244,
-          "cost_usd": 0.0395694,
-          "price_source": "anthropic-published:2026-10-28",
-          "pricing_failure": null,
-          "stop_reason": "tool_use",
-          "wall_s": 6.611940503120422,
-          "refused": null,
-          "admitted_on_estimate": false,
-          "sent_binding": "error",
-          "input_transformations": []
-        },
-        {
-          "session": "editor-2",
-          "role": "editor",
-          "round": 2,
-          "turn": 3,
-          "model": "claude-opus-5-5",
-          "served_model": "claude-opus-5-5",
-          "input_tokens": 37159,
-          "output_tokens": 3835,
-          "reasoning_tokens": 1848,
-          "cache_read_tokens": 33151,
-          "cache_write_tokens": 4006,
-          "cost_usd": 0.1033682,
-          "price_source": "anthropic-published:2026-10-28",
-          "pricing_failure": null,
-          "stop_reason": "end_turn",
-          "wall_s": 36.0530417249538,
+          "wall_s": 31.715565223013982,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -992,20 +705,20 @@
         {
           "session": "analyst",
           "role": "analyst",
-          "round": 3,
+          "round": 1,
           "turn": 15,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 141102,
-          "output_tokens": 1144,
-          "reasoning_tokens": 422,
-          "cache_read_tokens": 132885,
-          "cache_write_tokens": 8135,
-          "cost_usd": 0.09046,
+          "input_tokens": 105227,
+          "output_tokens": 5155,
+          "reasoning_tokens": 14,
+          "cache_read_tokens": 101830,
+          "cache_write_tokens": 3395,
+          "cost_usd": 0.140449,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 14.820843381108716,
+          "wall_s": 41.871495394036174,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1014,20 +727,20 @@
         {
           "session": "analyst",
           "role": "analyst",
-          "round": 3,
+          "round": 1,
           "turn": 16,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 145122,
-          "output_tokens": 792,
-          "reasoning_tokens": 437,
-          "cache_read_tokens": 141020,
-          "cache_write_tokens": 4022,
-          "cost_usd": 0.064474,
+          "input_tokens": 114818,
+          "output_tokens": 6308,
+          "reasoning_tokens": 988,
+          "cache_read_tokens": 105225,
+          "cache_write_tokens": 9591,
+          "cost_usd": 0.195168,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 9.874330420978367,
+          "wall_s": 45.9241206869483,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1036,20 +749,438 @@
         {
           "session": "analyst",
           "role": "analyst",
-          "round": 3,
+          "round": 1,
           "turn": 17,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 146112,
-          "output_tokens": 5843,
-          "reasoning_tokens": 0,
-          "cache_read_tokens": 145042,
-          "cache_write_tokens": 990,
-          "cost_usd": 0.1511384,
+          "input_tokens": 126575,
+          "output_tokens": 5564,
+          "reasoning_tokens": 315,
+          "cache_read_tokens": 114816,
+          "cache_write_tokens": 11757,
+          "cost_usd": 0.1930362,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 37.54150814190507,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 18,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 132365,
+          "output_tokens": 5374,
+          "reasoning_tokens": 56,
+          "cache_read_tokens": 126573,
+          "cache_write_tokens": 5788,
+          "cost_usd": 0.1617506,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 35.40679097385146,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 0,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 19292,
+          "output_tokens": 3968,
+          "reasoning_tokens": 3633,
+          "cache_read_tokens": 6589,
+          "cache_write_tokens": 12699,
+          "cost_usd": 0.1441888,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 40.2805274350103,
+          "wall_s": 37.0837289749179,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 1,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 31781,
+          "output_tokens": 612,
+          "reasoning_tokens": 141,
+          "cache_read_tokens": 19288,
+          "cache_write_tokens": 12491,
+          "cost_usd": 0.0785606,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 5.977208002004772,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 2,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 34182,
+          "output_tokens": 439,
+          "reasoning_tokens": 112,
+          "cache_read_tokens": 31779,
+          "cache_write_tokens": 2401,
+          "cost_usd": 0.0271488,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 3.9736224180087447,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 3,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 36177,
+          "output_tokens": 604,
+          "reasoning_tokens": 271,
+          "cache_read_tokens": 34180,
+          "cache_write_tokens": 1995,
+          "cost_usd": 0.028899,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 9.455864921212196,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 4,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 40721,
+          "output_tokens": 3913,
+          "reasoning_tokens": 3563,
+          "cache_read_tokens": 36175,
+          "cache_write_tokens": 4544,
+          "cost_usd": 0.108223,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 39.93768935208209,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 5,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 46358,
+          "output_tokens": 4199,
+          "reasoning_tokens": 1734,
+          "cache_read_tokens": 40719,
+          "cache_write_tokens": 5637,
+          "cost_usd": 0.1203168,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 39.883372975979,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 19,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 140243,
+          "output_tokens": 1206,
+          "reasoning_tokens": 944,
+          "cache_read_tokens": 132361,
+          "cache_write_tokens": 7800,
+          "cost_usd": 0.0899202,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 14.07330917310901,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 20,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 142084,
+          "output_tokens": 8185,
+          "reasoning_tokens": 2179,
+          "cache_read_tokens": 140161,
+          "cache_write_tokens": 1843,
+          "cost_usd": 0.2012672,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 64.00573382084258,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 21,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 106851,
+          "output_tokens": 6027,
+          "reasoning_tokens": 85,
+          "cache_read_tokens": 29328,
+          "cache_write_tokens": 77521,
+          "cost_usd": 0.5140186,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 40.71702193492092,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 22,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 115528,
+          "output_tokens": 6526,
+          "reasoning_tokens": 75,
+          "cache_read_tokens": 106849,
+          "cache_write_tokens": 8677,
+          "cost_usd": 0.1952828,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 44.59947702102363,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 0,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 20927,
+          "output_tokens": 3389,
+          "reasoning_tokens": 3129,
+          "cache_read_tokens": 6589,
+          "cache_write_tokens": 14334,
+          "cost_usd": 0.1407838,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 31.601261056028306,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 1,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 25933,
+          "output_tokens": 586,
+          "reasoning_tokens": 296,
+          "cache_read_tokens": 20923,
+          "cache_write_tokens": 5008,
+          "cost_usd": 0.0409526,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 5.474590461002663,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 2,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 27631,
+          "output_tokens": 465,
+          "reasoning_tokens": 271,
+          "cache_read_tokens": 25931,
+          "cache_write_tokens": 1698,
+          "cost_usd": 0.0229842,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 4.880491418065503,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 3,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 33324,
+          "output_tokens": 495,
+          "reasoning_tokens": 289,
+          "cache_read_tokens": 27629,
+          "cache_write_tokens": 5693,
+          "cost_usd": 0.0438988,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 5.158004252007231,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 4,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 34471,
+          "output_tokens": 204,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 33322,
+          "cache_write_tokens": 1147,
+          "cost_usd": 0.0164874,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 2.1050109181087464,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 5,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 39486,
+          "output_tokens": 552,
+          "reasoning_tokens": 109,
+          "cache_read_tokens": 34469,
+          "cache_write_tokens": 5015,
+          "cost_usd": 0.0430168,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 5.100149919046089,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 6,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 43618,
+          "output_tokens": 410,
+          "reasoning_tokens": 296,
+          "cache_read_tokens": 39484,
+          "cache_write_tokens": 4132,
+          "cost_usd": 0.0367648,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 4.952324793906882,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 7,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 46521,
+          "output_tokens": 3284,
+          "reasoning_tokens": 1307,
+          "cache_read_tokens": 43616,
+          "cache_write_tokens": 2903,
+          "cost_usd": 0.0889262,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 30.90920280618593,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1059,19 +1190,19 @@
           "session": "analyst",
           "role": "analyst",
           "round": 3,
-          "turn": 18,
+          "turn": 23,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 152375,
-          "output_tokens": 6136,
-          "reasoning_tokens": 25,
-          "cache_read_tokens": 146032,
-          "cache_write_tokens": 6341,
-          "cost_usd": 0.1836394,
+          "input_tokens": 123985,
+          "output_tokens": 6673,
+          "reasoning_tokens": 457,
+          "cache_read_tokens": 115526,
+          "cache_write_tokens": 8455,
+          "cost_usd": 0.1988562,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "end_turn",
-          "wall_s": 42.0659668110311,
+          "wall_s": 47.75217506312765,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1084,16 +1215,16 @@
           "turn": 0,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 20120,
-          "output_tokens": 3596,
-          "reasoning_tokens": 3226,
-          "cache_read_tokens": 6232,
-          "cache_write_tokens": 13884,
-          "cost_usd": 0.1426024,
+          "input_tokens": 20122,
+          "output_tokens": 2574,
+          "reasoning_tokens": 2175,
+          "cache_read_tokens": 6589,
+          "cache_write_tokens": 13529,
+          "cost_usd": 0.1204588,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 33.02263784897514,
+          "wall_s": 22.63943317788653,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1106,16 +1237,16 @@
           "turn": 1,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 27849,
-          "output_tokens": 810,
-          "reasoning_tokens": 174,
-          "cache_read_tokens": 20116,
-          "cache_write_tokens": 7731,
-          "cost_usd": 0.0588862,
+          "input_tokens": 24628,
+          "output_tokens": 399,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 20118,
+          "cache_write_tokens": 4508,
+          "cost_usd": 0.0345516,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 7.642416586866602,
+          "wall_s": 5.075344210956246,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1128,16 +1259,16 @@
           "turn": 2,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 31381,
-          "output_tokens": 423,
-          "reasoning_tokens": 234,
-          "cache_read_tokens": 27847,
-          "cache_write_tokens": 3532,
-          "cost_usd": 0.0316974,
+          "input_tokens": 28655,
+          "output_tokens": 859,
+          "reasoning_tokens": 515,
+          "cache_read_tokens": 24626,
+          "cache_write_tokens": 4027,
+          "cost_usd": 0.0422482,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 4.547004377003759,
+          "wall_s": 8.579313337104395,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1150,16 +1281,16 @@
           "turn": 3,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 32142,
-          "output_tokens": 451,
-          "reasoning_tokens": 121,
-          "cache_read_tokens": 31379,
-          "cache_write_tokens": 761,
-          "cost_usd": 0.0191088,
+          "input_tokens": 32154,
+          "output_tokens": 1134,
+          "reasoning_tokens": 940,
+          "cache_read_tokens": 28653,
+          "cache_write_tokens": 3499,
+          "cost_usd": 0.0459136,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 3.916394460014999,
+          "wall_s": 11.391262839082628,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1172,38 +1303,16 @@
           "turn": 4,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 36535,
-          "output_tokens": 5578,
-          "reasoning_tokens": 3497,
-          "cache_read_tokens": 32140,
-          "cache_write_tokens": 4393,
-          "cost_usd": 0.139961,
+          "input_tokens": 37234,
+          "output_tokens": 1998,
+          "reasoning_tokens": 528,
+          "cache_read_tokens": 32152,
+          "cache_write_tokens": 5080,
+          "cost_usd": 0.0717984,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "end_turn",
-          "wall_s": 53.95334302587435,
-          "refused": null,
-          "admitted_on_estimate": false,
-          "sent_binding": "error",
-          "input_transformations": []
-        },
-        {
-          "session": "editor-3",
-          "role": "editor",
-          "round": 3,
-          "turn": 5,
-          "model": "claude-opus-5-5",
-          "served_model": "claude-opus-5-5",
-          "input_tokens": 42198,
-          "output_tokens": 2080,
-          "reasoning_tokens": 0,
-          "cache_read_tokens": 36533,
-          "cache_write_tokens": 5661,
-          "cost_usd": 0.0772276,
-          "price_source": "anthropic-published:2026-10-28",
-          "pricing_failure": null,
-          "stop_reason": "end_turn",
-          "wall_s": 13.674963589059189,
+          "wall_s": 28.904586096992716,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1212,157 +1321,163 @@
       ],
       "by_role": {
         "analyst": {
-          "turns": 19,
-          "input_tokens": 1829876,
-          "output_tokens": 53245,
-          "reasoning_tokens": 9728,
-          "cache_read_tokens": 1681689,
-          "cache_write_tokens": 147909,
-          "cost_usd": 2.1418947999999998,
+          "turns": 24,
+          "input_tokens": 2263675,
+          "output_tokens": 64681,
+          "reasoning_tokens": 13077,
+          "cache_read_tokens": 2026806,
+          "cache_write_tokens": 236657,
+          "cost_usd": 2.8831141999999996,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
-          "tool_calls": 31,
-          "bounces": 0,
-          "bounce_kinds": {},
-          "wall_s": 447.31375636695884
+          "tool_calls": 32,
+          "bounces": 1,
+          "bounce_kinds": {
+            "invariant": 1
+          },
+          "wall_s": 509.25897306366824
         },
         "editor": {
-          "turns": 18,
-          "input_tokens": 575926,
-          "output_tokens": 33478,
-          "reasoning_tokens": 20199,
-          "cache_read_tokens": 460571,
-          "cache_write_tokens": 115311,
-          "cost_usd": 1.3384052000000002,
+          "turns": 19,
+          "input_tokens": 623215,
+          "output_tokens": 30084,
+          "reasoning_tokens": 19309,
+          "cache_read_tokens": 512831,
+          "cache_write_tokens": 110340,
+          "cost_usd": 1.2561221999999999,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
           "tool_calls": 31,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 320.55281727178954
+          "wall_s": 303.0824619305786
         }
       },
       "by_round": {
         "analyst:1": {
-          "turns": 12,
-          "input_tokens": 872077,
-          "output_tokens": 26334,
-          "reasoning_tokens": 7396,
-          "cache_read_tokens": 766204,
-          "cache_write_tokens": 105847,
-          "cost_usd": 1.2092597999999999,
+          "turns": 19,
+          "input_tokens": 1634984,
+          "output_tokens": 36064,
+          "reasoning_tokens": 9337,
+          "cache_read_tokens": 1502581,
+          "cache_write_tokens": 132361,
+          "cost_usd": 1.6837692,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
-          "tool_calls": 24,
-          "bounces": 0,
-          "bounce_kinds": {},
-          "wall_s": 237.5285095628351
+          "tool_calls": 29,
+          "bounces": 1,
+          "bounce_kinds": {
+            "invariant": 1
+          },
+          "wall_s": 298.11125605064444
         },
         "analyst:2": {
-          "turns": 3,
-          "input_tokens": 373088,
-          "output_tokens": 12996,
-          "reasoning_tokens": 1448,
-          "cache_read_tokens": 350506,
-          "cache_write_tokens": 22574,
-          "cost_usd": 0.44292319999999996,
+          "turns": 4,
+          "input_tokens": 504706,
+          "output_tokens": 21944,
+          "reasoning_tokens": 3283,
+          "cache_read_tokens": 408699,
+          "cache_write_tokens": 95841,
+          "cost_usd": 1.0004888,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
-          "tool_calls": 2,
+          "tool_calls": 3,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 102.74357875599526
+          "wall_s": 163.39554194989614
         },
         "analyst:3": {
-          "turns": 4,
-          "input_tokens": 584711,
-          "output_tokens": 13915,
-          "reasoning_tokens": 884,
-          "cache_read_tokens": 564979,
-          "cache_write_tokens": 19488,
-          "cost_usd": 0.48971180000000003,
+          "turns": 1,
+          "input_tokens": 123985,
+          "output_tokens": 6673,
+          "reasoning_tokens": 457,
+          "cache_read_tokens": 115526,
+          "cache_write_tokens": 8455,
+          "cost_usd": 0.1988562,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
-          "tool_calls": 5,
+          "tool_calls": 0,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 107.04166804812849
+          "wall_s": 47.75217506312765
         },
         "editor:1": {
-          "turns": 8,
-          "input_tokens": 266724,
-          "output_tokens": 11185,
-          "reasoning_tokens": 6563,
-          "cache_read_tokens": 218282,
-          "cache_write_tokens": 48424,
-          "cost_usd": 0.5095484,
+          "turns": 6,
+          "input_tokens": 208511,
+          "output_tokens": 13735,
+          "reasoning_tokens": 9454,
+          "cache_read_tokens": 168730,
+          "cache_write_tokens": 39767,
+          "cost_usd": 0.5073369999999999,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
-          "tool_calls": 15,
+          "tool_calls": 12,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 114.37259925995022
+          "wall_s": 136.3114866442047
         },
         "editor:2": {
-          "turns": 4,
-          "input_tokens": 118977,
-          "output_tokens": 9355,
-          "reasoning_tokens": 6384,
-          "cache_read_tokens": 88042,
-          "cache_write_tokens": 30925,
-          "cost_usd": 0.35937339999999995,
+          "turns": 8,
+          "input_tokens": 271911,
+          "output_tokens": 9385,
+          "reasoning_tokens": 5697,
+          "cache_read_tokens": 231963,
+          "cache_write_tokens": 39930,
+          "cost_usd": 0.4338146,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
-          "tool_calls": 7,
+          "tool_calls": 10,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 89.42345812404528
+          "wall_s": 90.18103562435135
         },
         "editor:3": {
-          "turns": 6,
-          "input_tokens": 190225,
-          "output_tokens": 12938,
-          "reasoning_tokens": 7252,
-          "cache_read_tokens": 154247,
-          "cache_write_tokens": 35962,
-          "cost_usd": 0.4694834,
+          "turns": 5,
+          "input_tokens": 142793,
+          "output_tokens": 6964,
+          "reasoning_tokens": 4158,
+          "cache_read_tokens": 112138,
+          "cache_write_tokens": 30643,
+          "cost_usd": 0.3149706,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
           "tool_calls": 9,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 116.75675988779403
+          "wall_s": 76.58993966202252
         }
       },
       "total": {
-        "turns": 37,
-        "input_tokens": 2405802,
-        "output_tokens": 86723,
-        "reasoning_tokens": 29927,
-        "cache_read_tokens": 2142260,
-        "cache_write_tokens": 263220,
-        "cost_usd": 3.4802999999999997,
+        "turns": 43,
+        "input_tokens": 2886890,
+        "output_tokens": 94765,
+        "reasoning_tokens": 32386,
+        "cache_read_tokens": 2539637,
+        "cache_write_tokens": 346997,
+        "cost_usd": 4.139236399999999,
         "unpriced_turns": 0,
         "unpriced_reasons": [],
         "admitted_on_estimate": 0,
-        "tool_calls": 62,
-        "bounces": 0,
-        "bounce_kinds": {},
-        "wall_s": 767.8665736387484
+        "tool_calls": 63,
+        "bounces": 1,
+        "bounce_kinds": {
+          "invariant": 1
+        },
+        "wall_s": 812.3414349942468
       },
       "transcripts": {
-        "analyst": "ec132a884f5dc9dc54a22f4904d41f237f444ec3b511de5fe68dda15cc6fd6e0",
-        "editor-1": "4edd9c3002194dd26cb441133e9354dde343f3b509a1f5c3fa6f0b6383d75daa",
-        "editor-2": "251b6267f1ce8e57f05d7d827abdf716b5a35aee3e5af5f0f44e5498b9244b70",
-        "editor-3": "c86f4ec0a9855838575f5eded93e87a3e18a9b0008c19afd5b2f4de8fa3e4c71"
+        "analyst": "e435082f723323ebf22e5ee7faee82b89156c3ef9c740ffd279fe86c92b3208d",
+        "editor-1": "04f975ecb2f275069957cafbfd1a4796ec98c5df28034bcbc6b66266e5d69ab1",
+        "editor-2": "e513289729435b6af39341f8ce6104beb6bbb94d73069bd4c3f407c9fc3e3463",
+        "editor-3": "d4cec2b92bf9b0d825d8399ca55f25db49882dbd1797851c1910b30e876df00a"
       }
     },
     "reviews": [
@@ -1372,86 +1487,102 @@
           {
             "n": 1,
             "name": "First screen",
-            "score": 1,
-            "reason": "The headline, decision block and the cost claim make the action clear: keep September, because both candidates cost more (+$0.62 and +$0.49 per 1,000 replies, paired and corrected) and neither holds character better. The main risk is missing from the first screen. Under the declared 15-point allowed loss, both candidates are acceptable on character (pass-rate drops of at most 10.8 and 5.8 points at 95%), so cost alone decides. But no provider is recorded for any arm, and the earlier round found qwen3.8-flash cheaper with high confidence. That conflict is tucked into the end of a margin Watch line about a rejected arm. It is not in the headline, the lede or the confidence line."
+            "score": 2,
+            "reason": "The headline, decision block and claim cost tell a reader what to do: keep September. They give the reasons: both candidates cost more, at +$0.62 and +$0.49 per 1,000 replies, and neither holds character better. The lede names the risk that could reopen the choice, a candidate made cheaper under another provider routing."
           },
           {
             "n": 2,
             "name": "Coherent story",
-            "score": 2,
-            "reason": "The claims follow in order: cost decides, character does not rescue either candidate, off-lane asks carry most of the character loss, and the control fails there too. Each sentence matches its block row by row. The off-lane loss shares (48% and 53%), the off-lane failure counts (39, 64 and 62 trials) and the missing-cost bound in Method ($2.24 and $2.36 against $2.02) all check against the data. One small mismatch: Watch puts qwen3.8-flash's weakest margin at -12.6, 2.4 points inside, using the corrected interval. The 'What you could change' table puts its flip at 10.8, using the declared 95% reading."
+            "score": 1,
+            "reason": "The page gives two cost gaps that don't match. The Options table shows qwen3.8-flash at $2.43 against $1.89 (+28%), a gap of $0.54. Claim cost and the decision block say +$0.62, which would be +33%, and the page never says the two use different bases. Separately, Next says that if a candidate became cheaper the choice would turn on character alone, 'where qwen3.8-flash (A) is clearly worse'. But at -7.6 points it sits inside the declared 15-point margin, which is the standard the question sets, so it counts as no worse."
           },
           {
             "n": 3,
             "name": "Honest emphasis",
             "score": 1,
-            "reason": "The candidates' character losses are shown plainly. But the cost finding is framed as solid ('The cost finding, which decides, does not rest on the judge') under a High confidence. Yet it rests on a provider routing the run never recorded, and the earlier round said the opposite for qwen3.8-flash. If routing put a candidate at or below $1.89, the call could flip, because both candidates sit inside the allowed loss."
+            "reason": "Every confidence clause falls back on 'the cost order is measured telemetry'. That order was measured at a provider routing the snapshot doesn't record, and for qwen3.8-flash it contradicts a high-confidence earlier finding that this model lowers production cost. Since both candidates are inside the 15-point margin, the keep rests on cost. Yet the routing doubt appears only in a caption and in Watch, not in the confidence block or the claim cost sentence."
           },
           {
             "n": 4,
             "name": "Sound elision",
             "score": 2,
-            "reason": "Nothing left out would change the call. The outcome and transcript scores point the same way as the pass rate. The tool check and failed-reply notices are not separated from zero. Measuring spend includes the judge's and simulator's cost. The p95 cost goes the same way as the mean. Story asks are 10 cases, and their large drop for qwen3.8-flash is on keeping the booth offstage, not on holding character."
+            "reason": "None of the omitted items would change the call. The delivery check, failed-reply notices and 1017's outcome and transcript scores are not separated. qwen3.8-flash is lower on outcome and transcript, which only supports the keep. One small error: the 'under about ten cases' list includes multi, which has 12 cases, where 1017 is -13.9 points (11% of its loss)."
           },
           {
             "n": 5,
             "name": "Confounds handled",
             "score": 1,
-            "reason": "The reasoning-share confound is carried on the cost and character claims, in Watch and in a next step. Three gaps remain. The off_lane claim reads 1017's holding-character contrast (-4.7) without that caveat. The model-confound clause says 'each arm's recorded settings name only its model', while the page itself shows reasoning share moving (55% against 76%) and says the simulator's settings went unrecorded. And unrecorded routing, the confound on the deciding measure, is not in the confidence clauses."
+            "reason": "The reasoning-share confound is carried on claims cost, character and judged, and the reasoning-matched rerun in Next addresses it. Claim offlane reads 1017's persona-holds-character contrast (-4.7) but doesn't carry that confound. The unrecorded provider routing works like a confound on the cost axis that decides the call, and the confidence block doesn't name it."
           },
           {
             "n": 6,
             "name": "Actionable next steps",
             "score": 2,
-            "reason": "Each step names an experiment or a declaration and what it settles: re-price at a recorded routing, match 1017's reasoning budget, add an off-lane directive, calibrate the judge, and declare the criteria before the next run. The first step goes straight at the deciding risk."
+            "reason": "Each step names an experiment and says what it would settle: re-pricing with routing recorded, calibrating the judge on off-lane conversations, an off-lane directive for September, and a rerun of 1017 with matched reasoning share at 815 cases per arm."
           },
           {
             "n": 7,
             "name": "Evidence fits claims",
-            "score": 2,
-            "reason": "The cost forest shows the paired gaps and their intervals. The character forest marks the allowed loss. The off-lane bars show the slice changes the loss shares come from. Two smaller problems. The cost block's paired gaps (+$0.62 and +$0.49) differ from the gaps between the options table's means ($0.54 and $0.52) with no note on why. And the examples caption sets the candidates' failures against the control's 'customer-service refusal', but two of the three kept September off-lane failures also answer a non-music ask."
+            "score": 1,
+            "reason": "The blocks for claims cost, character and judged show the gaps they claim. Claim offlane's figures are not in its block: neither the 48% and 53% loss shares nor September's 65.8% off lane against 91.5% overall appear. Its captions also promise an 'overall' row that the block doesn't draw."
           }
         ],
         "findings": [
           {
             "claim": "",
             "severity": "must_fix",
-            "finding": "The confidence reads High, and its clauses say cost decides and 'does not rest on the judge'. But the cost order rests on a provider routing that was never recorded for any arm, and the earlier round found qwen3.8-flash cheaper with high confidence. Both candidates are inside the 15-point allowed loss (at most 10.8 and 5.8 points), so if routing put either at or below September's $1.89, the call could flip. Add a confidence clause for unrecorded routing: what would make it matter (a recorded routing where a candidate costs no more) and why the call holds until then. Qualify the headline and lede to say the costs are at this run's unrecorded routing. Move the conflict with the earlier round out of the margin Watch line into its own Watch item. If the analyst cannot stand behind that, lower the confidence."
-          },
-          {
-            "claim": "cost",
-            "severity": "must_fix",
-            "finding": "The claim ranks the three models by cost with no provider named. The caption and Method do say no provider was recorded, but the claim sentence and the lede rank the models as if the gap were the models' own. Say in the claim sentence that the gap is at an unrecorded routing, so it may belong to the routing rather than the model, and point to the re-pricing next step."
-          },
-          {
-            "claim": "off_lane",
-            "severity": "should_fix",
-            "finding": "This claim reads 1017's loss on holding character (-4.7 points, corrected), which carries the reasoning-share confound (55% against 76% for September). Neither the claim nor the confidence line carries it. Add the reasoning-ratio caveat to the claim."
+            "finding": "Under the declared 15-point margin, both candidates count as no worse. qwen3.8-flash is at -7.6 and 1017 at -3.0, and the call holds at every margin only 'because both cost more', so the keep rests on cost. Yet the confidence reads High and uses 'the cost order is measured telemetry' as the safe fallback for every open caveat. The page itself says the snapshot names no provider for any arm, and that this run contradicts the earlier high-confidence finding that qwen3.8-flash lowers production cost. Fix: (a) in the headline and the claim cost sentence, qualify the +28%/+27% and +$0.62/+$0.49 as costs at this run's unrecorded provider routing, not the models' own; (b) in the confidence block, name the unrecorded routing as the open risk. Say the High applies to the cost order at this run's routing, and that a candidate priced below $1.89 under another routing would win under the declared margin. Or lower the confidence form.",
+            "id": "f1.1",
+            "since": 1
           },
           {
             "claim": "",
             "severity": "should_fix",
-            "finding": "The model-confound clause ('each arm's recorded settings name only its model') understates what the page itself shows. 1017's reasoning share differed (55% against 76%), and the simulator's request settings went unrecorded. Reword the clause so it acknowledges both, or point it to the reasoning-share Watch item and the Method note."
+            "finding": "The Options table and headline give qwen3.8-flash as $2.43 against $1.89 (+28%, a $0.54 gap). Claim cost and 'Why not the others' say +$0.62, which would be +33%; for 1017 it is $0.52 against +$0.49. The +$0.62 and +$0.49 are paired contrasts over trials with reported cost, while the table compares arm means over trials with different missing costs. Fix: say once, in claim cost's caption and beside the Options table, which basis each figure uses, so the numbers reconcile. The claim cost caption should also say the paired intervals may be too narrow if they count trials nested in conversations. The 1017 gap stays clear even so: today's spread would settle it with 66 cases.",
+            "id": "f1.2",
+            "since": 1
           },
           {
             "claim": "",
             "severity": "should_fix",
-            "finding": "Watch gives qwen3.8-flash's weakest margin as the corrected interval reaching -12.6, 2.4 points inside -15. The 'What you could change' table and the declared reading put its flip at 10.8, from the 95% interval. Use one basis in both places, or say which each uses. Also drop the '+' from '+5.8 points' and '+10.8': they are allowed losses, not gains."
+            "finding": "'Why not the others' and Next present qwen3.8-flash's -7.6-point pass-rate gap as disqualifying: 'clearly worse', and 'then on character alone, where qwen3.8-flash (A) is clearly worse'. But the declared question allows up to 15 points, and the corrected interval stops at -12.6. Fix: say that under the declared margin both candidates count as no worse, so the reason not to switch is cost. If qwen3.8-flash became cheaper under another routing, it would become the pick unless the margin were tightened before the next round.",
+            "id": "f1.3",
+            "since": 1
           },
           {
-            "claim": "cost",
+            "claim": "offlane",
             "severity": "should_fix",
-            "finding": "The lede and the cost block give paired gaps of +$0.62 and +$0.49, but the options table's means ($2.43 and $2.41 against $1.89) imply $0.54 and $0.52. The two differ because some trials report no cost and only matched cases are paired. Add a short note to the caption so a reader doesn't take the figures for a mistake."
+            "finding": "Claim offlane reads 1017's persona-holds-character contrast (-4.7, -8.2 to -1.3) and its off-lane gap (-20.2), which code ties to the reasoning-share confound (1017 55% against September 76%). The claim carries no caveats at all. Fix: carry the reasoning-ratio confound on this claim, as claims cost, character and judged do, and note that the judge is uncalibrated.",
+            "id": "f1.4",
+            "since": 1
           },
           {
-            "claim": "examples",
+            "claim": "offlane",
             "severity": "should_fix",
-            "finding": "The caption sets the candidates' failures (answering a question the persona should decline) against September's 'customer-service refusal'. But two of September's three kept off-lane failures (the landlord email and the laundry question) also answer a non-music ask. The cards are also only 3 of 39, 64 and 62 failures. Say they are a sample, and don't imply the control fails differently when its kept failures mostly fail the same way."
+            "finding": "The claim's own figures are not in its blocks. The 48% (qwen3.8-flash) and 53% (1017) shares of the loss carried off lane don't appear, nor September's 65.8% off lane against 91.5% overall. The blocks show only gaps by stratum, and both captions mention an 'overall' row that isn't drawn. Fix: add the loss shares, or rows with September's off-lane and overall rates, and drop 'overall' from the captions or add the row.",
+            "id": "f1.5",
+            "since": 1
+          },
+          {
+            "claim": "",
+            "severity": "should_fix",
+            "finding": "'Left out' lists multi among 'strata under about ten cases', but multi has 12 cases. There 1017 trails September by 13.9 points on persona holds character (72.2% against 58.3%), 11% of its loss. Fix: correct the list, or give the actual cutoff used.",
+            "id": "f1.6",
+            "since": 1
           }
         ],
-        "total": 11,
-        "passes": true,
-        "must_fix": true
+        "resolved": [],
+        "total": 10,
+        "passes": false,
+        "must_fix": true,
+        "blocking": [
+          "f1.1",
+          "f1.2",
+          "f1.3",
+          "f1.4",
+          "f1.5",
+          "f1.6"
+        ]
       },
       {
         "round": 2,
@@ -1460,70 +1591,81 @@
             "n": 1,
             "name": "First screen",
             "score": 2,
-            "reason": "The headline, decision block and lead cost claim give the reader the action (keep September), the reason (both candidates cost more at this run's routing, and neither holds character better) and the main risk (routing was never recorded, and the earlier round found qwen3.8-flash cheaper). That risk now has its own Watch item and its own next step. The previous round's must_fix on the headline and lede is resolved: both now say the costs are at this run's unrecorded routing."
+            "reason": "The headline, decision block and claim cost tell a reader what to do and why. Keep September. Both candidates are inside the 15-point margin, and at this run's routing they cost 28% and 27% more. The main risk is named up front: the provider routing is not recorded, so a candidate priced below $1.89 under another routing would become the pick. options_dominance agrees: September dominates, and both candidates count as shown no worse."
           },
           {
             "n": 2,
             "name": "Coherent story",
             "score": 2,
-            "reason": "Each claim matches its block row by row. In claim cost, the paired gaps +$0.62 and +$0.49 have intervals clear of zero. In claim character, qwen3.8-flash is at -7.6 (-10.8 to -3.4) and 1017 at -3.0 (-5.8 to +1.1), both inside the 15-point margin, and the second block shows 1017 separated worse on holding character (-4.7). The off_lane shares of 48% and 53% match measure_breakdown's loss shares. options_dominance makes September dominant, and the margin sweep holds at every margin, so the call agrees with code's reading."
+            "reason": "The claims build in order. Claim cost gives the cost order, claim character shows both candidates inside the margin, claim judged shows 1017's unseparated pass rate is not parity, and claims offlane and cards show where the slips happen. Each sentence matches its table. Off lane is where qwen3.8-flash (-22.9 points) and 1017 (-20.2) fall furthest behind on persona holds character, ahead of next up (-16.7) and multi. September's 65.8% off lane is the lowest of the six largest strata. The margin sweep holds the keep at every margin, as the page says."
           },
           {
             "n": 3,
             "name": "Honest emphasis",
             "score": 2,
-            "reason": "The recommended arm's weak point is in plain view: the confidence line, a Watch item and a next step all say its cost advantage may belong to the routing rather than the model. The candidates' character results are not overstated. 1017's pass-rate drop is called not separated, while its loss on holding character is shown. The weakest-margin Watch line now gives both bases (12.6 corrected, 10.8 declared), which resolves my earlier finding, and the stray plus signs are gone."
+            "reason": "The keep's weak point, that it rests on cost at an unrecorded routing which contradicts an earlier finding, is in the lede, the confidence block, Watch and Next. qwen3.8-flash's clear drop is now framed as allowed under the margin rather than as disqualifying. 1017's -4.7 on persona holds character carries the reasoning-share confound and the judge caveat. One overstatement: claim cost says the order holds 'however' the missing costs are filled in, but the check fills them at September's p95 ($2.02), not at a worst case."
           },
           {
             "n": 4,
             "name": "Sound elision",
             "score": 2,
-            "reason": "Nothing omitted could change the call. qwen3.8-flash's story-slice drop on keeping the booth offstage (53.3% against 93.3%, ten cases) hurts an arm that is already rejected. The tool check and failed-reply notices are not separated. Measuring spend and p95 cost point the same way as production cost: the candidates' p95s are $6.20 and $8.27 against $5.30."
+            "reason": "Multi is now shown, and the cutoff for left-out strata is stated as 'smaller than the six shown'. I checked the largest left-out gap, next up at -16.7 points on persona holds character for both candidates. Its unpaired intervals cross zero (-41.4 to +8 and -34.1 to +0.8). The delivery check, failed-reply notices, measuring spend and latency don't bear on a cost-decided keep."
           },
           {
             "n": 5,
             "name": "Confounds handled",
             "score": 2,
-            "reason": "1017's reasoning-share difference (55% against 76%) is carried on claims cost, character and off_lane (my earlier should_fix is resolved), with a Watch item and a matched-budget rerun. The model-confound clause now names the reasoning share and the unrecorded simulator settings, which resolves my earlier finding. Unrecorded routing has its own clause, Watch item and re-pricing step."
+            "reason": "The reasoning-share confound (1017 at 55% against September at 76%) is carried on claims cost, character, judged and offlane. A matched-reasoning rerun is in Next steps. The unrecorded routing has its own re-pricing step. The model confound and the late aspect and control each say what would make them matter."
           },
           {
             "n": 6,
             "name": "Actionable next steps",
             "score": 2,
-            "reason": "Each step names what it would settle: re-pricing at a recorded routing, with a re-entry rule; a rerun with matched reasoning budgets; judge calibration on off-lane asks; and declaring the criteria and recording routing before the next round. One wording point is noted below: the off-lane directive step reads as if no directive existed."
+            "reason": "Each step names an owner or an experiment and what it would settle: declaring the margin (a margin under 10.8 points rules qwen3.8-flash out), re-pricing with routing recorded, calibrating the judge on off-lane conversations, an off-lane directive for September, and a powered rerun of 1017 at matched reasoning."
           },
           {
             "n": 7,
             "name": "Evidence fits claims",
             "score": 1,
-            "reason": "The cost and character blocks show their claims' own figures, and the cost caption now explains why paired gaps differ from the gaps between means (resolved). Two claims are less clearly served. Claim examples rests on September's landlord-email and laundry failures answering the non-music ask, but its block shows September's match-score card, a different kind of failure. Claim off_lane states a share of the loss (48% and 53%), but its block draws only slice changes, from which a reader cannot get the share."
+            "reason": "Claim cost's caption now reconciles the paired gaps with the arm means and carries the nested-trials caution. The p95-fill bound checks out: $2.02 against $2.24 and $2.36. Claim offlane now draws the per-arm rates its sentence cites. But the diverging-bars caption still describes an 'overall' row it does not draw, and it carries tool boilerplate a reader can't use. Separately, Watch measures the weakest margin on the corrected -12.6 interval, while the margin flip the page reports elsewhere (10.8 points) is read on the 95% interval, so the page gives a reader two different distances to the line."
           }
         ],
         "findings": [
           {
-            "claim": "examples",
+            "claim": "offlane",
             "severity": "should_fix",
-            "finding": "The claim says September's kept landlord-email and laundry failures answer the non-music ask just as the qwen3.8-flash card does. But the September card in the block is the match-score trial, a customer-service refusal, so the claim's own point is not drawn. Show September's landlord-email failure in its place: the judge's reason is 'supplies a suggested opening for the landlord email'. That puts it directly beside qwen3.8-flash's landlord-email card. Then update the caption so it no longer sets September's card apart as a different failure."
-          },
-          {
-            "claim": "off_lane",
-            "severity": "should_fix",
-            "finding": "The sentence states shares of the holding-character loss (48% for qwen3.8-flash, 53% for 1017), but the block draws only each slice's change (-22.9 and -20.2 points on off-lane asks). A reader can't get the share without the case weights and the overall loss. Add the loss share per slice to the block (strata.off_lane.loss_share.*), or say in the caption how the share follows from the drawn changes."
+            "finding": "The diverging-bars caption in claim offlane still says 'overall and in each place both hold it', but the block draws no overall row. It also repeats tool text ('1017 (897 trials of 299 cases)…', 'The input states what an unpaired interval's arms count: observations') that a reader can't act on. Fix: either drop 'overall' or add 1017's overall row (-4.7). Then replace the boilerplate with one plain sentence: the intervals are unpaired and uncorrected, and may be too narrow because repeats of one case are not independent.",
+            "id": "f1.5",
+            "since": 1
           },
           {
             "claim": "",
             "severity": "should_fix",
-            "finding": "Method, cost basis: 'had its own missing trials cost its p95 ($2.02 per 1,000 replies)' reads as if September's p95 were $2.02. September's p95 is $5.30 per 1,000 replies, and $2.02 is its mean if its 33 missing trials cost that p95. Reword it, for example: 'had its missing trials each cost its p95 of $5.30, its mean would be $2.02, still below the candidates' floors of $2.24 and $2.36'."
+            "finding": "Watch says the weakest margin is qwen3.8-flash's because its corrected pass-rate interval reaches -12.6, '2.4 points short of the -15-point line'. But the declared margin is read on the 95% interval: decision_sensitivity puts qwen3.8-flash's flip at 10.8 points, and 'What you could change' and Next steps both use 10.8. A reader gets two distances to the line, 2.4 and 4.2 points. Fix: in Watch, cite the -10.8 reading the margin test uses (4.2 points short of -15). Or say once that the margin is tested at 95%, and that the corrected -12.6 is shown only as a stricter view.",
+            "id": "f2.1",
+            "since": 2
           },
           {
-            "claim": "",
+            "claim": "cost",
             "severity": "should_fix",
-            "finding": "The third next step says 'Add an off-lane directive'. But the run already used the promoted directives, and the judge's reasons cite a 'directive to brush off non-music asks'. The kept failures brush off the ask and then answer it anyway (laundry 'Cold', the landlord-email opener). Reword the step as tightening the existing brush-off directive so it forbids answering after the brush-off, so a reader doesn't think no directive was in place."
+            "finding": "Claim cost says the cost order 'holds however the trials with no reported cost are filled in'. The caption's check fills September's 33 unreported trials at its p95 ($2.02) and the candidates' at zero. That is a strong bound, not every possible fill. Fix: say 'holds even with September's unreported trials filled at its p95 and the candidates' at zero'.",
+            "id": "f2.2",
+            "since": 2
           }
+        ],
+        "resolved": [
+          "f1.1",
+          "f1.2",
+          "f1.3",
+          "f1.4",
+          "f1.6"
         ],
         "total": 13,
         "passes": true,
-        "must_fix": false
+        "must_fix": false,
+        "blocking": [
+          "f1.5"
+        ]
       },
       {
         "round": 3,
@@ -1532,90 +1674,88 @@
             "n": 1,
             "name": "First screen",
             "score": 2,
-            "reason": "The headline, lede and decision block together say what to do: keep September. They say why: at this run's routing both candidates cost more, +$0.62 and +$0.49 per 1,000 replies, and neither holds character better. They also name the main risk, that no provider routing was recorded for any arm, and say a re-pricing settles it. The first claim (cost) shows the gaps and carries the routing caveat. Because the page says plainly that routing went unrecorded for every arm, it addresses the cost_served_by fact as far as the data allows."
+            "reason": "The headline, decision block and claim cost say what to do: keep September (P). They say why: both candidates cost 27–28% more at this run's routing, and neither keeps Kairo in character better within the 15-point margin. They also name the main risk: the routing is not recorded, and an earlier finding says qwen3.8-flash (A) is cheaper. Watch names qwen3.8-flash's 10.8-point worst drop as the weakest margin, which matches decision_sensitivity."
           },
           {
             "n": 2,
             "name": "Coherent story",
-            "score": 1,
-            "reason": "Claims cost, off_lane and examples follow from one another. Claim character does not hold up against its own block. Its sentence says qwen3.8-flash 'holds character' 7.6 points worse and 1017 is 'not told apart'. Those are pass-rate figures. The block's second forest reads the judged holding-character check: 1017 is -4.7 (-8.2 to -1.3), separated, and its caption says 'both candidates are worse on holding character'. The routing caveat also contradicts itself. It calls the measured gap 'the only cost evidence', yet the same clause cites the earlier round, which found qwen3.8-flash cheaper."
+            "score": 2,
+            "reason": "The claims build on each other. Claim cost settles the order, claim character puts both candidates inside the margin, claim judged shows 1017's unseparated pass rate is not parity, and claims offlane and cards locate the slip. I checked each sentence against its table: the gaps (+$0.62 and +$0.49; -7.6 and -3.0 points; -6.0 and -4.7 points) and the off-lane rates (65.8%, 42.9%, 45.6%) all match their rows. options_dominance agrees: September is dominant and the call holds at every margin."
           },
           {
             "n": 3,
             "name": "Honest emphasis",
-            "score": 1,
-            "reason": "The candidates' weak axes are visible, and the weakest margin is in Watch (-12.6 against -15). The confidence line is the problem. It reads High over the routing caveat, and the page itself says cost alone decides and an earlier round found the opposite cost order for qwen3.8-flash. That caveat could plausibly be material. A cheaper candidate inside the 15-point allowed loss would be picked under the declared criteria. The High isn't scoped to what it covers."
+            "score": 2,
+            "reason": "The keep rests on cost at a routing the run does not record, and the page says so in the headline, the lede, the confidence line and Watch. It also scopes the High to the cost order at this routing. qwen3.8-flash's drop is called clearly worse but allowed. 1017's pass rate is called not separated, and the page does not lean on that, because the judged dimension puts it 4.7 points behind."
           },
           {
             "n": 4,
             "name": "Sound elision",
             "score": 2,
-            "reason": "None of the omitted items would change the decision. The outcome and transcript scores point the same way as the pass rate. The tool check and failed-reply notices are not separated. The p95 cost points the same way: $5.30 for September against $6.20 and $8.27 for the candidates. Measuring spend is not what a deployment pays. The story slice is 10 cases."
+            "reason": "Nothing omitted would move the keep. The delivery check and failed-reply notices are not separated. Measuring spend is the evaluation's own cost. Latency was read under concurrent runs. I checked the strata table: off lane carries about half of each candidate's loss on persona holds character (48% and 53%), and the claim already centres it."
           },
           {
             "n": 5,
             "name": "Confounds handled",
             "score": 2,
-            "reason": "1017's lower reasoning share (55% against 76%) is in Watch, on the cost and character claims, and in a matched-budget rerun step. The unrecorded routing is carried into Watch and the first next step. The unrecorded simulator settings are in Method and the declaration step. Method also handles the missing cost trials: the order holds under worst-case fills ($2.02 against $2.24 and $2.36)."
+            "reason": "1017's reasoning share (55% against 76%) is carried on claims cost, character and judged, and a matched-reasoning rerun is in Next steps. Provider routing has its own re-pricing step. The uncalibrated judge has a calibration step. The late margin and floor are checked, and the late aspect and control carry clauses that say when they would matter."
           },
           {
             "n": 6,
             "name": "Actionable next steps",
             "score": 2,
-            "reason": "Each step names an experiment or a declaration and says what it settles: re-pricing at a recorded routing, a 1017 rerun with the reasoning budget matched, tightening the existing brush-off directive and rerunning off-lane asks on all three arms, judge calibration, and declaring criteria before the next round. The earlier finding on the directive wording is resolved. One gap remains: what the first step leads to if a candidate prices at or below September (see finding)."
+            "reason": "Each step names an action and what it settles: who declares the margin and the 10.8-point line that matters, re-pricing with routing recorded, judge calibration focused on off lane, an off-lane directive for September, and a matched-reasoning rerun of 1017 with a stated size and power."
           },
           {
             "n": 7,
             "name": "Evidence fits claims",
-            "score": 1,
-            "reason": "Both earlier findings here are resolved. The off_lane caption now explains how the 48% and 53% shares follow from the drawn drops and case counts; both figures read as stated. The examples block now shows September's landlord-email and laundry failures beside qwen3.8-flash's landlord-email card. The Method cost-basis wording is also fixed. Claim character still has a block row that its sentence rules out: 1017 separated on holding character at -4.7."
+            "score": 2,
+            "reason": "Claim cost draws the paired gaps with intervals clear of zero, and its caption works through the unreported-trial bound. I checked it: September's 33 missing trials at its $5.30 p95 give $2.02, against qwen3.8-flash's $2.24 and 1017's $2.36 with their missing trials free. Claim character draws the gaps against the -15 line. Claim offlane's table holds the rates it cites, and its caption now states plainly that the intervals are unpaired and uncorrected and may be too narrow."
           }
         ],
         "findings": [
           {
-            "claim": "character",
-            "severity": "must_fix",
-            "finding": "Claim character uses 'holds character' for the pass rate on character adherence. It then says 1017 is 'down 3, not told apart'. But the judged check 'persona holds character' sits in the same block, and there 1017 is -4.7 points (-8.2 to -1.3 at 99.69%), separated and worse, as that block's own caption says. A reader takes the two for one measure, and the sentence then contradicts its own block. Fix: call the 7.6 and 3.0 figures 'the pass rate on character adherence'. Add a sentence on the judged holding-character check: both candidates are separated and worse, qwen3.8-flash -6.0 and 1017 -4.7. The decision block's 'Why not' for qwen3.8-flash should also say 'pass rate' rather than 'holds character'."
-          },
-          {
-            "claim": "",
-            "severity": "must_fix",
-            "finding": "The confidence reads High over the unrecorded-routing caveat. That caveat is plausibly material: the page says cost alone decides, and that the earlier round found qwen3.8-flash cheaper. Its clause also contradicts itself, calling this run's gap 'the only cost evidence' while citing that earlier finding. Fix: scope the High to the character readings and to the cost order at this run's routing. Then say it leaves open whether a candidate costs less at a recorded production routing, which the earlier round suggests it may. Otherwise, make the form low."
-          },
-          {
             "claim": "",
             "severity": "should_fix",
-            "finding": "The first next step says that if a candidate costs no more than September after re-pricing, 'then character decides'. The routing caveat says the call 'would turn on character alone or become a trade'. Under the declared criteria, a cheaper candidate inside the 15-point allowed loss would be the pick: qwen3.8-flash's worst corrected drop is -12.6, and 1017's is -7.4. Say so. If the team would not accept qwen3.8-flash's 7.6-point pass-rate drop at any price, say the allowed loss should be tightened now (qwen3.8-flash stops counting as acceptable below 10.8, 1017 below 5.8). Then a reader knows what a cheaper re-pricing would actually do to the call."
+            "finding": "The 'What you could change' row and the margin next step put the point where 1017 (B) is ruled out on character at 5.8 points, its pass-rate reading. But the declared floor reads 1017 on persona holds character, and there its worst drop is 7.1 points (95% interval -7.1 to -1.7, against the same 15-point margin). So any margin under 7.1 rules 1017 out, not only one under 5.8. The keep does not change. But the persona owner deciding the margin should see both lines. Fix: in that row, say 1017 is ruled out below 7.1 points on persona holds character (its declared floor) and below 5.8 on the pass rate.",
+            "id": "f3.1",
+            "since": 3
           }
         ],
-        "total": 11,
+        "resolved": [
+          "f1.5",
+          "f2.1",
+          "f2.2"
+        ],
+        "total": 14,
         "passes": true,
-        "must_fix": true
+        "must_fix": false,
+        "blocking": []
       }
     ],
     "sessions": {
       "analyst": {
-        "digest": "ec132a884f5dc9dc54a22f4904d41f237f444ec3b511de5fe68dda15cc6fd6e0",
-        "turns": 19,
-        "ref": "01a18920-31d7-7377-bb57-533e801b529a:session:analyst"
+        "digest": "e435082f723323ebf22e5ee7faee82b89156c3ef9c740ffd279fe86c92b3208d",
+        "turns": 24,
+        "ref": "01a18943-a4e9-72b6-a1f6-9c57dd1e6efa:session:analyst"
       },
       "editor-1": {
-        "digest": "4edd9c3002194dd26cb441133e9354dde343f3b509a1f5c3fa6f0b6383d75daa",
-        "turns": 8,
-        "ref": "01a18920-31d7-7377-bb57-533e801b529a:session:editor-1"
+        "digest": "04f975ecb2f275069957cafbfd1a4796ec98c5df28034bcbc6b66266e5d69ab1",
+        "turns": 6,
+        "ref": "01a18943-a4e9-72b6-a1f6-9c57dd1e6efa:session:editor-1"
       },
       "editor-2": {
-        "digest": "251b6267f1ce8e57f05d7d827abdf716b5a35aee3e5af5f0f44e5498b9244b70",
-        "turns": 4,
-        "ref": "01a18920-31d7-7377-bb57-533e801b529a:session:editor-2"
+        "digest": "e513289729435b6af39341f8ce6104beb6bbb94d73069bd4c3f407c9fc3e3463",
+        "turns": 8,
+        "ref": "01a18943-a4e9-72b6-a1f6-9c57dd1e6efa:session:editor-2"
       },
       "editor-3": {
-        "digest": "c86f4ec0a9855838575f5eded93e87a3e18a9b0008c19afd5b2f4de8fa3e4c71",
-        "turns": 6,
-        "ref": "01a18920-31d7-7377-bb57-533e801b529a:session:editor-3"
+        "digest": "d4cec2b92bf9b0d825d8399ca55f25db49882dbd1797851c1910b30e876df00a",
+        "turns": 5,
+        "ref": "01a18943-a4e9-72b6-a1f6-9c57dd1e6efa:session:editor-3"
       }
     }
   },
   "created_by": "agent:test",
-  "created_at": "2026-10-29T19:25:50.936549+00:00"
+  "created_at": "2026-10-29T20:04:34.157696+00:00"
 }
