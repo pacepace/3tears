@@ -116,6 +116,40 @@ columns scrolls inside its frame instead of widening the page (the r2 page, 398 
 table now keeps the widest panel's columns and leaves a narrower panel's missing cells empty: a forest panel with a
 Note column beside one without gave rows longer than the header (the r4 reference's "aspects" chart). Layout only; no
 page's words move.
+### evals: the report writer revises until its editor's review is clean, and a report stored with findings open is a draft
+
+**Changed:** a review clears a report only when it passes on its scores with no finding open: a `should_fix` now sends
+the report back while revisions remain, as a `must_fix` always did (owner ruling 2026-10-29, after a stored Discodon
+report was served as finished with six of its own editor's should-fix findings open: a lede that misstated an arm's
+result, a cost column with no dollar figures, a claim with no evidence behind it). `Review.clears` is the passing
+scores and no finding. The revision request says the review holds findings left open and asks for every one,
+must_fix and should_fix alike, to be resolved. A loop that ends `stored` stores no finding; `stored_with_findings` and
+`over_budget` keep their findings as before.
+
+**Added:** a stored report document says whether it is a draft, decided by code from its ending and its review's
+structured findings, never from prose: `EvalReportDoc.draft` (a property, not a stored field), true for every ending
+but `stored` and for a `stored` document carrying a finding, as a build before this one stored them. A draft's page
+says so first, under its masthead, in one line of code's ("Draft: its editor's review left 6 findings open.", or "...
+did not pass it." where its review failed on its scores alone), in every format, static HTML included, with its
+findings listed in the appendix where the page already listed them. The flag is carried typed: `DocPage.draft`,
+`build(..., draft=)`, `AnalysisLine.draft` (so a host's list of analyses can show "draft"), `ReportDocument.draft`
+(on `report_read`'s result), and `draft` in the JSON form's `report_doc`. `doc_page.words.DRAFT_OPEN` and
+`DRAFT_UNCLEARED` hold the line's words, and `doc_page.model.draft_line(page)` writes it.
+
+**Added:** the editor is handed one more computed fact, `high_over_open`: the confidence's form is
+`high_if_immaterial`, so the page reads "High, if the caveats below aren't material", over caveats it leaves open,
+none of which code proves immaterial, named by count and id. Code writes the form's words and checks only that the
+form matches its caveats, so whether the high stands is the editor's: its rubric now makes a high over an open caveat
+the page does not stand behind (one that could plausibly be material, or whose clause does not say what would make it
+matter and why the call holds until then) a must_fix, and says every finding left open sends the report back and a
+report stored with one open is served as a draft. The analyst skill's list of the facts the editor weighs names it.
+The skill's digest moves with it.
+
+**Fixtures:** the hand-scripted `hand-pass` recording's editor review no longer carries its one should_fix finding
+(edited as data, so the run still clears in round 1). The seven `prototype5` acceptance recordings are not re-recorded
+and now drift: in six, round 1's review passed with should_fix findings and the loop now asks for a revision the
+recording does not hold; in `r2-with-its-gates-read-in-each-task`, round 3's review left one should_fix open, so the
+run now ends `stored_with_findings` where it recorded `stored`. They need a live re-record.
 
 ### evals: Discodon's W4 adoption findings: unanswered calls through the ledger, a turn cap on a dollar budget, the report writer's port declared
 

@@ -114,8 +114,10 @@ async def test_a_replay_stored_what_its_run_stored() -> None:
     replayed = await replay(case)
     stored = replayed.written.stored
     assert stored is not None and stored.ending == "stored"
-    assert [finding["severity"] for finding in stored.findings] == ["should_fix"]
-    assert replayed.written.page is not None and replayed.written.page.made
+    # The hand-scripted review left no finding open (its should_fix was edited out of the recorded reply as data when
+    # a should_fix began sending a report back, owner ruling 2026-10-29), so it clears in round 1, finished.
+    assert stored.findings == [] and not stored.draft
+    assert replayed.written.page is not None and replayed.written.page.made and not replayed.written.page.draft
 
 
 async def test_a_refused_store_is_named_in_the_drift_line() -> None:

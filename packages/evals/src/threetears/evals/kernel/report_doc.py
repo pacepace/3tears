@@ -526,9 +526,10 @@ class EvalReportDoc(EvalDocumentModel):
         description="The document, as `report-doc/1` JSON (its prose names figures by key)."
     )
     ending: Literal["stored", "stored_with_findings", "over_budget"] = Field(
-        description="How the writing loop ended: `stored`, a review passed with no must_fix finding; "
-        "`stored_with_findings`, the revisions ran out before a review passed (its findings, if any, are kept); `over_budget`, the budget ran out and the "
-        "last draft the invariants passed, reviewed at least once, was kept."
+        description="How the writing loop ended: `stored`, a review passed with no finding open; "
+        "`stored_with_findings`, the revisions ran out before a review cleared it (its findings, if any, are kept); "
+        "`over_budget`, the budget ran out and the last draft the invariants passed, reviewed at least once, was kept. "
+        "Every ending but `stored` keeps a draft (`draft`)."
     )
     findings: list[VerbatimJsonObject] = Field(
         default_factory=list,
@@ -558,6 +559,19 @@ class EvalReportDoc(EvalDocumentModel):
             :data:`~threetears.evals.schema.versioning.REPORT_DOC_SCHEMA_VERSION`.
         """
         return _this_version_only(data, "report document")
+
+    @property
+    def draft(self) -> bool:
+        """Whether the document is a draft: its editor's review did not clear it, so its page must say so first.
+
+        Code decides it from how the loop ended and the review's structured findings, never from prose (owner ruling
+        2026-10-29): every ending but ``stored`` keeps a draft, and so does a ``stored`` document carrying a finding,
+        which a build before the ruling stored with its ``should_fix`` findings open.
+
+        :return: True for a draft; False for a finished document, stored after a review left no finding open.
+        :rtype: bool
+        """
+        return self.ending != "stored" or bool(self.findings)
 
     @field_validator("doc_type")
     @classmethod

@@ -421,9 +421,12 @@ def _served(tool: MountedTool) -> list[str]:
 #: ``kind``, ``figure_keys`` and ``calls``, their bounds, and says who stores the gap. The editor's moved again when a
 #: tool whose only write is an appended note came to say why it is not marked read-only (its description). The evals
 #: tool's moved again when campaign_create's and campaign_update's name came to state its cap and where the detail goes,
-#: and when a campaign's line came to carry its title, outcome_short and the rest a list page shows.
-_EVALS_BYTES = "1d586db6cfed64d3ce83201d9514e6201da9ad4b0d261e38a73c26b3764b8e4a"
-_EDITOR_BYTES = "f641099a4794637a3c1d773f6d193260e70e9735e7ac144807832885bd5d2b05"
+#: and when a campaign's line came to carry its title, outcome_short and the rest a list page shows, and again when a
+#: report stored with its editor's findings open became a draft: analyses_list's line and report_read's result gained draft.
+#: The editor's moved again when the weakest margin's keys gained `weakest.interval`, the interval its worst case is
+#: read on (the figure-key grammar it serves).
+_EVALS_BYTES = "3aa9344263c47cec0cf23acb2599524ba4498e0df291d4d8e3825abe2be11893"
+_EDITOR_BYTES = "60cf01b3676e6dda92c5897678d6012062417ae05c8b3f8bdf7a21615cd51aa3"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's
 #: description and its topics.

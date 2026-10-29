@@ -483,6 +483,34 @@ def test_cost_arms_reads_which_arms_costs_a_key_compares() -> None:
     assert cost_arms(f"{_ON_1017}.persona.holds_character.delta", held) == []
 
 
+# --- a high confidence over open caveats ----------------------------------------------------------------------------
+
+
+def test_a_high_over_open_caveats_is_one_fact_naming_how_many_and_which() -> None:
+    doc = converted_doc(_KAIRO)
+    left = [caveat["id"] for caveat in doc["confidence"]["caveats"] if caveat.get("material_if") is not None]
+    assert doc["confidence"]["form"] == "high_if_immaterial" and left, "the control: Kairo reads high over open caveats"
+
+    (fact,) = _of(_facts(_KAIRO), "high_over_open")
+
+    assert fact.path == "confidence" and fact.figures == []
+    count = "1 open caveat" if len(left) == 1 else f"{len(left)} open caveats"
+    assert fact.fact == (
+        f"The confidence reads high, if the caveats aren't material, over {count}, none of which code proves "
+        f"immaterial: {', '.join(f'`{caveat}`' for caveat in left)}."
+    )
+
+
+@pytest.mark.parametrize("form", ["low", "high"])
+def test_a_confidence_that_does_not_read_high_over_open_caveats_is_no_fact(form: str) -> None:
+    def formed(doc: dict[str, Any]) -> None:
+        doc["confidence"]["form"] = form
+        if form == "high":
+            doc["confidence"]["caveats"] = []
+
+    assert not _of(_facts(_KAIRO, doc_change=formed), "high_over_open")
+
+
 # --- the converted documents ---------------------------------------------------------------------------------------
 
 #: The facts each later converted document triggers, by kind. Every one that fires is real:
@@ -500,19 +528,22 @@ def test_cost_arms_reads_which_arms_costs_a_key_compares() -> None:
 #:   two arms' costs per 1,000, a price gap), and its snapshot, converted before arms carried their pricing, states no
 #:   routing for any of them. True; whether the page says its costs' routing is unknown is the editor's. s3 compares
 #:   no costs.
+#: - Every document but s2 reads high, if the caveats aren't material, over caveats it leaves open (``high_over_open``,
+#:   added 2026-10-29 after a stored page printed that line above four uncleared caveats). True of each: s2 is low,
+#:   and every other one's form is high_if_immaterial; whether each high stands is the editor's.
 _SERVED = "cost_served_by"
 _EXPECTED: dict[str, list[str]] = {
-    "prototype2/r2-with-its-gates-read-in-each-task": [_SERVED],
-    "prototype2/r2-with-one-gate": [_SERVED],
-    "prototype2/r3-without-its-configs": [_SERVED],
-    "prototype2/s1": ["call_vs_dominance", _SERVED],
+    "prototype2/r2-with-its-gates-read-in-each-task": [_SERVED, "high_over_open"],
+    "prototype2/r2-with-one-gate": [_SERVED, "high_over_open"],
+    "prototype2/r3-without-its-configs": [_SERVED, "high_over_open"],
+    "prototype2/s1": ["call_vs_dominance", _SERVED, "high_over_open"],
     "prototype2/s2": ["call_vs_dominance", _SERVED],
-    "prototype2/s3": [],
-    "prototype3/kairo": ["weakest_not_in_watch", _SERVED],
-    "prototype3/r1": [_SERVED],
-    "prototype3/r2": [_SERVED],
-    "prototype3/r3": [_SERVED],
-    "prototype3/r4": [_SERVED],
+    "prototype2/s3": ["high_over_open"],
+    "prototype3/kairo": ["weakest_not_in_watch", _SERVED, "high_over_open"],
+    "prototype3/r1": [_SERVED, "high_over_open"],
+    "prototype3/r2": [_SERVED, "high_over_open"],
+    "prototype3/r3": [_SERVED, "high_over_open"],
+    "prototype3/r4": [_SERVED, "high_over_open"],
 }
 
 
@@ -547,7 +578,7 @@ def test_an_arm_the_snapshot_does_not_hold_is_written_as_the_document_wrote_it()
     facts = _facts(_KAIRO, recommends=["ghost"])
 
     # Kairo's cost comparisons raise cost_served_by whatever it recommends (the converted documents' pins say why).
-    assert [fact.kind for fact in facts] == ["call_vs_dominance", "weakest_not_in_watch", _SERVED]
+    assert [fact.kind for fact in facts] == ["call_vs_dominance", "weakest_not_in_watch", _SERVED, "high_over_open"]
     assert facts[0].fact.endswith("the document recommends `ghost`.")
 
 
@@ -584,8 +615,9 @@ def test_no_fact_tells_the_editor_what_to_conclude() -> None:
     ]
     advice = ("should", "must", "ought", "consider", "needs to")
 
-    # The seven planted kinds, and cost_served_by, which every one of these documents' cost comparisons raises.
-    assert len({fact.kind for fact in facts}) == 8
+    # The seven planted kinds, cost_served_by, which every one of these documents' cost comparisons raises, and
+    # high_over_open, which every one reading high over open caveats raises.
+    assert len({fact.kind for fact in facts}) == 9
     assert not [fact.fact for fact in facts if any(word in fact.fact.lower() for word in advice)]
 
 

@@ -164,8 +164,10 @@ class Review:
 
     @property
     def clears(self) -> bool:
-        """Whether the report may be stored as written: the scores pass and no finding is a ``must_fix``."""
-        return self.passes and not self.must_fix
+        """Whether the report may be stored as finished: the scores pass and no finding is open, ``must_fix`` or
+        ``should_fix`` (owner ruling 2026-10-29: a page is never served as finished while its editor's findings are
+        open, so a ``should_fix`` sends the report back too while revisions remain)."""
+        return self.passes and not self.findings
 
     def to_json(self) -> dict[str, Any]:  # Any: a JSON object
         """The review as the stored record keeps it, the total and the pass as code computed them.

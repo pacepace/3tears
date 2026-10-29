@@ -6,7 +6,7 @@ You review one campaign report before it is stored. You did not write it, and yo
 
 - **The page**, as a reader sees it: the headline, lede and flag, the confidence line, the decision block, the claims in page order, each with its evidence block and that block's values table, then explore, next steps, the full-results appendix and Method. Every number on it was printed from the campaign's data through a figure key. Mechanical checks have already passed: every key resolves, every block renders, every caveat has a landing, the confidence form matches its caveats, and no internal id shows above the appendix. Don't spend your review on those.
 - **`omitted`**: each substantial thing the analyst saw and left out, with a one-line reason. Check that none of it would change a reader's decision.
-- **Computed facts**, when the message carries them: things code found in the data that bear on the call, such as a recommended arm failing a declared gate, an unanswered warning on it, a call that disagrees with `options_dominance`, the weakest margin missing from Watch, a caveat code attaches to a contrast a claim reads that the claim does not carry, or who served the model calls of an arm whose cost the page cites. Each is a fact for you to weigh, not a verdict. Overriding one can be right, but the page must say why. A fact the page neither addresses nor explains is a finding.
+- **Computed facts**, when the message carries them: things code found in the data that bear on the call, such as a recommended arm failing a declared gate, an unanswered warning on it, a call that disagrees with `options_dominance`, the weakest margin missing from Watch, a caveat code attaches to a contrast a claim reads that the claim does not carry, who served the model calls of an arm whose cost the page cites, or a confidence that reads high over caveats it leaves open. Each is a fact for you to weigh, not a verdict. Overriding one can be right, but the page must say why. A fact the page neither addresses nor explains is a finding.
 - **Your earlier findings**, from the second round on, with the revised page. Check whether each was resolved, and say so in your reasons. Don't re-raise a finding the page now answers, and don't hold back a new one because it wasn't raised before.
 
 ## Your tool
@@ -46,7 +46,10 @@ Each finding is one thing the analyst should change, specific enough to act on w
   - a figure whose sign contradicts what its sentence says it measures (a "saving" printed below zero), since it changes what a reader concludes;
   - one measure under two names where a reader would take them for two measures;
   - a claim that ranks models by cost with no provider named: a cost is the provider routing's, not the model's, so a cost comparison names who served each model (the `cost_served_by` fact states it, per arm, where the page cites a cost).
+  - a confidence that reads high over an open caveat it does not stand behind: one that could plausibly be material, or whose clause does not say what would make it matter and why the call holds until then. The fix is to say which findings the high applies to and what it leaves open, or to make the form low.
 - **`should_fix`**: the page would be clearer, tighter or better supported, but a reader acting on it now would not be misled.
+
+Every finding you leave open sends the report back while revisions remain, a should_fix as much as a must_fix, and a report stored with findings open is served marked as a draft. So raise each finding the page should change before a reader acts on it, and give it the severity its effect on that reader earns.
 
 Name the claim by its id, or `report` for the first screen, confidence, decision, explore, next steps, method or the page as a whole. A finding about wording alone is a should_fix unless the wording changes what a reader would conclude. One measure under two names is a should_fix, and a must_fix as above.
 

@@ -169,8 +169,19 @@ async def test_json_keeps_every_member_it_carried_and_gains_the_report_doc_witho
     assert (document["kind"], document["basis"], document["analysis_id"]) == ("campaign", "analysis", analysis.id)
     assert document["readings"]["aspects"] == code_only["readings"]["aspects"]
     served = document["report_doc"]
-    assert set(served) == {"id", "snapshot_id", "created_at", "ending", "doc", "findings", "made", "generation"}
+    assert set(served) == {
+        "id",
+        "snapshot_id",
+        "created_at",
+        "ending",
+        "draft",
+        "doc",
+        "findings",
+        "made",
+        "generation",
+    }
     assert (served["id"], served["doc"]) == (analysis.report_doc_id, read.doc)
+    assert served["draft"] is False and read.draft is False, "a review that left no finding open stores it finished"
     sessions = served["generation"]["sessions"]
     assert sessions and all(set(entry) == {"digest", "turns", "ref"} for entry in sessions.values()), (
         "the generation record names each session by ref, never its transcript"

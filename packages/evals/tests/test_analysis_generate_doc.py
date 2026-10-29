@@ -25,6 +25,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import dataclasses
+import html
+import json
 import math
 import random
 import threading
@@ -951,13 +953,54 @@ async def test_a_doc_analysis_is_listed_read_as_the_campaign_page_and_its_insigh
         0,
     )
     assert line.needs_regeneration is None
+    assert not line.draft, "a review that left no finding open stores a finished report"
     page = off_loop(report_read, eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="json")
-    assert page.analysis_id == status.analysis_id and page.analysis_basis == "doc"
+    assert page.analysis_id == status.analysis_id and page.analysis_basis == "doc" and not page.draft
     markdown = off_loop(report_read, eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown").body
     assert TOY_DOC["headline"] in markdown, "the campaign's page is the stored document's (test_report_read_doc.py)"
     assert "no analysis has been generated" not in markdown
+    assert "Draft:" not in markdown
     frozen = await report_snapshot_freeze(
         fixture.host, TOYHOST_SCOPE, campaign_id=fixture.campaign.id, created_by=CALLER.identity
     )
     overview = await campaign_overview(fixture.host, TOYHOST_SCOPE, snapshot_id=frozen.snapshot_id)
     assert TOY_DOC["claims"][0]["text"] in [prior.statement for prior in overview.prior_insights]
+
+
+async def test_a_report_out_of_revisions_with_findings_open_is_a_draft_on_its_listing_line_and_every_page() -> None:
+    """Owner ruling 2026-10-29: a report its editor's review did not clear is never served as finished."""
+    fixture = off_loop(ops_fixture)
+    open_finding = {"claim": "report", "severity": "should_fix", "finding": "Give the cost column its dollars."}
+    _scripted(
+        fixture,
+        {
+            "analyst": [scripted_reply(submission())],
+            "editor-1": [scripted_reply(passing_review(findings=[open_finding]))],
+        },
+    )
+    assert fixture.host.generation is not None
+    generation = dataclasses.replace(fixture.host.generation, limits=WriterLimits(revisions=0))
+    host = dataclasses.replace(fixture.host, generation=generation)
+    (job,) = (await analysis_generate(host, fixture.campaign.id, TOYHOST_SCOPE, writer=WRITER)).jobs
+    status = await settled(host, job.job_id)
+    assert status.status == "stored", status
+    eval_host = host.eval_host
+    stored = off_loop(
+        eval_host.storage.load_report_doc, _analysis(fixture, status.analysis_id).report_doc_id, TOYHOST_SCOPE
+    )
+    assert stored is not None and stored.ending == "stored_with_findings" and stored.draft
+    (line,) = off_loop(analyses_list, eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    assert line.draft, "a host's list shows the report as a draft"
+    said = "Draft: its editor's review left 1 finding open."
+    for form, static in (("markdown", False), ("html", False), ("html", True)):
+        read = off_loop(report_read, eval_host, fixture.campaign.id, TOYHOST_SCOPE, format=form, static=static)
+        assert read.draft, (form, static)
+        assert (html.escape(said) if form == "html" else said) in read.body, (form, static)
+        assert open_finding["finding"] in read.body, (form, static)
+    read = off_loop(report_read, eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="json")
+    body = json.loads(read.body)
+    assert read.draft and body["report_doc"]["draft"] is True, "the JSON form carries it typed"
+    markdown = off_loop(report_read, eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown").body
+    lines = [line for line in markdown.splitlines() if line]
+    assert lines[1] == f"**{said}**", "the draft line comes first, right under the masthead"
+    assert markdown.index(said) < markdown.index(TOY_DOC["headline"])

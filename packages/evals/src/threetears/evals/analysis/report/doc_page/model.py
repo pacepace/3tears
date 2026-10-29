@@ -10,10 +10,10 @@ the document: every figure key is already written out, every block already drawn
 (the form words, a caveat's code label and checked line, the slot titles, a block's notes, the masthead) is plain
 text. The parts the planned page shares (the masthead, a drawn chart, the arms key, a decision entry) are its models.
 
-**Above the appendix, then the appendix.** The masthead, the first screen (headline, lede, flag, confidence, decision,
-options), the claims with their evidence, explore and next steps are what a reader reads first; the appendix is the
-record under them: the arms key, every table the input holds, what was left out and why, Method, the editor's
-findings left open, and the made line.
+**Above the appendix, then the appendix.** The masthead, a draft's line, the first screen (headline, lede, flag,
+confidence, decision, options), the claims with their evidence, explore and next steps are what a reader reads first;
+the appendix is the record under them: the arms key, every table the input holds, what was left out and why, Method,
+the editor's findings left open, and the made line.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from typing import Literal
 from pydantic import Field
 
 from threetears.evals.analysis.report.blocks import TableBlock
-from threetears.evals.analysis.report.doc_page.words import CAVEATS_TEMPLATE
+from threetears.evals.analysis.report.doc_page.words import CAVEATS_TEMPLATE, DRAFT_OPEN, DRAFT_UNCLEARED
 from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.analysis.report.plan_page.model import PageArmsKey, PageChart, PageMasthead, PageSlot
 from threetears.evals.schema.base import EvalDocumentModel
@@ -41,6 +41,7 @@ __all__ = [
     "DocPage",
     "DocTerm",
     "caveats_line",
+    "draft_line",
 ]
 
 
@@ -137,6 +138,11 @@ class DocPage(EvalDocumentModel):
         description="What the campaign compares and on what, with its name as a qualifier: the page's title."
     )
     masthead: PageMasthead
+    draft: bool = Field(
+        default=False,
+        description="Whether the page is a draft: its editor's review did not clear it, so its first line under the "
+        "masthead says so (draft_line) and its open findings are listed in the appendix. False for a finished page.",
+    )
     degraded: str = Field(
         default="", description="Code's one note where part of a stored document no longer reads; empty where all does."
     )
@@ -172,3 +178,19 @@ def caveats_line(labels: Sequence[str]) -> str:
     if not labels:
         return ""
     return CAVEATS_TEMPLATE.format(labels="; ".join(one_line(label) for label in labels))
+
+
+def draft_line(page: DocPage) -> str:
+    """A draft page's first line under its masthead, as every writer prints it: how many findings its editor left open.
+
+    :param page: The page.
+    :ptype page: DocPage
+    :return: The line; empty for a finished page.
+    :rtype: str
+    """
+    if not page.draft:
+        return ""
+    if not page.findings:
+        return DRAFT_UNCLEARED
+    count = len(page.findings)
+    return DRAFT_OPEN.format(count=f"{count} finding" if count == 1 else f"{count} findings")
