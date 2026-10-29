@@ -795,8 +795,6 @@ class CampaignArm(EvalDocumentModel, CoreShapeModel):
         default=None,
         # Presentation only: written only when declared, so an arm naming none is stored as it was before the field.
         exclude_if=lambda name: name is None,
-        # Stated in the schema for a host's form; the validator below enforces it.
-        json_schema_extra={"maxLength": DECLARED_NAME_CHARS},
         description=(
             f"What a page prints for this arm in tight places (a chart's labels, a table cell, a sentence), at most "
             f"{DECLARED_NAME_CHARS} characters; the label is printed once beside it. It is no other arm's label or "
@@ -943,8 +941,6 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
         default=None,
         # Presentation only: written only when declared, so an aspect naming none is stored as it was before the field.
         exclude_if=lambda name: name is None,
-        # Stated in the schema for a host's form; the validator below enforces it.
-        json_schema_extra={"maxLength": DECLARED_NAME_CHARS},
         description=(
             f"What a page prints for this aspect in table cells and sentences, at most {DECLARED_NAME_CHARS} "
             "characters; the label is printed once beside it. It is no other aspect's label or short name. None = the "

@@ -10,7 +10,8 @@ packages (bumped in lock-step).
 
 **Added:** the JSON schema states each declared name's cap (`maxLength`), so a host's form can read it: a campaign's
 name (`CampaignDefinition.name`, `CampaignChanges.name` and the `campaign_create` / `campaign_update` parameters, 32)
-and an arm's and an aspect's `short_name` (32). The operations still enforce the campaign name's cap with their remedy,
+and an arm's and an aspect's `short_name` as a campaign's definition declares them (`ArmDefinition`,
+`AspectDefinition`, 32). The stored campaign's shape is unchanged. The operations still enforce the campaign name's cap with their remedy,
 and the validators the short names'. `CampaignLineReport.draft` says whether the campaign's reported analysis is a draft,
 as `AnalysisLine.draft` does, so a campaign list can show it without listing analyses.
 

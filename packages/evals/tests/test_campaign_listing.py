@@ -672,9 +672,9 @@ def test_two_models_each_run_at_two_settings_title_as_a_sweep() -> None:
 
 
 def test_the_schemas_state_the_name_caps_a_host_form_reads() -> None:
-    from threetears.evals.kernel.declaration import Aspect, CampaignArm
+    from threetears.evals.analysis.campaigns import ArmDefinition, AspectDefinition
 
     assert CampaignDefinition.model_json_schema()["properties"]["name"]["maxLength"] == CAMPAIGN_NAME_CHARS
     assert CampaignChanges.model_json_schema()["properties"]["name"]["maxLength"] == CAMPAIGN_NAME_CHARS
-    for declared in (CampaignArm, Aspect):
+    for declared in (ArmDefinition, AspectDefinition):
         assert declared.model_json_schema()["properties"]["short_name"]["maxLength"] == DECLARED_NAME_CHARS
