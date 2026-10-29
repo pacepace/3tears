@@ -726,7 +726,9 @@ class TestTheOutcomeSaysWhereItIsKept:
 
 
 class TestWhatIsRecorded:
-    async def test_an_unreadable_l2_entry_is_never_served_and_is_deleted_once_stale(self, bus: FakeNatsClient) -> None:
+    async def test_an_unreadable_l2_entry_is_never_served_and_is_deleted_once_stale(
+        self, bus: FakeNatsClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
         store = _Store()
         estate = _Estate(store)
         replica, other = await _replica(bus, store), await _replica(bus, store)
@@ -737,6 +739,7 @@ class TestWhatIsRecorded:
         await bucket.put(key=key, value=b"{")
         compute = _Computer()
         assert (await _ask(other, estate, shape, compute)).outcome is ShapeAnswerOutcome.DERIVED
+        assert "an access-shape L2 entry could not be decoded" in caplog.text
         await bucket.put(key=key, value=b"{")
         replica.hear(_assignment_row(estate.states[0]))
         await replica.settle()

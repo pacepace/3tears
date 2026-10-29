@@ -963,7 +963,11 @@ class AccessShapeAnswers(DerivedCollection[ShapeAnswerRow]):
         try:
             decoded = json.loads(data)
         except ValueError:
-            # NOSILENT: an entry another release or a torn write left is no answer; the read derives one
+            # an entry another release or a torn write left is no answer; the read derives one and says so
+            log.warning(
+                "an access-shape L2 entry could not be decoded; it is derived again",
+                extra={"extra_data": {"table": self.table_name, "bytes": len(data)}},
+            )
             decoded = None
         if isinstance(decoded, dict):
             row = decoded
