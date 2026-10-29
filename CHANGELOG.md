@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.83.0 -- 2026-10-28
+
 ### agent-acl, core: access answers derived once per membership shape and shared by every replica
 
 **Added:** `AccessShape`, `ShapeActors`, `AccessShapeAnswers`, `ShapeDependencies`, `ShapeAnswer`,
