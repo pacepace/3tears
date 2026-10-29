@@ -18,9 +18,14 @@ the task to end, one bad tick kills some loops and not others.
   tick that swallowed it;
 - the loop sleeps one interval before the first tick by default --
   ``first_delay`` sets that first sleep alone (``0`` ticks at once);
-- a tick may return a number of seconds to use as the NEXT delay only
-  (fast retry until a first success, backoff after a failure) -- ``None``
-  keeps the configured interval;
+- a tick may return :class:`NextDelay` to set the NEXT delay only (fast
+  retry until a first success, backoff after a failure); anything else it
+  returns -- ``None``, a count, a list -- keeps the configured interval. A
+  bare number is not a delay: a pass that returns how much it did (almost
+  always ``0``) would otherwise re-tick with no sleep at all, and one did,
+  spinning thousands of NATS requests a second per pod;
+- a requested delay is floored at ``min_delay`` (one second by default), so
+  even an explicit ``NextDelay(0)`` cannot spin the loop;
 - the task is spawned with ``spawn_background`` so its end is logged
   like every other background task.
 """
@@ -31,33 +36,45 @@ import asyncio
 import logging
 import math
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, cast
+from typing import Any
 
 from threetears.observe.background import spawn_background
 from threetears.observe.containment import contain
 
-__all__ = ["PeriodicTask", "TickResult"]
+__all__ = ["NextDelay", "PeriodicTask", "TickResult"]
 
-#: what a tick may return: ``None`` (keep the interval) or the seconds to wait before the next tick.
-TickResult = float | int | None
+#: the floor under a delay a tick requests: low enough for a fast retry, high enough that a request for no
+#: delay at all costs one tick a second, not a core.
+_DEFAULT_MIN_DELAY = 1.0
 
 
-def _as_delay(returned: object) -> TickResult:
-    """a tick's return value as a next delay: a finite, non-negative number; anything else is ``None``.
+@dataclass(frozen=True, slots=True)
+class NextDelay:
+    """a tick's request for the delay before the NEXT tick only; the configured interval applies after it.
 
-    :param returned: what the tick returned
-    :ptype returned: object
-    :return: the delay in seconds, or ``None`` to keep the interval
-    :rtype: TickResult
+    :param seconds: seconds (or a ``timedelta``) to wait; finite and non-negative. The loop floors it at the
+        task's ``min_delay``
+    :ptype seconds: float | timedelta
+    :raises ValueError: ``seconds`` is negative or not finite
     """
-    valid = (
-        isinstance(returned, int | float)
-        and not isinstance(returned, bool)
-        and math.isfinite(returned)
-        and returned >= 0
-    )
-    return cast("float | int", returned) if valid else None
+
+    seconds: float | timedelta
+
+    def __post_init__(self) -> None:
+        """refuse a delay that is negative or not finite.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: the delay is negative or not finite
+        """
+        _seconds(self.seconds, label="NextDelay.seconds", allow_zero=True)
+
+
+#: what a tick may return to steer the loop: :class:`NextDelay`, or ``None`` to keep the interval. Any other
+#: value is ignored, and the interval holds.
+TickResult = NextDelay | None
 
 
 def _seconds(value: float | timedelta, *, label: str, allow_zero: bool = False) -> float:
@@ -82,7 +99,7 @@ def _seconds(value: float | timedelta, *, label: str, allow_zero: bool = False) 
 class PeriodicTask:
     """run ``tick`` every ``interval`` on a background task, surviving failed ticks.
 
-    :param tick: zero-argument coroutine function run once per period; may return the next delay
+    :param tick: zero-argument coroutine function run once per period; may return :class:`NextDelay`
     :ptype tick: Callable[[], Awaitable[TickResult]]
     :param interval: seconds (or a ``timedelta``) between ticks; must be positive
     :ptype interval: float | timedelta
@@ -97,6 +114,9 @@ class PeriodicTask:
         ``"periodic tick failed: <name>"``) -- so a loop moved onto this keeps the message its
         operators already alert on
     :ptype failure_message: str | None
+    :param min_delay: the least a tick's :class:`NextDelay` may set the next sleep to; must be positive
+        (default one second). The configured ``interval`` and ``first_delay`` are not floored
+    :ptype min_delay: float | timedelta
     """
 
     def __init__(
@@ -108,9 +128,11 @@ class PeriodicTask:
         logger: logging.Logger,
         first_delay: float | timedelta | None = None,
         failure_message: str | None = None,
+        min_delay: float | timedelta = _DEFAULT_MIN_DELAY,
     ) -> None:
         self._tick = tick
         self.interval = _seconds(interval, label="interval")
+        self.min_delay = _seconds(min_delay, label="min_delay")
         self.first_delay = (
             self.interval if first_delay is None else _seconds(first_delay, label="first_delay", allow_zero=True)
         )
@@ -161,13 +183,14 @@ class PeriodicTask:
         if self._task is task:
             self._task = None
 
-    async def run_once(self) -> TickResult:
+    async def run_once(self) -> float | None:
         """run one tick with the loop's failure isolation, without starting the loop.
 
-        :return: the tick's requested next delay, or ``None`` (also after a failed tick)
-        :rtype: TickResult
+        :return: the seconds the tick's :class:`NextDelay` sets the next sleep to, floored at ``min_delay``;
+            ``None`` when it returned anything else, and after a failed tick
+        :rtype: float | None
         """
-        result: TickResult = None
+        result: float | None = None
         try:
             returned = await self._tick()
         except asyncio.CancelledError:
@@ -180,7 +203,8 @@ class PeriodicTask:
                 extra={"task_name": self.name, "error": f"{type(error).__name__}: {error}"},
             )
         else:
-            result = _as_delay(returned)
+            if isinstance(returned, NextDelay):
+                result = max(self.min_delay, _seconds(returned.seconds, label="NextDelay.seconds", allow_zero=True))
         return result
 
     async def _loop(self) -> None:
@@ -197,4 +221,4 @@ class PeriodicTask:
             if current is not None and current.cancelling():
                 # a stop landed during a tick that swallowed its CancelledError; honour it anyway
                 raise asyncio.CancelledError
-            delay = self.interval if requested is None else float(requested)
+            delay = self.interval if requested is None else requested
