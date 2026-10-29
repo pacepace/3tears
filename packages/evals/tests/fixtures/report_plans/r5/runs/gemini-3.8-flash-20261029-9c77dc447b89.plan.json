@@ -1,0 +1,366 @@
+{
+  "mode": "decide",
+  "headline_kind": "decision",
+  "headline": "Keep {arm:September}. Both candidates increase cost and degrade character adherence.",
+  "lede": "Neither challenger improves performance, while {arm:1017} costs {cost.gap.1017.September.multiple} and {arm:qwen3.8-flash} costs {cost.gap.qwen3.8-flash.September.multiple} the control per reply. A switch would require a candidate to demonstrate clear adherence gains or substantial cost reduction.",
+  "decision": {
+    "slots": [
+      {
+        "key": "recommendation",
+        "text": "Retain {arm:September}. It delivers the highest adherence at {scoreboard.September.reply_cost_usd|usd_per_1k}, outperforming both candidates on cost and quality.",
+        "caveats": []
+      },
+      {
+        "key": "why_not",
+        "text": "{arm:1017} regresses adherence by {contrast.1017.persona.holds_character.delta|abs|pts} points while costing {cost.gap.1017.September.multiple}. {arm:qwen3.8-flash} regresses adherence by {contrast.qwen3.8-flash.persona.holds_character.delta|abs|pts} points and increases cost to {scoreboard.qwen3.8-flash.reply_cost_usd|usd_per_1k}.",
+        "caveats": []
+      },
+      {
+        "key": "watch",
+        "text": "Weakest margin sits with {weakest.arm} on {weakest.criterion} at {weakest.value|pts} against threshold {weakest.threshold|pts} ({weakest.interval}), leaving a margin gap of {weakest.margin|pts}. Confounding shifts in reasoning ratio between models qualify cost attribution, and two harness drops shortened {arm:qwen3.8-flash} runs.",
+        "caveats": [
+          "confound:observed:reasoning_ratio",
+          "confound:model",
+          "short_run:01a170ab-d2da-750d-a1e3-f4b43716844d",
+          "short_run:01a17121-6e85-732d-ab3a-cf86aed8cdc6"
+        ]
+      },
+      {
+        "key": "next",
+        "text": "Run a cost-optimized variant of {arm:September} with trimmed reasoning ratios before testing alternative model architectures.",
+        "caveats": []
+      }
+    ],
+    "confidence": {
+      "form": "high_if_immaterial",
+      "caveats": [
+        {
+          "id": "late:aspect",
+          "material_if": "The aspect character adherence (v2) was declared post-hoc; material only if evaluated behaviors do not reflect core operational requirements."
+        },
+        {
+          "id": "late:control",
+          "material_if": "{arm:September} was designated as control after runs completed; material only if comparison against alternative baselines was intended."
+        },
+        {
+          "id": "judge_uncalibrated",
+          "material_if": "The LLM judge tier is undetermined and uncalibrated; material only if judge bias systematically distorts cross-arm adherence rankings."
+        }
+      ]
+    }
+  },
+  "method": [
+    {
+      "term": "Evaluation Design",
+      "text": "{count.arms|words} arms evaluated on {aspect.name} over {cases} cases with {repeats} repeats per case.",
+      "caveats": []
+    },
+    {
+      "term": "Pass Criteria",
+      "text": "Trials pass when model outputs satisfy character adherence criteria and execution checks without harness errors.",
+      "caveats": []
+    },
+    {
+      "term": "Inference Cost Basis",
+      "text": "Reported costs reflect production-replicating token spend excluding offline evaluation telemetry and judge overhead.",
+      "caveats": []
+    },
+    {
+      "term": "Multiple Testing Correction",
+      "text": "Family of {family.family_size} contrasts adjusted via Holm's step-down procedure at alpha {family.alpha}.",
+      "caveats": []
+    },
+    {
+      "term": "Simulator Settings",
+      "text": "Simulator request parameters were unrecorded across runs and could not be verified as identical.",
+      "caveats": [
+        "apparatus:simulator_sent_settings"
+      ]
+    },
+    {
+      "term": "Latency Exclusion",
+      "text": "{caveats.latency}",
+      "caveats": [
+        "latency"
+      ]
+    },
+    {
+      "term": "Unreported Metrics",
+      "text": "Harness did not persist raw token logs or LLM call counters for detailed breakdown.",
+      "caveats": [
+        "unreported:input_tokens",
+        "unreported:llm_calls",
+        "unreported:output_tokens"
+      ]
+    }
+  ],
+  "schema": "report-plan/1",
+  "signals": {
+    "candidate_structure": "control_plus_candidates",
+    "baseline": "control",
+    "score_type": "mixed",
+    "strata": "many_strata",
+    "criteria": "margin",
+    "cross_cutting": [],
+    "log_cost_axis": false
+  },
+  "shape": "D",
+  "masthead": {
+    "kind": "Change · control vs candidates",
+    "system": "Kairo's character across persona models",
+    "counts": "{control.name} vs {n_candidates} candidates · {aspect.name} · {cases} cases × {repeats} repeats",
+    "run_date": "{meta.run_date}",
+    "synthetic": false
+  },
+  "arms": [
+    {
+      "id": "September",
+      "color_slot": -1
+    },
+    {
+      "id": "qwen3.8-flash",
+      "color_slot": 0
+    },
+    {
+      "id": "1017",
+      "color_slot": 1
+    }
+  ],
+  "show_arms_key": true,
+  "flag": [],
+  "options": {
+    "rows": [
+      {
+        "option": "September",
+        "role": "recommended"
+      },
+      {
+        "option": "1017",
+        "role": "near_miss"
+      },
+      {
+        "option": "qwen3.8-flash",
+        "role": "alternative"
+      }
+    ],
+    "columns": [
+      "pass_rate",
+      "reading.change",
+      "reading.verdict",
+      "judged:persona.holds_character",
+      "cost_per_1k"
+    ]
+  },
+  "summary": [
+    {
+      "kind": "forest",
+      "title": "Adherence Drop vs Margin",
+      "query": {
+        "source": "readings",
+        "aspect": "character adherence (v2)",
+        "measures": [],
+        "arms": [
+          "1017",
+          "qwen3.8-flash"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [
+        {
+          "kind": "margin",
+          "key": "aspect.margin"
+        }
+      ],
+      "emphasis": "",
+      "level": "95%",
+      "unit": "points",
+      "domain": [
+        -16.0,
+        3.0
+      ]
+    },
+    {
+      "kind": "bars",
+      "title": "Cost per Reply",
+      "query": {
+        "source": "scoreboard",
+        "aspect": "",
+        "measures": [
+          "reply_cost_usd"
+        ],
+        "arms": [
+          "September",
+          "1017",
+          "qwen3.8-flash"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "per_1k",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "September",
+      "level": "",
+      "unit": "",
+      "domain": []
+    }
+  ],
+  "sections": [
+    {
+      "id": "adherence",
+      "eyebrow": "Gating Aspect Adherence",
+      "headline": "Both challengers stay within margin but regress adherence",
+      "takeaway": "Points show difference from control with stated intervals; dashed line marks the declared margin.",
+      "chart": {
+        "kind": "forest",
+        "title": "",
+        "query": {
+          "source": "readings",
+          "aspect": "character adherence (v2)",
+          "measures": [],
+          "arms": [
+            "1017",
+            "qwen3.8-flash"
+          ],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [
+          {
+            "kind": "margin",
+            "key": "aspect.margin"
+          }
+        ],
+        "emphasis": "",
+        "level": "95%",
+        "unit": "points",
+        "domain": [
+          -16.0,
+          3.0
+        ]
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "strata_loss",
+      "eyebrow": "Stratum Breakdown",
+      "headline": "Adherence losses concentrate heavily in off-lane interactions",
+      "takeaway": "Bars show difference from control on persona holds character across primary strata.",
+      "chart": {
+        "kind": "diverging_bars",
+        "title": "",
+        "query": {
+          "source": "strata",
+          "aspect": "",
+          "measures": [
+            "persona.holds_character"
+          ],
+          "arms": [
+            "1017",
+            "qwen3.8-flash"
+          ],
+          "strata": [
+            "off_lane",
+            "machinery",
+            "about",
+            "superlative",
+            "small_talk",
+            "multi"
+          ],
+          "limit": 6,
+          "transform": "arm_minus_control",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "95% uncorrected",
+        "unit": "points",
+        "domain": []
+      },
+      "caption": "Descriptive stratum figures are uncorrected across slices.",
+      "caveats": []
+    },
+    {
+      "id": "failure_examples",
+      "eyebrow": "Failure Inspection",
+      "headline": "Challengers leak technical machinery and break voice in off-lane queries",
+      "takeaway": "Excerpts highlight representative prompt slips where candidates dropped persona.",
+      "chart": {
+        "kind": "examples",
+        "title": "",
+        "query": {
+          "source": "examples",
+          "aspect": "character adherence (v2)",
+          "measures": [],
+          "arms": [
+            "1017",
+            "qwen3.8-flash"
+          ],
+          "strata": [],
+          "limit": 4,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    }
+  ],
+  "explore": [
+    {
+      "title": "Explore Adherence Bounds",
+      "controls": [
+        {
+          "id": "margin_slider",
+          "kind": "slider",
+          "title": "Adherence Drop Margin",
+          "binds": "margin",
+          "min": 0.0,
+          "max": 20.0,
+          "step": 1.0,
+          "default": 15.0,
+          "options": []
+        }
+      ],
+      "recomputes": "Adjusting the allowable degradation margin does not change the recommendation to keep {arm:September}, because both candidates also increase cost. {arm:qwen3.8-flash} violates margin when tightened below {flip_margin.qwen3.8-flash|abs|pts} points, and {arm:1017} below {flip_margin.1017|abs|pts} points."
+    }
+  ],
+  "full_results": [
+    "arms_by_measure",
+    "contrasts",
+    "strata"
+  ],
+  "durable_claims": [
+    {
+      "text": "{arm:September} achieves lower reply spend at {scoreboard.September.reply_cost_usd|usd_per_1k} than {arm:1017} at {scoreboard.1017.reply_cost_usd|usd_per_1k} and {arm:qwen3.8-flash} at {scoreboard.qwen3.8-flash.reply_cost_usd|usd_per_1k}.",
+      "confidence": "high",
+      "keys": [
+        "scoreboard.September.reply_cost_usd",
+        "scoreboard.1017.reply_cost_usd",
+        "scoreboard.qwen3.8-flash.reply_cost_usd"
+      ]
+    },
+    {
+      "text": "Both {arm:1017} and {arm:qwen3.8-flash} reduce character adherence, dropping by {reading.1017.change|abs|pts} points ({reading.1017.interval|pts}) and {reading.qwen3.8-flash.change|abs|pts} points ({reading.qwen3.8-flash.interval|pts}) respectively.",
+      "confidence": "high",
+      "keys": [
+        "reading.1017.change",
+        "reading.qwen3.8-flash.change",
+        "contrast.1017.persona.holds_character.delta",
+        "contrast.qwen3.8-flash.persona.holds_character.delta"
+      ]
+    }
+  ],
+  "answers": []
+}
