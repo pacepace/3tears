@@ -426,6 +426,7 @@ class _ReadinessFakeServer(_FakeToolServer):
         self.is_healthy = True
         self.tools_count = 1
         self.jwks_warmed = False
+        self.serving_calls = True
 
 
 def _free_port() -> int:
@@ -608,6 +609,7 @@ class TestAPodContributesItsOwnHealthChecks:
             "nats": True,
             "tools_registered": True,
             "jwks_warmed": True,
+            "calls_open": True,
             "catalogue_storage": False,
         }, "the contributed check is evaluated beside the bootstrap's own, not instead of them"
         assert ready_status == 503
@@ -615,6 +617,21 @@ class TestAPodContributesItsOwnHealthChecks:
         assert [c["name"] for c in live["components"]] == ["nats"], "a READY check never reaches liveness"
         assert after_status == 200
         assert after["healthy"] is True
+
+    async def test_reports_not_ready_while_calls_are_held_or_left(self) -> None:
+        """a replica out of its call queue group gets no calls, so a rolling deploy must not count it ready."""
+        srv = _ReadinessFakeServer()
+        srv.jwks_warmed = True
+        srv.serving_calls = False
+        async with _serving_pod(srv) as port:
+            held_status, held = await _probe(port, "/healthz/ready")
+            live_status, _live = await _probe(port, "/healthz/live")
+            srv.serving_calls = True
+            open_status, _open = await _probe(port, "/healthz/ready")
+        assert _components(held)["calls_open"] is False
+        assert held_status == 503
+        assert live_status == 200, "holding calls is not a liveness failure"
+        assert open_status == 200
 
     async def test_a_contributed_liveness_check_fails_both_tiers(self) -> None:
         srv = _ReadinessFakeServer()
@@ -627,7 +644,7 @@ class TestAPodContributesItsOwnHealthChecks:
         assert live_status == 503
         assert ready_status == 503
 
-    @pytest.mark.parametrize("name", ["nats", "tools_registered", "jwks_warmed"])
+    @pytest.mark.parametrize("name", ["nats", "tools_registered", "jwks_warmed", "calls_open"])
     async def test_a_check_named_like_a_bootstrap_check_is_refused_before_serving(self, name: str) -> None:
         """two components with one name make the JSON body ambiguous to the operator reading it."""
         srv = _ReadinessFakeServer()
