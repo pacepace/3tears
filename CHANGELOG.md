@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: an L3 read a stopped hub replica never answered is sent again; a write is not
+
+**Fixed:** `NatsProxyL3Backend` raised the first time a request went unanswered, so a hub rollout that stopped the
+replica holding a request failed it after its 7-second bound (cobalt dev, 2026-10-29: `l3.query` in the registry,
+`l3.tx.rollback` in the reports pod). A request is now sent again, up to three times in all, each attempt encoded
+afresh with its own proof: any request no hub received (`NoRespondersError`), and a read (`fetch`, `fetchrow`,
+`fetchval`, `fetch_arrow`) that timed out or that a leaving replica cut off. A write, a statement inside a
+transaction, `tx.begin` and a commit raise as before on a timeout: each may have run. **Added:**
+`REPLICA_LEAVING_ERROR_CODE` (`BROKER_REPLICA_LEAVING`), the code a leaving hub replica answers a request it could not
+finish with. **Changed:** a rollback nobody answers, on the way out of a transaction an exception ended, is logged
+rather than raised, so the caller sees the error that ended the transaction; the transaction never commits.
+
 ## v0.83.0 -- 2026-10-29
 
 ### observe, core: a periodic tick sets its next delay only with `NextDelay`, and never below `min_delay`
