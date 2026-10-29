@@ -41,6 +41,7 @@ from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
+from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.doc_analysis import doc_analysis
 from threetears.evals.analysis.generator import GenerationTally
 from threetears.evals.analysis.service import (
@@ -136,6 +137,9 @@ CAMPAIGN_NAME_REMEDY = (
 #: The most characters a listing's short question holds, its ellipsis included.
 QUESTION_SHORT_CHARS = 100
 
+#: The longest an outcome with its warnings is spelled out; past it the warnings are counted (`2 warnings`).
+OUTCOME_SHORT_CHARS = 48
+
 #: Where a campaign's report stands, as a listing shows it: ``none``, no live analysis; ``written``, one this build reads
 #: over the runs the campaign holds now; ``needs_regeneration``, one it cannot read, a report plan (rendered code-only),
 #: or one written over other runs than the campaign holds now.
@@ -228,6 +232,24 @@ class CampaignLine(EvalBaseModel):
             "<arm>` for the control and `Adopt <arm>` for a candidate; else from its report's recommendation, the "
             "same way; `No call` for a report recommending no arm or more than one; None with neither a call nor a "
             "report. report.headline is the long form."
+        ),
+    )
+    outcome_short: str | None = Field(
+        default=None,
+        description=(
+            "What the evidence says in a few words, read by code off its report's frozen readings and never from the "
+            "writer's prose or by cutting the headline; distinct from verdict_short, which is the decision. Arms are "
+            "named by their short names (else labels). The answer leads and a warning only qualifies it. A change: "
+            "`<arm> improved` or `<N> candidates improved` where a candidate is shown better, else `No candidate "
+            "improved`, whether the candidates are equal, not separated or worse. A choice: `<arm> ahead` where one "
+            "arm is shown ahead of another and behind none, else `Arms differ` where any pair separates, else `Not "
+            "separated`. A measurement: `Measured`. `No readings yet` where the readings hold no row of their kind. "
+            "Where the arms the answer names (the improving arms, the leader, the measured arm) broke a floor or "
+            "missed a bar it adds `, broke a floor`, `, missed a bar` or `, broke a floor and missed a bar` (floor "
+            "first; `Measured, <arm> missed a bar` names the arm; several arms count, `2 candidates improved, 1 broke "
+            "a floor`), and past "
+            f"{OUTCOME_SHORT_CHARS} characters counts the warnings (`, 2 warnings`). A warning on an arm the answer "
+            "does not name changes nothing. None with no reported analysis, or one this build cannot read."
         ),
     )
     report_state: ReportState = Field(default="none", description="Where its report stands (`report`).")
@@ -602,6 +624,67 @@ def _decided(label: str, arms: Sequence[CampaignArm]) -> str:
     return f"{'Keep' if role == 'control' else 'Adopt'} {label}"
 
 
+def _outcome(readings: CampaignReadings, arms: Sequence[CampaignArm]) -> str:
+    """What the readings show in a few words (:attr:`CampaignLine.outcome_short`), from their structure alone: the
+    answer first, then the warnings of the arms the answer names as a qualifier, never in its place."""
+    printed = {arm.variant_key: arm.short_name or arm.label for arm in arms}
+    labels = {s.arm: s.arm_label for s in readings.floors}
+    labels |= {s.arm: s.arm_label for s in readings.bars}
+    labels |= {s.arm: s.arm_label for s in readings.readings}
+    labels |= {s.arm: s.arm_label for s in readings.measures}
+    for pair in readings.pairs:
+        labels |= {pair.first: pair.first_label, pair.second: pair.second_label}
+
+    def named(key: str) -> str:
+        return printed.get(key, labels.get(key, key))
+
+    def qualified(answer: str, subjects: set[str], *, name: bool = False) -> str:
+        """``answer`` with the floors its subject arms broke and the bars they miss, floors first."""
+        floors = [s for s in readings.broken_floors() if s.arm in subjects]
+        bars = [s for s in readings.missed_bars() if s.arm in subjects]
+        floor_arms, bar_arms = {s.arm for s in floors}, {s.arm for s in bars}
+        if not floors and not bars:
+            return answer
+        if len(subjects) == 1 or (name and len({*floor_arms, *bar_arms}) == 1):
+            who = f"{named(next(iter({*floor_arms, *bar_arms})))} " if name else ""
+            phrases = [f"{who}broke a floor"] if floors else []
+            phrases += [f"{'' if phrases else who}missed a bar"] if bars else []
+        else:
+            phrases = [f"{len(floor_arms)} broke a floor"] if floors else []
+            phrases += [f"{len(bar_arms)} missed a bar"] if bars else []
+        full = f"{answer}, {' and '.join(phrases)}"
+        if len(full) <= OUTCOME_SHORT_CHARS:
+            return full
+        warnings = len(floors) + len(bars)
+        return f"{answer}, {warnings} warning{'s' if warnings != 1 else ''}"
+
+    if readings.kind == "measurement":
+        if not readings.measures:
+            return "No readings yet"
+        return qualified(
+            "Measured",
+            {*(s.arm for s in readings.broken_floors()), *(s.arm for s in readings.missed_bars())},
+            name=True,
+        )
+    if readings.kind == "choice":
+        if not readings.pairs:
+            return "No readings yet"
+        ahead = {pair.ahead for pair in readings.pairs if pair.ahead is not None}
+        behind = {
+            pair.second if pair.ahead == pair.first else pair.first for pair in readings.pairs if pair.ahead is not None
+        }
+        if len(leaders := ahead - behind) == 1:
+            return qualified(f"{named(next(iter(leaders)))} ahead", leaders)
+        return "Arms differ" if ahead else "Not separated"
+    if not readings.readings:
+        return "No readings yet"
+    better = list(dict.fromkeys(row.arm for row in readings.readings if row.reading == "better"))
+    if not better:
+        return "No candidate improved"
+    answer = f"{named(better[0])} improved" if len(better) == 1 else f"{len(better)} candidates improved"
+    return qualified(answer, set(better))
+
+
 def _recommended(analysis: EvalAnalysis, campaign: EvalCampaign) -> str:
     """What a report recommends in a few words: the arm its recommended variant is, or ``No call``."""
     key = analysis.recommended_variant_key
@@ -674,10 +757,18 @@ def _with_report(host: EvalHost, line: CampaignLine, campaign: EvalCampaign) -> 
         cost_usd=attempt.token_cost if attempt is not None and attempt.unpriced_calls == 0 else None,
         unpriced_calls=attempt.unpriced_calls if attempt is not None else 0,
     )
+    try:
+        bundle = analysis_campaign_bundle(analysis)
+    except RefusedInput:
+        # NOSILENT: a bundle this build cannot read has no readings to summarise; why_regenerate already says so.
+        outcome = None
+    else:
+        outcome = _outcome(bundle.readings, bundle.arms)
     return line.model_copy(
         update={
             "report_state": "written" if why is None else "needs_regeneration",
             "report": report,
+            "outcome_short": outcome,
             "verdict_short": line.verdict_short or _recommended(analysis, campaign),
         }
     )

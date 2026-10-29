@@ -13,7 +13,14 @@ packages (bumped in lock-step).
 the declared `arms` (`CampaignLineArm`: label, short name, role), the recorded `call` (`CampaignLineCall`: arm and
 reason), `verdict_short` (code's few words: `Keep <arm>` for the control and `Adopt <arm>` for a candidate, from the
 recorded call or else the report's recommendation; `No call` for a report recommending none; None with neither),
-`report_state` (`none`, `written` or `needs_regeneration`), `report` (`CampaignLineReport`: the analysis id, code's
+`outcome_short` (what the evidence says in a few words, read by code off the report's frozen readings by their kind,
+never from the writer's prose or the headline's text, and distinct from the decision: the answer leads, a change's
+`<arm> improved`, `<N> candidates improved` or `No candidate improved` (whether the candidates are equal, not separated
+or worse), a choice's `<arm> ahead`, `Arms differ` or `Not separated`, a measurement's `Measured`, or `No readings yet`
+where the readings hold no row; a floor the answer's arms broke or a bar they miss only qualifies it, floor first
+(`1017 improved, broke a floor and missed a bar`, `2 candidates improved, 1 broke a floor`), counted past 48
+characters (`, 2 warnings`), and a warning on an arm the answer does not name changes nothing; None with no report or
+one this build cannot read), `report_state` (`none`, `written` or `needs_regeneration`), `report` (`CampaignLineReport`: the analysis id, code's
 verdict line as `headline`, why it needs regeneration, when and on what model it was generated, its attempt's
 `cost_usd`, None while any call is unpriced, and `unpriced_calls`) and `feeds` (for an exploratory campaign, the
 declared campaigns holding any of its runs). A report needs regeneration when this build cannot read it, when it is a
