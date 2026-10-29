@@ -38,7 +38,7 @@ from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, planned_generation
 from packages.evals.tests.page_contract_support import parsed, what_runs
 from packages.evals.tests.report_support import stored_memo_analysis, toy_report
-from packages.evals.tests.static_page_support import assert_static, less_what_static_leaves_out
+from packages.evals.tests.static_page_support import assert_static, less_drawings, less_what_static_leaves_out
 
 
 def test_the_static_page_of_a_hostile_report_runs_and_loads_nothing_and_shows_every_chart_as_its_table() -> None:
@@ -80,7 +80,7 @@ async def test_the_default_pages_are_the_static_pages_plus_the_script_the_fonts_
     ]
     for default, unasked, static in pages:
         assert unasked == default
-        assert static == less_what_static_leaves_out(default)
+        assert less_drawings(static) == less_what_static_leaves_out(default)
         assert parsed(default).tags[-1] == ("script", []), "the default page still ends in the kit's script"
 
 
@@ -110,7 +110,9 @@ async def test_report_read_returns_the_static_page_for_a_code_only_report() -> N
 
     assert read.analysis_id is None
     assert_static(read.body)
-    assert _without_instants(read.body) == _without_instants(less_what_static_leaves_out(_read(fixture).body))
+    assert _without_instants(less_drawings(read.body)) == _without_instants(
+        less_what_static_leaves_out(_read(fixture).body)
+    )
 
 
 async def test_report_read_returns_the_static_page_for_a_memo_analysis() -> None:
@@ -120,7 +122,9 @@ async def test_report_read_returns_the_static_page_for_a_memo_analysis() -> None
 
     assert (read.analysis_id, read.analysis_basis) == (memo.id, "memo")
     assert_static(read.body)
-    assert _without_instants(read.body) == _without_instants(less_what_static_leaves_out(_read(fixture).body))
+    assert _without_instants(less_drawings(read.body)) == _without_instants(
+        less_what_static_leaves_out(_read(fixture).body)
+    )
 
 
 async def test_report_read_returns_the_static_page_for_a_planned_analysis() -> None:
@@ -130,7 +134,9 @@ async def test_report_read_returns_the_static_page_for_a_planned_analysis() -> N
 
     assert planned is not None and (read.analysis_id, read.analysis_basis) == (planned, "plan")
     assert_static(read.body)
-    assert _without_instants(read.body) == _without_instants(less_what_static_leaves_out(_read(fixture).body))
+    assert _without_instants(less_drawings(read.body)) == _without_instants(
+        less_what_static_leaves_out(_read(fixture).body)
+    )
 
 
 async def test_the_action_takes_static_and_defaults_to_the_page_it_always_read() -> None:

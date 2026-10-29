@@ -74,6 +74,18 @@ names none, or that the input states no pricing, and its tool spend apart. Which
 with it; the recorded prototype5 replays still pass. The shipped reasoning notes (Kairo, r1, r3, r4) and their index
 no longer state a cost as the model's: each cost comparison is this run's routing's, and since no note's snapshot
 names a provider, each says the routing is unknown; their reasoning is unchanged.
+### evals: a static report page draws its charts as inline SVG
+
+**Changed:** the static page (`report_read(..., static=True)`, `report_html(report, static=True)`,
+`campaign_report_html(report, static=True)`, and a planned or document page asked for static) draws its charts again.
+It showed each chart as its table alone, since the kit draws charts with its script and the static page carries none,
+so a host serving it under `default-src 'none'` or in an empty `sandbox` saw no graphics at all. Each chart is now
+drawn on the server as inline SVG by the kit's own geometry and colour tokens (bars, diverging bars, forest, lines,
+scatter, gate scatter, dot interval, range bars, heatmap, difference heatmap, confusion; an outcome bar and a
+cost/quality chart as the kit's bars and scatter), at three widths the stylesheet picks between by the chart's own
+width, with each mark's tooltip as its `<title>`, and no script, event attribute or URL. Each chart's table of values
+stays under it. A chart the kit lays out as HTML (a gate matrix, a lattice, example cards) and a report's interval
+rows say in one line that they are shown as their table. The default page is unchanged, byte for byte.
 
 ### evals: Discodon's W4 adoption findings: unanswered calls through the ledger, a turn cap on a dollar budget, the report writer's port declared
 

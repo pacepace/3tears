@@ -1,7 +1,7 @@
 """A report in one of its three forms: the one switch every door that hands a report out reads.
 
 Markdown is what an agent reads and a pull request quotes, HTML the one page a person reads, its charts drawn by the kit's inlined script
-(or, static, shown as their tables, for a host whose policy runs and loads nothing), and JSON
+(or, static, drawn on the server as inline SVG, for a host whose policy runs and loads nothing), and JSON
 the bundle the report was computed from — the machine form, versioned by its ``schema_version`` — so a program never
 reads the page's layout as data.
 """
@@ -29,7 +29,7 @@ def serialize_report(report: Report | CampaignReport, format: ReportFormat, *, s
         aspect's bundle by its fingerprint and shape (:meth:`CampaignReport.json_document`).
     :ptype format: ReportFormat
     :param static: For ``html``, the static page (:func:`~threetears.evals.analysis.report.serialize_html.report_html`):
-        no script, no link, every chart its table. It changes neither Markdown nor JSON.
+        no script, no link, every chart drawn as inline SVG above its table. It changes neither Markdown nor JSON.
     :ptype static: bool
     :return: The serialized report.
     :rtype: str

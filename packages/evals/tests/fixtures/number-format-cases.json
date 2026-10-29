@@ -238,7 +238,7 @@
     ]
   },
   "kit_money": {
-    "$comment": "The chart kit's money formats beside the package's one money form (#993), as cases: each case's `fmt` is a kit format (`analysis/report/charts.py` `Fmt`, `kit.js` `K_FMTS`) and `value` an amount in dollars as stored; `expected` is what the kit draws on a tick and what the package writes in the chart's notes and values table (`MoneyForm.spell`). `usdpk` is dollars per 1,000 with the mark written, the format a chart of totals under a cent reads in: a total counts nothing, so its ruler cannot move, and its ticks carry the mark as its keys and tables do. Readers: tests/test_money_forms.py, and tests/test_report_kit_charts.py in headless Chromium.",
+    "$comment": "The chart kit's money formats beside the package's one money form (#993), as cases: each case's `fmt` is a kit format (`analysis/report/charts.py` `Fmt`, `kit.js` `K_FMTS`) and `value` an amount in dollars as stored; `expected` is what the kit draws on a tick and what the package writes in the chart's notes and values table (`MoneyForm.spell`). `usdpk` is dollars per 1,000 with the mark written, the format a chart of totals under a cent reads in: a total counts nothing, so its ruler cannot move, and its ticks carry the mark as its keys and tables do. Readers: tests/test_money_forms.py, tests/test_report_kit_charts.py in headless Chromium, and tests/test_report_chart_svg.py for the static page's server-drawn charts.",
     "cases": [
       {
         "fmt": "usdpk:2",
