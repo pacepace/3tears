@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.84.0 -- 2026-10-29
+
 ### registry: an idle platform no longer rewrites the tool catalog on every heartbeat
 
 **Fixed:** every tool pod re-publishes its manifest with each 15 s heartbeat, and every registry replica hears it.
