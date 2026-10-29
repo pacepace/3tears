@@ -690,6 +690,143 @@ class TestToolServerServe:
         assert "testns.tools.internal.test-pod-3" in subject_paths
 
 
+class TestToolServerCallGroupMembership:
+    """hold_calls / open_calls / leave_calls: whether NATS routes calls to this replica."""
+
+    @staticmethod
+    def _mock_nc() -> AsyncMock:
+        mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
+        mock_nc.is_connected = True
+        mock_nc.subscribe = AsyncMock(side_effect=lambda **kwargs: MagicMock(name=kwargs["subject"].path))
+        mock_nc.publish = AsyncMock()
+        mock_nc.drain = AsyncMock(return_value=True)
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
+        return mock_nc
+
+    @staticmethod
+    def _call_subscribes(mock_nc: AsyncMock) -> int:
+        return sum(
+            1 for c in mock_nc.subscribe.call_args_list if c.kwargs["subject"].path.startswith("testns.tools.internal.")
+        )
+
+    @staticmethod
+    async def _stop(server: ToolServer, serve_task: asyncio.Task[None]) -> None:
+        await server.shutdown()
+        await asyncio.wait_for(serve_task, timeout=1.0)
+
+    async def test_an_unheld_server_joins_before_it_registers(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod")
+        server.register(StubTool())
+        mock_nc = self._mock_nc()
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await server.wait_ready(timeout=1.0)
+            assert server.serving_calls is True
+            assert self._call_subscribes(mock_nc) == 1
+            await self._stop(server, serve_task)
+        assert server.serving_calls is False
+        mock_nc.drain.assert_awaited_once()
+
+    async def test_a_held_server_registers_but_joins_only_once_opened(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod")
+        server.register(StubTool())
+        server.hold_calls()
+        mock_nc = self._mock_nc()
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await server.wait_ready(timeout=1.0)
+            await asyncio.sleep(0.05)
+            assert server.is_ready is True, "a held server still registers and binds its probe subject"
+            assert server.serving_calls is False
+            assert self._call_subscribes(mock_nc) == 0
+            server.open_calls()
+            await asyncio.sleep(0.05)
+            assert server.serving_calls is True
+            assert self._call_subscribes(mock_nc) == 1
+            await self._stop(server, serve_task)
+
+    async def test_calls_opened_before_serve_join_at_once(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod")
+        server.register(StubTool())
+        server.hold_calls()
+        server.open_calls()
+        mock_nc = self._mock_nc()
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await server.wait_ready(timeout=1.0)
+            await asyncio.sleep(0.05)
+            assert server.serving_calls is True
+            await self._stop(server, serve_task)
+
+    async def test_a_server_that_left_never_joins(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod")
+        server.register(StubTool())
+        server.hold_calls()
+        mock_nc = self._mock_nc()
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await server.wait_ready(timeout=1.0)
+            assert await server.leave_calls() is True
+            server.open_calls()
+            await asyncio.sleep(0.05)
+            assert server.serving_calls is False
+            assert self._call_subscribes(mock_nc) == 0
+            mock_nc.drain.assert_not_awaited()
+            await self._stop(server, serve_task)
+
+    async def test_leaving_drains_the_call_subscription_then_waits_for_the_replies_owed(self) -> None:
+        """the answering of routed calls itself is proven against real NATS in the integration suite."""
+        server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod")
+        server.register(StubTool())
+        mock_nc = self._mock_nc()
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await server.wait_ready(timeout=1.0)
+            with patch.object(server, "await_sync_replies", AsyncMock(return_value=False)) as owed:
+                assert await server.leave_calls(timeout=3.0) is False, "a reply still owed past the bound is said"
+            assert mock_nc.drain.await_args.kwargs["timeout"] == 3.0
+            assert 0.0 <= owed.await_args.kwargs["timeout"] <= 3.0, "one bound covers the drain and the replies"
+            await self._stop(server, serve_task)
+
+    async def test_a_held_server_that_cannot_join_tries_again(self) -> None:
+        from threetears.nats.errors import SubscribeError  # noqa: PLC0415
+
+        server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod")
+        server.register(StubTool())
+        server.hold_calls()
+        mock_nc = self._mock_nc()
+        failures = [SubscribeError("the server refused the subscription")]
+
+        def subscribe(**kwargs: Any) -> MagicMock:
+            if kwargs["subject"].path.startswith("testns.tools.internal.") and failures:
+                raise failures.pop()
+            return MagicMock()
+
+        mock_nc.subscribe = AsyncMock(side_effect=subscribe)
+        with (
+            patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc),
+            patch("threetears.agent.tools.server.JOIN_CALLS_RETRY_SECONDS", 0.01),
+        ):
+            serve_task = asyncio.create_task(server.serve())
+            await server.wait_ready(timeout=1.0)
+            server.open_calls()
+            await asyncio.sleep(0.1)
+            assert server.serving_calls is True, "one refused subscribe does not keep the replica out for good"
+            await self._stop(server, serve_task)
+
+    async def test_hold_calls_after_serve_is_refused(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod")
+        server.register(StubTool())
+        mock_nc = self._mock_nc()
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await server.wait_ready(timeout=1.0)
+            with pytest.raises(RuntimeError, match="before serve"):
+                server.hold_calls()
+            await self._stop(server, serve_task)
+
+
 # -- handle_call tests --
 
 

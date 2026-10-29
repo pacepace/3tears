@@ -849,6 +849,15 @@ class Subscription:
         """
         return self._queue
 
+    @property
+    def connection(self) -> Any:
+        """the nats-py connection the subscription currently receives on.
+
+        :return: the connection ``raw_subscription`` is on
+        :rtype: Any
+        """
+        return self._connection
+
     async def subscribe_on(self, connection: Any) -> Any:
         """subscribe this subscription's subject and group on a successor connection.
 
@@ -5444,6 +5453,57 @@ class NatsClient:
             )
         if sub in self._subscriptions:
             self._subscriptions.remove(sub)
+
+    async def drain(self, sub: Subscription, *, timeout: float) -> bool:
+        """end a subscription without dropping what it was given: the server stops routing to it, every message
+        it had already routed reaches the callbacks, and the callbacks finish.
+
+        The graceful twin of :meth:`unsubscribe`, for a queue-group member leaving while its siblings stay (a
+        replica shutting down in a rolling deploy): once the server has processed the ``UNSUB`` it hands the
+        group's messages to the other members only, and nothing it had already given this one is lost or cut
+        off mid-reply. :meth:`unsubscribe` cancels the callbacks in flight instead, which leaves a request
+        unanswered. Bounded by ``timeout``: past it the subscription is dropped as :meth:`unsubscribe` drops it.
+        Idempotent; a subscription already dropped returns ``True``.
+
+        :param sub: subscription handle returned by :meth:`subscribe`
+        :ptype sub: Subscription
+        :param timeout: longest to wait for the routed messages and their callbacks, in seconds
+        :ptype timeout: float
+        :return: ``True`` when every routed message was handled within ``timeout``; ``False`` when the bound, or
+            a connection that failed first, cut it short
+        :rtype: bool
+        """
+        if sub.is_closed:
+            return True
+        async with self._handover_lock:
+            # closed under the lock: a renewal moves only the subscriptions open when it holds it, so none moves
+            # this one onto a successor connection while it is being drained
+            sub.mark_closed()
+            raw_subscription, connection = sub.raw_subscription, sub.connection
+
+        async def _drained() -> None:
+            await _stop_routing_then_drain(raw_subscription, connection)
+            # the receiver ends with the drained subscription and closes the backlog, so the dispatcher hands
+            # out what is left, waits for its callbacks and ends; shielded so the bound does not cancel them
+            await asyncio.shield(sub.dispatch_task)
+
+        drained = True
+        try:
+            await asyncio.wait_for(_drained(), timeout=timeout)
+        # NOSILENT: logged and reported as False; the subscription is dropped below either way
+        except Exception as exc:  # noqa: BLE001 -- a bound or a failed connection ends the drain, never the caller
+            drained = False
+            contain(
+                exc,
+                log=log,
+                what="subscription drain did not complete; dropping it",
+                extra={"subject": sub.subject.path, "timeout_seconds": timeout, "error": str(exc)},
+            )
+            await _unsubscribe_quietly(raw_subscription, subject=sub.subject)
+        await cancel_and_wait(sub.dispatch_task)
+        if sub in self._subscriptions:
+            self._subscriptions.remove(sub)
+        return drained
 
     # ------------------------------------------------------------------
     # request / reply

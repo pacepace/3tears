@@ -96,7 +96,7 @@ from threetears.nats import (
     result_subject_prefix_for_pod,
     set_default_namespace,
 )
-from threetears.nats.errors import NatsClientError, PublishError, RequestError
+from threetears.nats.errors import NatsClientError, PublishError, RequestError, SubscribeError
 from threetears.observe import cancel_and_wait, clear_context, contain, get_logger, InflightRequestsGauge, traced
 from threetears.observe.resilience import retry_bounded
 
@@ -208,6 +208,14 @@ _EMPTY_TOOL_NAMES: tuple[str, ...] = ()
 #: the default 15s heartbeat is ~45s of sustained death -- prompt enough for cattle, long
 #: enough to ride out a one-cycle blip.
 _UNHEALTHY_EXIT_THRESHOLD: int = 3
+
+#: how long :meth:`ToolServer.leave_calls` waits, by default, for the calls the server had already routed
+#: to this replica to be answered once it has left its call queue group. Inside the tool pod's shutdown
+#: bound (``get_shutdown_timeout``), which still has the rest of the shutdown to cover.
+LEAVE_CALLS_SECONDS: float = 10.0
+
+#: how long a replica that could not join its call queue group waits before it tries again
+JOIN_CALLS_RETRY_SECONDS: float = 1.0
 
 if TYPE_CHECKING:
     from threetears.core.coordination.replay_anchor import ReplayAnchor
@@ -1392,6 +1400,13 @@ class ToolServer:
         self._calls_idle.set()
         self._shutdown_event = asyncio.Event()
         self._ready_event = asyncio.Event()
+        # the call subject's queue-group membership, which decides whether NATS routes calls here. see
+        # :meth:`hold_calls`, :meth:`open_calls` and :meth:`leave_calls`.
+        self._calls_held = False
+        self._calls_opened = asyncio.Event()
+        self._calls_left = False
+        self._call_subscription: Any = None
+        self._joining_calls: asyncio.Task[None] | None = None
         # lifecycle hooks the OWNER of this server registers before ``serve()``, run once the
         # connection exists and before anything is subscribed or registered. see
         # :meth:`add_connected_callback`.
@@ -1744,6 +1759,132 @@ class ToolServer:
         resolved = get_serve_ready_timeout() if timeout is None else timeout
         await asyncio.wait_for(self._ready_event.wait(), timeout=resolved)
 
+    def hold_calls(self) -> None:
+        """keep this replica out of its call queue group until :meth:`open_calls`.
+
+        A pod identity runs as N replicas that share one queue group on the call subject, and NATS hands each
+        call to any member. A replica that joins before it can answer (its own copy of the data still
+        loading, say) is given its share of calls and refuses them, while a sibling that could answer them
+        sits beside it. So a pod whose replicas warm up after connecting holds its calls: :meth:`serve`
+        connects, binds the probe subject and registers as always, and subscribes the call subject only once
+        the owner calls :meth:`open_calls`. Until then NATS routes every call to the siblings, and
+        :attr:`serving_calls` (the bootstrap's ``calls_open`` readiness check) stays False, so a rolling
+        deploy keeps the old replicas until this one can answer.
+
+        A pod that never calls this joins at once, before it registers, exactly as before.
+
+        :return: nothing
+        :rtype: None
+        :raises RuntimeError: when :meth:`serve` has already started
+        """
+        if self._running:
+            raise RuntimeError("hold_calls must be called before serve()")
+        self._calls_held = True
+
+    def open_calls(self) -> None:
+        """let this replica join its call queue group: the counterpart of :meth:`hold_calls`.
+
+        Callable at any time and more than once; before :meth:`serve` reaches the subscription it joins as
+        soon as it does, and after :meth:`leave_calls` it does nothing.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._calls_opened.set()
+
+    @property
+    def serving_calls(self) -> bool:
+        """whether NATS routes calls to this replica: it holds its call queue-group subscription.
+
+        False before :meth:`serve` subscribes, while :meth:`hold_calls` holds it, and once
+        :meth:`leave_calls` has begun.
+
+        :return: true while the call subject is subscribed and not being left
+        :rtype: bool
+        """
+        return self._call_subscription is not None and not self._calls_left
+
+    async def _subscribe_calls(self) -> None:
+        """subscribe the call subject in the pod's queue group: from here NATS routes calls to this replica.
+
+        :return: nothing
+        :rtype: None
+        """
+        assert self._nc is not None  # serve() connected first
+        # QUEUE-GROUPED, because a pod identity is not a process. The DQ-B7 sweep
+        # left these ungrouped on the premise that "only this pod's connection
+        # binds them" -- true of one process per pod id, and FALSE of every
+        # Kubernetes Deployment with replicas > 1, where N processes share one
+        # registered identity and all N bind the same pod-scoped subject.
+        #
+        # Without a group NATS broadcasts, so each call is delivered to every
+        # replica. They all handle it, and the first to reach the shared
+        # proxy-assertion ReplayGuard consumes the assertion's nonce -- so every
+        # other replica rejects the SAME call as `proxy assertion nonce replay`.
+        # The hub turns that into a 502. Observed on cobalt-prod 2026-09-20 with
+        # two replicas: one correlation id, both pods, one rejection.
+        #
+        # THE QUEUE NAME IS THE SUBJECT PATH, matching `nats/forward.py`. It has
+        # to be stable across restarts and distinct per pod identity, and the
+        # subject already is both -- it carries the pod id, so two DIFFERENT tool
+        # pods never share a group and a restarted replica rejoins its own.
+        call_subject = Subjects.tools_internal(self._pod_id)
+        # sender-posture: signed-envelope -- hub token plus a registry assertion bound to pod, body, expiry, jti
+        self._call_subscription = await self._nc.subscribe(
+            subject=call_subject, queue=call_subject.path, cb=self.handle_call
+        )
+        log.info(
+            "subscribed to call subject",
+            extra={"extra_data": {"subject": call_subject.path, "queue": call_subject.path}},
+        )
+
+    async def _join_calls_when_opened(self) -> None:
+        """wait for :meth:`open_calls`, then join the call queue group unless the replica is leaving.
+
+        :return: nothing
+        :rtype: None
+        """
+        await self._calls_opened.wait()
+        while not self._calls_left and self._running and self._call_subscription is None:
+            try:
+                await self._subscribe_calls()
+            except SubscribeError as exc:
+                # NOSILENT: logged, and asked again: a replica that could not join would sit out of rotation
+                # for good, not ready, while nothing said why
+                contain(exc, log=log, what="could not join the call queue group; trying again", level="error")
+                await asyncio.sleep(JOIN_CALLS_RETRY_SECONDS)
+
+    async def leave_calls(self, *, timeout: float = LEAVE_CALLS_SECONDS) -> bool:
+        """leave the call queue group gracefully: NATS routes no new call here, and those already routed are
+        answered.
+
+        The first step of a replica's shutdown, ahead of anything that stops what the tools answer from: the
+        server processes the ``UNSUB`` first, so every later call goes to a sibling, then each call it had
+        already handed this replica reaches its handler and is answered (:meth:`NatsClient.drain`, then
+        :meth:`await_sync_replies`). Bounded by ``timeout`` in all. Idempotent, and a replica that never
+        joined returns at once; it will not join afterwards either.
+
+        :param timeout: longest to wait for the routed calls to be answered, in seconds
+        :ptype timeout: float
+        :return: ``True`` when every routed call was answered within ``timeout``
+        :rtype: bool
+        """
+        self._calls_left = True
+        joining, self._joining_calls = self._joining_calls, None
+        if joining is not None:
+            await cancel_and_wait(joining)
+        subscription, self._call_subscription = self._call_subscription, None
+        if subscription is None or self._nc is None:
+            return True
+        started = time.monotonic()
+        drained = await self._nc.drain(subscription, timeout=timeout)
+        answered = await self.await_sync_replies(timeout=max(0.0, timeout - (time.monotonic() - started)))
+        log.info(
+            "left the call queue group",
+            extra={"extra_data": {"pod_id": self._pod_id, "drained": drained, "answered": answered}},
+        )
+        return drained and answered
+
     def register(self, tool: TearsTool) -> None:
         """register tool for serving via NATS.
 
@@ -2017,32 +2158,11 @@ class ToolServer:
         # its tool pods without injecting a guard, so no owner can do this for them.
         await self._assertion_replay_guard.bind()
 
-        # QUEUE-GROUPED, because a pod identity is not a process. The DQ-B7 sweep
-        # left these ungrouped on the premise that "only this pod's connection
-        # binds them" -- true of one process per pod id, and FALSE of every
-        # Kubernetes Deployment with replicas > 1, where N processes share one
-        # registered identity and all N bind the same pod-scoped subject.
-        #
-        # Without a group NATS broadcasts, so each call is delivered to every
-        # replica. They all handle it, and the first to reach the shared
-        # proxy-assertion ReplayGuard consumes the assertion's nonce -- so every
-        # other replica rejects the SAME call as `proxy assertion nonce replay`.
-        # The hub turns that into a 502. Observed on cobalt-prod 2026-09-20 with
-        # two replicas: one correlation id, both pods, one rejection.
-        #
-        # THE QUEUE NAME IS THE SUBJECT PATH, matching `nats/forward.py`. It has
-        # to be stable across restarts and distinct per pod identity, and the
-        # subject already is both -- it carries the pod id, so two DIFFERENT tool
-        # pods never share a group and a restarted replica rejoins its own.
-        #
-        # Heartbeat publishes are write-only and still need no queue group.
-        call_subject = Subjects.tools_internal(self._pod_id)
-        # sender-posture: signed-envelope -- hub token plus a registry assertion bound to pod, body, expiry, jti
-        await self._nc.subscribe(subject=call_subject, queue=call_subject.path, cb=self.handle_call)
-        log.info(
-            "subscribed to call subject",
-            extra={"extra_data": {"subject": call_subject.path, "queue": call_subject.path}},
-        )
+        # the call subject first, so a call routed the moment the registry marks this pod available finds a
+        # member -- unless the owner holds calls (hold_calls): then siblings answer until it opens them.
+        # Heartbeat publishes are write-only and need no queue group.
+        if not self._calls_held:
+            await self._subscribe_calls()
 
         probe_subject = Subjects.tools_probe(self._pod_id)
         # sender-posture: read-only -- answers a probe ack and nothing else
@@ -2057,6 +2177,8 @@ class ToolServer:
         await self.publish_registration(await_reply=True)
 
         self._ready_event.set()
+        if self._calls_held:
+            self._joining_calls = asyncio.create_task(self._join_calls_when_opened(), name="tool-server-join-calls")
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         hold_tier_reads_timer()
@@ -4068,6 +4190,9 @@ class ToolServer:
         # release, and ``serve`` waited forever on an event nothing would set. The exception still
         # propagates to the caller, which decides what a failed shutdown means for the process.
         try:
+            # out of the call queue group first, while everything the tools answer from still stands: siblings
+            # take every new call, and the ones already routed here are answered
+            await self.leave_calls()
             if self._heartbeat_task is not None:
                 await cancel_and_wait(self._heartbeat_task)
                 self._heartbeat_task = None
