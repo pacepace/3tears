@@ -40,7 +40,7 @@ _NOW = int(time.time())
 _NONCE = "fixed-nonce-for-byte-comparison"
 
 
-def _token() -> str:
+def _token(now: int) -> str:
     return sign_identity_token(
         IdentityClaims(
             sub="agent-1",
@@ -48,8 +48,8 @@ def _token() -> str:
             sid="sid-1",
             pod_id="pod-a",
             iss="hub",
-            iat=_NOW,
-            exp=_NOW + 600,
+            iat=now,
+            exp=now + 600,
             cnf=jwk_thumbprint(_AGENT_PUB),
         ),
         signing_key=_HUB,
@@ -57,15 +57,16 @@ def _token() -> str:
     )
 
 
-_TOKEN = _token()
+#: the bodies' token; a byte comparison never verifies it, so its times may pass while the suite runs
+_TOKEN = _token(_NOW)
 
 
-def _backend() -> NatsProxyL3Backend:
+def _backend(token: str = _TOKEN) -> NatsProxyL3Backend:
     return NatsProxyL3Backend(
         nats_client=MagicMock(),
         namespace_prefix="test",
         agent_id="agent-1",
-        identity_token=lambda: _TOKEN,
+        identity_token=lambda: token,
         pop_key=lambda: PopKey(_AGENT),
     )
 
@@ -151,14 +152,15 @@ def _bodies() -> list[tuple[str, str, dict[str, Any]]]:
     ]
 
 
-@pytest.fixture(autouse=True)
-def _fixed_proof_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture
+def fixed_proof_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
     # a proof is deterministic (Ed25519) but for its nonce and issue time; fix both so two encodings compare
     monkeypatch.setattr(secrets, "token_urlsafe", lambda _n=None: _NONCE)
     monkeypatch.setattr(time, "time", lambda: float(_NOW))
 
 
 @pytest.mark.parametrize(("subject", "op", "payload"), _bodies(), ids=["select", "insert", "tx-begin", "copy-1000"])
+@pytest.mark.usefixtures("fixed_proof_inputs")
 def test_the_wire_bytes_are_unchanged(subject: str, op: str, payload: dict[str, Any]) -> None:
     sent = _backend().encode_request(subject, payload)
     assert sent == _before(payload, op)
@@ -167,11 +169,13 @@ def test_the_wire_bytes_are_unchanged(subject: str, op: str, payload: dict[str, 
 
 @pytest.mark.parametrize(("subject", "op", "payload"), _bodies(), ids=["select", "insert", "tx-begin", "copy-1000"])
 def test_the_spliced_request_verifies_at_the_door(subject: str, op: str, payload: dict[str, Any]) -> None:
-    del subject
-    sent = json.loads(_backend().encode_request(f"test.l3.{op}", payload))
+    # a token minted now, and the real clock: the door checks both, and the suite may run long after import
+    token = _token(int(time.time()))
+    sent = json.loads(_backend(token).encode_request(subject, {**payload, "identity_token": token}))
     assert verify_door_request(sent, jwks=_JWKS, hub_issuer="hub", door="l3", op=op).agent_id == "agent-1"
 
 
+@pytest.mark.usefixtures("fixed_proof_inputs")
 def test_a_body_already_carrying_a_proof_is_encoded_whole_as_before() -> None:
     payload = {"correlation_id": "c-5", "identity_token": _TOKEN, DOOR_PROOF_FIELD: "stale", "query": "SELECT 1"}
     assert _backend().encode_request("test.l3.query", payload) == _before(payload, "query")
