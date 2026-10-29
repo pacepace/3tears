@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a static page hides a drawn chart's table, as the default page does
+
+**Changed:** a static page (`report_read(static=True)`) draws each chart as inline SVG on the server, and its table of
+values stayed in sight under the picture, so every drawn chart showed twice. That table is now visually hidden beside
+its drawing, read by a screen reader, as the kit's drawn chart's table is on the default page (owner ruling
+2026-10-29). A chart the server does not draw (a report's interval rows, a gate matrix, a lattice, example cards)
+still shows its table under its one line saying so. The rule ships in the drawings' stylesheet (`CHART_STYLE`), so
+the default page is unchanged.
+
 ### evals: the name caps are in the schema, and a campaign's line says when its report is a draft
 
 **Added:** the JSON schema states each declared name's cap (`maxLength`), so a host's form can read it: a campaign's

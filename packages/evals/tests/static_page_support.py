@@ -6,10 +6,11 @@ writer of one (a report's page, a campaign's, a page built from a report plan) h
 - it carries no ``<script>`` and no ``<link>``, not even the package's own, no ``on*`` attribute, no ``javascript:``
   value in any attribute (``data-*`` included: it has no chart data either), and no ``url(`` or ``@import`` in its
   styles (:func:`assert_static`);
-- every chart is its figure's title, its picture and its table of values, and no rule the page ships hides that
-  table: the one that does needs a drawn ``div.chart`` beside it, and the static page writes none, so no empty box
-  stands either. The picture is inline SVG in a ``div.chart-drawn``, drawn on the server, or, for a kind not drawn
-  there, one line saying the chart is shown as its table; never neither;
+- every chart is its figure's title, its picture and its table of values. The picture is inline SVG in a
+  ``div.chart-drawn``, drawn on the server, beside which the table is visually hidden (a screen reader reads it), or,
+  for a kind not drawn there, one line saying the chart is shown as its table, which is then in sight: the only rules
+  that hide the table need a drawing beside it, so no empty box stands and no undrawn chart loses its table; never
+  neither;
 - less its drawings and those lines (:func:`less_drawings`), it is the default page less exactly the kit's script,
   the font links and each ``div.chart`` (:func:`less_what_static_leaves_out`), so the default page is the one it
   always was.
@@ -25,8 +26,8 @@ from packages.evals.tests.page_contract_support import FONT_LINK_MARKUP, KIT_JS,
 __all__ = ["assert_static", "less_drawings", "less_what_static_leaves_out"]
 
 #: The selectors, of every rule the page ships, that reach a chart's values table: its caption, which repeats the
-#: figure's own title for a screen reader, and the rule hiding the table beside a drawn chart.
-_TABLE_RULES = {".chart-values caption", ".chart:not(:empty) + .chart-values"}
+#: figure's own title for a screen reader, and the rules hiding the table beside a chart the kit drew or the server did.
+_TABLE_RULES = {".chart-values caption", ".chart:not(:empty) + .chart-values", ".chart-drawn + .chart-values"}
 
 #: A chart the kit draws, as the default page writes it: every attribute double-quoted, its JSON escaped in them.
 _CHART_DIV = re.compile(r'<div class="chart" id="[^"]*" data-kind="[^"]*" data-chart="[^"]*"></div>')
@@ -70,7 +71,7 @@ def assert_static(page: str) -> None:
     assert not [tag for tag, attrs in read.tags if "chart" in _classes(attrs)], "no chart box, drawn or empty"
     tables = [at for at, (tag, attrs) in enumerate(read.tags) if "chart-values" in _classes(attrs)]
     assert len(tables) == len(figures), "every figure holds its table of values"
-    assert _selectors(read.styles) == _TABLE_RULES, "a rule that hides the table without a drawn chart beside it"
+    assert _selectors(read.styles) == _TABLE_RULES, "a rule that hides the table without a drawing beside it"
     for start, table in zip(figures, tables, strict=True):
         assert start < table, "a figure's table is its own"
         inside = read.tags[start:table]

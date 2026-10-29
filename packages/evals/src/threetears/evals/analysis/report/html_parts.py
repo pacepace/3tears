@@ -408,10 +408,10 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bo
 
     A static page writes no ``div.chart`` at all, so no script is wanted to draw one and no empty box stands where it
     would be: it draws the chart here, as inline SVG
-    (:func:`~threetears.evals.analysis.report.chart_svg.chart_drawing`), in a ``div.chart-drawn`` the hiding rule
-    (``.chart:not(:empty) + .chart-values``) never matches, so the table stays in sight under the picture. A chart
-    not drawn there (a report's interval rows, a gate matrix, a lattice, example cards) says in one line that it is
-    shown as its table.
+    (:func:`~threetears.evals.analysis.report.chart_svg.chart_drawing`), in a ``div.chart-drawn``, and its table is
+    visually hidden beside it as beside a drawn ``div.chart`` (``.chart-drawn + .chart-values``, in the drawings'
+    stylesheet; owner ruling 2026-10-29), read by a screen reader. A chart not drawn there (a report's interval rows, a gate matrix, a lattice,
+    example cards) says in one line that it is shown as its table, and that table is in sight.
 
     Without ``figcaption`` the figure carries no visible title, for a figure whose heading the page writes beside it
     (a section's headline); its table keeps the title as its caption, for a screen reader."""
