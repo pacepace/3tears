@@ -633,19 +633,19 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`inspect_campaign_bundle`** · *host contract* · function · Assemble one aspect's context bundle of a campaign and return it, without generating.
   <br>`inspect_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str, *, aspect: str | None = None) -> BundleInspection`
 - **`inter_judge_agreement`** · function · Pair each second judge's score with the first score it answers, and read agreement the way calibration does.
-  <br>`inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None = None) -> InterJudgeAgreement`
+  <br>`inter_judge_agreement(results: Iterable[ResultView], *, pass_id: str | None = None) -> InterJudgeAgreement`
 - **`judge_agreement`** · function · Pair each rating with the judge's score on its dimension, on its result or the same output, and read agreement.
-  <br>`judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]) -> JudgeAgreement`
+  <br>`judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[ResultView]) -> JudgeAgreement`
 - **`judge_drift`** · function · Read how far each dimension's scores moved from the run's judge to a second judge on the same evidence.
-  <br>`judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) -> JudgeDrift`
+  <br>`judge_drift(results: Iterable[ResultView], *, pass_id: str | None = None) -> JudgeDrift`
 - **`judge_evidence_tiers`** · function · Decide the evidence tier of every judge's readings on every dimension, from the two agreements.
   <br>`judge_evidence_tiers(agreement: JudgeAgreement, self_agreement: JudgeSelfAgreement, judged: Iterable[JudgeKey]) -> list[JudgeEvidenceTier]`
 - **`judge_key`** · function · The judge behind `result`'s score on `dim`, or None when it holds no score there.
-  <br>`judge_key(result: EvalResult, dim: str) -> JudgeKey | None`
+  <br>`judge_key(result: ResultView, dim: str) -> JudgeKey | None`
 - **`judge_kind_readings`** · function · Pool a judge campaign's trials into agreement with the labels, self-agreement and parse validity, per judge and criterion.
   <br>`judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings`
 - **`judge_self_agreement`** · function · Pair each repeated score with the first score it repeated, and read agreement the way calibration does.
-  <br>`judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement`
+  <br>`judge_self_agreement(results: Iterable[ResultView]) -> JudgeSelfAgreement`
 - **`lint_prose`** · function · Every rule `text` breaks.
   <br>`lint_prose(text: str, *, question: str | None = None, header: bool = False) -> list[StyleViolation]`
 - **`prompt_content_version`** · function · The version a generation records for its prompt — a short hash of what the model is told.

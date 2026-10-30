@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 
 from pydantic import BaseModel
@@ -827,6 +827,62 @@ class _ExcludeSwitch(InMemoryDocumentStore):
             field_in=field_in,
             **field_eq,
         )
+
+    def get_many(
+        self,
+        doc_type: str,
+        doc_ids: Sequence[str],
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        keep: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        if doc_type == "eval_result":
+            # A read keeping only named fields ships none it doesn't name, so it leaves out every field but those.
+            self.excluded.append(
+                frozenset(exclude) | (frozenset(VERBATIM_RESULT_FIELDS) - frozenset(keep) if keep else frozenset())
+            )
+        return super().get_many(doc_type, doc_ids, scope_id, exclude=exclude if self.honour_exclude else (), keep=keep)
+
+    def iter_narrowed(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> Iterator[dict[str, Any]]:
+        if doc_type == "eval_result":
+            self.excluded.append(frozenset(exclude))
+        return super().iter_narrowed(
+            doc_type,
+            scope_id,
+            exclude=exclude if self.honour_exclude else (),
+            exclude_in_items=exclude_in_items if self.honour_exclude else {},
+            field_in=field_in,
+            **field_eq,
+        )
+
+    def grouped(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        if doc_type == "eval_result":
+            # A grouped read ships only the paths its groups and measures name: record what it leaves out of the
+            # verbatim fields, so a measure over one of them shows as a read that ships it.
+            named = {path.split(".", 1)[0] for path in by} | {
+                path.split(".", 1)[0] for _, path in measures.values() if path is not None
+            }
+            self.excluded.append(frozenset(VERBATIM_RESULT_FIELDS) - named)
+        return super().grouped(doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq)
 
 
 def _as_data(answer: object) -> object:

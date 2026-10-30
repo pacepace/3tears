@@ -5868,7 +5868,7 @@
     },
     "threetears.evals.analysis.inter_judge_agreement": {
       "kind": "function",
-      "signature": "inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None = None) -> InterJudgeAgreement",
+      "signature": "inter_judge_agreement(results: Iterable[ResultView], *, pass_id: str | None = None) -> InterJudgeAgreement",
       "tier": "stable"
     },
     "threetears.evals.analysis.InterJudgeAgreement": {
@@ -5888,12 +5888,12 @@
     },
     "threetears.evals.analysis.judge_agreement": {
       "kind": "function",
-      "signature": "judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]) -> JudgeAgreement",
+      "signature": "judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[ResultView]) -> JudgeAgreement",
       "tier": "stable"
     },
     "threetears.evals.analysis.judge_drift": {
       "kind": "function",
-      "signature": "judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) -> JudgeDrift",
+      "signature": "judge_drift(results: Iterable[ResultView], *, pass_id: str | None = None) -> JudgeDrift",
       "tier": "stable"
     },
     "threetears.evals.analysis.judge_evidence_tiers": {
@@ -5903,7 +5903,7 @@
     },
     "threetears.evals.analysis.judge_key": {
       "kind": "function",
-      "signature": "judge_key(result: EvalResult, dim: str) -> JudgeKey | None",
+      "signature": "judge_key(result: ResultView, dim: str) -> JudgeKey | None",
       "tier": "stable"
     },
     "threetears.evals.analysis.judge_kind_readings": {
@@ -5918,7 +5918,7 @@
     },
     "threetears.evals.analysis.judge_self_agreement": {
       "kind": "function",
-      "signature": "judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement",
+      "signature": "judge_self_agreement(results: Iterable[ResultView]) -> JudgeSelfAgreement",
       "tier": "stable"
     },
     "threetears.evals.analysis.JudgeAgreement": {
