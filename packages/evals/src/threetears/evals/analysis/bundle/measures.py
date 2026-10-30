@@ -418,33 +418,39 @@ def _failures_as_misses(results_by_run: dict[str, list[EvalResult]]) -> dict[str
     :rtype: dict[str, list[EvalResult]]
     """
     classified_cases = {
-        result.test_case_id
-        for members in results_by_run.values()
-        for result in members
-        if isinstance(result.host_measures.get(MATCH_MEASURE), bool)
+        result.test_case_id for members in results_by_run.values() for result in members if _classifies(result)
     }
     grading_otherwise = {
         run_id
         for run_id, members in results_by_run.items()
-        if any(
-            result.test_case_id in classified_cases
-            and MATCH_MEASURE not in result.host_measures
-            and classify_result(result) is ResultOutcome.OK
-            for result in members
-        )
+        if any(result.test_case_id in classified_cases and _answered_unclassified(result) for result in members)
     }
 
     def read(run_id: str, result: EvalResult) -> EvalResult:
-        if (
-            run_id not in grading_otherwise
-            and result.test_case_id in classified_cases
-            and MATCH_MEASURE not in result.host_measures
-            and classify_result(result) is ResultOutcome.CANDIDATE_FAIL
-        ):
-            return result.model_copy(update={"host_measures": {**result.host_measures, MATCH_MEASURE: False}})
+        if run_id not in grading_otherwise and result.test_case_id in classified_cases:
+            return _as_miss(result) or result
         return result
 
     return {run_id: [read(run_id, result) for result in members] for run_id, members in results_by_run.items()}
+
+
+def _classifies(result: EvalResult) -> bool:
+    """Whether the result landed a verdict, making its case a classification (:func:`_failures_as_misses`)."""
+    return isinstance(result.host_measures.get(MATCH_MEASURE), bool)
+
+
+def _answered_unclassified(result: EvalResult) -> bool:
+    """Whether the result was delivered without failing and landed no verdict: on a classified case, its run grades by
+    something else (:func:`_failures_as_misses`)."""
+    return MATCH_MEASURE not in result.host_measures and classify_result(result) is ResultOutcome.OK
+
+
+def _as_miss(result: EvalResult) -> EvalResult | None:
+    """The result read as a miss when it is a candidate failure that landed no verdict, else ``None``; whether it is
+    read so turns on its case and its run (:func:`_failures_as_misses`)."""
+    if MATCH_MEASURE not in result.host_measures and classify_result(result) is ResultOutcome.CANDIDATE_FAIL:
+        return result.model_copy(update={"host_measures": {**result.host_measures, MATCH_MEASURE: False}})
+    return None
 
 
 def _accuracy_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool, str, str]]:

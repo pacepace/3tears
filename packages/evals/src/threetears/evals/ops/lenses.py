@@ -96,7 +96,7 @@ from threetears.evals.run.reads import list_runs
 
 from threetears.evals.analysis.lens_text import exclusion_lines
 from threetears.evals.kernel.remedies import FIND_RUN, FIND_TEMPLATE
-from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
+from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_keyed_results, iter_run_results
 
 
 def _lister(host: EvalHost) -> RunLister:
@@ -879,23 +879,22 @@ def detectable_effects(
     :rtype: DetectableEffects
     :raises ValidationFailedError: The template's earlier runs are estimated past
         :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` results by their matrices (refused before any result
-        is read), or their reads returned more than it. A launch estimate reports that in the block's
+        is read), or their result keys count more than it (refused before any result is read too). A launch estimate reports that in the block's
         ``cannot_estimate`` instead, and is still priced (:func:`launch_estimate`).
     """
     runs = [run for run in list_runs(host, scope_id) if run.template_id == template_id]
-    # Every earlier run's results are held at once to read their variances, so the read is held to the read tier's
-    # budget as the aggregates are, estimated off the listing above before any result is read (the store computing it
-    # is #996).
+    # Every result of every earlier run is read, so the read is held to the read tier's budget as the aggregates are:
+    # estimated off the listing above, then counted off the runs' keys, both before any result is read (the store
+    # computing it is #996). Memory is held by the walk below, a page at a time; the budget holds the read's time.
     hold_to_read_budget(_PLANNING_LENS, scope_id, runs, how=_NARROW_THE_PLANNING_READ)
-    results_by_run = {run.id: host.storage.query_eval_results_by_run(run.id, scope_id) for run in runs}
+    keys = {run.id: host.storage.query_eval_result_keys_by_run(run.id, scope_id) for run in runs}
     hold_to_read_budget(
-        _PLANNING_LENS,
-        scope_id,
-        runs,
-        how=_NARROW_THE_PLANNING_READ,
-        returned=sum(len(results) for results in results_by_run.values()),
+        _PLANNING_LENS, scope_id, runs, how=_NARROW_THE_PLANNING_READ, returned=sum(map(len, keys.values()))
     )
-    runs = [run for run in runs if results_by_run[run.id]]
+    runs = [run for run in runs if keys[run.id]]
+    # Each run walked a page at a time in the store's order, each result read down to its values before the next page
+    # (:func:`planning_readings`): a template's history read whole held every result of every run at once.
+    results_by_run = {run.id: iter_keyed_results(host.storage, scope_id, keys[run.id]) for run in runs}
     readings = planning_readings(runs, results_by_run, profile=host.profile) if runs else []
     family_size = max(1, len(readings)) * max(1, n_arms - 1)
     block = DetectableEffects(
