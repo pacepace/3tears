@@ -10,6 +10,9 @@ its kept trials, by id) asks the store to leave them out, so:
 - **the read names both fields** for the store to leave out, so a store that projects never ships them;
 - **its peak memory does not grow with them**: a campaign whose results carry tens of kilobytes verbatim each is
   assembled in about the memory of one whose results carry none.
+
+Each holds on both read paths: the store's own narrowed read, and the engine's reads by key and by id over a store
+behind the document-store port alone (``EngineOnlyStore``), the path a host's store without ``ResultReadings`` takes.
 """
 
 from __future__ import annotations
@@ -18,6 +21,8 @@ import tracemalloc
 from dataclasses import replace
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
+
+import pytest
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
 from threetears.evals.kernel import EvalStorage
@@ -30,6 +35,7 @@ from threetears.evals.schema import WorldEvent
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 from packages.evals.tests.factories import fixture_variant_key, make_campaign, make_eval_result, make_eval_run
+from packages.evals.tests.read_path_support import EngineOnlyStore
 
 _SCOPE = "uni-1"
 #: A host measure named as a world event's field is, which these results do not report: a whole read's walk pooled each
@@ -169,9 +175,10 @@ def _result(model: str, case_id: str, k: int, *, verbatim: int) -> EvalResult:
     )
 
 
-def _store(store: InMemoryDocumentStore, *, verbatim: int) -> tuple[EvalStorage, EvalCampaign]:
-    """Two arms over twelve cases, three repeats each, and a campaign over them."""
-    storage = EvalStorage(store)
+def _store(store: InMemoryDocumentStore, *, verbatim: int, engine: bool) -> tuple[EvalStorage, EvalCampaign]:
+    """Two arms over twelve cases, three repeats each, and a campaign over them, read through ``store`` as it is, or
+    behind the port alone (``engine``)."""
+    storage = EvalStorage(EngineOnlyStore(store) if engine else store)
     run_ids = []
     for model in ("sonnet", "haiku"):
         run = make_eval_run(
@@ -215,25 +222,32 @@ def _without_volatile(bundle: AnalysisContextBundle) -> Mapping[str, Any]:
     return {name: value for name, value in bundle.model_dump(mode="json").items() if name != "assembled_at"}
 
 
-def test_the_bundle_is_the_one_a_whole_read_of_its_results_gives() -> None:
-    slim = _bundle(*_store(InMemoryDocumentStore(), verbatim=4_000))
-    whole = _bundle(*_store(_ShipsEveryField(), verbatim=4_000))
+#: The two read paths: the store's own narrowed read, and the engine's behind the port alone.
+_PATHS = pytest.mark.parametrize("engine", (False, True), ids=("store", "engine"))
+
+
+@_PATHS
+def test_the_bundle_is_the_one_a_whole_read_of_its_results_gives(engine: bool) -> None:
+    slim = _bundle(*_store(InMemoryDocumentStore(), verbatim=4_000, engine=engine))
+    whole = _bundle(*_store(_ShipsEveryField(), verbatim=4_000, engine=engine))
 
     assert _without_volatile(slim) == _without_volatile(whole)
 
 
-def test_the_read_asks_the_store_to_leave_both_verbatim_fields_out() -> None:
+@_PATHS
+def test_the_read_asks_the_store_to_leave_both_verbatim_fields_out(engine: bool) -> None:
     store = _RecordsExclude()
-    _bundle(*_store(store, verbatim=0))
+    _bundle(*_store(store, verbatim=0, engine=engine))
 
     assert store.excluded, "the bundle read its results"
     assert all(set(VERBATIM_RESULT_FIELDS) <= set(excluded) for excluded in store.excluded), store.excluded
     assert set(VERBATIM_RESULT_FIELDS) == {"world_events", "kind_payload"}
 
 
-def test_its_peak_memory_does_not_grow_with_what_its_results_carry_verbatim() -> None:
-    bare = _store(InMemoryDocumentStore(), verbatim=0)
-    heavy = _store(InMemoryDocumentStore(), verbatim=32_000)
+@_PATHS
+def test_its_peak_memory_does_not_grow_with_what_its_results_carry_verbatim(engine: bool) -> None:
+    bare = _store(InMemoryDocumentStore(), verbatim=0, engine=engine)
+    heavy = _store(InMemoryDocumentStore(), verbatim=32_000, engine=engine)
     _bundle(*bare)
     _bundle(*heavy)
 

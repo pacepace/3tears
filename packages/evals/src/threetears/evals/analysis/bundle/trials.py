@@ -55,6 +55,7 @@ from threetears.evals.analysis.bundle.schema import (
     TrialRow,
     TrialState,
 )
+from threetears.evals.kernel.errors import ConflictError
 from threetears.evals.kernel.metrics import MATCH_MEASURE, MetricDescriptor, goal_check_measure
 from threetears.evals.kernel.result_condition import (
     candidate_failure_cause,
@@ -80,6 +81,9 @@ _AXIS_NAMES: dict[str, str] = {TRANSCRIPT_DIM_ID: "transcript", OUTCOME_DIM_ID: 
 
 #: How much worse a lost or failed trial is than a passed one, for keeping trials under the cap: lost first.
 _KEEP_WEIGHT: dict[TrialState, int] = {"lost": 2, "failed": 1, "passed": 0}
+
+#: What a caller does when a kept trial's result is gone by the time it is read whole: the runs changed under the read.
+_STALE_TRIALS_REMEDY = "a member run changed while the report was read; read it again"
 
 #: A case id ending in a number, as a generated ``{template}-{index}`` id does.
 _NUMBERED_ID = re.compile(r"(.*)-(\d+)")
@@ -235,7 +239,7 @@ def trials_and_census(
         are the bundle's ``exclusions`` and ``differential_exclusions``, which the assembler counts off the same
         :func:`~threetears.evals.kernel.result_condition.trial_exclusion`, never counted again here.
     :rtype: TrialsAndCensus
-    :raises LookupError: A kept trial's result was no longer stored when it was read whole.
+    :raises ConflictError: A kept trial's result was no longer stored when it was read whole (409).
     """
     readings = {result.id: read_trial(result, rubric_threshold=rubric_threshold, catalog=catalog) for result in results}
     position = {variant: index for index, variant in enumerate(arm_order)}
@@ -280,14 +284,17 @@ def _whole(
 ) -> dict[str, EvalResult]:
     """The kept trials' results, whole, by id, in one read; none when no trial is kept.
 
-    :raises LookupError: A kept trial's result was no longer stored: its row would show no reason the judge gave, as
+    :raises ConflictError: A kept trial's result was no longer stored: its row would show no reason the judge gave, as
         though it gave none.
     """
     if not kept:
         return {}
     whole = {result.id: result for result in load_results([result.id for result in kept])}
     if missing := [result.id for result in kept if result.id not in whole]:
-        raise LookupError(f"the kept trials' results {missing!r} were no longer stored when read whole for their rows")
+        raise ConflictError(
+            f"the kept trials' results {missing!r} were no longer stored when read whole for their rows",
+            remedy=_STALE_TRIALS_REMEDY,
+        )
     return whole
 
 
