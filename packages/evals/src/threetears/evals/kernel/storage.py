@@ -37,6 +37,7 @@ failing the list, as does the operator's scan that names such rows (:meth:`EvalS
 from __future__ import annotations
 
 import inspect
+from contextlib import contextmanager
 from dataclasses import dataclass
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from itertools import islice
@@ -192,6 +193,28 @@ _READING_PROSE_IN_ITEMS: Final[Mapping[str, Sequence[str]]] = {
     "rubric_scores": ("reasoning",),
     "judge_rescores": ("cannot_tell",),
 }
+
+
+@contextmanager
+def _read_outage(what: str, *, refusals: tuple[type[Exception], ...] = ()) -> Iterator[None]:
+    """A backend failure inside the block, raised as the :class:`StorageError` (503) every path of a reading seam
+    raises for an outage, on the store's path as on the engine's; a :class:`StorageError` already raised, and the
+    ``refusals`` the read documents as its own answer (``grouped``'s refusal of a grouping), pass through as they are.
+
+    :param what: What was being read, for the message.
+    :ptype what: str
+    :param refusals: The exception types the read raises as a refusal, never as an outage.
+    :ptype refusals: tuple[type[Exception], ...]
+    :raises StorageError: The block raised anything else.
+    """
+    passed: tuple[type[Exception], ...] = (StorageError, *refusals)
+    try:
+        yield
+    # prawduct:ok-broad-except — DB read boundary; re-raised as itself or as a typed eval error
+    except Exception as e:
+        if isinstance(e, passed):
+            raise
+        raise StorageError(f"failed to read {what}: {e}") from e
 
 
 def _runs_in(runs: list[str] | None) -> dict[str, Sequence[Any]] | None:
@@ -2865,8 +2888,8 @@ class EvalStorage:
           ``iter_narrowed`` call, made when the walk begins, with the runs as a ``field_in`` predicate, the verbatim
           fields and the judge's prose left out (``exclude``, and ``exclude_in_items`` for each score's reasoning),
           its rows hydrated a page at a time as they arrive. :attr:`ReadingsRead.store_calls` is 1 (0 for no runs
-          named). A store that offers the capability and fails raises what it raised; the read is never retried on the
-          engine's path.
+          named). A store that offers the capability and fails raises a :class:`StorageError`, as the engine's path
+          does; the read is never retried on the engine's path.
         - ``engine``, otherwise: the results' keys first, then the results by id, :data:`READINGS_PAGE` at a time, each
           page when the one before it has been walked. :attr:`ReadingsRead.store_calls` counts the key reads (one per
           run named, or one for the scope or with ``in_store_order``) and one ``get_many`` per page.
@@ -2892,9 +2915,8 @@ class EvalStorage:
         :ptype in_store_order: bool
         :return: The readings, walked once.
         :rtype: ReadingsRead
-        :raises StorageError: The store failed to answer a key read (the engine's path), or answered a read of runs
-            with a result of a run not asked for (the store's path), before any reading of the page holding it is
-            handed out.
+        :raises StorageError: The store failed to answer, on either path, or answered a read of runs with a result of
+            a run not asked for (the store's path), before any reading of the page holding it is handed out.
         :raises UnreadableResultKey: A row matched carries no readable key (the engine's path).
         """
         store = self._store
@@ -2946,7 +2968,7 @@ class EvalStorage:
         :return: The groups, the path and the store calls made: one ``grouped`` on the store's path; one key read and
             one ``get_many`` per page on the engine's; none for no runs named.
         :rtype: GroupsRead
-        :raises StorageError: The store failed to answer the key read (the engine's path).
+        :raises StorageError: The store failed to answer, on either path.
         :raises ValueError: The grouping is refused, as a store refuses it.
         :raises TypeError: A measure met a value its kind refuses, as a store refuses it.
         """
@@ -2958,7 +2980,9 @@ class EvalStorage:
                 return GroupsRead("store", 0, [])
             # Counted before it is made, so a call that raises is counted on the line too.
             served_by("store", store_calls=1)
-            with charged("store"):
+            # A refused grouping is the read's answer, raised as the engine's path raises it; anything else the store
+            # raises is an outage.
+            with charged("store"), _read_outage("the grouped results", refusals=(TypeError, ValueError)):
                 groups = store.grouped("eval_result", scope_id, by=by, measures=measures, field_in=_runs_in(runs))
             return GroupsRead("store", 1, groups)
         if runs == []:
@@ -2974,7 +2998,7 @@ class EvalStorage:
             page = ids[start : start + READINGS_PAGE]
             served_by("engine", store_calls=1)
             calls += 1
-            with charged("store"):
+            with charged("store"), _read_outage("the results to group"):
                 rows = {row.get("id"): row for row in self._store.get_many("eval_result", page, scope_id, keep=kept)}
             for result_id in page:
                 if (row := rows.get(result_id)) is not None:
@@ -3017,7 +3041,7 @@ class EvalStorage:
             place = {key.id: index for index, key in enumerate(page)}
             served_by("engine", store_calls=1)
             yield 1, []
-            with charged("store"):
+            with charged("store"), _read_outage("the results as readings"):
                 items = self._store.get_many("eval_result", list(place), scope_id, exclude=_READING_EXCLUDED)
             with charged("hydrate"):
                 results = self._hydrate_all(EvalResult, items)
@@ -3045,7 +3069,7 @@ class EvalStorage:
         served_by("store", store_calls=1)
         yield 1, []
         refuse_on_event_loop()
-        with charged("store"):
+        with charged("store"), _read_outage("the results as readings"):
             rows = store.iter_narrowed(
                 "eval_result",
                 scope_id,
@@ -3061,7 +3085,7 @@ class EvalStorage:
         try:
             while True:
                 refuse_on_event_loop()
-                with charged("store"):
+                with charged("store"), _read_outage("the results as readings"):
                     items = list(islice(rows, READINGS_PAGE))
                 if not items:
                     break
