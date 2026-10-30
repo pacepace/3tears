@@ -878,7 +878,7 @@ class FrontierResult(EvalDocumentModel):
     #: dominance test and "fastest" — and how much; ``None`` when every latency ranked was read
     #: serially (:mod:`~threetears.evals.analysis.contention`).
     contended_latency_disclosure: str | None = None
-    #: Set when the scope was past :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and only one subject's runs
+    #: Set when the scope was past :data:`~threetears.evals.analysis.reads.READING_BUDGET` and only one subject's runs
     #: were read (:func:`~threetears.evals.analysis.reads.frontier`): the sentence naming the subject and what was
     #: therefore not counted (other subjects' results in ``n_filtered_out``, results whose run is missing, and other
     #: subjects' results in each judge's evidence tier). ``None`` on a whole-scope read, and then left out of a dump,

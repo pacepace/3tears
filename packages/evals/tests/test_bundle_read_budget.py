@@ -1,14 +1,17 @@
-"""A campaign's bundle past the read tier's budget is refused before any result is read, as the aggregates are.
+"""A campaign's bundle past its read budget is refused before any result is read, as the aggregates are.
 
-The bundle holds a reading of every result of the runs it reads at once (``test_bundle_store_reads``). Until the
-store computes its aggregates (#996), a campaign whose runs' matrices (cases × k) promise more than
-``READ_TIER_ROW_BUDGET`` results is refused before that read, in the aggregates' refusal shape, naming how to narrow
-it; a campaign at the budget assembles. The estimate is read off the runs the batch run read already returned.
+The bundle holds a reading of every result of the runs it reads at once, and each fold's work on it
+(``test_bundle_store_reads``). A campaign whose runs' matrices (cases × k) promise more than ``BUNDLE_READ_BUDGET``
+results (1 GiB over the bytes per result the bundle was measured to hold, 2026-10-30) is refused before that read, in
+the aggregates' refusal shape, naming how to narrow it in plain words; a campaign at the budget assembles. The estimate
+is read off the runs the batch run read already returned. The bundle is held to its own budget, not the readings
+readers' larger one: one result past it is refused.
 
 Mutations that turn this file red (each run against a saved copy and restored from it):
 
 - ``assemble.assemble_context_bundle``: the budget held after the results are read (the refusal reads them).
 - ``reads.hold_to_read_budget``: ``>=`` for ``>`` (a campaign at the budget refused); the check skipped.
+- ``assemble.assemble_context_bundle``: held to ``READING_BUDGET`` instead of ``BUNDLE_READ_BUDGET``.
 """
 
 from __future__ import annotations
@@ -19,10 +22,9 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import READ_TIER_ROW_BUDGET
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis import reads
-from threetears.evals.analysis.reads import hold_to_read_budget
+from threetears.evals.analysis.reads import BUNDLE_READ_BUDGET, READING_BUDGET, hold_to_read_budget
 from threetears.evals.kernel import CampaignArm, ValidationFailedError
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.kernel.campaign import EvalCampaign
@@ -36,8 +38,10 @@ from packages.evals.tests.factories import (
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 _SCOPE = "uni-1"
-#: The large run's cases: at k = 3, 49,998 results by its matrix, two under the budget.
-LARGE_CASES = 16_666
+#: The large run's cases: at k = 3, three results or fewer under the budget by its matrix.
+LARGE_CASES = (BUNDLE_READ_BUDGET - 3) // 3
+#: The small run's cases that put the campaign at the budget exactly.
+AT_THE_BUDGET = BUNDLE_READ_BUDGET - 3 * LARGE_CASES
 
 
 class _ResultReadCounter(InMemoryDocumentStore):
@@ -67,8 +71,8 @@ class _ResultReadCounter(InMemoryDocumentStore):
 
 def _campaign(*, small_cases: int) -> tuple[_ResultReadCounter, EvalStorage, EvalCampaign]:
     """A campaign of two runs: one of ``small_cases`` cases, each result stored; one whose matrix is
-    :data:`LARGE_CASES` × 3 with three results stored. The estimate is ``small_cases + 49,998``, however few of the
-    large run's results are stored."""
+    :data:`LARGE_CASES` × 3 with three results stored. The estimate is ``small_cases + 3 × LARGE_CASES``, however
+    few of the large run's results are stored."""
     store = _ResultReadCounter()
     storage = EvalStorage(store)
     small = make_eval_run(
@@ -89,24 +93,30 @@ def _campaign(*, small_cases: int) -> tuple[_ResultReadCounter, EvalStorage, Eva
 
 class TestABundlePastTheReadBudgetIsRefused:
     def test_one_result_past_the_budget_is_refused_naming_how_to_narrow_it(self) -> None:
-        # 3 + 16,666 × 3 = 50,001: one past the budget.
-        store, storage, campaign = _campaign(small_cases=3)
+        store, storage, campaign = _campaign(small_cases=AT_THE_BUDGET + 1)
 
         with pytest.raises(ValidationFailedError) as refused:
             assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
 
+        assert BUNDLE_READ_BUDGET < READING_BUDGET, "held to its own budget, past which the readings readers answer"
         assert refused.value.details == {
             "runs": 2,
-            "results_estimated": READ_TIER_ROW_BUDGET + 1,
-            "result_budget": READ_TIER_ROW_BUDGET,
+            "results_estimated": BUNDLE_READ_BUDGET + 1,
+            "result_budget": BUNDLE_READ_BUDGET,
         }
-        assert "assemble_context_bundle would aggregate about 50001 results" in refused.value.message
-        assert refused.value.remedy.startswith(
-            "assemble a campaign of fewer member runs, or archive the members it need not read"
+        assert (
+            f"assemble_context_bundle would aggregate about {BUNDLE_READ_BUDGET + 1} results, past the "
+            f"{BUNDLE_READ_BUDGET} one read-tier call aggregates"
+        ) in refused.value.message
+        assert refused.value.remedy == (
+            "assemble a campaign of fewer member runs, or archive the members it need not read, or, where the call "
+            "takes one, name one aspect that reads fewer runs (aspect); the runs read now hold about "
+            f"{BUNDLE_READ_BUDGET + 1} results by their matrices (cases × k), and a call whose runs hold "
+            f"{BUNDLE_READ_BUDGET} or fewer is answered"
         )
 
     def test_the_refusal_reads_no_result(self) -> None:
-        store, storage, campaign = _campaign(small_cases=3)
+        store, storage, campaign = _campaign(small_cases=AT_THE_BUDGET + 1)
 
         with pytest.raises(ValidationFailedError):
             assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
@@ -114,8 +124,8 @@ class TestABundlePastTheReadBudgetIsRefused:
         assert store.result_reads == Counter(), "refused before any result was read"
 
     def test_a_campaign_at_the_budget_assembles_in_its_one_read_of_results(self) -> None:
-        # 2 + 16,666 × 3 = 50,000: at the budget, which a call is answered within.
-        store, storage, campaign = _campaign(small_cases=2)
+        # At the budget, which a call is answered within.
+        store, storage, campaign = _campaign(small_cases=AT_THE_BUDGET)
 
         bundle = assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
 
@@ -128,18 +138,19 @@ class TestABundlePastTheReadBudgetIsRefused:
 class TestTheBudgetHoldsAReadThatReturnedMoreThanItsRunsPromised:
     def test_a_read_past_the_budget_is_refused_naming_what_it_returned(self) -> None:
         run = make_eval_run(k_runs=1, test_case_ids=["tc-0"])
-        hold_to_read_budget("assemble_context_bundle", _SCOPE, [run], how="narrow it", returned=READ_TIER_ROW_BUDGET)
+        budget = BUNDLE_READ_BUDGET
+        hold_to_read_budget("assemble_context_bundle", _SCOPE, [run], budget=budget, how="narrow it", returned=budget)
 
         with pytest.raises(ValidationFailedError) as refused:
             hold_to_read_budget(
-                "assemble_context_bundle", _SCOPE, [run], how="narrow it", returned=READ_TIER_ROW_BUDGET + 1
+                "assemble_context_bundle", _SCOPE, [run], budget=budget, how="narrow it", returned=budget + 1
             )
 
         assert refused.value.details == {
             "runs": 1,
             "results_estimated": 1,
-            "result_budget": READ_TIER_ROW_BUDGET,
-            "results_returned": READ_TIER_ROW_BUDGET + 1,
+            "result_budget": budget,
+            "results_returned": budget + 1,
         }
 
 
@@ -175,7 +186,7 @@ class TestTheBundleCountsWhatItReads:
         storage = EvalStorage(store)
         member = _stored(storage, "run-member", cases=3, k=1)
         curated = _stored(storage, "run-curated", cases=3, k=1, archived=True)
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 5)
+        monkeypatch.setattr(reads, "BUNDLE_READ_BUDGET", 5)
         control = CampaignArm(label="control", role="control", variant_key=fixture_variant_key("sonnet"))
         store.result_reads.clear()
 
@@ -211,7 +222,7 @@ class TestTheBundleCountsWhatItReads:
                     scope_id=_SCOPE,
                 )
             )
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 3)
+        monkeypatch.setattr(reads, "BUNDLE_READ_BUDGET", 3)
 
         with pytest.raises(ValidationFailedError) as refused:
             assemble_context_bundle(make_aspect_campaign(run_ids=[run_id]), storage=storage, profile=toyhost_profile())

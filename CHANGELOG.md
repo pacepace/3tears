@@ -6,6 +6,45 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: each reader's read budget is measured; the bundle and pivot refuse sooner
+
+**Changed:** the read tier's one budget of 50,000 results is replaced by one per reader, each the bytes per result
+that reader holds at its peak against the memory one call may take (measured 2026-10-30 with tracemalloc on the
+hot-path corpus at 1x and 2x; each budget is set by the worst of the paths a host runs, the SQLite store with and
+without its narrowed reads and the memory store without them; `packages/evals/scripts/measure_read_budgets.py`
+re-measures):
+
+| Reader | Budget (results) | Bytes per result | Set by | Allowance |
+|---|---|---|---|---|
+| `history`, `frontier`, `comparison_sets`, the regression watch (`READING_BUDGET`) | 66,003 | 4,067 | SQLite, reads hidden | 256 MiB |
+| `detectable_effects`, a launch estimate's planning block (`PLANNING_READ_BUDGET`) | 37,010 | 7,253 | SQLite, reads hidden | 256 MiB |
+| `pivot` (`PIVOT_READ_BUDGET`) | 27,108 | 39,609 | SQLite | 1 GiB |
+| a campaign's bundle, so `report_read` and every analysis (`BUNDLE_READ_BUDGET`) | 28,116 | 38,189 | SQLite, reads hidden | 1 GiB |
+| `program_budget`, `orphaned_runs` (`SPEND_READ_BUDGET`) | 105,196 | 10,207 | SQLite, reads hidden | 1 GiB |
+
+What a host sees: a history, a frontier, a comparison grouping or a regression watch over a scope of up to 66,003
+results is now answered where it was refused past 50,000, and `program_budget` and `orphaned_runs` over a scope of
+up to 105,196. The spend lenses read no result, but they hold their one grouped read whole before folding it: 1,683
+bytes a result on a store offering grouped reads (SQLite), 10,207 on the engine's grouping of a store without them
+(Discodon's today), which sets their budget. Past it they refuse as the other readers do, before reading anything,
+saying no narrower call exists and where to read the spend a page at a time.
+
+**Changed, tighter:** a pivot past 27,108 results, and a campaign's bundle past 28,116 (its report, `report_read`, an
+analysis), are now refused where they were answered up to 50,000. A host with a campaign or a pivot scope between
+those figures and 50,000 narrows it (a pivot to one subject; a campaign to fewer runs, archived members or one aspect),
+as the refusal's remedy says. The planning block of a launch estimate past 37,010 earlier results says it cannot
+estimate, where it read up to 50,000; the estimate is still priced.
+
+**Changed:** `READ_TIER_ROW_BUDGET` stays, as the readings readers' budget (66,003, where it was 50,000), and is still
+the record count past which an `eval.read_tier` line is a WARNING: a pivot or an export now warns past 66,003 projected
+records, where it warned past 50,000. A refusal's text is unchanged but for its figure;
+its log line now ends `over result_budget=<figure>`, where it ended `over READ_TIER_ROW_BUDGET=<figure>`, and the
+regression watch's ERROR line reads `past its read budget of <figure>`. No remedy cites an issue number.
+
+**Changed (provisional):** `reads.hold_to_read_budget` and `reads.narrowed_read_disclosure` take a keyword-only
+`budget`. The planning read reads its runs' readings in the store's own order across them, so on the engine's path
+every run's keys are one call. The five budgets are exported from `threetears.evals.analysis` (provisional).
+
 ### evals: the campaign bundle reads its results as readings, and its kept trials whole by id
 
 **Changed:** `assemble_context_bundle` reads a campaign's results through `iter_result_readings`, so it holds each
@@ -51,11 +90,12 @@ made. They stay empty for a call that makes none of these reads; no reader reads
 launch's planning block (`detectable_effects`) read each result as its compact reading (`EvalStorage.iter_result_readings`)
 where they read whole results; `program_budget` and `orphaned_runs` read each result's spend figures (its run,
 `cost_usd`, its re-judges' `cost_usd` and `cost_roles`) off a grouped read's values (`EvalStorage.result_groups`), never
-hydrating a result. Every answer is unchanged, to the byte, and the read budget is unchanged. A narrowed read (one
+hydrating a result. Every answer is unchanged, to the byte; the read budgets are set per reader from measurement (the
+entry above). A narrowed read (one
 subject's runs) reads its runs one after another, as before; the watch's judged tiers over one subject's runs now read
 them so too, where they read them in one read in the store's order. The planning read's store calls on the engine's
-path are one key read per run (each holding that run's keys alone) and one read by id per 1,000 results, where it read
-its runs' keys a batch of runs at a time; its refusal past the read budget on what the read returned now comes once
+path are one key read of every run, in the store's order across them, and one read by id per 1,000 results, where it
+read its runs' keys a batch of runs at a time; its refusal past the read budget on what the read returned now comes once
 the read is walked. The `eval.read_tier` line of each aggregate gains `path=` (`store` or `engine`) and `store_calls=`,
 after `elapsed_ms`.
 

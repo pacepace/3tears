@@ -154,8 +154,13 @@ from threetears.evals.analysis.generator import (
 )
 from threetears.evals.kernel.numbers import ABSENT, format_number, format_signed
 from threetears.evals.analysis.reads import (
+    BUNDLE_READ_BUDGET,
     EXPORT_PAGE_RESULTS,
+    PIVOT_READ_BUDGET,
+    PLANNING_READ_BUDGET,
+    READING_BUDGET,
     READ_TIER_ROW_BUDGET,
+    SPEND_READ_BUDGET,
     compare_two_runs,
     comparison_sets,
     export_results,
@@ -717,6 +722,11 @@ __all__ = [
     "PAIRED_TEST_NAME",
     "PROJECTED_METRICS",
     "READ_TIER_ROW_BUDGET",
+    "READING_BUDGET",
+    "PIVOT_READ_BUDGET",
+    "PLANNING_READ_BUDGET",
+    "BUNDLE_READ_BUDGET",
+    "SPEND_READ_BUDGET",
     "EXPORT_PAGE_RESULTS",
     "REPORTER_KIND",
     "REPORTER_KIND_CONTRACT",

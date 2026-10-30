@@ -744,8 +744,8 @@ eval.read_tier lens=pivot scope_id=acme runs_in=12 results_in=480 records_out=28
 
 `runs_in` and `results_in` are what the call read, `records_out` the score records it projected, `cells_out`
 the pivot's cells (`refused` when the pivot was refused; absent on an export) and `elapsed_ms` its wall time.
-Once `records_out` passes `READ_TIER_ROW_BUDGET` (50,000, in `threetears.evals.analysis`) the line is logged
-at WARNING and ends `over READ_TIER_ROW_BUDGET=50000`, so you can alert on the level alone. Crossing it means
+Once `records_out` passes `READ_TIER_ROW_BUDGET` (66,003, in `threetears.evals.analysis`) the line is logged
+at WARNING and ends `over READ_TIER_ROW_BUDGET=66003`, so you can alert on the level alone. Crossing it means
 the scope has outgrown the in-Python projection, the signal to push it down into your store; it fires
 before a page is slow, and you can alert on `elapsed_ms` instead.
 
@@ -755,10 +755,19 @@ more. Past `EXPORT_PAGE_RESULTS` (1,000) it exports in pages of whole runs (`Sco
 run, so one call never holds the scope. A run past the ceiling, in the scope's pages or named alone, is exported in
 pages of whole cases of it, the cursor naming the case (`page.next_after_case_id`).
 
-The aggregating lenses (`comparison_sets`, `pivot`, `frontier`, `history`, `program_budget` and `orphaned_runs`, and
-the `scope_pivot`, `scope_frontier` and `scope_history` operations and actions over them) cannot page: part of a
-pivot, a frontier or a history reads as the whole of it. They make the same estimate and hold it to
-`READ_TIER_ROW_BUDGET`, before reading anything:
+The aggregating lenses (`comparison_sets`, `pivot`, `frontier`, `history`, `program_budget` and `orphaned_runs`,
+and the `scope_pivot`,
+`scope_frontier` and `scope_history` operations and actions over them) cannot page: part of a pivot, a frontier or a
+history reads as the whole of it. They make the same estimate and hold it to their read budget, before reading
+anything. Each budget is the bytes per result that reader holds at its peak against the memory one call may take,
+measured on the paths a host runs (`threetears.evals.analysis`): `READING_BUDGET` (66,003 results, 256 MiB) for
+`comparison_sets`,
+`frontier`, `history` and the regression watch; `PIVOT_READ_BUDGET` (27,108, 1 GiB) for `pivot`; `BUNDLE_READ_BUDGET`
+(28,116, 1 GiB) for a campaign's bundle; `PLANNING_READ_BUDGET` (37,010, 256 MiB) for a launch estimate's planning
+block; `SPEND_READ_BUDGET` (105,196, 1 GiB) for `program_budget` and `orphaned_runs`, which read each result's
+spend figures off one grouped read, never a result, but hold that read whole before folding it (1,683 bytes a result
+on a store offering grouped reads, 10,207 on a store without them, whose rows the engine groups). They take no
+filter, so past it they are refused, the remedy naming where to read the spend a page at a time.
 
 - **A scope within the budget** is read whole, as before.
 - **A scope past it** is refused (`VALIDATION_FAILED`, with `details` `runs`, `results_estimated` and
@@ -1464,7 +1473,7 @@ A judged measure fires only when every judge behind the step's scores is `calibr
 [Judges and calibration](judges-and-calibration.md)). A run that ended any other way than `completed` is
 not a point on the history, so it is never checked. The engine ships no delivery: with no watch, nothing
 is checked. A sink that raises is logged, the next alert is still delivered, and the run's status never
-changes. The watch reads the history of the run's own subject, so a scope past `READ_TIER_ROW_BUDGET` is still
+changes. The watch reads the history of the run's own subject, so a scope past `READING_BUDGET` is still
 checked wherever that subject fits; a judged alert then carries `narrowed_read_disclosure`, saying its judges were
 tiered on that subject's results alone. When the subject alone is past the budget, the watch checks nothing on the
 run and logs it at ERROR (`eval.regression watch checked nothing on run=...`), saying nothing narrower exists

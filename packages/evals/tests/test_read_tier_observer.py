@@ -4,7 +4,8 @@ The read tier projects and aggregates a whole scope in Python on every call, cal
 dozens-to-hundreds of cells. These pin that a host can see that premise being crossed: each call logs one
 ``eval.read_tier`` line naming what it read (``runs_in``, ``results_in``), what it projected
 (``records_out``), the pivot's ``cells_out`` and ``elapsed_ms``, and a call whose projection is past
-``READ_TIER_ROW_BUDGET`` logs it at WARNING, naming the constant.
+``READ_TIER_ROW_BUDGET`` (the readings readers' budget, ``READING_BUDGET``, under the name a host already reads)
+logs it at WARNING, naming the constant.
 
 Mutations that turn this file red (each run against a saved copy and restored from it):
 
@@ -193,7 +194,8 @@ class TestEveryAggregateReportsItsRead:
 
 class TestPastTheBudgetTheLineIsAWarning:
     def test_the_budget_is_stated(self) -> None:
-        assert READ_TIER_ROW_BUDGET == reads.READ_TIER_ROW_BUDGET == 50_000
+        """The name a host already reads is the readings readers' measured budget (2026-10-30)."""
+        assert READ_TIER_ROW_BUDGET == reads.READ_TIER_ROW_BUDGET == reads.READING_BUDGET == 66_003
 
     def test_a_pivot_over_the_budget_warns_and_names_it(
         self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch

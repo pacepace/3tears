@@ -6,12 +6,14 @@ so the budget a program reads is the money it spent rather than the money behind
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
-from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES
+from pydantic import create_model
+
+from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel
+from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, EvalResult
 from threetears.evals.analysis.reporting import _subject_id_of, pooled_cost_compositions
 from threetears.evals.kernel.result_reading import RescoreReading, RescoreView
 
@@ -36,6 +38,25 @@ class SpendView(Protocol):
     def cost_roles(self) -> Sequence[str] | None: ...
 
 
+#: The spend fields of a stored result, read off its row by the spend lenses.
+_SPEND_FIELDS = ("eval_run_id", "cost_usd", "judge_rescores", "cost_roles")
+
+#: The stored read of a result narrowed to its spend fields: a core document of the result's own type, its fields
+#: the result's own definitions (types, bounds and validators), so its :meth:`~CoreDocumentModel.from_dict` refuses
+#: what the result's does, a version or minor this build does not read included, with the same ``ValidationError``.
+#: Named as the result is, so a refusal reads as the result's.
+_STORED_SPEND_FIELDS: dict[str, Any] = {
+    name: (EvalResult.model_fields[name].annotation, EvalResult.model_fields[name])
+    for name in ("doc_type", "schema_version", "schema_minor", *_SPEND_FIELDS)
+}
+_StoredSpend: type[CoreDocumentModel] = create_model(
+    "EvalResult", __base__=CoreDocumentModel, __module__=__name__, **_STORED_SPEND_FIELDS
+)
+
+#: A version field the caller did not read off the row.
+_UNREAD: Any = object()
+
+
 @dataclass(frozen=True, slots=True)
 class ResultSpend:
     """One stored result's spend figures (:class:`SpendView`), read off its stored row without hydrating it.
@@ -52,33 +73,68 @@ class ResultSpend:
     cost_roles: tuple[str, ...] | None
 
     @classmethod
-    def of_stored(cls, eval_run_id: Any, cost_usd: Any, judge_rescores: Any, cost_roles: Any) -> ResultSpend:
-        """The figures as a stored row holds them, read as a hydrated result reads them: a spend as a float (a JSON
-        integer such as ``0`` is ``0.0``), an absent re-judge list as an empty one.
+    def of_stored(
+        cls,
+        eval_run_id: Any,
+        cost_usd: Any,
+        judge_rescores: Any,
+        cost_roles: Any,
+        *,
+        schema_version: Any = _UNREAD,
+        schema_minor: Any = _UNREAD,
+    ) -> ResultSpend:
+        """The figures as a stored row holds them, read as strictly as the row's hydration reads them.
+
+        Validated by the stored read of a result narrowed to these fields, with the result's own field definitions: a
+        value a hydrated result refuses (a negative spend, a role this build does not know, a malformed re-judge, a
+        version this build does not read) is refused here with the same ``ValidationError``, and a value it coerces (a
+        JSON integer spend read as a float) is coerced alike.
+
+        **A grouped read cannot tell a null from an absent field**, so neither can this: an explicit null
+        ``judge_rescores`` or ``schema_minor`` is read as absent and accepted (no re-judges; this build's minor), and an
+        absent ``cost_usd`` is read as null, unpriced, where :meth:`EvalResult.from_dict` refuses each of the three. No
+        writer produces such a row: every result is written by its model's dump, which writes each of them.
 
         :param eval_run_id: The row's ``eval_run_id``.
         :ptype eval_run_id: Any
         :param cost_usd: The row's ``cost_usd``.
         :ptype cost_usd: Any
-        :param judge_rescores: The row's ``judge_rescores``, each re-judge as stored; only its ``cost_usd`` is read.
+        :param judge_rescores: The row's ``judge_rescores``, each re-judge as stored; only its ``cost_usd`` is kept. An
+            absent list is an empty one, as the field's default reads it.
         :ptype judge_rescores: Any
         :param cost_roles: The row's ``cost_roles``.
         :ptype cost_roles: Any
+        :param schema_version: The row's ``schema_version``; left unread, the version this build writes.
+        :ptype schema_version: Any
+        :param schema_minor: The row's ``schema_minor``; left unread (or absent from the row), the minor this build
+            writes.
+        :ptype schema_minor: Any
         :return: The figures.
         :rtype: ResultSpend
+        :raises ValidationError: The figures, or the row's version, are ones a stored result's read refuses.
         """
-        rescores: Iterable[Mapping[str, Any]] = judge_rescores or ()
+        space = _StoredSpend.version_space
+        # A grouped read reads an absent field as null: each field but the spend (whose null is "unpriced") is left out
+        # when null, so it is read as the stored row's absence is read.
+        row: dict[str, Any] = {
+            "doc_type": "eval_result",
+            "schema_version": space.version if schema_version is _UNREAD else schema_version,
+            "cost_usd": cost_usd,
+        }
+        present = {
+            "eval_run_id": eval_run_id,
+            "cost_roles": cost_roles,
+            "judge_rescores": judge_rescores,
+            "schema_minor": None if schema_minor is _UNREAD else schema_minor,
+        }
+        row.update({name: value for name, value in present.items() if value is not None})
+        read: Any = _StoredSpend.from_dict(row)
         return cls(
-            eval_run_id=str(eval_run_id),
-            cost_usd=_spend(cost_usd),
-            judge_rescores=tuple(RescoreReading(cost_usd=_spend(rescore.get("cost_usd"))) for rescore in rescores),
-            cost_roles=None if cost_roles is None else tuple(str(role) for role in cost_roles),
+            eval_run_id=read.eval_run_id,
+            cost_usd=read.cost_usd,
+            judge_rescores=tuple(RescoreReading(cost_usd=rescore.cost_usd) for rescore in read.judge_rescores),
+            cost_roles=tuple(read.cost_roles),
         )
-
-
-def _spend(value: Any) -> float | None:
-    """A stored spend as the float a hydrated result holds, or ``None`` when it went unpriced."""
-    return None if value is None else float(value)
 
 
 # A run whose status a quality view drops BY DEFAULT. The read-tier quality
