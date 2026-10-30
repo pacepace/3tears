@@ -58,3 +58,5 @@ packages/agent/acl/src/threetears/agent/acl/__init__.py:ShapeAnswerOutcome  # bl
 packages/agent/acl/src/threetears/agent/acl/generation_follow.py:ShapeAnswersFollowing  # bluelabsio/14-eng-ai-bot (hub): src/aibots/hub/faces/cache_token_grants.py holds the handle it stops at shutdown
 packages/agent/acl/src/threetears/agent/acl/generation_follow.py:follow_access_shape_answers  # bluelabsio/14-eng-ai-bot (hub): src/aibots/hub/faces/cache_token_grants.py follows the tables its shape answers derive from
 packages/agent/acl/src/threetears/agent/acl/generation_follow.py:follow_caller_memberships  # bluelabsio/14-eng-ai-bot (hub): src/aibots/hub/faces/cache_token_grants.py follows each person's membership rows (their access shape)
+packages/core/src/threetears/core/utils/session_settings.py:session_settings_connection_class  # bluelabsio/14-eng-ai-bot: the hub L3 pool (src/aibots/hub/app.py) builds its connection class with it, replacing its own reset-every-release class
+packages/core/src/threetears/core/utils/__init__.py:session_settings_connection_class  # bluelabsio/14-eng-ai-bot: re-exported from threetears.core.utils for the hub L3 pool in src/aibots/hub/app.py
