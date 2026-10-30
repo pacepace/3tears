@@ -887,11 +887,12 @@ def detectable_effects(
     # Every result of every earlier run is read, so the read is held to the read tier's budget as the aggregates are:
     # estimated off the listing above before any result is read, then counted as the read is walked.
     hold_to_read_budget(_PLANNING_LENS, scope_id, runs, how=_NARROW_THE_PLANNING_READ)
-    # One read of every earlier run's results, as their compact readings, walked once, run by run in the listing's
-    # order and a page at a time, each reading read down to its values before the next page (:func:`planning_readings`):
+    # One read of every earlier run's results, as their compact readings, walked once a page at a time, in any order
+    # across runs, each reading read down to its values before the next page (:func:`planning_readings`):
     # a template's history read whole held every result of every run at once. The read holds one page of results and
     # their readings at a time; on the engine's path its key reads are one per run, each holding that run's keys alone.
     read_counts: dict[str, int] = {}
+    # TODO(W4b P4 merge): pass iter_result_readings(..., in_store_order=True): this read groups by run itself.
     walk = _counted(host.storage.iter_result_readings([run.id for run in runs], scope_id), read_counts)
     readings = planning_readings(runs, walk, profile=host.profile)
     hold_to_read_budget(

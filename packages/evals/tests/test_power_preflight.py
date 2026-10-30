@@ -40,6 +40,7 @@ from threetears.evals.analysis import assemble_context_bundle, reads
 from threetears.evals.analysis.bundle import comparisons
 from threetears.evals.analysis.bundle.comparisons import planning_readings
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
+from threetears.evals.kernel import storage as storage_module
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.result_condition import candidate_failure_cause, harness_faulted
 from threetears.evals.schema.models import EvalResult, EvalRun, RubricScore
@@ -511,7 +512,10 @@ class TestThePlanningReadHoldsAPageNotTheHistory:
             for index in range(first, last)
         }
 
-    def test_four_times_the_history_adds_its_values_not_its_results(self) -> None:
+    def test_four_times_the_history_adds_its_values_not_its_results(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The read pages by the reading seam's page (``READINGS_PAGE``, a thousand results), which this history would
+        # fit in whole; a page of one run's results makes the history twelve pages, as a live history is many.
+        monkeypatch.setattr(storage_module, "READINGS_PAGE", 30)
         host = _host()
         _store_history(host.storage, self._runs(0, 3), payload=self.PAYLOAD)
 

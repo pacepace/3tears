@@ -76,6 +76,7 @@ from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture
+from packages.evals.tests.read_path_support import EngineOnlyStore
 from packages.evals.tests.run_pages_support import BatchRecordingStore
 
 PROFILE = toyhost_profile(every_seat=True)
@@ -713,16 +714,21 @@ class TestTheRegressionWatchsJudgedTiersAreHeldToTheBudget:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         store = BatchRecordingStore()
-        watch, _ = _watched(others=3, store=store)
+        # On the engine path (the store's narrowed reads hidden), whose store calls are pinned here.
+        watch, _ = _watched(others=3, store=EngineOnlyStore(store))
         monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 2 * len(_WATCH_CASES))
         store.clear()
 
         (_, transcript) = watch.check("run-b", SCOPE)
 
         assert transcript.evidence_tier == "calibrated" and transcript.narrowed_read_disclosure is not None
-        subject_reads = [rows for named, _, rows in store.typed_reads if set(named) == {"run-a", "run-b"}]
-        assert subject_reads == [24], "the tiers read the subject's 24 in one read of both its runs"
-        assert frozenset(VERBATIM_RESULT_FIELDS) in store.excluded, "without the fields no tier reads"
+        # Each measure's history, then the tiers once, read the subject's runs' readings: each run's keys, a run at a
+        # time (two measures' histories and one tier read: three reads of the subject).
+        subject_reads = [(named, rows) for named, keys_only, rows in store.typed_reads if keys_only]
+        assert subject_reads == [(("run-a",), 12), (("run-b",), 12)] * 3, subject_reads
+        assert all(frozenset(VERBATIM_RESULT_FIELDS) <= excluded for excluded in store.excluded), (
+            "without the fields no tier reads"
+        )
 
 
 class TestTheFrontierCommand:

@@ -9,8 +9,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping
-from itertools import batched, groupby
-from operator import attrgetter
+from itertools import batched
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from threetears.evals.analysis.contention import withhold_contended_latency
@@ -214,49 +213,51 @@ def planning_readings(
 
     **Each result is read down to its values before the next page is read.** A template's history is every result of
     every run of it, so nothing here holds more than a page of results and the values read so far: ``results`` is
-    read once, lazily, run by run (a walk of the runs' readings,
-    :meth:`~threetears.evals.kernel.storage.EvalStorage.iter_result_readings`), a page of a run at a time. What reads
-    across runs (a failure that landed no verdict counts as a miss on a case another run classified,
+    read once, lazily (a walk of the runs' readings,
+    :meth:`~threetears.evals.kernel.storage.EvalStorage.iter_result_readings`), a page at a time, and each page's
+    results are read run by run. The runs' results may come in any order across runs; within a run, in the store's
+    order. What reads across runs (a failure that landed no verdict counts as a miss on a case another run classified,
     :func:`_failures_as_misses`; a dimension any result scored as a boundary is a guardrail; the scale a dimension was
-    answered on) is kept as the few facts it needs and applied once every run is read, so the readings are the ones
-    every run's results read at once give. A run none of ``results`` belongs to is read as no earlier run: nothing of
-    it, its launch scales included, is planned from.
+    answered on, the last run in ``runs`` order to answer it deciding) is kept as the few facts it needs and applied
+    once every run is read, so the readings are the ones every run's results read at once give. A run none of
+    ``results`` belongs to is read as no earlier run: nothing of it, its launch scales included, is planned from.
 
     :param runs: The earlier runs.
     :ptype runs: list[EvalRun]
-    :param results: Their results, run by run in ``runs`` order (each run's results together), each read once.
+    :param results: Their results, each read once: in any order across runs, and in the store's order within one.
     :ptype results: Iterable[ResultView]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: One entry per reading with a value, sorted by reading kind and name.
     :rtype: list[PlanningReading]
-    :raises ValueError: A result belongs to none of ``runs``, or a run's results do not come together.
+    :raises ValueError: A result belongs to none of ``runs``.
     """
     listed = {run.id: run for run in runs}
-    # The scale each template dim was answered on, as its scores carried it: laid over what each run recorded at
-    # launch once every run is read.
-    answered_scales: dict[str, RubricScale] = {}
+    # The scale each template dim was answered on, as each run's scores carried it: laid, in ``runs`` order, over what
+    # each run recorded at launch once every run is read.
+    answered_scales: dict[str, dict[str, RubricScale]] = {}
     classified_cases: set[str] = set()
     boundary: set[str] = set()
     kept: dict[str, _RunRepeats] = {}
-    for run_id, run_results in groupby(results, key=attrgetter("eval_run_id")):
-        run = listed.get(run_id)
-        if run is None or run_id in kept:
-            raise ValueError(
-                f"the planning read handed out a result of run {run_id!r} "
-                + ("that is none of the runs it read" if run is None else "apart from that run's other results")
-            )
-        run_repeats = kept[run.id] = _RunRepeats(answered_unclassified=set(), kept=[])
-        for page in batched(run_results, RUN_RESULTS_PAGE):
-            for result in page:
+    for page in batched(results, RUN_RESULTS_PAGE):
+        by_run: dict[str, list[ResultView]] = {}
+        for result in page:
+            by_run.setdefault(result.eval_run_id, []).append(result)
+        for run_id, members in by_run.items():
+            run = listed.get(run_id)
+            if run is None:
+                raise ValueError(f"the planning read handed out a result of run {run_id!r}, none of the runs it read")
+            run_repeats = kept.setdefault(run_id, _RunRepeats(answered_unclassified=set(), kept=[]))
+            run_scales = answered_scales.setdefault(run_id, {})
+            for result in members:
                 if _classifies(result):
                     classified_cases.add(result.test_case_id)
                 if _answered_unclassified(result):
                     run_repeats.answered_unclassified.add(result.test_case_id)
-            boundary |= _boundary_dimensions(page)
+            boundary |= _boundary_dimensions(members)
             # Latency read under concurrency is in no comparison (#701), so it plans none either.
-            read = withhold_contended_latency(page, profile.measures)
-            as_misses = [miss for miss in map(_as_miss, page) if miss is not None]
+            read = withhold_contended_latency(members, profile.measures)
+            as_misses = [miss for miss in map(_as_miss, members) if miss is not None]
             misses = {result.id: result for result in withhold_contended_latency(as_misses, profile.measures)}
             # A judged score is read off the judge's scores, which a verdict read as a miss leaves as they were.
             projection = project_score_records([run], read, known_run_ids=None, archived_run_ids=None, profile=profile)
@@ -264,7 +265,7 @@ def planning_readings(
             for record in projection.records:
                 judged_rows.setdefault(record.result_id, []).append(record)
                 if record.metric == METRIC_SCORE and record.rubric_dim and record.rubric_scale is not None:
-                    answered_scales[record.rubric_dim] = record.rubric_scale
+                    run_scales[record.rubric_dim] = record.rubric_scale
             # One memo per page, not per read: it holds each walked result, so a read-long memo would hold the history
             # the page-at-a-time walk exists not to hold. Within the page, each name is described once.
             with _measure_walk_memo():
@@ -280,10 +281,9 @@ def planning_readings(
                         )
                     )
     read_runs = [run for run in runs if run.id in kept]
-    scales: dict[str, RubricScale] = {
-        **{dim: scale for run in read_runs for dim, scale in run.rubric_scales.items()},
-        **answered_scales,
-    }
+    scales: dict[str, RubricScale] = {dim: scale for run in read_runs for dim, scale in run.rubric_scales.items()}
+    for run in read_runs:
+        scales.update(answered_scales[run.id])
     repeats: dict[tuple[ReadingKind, str], dict[str, dict[str, list[float]]]] = {}
     for run in read_runs:
         run_repeats = kept[run.id]
