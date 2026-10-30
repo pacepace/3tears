@@ -41,7 +41,8 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import ValidationError
@@ -65,7 +66,7 @@ from threetears.evals.analysis.lenses.pivot import PivotError, PivotTable, compu
 from threetears.evals.analysis.judge_profiles import judges_tiers
 from threetears.evals.analysis.lenses.frontier import FrontierError, compute_frontier, normalize_bar
 from threetears.evals.analysis.lenses.history import HistoryError, HistoryResult, compute_history
-from threetears.evals.analysis.lenses.program_budget import compute_program_budget
+from threetears.evals.analysis.lenses.program_budget import ResultSpend, compute_program_budget
 from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
 from threetears.evals.analysis.lenses.export import (
     ExportError,
@@ -78,7 +79,7 @@ from threetears.evals.analysis.significance import cross_subject_disclosure
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, composite_significance, difference_interval
 from threetears.evals.kernel.arguments import normalize_blank
-from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
 from threetears.evals.kernel.host.bars import PassCriterion
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.scoring import (
@@ -105,6 +106,8 @@ from threetears.evals.kernel.run_pages import (
 )
 
 if TYPE_CHECKING:
+    from threetears.evals.kernel.result_reading import GroupsRead, ReadingsRead, ReadPath, ResultView
+    from threetears.evals.schema.store_port import GroupMeasure
     from threetears.evals.kernel.storage import EvalStorage
     from threetears.evals.kernel.campaign import EvalCampaign
     from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
@@ -191,6 +194,7 @@ def _observe_read(
     *,
     cells_out: int | str | None = None,
     refused: bool = False,
+    read: _Aggregated[Any] | None = None,
 ) -> None:
     """Log one read-tier call's size and wall time, at WARNING once it is past :data:`READ_TIER_ROW_BUDGET`.
 
@@ -204,7 +208,9 @@ def _observe_read(
     ``program_budget`` and ``orphaned_runs``. Only the pivot and the export project score records themselves, so
     the others leave ``records_out`` off their line, and only a projection past the budget makes the line a
     WARNING (an aggregate's read is already held to the budget before it is made, :func:`_aggregate_results`). A
-    frontier or a history that its lens refused after the read carries ``refused=true``.
+    frontier or a history that its lens refused after the read carries ``refused=true``. An aggregate's line carries the
+    path its read took (``path=store`` for the store's own narrowed and grouped reads, ``path=engine`` for the
+    engine's reads by key and id) and the store calls it made (``store_calls=``), after ``elapsed_ms``.
 
     :param lens: The operation, as the line names it (``pivot``, ``export_results``, ``frontier``, ...).
     :ptype lens: str
@@ -222,14 +228,18 @@ def _observe_read(
     :ptype cells_out: int | str | None
     :param refused: The lens refused the call after its read.
     :ptype refused: bool
+    :param read: The aggregate's read (:func:`_aggregate_results`), whose path and store calls the line carries; ``None``
+        for an export, which reads by its own pages.
+    :ptype read: _Aggregated[Any] | None
     """
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     over = records_out is not None and records_out > READ_TIER_ROW_BUDGET
     records = "" if records_out is None else f" records_out={records_out}"
     cells = "" if cells_out is None else f" cells_out={cells_out}"
+    path = "" if read is None else f" path={read.path} store_calls={read.store_calls}"
     log.log(
         logging.WARNING if over else logging.INFO,
-        "eval.read_tier lens=%s scope_id=%s runs_in=%d results_in=%d%s%s elapsed_ms=%.1f%s%s",
+        "eval.read_tier lens=%s scope_id=%s runs_in=%d results_in=%d%s%s elapsed_ms=%.1f%s%s%s",
         lens,
         scope_id,
         runs_in,
@@ -237,6 +247,7 @@ def _observe_read(
         records,
         cells,
         elapsed_ms,
+        path,
         " refused=true" if refused else "",
         f" over READ_TIER_ROW_BUDGET={READ_TIER_ROW_BUDGET}" if over else "",
     )
@@ -289,6 +300,26 @@ class LensStore(RunResultsStore, Protocol):
 
     def load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None:
         """Load one run within a scope, whole, or ``None`` when it does not resolve there."""
+        ...
+
+    def iter_result_readings(self, run_ids: Sequence[str] | None, scope_id: str, /) -> ReadingsRead:
+        """Every result of the runs (or, with ``None``, of the scope) as its compact reading, walked once, run by run
+        in the order named and in the store's order within a run, beside the path that served the read and the store
+        calls it made (:meth:`~threetears.evals.kernel.storage.EvalStorage.iter_result_readings`)."""
+        ...
+
+    def result_groups(
+        self,
+        run_ids: Sequence[str] | None,
+        scope_id: str,
+        /,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+    ) -> GroupsRead:
+        """The results of the runs (or of the scope) grouped by ``by``, each measure computed per group, beside the
+        path that served the read and the store calls it made
+        (:meth:`~threetears.evals.kernel.storage.EvalStorage.result_groups`)."""
         ...
 
 
@@ -512,7 +543,51 @@ def narrowed_read_disclosure(subject_id: str, *, tiers: bool = False) -> str:
     )
 
 
-def _aggregate_results(
+class _Walk[T](Protocol):
+    """A read walked once, beside the path that served it and the store calls it has made so far: a
+    :class:`~threetears.evals.kernel.result_reading.ReadingsRead`, or a grouped read's rows (:class:`_SpendRows`)."""
+
+    @property
+    def path(self) -> ReadPath: ...
+    @property
+    def store_calls(self) -> int: ...
+    def __iter__(self) -> Iterator[T]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _Aggregated[T]:
+    """What an aggregate read: its rows, whether they are its narrowed runs' alone, and the path and store calls of the
+    reads it made (a whole-scope read the safety net set aside included)."""
+
+    rows: list[T]
+    narrowed: bool
+    path: ReadPath
+    store_calls: int
+
+
+def _held_to_budget[T](walk: _Walk[T]) -> tuple[list[T], int]:
+    """``walk``'s rows up to :data:`READ_TIER_ROW_BUDGET`, and how many it handed out in all.
+
+    Every row is counted, so a read past the budget reports what it returned; none past the budget is kept, so a read
+    the safety net sets aside never held more rows than the budget allows.
+    """
+    budget = READ_TIER_ROW_BUDGET
+    rows: list[T] = []
+    returned = 0
+    for row in walk:
+        returned += 1
+        if returned <= budget:
+            rows.append(row)
+    return rows, returned
+
+
+def _readings_of(storage: LensStore, scope_id: str) -> Callable[[Sequence[str] | None], _Walk[ResultView]]:
+    """The read an aggregate over results folds: each result's compact reading, of the runs named (``None``: of the
+    scope), without the verbatim fields or the judge's prose, which no aggregate reads."""
+    return lambda run_ids: storage.iter_result_readings(run_ids, scope_id)
+
+
+def _aggregate_results[T](
     storage: LensStore,
     scope_id: str,
     lens: str,
@@ -520,13 +595,21 @@ def _aggregate_results(
     *,
     narrowed: Sequence[EvalRun] | None,
     remedy: str,
-) -> tuple[list[EvalResult], bool]:
-    """The results an aggregate reads, held to :data:`READ_TIER_ROW_BUDGET` by its runs' estimate before any is read.
+    read: Callable[[Sequence[str] | None], _Walk[T]],
+) -> _Aggregated[T]:
+    """The rows an aggregate reads, held to :data:`READ_TIER_ROW_BUDGET` by its runs' estimate before any is read: the
+    one place an aggregate's read is made, its budget held and its path taken.
+
+    ``read`` is the seam the aggregate folds: the results' readings (:func:`_readings_of`), or a grouped read of the
+    figures it sums (:func:`_spend_of`). Given runs, it reads theirs, run by run in that order; given ``None``, the
+    scope's. Which path served it (the store's own narrowed and grouped reads, or the engine's reads by key and id)
+    is the seam's to choose, and is carried out on the answer.
 
     A scope whose runs (``corpus``, every run a whole-scope read can return, archived ones included) are estimated at
-    the budget or under is read whole, as before. Past it, the call's ``narrowed`` runs are read run by run when they
-    fit, and the call is refused when they do not or when it does not narrow (``None``). A read that returns more than
-    the budget is not aggregated: a whole-scope read falls back to the narrowed read, and a narrowed read is refused.
+    the budget or under is read whole, as before. Past it, the call's ``narrowed`` runs are read when they fit, and the
+    call is refused when they do not or when it does not narrow (``None``). A read that returns more than the budget is
+    not aggregated: a whole-scope read falls back to the narrowed read, and a narrowed read is refused. No read holds
+    more rows than the budget allows (:func:`_held_to_budget`).
 
     :param lens: The operation, as the refusal and its log line name it.
     :ptype lens: str
@@ -536,19 +619,21 @@ def _aggregate_results(
     :ptype narrowed: Sequence[EvalRun] | None
     :param remedy: How this call narrows, by the filters it takes (or what to read instead, when it takes none).
     :ptype remedy: str
-    :return: The results read, and whether they are the narrowed runs' alone rather than the whole scope's.
-    :rtype: tuple[list[EvalResult], bool]
+    :param read: The seam read, given the runs to read or ``None`` for the scope.
+    :ptype read: Callable[[Sequence[str] | None], _Walk[T]]
+    :return: The rows read, whether they are the narrowed runs' alone, and the path and store calls of the reads made.
+    :rtype: _Aggregated[T]
     :raises ValidationFailedError: The runs this call reads are estimated past the budget, or a read returned more.
     """
     whole = sum(_results_estimate(run) for run in corpus)
-    # Without the verbatim fields (a world's event log, a kind's payload): no aggregate reads them, and they are most of
-    # a result's bytes, so a read held to a row budget never ships them.
+    calls = 0
     if whole <= READ_TIER_ROW_BUDGET:
-        results = storage.query_eval_results(scope_id, elide=VERBATIM_RESULT_FIELDS)
-        if len(results) <= READ_TIER_ROW_BUDGET:
-            return results, False
-        returned = len(results)
-        del results
+        walk = read(None)
+        rows, returned = _held_to_budget(walk)
+        if returned <= READ_TIER_ROW_BUDGET:
+            return _Aggregated(rows, False, walk.path, walk.store_calls)
+        calls = walk.store_calls
+        del rows
         if narrowed is None:
             raise _refuse_past_budget(lens, scope_id, estimate=whole, runs=len(corpus), returned=returned, how=remedy)
         log.warning(
@@ -565,16 +650,49 @@ def _aggregate_results(
     estimate = sum(_results_estimate(run) for run in narrowed)
     if estimate > READ_TIER_ROW_BUDGET:
         raise _refuse_past_budget(lens, scope_id, estimate=estimate, runs=len(narrowed), returned=None, how=remedy)
-    results = [
-        res
-        for run in narrowed
-        for res in storage.query_eval_results_by_run(run.id, scope_id, elide=VERBATIM_RESULT_FIELDS)
-    ]
-    if len(results) > READ_TIER_ROW_BUDGET:
-        raise _refuse_past_budget(
-            lens, scope_id, estimate=estimate, runs=len(narrowed), returned=len(results), how=remedy
-        )
-    return results, True
+    walk = read([run.id for run in narrowed])
+    rows, returned = _held_to_budget(walk)
+    if returned > READ_TIER_ROW_BUDGET:
+        raise _refuse_past_budget(lens, scope_id, estimate=estimate, runs=len(narrowed), returned=returned, how=remedy)
+    return _Aggregated(rows, True, walk.path, calls + walk.store_calls)
+
+
+#: The figures the spend lenses sum, read off each stored result as a grouped read's ``values`` in one group (no
+#: ``by``), so every column comes in the order a whole read hands the results out in, and the engine adds them in it.
+_SPEND_MEASURES: dict[str, GroupMeasure] = {
+    "eval_run_id": ("values", "eval_run_id"),
+    "cost_usd": ("values", "cost_usd"),
+    "judge_rescores": ("values", "judge_rescores"),
+    "cost_roles": ("values", "cost_roles"),
+}
+
+
+class _SpendRows:
+    """A grouped read of the spend figures (:data:`_SPEND_MEASURES`), as one
+    :class:`~threetears.evals.analysis.lenses.program_budget.ResultSpend` per stored result, in the read's order."""
+
+    def __init__(self, groups: GroupsRead) -> None:
+        self.path: ReadPath = groups.path
+        self.store_calls = groups.store_calls
+        self._groups = groups.groups
+
+    def __iter__(self) -> Iterator[ResultSpend]:
+        for group in self._groups:
+            columns = [group[name] for name in _SPEND_MEASURES]
+            for (row_id, run_id), *figures in zip(*columns, strict=True):
+                if any(figure[0] != row_id for figure in figures):
+                    raise StorageError(
+                        f"a grouped read of the spend figures answered its columns out of step at result {row_id!r}: "
+                        "every column comes in the order its group's rows were read, so a row's figures share a place"
+                    )
+                (_, cost), (_, rescores), (_, roles) = figures
+                yield ResultSpend.of_stored(run_id, cost, rescores, roles)
+
+
+def _spend_of(storage: LensStore, scope_id: str) -> Callable[[Sequence[str] | None], _Walk[ResultSpend]]:
+    """The read a spend lens folds: each stored result's spend figures as a grouped read's values, never hydrated, so
+    nothing else of a result is read or held."""
+    return lambda run_ids: _SpendRows(storage.result_groups(run_ids, scope_id, by=(), measures=_SPEND_MEASURES))
 
 
 def comparison_sets(
@@ -683,8 +801,10 @@ def comparison_sets(
     # The grouping reads results only for the runs it groups, so a scope past the budget is read for those alone.
     grouped = runs if scope_run_ids is None else [run for run in runs if run.id in set(scope_run_ids)]
     corpus = list_runs(scope_id, include_archived=True)
-    # Exact when narrowed: the grouping reads no result of a run it does not group, so nothing needs disclosing.
-    results, _ = _aggregate_results(
+    # Exact when narrowed: the grouping reads no result of a run it does not group, so nothing needs disclosing. The
+    # results are read as readings: each run's measurement window is its readings' first and last ``scored_at``, and
+    # the role-pin badges hand each run's readings to the host's lever readers, which read across a run's results.
+    read = _aggregate_results(
         storage,
         scope_id,
         "comparison_sets",
@@ -692,11 +812,12 @@ def comparison_sets(
         narrowed=grouped,
         remedy="narrow it to a campaign (campaign_id), to named runs (run_ids) or to one run status (status): a "
         "narrowed grouping reads only its runs' results",
+        read=_readings_of(storage, scope_id),
     )
     grouping = compute_comparison_sets(
-        runs, results=results, full_windows=full_windows, scope_run_ids=scope_run_ids, profile=profile
+        runs, results=read.rows, full_windows=full_windows, scope_run_ids=scope_run_ids, profile=profile
     ).model_dump(mode="json")
-    _observe_read("comparison_sets", scope_id, started, len(corpus), len(results), None)
+    _observe_read("comparison_sets", scope_id, started, len(corpus), len(read.rows), None, read=read)
     return grouping
 
 
@@ -812,7 +933,7 @@ def pivot(
     # so those two counts stay exact within the subject.
     all_runs, cohort, archived_run_ids = _corpus_and_cohort(list_runs, scope_id)
     runs = [run for run in cohort if run.status == status] if status else cohort
-    results, narrowed = _aggregate_results(
+    read = _aggregate_results(
         storage,
         scope_id,
         "pivot",
@@ -820,7 +941,9 @@ def pivot(
         narrowed=_subject_runs(all_runs, subject_id or None),
         remedy="filter it to one subject (subject_filter on scope_pivot, subject_id in Python): a pivot of one "
         "subject reads only that subject's runs",
+        read=_readings_of(storage, scope_id),
     )
+    results, narrowed = read.rows, read.narrowed
     projection = project_score_records(
         runs, results, known_run_ids={run.id for run in all_runs}, archived_run_ids=archived_run_ids, profile=profile
     )
@@ -846,9 +969,9 @@ def pivot(
         # question the caller can restate (a different axis, a subject filter),
         # so a 500 would misattribute it and an empty table would read as
         # "no data" — the one answer that is definitely wrong.
-        _observe_read("pivot", scope_id, started, *observed, cells_out="refused")
+        _observe_read("pivot", scope_id, started, *observed, cells_out="refused", read=read)
         raise ValidationFailedError(e.fault, remedy=e.remedy) from e
-    _observe_read("pivot", scope_id, started, *observed, cells_out=len(table.cells))
+    _observe_read("pivot", scope_id, started, *observed, cells_out=len(table.cells), read=read)
     if narrowed and subject_id:
         return table.model_copy(update={"narrowed_read_disclosure": narrowed_read_disclosure(subject_id)})
     return table
@@ -925,7 +1048,7 @@ def frontier(
     # Every run is read then narrowed here rather than in the query, for the
     # exclusion-accounting reason spelled out in :func:`pivot`.
     all_runs, cohort, archived_run_ids = _corpus_and_cohort(list_runs, scope_id)
-    results, narrowed = _aggregate_results(
+    read = _aggregate_results(
         storage,
         scope_id,
         "frontier",
@@ -933,7 +1056,9 @@ def frontier(
         narrowed=_subject_runs(all_runs, subject),
         remedy="filter it to one subject (subject_filter on scope_frontier, subject_id in Python): a frontier of "
         "one subject reads only that subject's runs",
+        read=_readings_of(storage, scope_id),
     )
+    results, narrowed = read.rows, read.narrowed
     runs = [run for run in cohort if run.status == status] if status else cohort
     if profile is not None:
         # A listing elides host payload, and a payload-carried lever read off it would report as the subject's
@@ -956,14 +1081,14 @@ def frontier(
             control_variant_key=(control_variant_key or "").strip() or None,
         )
     except FrontierError as e:
-        _observe_read("frontier", scope_id, started, len(all_runs), len(results), None, refused=True)
+        _observe_read("frontier", scope_id, started, len(all_runs), len(results), None, refused=True, read=read)
         raise ValidationFailedError(e.fault, remedy=e.remedy) from e
     if narrowed and subject is not None:
         # Kept, and said: a judge's agreement here pooled over this subject's results alone, where a whole-scope
         # read pools every subject's, so its tier can differ from the whole read's for the same subject.
         result.narrowed_read_disclosure = narrowed_read_disclosure(subject, tiers=bool(tiers))
     dumped = result.model_dump(mode="json")
-    _observe_read("frontier", scope_id, started, len(all_runs), len(results), None)
+    _observe_read("frontier", scope_id, started, len(all_runs), len(results), None, read=read)
     return dumped
 
 
@@ -1030,7 +1155,7 @@ def history(
     # exclusion-accounting reason spelled out in :func:`pivot`.
     all_runs, cohort, archived_run_ids = _corpus_and_cohort(list_runs, scope_id)
     runs = [run for run in cohort if run.status == status] if status else cohort
-    results, narrowed = _aggregate_results(
+    read = _aggregate_results(
         storage,
         scope_id,
         "history",
@@ -1038,7 +1163,9 @@ def history(
         narrowed=_subject_runs(all_runs, subject),
         remedy="filter it to one subject (subject_filter on scope_history, subject_id in Python): a history of "
         "one subject reads only that subject's runs",
+        read=_readings_of(storage, scope_id),
     )
+    results, narrowed = read.rows, read.narrowed
     try:
         result = compute_history(
             runs,
@@ -1052,9 +1179,9 @@ def history(
             profile=profile,
         )
     except HistoryError as e:
-        _observe_read("history", scope_id, started, len(all_runs), len(results), None, refused=True)
+        _observe_read("history", scope_id, started, len(all_runs), len(results), None, refused=True, read=read)
         raise ValidationFailedError(e.fault, remedy=e.remedy) from e
-    _observe_read("history", scope_id, started, len(all_runs), len(results), None)
+    _observe_read("history", scope_id, started, len(all_runs), len(results), None, read=read)
     if narrowed and subject is not None:
         return result.model_copy(update={"narrowed_read_disclosure": narrowed_read_disclosure(subject)})
     return result
@@ -1091,7 +1218,8 @@ def program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -
     # nonzero only on an integrity gap.
     started = time.perf_counter()
     runs = list_runs(scope_id, include_archived=True)
-    results, _ = _aggregate_results(
+    # The spend figures alone, off a grouped read of the store, never a hydrated result.
+    read = _aggregate_results(
         storage,
         scope_id,
         "program_budget",
@@ -1100,9 +1228,10 @@ def program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -
         remedy="the program budget takes no filter and counts every run, archived ones too, so no narrower call "
         "exists: read the spend a page at a time from scope_export's cost_usd rows with run_status 'all', and an "
         "archived run's by naming it in export_run_ids",
+        read=_spend_of(storage, scope_id),
     )
-    budget = compute_program_budget(runs, results).model_dump(mode="json")
-    _observe_read("program_budget", scope_id, started, len(runs), len(results), None)
+    budget = compute_program_budget(runs, read.rows).model_dump(mode="json")
+    _observe_read("program_budget", scope_id, started, len(runs), len(read.rows), None, read=read)
     return budget
 
 
@@ -1130,7 +1259,8 @@ def orphaned_runs(storage: LensStore, scope_id: str, *, list_runs: RunLister) ->
     """
     started = time.perf_counter()
     runs = list_runs(scope_id, include_archived=True)
-    results, _ = _aggregate_results(
+    # The spend figures alone, off a grouped read of the store, never a hydrated result.
+    read = _aggregate_results(
         storage,
         scope_id,
         "orphaned_runs",
@@ -1138,12 +1268,15 @@ def orphaned_runs(storage: LensStore, scope_id: str, *, list_runs: RunLister) ->
         narrowed=None,
         remedy="the orphaned-runs scan takes no filter and reads every run, archived ones too, so no narrower call "
         "exists: compare the runs runs_list names with the run_ids each campaign holds",
+        read=_spend_of(storage, scope_id),
     )
     # Every campaign in the scope is every campaign that can hold one of its runs:
     # membership outside a campaign's own scope is refused at attachment.
     campaigns = storage.list_campaigns(scope_id)
-    orphans = compute_orphaned_runs(runs, results, [campaign.run_ids for campaign in campaigns]).model_dump(mode="json")
-    _observe_read("orphaned_runs", scope_id, started, len(runs), len(results), None)
+    orphans = compute_orphaned_runs(runs, read.rows, [campaign.run_ids for campaign in campaigns]).model_dump(
+        mode="json"
+    )
+    _observe_read("orphaned_runs", scope_id, started, len(runs), len(read.rows), None, read=read)
     return orphans
 
 

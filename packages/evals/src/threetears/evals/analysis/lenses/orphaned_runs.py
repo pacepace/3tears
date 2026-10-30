@@ -5,16 +5,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.analysis.reporting import _subject_id_of
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import (
-        EvalResult,
-        EvalRun,
-    )
+    from threetears.evals.analysis.lenses.program_budget import SpendView
+    from threetears.evals.schema.models import EvalRun
 
 
 class OrphanedRun(EvalBaseModel):
@@ -72,7 +71,7 @@ class OrphanedRunsResult(EvalBaseModel):
 
 def compute_orphaned_runs(
     runs: list[EvalRun],
-    results: list[EvalResult],
+    results: Sequence[SpendView],
     campaign_run_id_sets: list[list[str]],
 ) -> OrphanedRunsResult:
     """Report the runs no campaign claims, and the spend they represent.
@@ -83,7 +82,7 @@ def compute_orphaned_runs(
     :ptype runs: list[EvalRun]
     :param results: Every result in the scope; a result's ``cost_usd`` is
         attributed to its ``eval_run_id``, matching :func:`compute_program_budget`.
-    :ptype results: list[EvalResult]
+    :ptype results: Sequence[SpendView]
     :param campaign_run_id_sets: One ``run_ids`` list per campaign in the
         scope. Taken as a list of lists rather than a pre-flattened set
         so the campaign COUNT is derived from the same argument as the claimed

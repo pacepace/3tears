@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping
-from itertools import batched
+from itertools import batched, groupby
+from operator import attrgetter
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from threetears.evals.analysis.contention import withhold_contended_latency
@@ -110,6 +111,7 @@ from threetears.evals.analysis.bundle.cell_reads import (
 )
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
+    from threetears.evals.kernel.result_reading import ResultView
     from threetears.evals.schema.models import EvalRun
 
 
@@ -200,7 +202,7 @@ class _RunRepeats(NamedTuple):
 
 
 def planning_readings(
-    runs: list[EvalRun], results_by_run: Mapping[str, Iterable[EvalResult]], *, profile: HostProfile
+    runs: list[EvalRun], results: Iterable[ResultView], *, profile: HostProfile
 ) -> list[PlanningReading]:
     """Every reading an unscoped comparison family would test, with each earlier run's per-repeat values.
 
@@ -211,30 +213,41 @@ def planning_readings(
     they are held, not tested for a difference; so is latency read under concurrency, which no comparison reads.
 
     **Each result is read down to its values before the next page is read.** A template's history is every result of
-    every run of it, so nothing here holds more than a page of results and the values read so far: a lazy iterable
-    per run (a paged walk, :mod:`~threetears.evals.kernel.run_pages`) is read once, a run at a
-    time, in ``runs`` order. What reads across runs (a failure that landed no verdict counts as a miss on a case
-    another run classified, :func:`_failures_as_misses`; a dimension any result scored as a boundary is a guardrail;
-    the scale a dimension was answered on) is kept as the few facts it needs and applied once every run is read, so
-    the readings are the ones every run's results read at once give.
+    every run of it, so nothing here holds more than a page of results and the values read so far: ``results`` is
+    read once, lazily, run by run (a walk of the runs' readings,
+    :meth:`~threetears.evals.kernel.storage.EvalStorage.iter_result_readings`), a page of a run at a time. What reads
+    across runs (a failure that landed no verdict counts as a miss on a case another run classified,
+    :func:`_failures_as_misses`; a dimension any result scored as a boundary is a guardrail; the scale a dimension was
+    answered on) is kept as the few facts it needs and applied once every run is read, so the readings are the ones
+    every run's results read at once give. A run none of ``results`` belongs to is read as no earlier run: nothing of
+    it, its launch scales included, is planned from.
 
     :param runs: The earlier runs.
     :ptype runs: list[EvalRun]
-    :param results_by_run: Each run's results, each iterated once.
-    :ptype results_by_run: Mapping[str, Iterable[EvalResult]]
+    :param results: Their results, run by run in ``runs`` order (each run's results together), each read once.
+    :ptype results: Iterable[ResultView]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: One entry per reading with a value, sorted by reading kind and name.
     :rtype: list[PlanningReading]
+    :raises ValueError: A result belongs to none of ``runs``, or a run's results do not come together.
     """
-    # The scale each template dim was answered on: what each run recorded at launch, then what its scores carried.
-    scales: dict[str, RubricScale] = {dim: scale for run in runs for dim, scale in run.rubric_scales.items()}
+    listed = {run.id: run for run in runs}
+    # The scale each template dim was answered on, as its scores carried it: laid over what each run recorded at
+    # launch once every run is read.
+    answered_scales: dict[str, RubricScale] = {}
     classified_cases: set[str] = set()
     boundary: set[str] = set()
     kept: dict[str, _RunRepeats] = {}
-    for run in runs:
+    for run_id, run_results in groupby(results, key=attrgetter("eval_run_id")):
+        run = listed.get(run_id)
+        if run is None or run_id in kept:
+            raise ValueError(
+                f"the planning read handed out a result of run {run_id!r} "
+                + ("that is none of the runs it read" if run is None else "apart from that run's other results")
+            )
         run_repeats = kept[run.id] = _RunRepeats(answered_unclassified=set(), kept=[])
-        for page in batched(results_by_run.get(run.id, ()), RUN_RESULTS_PAGE):
+        for page in batched(run_results, RUN_RESULTS_PAGE):
             for result in page:
                 if _classifies(result):
                     classified_cases.add(result.test_case_id)
@@ -251,7 +264,7 @@ def planning_readings(
             for record in projection.records:
                 judged_rows.setdefault(record.result_id, []).append(record)
                 if record.metric == METRIC_SCORE and record.rubric_dim and record.rubric_scale is not None:
-                    scales[record.rubric_dim] = record.rubric_scale
+                    answered_scales[record.rubric_dim] = record.rubric_scale
             # One memo per page, not per read: it holds each walked result, so a read-long memo would hold the history
             # the page-at-a-time walk exists not to hold. Within the page, each name is described once.
             with _measure_walk_memo():
@@ -266,8 +279,13 @@ def planning_readings(
                             ),
                         )
                     )
+    read_runs = [run for run in runs if run.id in kept]
+    scales: dict[str, RubricScale] = {
+        **{dim: scale for run in read_runs for dim, scale in run.rubric_scales.items()},
+        **answered_scales,
+    }
     repeats: dict[tuple[ReadingKind, str], dict[str, dict[str, list[float]]]] = {}
-    for run in runs:
+    for run in read_runs:
         run_repeats = kept[run.id]
         grading_otherwise = _grades_otherwise(run_repeats.answered_unclassified, classified_cases)
         for kept_result in sorted(run_repeats.kept, key=lambda one: one.order):

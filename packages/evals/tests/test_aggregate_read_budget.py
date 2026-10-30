@@ -54,7 +54,9 @@ from threetears.evals.kernel.run_pages import VERBATIM_RESULT_FIELDS
 from threetears.evals.kernel import ResultKey, ValidationFailedError
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
+from threetears.evals.kernel.result_reading import GroupsRead, ReadingsRead
 from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.schema.store_port import GroupMeasure
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.quick import EXIT_REFUSED, run_cli
 from threetears.evals.ops import RegressionAlert, RegressionSink, RegressionWatch, history_text, pivot_text
@@ -138,6 +140,35 @@ class FakeCountingStore:
 
     def load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None:
         return self._inner.load_eval_run(run_id, scope_id)
+
+    def iter_result_readings(self, run_ids: Sequence[str] | None, scope_id: str, /) -> ReadingsRead:
+        read = self._inner.iter_result_readings(run_ids, scope_id)
+        if run_ids is not None:
+            self.run_reads.extend(dict.fromkeys(run_ids))
+            return read
+        # Walked here, so the whole-scope read is counted by the rows it returned, as a list read is.
+        readings = list(read)
+        self.scope_reads.append(len(readings))
+        return ReadingsRead(read.path, store_calls=read.store_calls, pages=iter([(0, readings)]))
+
+    def result_groups(
+        self,
+        run_ids: Sequence[str] | None,
+        scope_id: str,
+        /,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+    ) -> GroupsRead:
+        groups = self._inner.result_groups(run_ids, scope_id, by=by, measures=measures)
+        if run_ids is not None:
+            self.run_reads.extend(dict.fromkeys(run_ids))
+        else:
+            # Each group's rows, counted off its longest values column (every spend column is one value a row).
+            self.scope_reads.append(
+                sum(max((len(v) for v in group.values() if isinstance(v, list)), default=0) for group in groups.groups)
+            )
+        return groups
 
     def read_nothing(self) -> bool:
         """No result was read, whole-scope or by run."""
