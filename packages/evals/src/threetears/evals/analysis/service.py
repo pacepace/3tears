@@ -1600,10 +1600,12 @@ def _assembled_campaign_bundle(
     """Assemble every aspect's bundle, the campaign's arms and code's readings into the campaign bundle. Blocking.
 
     Logs one ``eval.read_tier lens=assemble_context_bundle`` line per assembly
-    (:func:`~threetears.evals.kernel.phase_log.phase_logged`). The store reads happen inside the assembly, so
-    ``fold_ms`` covers the whole of it, store reads and model rebuilding included, until the store reads charge
-    ``store_ms`` and ``hydrate_ms`` themselves; ``render_ms`` is empty, since nothing renders here. ``runs_in`` is
-    the runs the aspects' bundles summarise and ``results_in`` the results those runs produced.
+    (:func:`~threetears.evals.kernel.phase_log.phase_logged`). The results' read as readings
+    (:meth:`~threetears.evals.kernel.storage.EvalStorage.iter_result_readings`) charges its store calls to
+    ``store_ms`` and its rebuilding of results to ``hydrate_ms``, and fills ``path`` and ``store_calls``; ``fold_ms``
+    is the rest, the assembly's other store reads (runs, the kept trials, insights) included, and ``render_ms`` is
+    empty, since nothing renders here. ``runs_in`` is the runs the aspects' bundles summarise and ``results_in`` the
+    results those runs produced.
 
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
