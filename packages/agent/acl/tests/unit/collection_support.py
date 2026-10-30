@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+from threetears.core.collections.scan_cache import ScanCache
+
 __all__ = ["make_collection"]
 
 
@@ -31,6 +33,8 @@ def make_collection(
     mock_registry.get_l1_backend.return_value = None
     mock_registry.get_l3_pool.return_value = l3_pool
     mock_registry.register.return_value = None
+    # no L1: the scan cache stores nothing, as in a process that has none
+    mock_registry.scan_cache = ScanCache(None)
 
     mock_config = MagicMock()
     mock_config.collection_flush = "ALWAYS"

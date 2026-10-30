@@ -48,6 +48,7 @@ from typing import ClassVar
 from uuid import UUID, uuid7
 
 from threetears.core.collections import DeleteCascade
+from threetears.core.collections.scan_cache import ScanCacheKey
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     DATETIMETZ_TYPE,
@@ -2289,17 +2290,29 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     async def get_by_name(self, name: str) -> NamespaceEntity | None:
         """look up namespace by unique name.
 
-        searches L3 for namespace matching name. promotes found
-        namespace into L1/L2 caches.
+        A name found is held in the registry's scan cache as the row's key, and the row read by that key
+        through the collection's tiers, until ``namespaces`` is written: the broker resolves a request's
+        namespace by name for every statement it runs. A row the held key no longer names by ``name`` is
+        looked up by name again. An absent name is read from L3 every time, since a namespace can be
+        created by SQL that no collection write announces. Found rows are promoted into L1/L2.
 
         :param name: unique namespace name
         :ptype name: str
         :return: namespace entity or ``None`` if not found
         :rtype: NamespaceEntity | None
         """
-        read_ticket = self.scan_ticket()  # before the first await
         result: NamespaceEntity | None = None
-        if self.l3_pool is not None:
+        registry = self.registry
+        cache = None if registry is None else registry.scan_cache
+        key = ScanCacheKey("namespaces", "by_name", name)
+        held = None if cache is None else cache.get(key)
+        if held:
+            found = await self.get((held[0]["row_scope"], UUID(held[0]["namespace_id"])))
+            if found is not None and found.name == name:
+                result = found
+        if result is None and self.l3_pool is not None:
+            read_ticket = self.scan_ticket()  # before the first await
+            token = None if cache is None else cache.begin_read(("namespaces",))
             row = await self.l3_pool.fetchrow(
                 "SELECT * FROM namespaces WHERE name = $1",
                 name,
@@ -2308,6 +2321,12 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 data = self._coerce_row(dict(row))
                 self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
+                if cache is not None and token is not None:
+                    cache.put(
+                        key,
+                        [{"row_scope": data["row_scope"], "namespace_id": str(data["namespace_id"])}],
+                        token=token,
+                    )
         return result
 
     async def get_by_agent_id(
