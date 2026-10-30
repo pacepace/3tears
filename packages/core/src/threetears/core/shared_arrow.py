@@ -56,6 +56,7 @@ import resource
 import shutil
 import threading
 import uuid
+import weakref
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -83,11 +84,14 @@ __all__ = [
     "MappedSegment",
     "MappedTables",
     "MappedVersion",
+    "Parts",
     "SegmentSlot",
     "SharedArrowFullError",
     "SharedArrowPool",
+    "SharedArrowReader",
     "SharedArrowStore",
     "SharedLease",
+    "SharedRead",
     "SharedVersion",
     "epochs_version",
     "read_version",
@@ -113,6 +117,11 @@ _RETIRING_PREFIX: Final = ".retiring-"
 #: each table's file: Arrow IPC, file format (random access, so a reader maps it), uncompressed (so a mapped buffer
 #: IS the column, never a decompressed copy of it)
 _TABLE_SUFFIX: Final = ".arrow"
+
+#: between a table held in parts and a part's name in its file's name (``{table}@{part}.arrow``): a character no name
+#: holds, so a file names its table unambiguously. The part named ``""`` (``{table}@.arrow``) holds the table's schema
+#: and no rows, so a table of no parts still has its columns.
+_PART_SEPARATOR: Final = "@"
 
 #: what a version's and a table's name may hold: one path segment, never hidden
 _NAME_CHARS: Final = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
@@ -224,20 +233,58 @@ def _removed(path: Path) -> None:
     shutil.rmtree(gone, ignore_errors=True)
 
 
-def _directory_bytes(path: Path) -> int:
-    """the bytes the files directly in a directory hold.
+def _directory_bytes(path: Path, seen: set[tuple[int, int]] | None = None) -> int:
+    """the bytes the files directly in a directory hold, each file once however many names it has.
+
+    A version that reuses another's parts holds hard links to the same files, whose pages exist once: ``seen``, shared
+    across directories, counts each file (by device and inode) the first time it is met.
 
     :param path: the directory
     :ptype path: Path
+    :param seen: the files counted already, by (device, inode); None to count this directory alone
+    :ptype seen: set[tuple[int, int]] | None
     :return: bytes; 0 when it is gone
     :rtype: int
     """
+    counted = set() if seen is None else seen
     total = 0
     with contextlib.suppress(FileNotFoundError):  # NOSILENT: a directory removed meanwhile holds nothing
         for entry in path.iterdir():
             with contextlib.suppress(FileNotFoundError):  # NOSILENT: likewise a file
-                total += entry.stat().st_size
+                stat = entry.stat()
+                key = (stat.st_dev, stat.st_ino)
+                if key not in counted:
+                    counted.add(key)
+                    total += stat.st_size
     return total
+
+
+def _table_of(file_name: str) -> str | None:
+    """the table a version's file holds (all of it, or one part), or None for a file that is not a table's.
+
+    :param file_name: the file's name
+    :ptype file_name: str
+    :return: the table's name, or None
+    :rtype: str | None
+    """
+    if not file_name.endswith(_TABLE_SUFFIX) or file_name.startswith("."):
+        return None
+    return file_name[: -len(_TABLE_SUFFIX)].split(_PART_SEPARATOR, 1)[0]
+
+
+@dataclass(frozen=True)
+class Parts:
+    """a table published as named parts (a scope's rows each, say), so a later version can rewrite only the parts that
+    changed and share every other one with the version it was published from (:meth:`SharedArrowStore.publish`,
+    ``base=``). Readers see one table: its parts' rows, in part-name order, no row copied.
+
+    :ivar schema: the table's columns; every part written must have exactly these
+    :ivar parts: part name -> its rows (as a table may be given to :meth:`SharedArrowStore.publish`), or None to drop
+        that part of the base version's
+    """
+
+    schema: Any
+    parts: Mapping[str, Any]
 
 
 def _batches(source: Any) -> tuple[Any, Iterator[Any]]:
@@ -260,30 +307,109 @@ def _batches(source: Any) -> tuple[Any, Iterator[Any]]:
     raise TypeError(f"a shared Arrow table is a pyarrow Table or RecordBatchReader, not {type(source).__name__}")
 
 
-def _write_tables(directory: Path, tables: Mapping[str, Any], room: int) -> int:
-    """write each table as an uncompressed Arrow IPC file in ``directory``, refusing a batch that would pass ``room``.
+def _write_file(path: Path, schema: Any, batches: Iterator[Any], room: int, *, what: str) -> int:
+    """write one uncompressed Arrow IPC file, refusing a batch that would pass ``room``.
+
+    :param path: the file
+    :ptype path: Path
+    :param schema: its columns; a batch with others is refused
+    :ptype schema: pa.Schema
+    :param batches: its record batches
+    :ptype batches: Iterator[pa.RecordBatch]
+    :param room: the bytes it may take
+    :ptype room: int
+    :param what: what it holds, for an error
+    :ptype what: str
+    :return: the bytes written
+    :rtype: int
+    :raises SharedArrowFullError: when it would take more than ``room``
+    :raises ValueError: when a batch's columns are not ``schema``
+    """
+    options = ipc.IpcWriteOptions(compression=None)
+    with pa.OSFile(str(path), "wb") as sink, ipc.new_file(sink, schema, options=options) as writer:
+        for batch in batches:
+            if not batch.schema.equals(schema):
+                raise ValueError(f"{what}: a batch's columns are not the table's ({batch.schema} vs {schema})")
+            if sink.tell() + batch.nbytes > room:
+                raise SharedArrowFullError(f"{what} would pass its {room} bytes")
+            writer.write_batch(batch)
+    return path.stat().st_size
+
+
+def _file_schema(path: Path) -> Any:
+    """the columns of an Arrow IPC file.
+
+    :param path: the file
+    :ptype path: Path
+    :return: the schema
+    :rtype: pa.Schema
+    """
+    with pa.memory_map(str(path), "r") as mapped:
+        return ipc.open_file(mapped).schema
+
+
+def _write_tables(directory: Path, tables: Mapping[str, Any], room: int, base: Path | None = None) -> int:
+    """write each table as uncompressed Arrow IPC in ``directory``, refusing a batch that would pass ``room``; with a
+    ``base`` version, link in every file of it that ``tables`` does not replace.
+
+    A table given whole is one file; one given as :class:`Parts` is a schema file and a file per part, and with a base
+    holding it in parts keeps every base part ``Parts`` does not name. A table of the base that ``tables`` does not
+    name is kept whole. A linked file is the base's own (a hard link): no byte is written and none counted again.
 
     :param directory: where
     :ptype directory: Path
-    :param tables: name -> a table or a reader of its batches
-    :ptype tables: Mapping[str, pa.Table | pa.RecordBatchReader]
-    :param room: the bytes every table together may take
+    :param tables: name -> a table, a reader of its batches, what opens either, or :class:`Parts`
+    :ptype tables: Mapping[str, Any]
+    :param room: the bytes every new file together may take
     :ptype room: int
+    :param base: the version directory to keep what is not replaced from, or None
+    :ptype base: Path | None
     :return: the bytes written
     :rtype: int
     :raises SharedArrowFullError: when they would take more than ``room``
+    :raises ValueError: when a part's columns are not its table's, or a table in parts changed its columns from the
+        base's (publish it without a base)
     """
-    options = ipc.IpcWriteOptions(compression=None)
     written = 0
     for name, source in tables.items():
-        path = directory / f"{_valid_name(name, 'table')}{_TABLE_SUFFIX}"
-        schema, batches = _batches(source)
-        with pa.OSFile(str(path), "wb") as sink, ipc.new_file(sink, schema, options=options) as writer:
-            for batch in batches:
-                if written + sink.tell() + batch.nbytes > room:
-                    raise SharedArrowFullError(f"table {name!r} would pass its {room} bytes")
-                writer.write_batch(batch)
-        written += path.stat().st_size
+        _valid_name(name, "table")
+        if isinstance(source, Parts):
+            schema_file = f"{name}{_PART_SEPARATOR}{_TABLE_SUFFIX}"
+            written += _write_file(directory / schema_file, source.schema, iter(()), room - written, what=name)
+            kept: list[Path] = []
+            if base is not None and (base / schema_file).is_file():
+                if not _file_schema(base / schema_file).equals(source.schema):
+                    raise ValueError(f"table {name!r} changed its columns from the base version's; publish it whole")
+                prefix = f"{name}{_PART_SEPARATOR}"
+                kept = [
+                    entry
+                    for entry in base.iterdir()
+                    if entry.name.startswith(prefix)
+                    and entry.name != schema_file
+                    and entry.name.endswith(_TABLE_SUFFIX)
+                    and entry.name[len(prefix) : -len(_TABLE_SUFFIX)] not in source.parts
+                ]
+            for entry in kept:
+                os.link(entry, directory / entry.name)
+            for part, rows in source.parts.items():
+                if rows is None:
+                    continue
+                part_schema, batches = _batches(rows)
+                if not part_schema.equals(source.schema):
+                    raise ValueError(f"table {name!r} part {part!r}: its columns are not the table's")
+                path = directory / f"{name}{_PART_SEPARATOR}{part}{_TABLE_SUFFIX}"
+                written += _write_file(
+                    path, source.schema, batches, room - written, what=f"table {name!r} part {part!r}"
+                )
+        else:
+            schema, batches = _batches(source)
+            path = directory / f"{name}{_TABLE_SUFFIX}"
+            written += _write_file(path, schema, batches, room - written, what=f"table {name!r}")
+    if base is not None:
+        for entry in base.iterdir():
+            table = _table_of(entry.name)
+            if table is not None and table not in tables:
+                os.link(entry, directory / entry.name)
     return written
 
 
@@ -304,16 +430,20 @@ class MappedTables:
             if self._descriptor is None:
                 raise LookupError(f"shared Arrow {name!r} is gone")
         self._maps: list[Any] = []
-        tables: dict[str, Any] = {}
+        pieces: dict[str, list[Any]] = {}
         try:
-            for entry in sorted(path.iterdir()):
-                if entry.name.endswith(_TABLE_SUFFIX):
+            # sorted, so a table's schema file (``{table}@.arrow``) comes before its parts, and parts in name order
+            for entry in sorted(path.iterdir(), key=lambda each: each.name):
+                table = _table_of(entry.name)
+                if table is not None:
                     mapped = pa.memory_map(str(entry), "r")
                     self._maps.append(mapped)
-                    tables[entry.name[: -len(_TABLE_SUFFIX)]] = ipc.open_file(mapped).read_all()
+                    pieces.setdefault(table, []).append(ipc.open_file(mapped).read_all())
         except BaseException:
             self._unmap()
             raise
+        # a table in parts is its parts' chunks side by side: concatenating tables copies no buffer
+        tables = {name: held[0] if len(held) == 1 else pa.concat_tables(held) for name, held in pieces.items()}
         self.tables: Mapping[str, Any] = MappingProxyType(tables)
 
     def connect(self, *, schema: str | None = None, config: Mapping[str, Any] | None = None) -> Any:
@@ -510,7 +640,7 @@ class SharedVersion:
     :ivar name: the version's name
     :ivar path: its directory
     :ivar tables: its tables' names
-    :ivar nbytes: the bytes its files hold
+    :ivar nbytes: the bytes its files hold, counting the files it shares with other versions (:class:`Parts`)
     """
 
     name: str
@@ -527,11 +657,11 @@ def _described(path: Path) -> SharedVersion:
     :return: the version
     :rtype: SharedVersion
     """
-    files = sorted(entry for entry in path.iterdir() if entry.name.endswith(_TABLE_SUFFIX))
+    files = [entry for entry in path.iterdir() if _table_of(entry.name) is not None]
     return SharedVersion(
         name=path.name,
         path=path,
-        tables=tuple(entry.name[: -len(_TABLE_SUFFIX)] for entry in files),
+        tables=tuple(sorted({name for entry in files if (name := _table_of(entry.name)) is not None})),
         nbytes=sum(entry.stat().st_size for entry in files),
     )
 
@@ -644,8 +774,11 @@ class SharedArrowStore:
         #: one publish at a time, so the room each is given is exact
         self._publishing = threading.Lock()
         self._current: SharedVersion | None = None
-        #: the version staging directory being written now, which a sweep leaves alone
+        #: the version staging directory being written now, and the version being published, which a sweep leaves alone
         self._staging: str | None = None
+        self._pending: str | None = None
+        #: the serving process's readers of this store (:meth:`reader`), told after each publish
+        self._readers: weakref.WeakSet[SharedArrowReader] = weakref.WeakSet()
         #: slots reserved and not yet claimed or discarded, with the bytes each may take
         self._slots: dict[str, int] = {}
         #: results claimed and not yet closed
@@ -707,13 +840,14 @@ class SharedArrowStore:
         return tuple(sorted(entry.name for entry in self._segments.iterdir() if not entry.name.startswith(".")))
 
     def held_bytes(self) -> int:
-        """the bytes the directory's files hold now, staged ones included.
+        """the bytes the directory's files hold now, staged ones included, a file shared by versions once.
 
         :return: bytes
         :rtype: int
         """
+        seen: set[tuple[int, int]] = set()
         return sum(
-            _directory_bytes(entry)
+            _directory_bytes(entry, seen)
             for half in (self._versions, self._segments)
             for entry in half.iterdir()
             if entry.is_dir()
@@ -740,34 +874,58 @@ class SharedArrowStore:
             "refused": self.refused,
         }
 
-    def publish(self, version: str, tables: Mapping[str, Any]) -> SharedVersion:
+    def publish(self, version: str, tables: Mapping[str, Any], *, base: str | None = None) -> SharedVersion:
         """write ``tables`` as ``version`` and make it current; a version already present is made current as it is.
+
+        With ``base``, the new version starts as that version: every table of it not named in ``tables`` is kept, and
+        a table given as :class:`Parts` keeps every part of the base's it does not name. What is kept is the base's
+        own files, hard-linked: its pages are not copied and not counted twice, so a change to one part costs one
+        part's bytes and one part's write.
 
         :param version: the version's name (:func:`epochs_version`)
         :ptype version: str
         :param tables: name -> a ``pyarrow.Table``, a ``pyarrow.RecordBatchReader`` of its rows, or a callable taking no
             argument that returns either, called only as the write reaches the table (never when the version is
-            present already)
-        :ptype tables: Mapping[str, pa.Table | pa.RecordBatchReader | Callable[[], pa.Table | pa.RecordBatchReader]]
+            present already); or :class:`Parts` of those
+        :ptype tables: Mapping[str, Any]
+        :param base: a version the store holds to keep what ``tables`` does not replace from; None to write every
+            table whole
+        :ptype base: str | None
         :return: the version
         :rtype: SharedVersion
         :raises SharedArrowFullError: when it would pass ``max_bytes``; nothing of it is kept
-        :raises ValueError: for a version or table name that is not one plain path segment
+        :raises ValueError: for a version, table or part name that is not one plain path segment, or a part whose
+            columns are not its table's
+        :raises LookupError: when ``base`` is not held
         """
         name = _valid_name(version, "version")
-        for table in tables:
+        for table, source in tables.items():
             _valid_name(table, "table")
+            if isinstance(source, Parts):
+                for part in source.parts:
+                    _valid_name(part, "part")
         target = self._versions / name
-        with self._publishing:
-            if not (target / _LOCK_FILE).is_file():
-                self.sweep()
-                self._write_version(name, tables)
+        with self._publishing, contextlib.ExitStack() as held:
+            # named before the write, so no sweep (a lease released on another thread) retires the version between its
+            # rename into place and its being made current
             with self._state:
-                published = _described(target)
-                atomic_write_sync(self._versions / _CURRENT_FILE, name, mode=0o644)
-                self._current = published
-                self.published += 1
+                self._pending = name
+            try:
+                if not (target / _LOCK_FILE).is_file():
+                    self.sweep()
+                    # the base is held until the version is current, so no sweep retires it while it is linked
+                    base_path = None if base is None else held.enter_context(self.lease(base)).path
+                    self._write_version(name, tables, base_path)
+                with self._state:
+                    published = _described(target)
+                    atomic_write_sync(self._versions / _CURRENT_FILE, name, mode=0o644)
+                    self._current = published
+                    self.published += 1
+            finally:
+                with self._state:
+                    self._pending = None
         self.sweep()
+        self._tell_readers()
         log.info(
             "shared Arrow version published",
             extra={"extra_data": {"version": name, "bytes": published.nbytes, "held_bytes": self.held_bytes()}},
@@ -821,6 +979,42 @@ class SharedArrowStore:
         if descriptor is None:
             raise LookupError(f"shared Arrow version {held.name!r} is being retired")
         return SharedLease(held, descriptor, self.sweep)
+
+    def reader(
+        self,
+        *,
+        schema: str | None = None,
+        config: Mapping[str, Any] | None = None,
+        prepare: Callable[[Any], Any] | None = None,
+    ) -> SharedArrowReader:
+        """a reader of the current version for this process (the serving process reading what its workers read), told
+        after every publish so it lets a superseded version go as soon as its last read ends.
+
+        :param schema: the schema each read's views are made in; None for the connection's default
+        :ptype schema: str | None
+        :param config: DuckDB settings for the reader's connection (``threads``, ``memory_limit``)
+        :ptype config: Mapping[str, Any] | None
+        :param prepare: called once with each version's connection as it is mapped (to make views over its tables,
+            say); what it returns is each read's ``prepared``
+        :ptype prepare: Callable[[duckdb.DuckDBPyConnection], Any] | None
+        :return: the reader; close it when done
+        :rtype: SharedArrowReader
+        """
+        made = SharedArrowReader(self, schema=schema, config=config, prepare=prepare)
+        with self._state:
+            self._readers.add(made)
+        return made
+
+    def _tell_readers(self) -> None:
+        """tell every reader a version was published, so each lets go of a superseded one nobody reads.
+
+        :return: nothing
+        :rtype: None
+        """
+        with self._state:
+            readers = list(self._readers)
+        for each in readers:
+            each.refresh()
 
     def reserve(self, max_bytes: int) -> SegmentSlot:
         """reserve a slot for one worker's result, counted at ``max_bytes`` until it is claimed or discarded.
@@ -914,9 +1108,10 @@ class SharedArrowStore:
         :return: bytes
         :rtype: int
         """
-        held = sum(_directory_bytes(entry) for entry in self._versions.iterdir() if entry.is_dir())
+        seen: set[tuple[int, int]] = set()
+        held = sum(_directory_bytes(entry, seen) for entry in self._versions.iterdir() if entry.is_dir())
         held += sum(
-            _directory_bytes(entry)
+            _directory_bytes(entry, seen)
             for entry in self._segments.iterdir()
             if entry.is_dir() and _slot_of(entry.name) not in self._slots
         )
@@ -933,7 +1128,7 @@ class SharedArrowStore:
         current = None if self._current is None else self._current.name
         for entry in list(self._versions.iterdir()):
             name = entry.name
-            if not entry.is_dir() or name in (current, self._staging):
+            if not entry.is_dir() or name in (current, self._staging, self._pending):
                 continue
             if name.startswith(_RETIRING_PREFIX):
                 shutil.rmtree(entry, ignore_errors=True)
@@ -974,13 +1169,15 @@ class SharedArrowStore:
             elif name not in self._slots and name not in self._claimed:
                 _removed(entry)
 
-    def _write_version(self, name: str, tables: Mapping[str, Any]) -> None:
+    def _write_version(self, name: str, tables: Mapping[str, Any], base: Path | None = None) -> None:
         """write a version under a staging name and rename it into place whole; on any failure keep nothing.
 
         :param name: the version
         :ptype name: str
         :param tables: its tables
         :ptype tables: Mapping[str, Any]
+        :param base: the version directory to keep what ``tables`` does not replace from
+        :ptype base: Path | None
         :return: nothing
         :rtype: None
         :raises SharedArrowFullError: when it would pass ``max_bytes``
@@ -992,7 +1189,7 @@ class SharedArrowStore:
             room = self._max_bytes - self._committed_bytes()
         try:
             staging.mkdir()
-            _write_tables(staging, tables, room)
+            _write_tables(staging, tables, room, base)
             (staging / _LOCK_FILE).touch()
             os.rename(staging, self._versions / name)
         except SharedArrowFullError:
@@ -1006,6 +1203,225 @@ class SharedArrowStore:
             shutil.rmtree(staging, ignore_errors=True)
             with self._state:
                 self._staging = None
+
+
+@dataclass(frozen=True)
+class SharedRead:
+    """one read of a version through a :class:`SharedArrowReader`, valid for its block.
+
+    :ivar version: the version read
+    :ivar tables: table name -> the mapped table
+    :ivar cursor: a DuckDB cursor with every table as a view over its mapped Arrow, no row copied
+    :ivar prepared: what the reader's ``prepare`` returned for this version's connection; None without one
+    """
+
+    version: str
+    tables: Mapping[str, Any]
+    cursor: Any
+    prepared: Any = None
+
+
+class _HeldVersion:
+    """a version a reader holds: its lease, its mapping, a DuckDB connection with a view per table, and its reads."""
+
+    def __init__(
+        self,
+        lease: SharedLease,
+        schema: str | None,
+        config: Mapping[str, Any] | None,
+        prepare: Callable[[Any], Any] | None,
+    ) -> None:
+        self.lease = lease
+        self.name = lease.version.name
+        try:
+            self.mapped = MappedTables(self.name, lease.version.path, lock=False)
+            try:
+                self.connection = self.mapped.connect(schema=schema, config=config)
+                try:
+                    self.prepared = None if prepare is None else prepare(self.connection)
+                except BaseException:
+                    self.connection.close()
+                    raise
+            except BaseException:
+                self.mapped.close()
+                raise
+        except BaseException:
+            lease.release()
+            raise
+        self.reads = 0
+        self.superseded = False
+
+    def cursor(self) -> Any:
+        """a cursor of the connection with this version's tables registered on it (a registration is the connection's
+        own, and the views made by :meth:`MappedTables.connect` name them).
+
+        :return: the cursor; close it when done
+        :rtype: duckdb.DuckDBPyConnection
+        """
+        cursor = self.connection.cursor()
+        try:
+            for name, table in self.mapped.tables.items():
+                cursor.register(f"{_REGISTERED_PREFIX}{name}", table)
+        except BaseException:
+            cursor.close()
+            raise
+        return cursor
+
+    def close(self) -> None:
+        """close the connection, unmap the files and release the lease (whose release retires the version when it is
+        not current and nobody else holds it).
+
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            self.connection.close()
+            self.mapped.close()
+        finally:
+            self.lease.release()
+
+
+class SharedArrowReader:
+    """the current version read in place by the process that owns the store: a serving process answering from the
+    same pages its workers map, with no copy of its own. Each read takes the version current as it opens and keeps it
+    for its block, whatever is published meanwhile; a superseded version is let go when its last read ends (the
+    store tells this reader after each publish), so the store holds two versions only while a read of the old one
+    is open. Made by :meth:`SharedArrowStore.reader`.
+
+    Blocking: a read that finds a new version maps it (one file per table or part); call :meth:`read` from a worker
+    thread, never the event loop.
+
+    :param store: the store
+    :ptype store: SharedArrowStore
+    :param schema: the schema each read's views are made in; None for the connection's default
+    :ptype schema: str | None
+    :param config: DuckDB settings for the reader's connection
+    :ptype config: Mapping[str, Any] | None
+    :param prepare: called once with each version's connection as it is mapped; its answer is each read's
+        ``prepared``
+    :ptype prepare: Callable[[duckdb.DuckDBPyConnection], Any] | None
+    """
+
+    def __init__(
+        self,
+        store: SharedArrowStore,
+        *,
+        schema: str | None = None,
+        config: Mapping[str, Any] | None = None,
+        prepare: Callable[[Any], Any] | None = None,
+    ) -> None:
+        self._store = store
+        self._schema = schema
+        self._config = dict(config or {})
+        self._prepare = prepare
+        self._lock = threading.Lock()
+        self._held: _HeldVersion | None = None
+        self._closed = False
+        self.reads = 0
+        self.mapped = 0
+
+    @contextlib.contextmanager
+    def read(self) -> Iterator[SharedRead]:
+        """read the current version for the block.
+
+        :return: the read
+        :rtype: Iterator[SharedRead]
+        :raises LookupError: when nothing is published yet
+        :raises RuntimeError: after :meth:`close`
+        """
+        let_go: _HeldVersion | None = None
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("the shared Arrow reader is closed")
+            current = self._store.current
+            if current is None:
+                raise LookupError("no shared Arrow version is published yet")
+            held = self._held
+            if held is None or held.name != current.name:
+                held = _HeldVersion(self._store.lease(), self._schema, self._config, self._prepare)
+                self.mapped += 1
+                let_go = self._supersede()
+                self._held = held
+            held.reads += 1
+            self.reads += 1
+            try:
+                cursor = held.cursor()
+            except BaseException:
+                held.reads -= 1
+                raise
+        if let_go is not None:
+            let_go.close()
+        try:
+            yield SharedRead(version=held.name, tables=held.mapped.tables, cursor=cursor, prepared=held.prepared)
+        finally:
+            cursor.close()
+            with self._lock:
+                held.reads -= 1
+                done = held.superseded and held.reads == 0
+            if done:
+                held.close()
+
+    def refresh(self) -> None:
+        """let go of the version held when another is current now; a read still open keeps it until it ends.
+
+        :return: nothing
+        :rtype: None
+        """
+        with self._lock:
+            current = self._store.current
+            let_go = None
+            if self._held is not None and (current is None or self._held.name != current.name):
+                let_go = self._supersede()
+        if let_go is not None:
+            let_go.close()
+
+    def close(self) -> None:
+        """let the version go (when its open reads end) and read no more. Harmless twice.
+
+        :return: nothing
+        :rtype: None
+        """
+        with self._lock:
+            self._closed = True
+            let_go = self._supersede()
+        if let_go is not None:
+            let_go.close()
+
+    def status(self) -> dict[str, Any]:
+        """what the reader holds, as plain JSON values.
+
+        :return: the version held, its open reads, and the reads and mappings so far
+        :rtype: dict[str, Any]
+        """
+        with self._lock:
+            held = self._held
+            return {
+                "version": None if held is None else held.name,
+                "open_reads": 0 if held is None else held.reads,
+                "reads": self.reads,
+                "mapped": self.mapped,
+            }
+
+    def _supersede(self) -> _HeldVersion | None:
+        """stop handing out the held version; the caller closes what this returns (nothing while a read is open, its
+        last read closes it then). Called under ``_lock``.
+
+        :return: the version to close now, or None
+        :rtype: _HeldVersion | None
+        """
+        held, self._held = self._held, None
+        if held is None:
+            return None
+        held.superseded = True
+        return held if held.reads == 0 else None
+
+    def __enter__(self) -> SharedArrowReader:
+        return self
+
+    def __exit__(
+        self, kind: type[BaseException] | None, error: BaseException | None, trace: TracebackType | None
+    ) -> None:
+        self.close()
 
 
 def _slot_of(name: str) -> str:

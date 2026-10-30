@@ -42,6 +42,10 @@ Decisions:
 2. Results direction (slots, claim/discard, crash and abandon paths), guide `docs/shared-arrow.md`. Done.
 3. Measurement script and real-size figures. Done.
 4. Reports adoption: separate PR in the reports repo, after a 3tears release carrying this.
+5. The serving process reads the store and drops its own copy (Pace, 2026-10-30: total memory about 1x today, not
+   1.8x): `SharedArrowReader` (`store.reader()`), `Parts` + `publish(base=)` by hard link, `SharedSnapshot` (a
+   scoped snapshot published a scope's part at a time), `ScopedSnapshot.behind`, `DuckDBBackend(compressed=True)`
+   with its checkpoint on a thread of its own. Done.
 
 ## Evidence
 
@@ -70,5 +74,33 @@ Each worker maps all 1.75 GiB (RSS 1.89 GiB) and is charged its share (PSS 0.97 
 is a second copy beside the serving process's DuckDB L1, so the pod pays about 1.8x today's data memory, flat in the
 worker count; naive copies pay (1 + N)x. Publish 2.6-3.5 s, a full scan of every column 1.6-1.9 s per worker.
 
-Follow-up worth weighing, not built: the serving process could read the store too and drop its own L1 copy for the
-tables workers serve, which would bring the shared layout to about 1x.
+Chunk 5 decisions:
+
+- [DECISION] The DuckDB copy is not deleted: it is what applies each change (scope swaps, the reports' retention,
+  derived columns, rows kept apart), and Arrow files are immutable. It is held compressed (`ATTACH ':memory:'
+  (COMPRESS)`: real election extracts 513 -> 116 MiB) and never read by requests. Rewriting the snapshot backend on
+  Arrow was the alternative; too large for the gain. Told to Pace's session before building.
+- [DECISION] A version reuses the last one's unchanged parts by hard link (same inode: one set of pages, counted once
+  by inode against `max_bytes`), so a change costs one scope's write, not the copy's.
+- [DECISION] The checkpoint that compresses a change runs on the backend's own thread after the write lets go of the
+  lock: off the change's path (coordinator: the <40 s update budget must not get worse).
+- [DECISION] `SharedSnapshot` writes a scope again when its epoch moved, when no epoch names it, or when the base
+  lacks it; reads each table's scope values every publish, so nothing the copy holds is left out.
+- [DECISION] Publish and sweep race closed: the version being published is named to the sweep before its rename
+  (`_pending`), so a lease released on another thread cannot retire it before it is current.
+
+Chunk 5 evidence. Mutations (scratch, restored): hard links made copies -> 3 tests fail; inode dedupe removed -> 2;
+reader keeps a superseded version -> 4; no `_pending` guard -> 1; readers not told at publish -> 1; every scope
+rewritten -> 1; no background checkpoint -> 3; catalog attached without COMPRESS -> 1.
+
+Measured, 2026-10-30 (Linux arm64 container, `/dev/shm`, each state's rows side by side):
+
+| layout | 2 workers | 4 workers |
+|---|---|---|
+| today: one process holding the copy (PSS) | 2.17 GiB | 2.18 GiB |
+| shared: serving process + store + workers | 4.01 GiB | 4.18 GiB |
+| store: serving reads the store, copy compressed (0.18 GiB) + workers | 2.30 GiB | 2.57 GiB |
+
+Generated values compress to a twelfth, real ones to a quarter: a real copy adds about 0.3 GiB. One-state change:
+write plain 0.08-0.10 s vs compressed 0.08-0.10 s (LSF), 0.04-0.05 s both (AP); checkpoint 0.17-0.21 / 0.01-0.02 s,
+off the path; publish of the state 0.10-0.15 s, on the path. Every state published: 2.3-5.6 s (a replica's start).

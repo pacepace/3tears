@@ -73,7 +73,7 @@ def duckdb_sum(context: JobContext, table: str, column: str) -> int:
     return int(found[0])
 
 
-def _mapping_of(path: str) -> dict[str, int]:
+def mapping_of(path: str) -> dict[str, int]:
     """this process's resident and proportional bytes of one mapped file (Linux ``smaps``); empty elsewhere.
 
     :param path: the file
@@ -111,7 +111,7 @@ def shared_read(context: JobContext, table: str, column: str, signals: str, read
         if time.monotonic() > deadline:
             raise TimeoutError("the other readers never read")
         time.sleep(0.01)
-    return {"pid": os.getpid(), "sum": total, **_mapping_of(os.path.realpath(path))}
+    return {"pid": os.getpid(), "sum": total, **mapping_of(os.path.realpath(path))}
 
 
 def read_on_signal(context: JobContext, table: str, column: str, signals: str) -> int:

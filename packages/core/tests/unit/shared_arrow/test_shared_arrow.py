@@ -10,13 +10,16 @@ the worker died mid-write) leaves nothing behind. Both: the directory holds no m
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fcntl
 import os
 import sys
+import threading
 import time
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import pyarrow as pa
@@ -25,6 +28,7 @@ import pytest
 from packages.core.tests.unit.shared_arrow import jobs
 from threetears.core.shared_arrow import (
     MappedVersion,
+    Parts,
     SharedArrowFullError,
     SharedArrowPool,
     SharedArrowStore,
@@ -42,7 +46,7 @@ def _table(value: int, rows: int = ROWS) -> pa.Table:
     :return: the table
     :rtype: pa.Table
     """
-    return pa.table({"a": pa.array([value] * rows, pa.int64()), "s": pa.array([f"row-{value}"] * rows)})
+    return pa.table({"a": pa.array([value] * rows, pa.int64()), "s": pa.array([f"row-{value}"] * rows, pa.string())})
 
 
 @pytest.fixture
@@ -427,6 +431,20 @@ class TestPublishing:
         with MappedVersion(store.root, "v1") as mapped:
             assert mapped.tables["y"].column("a")[0].as_py() == 2
 
+    def test_a_sweep_between_the_rename_and_current_keeps_the_new_version(self, where: Path) -> None:
+        class SweptMidPublish(SharedArrowStore):
+            """a store whose sweep runs right after a version is renamed into place, as a lease released on another
+            thread would run it."""
+
+            def _write_version(self, name: str, tables: Any, base: Path | None = None) -> None:
+                super()._write_version(name, tables, base)
+                self.sweep()
+
+        swept = SweptMidPublish(where / "shm", max_bytes=64 << 20)
+        swept.publish("v1", {TABLE: _table(1, rows=10)})
+        swept.publish("v2", {TABLE: _table(2, rows=10)})
+        assert swept.versions() == ("v2",)
+
     @pytest.mark.parametrize("name", ["", ".hidden", "../up", "a/b", "CURRENT", "x" * 129])
     def test_a_name_is_one_plain_path_segment(self, store: SharedArrowStore, name: str) -> None:
         with pytest.raises(ValueError):
@@ -467,3 +485,257 @@ class TestThePool:
     async def test_nothing_published_runs_nothing_that_reads(self, pool: SharedArrowPool) -> None:
         with pytest.raises(LookupError):
             await pool.run(jobs.process_id)
+
+
+def _serving_sum(read: Any, table: str = TABLE, column: str = "a") -> int:
+    """the sum of one column through a serving read's DuckDB cursor.
+
+    :return: the sum
+    :rtype: int
+    """
+    found = read.cursor.execute(f'SELECT sum("{column}") FROM "{table}"').fetchone()
+    assert found is not None
+    return int(found[0])
+
+
+class TestTheServingProcessReadsInPlace:
+    async def test_the_serving_process_and_its_workers_read_one_mapping(
+        self, store: SharedArrowStore, pool: SharedArrowPool, where: Path
+    ) -> None:
+        version = store.publish("v1", {TABLE: _table(3)})
+        path = os.path.realpath(version.path / f"{TABLE}.arrow")
+        signals = str(where / "signals")
+        reader = store.reader()
+        try:
+            before = pa.total_allocated_bytes()
+            with reader.read() as read:
+                assert read.version == "v1"
+                assert _serving_sum(read) == 3 * ROWS
+                assert pa.total_allocated_bytes() - before < read.tables[TABLE].nbytes / 10, (
+                    "no copy in the serving process"
+                )
+                answers = [
+                    result.value
+                    for result in await asyncio.gather(
+                        *(pool.run(jobs.shared_read, TABLE, "a", signals, 3, path) for _ in range(3))
+                    )
+                ]
+                assert {answer["sum"] for answer in answers} == {3 * ROWS}
+                assert os.getpid() not in {answer["pid"] for answer in answers}
+                if sys.platform.startswith("linux"):
+                    # four processes map the file; each is charged a share of the pages it has resident
+                    serving = jobs.mapping_of(path)
+                    assert serving["rss"] >= ROWS * 8 * 0.9
+                    assert serving["pss"] <= serving["rss"] / 2
+        finally:
+            reader.close()
+
+    def test_a_read_keeps_its_version_across_a_swap_and_the_old_goes_when_it_ends(
+        self, store: SharedArrowStore
+    ) -> None:
+        store.publish("v1", {TABLE: _table(1)})
+        reader = store.reader(schema="s")
+        with contextlib.ExitStack() as reads:
+            old = reads.enter_context(reader.read())
+            store.publish("v2", {TABLE: _table(2)})
+            assert set(store.versions()) == {"v1", "v2"}, "v1 is kept while a serving read is open on it"
+            assert old.cursor.execute(f'SELECT sum(a) FROM s."{TABLE}"').fetchone() == (1 * ROWS,)
+            with reader.read() as new:
+                assert new.version == "v2"
+                assert new.cursor.execute(f'SELECT sum(a) FROM s."{TABLE}"').fetchone() == (2 * ROWS,)
+            assert set(store.versions()) == {"v1", "v2"}
+        assert store.versions() == ("v2",), "v1 retired once its last serving read ended"
+        assert reader.status()["version"] == "v2"
+        reader.close()
+
+    def test_an_idle_reader_lets_a_superseded_version_go_when_the_next_is_published(
+        self, store: SharedArrowStore
+    ) -> None:
+        store.publish("v1", {TABLE: _table(1)})
+        reader = store.reader()
+        with reader.read():
+            pass
+        assert reader.status()["version"] == "v1"
+        store.publish("v2", {TABLE: _table(2)})
+        assert store.versions() == ("v2",), "the reader let v1 go at the publish, not at its next read"
+        assert reader.status()["version"] is None
+        with reader.read() as read:
+            assert _serving_sum(read) == 2 * ROWS
+        reader.close()
+        store.publish("v3", {TABLE: _table(3)})
+        assert store.versions() == ("v3",)
+
+    async def test_a_worker_and_the_serving_reader_hold_their_versions_apart(
+        self, store: SharedArrowStore, pool: SharedArrowPool, where: Path
+    ) -> None:
+        signals = where / "signals"
+        store.publish("v1", {TABLE: _table(1)})
+        reader = store.reader()
+        reading = asyncio.ensure_future(pool.run(jobs.read_on_signal, TABLE, "a", str(signals)))
+        await _until(lambda: (signals / "started").exists(), "the worker mapped v1")
+        store.publish("v2", {TABLE: _table(2)})
+        with reader.read() as read:
+            assert _serving_sum(read) == 2 * ROWS
+            (signals / "go").touch()
+            assert (await reading).value == 1 * ROWS, "the worker read v1 whole"
+            await _until(lambda: store.versions() == ("v2",), "v1 retired once the worker let it go")
+        reader.close()
+        assert store.versions() == ("v2",), "the current version stays after the reader closes"
+
+    def test_reads_on_many_threads_across_publishes_each_see_one_version(self, store: SharedArrowStore) -> None:
+        store.publish("v0", {TABLE: _table(0, rows=10_000)})
+        reader = store.reader()
+        seen: list[tuple[str, int]] = []
+        failures: list[BaseException] = []
+        stop = threading.Event()
+
+        def read_until_stopped() -> None:
+            try:
+                while not stop.is_set():
+                    with reader.read() as read:
+                        seen.append((read.version, _serving_sum(read)))
+            except BaseException as exc:  # noqa: BLE001 - the test reports it
+                failures.append(exc)
+
+        threads = [threading.Thread(target=read_until_stopped) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for value in range(1, 8):
+            store.publish(f"v{value}", {TABLE: _table(value, rows=10_000)})
+            time.sleep(0.02)
+        stop.set()
+        for thread in threads:
+            thread.join()
+        assert not failures
+        assert all(total == int(name[1:]) * 10_000 for name, total in seen), "every read saw one version whole"
+        reader.close()
+        assert store.versions() == ("v7",), "every superseded version retired"
+
+    def test_each_version_is_prepared_once_and_its_views_serve_every_read(self, store: SharedArrowStore) -> None:
+        prepared: list[str] = []
+
+        def views(connection: Any) -> str:
+            connection.execute(f'CREATE VIEW doubled AS SELECT a * 2 AS a FROM "{TABLE}"')
+            prepared.append("made")
+            return f"views-{len(prepared)}"
+
+        store.publish("v1", {TABLE: _table(1, rows=10)})
+        reader = store.reader(prepare=views)
+        for _ in range(3):
+            with reader.read() as read:
+                assert read.prepared == "views-1"
+                assert read.cursor.execute("SELECT sum(a) FROM doubled").fetchone() == (20,)
+        store.publish("v2", {TABLE: _table(2, rows=10)})
+        with reader.read() as read:
+            assert read.prepared == "views-2"
+            assert read.cursor.execute("SELECT sum(a) FROM doubled").fetchone() == (40,)
+        assert prepared == ["made", "made"]
+        reader.close()
+
+    def test_a_prepare_that_fails_holds_nothing(self, store: SharedArrowStore) -> None:
+        def broken(connection: Any) -> None:
+            raise RuntimeError("no views")
+
+        store.publish("v1", {TABLE: _table(1, rows=10)})
+        reader = store.reader(prepare=broken)
+        with pytest.raises(RuntimeError, match="no views"), reader.read():
+            pass
+        store.publish("v2", {TABLE: _table(2, rows=10)})
+        assert store.versions() == ("v2",), "the failed mapping released its lease"
+        reader.close()
+
+    def test_nothing_published_is_nothing_to_read_and_a_closed_reader_reads_nothing(
+        self, store: SharedArrowStore
+    ) -> None:
+        reader = store.reader()
+        with pytest.raises(LookupError), reader.read():
+            pass
+        store.publish("v1", {TABLE: _table(1, rows=10)})
+        reader.close()
+        with pytest.raises(RuntimeError), reader.read():
+            pass
+
+
+def _parts(values: dict[str, int], rows: int = 1_000) -> Parts:
+    """a table in parts, each part's ``a`` its value.
+
+    :return: the parts
+    :rtype: Parts
+    """
+    return Parts(schema=_table(0, rows=0).schema, parts={part: _table(value, rows) for part, value in values.items()})
+
+
+def _inode(store: SharedArrowStore, version: str, file_name: str) -> int:
+    return (store.root / "versions" / version / file_name).stat().st_ino
+
+
+class TestPartsAreSharedAcrossVersions:
+    def test_a_version_rewrites_only_the_parts_that_changed(self, store: SharedArrowStore) -> None:
+        first = store.publish("v1", {TABLE: _parts({"VA": 1, "GA": 2, "TX": 3}), "whole": _table(5, rows=10)})
+        with store.lease("v1"):
+            store.publish(
+                "v2",
+                {TABLE: Parts(schema=_table(0, rows=0).schema, parts={"GA": _table(20, 1_000), "TX": None})},
+                base="v1",
+            )
+            assert _inode(store, "v1", "t@VA.arrow") == _inode(store, "v2", "t@VA.arrow"), "VA is the same file"
+            assert _inode(store, "v1", "t@GA.arrow") != _inode(store, "v2", "t@GA.arrow")
+            assert not (store.root / "versions" / "v2" / "t@TX.arrow").exists(), "TX was dropped"
+            assert _inode(store, "v1", "whole.arrow") == _inode(store, "v2", "whole.arrow"), "a table not named is kept"
+            # the shared file counted once: v1 whole, plus v2's own GA part and schema file
+            v2_own = sum((store.root / "versions" / "v2" / name).stat().st_size for name in ("t@GA.arrow", "t@.arrow"))
+            assert store.held_bytes() == first.nbytes + v2_own
+        reader = store.reader()
+        with reader.read() as read:
+            assert read.tables[TABLE].num_rows == 2_000
+            assert read.cursor.execute(f'SELECT sum(a) FROM "{TABLE}"').fetchone() == ((1 + 20) * 1_000,)
+            assert read.cursor.execute('SELECT sum(a) FROM "whole"').fetchone() == (50,)
+        reader.close()
+        assert store.versions() == ("v2",)
+
+    def test_shared_files_are_counted_once_against_the_bound(self, where: Path) -> None:
+        # room for one version and a part, never two versions whole
+        one = _parts({f"S{index}": index for index in range(8)}, rows=20_000)
+        probe = SharedArrowStore(where / "probe", max_bytes=1 << 30).publish("p", {TABLE: one})
+        bounded = SharedArrowStore(where / "bounded", max_bytes=int(probe.nbytes * 1.3))
+        bounded.publish("v1", {TABLE: one})
+        with bounded.lease("v1"):
+            changed = Parts(schema=one.schema, parts={"S0": _table(100, 20_000)})
+            bounded.publish("v2", {TABLE: changed}, base="v1")
+            assert bounded.held_bytes() < probe.nbytes * 1.3
+            with pytest.raises(SharedArrowFullError):
+                bounded.publish("v3", {TABLE: one})
+
+    async def test_a_worker_reads_a_table_in_parts(self, store: SharedArrowStore, pool: SharedArrowPool) -> None:
+        store.publish("v1", {TABLE: _parts({"VA": 1, "GA": 2})})
+        assert (await pool.run(jobs.duckdb_sum, TABLE, "a")).value == 3 * 1_000
+
+    def test_a_table_of_no_parts_has_its_columns_and_no_rows(self, store: SharedArrowStore) -> None:
+        store.publish("v1", {TABLE: Parts(schema=_table(0, rows=0).schema, parts={})})
+        with MappedVersion(store.root, "v1") as mapped:
+            assert mapped.tables[TABLE].num_rows == 0
+            assert mapped.tables[TABLE].schema.names == ["a", "s"]
+
+    def test_a_part_with_other_columns_is_refused_and_nothing_kept(self, store: SharedArrowStore) -> None:
+        wrong = Parts(schema=_table(0, rows=0).schema, parts={"VA": pa.table({"b": [1]})})
+        with pytest.raises(ValueError, match="columns"):
+            store.publish("v1", {TABLE: wrong})
+        assert store.versions() == ()
+        assert _hidden(store) == []
+
+    def test_a_base_whose_columns_differ_is_refused(self, store: SharedArrowStore) -> None:
+        store.publish("v1", {TABLE: _parts({"VA": 1})})
+        other = pa.schema([("a", pa.int64())])
+        with pytest.raises(ValueError, match="changed its columns"):
+            store.publish("v2", {TABLE: Parts(schema=other, parts={"GA": pa.table({"a": [1]})})}, base="v1")
+        assert store.versions() == ("v1",)
+
+    def test_a_base_not_held_is_refused(self, store: SharedArrowStore) -> None:
+        with pytest.raises(LookupError):
+            store.publish("v1", {TABLE: _parts({"VA": 1})}, base="v0")
+        assert store.versions() == ()
+
+    @pytest.mark.parametrize("part", ["", ".x", "a/b", "a@b"])
+    def test_a_part_name_is_one_plain_path_segment(self, store: SharedArrowStore, part: str) -> None:
+        with pytest.raises(ValueError):
+            store.publish("v1", {TABLE: Parts(schema=_table(0, rows=0).schema, parts={part: _table(1, rows=1)})})

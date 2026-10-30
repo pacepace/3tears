@@ -29,10 +29,23 @@ every process that reads them. Guide: `docs/shared-arrow.md`.
 - `max_bytes` bounds every version and result together (an open slot counts at its most); a publish, reservation
   or worker write past it raises `SharedArrowFullError` and keeps nothing.
 
-Measured on Linux with the reports pod's dev tables (9.0M rows, real column types, generated values): one process
-holding them in DuckDB is 2.24 GiB PSS; that process, the published store (1.75 GiB) and four workers scanning every
-column is 4.29 GiB, each worker 66 MiB of private memory; four workers each loading their own copy would be 12.5 GiB
-(`scripts/measure-shared-arrow.py`).
+- The serving process reads the published version in place too: `store.reader()` gives a `SharedArrowReader`
+  whose `read()` holds the current version for its block (a DuckDB cursor over the mapped tables, `prepare=` making
+  views once per version), lets a superseded version go when its last read ends, and is told after each publish.
+- `Parts` publishes a table one file per part; `publish(..., base=)` keeps every part and table it does not name
+  from the base version by hard link, counted once against `max_bytes`, so a change costs one part.
+- `threetears.core.collections.shared_snapshot.SharedSnapshot` publishes a scoped snapshot's copy a scope's part at
+  a time, writing only the scopes whose epoch moved since its last version; `ScopedSnapshot.behind` says the scopes
+  the L1 is behind on now.
+- `DuckDBBackend(compressed=True)` holds the L1's tables in a catalog attached with DuckDB's `COMPRESS` and
+  checkpoints after each write on a thread of its own, off the write's path (`request_checkpoint`,
+  `background_checkpoints`): for a copy only written here and read from the shared store.
+
+Measured on Linux with the reports pod's dev tables (9.0M rows, real column types, generated values; two workers):
+one process holding them in DuckDB is 2.17 GiB PSS; that process beside the store and the workers is 4.01 GiB; the
+serving process reading the store, its DuckDB copy compressed, and the workers is 2.30 GiB (real values compress
+less: about 0.3 GiB more). A one-state change publishes in 0.10-0.15 s; its checkpoint (0.01-0.21 s) runs off the
+change's path (`scripts/measure-shared-arrow.py`, `docs/shared-arrow.md`).
 
 ## v0.85.0 -- 2026-10-29
 
