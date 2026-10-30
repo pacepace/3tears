@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.agreement import sent_settings_from_level, sent_settings_level
 from threetears.evals.analysis.judge_drift import judge_drift
-from threetears.evals.schema.models import EvalResult
+from threetears.evals.kernel.result_reading import ResultView, SecondJudgingView
 from threetears.evals.analysis.bundle.schema import (
     JudgeChange,
     JudgeDriftLink,
@@ -16,7 +16,7 @@ from threetears.evals.analysis.bundle.schema import (
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
-    from threetears.evals.schema.models import EvalRun, SecondJudging
+    from threetears.evals.schema.models import EvalRun
 
 
 #: What a judge change across the member runs means for a judged comparison, quoted when there is one.
@@ -40,7 +40,7 @@ _JUDGE_CHANGE_NO_DRIFT = (
 _Level = tuple[str, tuple[tuple[str, str], ...], float | None, tuple[str, ...] | None]
 
 
-def _judge_identity(run: EvalRun, results: Sequence[EvalResult]) -> _Level | None:
+def _judge_identity(run: EvalRun, results: Sequence[ResultView]) -> _Level | None:
     """A judged run's judge — the pin, configs and temperature it recorded at launch, and the request settings its
     scores were sent with — or None for an unjudged run."""
     if run.judge_model is None:
@@ -51,7 +51,7 @@ def _judge_identity(run: EvalRun, results: Sequence[EvalResult]) -> _Level | Non
     return run.judge_model, tuple(sorted((run.judge_config_ids or {}).items())), run.judge_temperature, sent
 
 
-def _names_level(judging: SecondJudging, level: _Level, own: _Level) -> bool:
+def _names_level(judging: SecondJudgingView, level: _Level, own: _Level) -> bool:
     """Whether a second-judge pass is the judge ``level`` names, asked of a run judged as ``own``.
 
     The model must be the level's pin; the prompts are the run's own when the second judge named none; its
@@ -67,7 +67,7 @@ def _names_level(judging: SecondJudging, level: _Level, own: _Level) -> bool:
     return judge.model == level[0] and configs == level[1] and temperature == level[2] and sent == level[3]
 
 
-def _judge_change(runs: Sequence[EvalRun], results_by_run: Mapping[str, Sequence[EvalResult]]) -> JudgeChange:
+def _judge_change(runs: Sequence[EvalRun], results_by_run: Mapping[str, Sequence[ResultView]]) -> JudgeChange:
     """Each judge the judged member runs recorded, and every drift reading among them that spans two of them."""
     by_level: dict[_Level, list[EvalRun]] = {}
     for run in runs:

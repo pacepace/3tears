@@ -4,7 +4,7 @@
 It needs no campaign and no bundle, so any plan renders through it from its input alone. It never re-checks the plan
 (``validate_plan`` is generation's): a stored plan is drawn as it was accepted.
 
-**Part by part** (the P4 design, §2):
+**Part by part** (the planned page's design, §2):
 
 - *Masthead*: the plan's, its keys written out; *headline*, *lede*: the plan's prose, keys written out with each
   arm's name and tag (:func:`~threetears.evals.analysis.report.figure_keys.render`).

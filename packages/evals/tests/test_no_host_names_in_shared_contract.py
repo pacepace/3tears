@@ -518,6 +518,12 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/usage_capture.py",
     # Which build of the engine is installed, from its own distribution metadata: the engine's own name only.
     "kernel/build_stamp.py",
+    # A stored result as the engine's readers read it, and the protocol a result and its reading share: the
+    # result's own field names, and nothing a host names.
+    "kernel/result_reading.py",
+    # Where a read's wall time went, as the one eval.read_tier line a host's log store reads: the engine's own
+    # phase and field names.
+    "kernel/phase_log.py",
     # A cell's world events and the session every world-bearing kind seeds, fires and reads back
     # through: dimension names and conditions are the host's words carried as data. A host noun here
     # would be one host's world written into every kind's cell.

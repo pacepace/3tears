@@ -56,8 +56,8 @@ from threetears.evals.kernel.metrics import (
     materiality,
     summary_population,
 )
+from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.schema.models import (
-    EvalResult,
     RubricScale,
     rubric_dim_scale,
 )
@@ -89,7 +89,9 @@ from threetears.evals.analysis.bundle.measures import (
     _as_miss,
     _classifies,
     _grades_otherwise,
-    _measure_collection,
+    _measure_walk_memo,
+    _pool_measures,
+    _pooled_means,
     _miss_counts,
 )
 from threetears.evals.analysis.bundle.mechanisms import (
@@ -108,6 +110,7 @@ from threetears.evals.analysis.bundle.cell_reads import (
 )
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
+    from threetears.evals.kernel.result_reading import ResultView
     from threetears.evals.schema.models import EvalRun
 
 
@@ -124,18 +127,18 @@ _NO_CONTROL_TO_COMPARE_AGAINST = (
 
 
 def _per_case_values(
-    members: list[EvalResult], judged_rows: dict[str, list[ScoreRecord]], *, profile: HostProfile
+    members: list[ResultView], judged_rows: dict[str, list[ScoreRecord]], *, profile: HostProfile
 ) -> dict[tuple[ReadingKind, str], dict[str, float]]:
     """Every numeric reading of one cell, as one mean per case — the unit a family comparison tests.
 
     A case is the independent draw (rule: count cases, not attempts), so repeats of one case are
     averaged before any test sees them. A measure's per-case value is read off the same walk the
-    cell's own collection is (:func:`_measure_collection`, each measure over its own population), so
-    the value tested and the value the cell reports are one computation; a judged dimension's, off the
+    cell's own collection is (:func:`_pool_measures`, each measure over its own population, its mean the summary's
+    own, :func:`_pooled_means`), so the value tested and the value the cell reports are one computation; a judged dimension's, off the
     non-faulted results' scores, as :func:`_bar_reading` reads one.
 
     :param members: One cell's results, faulted ones included.
-    :ptype members: list[EvalResult]
+    :ptype members: list[ResultView]
     :param judged_rows: Projected judged-score rows by result id.
     :ptype judged_rows: dict[str, list[ScoreRecord]]
     :param profile: The host whose vocabulary this reads.
@@ -143,7 +146,7 @@ def _per_case_values(
     :return: ``{(reading, name): {test_case_id: per-case mean}}`` for every reading with a numeric value.
     :rtype: dict[tuple[ReadingKind, str], dict[str, float]]
     """
-    by_case: dict[str, list[EvalResult]] = defaultdict(list)
+    by_case: dict[str, list[ResultView]] = defaultdict(list)
     for result in members:
         by_case[result.test_case_id].append(result)
     values: dict[tuple[ReadingKind, str], dict[str, float]] = defaultdict(dict)
@@ -151,9 +154,10 @@ def _per_case_values(
         # The candidate's own spend among them (``production_replicating_cost``, which the walk yields over the
         # turns the candidate took and only where a result measured it): a contrast on cost tests it, never
         # ``cost_usd``, which sums the judge's spend too.
-        for summary in _measure_collection(by_case[case_id], profile=profile, undeclared="scored").measures:
-            if summary.mean is not None:
-                values[("measure", summary.name)][case_id] = summary.mean
+        # Each summary's mean, in the collection's name order, with no summary built (:func:`_pooled_means`).
+        pooled = _pool_measures(by_case[case_id], profile=profile, undeclared="scored")
+        for name, mean in _pooled_means(pooled).items():
+            values[("measure", name)][case_id] = mean
     scores: dict[tuple[str, str], list[float]] = defaultdict(list)
     for result in _non_faulted(members):
         for dimension, record in _judged_values(judged_rows.get(result.id, [])):
@@ -197,7 +201,7 @@ class _RunRepeats(NamedTuple):
 
 
 def planning_readings(
-    runs: list[EvalRun], results_by_run: Mapping[str, Iterable[EvalResult]], *, profile: HostProfile
+    runs: list[EvalRun], results: Iterable[ResultView], *, profile: HostProfile
 ) -> list[PlanningReading]:
     """Every reading an unscoped comparison family would test, with each earlier run's per-repeat values.
 
@@ -208,39 +212,52 @@ def planning_readings(
     they are held, not tested for a difference; so is latency read under concurrency, which no comparison reads.
 
     **Each result is read down to its values before the next page is read.** A template's history is every result of
-    every run of it, so nothing here holds more than a page of results and the values read so far: a lazy iterable
-    per run (a paged walk, :mod:`~threetears.evals.kernel.run_pages`) is read once, a run at a
-    time, in ``runs`` order. What reads across runs (a failure that landed no verdict counts as a miss on a case
-    another run classified, :func:`_failures_as_misses`; a dimension any result scored as a boundary is a guardrail;
-    the scale a dimension was answered on) is kept as the few facts it needs and applied once every run is read, so
-    the readings are the ones every run's results read at once give.
+    every run of it, so nothing here holds more than a page of results and the values read so far: ``results`` is
+    read once, lazily (a walk of the runs' readings,
+    :meth:`~threetears.evals.kernel.storage.EvalStorage.iter_result_readings`), a page at a time, and each page's
+    results are read run by run. The runs' results may come in any order across runs; within a run, in the store's
+    order. What reads across runs (a failure that landed no verdict counts as a miss on a case another run classified,
+    :func:`_failures_as_misses`; a dimension any result scored as a boundary is a guardrail; the scale a dimension was
+    answered on, the last run in ``runs`` order to answer it deciding) is kept as the few facts it needs and applied
+    once every run is read, so the readings are the ones every run's results read at once give. A run none of
+    ``results`` belongs to is read as no earlier run: nothing of it, its launch scales included, is planned from.
 
     :param runs: The earlier runs.
     :ptype runs: list[EvalRun]
-    :param results_by_run: Each run's results, each iterated once.
-    :ptype results_by_run: Mapping[str, Iterable[EvalResult]]
+    :param results: Their results, each read once: in any order across runs, and in the store's order within one.
+    :ptype results: Iterable[ResultView]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: One entry per reading with a value, sorted by reading kind and name.
     :rtype: list[PlanningReading]
+    :raises ValueError: A result belongs to none of ``runs``.
     """
-    # The scale each template dim was answered on: what each run recorded at launch, then what its scores carried.
-    scales: dict[str, RubricScale] = {dim: scale for run in runs for dim, scale in run.rubric_scales.items()}
+    listed = {run.id: run for run in runs}
+    # The scale each template dim was answered on, as each run's scores carried it: laid, in ``runs`` order, over what
+    # each run recorded at launch once every run is read.
+    answered_scales: dict[str, dict[str, RubricScale]] = {}
     classified_cases: set[str] = set()
     boundary: set[str] = set()
     kept: dict[str, _RunRepeats] = {}
-    for run in runs:
-        run_repeats = kept[run.id] = _RunRepeats(answered_unclassified=set(), kept=[])
-        for page in batched(results_by_run.get(run.id, ()), RUN_RESULTS_PAGE):
-            for result in page:
+    for page in batched(results, RUN_RESULTS_PAGE):
+        page_runs: dict[str, list[ResultView]] = {}
+        for result in page:
+            page_runs.setdefault(result.eval_run_id, []).append(result)
+        for run_id, members in page_runs.items():
+            run = listed.get(run_id)
+            if run is None:
+                raise ValueError(f"the planning read handed out a result of run {run_id!r}, none of the runs it read")
+            run_repeats = kept.setdefault(run_id, _RunRepeats(answered_unclassified=set(), kept=[]))
+            run_scales = answered_scales.setdefault(run_id, {})
+            for result in members:
                 if _classifies(result):
                     classified_cases.add(result.test_case_id)
                 if _answered_unclassified(result):
                     run_repeats.answered_unclassified.add(result.test_case_id)
-            boundary |= _boundary_dimensions(page)
+            boundary |= _boundary_dimensions(members)
             # Latency read under concurrency is in no comparison (#701), so it plans none either.
-            read = withhold_contended_latency(page, profile.measures)
-            as_misses = [miss for miss in map(_as_miss, page) if miss is not None]
+            read = withhold_contended_latency(members, profile.measures)
+            as_misses = [miss for miss in map(_as_miss, members) if miss is not None]
             misses = {result.id: result for result in withhold_contended_latency(as_misses, profile.measures)}
             # A judged score is read off the judge's scores, which a verdict read as a miss leaves as they were.
             projection = project_score_records([run], read, known_run_ids=None, archived_run_ids=None, profile=profile)
@@ -248,18 +265,27 @@ def planning_readings(
             for record in projection.records:
                 judged_rows.setdefault(record.result_id, []).append(record)
                 if record.metric == METRIC_SCORE and record.rubric_dim and record.rubric_scale is not None:
-                    scales[record.rubric_dim] = record.rubric_scale
-            for result in read:
-                miss = misses.get(result.id)
-                run_repeats.kept.append(
-                    _KeptResult(
-                        order=(result.test_case_id, result.k_iteration, result.id),
-                        values=_per_case_values([result], judged_rows, profile=profile),
-                        as_miss=_per_case_values([miss], judged_rows, profile=profile) if miss is not None else None,
+                    run_scales[record.rubric_dim] = record.rubric_scale
+            # One memo per page, not per read: it holds each walked result, so a read-long memo would hold the history
+            # the page-at-a-time walk exists not to hold. Within the page, each name is described once.
+            with _measure_walk_memo():
+                for result in read:
+                    miss = misses.get(result.id)
+                    run_repeats.kept.append(
+                        _KeptResult(
+                            order=(result.test_case_id, result.k_iteration, result.id),
+                            values=_per_case_values([result], judged_rows, profile=profile),
+                            as_miss=(
+                                _per_case_values([miss], judged_rows, profile=profile) if miss is not None else None
+                            ),
+                        )
                     )
-                )
+    read_runs = [run for run in runs if run.id in kept]
+    scales: dict[str, RubricScale] = {dim: scale for run in read_runs for dim, scale in run.rubric_scales.items()}
+    for run in read_runs:
+        scales.update(answered_scales[run.id])
     repeats: dict[tuple[ReadingKind, str], dict[str, dict[str, list[float]]]] = {}
-    for run in runs:
+    for run in read_runs:
         run_repeats = kept[run.id]
         grading_otherwise = _grades_otherwise(run_repeats.answered_unclassified, classified_cases)
         for kept_result in sorted(run_repeats.kept, key=lambda one: one.order):
@@ -338,7 +364,7 @@ _TRIAL_PASS_RANGE = (0.0, 1.0)
 
 
 def _trial_pass_counts(
-    members: list[EvalResult], *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]
+    members: list[ResultView], *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]
 ) -> dict[str, tuple[int, int]]:
     """One cell's overall pass rate per case, as counts: each case's usable trials passed and its usable trials, the
     case's share passed being the one over the other.
@@ -351,7 +377,7 @@ def _trial_pass_counts(
     of its trials passed only because nothing could fail it.
 
     :param members: One cell's results.
-    :ptype members: list[EvalResult]
+    :ptype members: list[ResultView]
     :param rubric_threshold: The 1–5 level a judged dimension must reach to pass.
     :ptype rubric_threshold: int
     :param catalog: The bundle's measure catalog, which says which checks a trial is graded on.
@@ -699,7 +725,7 @@ def _multiple_comparisons(
     aspect: str,
     declared: AspectDeclaration | None,
     realized: RealizedDesign,
-    results_by_cell: dict[_CellKey, list[EvalResult]],
+    results_by_cell: dict[_CellKey, list[ResultView]],
     records: list[ScoreRecord],
     *,
     catalog: dict[str, MetricDescriptor],
@@ -742,7 +768,7 @@ def _multiple_comparisons(
     :param realized: The derived design, for the control arm.
     :ptype realized: RealizedDesign
     :param results_by_cell: Each cell's results.
-    :ptype results_by_cell: dict[_CellKey, list[EvalResult]]
+    :ptype results_by_cell: dict[_CellKey, list[ResultView]]
     :param records: The assembly's score projection rows, where judged scores live.
     :ptype records: list[ScoreRecord]
     :param catalog: The bundle's measure catalog — direction and axis per measure.
@@ -901,7 +927,7 @@ def _multiple_comparisons(
 
 
 def _choice_contrasts(
-    results_by_cell: dict[_CellKey, list[EvalResult]], *, rubric_threshold: int, catalog: dict[str, MetricDescriptor]
+    results_by_cell: dict[_CellKey, list[ResultView]], *, rubric_threshold: int, catalog: dict[str, MetricDescriptor]
 ) -> list[FloorContrast]:
     """With no control, every pair of arms under one rig on the overall pass rate, per case: what a choice's pairwise
     readings read. The pair's ``control`` is the arm first in variant-key order, a position and never a role.

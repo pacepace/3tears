@@ -38,18 +38,21 @@ rebuild it.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.covariates import TRUNCATED_ROUNDS_KEY, TURN_BUDGET_ENDED_KEY
+from threetears.evals.kernel.result_reading import GoalView, ResultView, ScoreView
 from threetears.evals.schema.models import (
     RESERVED_DIM_IDS,
     SCALES,
     CellTermination,
-    EvalResult,
-    GoalStateOutcome,
-    RubricScore,
 )
+
+if TYPE_CHECKING:
+    # The judging axis reads whether the judge narrated (``judge_reasoning``), which a compact reading does not carry:
+    # no reader family resolves a result's whole condition, so that rule reads a stored result alone.
+    from threetears.evals.schema.models import EvalResult
 
 __all__ = [
     "CandidateFailureCause",
@@ -140,7 +143,7 @@ class ResultCondition(EvalBaseModel):
     disclosure: str | None = None
 
 
-def candidate_failure_cause(result: EvalResult) -> CandidateFailureCause | None:
+def candidate_failure_cause(result: ResultView) -> CandidateFailureCause | None:
     """Name why ``result`` is a candidate failure, or ``None`` when it is not one.
 
     The output cap counts because the end user's experience is the measure: a turn the provider cut off delivered
@@ -156,7 +159,7 @@ def candidate_failure_cause(result: EvalResult) -> CandidateFailureCause | None:
     it, as it does the cap.
 
     :param result: The result.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: The cause, or ``None``.
     :rtype: CandidateFailureCause | None
     """
@@ -171,7 +174,7 @@ def candidate_failure_cause(result: EvalResult) -> CandidateFailureCause | None:
     return None
 
 
-def classify_result(result: EvalResult) -> ResultOutcome:
+def classify_result(result: ResultView) -> ResultOutcome:
     """Categorize a result for scoring by its error fields and its candidate's delivery.
 
     Candidate failures take precedence over infra: a broken candidate FAILS even
@@ -191,7 +194,7 @@ def classify_result(result: EvalResult) -> ResultOutcome:
 _CUT_OFF: frozenset[CellTermination] = frozenset({"cell_timeout", "cancelled"})
 
 
-def delivered_a_turn(result: EvalResult) -> bool:
+def delivered_a_turn(result: ResultView) -> bool:
     """Whether ``result`` is a turn the candidate took — the one population a cost or latency reading is over.
 
     The predicate behind :data:`~threetears.evals.kernel.metrics.MeasurePopulation`'s ``delivered``, asked
@@ -227,7 +230,7 @@ def delivered_a_turn(result: EvalResult) -> bool:
     generator call that returned), and a conversing kind through its stamped turn records.
 
     :param result: The result.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: True when the result's time and spend describe a turn the candidate took.
     :rtype: bool
     """
@@ -238,7 +241,7 @@ def delivered_a_turn(result: EvalResult) -> bool:
     return bool(result.turns_delivered)
 
 
-def harness_faulted(result: EvalResult) -> bool:
+def harness_faulted(result: ResultView) -> bool:
     """Whether the harness, not the candidate, spoiled this result — so none of its verdicts count.
 
     The one answer every reader of a result's goal-state verdicts consults: the bars, the
@@ -251,7 +254,7 @@ def harness_faulted(result: EvalResult) -> bool:
     return classify_result(result) is ResultOutcome.INFRA_EXCLUDE
 
 
-def counted_goal_verdicts(result: EvalResult) -> list[tuple[GoalStateOutcome, bool]] | None:
+def counted_goal_verdicts(result: ResultView) -> list[tuple[GoalView, bool]] | None:
     """Each goal-state check on ``result`` paired with the verdict every rate counts for it.
 
     The one answer to "what does this check count as", which every per-check rate reads — the
@@ -270,10 +273,10 @@ def counted_goal_verdicts(result: EvalResult) -> list[tuple[GoalStateOutcome, bo
     - Otherwise each check counts as it evaluated.
 
     :param result: The result.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: ``(outcome, counted_passed)`` per check in stored order, or ``None`` when the result is
         excluded from every rate.
-    :rtype: list[tuple[GoalStateOutcome, bool]] | None
+    :rtype: list[tuple[GoalView, bool]] | None
     """
     outcome = classify_result(result)
     if outcome is ResultOutcome.INFRA_EXCLUDE:
@@ -282,7 +285,7 @@ def counted_goal_verdicts(result: EvalResult) -> list[tuple[GoalStateOutcome, bo
     return [(check, False if failed else check.passed) for check in result.goal_state_outcomes]
 
 
-def counted_score(result: EvalResult, score: RubricScore) -> int | None:
+def counted_score(result: ResultView, score: ScoreView) -> int | None:
     """What one judged score on ``result`` counts as in every measure — a rubric dim or a reserved axis.
 
     The rubric sibling of :func:`counted_goal_verdicts`, read wherever a judged score is meaned —
@@ -299,9 +302,9 @@ def counted_score(result: EvalResult, score: RubricScore) -> int | None:
     - Otherwise the score counts as judged.
 
     :param result: The result the score sits on.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :param score: One of its rubric scores, or its transcript or outcome axis.
-    :ptype score: RubricScore
+    :ptype score: ScoreView
     :return: The counted score on the score's own scale, or ``None`` when it enters no measure.
     :rtype: int | None
     """
@@ -313,14 +316,14 @@ def counted_score(result: EvalResult, score: RubricScore) -> int | None:
     return score.score
 
 
-def counted_rubric_scores(result: EvalResult) -> list[tuple[RubricScore, int]] | None:
+def counted_rubric_scores(result: ResultView) -> list[tuple[ScoreView, int]] | None:
     """Each judged rubric dim on ``result`` paired with what it counts as (:func:`counted_score`).
 
     :param result: The result.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: ``(score, counted)`` per judged dim in stored order, or ``None`` when the result is in no
         per-dimension measure (a harness fault).
-    :rtype: list[tuple[RubricScore, int]] | None
+    :rtype: list[tuple[ScoreView, int]] | None
     """
     if classify_result(result) is ResultOutcome.INFRA_EXCLUDE:
         return None
@@ -478,7 +481,7 @@ DIFFERENTIAL_EXCLUSION_SHARE: float = 0.10
 JUDGE_CANNOT_TELL_OUTCOME = "judge_cannot_tell"
 
 
-def trial_exclusion(result: EvalResult) -> ExclusionCause | None:
+def trial_exclusion(result: ResultView) -> ExclusionCause | None:
     """Why ``result`` is left out of the measures that need every rubric dim, or ``None``.
 
     The one classification pass^k, the composite and their counts read. A candidate failure is
@@ -490,7 +493,7 @@ def trial_exclusion(result: EvalResult) -> ExclusionCause | None:
     here; the composite keeps the exclusion, since a mean over fewer dims is not the composite.
 
     :param result: The result.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: The cause, or ``None`` when the result counts.
     :rtype: ExclusionCause | None
     """
@@ -505,7 +508,7 @@ def trial_exclusion(result: EvalResult) -> ExclusionCause | None:
     return None
 
 
-def judge_truncated_dims(result: EvalResult) -> list[str]:
+def judge_truncated_dims(result: ResultView) -> list[str]:
     """The dims whose judge reply ran out of room and left them unscored, by the read rule ``judge_cut_short`` carries.
 
     An entry is read only for a dim that carries no score while ``judge_error`` is set
@@ -515,7 +518,7 @@ def judge_truncated_dims(result: EvalResult) -> list[str]:
     recorded on the entry and stays a fault of the rig.
 
     :param result: The result.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: The dims, sorted; empty when none, or when ``judge_error`` is unset.
     :rtype: list[str]
     """
@@ -525,7 +528,7 @@ def judge_truncated_dims(result: EvalResult) -> list[str]:
     return sorted(dim for dim, cut in result.judge_cut_short.items() if cut.out_of_room and dim not in scored)
 
 
-def judged_on_every_dim(result: EvalResult) -> bool:
+def judged_on_every_dim(result: ResultView) -> bool:
     """Whether the judge scored or failed on every rubric dim, answering "can't tell" on none.
 
     The one predicate the whole-trial measures read. pass^k and the composite each need every
@@ -535,7 +538,7 @@ def judged_on_every_dim(result: EvalResult) -> bool:
     reserved transcript/outcome axes are in neither whole-trial measure.
 
     :param result: The result.
-    :ptype result: EvalResult
+    :ptype result: ResultView
 
 
     **A boundary dim is not one of them.** pass^k and the composite read capability dims alone
@@ -550,7 +553,7 @@ def judged_on_every_dim(result: EvalResult) -> bool:
     return not any(dim not in RESERVED_DIM_IDS and dim not in boundary for dim in result.judge_cannot_tell)
 
 
-def _cannot_tell_disclosure(result: EvalResult) -> str | None:
+def _cannot_tell_disclosure(result: ResultView) -> str | None:
     """Name the dims the judge could not score, and what that does to the aggregates.
 
     Separate from :data:`_JUDGING_DISCLOSURE` because it is not a judging state: it rides on

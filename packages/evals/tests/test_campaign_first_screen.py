@@ -44,8 +44,8 @@ from packages.evals.tests.campaign_page_support import (
 from packages.evals.tests.campaign_support import ASSEMBLED_AT, CANDIDATE_LABEL, CONTROL_LABEL, QUESTION
 from packages.evals.tests.report_shapes_support import SHAPES, s1_change, s2_choice, s4_change
 
-#: Where code's readings are found, under the Scorecard after the first screen, by the campaign's kind (chunk 04's
-#: rows): the table's name, its caption in Markdown, and its mark in HTML.
+#: Where code's readings are found, under the Scorecard after the first screen, by the campaign's kind (the
+#: scorecard's rows): the table's name, its caption in Markdown, and its mark in HTML.
 _SCORECARD: dict[str, tuple[str, str, str]] = {
     "change": ("aspects", "**By aspect**", 'data-table="scorecard"'),
     "measurement": ("measures", "**alpha by aspect**", 'data-table="scorecard"'),

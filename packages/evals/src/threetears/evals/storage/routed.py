@@ -57,6 +57,16 @@ When any store has none, neither has the router, and the engine reads each proce
 that store alone: a router that answered from one store's clock while another could not keep time would promise an
 agreement it cannot keep.
 
+**So do narrowed and grouped reads, when every store a type is placed in offers them.** A read of
+:class:`~threetears.evals.schema.ResultReadings` names one ``doc_type``, so it goes, whole, to the one store that type
+is placed in, as ``by_doc_type`` does; a read is never split across stores. The router offers the capability exactly
+when every store the placements name (the store for unregistered types included) offers it, so every read it could
+be asked is one a store can answer. A store no type is placed in (one being drained) is never asked by a typed read,
+so it neither gives nor takes the capability. Offering it whenever some store did and refusing the reads of a type
+placed elsewhere would make ``isinstance(router, ResultReadings)`` a promise some reads break, and the engine picks
+its read path on that check alone. The router's class is chosen when it is built, from a table keyed by (clock,
+readings), so each capability it offers is a method it has and none is a method that raises.
+
 The record is the router's bookkeeping about the stores, not an engine document: it is not routed by facts, it
 is written to every store alike, and it is not in :data:`~threetears.evals.schema.models.EVAL_DOC_TYPES` because
 no operator wipe should remove it and no adapter's conformance run should be asked to store it. It lives in its
@@ -80,7 +90,7 @@ from typing import Any, Final, Literal, get_args
 
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS, DocLifecycle, DocOrigin, DocTypeFacts
 from threetears.evals.schema.hashing import canonical_digest
-from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict
+from threetears.evals.schema.store_port import DocumentStore, GroupMeasure, ResultReadings, StoreClock, StoreConflict
 from threetears.evals.schema.versioning import CORE_RESET_DOC_TYPES
 from threetears.evals.schema.logs import get_logger
 
@@ -276,10 +286,19 @@ class RoutedDocumentStore:
     def __new__(
         cls, children: Mapping[str, DocumentStore], route: DocTypeRoute, *, routing_scope: str
     ) -> RoutedDocumentStore:
-        """Build the clocked router when every store offers a clock, so ``isinstance(router, StoreClock)`` says so."""
-        if cls is RoutedDocumentStore and children and all(isinstance(s, StoreClock) for s in children.values()):
-            return super().__new__(_ClockedRoutedDocumentStore)
-        return super().__new__(cls)
+        """Build the router class that offers what its stores can honour, so ``isinstance`` says exactly that.
+
+        The clock when every store offers one; the readings when every store a type is placed in offers them (the
+        module docstring). The class comes from :data:`_ROUTER_CLASSES`. A route or a set of stores the router
+        refuses is refused here, as :meth:`__init__` would refuse it.
+        """
+        if cls is not RoutedDocumentStore:
+            return super().__new__(cls)
+        placements = _checked_children(children, route)
+        placed = {*placements.values(), route.unregistered}
+        clock = all(isinstance(store, StoreClock) for store in children.values())
+        readings = all(isinstance(children[name], ResultReadings) for name in placed)
+        return super().__new__(_ROUTER_CLASSES[clock, readings])
 
     def __init__(self, children: Mapping[str, DocumentStore], route: DocTypeRoute, *, routing_scope: str) -> None:
         """Resolve the route, and refuse to start unless every store was written under these placements."""
@@ -742,3 +761,67 @@ class _ClockedRoutedDocumentStore(RoutedDocumentStore):
         if not isinstance(store, StoreClock):
             raise TypeError("a clocked router is built only over stores that each keep a clock")
         return store.now()
+
+
+class _ReadingRoutedDocumentStore(RoutedDocumentStore):
+    """A :class:`RoutedDocumentStore` whose every placed store offers readings: it offers them too.
+
+    Each read goes, whole, to the one store its ``doc_type`` is placed in, as ``by_doc_type`` does, and is answered by
+    that store's own :class:`~threetears.evals.schema.ResultReadings`: its order, its one backend call, its failures.
+    """
+
+    def _reading(self, doc_type: str) -> ResultReadings:
+        """The store ``doc_type`` is placed in, as the readings it offers."""
+        store = self._routed(doc_type)
+        if not isinstance(store, ResultReadings):
+            raise TypeError("a router offering readings is built only when every store a type is placed in offers them")
+        return store
+
+    def iter_narrowed(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> Iterator[dict[str, Any]]:
+        """See :meth:`~threetears.evals.schema.ResultReadings.iter_narrowed`; from the store the type is kept in.
+
+        The store's own iterator is returned, not wrapped in a generator of the router's, so its backend call is made
+        at this call, as the capability promises.
+        """
+        return self._reading(doc_type).iter_narrowed(
+            doc_type, scope_id, exclude=exclude, exclude_in_items=exclude_in_items, field_in=field_in, **field_eq
+        )
+
+    def grouped(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`~threetears.evals.schema.ResultReadings.grouped`; from the store the type is kept in."""
+        return self._reading(doc_type).grouped(
+            doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq
+        )
+
+
+class _ClockedReadingRoutedDocumentStore(_ClockedRoutedDocumentStore, _ReadingRoutedDocumentStore):
+    """A :class:`RoutedDocumentStore` offering both the clock and the readings."""
+
+
+#: The router class built for each (clock, readings) its stores can honour: the one place the capabilities compose.
+_ROUTER_CLASSES: Final[Mapping[tuple[bool, bool], type[RoutedDocumentStore]]] = MappingProxyType(
+    {
+        (False, False): RoutedDocumentStore,
+        (True, False): _ClockedRoutedDocumentStore,
+        (False, True): _ReadingRoutedDocumentStore,
+        (True, True): _ClockedReadingRoutedDocumentStore,
+    }
+)

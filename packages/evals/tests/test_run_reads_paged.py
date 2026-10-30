@@ -33,6 +33,7 @@ import dataclasses
 import random
 from pathlib import Path
 
+
 import pytest
 
 from threetears.evals.analysis import summary

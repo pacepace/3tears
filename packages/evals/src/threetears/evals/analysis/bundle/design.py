@@ -22,7 +22,7 @@ from threetears.evals.kernel.surface import EarlierControl
 from threetears.evals.schema.hashing import canonical_json
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.values import SweepableValue
-from threetears.evals.schema.models import EvalResult
+from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.analysis.bundle.schema import (
     DesignArm,
     RealizedDesign,
@@ -136,14 +136,14 @@ class _SurfaceFolds:
     """
 
     def __init__(
-        self, runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], *, profile: HostProfile
+        self, runs: list[EvalRun], results_by_run: dict[str, list[ResultView]], *, profile: HostProfile
     ) -> None:
         """Capture the campaign's runs, which members each family resolved on each, and each fixed knob's level.
 
         :param runs: The campaign's resolved runs.
         :ptype runs: list[EvalRun]
         :param results_by_run: Each run's results, keyed by run id.
-        :ptype results_by_run: dict[str, list[EvalResult]]
+        :ptype results_by_run: dict[str, list[ResultView]]
         :param profile: The host whose vocabulary this reads.
         :ptype profile: HostProfile
         """
@@ -396,14 +396,14 @@ class _CampaignArms(NamedTuple):
 
 
 def _campaign_arms(
-    runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], *, profile: HostProfile
+    runs: list[EvalRun], results_by_run: dict[str, list[ResultView]], *, profile: HostProfile
 ) -> _CampaignArms:
     """Group the campaign's runs by the arm each measured.
 
     :param runs: The campaign's resolved runs, in bundle order.
     :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results, keyed by run id — where a variant key resolves.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: The grouping.
@@ -448,7 +448,7 @@ def _campaign_design(
     runs: list[EvalRun],
     declared_control: ResolvedControl,
     *,
-    results_by_run: dict[str, list[EvalResult]],
+    results_by_run: dict[str, list[ResultView]],
     arms: _CampaignArms | None = None,
     archived_control_variants: Collection[str] = (),
     has_unresolved_members: bool = False,
@@ -491,7 +491,7 @@ def _campaign_design(
     :ptype declared_control: ResolvedControl
     :param results_by_run: Each run's results, keyed by run id — the observation side of
         effective-config resolution, and where a variant key resolves.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :param arms: :func:`_campaign_arms`'s answer, when the caller already has it; derived otherwise.
     :ptype arms: _CampaignArms | None
     :param archived_control_variants: The variant keys carried by member runs an operator archived.
@@ -750,7 +750,7 @@ def _lever_cohort(lever: str, design: RealizedDesign, all_run_ids: list[str]) ->
 
 def _lever_levels(
     runs: list[EvalRun],
-    results_by_run: dict[str, list[EvalResult]],
+    results_by_run: dict[str, list[ResultView]],
     *,
     profile: HostProfile,
     declared_axes: Collection[str],
@@ -793,7 +793,7 @@ def _lever_levels(
     :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results, keyed by run id — the observation side of
         effective-config resolution.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :param declared_axes: The levers the campaign declared as axes, each a lever whatever its calls.
@@ -842,7 +842,7 @@ def _lever_levels(
 
 
 def _apparatus_levels(
-    runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], *, profile: HostProfile
+    runs: list[EvalRun], results_by_run: dict[str, list[ResultView]], *, profile: HostProfile
 ) -> dict[str, dict[str, str | None]]:
     """Read each run's value for every apparatus dimension, as comparable level keys.
 
@@ -857,7 +857,7 @@ def _apparatus_levels(
     :param runs: The campaign's resolved runs.
     :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results, for the dimensions observed per result.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: ``{dimension: {run_id: level_key}}`` over the host's apparatus sweepables that are dimensions of the

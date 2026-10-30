@@ -98,6 +98,7 @@ from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
 from threetears.evals.kernel.storage import JobRecordStore
 from threetears.evals.schema.models import EvalTestCase, utc_now_iso
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
+from threetears.evals.kernel.phase_log import phase_logged, took_in
 from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.provider import describe_failure, log_provider_failure, traceback_is_safe
@@ -230,8 +231,11 @@ class AnalysisStore(CampaignReadStore, JobRecordStore, Protocol):
         read's pass over the run, before it reads the run's results by id a page at a time."""
         ...
 
-    def load_eval_results(self, result_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
-        """The named results within a scope, in one read by id — a page of the calibration read's."""
+    def load_eval_results(
+        self, result_ids: Sequence[str], scope_id: str, /, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
+        """The named results within a scope, in one read by id — a page of the calibration read's — each without the
+        fields ``elide`` names (the bundle's kept trials leave out the verbatim ones)."""
         ...
 
     def query_calibration_ratings(
@@ -1595,6 +1599,14 @@ def _assembled_campaign_bundle(
 ) -> CampaignBundle:
     """Assemble every aspect's bundle, the campaign's arms and code's readings into the campaign bundle. Blocking.
 
+    Logs one ``eval.read_tier lens=assemble_context_bundle`` line per assembly
+    (:func:`~threetears.evals.kernel.phase_log.phase_logged`). The results' read as readings
+    (:meth:`~threetears.evals.kernel.storage.EvalStorage.iter_result_readings`) charges its store calls to
+    ``store_ms`` and its rebuilding of results to ``hydrate_ms``, and fills ``path`` and ``store_calls``; ``fold_ms``
+    is the rest, the assembly's other store reads (runs, the kept trials, insights) included, and ``render_ms`` is
+    empty, since nothing renders here. ``runs_in`` is the runs the aspects' bundles summarise and ``results_in`` the
+    results those runs produced.
+
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
     :param storage: Where its runs, results and insights are read, and its arms addressed.
@@ -1606,15 +1618,19 @@ def _assembled_campaign_bundle(
     :return: The campaign bundle.
     :rtype: CampaignBundle
     """
-    bundles = [
-        assemble_context_bundle(
-            campaign, aspect=aspect.label, storage=storage, profile=profile, insights_as_of=insights_as_of
-        )
-        for aspect in campaign.aspects
-    ]
-    arms = campaign_arms(storage, campaign, profile=profile)
-    readings = campaign_readings(campaign, {bundle.aspect: bundle for bundle in bundles}, arms=arms)
-    return build_campaign_bundle(campaign, bundles, arms=arms, readings=readings)
+    with phase_logged("assemble_context_bundle", scope_id=campaign.scope_id, campaign_id=campaign.id):
+        bundles = [
+            assemble_context_bundle(
+                campaign, aspect=aspect.label, storage=storage, profile=profile, insights_as_of=insights_as_of
+            )
+            for aspect in campaign.aspects
+        ]
+        arms = campaign_arms(storage, campaign, profile=profile)
+        readings = campaign_readings(campaign, {bundle.aspect: bundle for bundle in bundles}, arms=arms)
+        # A run belongs to one aspect at most (the campaign refuses one held twice), so the aspects' counts add.
+        summaries = [summary for bundle in bundles for summary in bundle.run_summaries]
+        took_in(runs=len(summaries), results=sum(summary.n_results for summary in summaries))
+        return build_campaign_bundle(campaign, bundles, arms=arms, readings=readings)
 
 
 def assemble_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignBundle:
@@ -2318,7 +2334,8 @@ def record_campaign_call(
     :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope, or no analysis ``analysis_id`` in it.
     :raises ValidationFailedError: The campaign is a measurement; the arm is none of the campaign's; the analysis is
-        another campaign's, archived, or not the campaign's report; a broken floor or missed bar of the arm is not overridden, or an override names one the
+        another campaign's, archived, not the campaign's report, or frozen over a bundle of a shape this build no
+        longer reads (generate it again); a broken floor or missed bar of the arm is not overridden, or an override names one the
         arm did not break or miss; or a floor or bar is named twice.
     :raises ConflictError: The campaign changed while its readings were read.
     """
@@ -2326,7 +2343,11 @@ def record_campaign_call(
     if analysis_id is None:
         bundle = _assembled_campaign_bundle(campaign, storage=host.storage, profile=host.profile)
     else:
-        bundle = analysis_campaign_bundle(_reported_analysis(host.storage, campaign_id, scope_id, analysis_id))
+        try:
+            bundle = analysis_campaign_bundle(_reported_analysis(host.storage, campaign_id, scope_id, analysis_id))
+        except RefusedInput as unread:
+            # Frozen over a bundle of another shape: no call can be read against it until it is generated again.
+            raise ValidationFailedError.refusing(unread) from unread
     readings = bundle.readings
     if readings.kind == "measurement":
         raise ValidationFailedError(
@@ -2658,13 +2679,17 @@ def _plan_case(storage: AnalysisStore, analysis: EvalAnalysis) -> _PlanCase:
     prose, so the judged text would not be the one the planner wrote or a reader read.
 
     :raises NotFoundError: The analysis's plan does not resolve.
-    :raises ValidationFailedError: A figure key of the plan does not resolve against the input built from its frozen
-        bundle, or that input's view is over the planner's budget: the plan cannot be judged as written.
+    :raises ValidationFailedError: The analysis was frozen over a bundle of a shape this build no longer reads, or
+        written as a plan it no longer reads; a figure key of the plan does not resolve against the input built from
+        its frozen bundle, or that input's view is over the planner's budget: the plan cannot be judged as written.
     """
-    stored = get_report_plan(storage, analysis)
+    try:
+        stored = get_report_plan(storage, analysis)
+        bundle = analysis_campaign_bundle(analysis)
+    except RefusedInput as unread:
+        raise ValidationFailedError.refusing(unread) from unread
     if stored is None:
         raise ValueError(f"analysis {analysis.id} was read as planned and names no report plan")
-    bundle = analysis_campaign_bundle(analysis)
     built = build_report_input(bundle)
     remedy = "generate the analysis again (analysis_generate), and freeze the new one"
     try:

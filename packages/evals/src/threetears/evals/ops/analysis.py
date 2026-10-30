@@ -35,6 +35,7 @@ from threetears.evals.analysis.campaigns import (
     update_campaign,
 )
 from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.phase_log import charged, phase_logged
 from threetears.evals.analysis.planned_analysis import report_plan_of
 from threetears.evals.analysis.report import ReportBasis, TrialDetail, analysis_verdict
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
@@ -2286,6 +2287,15 @@ def report_read(
     form carries a transcript: a page a reader sees never holds one, so ``include_sessions`` with ``markdown`` or
     ``html`` is refused, saying to ask for ``json``.
 
+    **Its log line.** Each read logs one ``eval.read_tier lens=report_read`` line
+    (:func:`~threetears.evals.kernel.phase_log.phase_logged`), raised or not. ``render_ms`` is serializing the
+    report in its form, the transcripts' read included when ``include_sessions`` adds them; ``fold_ms`` is the rest:
+    finding and building the report (and assembling its bundles, on the code-only path) and reading its analysis,
+    their other store reads included. A bundle assembly's read of results as readings charges ``store_ms`` and
+    ``hydrate_ms``, and fills ``path`` and ``store_calls``, on its own line and on this one. ``runs_in`` and
+    ``results_in`` are what the read's bundle assemblies took in, empty when it assembled none (a report document's
+    page draws its stored snapshot).
+
     :param host: The host whose store holds the campaign.
     :ptype host: EvalHost
     :param campaign_id: The campaign.
@@ -2312,7 +2322,9 @@ def report_read(
     :rtype: ReportDocument
     :raises NotFoundError: No campaign with that id in the scope; or no report document with ``report_doc_id`` in the
         scope, or one written for another campaign.
-    :raises ValidationFailedError: ``include_sessions`` with a form other than ``json``.
+    :raises ValidationFailedError: ``include_sessions`` with a form other than ``json``; or a memo's page refuses what
+        it is laid out over (an aspect with no page, readings of another campaign), which no regeneration line stands
+        in for.
     """
     if include_sessions and format != "json":
         raise ValidationFailedError(
@@ -2320,15 +2332,22 @@ def report_read(
             "page is read by a person, and never holds a transcript",
             remedy="ask for format='json' with include_sessions, or leave include_sessions off for the page",
         )
-    if report_doc_id is None:
-        report = campaign_report(host, campaign_id, scope_id, trials=trials)
-    else:
-        report = report_doc_report(host, campaign_id, scope_id, report_doc_id, trials=trials)
-    analysis_id = report.analysis_id or report.unread_analysis_id
-    analysis = get_analysis(host.storage, analysis_id, scope_id) if analysis_id is not None else None
-    body = serialize_report(report, format, static=static)
-    if include_sessions and report.report_doc is not None:
-        body = _with_sessions(host, report.json_document(), scope_id)
+    with phase_logged("report_read", scope_id=scope_id, campaign_id=campaign_id):
+        try:
+            if report_doc_id is None:
+                report = campaign_report(host, campaign_id, scope_id, trials=trials)
+            else:
+                report = report_doc_report(host, campaign_id, scope_id, report_doc_id, trials=trials)
+        except RefusedInput as refused:
+            # Not a page this version no longer reads (that reads code-only): a memo's page refusing what it is laid
+            # out over, which is the caller's to hear as the refusal it is.
+            raise ValidationFailedError.refusing(refused) from refused
+        analysis_id = report.analysis_id or report.unread_analysis_id
+        analysis = get_analysis(host.storage, analysis_id, scope_id) if analysis_id is not None else None
+        with charged("render"):
+            body = serialize_report(report, format, static=static)
+            if include_sessions and report.report_doc is not None:
+                body = _with_sessions(host, report.json_document(), scope_id)
     return ReportDocument(
         campaign_id=campaign_id,
         basis=report.basis,

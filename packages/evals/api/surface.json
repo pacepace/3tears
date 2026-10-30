@@ -121,6 +121,11 @@
       "signature": "AsyncExternalSpend(provider: str | None, calls: int, provider_units: int | None = None, provider_unit: str | None = None, money: float | None = None)",
       "tier": "stable"
     },
+    "threetears.evals.schema.AsyncResultReadings": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.AsyncStoreClock": {
       "kind": "protocol",
       "signature": "AsyncStoreClock{now(self) -> datetime}",
@@ -561,6 +566,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.fold_groups": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.GoalCheckControl": {
       "kind": "model",
       "signature": "GoalCheckControl(check: str, intent: GoalCheckIntent, control: str)",
@@ -585,6 +595,11 @@
       "kind": "model",
       "signature": "GoalStateOutcome(expression: str, passed: bool, detail: str = '')",
       "tier": "stable"
+    },
+    "threetears.evals.schema.GroupMeasure": {
+      "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.IntervalScale": {
       "kind": "model",
@@ -836,6 +851,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.narrow_items": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.nested_schemas": {
       "kind": "function",
       "signature": "nested_schemas(schema: Mapping[str, Any]) -> Iterator[NestedSchema]",
@@ -1040,6 +1060,11 @@
       "kind": "constant (frozenset)",
       "signature": "",
       "tier": "host-contract"
+    },
+    "threetears.evals.schema.ResultReadings": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.ROLE_MODEL_ORIGINS": {
       "kind": "constant (tuple)",
@@ -1793,7 +1818,7 @@
     },
     "threetears.evals.kernel.count_substituted_deliveries": {
       "kind": "function",
-      "signature": "count_substituted_deliveries(result: EvalResult) -> int",
+      "signature": "count_substituted_deliveries(result: ResultView) -> int",
       "tier": "stable"
     },
     "threetears.evals.kernel.counted_goal_verdicts": {
@@ -2211,8 +2236,23 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.GoalReading": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.GoalView": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.GradedBy": {
       "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.GroupsRead": {
+      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },
@@ -2456,6 +2496,16 @@
       "signature": "",
       "tier": "host-contract"
     },
+    "threetears.evals.kernel.LatencyReading": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.LatencyView": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.lease_lapsed": {
       "kind": "function",
       "signature": "",
@@ -2646,6 +2696,16 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.PreconditionReading": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.PreconditionView": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.PredictionPoweredReading": {
       "kind": "model",
       "signature": "",
@@ -2653,7 +2713,7 @@
     },
     "threetears.evals.kernel.production_replicating_cost": {
       "kind": "function",
-      "signature": "production_replicating_cost(usage: list[RoleUsage], *, substituted_deliveries: int, candidate_kind: str | None) -> float | None",
+      "signature": "production_replicating_cost(usage: Sequence[UsageView], *, substituted_deliveries: int, candidate_kind: str | None) -> float | None",
       "tier": "stable"
     },
     "threetears.evals.kernel.program_cost": {
@@ -2698,6 +2758,16 @@
     },
     "threetears.evals.kernel.Reading": {
       "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.ReadingsRead": {
+      "kind": "class",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.ReadPath": {
+      "kind": "type alias",
       "signature": "",
       "tier": "provisional"
     },
@@ -2756,6 +2826,26 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.RepeatedScoreReading": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.RepeatedScoreView": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.RepeatReading": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.RepeatView": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.ReplayedDelivery": {
       "kind": "dataclass",
       "signature": "ReplayedDelivery(outcome: DeliveryOutcome, payload: P | None = None, error: str | None = None)",
@@ -2788,6 +2878,16 @@
     },
     "threetears.evals.kernel.REREAD_AND_RETRY": {
       "kind": "constant (str)",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.RescoreReading": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.RescoreView": {
+      "kind": "protocol",
       "signature": "",
       "tier": "provisional"
     },
@@ -2846,10 +2946,20 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.ResultReading": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.ResultStore": {
       "kind": "protocol",
       "signature": "ResultStore{delete_eval_result(self, result_id: str, scope_id: str, /) -> bool; load_eval_result(self, result_id: str, scope_id: str, /) -> EvalResult | None; load_eval_result_with_etag(self, result_id: str, scope_id: str, /) -> tuple[EvalResult | None, str | None]; load_eval_trace(self, result_id: str, scope_id: str, /) -> EvalTrace | None; query_eval_results(self, scope_id: str, /, *, run_id: str | None = None, test_case_id: str | None = None, model: str | None = None, elide: Sequence[str] = ()) -> list[EvalResult]; query_eval_results_by_run(self, run_id: str, scope_id: str, /, *, elide: Sequence[str] = ()) -> list[EvalResult]; replace_eval_result(self, result: EvalResult, /, *, if_match: str | None) -> None; save_eval_result(self, result: EvalResult, trace: EvalTrace | None = None, /) -> None}",
       "tier": "host-contract"
+    },
+    "threetears.evals.kernel.ResultView": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.kernel.RoleUsageLedger": {
       "kind": "dataclass",
@@ -2911,6 +3021,46 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.ScoreReading": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.ScoreView": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.SecondJudgeReading": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.SecondJudgeView": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.SecondJudgingReading": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.SecondJudgingView": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.SecondScoreReading": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.SecondScoreView": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.seed_digest": {
       "kind": "function",
       "signature": "seed_digest(seed: SeedTemplate | str) -> str",
@@ -2958,6 +3108,11 @@
     },
     "threetears.evals.kernel.settle_job_record": {
       "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.SharedValues": {
+      "kind": "class",
       "signature": "",
       "tier": "provisional"
     },
@@ -3185,6 +3340,16 @@
       "kind": "exception",
       "signature": "UnreadableRunError(message: str, *, run_ids: Sequence[str])",
       "tier": "host-contract"
+    },
+    "threetears.evals.kernel.UsageReading": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.UsageView": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.kernel.ValidationFailedError": {
       "kind": "exception",
@@ -4956,6 +5121,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.BUNDLE_READ_BUDGET": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.BundleInspection": {
       "kind": "model",
       "signature": "",
@@ -5848,7 +6018,7 @@
     },
     "threetears.evals.analysis.inter_judge_agreement": {
       "kind": "function",
-      "signature": "inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None = None) -> InterJudgeAgreement",
+      "signature": "inter_judge_agreement(results: Iterable[ResultView], *, pass_id: str | None = None) -> InterJudgeAgreement",
       "tier": "stable"
     },
     "threetears.evals.analysis.InterJudgeAgreement": {
@@ -5868,12 +6038,12 @@
     },
     "threetears.evals.analysis.judge_agreement": {
       "kind": "function",
-      "signature": "judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]) -> JudgeAgreement",
+      "signature": "judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[ResultView]) -> JudgeAgreement",
       "tier": "stable"
     },
     "threetears.evals.analysis.judge_drift": {
       "kind": "function",
-      "signature": "judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) -> JudgeDrift",
+      "signature": "judge_drift(results: Iterable[ResultView], *, pass_id: str | None = None) -> JudgeDrift",
       "tier": "stable"
     },
     "threetears.evals.analysis.judge_evidence_tiers": {
@@ -5883,7 +6053,7 @@
     },
     "threetears.evals.analysis.judge_key": {
       "kind": "function",
-      "signature": "judge_key(result: EvalResult, dim: str) -> JudgeKey | None",
+      "signature": "judge_key(result: ResultView, dim: str) -> JudgeKey | None",
       "tier": "stable"
     },
     "threetears.evals.analysis.judge_kind_readings": {
@@ -5898,7 +6068,7 @@
     },
     "threetears.evals.analysis.judge_self_agreement": {
       "kind": "function",
-      "signature": "judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement",
+      "signature": "judge_self_agreement(results: Iterable[ResultView]) -> JudgeSelfAgreement",
       "tier": "stable"
     },
     "threetears.evals.analysis.JudgeAgreement": {
@@ -6381,6 +6551,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.PLANNING_READ_BUDGET": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.Precision": {
       "kind": "model",
       "signature": "",
@@ -6470,6 +6645,11 @@
       "kind": "constant (int)",
       "signature": "",
       "tier": "host-contract"
+    },
+    "threetears.evals.analysis.READING_BUDGET": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.analysis.ReadingScope": {
       "kind": "model",
@@ -7282,6 +7462,16 @@
       "tier": "host-contract"
     },
     "threetears.evals.testing.ReplayedCompletion": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.testing.RESULT_READINGS_CONFORMANCE_CASES": {
+      "kind": "constant (tuple)",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.testing.ResultReadingsConformanceCase": {
       "kind": "dataclass",
       "signature": "",
       "tier": "provisional"

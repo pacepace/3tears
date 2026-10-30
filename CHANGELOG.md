@@ -6,6 +6,208 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: each reader's read budget is measured; the bundle and pivot refuse sooner
+
+**Changed:** the read tier's one budget of 50,000 results is replaced by one per reader, each the bytes per result
+that reader holds at its peak against the memory one call may take (measured 2026-10-30 with tracemalloc on the
+hot-path corpus at 1x and 2x; each budget is set by the worst of the paths a host runs, the SQLite store with and
+without its narrowed reads and the memory store without them; `packages/evals/scripts/measure_read_budgets.py`
+re-measures):
+
+| Reader | Budget (results) | Bytes per result | Set by | Allowance |
+|---|---|---|---|---|
+| `history`, `frontier`, `comparison_sets`, the regression watch (`READING_BUDGET`) | 66,003 | 4,067 | SQLite, reads hidden | 256 MiB |
+| `detectable_effects`, a launch estimate's planning block (`PLANNING_READ_BUDGET`) | 37,010 | 7,253 | SQLite, reads hidden | 256 MiB |
+| `pivot` (`PIVOT_READ_BUDGET`) | 27,108 | 39,609 | SQLite | 1 GiB |
+| a campaign's bundle, so `report_read` and every analysis (`BUNDLE_READ_BUDGET`) | 28,116 | 38,189 | SQLite, reads hidden | 1 GiB |
+| `program_budget`, `orphaned_runs` (`SPEND_READ_BUDGET`) | 105,196 | 10,207 | SQLite, reads hidden | 1 GiB |
+
+What a host sees: a history, a frontier, a comparison grouping or a regression watch over a scope of up to 66,003
+results is now answered where it was refused past 50,000, and `program_budget` and `orphaned_runs` over a scope of
+up to 105,196. The spend lenses read no result, but they hold their one grouped read whole before folding it: 1,683
+bytes a result on a store offering grouped reads (SQLite), 10,207 on the engine's grouping of a store without them
+(Discodon's today), which sets their budget. Past it they refuse as the other readers do, before reading anything,
+saying no narrower call exists and where to read the spend a page at a time.
+
+**Changed, tighter:** a pivot past 27,108 results, and a campaign's bundle past 28,116 (its report, `report_read`, an
+analysis), are now refused where they were answered up to 50,000. A host with a campaign or a pivot scope between
+those figures and 50,000 narrows it (a pivot to one subject; a campaign to fewer runs, archived members or one aspect),
+as the refusal's remedy says. The planning block of a launch estimate past 37,010 earlier results says it cannot
+estimate, where it read up to 50,000; the estimate is still priced.
+
+**Changed:** `READ_TIER_ROW_BUDGET` stays, as the readings readers' budget (66,003, where it was 50,000), and is still
+the record count past which an `eval.read_tier` line is a WARNING: a pivot or an export now warns past 66,003 projected
+records, where it warned past 50,000. A refusal's text is unchanged but for its figure;
+its log line now ends `over result_budget=<figure>`, where it ended `over READ_TIER_ROW_BUDGET=<figure>`, and the
+regression watch's ERROR line reads `past its read budget of <figure>`. No remedy cites an issue number.
+
+**Changed (provisional):** `reads.hold_to_read_budget` and `reads.narrowed_read_disclosure` take a keyword-only
+`budget`. The planning read reads its runs' readings in the store's own order across them, so on the engine's path
+every run's keys are one call. All five are constants of `threetears.evals.analysis.reads`; `READING_BUDGET`, `PLANNING_READ_BUDGET` and
+`BUNDLE_READ_BUDGET` are exported from `threetears.evals.analysis` (provisional).
+
+### evals: the campaign bundle reads its results as readings, and its kept trials whole by id
+
+**Changed:** `assemble_context_bundle` reads a campaign's results through `iter_result_readings`, so it holds each
+result as its compact reading: about 2.7 KB a result where it held 25.4 KB, and a code-only `report_read` of the
+hot-path campaign peaks at 134 MiB where it peaked at 191 (248 MiB where 374 at twice the cases). The trials the
+bundle keeps (at most 500) are read whole, by id, in one more call, for the judge's reasons and "could not tell" notes,
+without the verbatim fields. The bundle, its fingerprint and every page are byte-identical.
+
+**Changed (provisional):** `CampaignReadStore`, and so `AnalysisStore`, names `iter_result_readings` and
+`load_eval_results(..., elide=())` where it named `query_eval_results_by_runs`. On `EvalStorage` the results are one
+store call over a store that offers `ResultReadings`, else one key read per run plus one read per 1,000 results.
+`EvalStorage.load_eval_results` takes a keyword-only `elide`.
+
+**Fixed:** a reading carries a usage row's `unanswered_reasons` and a second judge's `config_ids`, which each arm's
+census and the judge-change reading read.
+
+### evals: EvalStorage's reads of readings and groups take the store's path when the store offers it
+
+**Added:** `EvalStorage.iter_result_readings` and `result_groups` read on the store's path (`store`) when the store
+offers `ResultReadings`: one `iter_narrowed` call, with the verbatim fields (`world_events`, `kind_payload`) and the
+judge's prose (`judge_reasoning`, each score's `reasoning`, a re-judge's `cannot_tell` notes) left out, its rows
+hydrated a page at a time; or one `grouped` call. A store without it is read on the engine's path, as before. A store
+that offers the capability and fails raises a `StorageError` (503), as a store failing on the engine's path does,
+and is never read again on the engine's path; a grouping `grouped` refuses (`TypeError`, `ValueError`) is raised as
+it is on both paths. The readings
+and the groups are the same on both paths, in the same order. A store-path read of several runs holds its readings
+until the store's last row, to hand them out run by run; `iter_result_readings(..., in_store_order=True)` instead hands
+them out a page at a time in the store's order across the runs, on both paths (one key read for every run on the
+engine's path), for a reader that folds page by page and never depends on the order across runs. Each store call is
+counted when it is made, so one that raises is counted too.
+
+**Changed:** on the engine's path, the reads by id leave out the verbatim fields and the judge's prose outside a list
+(`judge_reasoning`, and the transcript and outcome scores' `reasoning`), which no reading carries: 8.7 KB shipped per
+result instead of 10.2 KB on the hot-path campaign (5.0 KB on the store's path). `result_groups` on the engine's path
+reads every run's keys in one call, in the store's order, so a grouping across runs hands its `values` in the order a
+capable store does, and reads by id only the top-level fields its paths name (`keep`).
+
+**Changed:** the `eval.read_tier` line's `path=` and `store_calls=` are filled by these reads: the path that served them
+(`store`, `engine`, or `engine+store` when both served one call) and the store calls they made, each counted when it is
+made. They stay empty for a call that makes none of these reads.
+
+### evals: the aggregates, the regression watch and the planning read read compact readings
+
+**Changed:** `pivot`, `history`, `frontier`, `comparison_sets`, the regression watch's history and judged tiers, and a
+launch's planning block (`detectable_effects`) read each result as its compact reading (`EvalStorage.iter_result_readings`)
+where they read whole results; `program_budget` and `orphaned_runs` read each result's spend figures (its run,
+`cost_usd`, its re-judges' `cost_usd` and `cost_roles`) off a grouped read's values (`EvalStorage.result_groups`), never
+hydrating a result. Every answer is unchanged, to the byte; the read budgets are set per reader from measurement (the
+entry above). A narrowed read (one
+subject's runs) reads its runs one after another, as before; the watch's judged tiers over one subject's runs now read
+them so too, where they read them in one read in the store's order. The planning read's store calls on the engine's
+path are one key read of every run, in the store's order across them, and one read by id per 1,000 results, where it
+read each run's keys in a call of its own; its refusal past the read budget on what the read returned now comes once
+the read is walked. The `eval.read_tier` line of each aggregate gains `path=` (`store` or `engine`) and `store_calls=`,
+after `elapsed_ms`.
+
+**Changed (provisional), host contract:** a host lever reader receives readings, not `EvalResult`s.
+`SweepableReader`, `ResidualReader` and `ProductionDepartureReader` take `Sequence[ResultView]`, as do
+`SweepableRegistry.read_all`, `resolve_levers`, `production_footing`, `read_role_pins` and `read_residual`. A reading
+carries only the attributes the engine's readers are measured to read (no judge prose, no `world_events`, no
+`kind_payload`); a reader reading another raises `AttributeError`. A reader annotated `Sequence[EvalResult]` should be
+retyped to `Sequence[ResultView]` (`threetears.evals.kernel`) to pass a strict typecheck.
+`planning_readings` takes the runs' results as one iterable, in any order across runs, where it took a mapping by run.
+`LensStore` gains `iter_result_readings` and `result_groups`, which `EvalStorage` has.
+
+**Added (provisional):** `threetears.evals.analysis.lenses.program_budget.SpendView`, a result as the spend lenses read
+it, and `ResultSpend`, the figures read off a stored row; `compute_program_budget` and `compute_orphaned_runs` take any
+`SpendView`.
+
+### evals: a compact reading of each stored result, and EvalStorage reads of readings and groups
+
+**Added (provisional):** `threetears.evals.kernel.ResultReading`, a stored result as the engine's readers
+read it: exactly the attributes they access, under the same names, copied from the hydrated `EvalResult` and never
+recomputed, without the judge's prose (`judge_reasoning`, each score's `reasoning`; the "cannot tell" notes are carried
+as the dimensions they name). It holds at most a fifth of a result's bytes (measured 3.4 KB against 28.9 KB at a
+production shape). `ResultView` is the protocol an `EvalResult` and a `ResultReading` both satisfy; the scoring,
+condition, usage and score-projection rules now take it. Two `EvalStorage` reads hand them out, on the engine's path
+as below, or on the store's when the store offers it (the entry above):
+`iter_result_readings(run_ids | None, scope_id)` (the results' keys, one read per run named or one for the scope, then
+one `get_many` per 1,000 results, each page hydrated as every read hydrates it and dropped once its readings are built)
+and `result_groups(run_ids | None, scope_id, by=, measures=)` (the `ResultReadings.grouped` answer over the same rows).
+Each says the path that served it and the store calls it made. A host store needs nothing new. `ResultView`,
+`ResultReading`, `SharedValues`, the views and readings of a result's record lists (`ScoreView` and `ScoreReading`,
+`UsageView` and `UsageReading`, and the rest), `ReadingsRead`, `GroupsRead` and `ReadPath` are exported from
+`threetears.evals.kernel`.
+
+**Changed:** the bundle's measure walk reads each model type's fields that can hold a number or text, but never the
+judge's prose: a score's `reasoning` and a result's `judge_reasoning`. A host that declares no measure of either name
+sees no change; the walk read the prose and dropped it as undescribed text. A host that declares a measure named
+`reasoning` or `judge_reasoning` no longer has the judge's text pooled into it. Before, `judge_reasoning` pooled the
+judge's narration (beside any value the host reported on `host_measures`), and `reasoning` pooled a score's reasoning where the host
+reported none in the cell (or was listed under `unreported_observations` when two judged scores of a result both held one). Each now pools only
+the values the host reports on `host_measures`, and the judge's prose is neither pooled nor listed unreported.
+
+### evals: a refusal reaches the caller as a 422 refusal, never as an exception; a stored bundle's shape is checked first
+
+**Fixed:** a lower layer's refusal (`RefusedInput`, or a subclass such as `PivotError` or `DesignRefused`) that an
+operation did not translate escaped `MountedTool.call` as an exception, which a host's transport serves as a 500. The
+dispatcher now refuses it as `validation_failed` (422), with its fault, its remedy and the parameters its raiser named,
+and logs one WARNING naming the action and the function that raised it, since the operation should have translated it.
+Anything else a handler raises still propagates. `campaign_record` over an analysis frozen at a bundle shape this build
+no longer reads, and `reporter_case_freeze` over a planned analysis whose bundle or plan no longer reads, now refuse 422
+naming `analysis_generate`; `report_read` refuses 422 where a memo's page refuses what it is laid out over (a bundle of
+another shape still reads code-only, led by the regenerate line). Putting a stored analysis's bundle back together
+checks every aspect's shape before it reads any, so an analysis whose later aspect no longer reads is refused
+without first rebuilding its earlier aspects' bundles.
+
+### evals: a bundle assembly and a report read each log where their time went; every aggregate logs its read
+
+**Added:** each campaign bundle assembly and each `report_read` logs one `eval.read_tier` line at INFO, whether the call
+returned or raised, with `lens=assemble_context_bundle` or `lens=report_read`:
+
+`eval.read_tier lens=<lens> scope_id=<scope> campaign_id=<campaign> runs_in= results_in= store_ms= hydrate_ms= fold_ms=
+render_ms= elapsed_ms= path= store_calls=`, plus `raised=<exception class>` when the call raised.
+
+- `store_ms`, `hydrate_ms`, `fold_ms` and `render_ms` are milliseconds by phase, and add up to `elapsed_ms`, the
+  call's wall time. A phase not measured is left empty (`store_ms=`), never written as zero.
+- A bundle's read of its results as readings (`iter_result_readings`) charges its store calls to `store_ms` and its
+  rebuilding of results to `hydrate_ms`; `fold_ms` covers the folds and the assembly's other store reads (its runs,
+  its kept trials, its insights). A nested line's charges reach the enclosing line too, so a code-only report line
+  carries its bundle's `store_ms` and `hydrate_ms`. On a bundle line `render_ms` is empty. On a report line `render_ms` is serializing the report in its form (with `include_sessions`, the
+  transcripts' read too), and `fold_ms` is the rest: finding and building the report, its bundle assemblies on the
+  code-only path, and reading its analysis.
+- `runs_in` is the runs a bundle's aspects summarise (a run belongs to one aspect) and `results_in` the results they
+  produced. A report line sums its assemblies' counts, and leaves both empty when it assembled none (a report
+  document's page draws its stored snapshot). A report read on the code-only path also logs its bundle's own line, before its own.
+- `path` and `store_calls` say which read path served the call's reads of readings and groups, and how many store
+  calls those reads made (the store-path entry above); both are empty when the call made no such read.
+
+`comparison_sets`, `frontier`, `history`, `program_budget` and `orphaned_runs` now log the `eval.read_tier` line that
+`pivot` and `export_results` log (`lens`, `scope_id`, `runs_in`, `results_in`, `elapsed_ms`). They project no score
+records themselves, so their line has no `records_out` and is always INFO. A frontier or history its lens refuses after
+the read carries `refused=true`.
+
+### evals: an optional readings capability for a document store, with its own conformance kit
+
+**Added:** `ResultReadings`, an optional capability a `DocumentStore` may offer beside its methods, detected with
+`isinstance` as `StoreClock` is. `iter_narrowed` yields the rows `by_doc_type` would return for the same predicates, in
+its order, from one backend call, with `exclude` applied and `exclude_in_items` dropping paths inside each object item
+of a list field (`narrow_items`, beside `omit_paths`, is that rule). `grouped` groups those rows by scalar paths and
+answers `count`, `count_null`, `sum_int`, `min`, `max` and `values` (`[row_id, value]` pairs in stored order, each
+value exactly as this store's own reads return it, every double to its last bit; SQLite reads an integer of 2**63
+or more back as a float) per group (`GroupMeasure`). It has no float measure: a reader adds the values itself, in order. The in-memory and SQLite
+stores offer it. `fold_groups(rows, *, by, measures)` is the grouped read's rules as one function, for a store that
+groups rows in Python; the in-memory store and the engine's grouping of a store without the capability both fold
+through it. All four names are provisional.
+
+`RoutedDocumentStore` offers it when every store a type is placed in does, and sends each read whole to the one store
+its type is placed in. `bridge_async_store` offers it when the async store offers `AsyncResultReadings` (provisional,
+exported from `threetears.evals.schema`), the same reads awaited: `iter_narrowed` is an async iterator, streamed to
+the engine a batch at a time, and `grouped` is awaited. Each combines with the store's clock as before, and neither
+offers the capability through a method that raises.
+
+`threetears.evals.testing.RESULT_READINGS_CONFORMANCE_CASES` proves a store that offers it, one
+`ResultReadingsConformanceCase` per rule, failures reported as `StoreConformanceFailure`. Each case also takes a hook
+installer: the store calls the hook once per query it issues (a statement, or a cursor opened, never a page fetched
+from one), so the kit can count queries and make the backend fail. The SQLite store streams a narrowed read of a file
+on a read-only connection of its own, so a read left part way never blocks a write, and needs nothing newer than
+JSON1 and an aggregate `FILTER` (SQLite 3.30).
+
+**A host need not implement it.** A store without it is read through the port's own methods, with the same answers.
+
 ### evals: a judge-kind launch overlaying a stored judge config no longer fails on the event loop
 
 **Fixed:** `launchable_judge_kind`'s launch built the judge kind on the event loop, and building it reads each

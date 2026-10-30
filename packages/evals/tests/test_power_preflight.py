@@ -36,18 +36,23 @@ from threetears.evals.analysis.stats import (
     paired_t_power,
     variance_components,
 )
-from threetears.evals.analysis import reads
+from threetears.evals.analysis import assemble_context_bundle, reads
 from threetears.evals.analysis.bundle import comparisons
 from threetears.evals.analysis.bundle.comparisons import planning_readings
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
+from threetears.evals.kernel import storage as storage_module
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.schema.models import EvalResult, RubricScore
+from threetears.evals.kernel.result_condition import candidate_failure_cause, harness_faulted
+from threetears.evals.schema.models import EvalResult, EvalRun, RubricScore
 from threetears.evals.ops import DetectableEffects, LaunchArguments, launch_estimate
 from threetears.evals.ops.lenses import detectable_effects, estimate_text
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.factories import make_eval_result, make_eval_run
+from packages.evals.tests.factories import make_campaign, make_eval_result, make_eval_run
+from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
+from packages.evals.tests.hot_path_support import hot_path_corpus
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT, ops_fixture
+from packages.evals.tests.read_path_support import EngineOnlyStore
 from packages.evals.tests.run_pages_support import BatchRecordingStore
 from packages.evals.tests.simulation_support import (
     ClusteredDesign,
@@ -303,12 +308,17 @@ def test_the_launch_estimate_prints_one_line_per_reading() -> None:
 
 
 class TestThePlanningReadIsHeldToTheReadBudget:
-    """Every earlier run's results are read, so past the read tier's budget the block is refused before any result is
-    read (#996 is the store computing it). Two runs of 6 cases × 2: 24 results by their matrices."""
+    """Every earlier run's results are read, and the planning fold keeps each one's values until every run is read, so
+    past its budget (``PLANNING_READ_BUDGET``) the block is refused before any result is read. Two runs of 6 cases × 2:
+    24 results by their matrices.
+
+    The store calls pinned here are the engine path's (the store's narrowed reads hidden, :class:`EngineOnlyStore`):
+    the planning read is one read of the runs' readings in the store's own order across them, which on that path reads
+    every run's keys in one call, then the results by id a page at a time."""
 
     def _host(self) -> tuple[BatchRecordingStore, EvalHost]:
         store = BatchRecordingStore()
-        host = replace(ops_fixture().host.eval_host, storage=EvalStorage(store))
+        host = replace(ops_fixture().host.eval_host, storage=EvalStorage(EngineOnlyStore(store)))
         by_case = {f"c{index}": [float(index), float(index) + 0.5] for index in range(6)}
         _store_history(host.storage, {"model-a": by_case, "model-b": by_case})
         store.clear()
@@ -316,7 +326,7 @@ class TestThePlanningReadIsHeldToTheReadBudget:
 
     def test_one_result_past_the_budget_is_refused_reading_no_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
         store, host = self._host()
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 23)
+        monkeypatch.setattr(reads, "PLANNING_READ_BUDGET", 23)
 
         with pytest.raises(ValidationFailedError) as refused:
             detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
@@ -327,13 +337,64 @@ class TestThePlanningReadIsHeldToTheReadBudget:
 
     def test_at_the_budget_it_plans_as_before(self, monkeypatch: pytest.MonkeyPatch) -> None:
         store, host = self._host()
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 24)
+        monkeypatch.setattr(reads, "PLANNING_READ_BUDGET", 24)
 
         block = detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
 
         assert block.run_ids == ["run-model-a", "run-model-b"] and _reading(block)
         assert all(keys_only for _, keys_only, _ in store.typed_reads), "no run was read whole"
         assert sum(store.id_reads) == 24
+
+    def test_every_runs_results_are_one_read_of_readings(self) -> None:
+        store, host = self._host()
+
+        detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
+
+        # On the engine path a read of readings in the store's order reads every run's keys in one call, then a page
+        # of results by id.
+        key_reads = [named for named, keys_only, _ in store.typed_reads if keys_only]
+        assert [sorted(named) for named in key_reads] == [["run-model-a", "run-model-b"]], "every run's keys, once"
+        assert store.id_reads == [24], "one page of results by id"
+
+    def test_every_runs_keys_are_one_read(self) -> None:
+        store, host = self._host()
+        # Runs whose matrices promise far more results than they hold: their keys are one read, of every run named.
+        for name, cases in (("wide-1", 2_000), ("wide-2", 2_000), ("wide-3", 2_000), ("past-the-bound", 6_000)):
+            run = make_eval_run(
+                id=f"run-{name}",
+                scope_id=SCOPE,
+                template_id=TEMPLATE,
+                candidate_model=name,
+                status="completed",
+                k_runs=1,
+                test_case_ids=[f"c{index}" for index in range(cases)],
+            )
+            host.storage.save_eval_run(run)
+            for case in ("c0", "c1"):
+                host.storage.save_eval_result(
+                    make_eval_result(
+                        id=f"{name}-{case}",
+                        eval_run_id=run.id,
+                        scope_id=SCOPE,
+                        model=name,
+                        test_case_id=case,
+                        k_iteration=1,
+                        host_measures={READING: 1.0},
+                    )
+                )
+        estimate = {
+            run.id: len(run.test_case_ids) * run.k_runs
+            for run in host.storage.query_eval_runs(SCOPE)
+            if run.template_id == TEMPLATE
+        }
+        store.clear()
+
+        block = detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
+
+        key_reads = [named for named, keys_only, _ in store.typed_reads if keys_only]
+        assert len(key_reads) == 1, key_reads
+        assert sorted(run for named in key_reads for run in named) == sorted(estimate), "every run's keys read once"
+        assert sorted(block.run_ids) == sorted(estimate)
 
     def test_a_read_returning_more_than_its_runs_promised_past_the_budget_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
@@ -352,7 +413,7 @@ class TestThePlanningReadIsHeldToTheReadBudget:
                     host_measures={READING: 1.0},
                 )
             )
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 25)
+        monkeypatch.setattr(reads, "PLANNING_READ_BUDGET", 25)
 
         with pytest.raises(ValidationFailedError) as refused:
             detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
@@ -363,7 +424,8 @@ class TestThePlanningReadIsHeldToTheReadBudget:
             "result_budget": 25,
             "results_returned": 26,
         }
-        assert store.id_reads == [], "counted off the runs' keys, refused before any result was read"
+        # Counted as the read is walked, so the refusal comes once it is, a page of results at a time.
+        assert store.id_reads == [26], "one page read, then refused"
 
 
 class TestALaunchEstimatePastTheBudgetIsPricedAndSaysWhyItCannotPlan:
@@ -396,7 +458,7 @@ class TestALaunchEstimatePastTheBudgetIsPricedAndSaysWhyItCannotPlan:
         )
         within = asyncio.run(launch_estimate(fixture.host, arguments, TOYHOST_SCOPE))
         assert within.detectable_effect is not None and within.detectable_effect.run_ids, "it plans within the budget"
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", corpus - 1)
+        monkeypatch.setattr(reads, "PLANNING_READ_BUDGET", corpus - 1)
         store.clear()
 
         estimate = asyncio.run(launch_estimate(fixture.host, arguments, TOYHOST_SCOPE))
@@ -416,7 +478,7 @@ class TestALaunchEstimatePastTheBudgetIsPricedAndSaysWhyItCannotPlan:
 
     def test_a_direct_call_still_refuses(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _, fixture, _ = self._fixture()
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 1)
+        monkeypatch.setattr(reads, "PLANNING_READ_BUDGET", 1)
 
         with pytest.raises(ValidationFailedError, match="detectable_effects would aggregate about"):
             detectable_effects(
@@ -452,7 +514,10 @@ class TestThePlanningReadHoldsAPageNotTheHistory:
             for index in range(first, last)
         }
 
-    def test_four_times_the_history_adds_its_values_not_its_results(self) -> None:
+    def test_four_times_the_history_adds_its_values_not_its_results(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The read pages by the reading seam's page (``READINGS_PAGE``, a thousand results), which this history would
+        # fit in whole; a page of one run's results makes the history twelve pages, as a live history is many.
+        monkeypatch.setattr(storage_module, "READINGS_PAGE", 30)
         host = _host()
         _store_history(host.storage, self._runs(0, 3), payload=self.PAYLOAD)
 
@@ -530,7 +595,8 @@ class TestTheCrossRunRulesHoldAcrossPages:
             runs.append(run)
             for result in results:
                 host.storage.save_eval_result(result)
-        walked = {run.id: iter(history[run.candidate_model]) for run in runs}
+        # One walk, run by run in the runs' order, as the planning read hands its readings out.
+        walked = (result for run in runs for result in history[run.candidate_model])
 
         readings = {reading.name: reading for reading in planning_readings(runs, walked, profile=host.profile)}
 
@@ -540,3 +606,52 @@ class TestTheCrossRunRulesHoldAcrossPages:
             "run-b": {"c1": [1.0]},
         }
         assert "conversation.tone" not in readings, "scored once as a boundary, on the first page read: a guardrail"
+
+
+class TestARepeatsValueIsItsResultsSummaryMean:
+    """A repeat's value in the planning read is its one result's mean of each measure, exactly as a summary states it:
+    the read takes each mean without building the summary, so its arithmetic is held here to a summary built over the
+    same result, a run of that one result in an assembled bundle (``run_summaries``). On the production-shaped corpus,
+    whose results carry per-role usage rows (several observations of one measure in one result) beside scalars."""
+
+    def test_on_the_production_shaped_corpus(self) -> None:
+        corpus = hot_path_corpus(cases_per_run=2)
+        storage, scope = corpus.host.storage, corpus.scope_id
+        runs: list[EvalRun] = []
+        results: dict[str, list[EvalResult]] = {}
+        for run in storage.query_eval_runs(scope):
+            for result in storage.query_eval_results_by_run(run.id, scope):
+                # A failure is read as a miss across runs, and a faulted result is out of a scored summary: neither
+                # is the arithmetic this pins.
+                if harness_faulted(result) or candidate_failure_cause(result) is not None:
+                    continue
+                one = run.model_copy(
+                    update={"id": f"{run.id}-{result.id}", "test_case_ids": [result.test_case_id], "k_runs": 1}
+                )
+                runs.append(one)
+                results[one.id] = [result.model_copy(update={"eval_run_id": one.id})]
+        campaign = make_campaign(
+            scope_id=scope,
+            subject_id=corpus.campaign.subject_id,
+            template_id=corpus.template_ids[0],
+            run_ids=[run.id for run in runs],
+        )
+        bundle = assemble_context_bundle(campaign, storage=ToyhostStorage(runs, results), profile=corpus.host.profile)
+        stated = {
+            summary.run_id: {measure.name: measure.mean for measure in summary.measures.measures}
+            for summary in bundle.run_summaries
+        }
+
+        readings = planning_readings(
+            runs, (result for run in runs for result in results[run.id]), profile=corpus.host.profile
+        )
+
+        compared = 0
+        for reading in readings:
+            if reading.reading != "measure":
+                continue
+            for run_id, by_case in reading.repeats.items():
+                ((value,),) = by_case.values()
+                assert value == stated[run_id][reading.name], (reading.name, run_id)
+                compared += 1
+        assert compared > len(runs), "more than one measure compared per result"

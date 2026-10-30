@@ -66,6 +66,7 @@ from threetears.evals.kernel.judge_cases import JUDGE_KIND, JUDGE_KIND_ROLE
 from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:
+    from threetears.evals.kernel.result_reading import ResultView, UsageView
     from threetears.evals.schema.models import AsyncDelivery, EvalResult
 
 log = get_logger(__name__)
@@ -815,7 +816,7 @@ def blended_cost(usage: list[RoleUsage], cost_roles: Collection[UsageRole]) -> f
     return math.fsum(row.cost_usd for row in rows if row.cost_usd is not None)
 
 
-def spend_observed(usage: list[RoleUsage], cost_roles: Collection[UsageRole]) -> bool:
+def spend_observed(usage: Sequence[UsageView], cost_roles: Collection[UsageRole]) -> bool:
     """Whether a row in ``cost_roles`` carries dollars — whether :func:`blended_cost` summed anything at all.
 
     :func:`blended_cost` sums an empty list to 0.0, so a result whose candidate reported nothing — a quick
@@ -827,7 +828,7 @@ def spend_observed(usage: list[RoleUsage], cost_roles: Collection[UsageRole]) ->
     averaged in, ranks the least-measured configuration the cheapest.
 
     :param usage: The result's rows.
-    :ptype usage: list[RoleUsage]
+    :ptype usage: Sequence[UsageView]
     :param cost_roles: The roles its total sums (``EvalResult.cost_roles``).
     :ptype cost_roles: Collection[UsageRole]
     :return: True when at least one row in those roles carries a ``cost_usd``.
@@ -873,14 +874,14 @@ def cell_cost(
     return blended_cost(usage, cost_roles)
 
 
-def _sum_costs(rows: list[RoleUsage]) -> float | None:
+def _sum_costs(rows: Sequence[UsageView]) -> float | None:
     """Total the observed costs, or ``None`` when no row observed one."""
     observed = [row.cost_usd for row in rows if row.cost_usd is not None]
     return math.fsum(observed) if observed else None
 
 
 def production_replicating_cost(
-    usage: list[RoleUsage], *, substituted_deliveries: int, candidate_kind: str | None
+    usage: Sequence[UsageView], *, substituted_deliveries: int, candidate_kind: str | None
 ) -> float | None:
     """Observed cost of the roles a production deployment would also pay for.
 
@@ -958,7 +959,7 @@ def production_replicating_cost(
     any arm of it, on every surface at once (#828).
 
     :param usage: The per-role rows to sum.
-    :ptype usage: list[RoleUsage]
+    :ptype usage: Sequence[UsageView]
     :param substituted_deliveries: How many of this result's async deliveries were supplied
         by a harness rather than produced by a background run. Any non-zero value
         withholds the figure.
@@ -977,23 +978,23 @@ def production_replicating_cost(
     return _sum_costs(production_rows(usage, candidate_kind=candidate_kind))
 
 
-def production_rows(usage: Sequence[RoleUsage], *, candidate_kind: str | None) -> list[RoleUsage]:
+def production_rows[U: UsageView](usage: Sequence[U], *, candidate_kind: str | None) -> list[U]:
     """The rows of the roles a production deployment pays for, as :func:`production_replicating_cost` sums them: the
     candidate's, the inner agent's and the external ones, or the judge's in a judge-kind result, whose subject it is.
 
     :param usage: A result's per-role rows.
-    :ptype usage: Sequence[RoleUsage]
+    :ptype usage: Sequence[U]
     :param candidate_kind: The kind that produced the rows (``EvalResult.candidate_kind``); ``None`` reads as any kind
         but the judge kind.
     :ptype candidate_kind: str | None
     :return: Those rows, in their order.
-    :rtype: list[RoleUsage]
+    :rtype: list[U]
     """
     roles = _JUDGE_KIND_PRODUCTION_ROLES if candidate_kind == JUDGE_KIND else PRODUCTION_REPLICATING_ROLES
     return [row for row in usage if row.role in roles]
 
 
-def program_cost(usage: list[RoleUsage]) -> float | None:
+def program_cost(usage: Sequence[UsageView]) -> float | None:
     """Cost of every role, i.e. what the eval program spent to produce this result.
 
     ``None`` when nothing observed a cost. This is a FLOOR, not a reconciliation: a
@@ -1049,7 +1050,7 @@ class ResolvedUsage(EvalBaseModel):
     substituted_deliveries: int = 0
 
 
-def count_substituted_deliveries(result: EvalResult) -> int:
+def count_substituted_deliveries(result: ResultView) -> int:
     """Count the async deliveries in ``result`` whose payload a harness supplied.
 
     Read from the result's own ``async_deliveries`` record rather than from the per-turn trace,
@@ -1082,7 +1083,7 @@ def count_substituted_deliveries(result: EvalResult) -> int:
     :func:`production_replicating_cost` for why that leaves the figure honest.
 
     :param result: The result to inspect. Never mutated.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: How many deliveries a harness supplied. Any non-zero count is enough to withhold the
         production-replicating cost; the number is kept rather than a bool because it is the
         more informative disclosure at no extra cost.

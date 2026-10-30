@@ -14,6 +14,7 @@ from collections.abc import Sequence
 
 import pytest
 
+from threetears.evals.kernel.result_reading import ReadingsRead, ResultReading
 from threetears.evals.analysis import measurement_windows
 from threetears.evals.analysis.measurement_windows import (
     DISJOINT_WINDOWS_CLAUSE,
@@ -162,6 +163,24 @@ class _WindowStorage:
         return [
             r.model_copy(update=dict.fromkeys(elide)) if elide else r for r in self._results if r.scope_id == scope_id
         ]
+
+    def iter_result_readings(self, run_ids: Sequence[str] | None, scope_id: str, /) -> ReadingsRead:
+        """Return the seeded results of the runs (or of the scope) as their readings, as the grouping reads them.
+
+        :param run_ids: The runs, or ``None`` for the scope.
+        :ptype run_ids: Sequence[str] | None
+        :param scope_id: Partition key.
+        :ptype scope_id: str
+        :return: The readings, in the seeded order, run by run when runs are named.
+        :rtype: ReadingsRead
+        """
+        scoped = [r for r in self._results if r.scope_id == scope_id]
+        chosen = (
+            scoped
+            if run_ids is None
+            else [r for run_id in dict.fromkeys(run_ids) for r in scoped if r.eval_run_id == run_id]
+        )
+        return ReadingsRead("engine", store_calls=1, pages=iter([(0, [ResultReading.of(r) for r in chosen])]))
 
 
 # =============================================================================

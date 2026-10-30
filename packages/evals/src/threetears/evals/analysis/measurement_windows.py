@@ -15,9 +15,7 @@ from threetears.evals.schema.base import EvalBaseModel
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.run_pages import ResultKey
-    from threetears.evals.schema.models import (
-        EvalResult,
-    )
+    from threetears.evals.kernel.result_reading import ResultView
 
 
 class MeasurementWindow(EvalBaseModel):
@@ -56,7 +54,7 @@ class MeasurementWindow(EvalBaseModel):
     end: str
 
 
-def measurement_window(run_id: str, results: Iterable[EvalResult | ResultKey]) -> MeasurementWindow | None:
+def measurement_window(run_id: str, results: Iterable[ResultView | ResultKey]) -> MeasurementWindow | None:
     """Derive one run's measurement window from the results it produced.
 
     Only when each was stored is read, so a run's result keys
@@ -68,7 +66,7 @@ def measurement_window(run_id: str, results: Iterable[EvalResult | ResultKey]) -
     :param results: That run's stored results, or their keys. Callers filter to one run; nothing
         here checks ``eval_run_id``, so passing another run's results
         produces a window describing a population that never existed.
-    :ptype results: Iterable[EvalResult | ResultKey]
+    :ptype results: Iterable[ResultView | ResultKey]
     :return: The window, or ``None`` when the run produced no results. ``None`` is an
         honest absence and never a zero-length span at some arbitrary instant: a
         run that measured nothing did not measure it "at" a time, and a synthetic

@@ -7,7 +7,7 @@ baseline run is stored, a second run's job writes its results and completes, and
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 import pytest
@@ -81,6 +81,23 @@ class _RecordsResultReads(InMemoryDocumentStore):
             exclude=exclude,
             field_in=field_in,
             **field_eq,
+        )
+
+    def iter_narrowed(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> Iterator[dict[str, Any]]:
+        # The store's own narrowed read, which a read of readings makes on the store's path.
+        if doc_type == "eval_result":
+            self.excluded.append(frozenset(exclude))
+        return super().iter_narrowed(
+            doc_type, scope_id, exclude=exclude, exclude_in_items=exclude_in_items, field_in=field_in, **field_eq
         )
 
 
@@ -196,7 +213,7 @@ async def test_the_judged_tiers_read_results_without_their_verbatim_fields() -> 
 
     await _drive(_RecordingSink(), measures=(TRANSCRIPT_DIM_ID,), calibrate=True, store=store)
 
-    assert frozenset(VERBATIM_RESULT_FIELDS) in store.excluded, store.excluded
+    assert any(frozenset(VERBATIM_RESULT_FIELDS) <= excluded for excluded in store.excluded), store.excluded
 
 
 async def test_a_measure_that_did_not_move_past_the_threshold_delivers_nothing() -> None:
