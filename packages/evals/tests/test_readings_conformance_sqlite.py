@@ -2,13 +2,16 @@
 
 The kit's backend hook counts statements: the store's connection is opened through a ``sqlite3.Connection`` subclass
 whose ``execute`` calls the installed hook first, so a read that ran two statements, or hid a failing one, is seen.
-Beside the kit: a narrowed read abandoned part way leaves the store usable, and one longer than a fetched page comes
-back whole and in order.
+Beside the kit: a narrowed read abandoned part way leaves the store usable and reports nothing when collected, one
+paused never blocks a write, one longer than a fetched page comes back whole and in order, and one opens the store's
+file after a change of directory.
 """
 
 from __future__ import annotations
 
+import gc
 import sqlite3
+import sys
 from collections.abc import Callable, Iterator
 from functools import partial
 from pathlib import Path
@@ -156,3 +159,35 @@ def test_grouped_values_need_nothing_newer_than_json1_and_filter(
         (statement,) = _HookedConnection.statements
         assert "->" not in statement
         assert "ORDER BY" not in statement.upper()
+
+
+def test_a_narrowed_read_dropped_part_way_reports_nothing_when_collected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A caller that breaks out of a loop over a narrowed read leaves nothing raised or printed behind."""
+    unraisable: list[Any] = []
+    monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+    with SqliteDocumentStore(tmp_path / "evals.sqlite") as store:
+        for index in range(600):
+            store.upsert(_doc(index))
+        rows = store.iter_narrowed("t", "s")
+        assert next(rows)["n"] == 0
+        del rows
+        gc.collect()
+        never_started = store.iter_narrowed("t", "s")
+        del never_started
+        gc.collect()
+        store.upsert(_doc(600))
+    assert unraisable == []
+    assert capsys.readouterr().err == ""
+
+
+def test_a_narrowed_read_opens_the_store_file_after_a_change_of_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path)
+    with SqliteDocumentStore("evals.sqlite") as store:
+        store.upsert(_doc(1))
+        monkeypatch.chdir(tmp_path / "elsewhere")
+        assert [row["n"] for row in store.iter_narrowed("t", "s")] == [1]
