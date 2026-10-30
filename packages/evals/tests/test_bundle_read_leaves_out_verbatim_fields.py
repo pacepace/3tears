@@ -2,7 +2,8 @@
 
 A stored result carries what its cell did verbatim: a world's event log (``world_events``) and its kind's own payload
 (``kind_payload``). They are most of a result's bytes, and a 41-run campaign's bundle read whole held them all at once
-(a 2 GB pod killed on 2026-10-30). The bundle's one read of its results asks the store to leave them out, so:
+(a 2 GB pod killed on 2026-10-30). Every read of results the bundle makes (its readings, by type or narrowed, and
+its kept trials, by id) asks the store to leave them out, so:
 
 - **the bundle is the one a whole read gives**: assembled over a store that ships every field anyway, it is equal, a
   host measure named as a world event's field (``turn``) included: the measure walk reads no event as a measurement;
@@ -15,7 +16,7 @@ from __future__ import annotations
 
 import tracemalloc
 from dataclasses import replace
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
@@ -53,7 +54,7 @@ _CASES = [f"case-{index:02d}" for index in range(12)]
 
 
 class _ShipsEveryField(InMemoryDocumentStore):
-    """A store that ignores ``exclude`` on a read by type, shipping every field: what a whole read of a result gives."""
+    """A store that ignores ``exclude`` on every read of rows, shipping every field: what a whole read of a result gives."""
 
     def by_doc_type(
         self,
@@ -70,6 +71,16 @@ class _ShipsEveryField(InMemoryDocumentStore):
         return super().by_doc_type(
             doc_type, scope_id, order_by=order_by, descending=descending, limit=limit, field_in=field_in, **field_eq
         )
+
+    def iter_narrowed(
+        self, doc_type: str, scope_id: str, *, exclude: Sequence[str] = (), **kwargs: Any
+    ) -> Iterator[dict[str, Any]]:
+        return super().iter_narrowed(doc_type, scope_id, **kwargs)
+
+    def get_many(
+        self, doc_type: str, doc_ids: Sequence[str], scope_id: str, *, exclude: Sequence[str] = (), **kwargs: Any
+    ) -> list[dict[str, Any]]:
+        return super().get_many(doc_type, doc_ids, scope_id, **kwargs)
 
 
 class _RecordsExclude(InMemoryDocumentStore):
@@ -103,6 +114,20 @@ class _RecordsExclude(InMemoryDocumentStore):
             field_in=field_in,
             **field_eq,
         )
+
+    def iter_narrowed(
+        self, doc_type: str, scope_id: str, *, exclude: Sequence[str] = (), **kwargs: Any
+    ) -> Iterator[dict[str, Any]]:
+        if doc_type == "eval_result":
+            self.excluded.append(tuple(exclude))
+        return super().iter_narrowed(doc_type, scope_id, exclude=exclude, **kwargs)
+
+    def get_many(
+        self, doc_type: str, doc_ids: Sequence[str], scope_id: str, *, exclude: Sequence[str] = (), **kwargs: Any
+    ) -> list[dict[str, Any]]:
+        if doc_type == "eval_result":
+            self.excluded.append(tuple(exclude))
+        return super().get_many(doc_type, doc_ids, scope_id, exclude=exclude, **kwargs)
 
 
 def _result(model: str, case_id: str, k: int, *, verbatim: int) -> EvalResult:
