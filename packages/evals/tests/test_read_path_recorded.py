@@ -7,8 +7,10 @@ by id). Held here:
 - **the path** is the store's on the reference store as it is, on the sqlite file store, and on a store wrapped to
   hide the capability the engine's; the read reports it, and the ``eval.read_tier`` line carries it
   (``path=`` and ``store_calls=``);
-- **no silent fallback:** a store that offers the capability and fails raises what it raised, at the call or part
-  way through its rows, and the engine's reads are never made after it;
+- **no silent fallback:** a store that offers the capability and fails raises a ``StorageError`` carrying what it
+  raised, at the call or part way through its rows, and the engine's reads are never made after it;
+- **one outage contract:** a backend failure on either path is a ``StorageError`` (503), and a grouping ``grouped``
+  refuses is raised as itself on both;
 - **store calls exact** on both paths, counted against the backend calls the store was asked for;
 - **the same answers:** every campaign the reading's fields were recorded over reads the same readings, JSON for
   JSON and in the same order, on both paths, for the scope, for several runs named out of the store's order, and for
@@ -278,8 +280,10 @@ class TestNoSilentFallback:
         store = _failing()
 
         walked = EvalStorage(store).iter_result_readings(["run-1"], SCOPE)
-        with pytest.raises(ConnectionError, match="went away"):
+        with pytest.raises(StorageError, match="went away") as raised:
             list(walked)
+
+        assert isinstance(raised.value.__cause__, ConnectionError), "the store's own failure is its cause"
 
         assert store.calls == ["iter_narrowed"], "no key read, no read by id: the engine's path is never taken"
         assert (walked.path, walked.store_calls) == ("store", 1), "the call that raised was made, and is counted"
@@ -288,8 +292,10 @@ class TestNoSilentFallback:
         store = _failing(rows_first=2)
 
         walked = EvalStorage(store).iter_result_readings(None, SCOPE)
-        with pytest.raises(ConnectionError, match="part way"):
+        with pytest.raises(StorageError, match="part way") as raised:
             list(walked)
+
+        assert isinstance(raised.value.__cause__, ConnectionError)
 
         assert store.calls == ["iter_narrowed"]
         assert (walked.path, walked.store_calls) == ("store", 1)
@@ -297,10 +303,52 @@ class TestNoSilentFallback:
     def test_a_grouped_read_that_fails_raises_and_is_never_read_again(self) -> None:
         store = _failing()
 
-        with pytest.raises(ConnectionError, match="went away"):
+        with pytest.raises(StorageError, match="went away") as raised:
             EvalStorage(store).result_groups(["run-1"], SCOPE, by=["eval_run_id"], measures=MEASURES)
 
+        assert isinstance(raised.value.__cause__, ConnectionError)
         assert store.calls == ["grouped"]
+
+
+class _Down(CountingStore):
+    """A store whose backend is down for every read of results, whichever path reads it."""
+
+    def by_doc_type(
+        self, doc_type: str, scope_id: str, *, field_in: Mapping[str, Sequence[Any]] | None = None, **kwargs: Any
+    ) -> list[dict[str, Any]]:
+        raise ConnectionError("the backend is down")
+
+    def get_many(self, doc_type: str, ids: Sequence[str], scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        raise ConnectionError("the backend is down")
+
+    def iter_narrowed(self, doc_type: str, scope_id: str, **kwargs: Any) -> Iterator[dict[str, Any]]:
+        raise ConnectionError("the backend is down")
+
+    def grouped(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        raise ConnectionError("the backend is down")
+
+
+class TestOneOutageContract:
+    @pytest.mark.parametrize("path", ["store", "engine"])
+    def test_an_outage_is_a_storage_error_on_either_path(self, path: str) -> None:
+        store = _Down()
+        storage = EvalStorage(store if path == "store" else EngineOnlyStore(store))
+
+        with pytest.raises(StorageError, match="down"):
+            list(storage.iter_result_readings(["run-1"], SCOPE))
+        with pytest.raises(StorageError, match="down"):
+            storage.result_groups(["run-1"], SCOPE, by=["eval_run_id"], measures=MEASURES)
+
+    @pytest.mark.parametrize("path", ["store", "engine"])
+    def test_a_refused_grouping_is_raised_as_itself_on_either_path(self, path: str) -> None:
+        store = CountingStore()
+        EvalStorage(store).save_eval_result(make_eval_result(id="r-00000", eval_run_id="run-1"))
+        storage = EvalStorage(store if path == "store" else EngineOnlyStore(store))
+
+        undefined: dict[str, Any] = {"m": ("mean", "cost_usd")}
+
+        with pytest.raises(ValueError, match="kind"):
+            storage.result_groups(["run-1"], SCOPE, by=["eval_run_id"], measures=undefined)
 
 
 class _StrayRows(CountingStore):

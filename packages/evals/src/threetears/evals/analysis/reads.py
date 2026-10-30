@@ -611,8 +611,10 @@ class _Aggregated[T]:
 def _held_to_budget[T](walk: _Walk[T], budget: int) -> tuple[list[T], int]:
     """``walk``'s rows up to ``budget``, and how many it handed out in all.
 
-    Every row is counted, so a read past the budget reports what it returned; none past the budget is kept, so a read
-    the safety net sets aside never held more rows than the budget allows.
+    Every row is counted, so a read past the budget reports what it returned; none past the budget is kept here. What
+    the walk holds beneath this is its own: a store-path read of several runs in the default order holds every reading
+    until its last row (to hand them out run by run), and a grouped read (the spend lenses') is held whole before it
+    is walked, so the bound on what a read held is the estimate checked before it, not this count.
     """
     rows: list[T] = []
     returned = 0
@@ -651,8 +653,9 @@ def _aggregate_results[T](
     A scope whose runs (``corpus``, every run a whole-scope read can return, archived ones included) are estimated at
     the budget or under is read whole, as before. Past it, the call's ``narrowed`` runs are read when they fit, and the
     call is refused when they do not or when it does not narrow (``None``). A read that returns more than the budget is
-    not aggregated: a whole-scope read falls back to the narrowed read, and a narrowed read is refused. No read holds
-    more rows than the budget allows (:func:`_held_to_budget`).
+    not aggregated: a whole-scope read falls back to the narrowed read, and a narrowed read is refused. The rows kept
+    are at most the budget (:func:`_held_to_budget`); what a read held while it was walked is bounded by the estimate
+    checked before it (a grouped read, and a store-path read of several runs, are held whole by the walk).
 
     :param lens: The operation, as the refusal and its log line name it.
     :ptype lens: str

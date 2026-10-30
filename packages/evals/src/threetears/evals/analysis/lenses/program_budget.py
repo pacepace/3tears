@@ -41,13 +41,14 @@ class SpendView(Protocol):
 #: The spend fields of a stored result, read off its row by the spend lenses.
 _SPEND_FIELDS = ("eval_run_id", "cost_usd", "judge_rescores", "cost_roles")
 
-#: The stored read of a result narrowed to its spend fields: a core document of the result's own type, its fields
-#: the result's own definitions (types, bounds and validators), so its :meth:`~CoreDocumentModel.from_dict` refuses
-#: what the result's does, a version or minor this build does not read included, with the same ``ValidationError``.
-#: Named as the result is, so a refusal reads as the result's.
+#: The stored read of a result narrowed to its spend fields: a part of a result's document, with no ``doc_type`` field
+#: of its own (so it is no second stored model of the result's type; the row's ``doc_type`` names it in a refusal),
+#: its fields the result's own definitions (types, bounds and validators), so its :meth:`~CoreDocumentModel.from_dict`
+#: refuses what the result's does, a version or minor this build does not read included, with the same
+#: ``ValidationError``. Named as the result is, so a refusal reads as the result's.
 _STORED_SPEND_FIELDS: dict[str, Any] = {
     name: (EvalResult.model_fields[name].annotation, EvalResult.model_fields[name])
-    for name in ("doc_type", "schema_version", "schema_minor", *_SPEND_FIELDS)
+    for name in ("schema_version", "schema_minor", *_SPEND_FIELDS)
 }
 _StoredSpend: type[CoreDocumentModel] = create_model(
     "EvalResult", __base__=CoreDocumentModel, __module__=__name__, **_STORED_SPEND_FIELDS

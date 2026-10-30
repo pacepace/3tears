@@ -2291,7 +2291,8 @@ def report_read(
     (:func:`~threetears.evals.kernel.phase_log.phase_logged`), raised or not. ``render_ms`` is serializing the
     report in its form, the transcripts' read included when ``include_sessions`` adds them; ``fold_ms`` is the rest:
     finding and building the report (and assembling its bundles, on the code-only path) and reading its analysis,
-    their store reads included until those charge ``store_ms`` and ``hydrate_ms`` themselves. ``runs_in`` and
+    their other store reads included. A bundle assembly's read of results as readings charges ``store_ms`` and
+    ``hydrate_ms``, and fills ``path`` and ``store_calls``, on its own line and on this one. ``runs_in`` and
     ``results_in`` are what the read's bundle assemblies took in, empty when it assembled none (a report document's
     page draws its stored snapshot).
 

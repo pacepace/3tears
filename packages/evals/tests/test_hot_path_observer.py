@@ -237,9 +237,12 @@ class TestTheCallSites:
         assert (fields["scope_id"], fields["campaign_id"]) == (TOYHOST_SCOPE, fixture.campaign.id)
         assert (fields["runs_in"], fields["results_in"]) == (str(runs), str(results))
         assert len(bundle.aspects) >= 1
-        assert fields["fold_ms"] == f"{_ms(fields, 'elapsed_ms'):.1f}", "the whole assembly is its fold, for now"
-        assert (fields["store_ms"], fields["hydrate_ms"], fields["render_ms"]) == ("", "", "")
-        assert (fields["path"], fields["store_calls"]) == ("", "")
+        # The results are read through the reading seam, which charges its store call and its hydration apart from
+        # the folds, and says the path that served it: the in-memory store offers the narrowed read.
+        assert fields["store_ms"] != "" and fields["hydrate_ms"] != "", "the readings' read is timed apart"
+        assert fields["render_ms"] == ""
+        assert fields["path"] == "store" and int(fields["store_calls"]) >= 1, fields
+        _phases_add_up(fields)
 
     def test_a_two_aspect_assembly_counts_every_aspect_s_runs_and_results(
         self, caplog: pytest.LogCaptureFixture
@@ -278,7 +281,9 @@ class TestTheCallSites:
         assert (page["runs_in"], page["results_in"]) == (str(runs), str(results))
         assert page["render_ms"] != "", "serializing the page is its render"
         assert _ms(page, "fold_ms") >= _ms(bundle, "elapsed_ms") - ROUNDING_MS, "the assembly is in the read's fold"
-        assert (page["store_ms"], page["hydrate_ms"]) == ("", "")
+        assert (page["store_ms"], page["hydrate_ms"]) == (bundle["store_ms"], bundle["hydrate_ms"]) != ("", ""), (
+            "the assembly's readings read reaches the read's line"
+        )
         assert "raised" not in page
         _phases_add_up(page)
 

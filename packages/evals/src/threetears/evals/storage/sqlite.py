@@ -51,6 +51,7 @@ import weakref
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from threetears.evals.schema.store_port import (
@@ -497,7 +498,7 @@ class SqliteDocumentStore:
         scope_id: str,
         *,
         exclude: Sequence[str] = (),
-        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> Iterator[dict[str, Any]]:
@@ -577,7 +578,8 @@ class SqliteDocumentStore:
         counted in the same statement and raised here. ``values`` rides the same statement as a ``UNION ALL`` of one
         row per matching document (its seq, id, group key, and each path's ``json_type`` and ``json_extract``),
         ordered by seq and grouped here: never through SQLite's JSON text, which writes a real at 15 significant
-        digits, so every number comes back exactly as stored.
+        digits, so every double comes back to its last bit. An integer of 2**63 or more, which SQLite stores as a
+        real, comes back as a float, as this store's own reads return it.
         See :meth:`~threetears.evals.schema.ResultReadings.grouped`.
 
         :param doc_type: The discriminator to select on.
