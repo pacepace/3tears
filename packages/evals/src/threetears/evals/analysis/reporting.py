@@ -1678,7 +1678,7 @@ def project_score_records(
                 metric=METRIC_COMPOSITE,
                 value=composite,
                 dimension_basis=composite_basis(result),
-                host_measures=result.host_measures,
+                host_measures=dict(result.host_measures),
                 **composite_coordinates,
             )
         )

@@ -205,7 +205,7 @@ class RepeatView(Protocol):
     """A repeat of the judge's scores."""
 
     @property
-    def judge_config_ids(self) -> dict[str, str]: ...
+    def judge_config_ids(self) -> Mapping[str, str]: ...
     @property
     def scores(self) -> Sequence[RepeatedScoreView]: ...
 
@@ -250,7 +250,7 @@ class SecondJudgingView(Protocol):
     @property
     def judge(self) -> SecondJudgeView: ...
     @property
-    def judge_config_ids(self) -> dict[str, str]: ...
+    def judge_config_ids(self) -> Mapping[str, str]: ...
     @property
     def scores(self) -> Sequence[SecondScoreView]: ...
 
@@ -306,7 +306,7 @@ class ResultView(Protocol):
     @property
     def outcome_score(self) -> ScoreView | None: ...
     @property
-    def judge_config_ids(self) -> dict[str, str]: ...
+    def judge_config_ids(self) -> Mapping[str, str]: ...
     @property
     def judge_rescores(self) -> Sequence[RescoreView]: ...
     @property
@@ -324,11 +324,11 @@ class ResultView(Protocol):
     @property
     def async_deliveries(self) -> Sequence[AsyncDelivery] | None: ...
     @property
-    def covariates(self) -> dict[str, str | float]: ...
+    def covariates(self) -> Mapping[str, str | float]: ...
     @property
-    def phase_timings(self) -> dict[str, float]: ...
+    def phase_timings(self) -> Mapping[str, float]: ...
     @property
-    def host_measures(self) -> dict[str, bool | float | str]: ...
+    def host_measures(self) -> Mapping[str, bool | float | str]: ...
     @property
     def variant_key(self) -> str: ...
     @property
@@ -348,7 +348,7 @@ class ResultView(Protocol):
     @property
     def judge_cannot_tell_boundary(self) -> Sequence[str]: ...
     @property
-    def judge_cut_short(self) -> dict[str, JudgeCutShort]: ...
+    def judge_cut_short(self) -> Mapping[str, JudgeCutShort]: ...
     @property
     def candidate_error(self) -> str | None: ...
     @property
@@ -395,7 +395,7 @@ class SharedValues:
         held = tuple(self.text(value) for value in values)
         return self._tuples.setdefault(held, held)
 
-    def names(self, mapping: dict[str, str]) -> dict[str, str]:
+    def names(self, mapping: Mapping[str, str]) -> Mapping[str, str]:
         """A mapping of text to text (a result's judge configs by dimension), the equal one already held if there is
         one."""
         key = tuple(mapping.items())
@@ -404,7 +404,7 @@ class SharedValues:
             held = self._names[key] = {self.text(name): self.text(value) for name, value in key}
         return held
 
-    def mapping[V](self, mapping: dict[str, V]) -> dict[str, V]:
+    def mapping[V](self, mapping: Mapping[str, V]) -> Mapping[str, V]:
         """``mapping`` with its keys held once, in its order: the one empty mapping when it is empty."""
         if not mapping:
             return cast(dict[str, V], self._empty)
@@ -620,7 +620,7 @@ class RepeatedScoreReading:
 class RepeatReading:
     """A repeat of the judge's scores (:class:`RepeatView`)."""
 
-    judge_config_ids: dict[str, str]
+    judge_config_ids: Mapping[str, str]
     scores: tuple[RepeatedScoreReading, ...]
 
     @classmethod
@@ -682,7 +682,7 @@ class SecondJudgingReading:
 
     pass_id: str
     judge: SecondJudgeReading
-    judge_config_ids: dict[str, str]
+    judge_config_ids: Mapping[str, str]
     scores: tuple[SecondScoreReading, ...]
 
     @classmethod
@@ -726,7 +726,7 @@ class ResultReading:
     judge_model: str | None
     transcript_score: ScoreReading | None
     outcome_score: ScoreReading | None
-    judge_config_ids: dict[str, str]
+    judge_config_ids: Mapping[str, str]
     judge_rescores: Sequence[RescoreReading]
     judge_repeats: Sequence[RepeatReading]
     judge_seconds: Sequence[SecondJudgingReading]
@@ -735,9 +735,9 @@ class ResultReading:
     usage: Sequence[UsageReading]
     latency: LatencyReading | None
     async_deliveries: Sequence[AsyncDelivery] | None
-    covariates: dict[str, str | float]
-    phase_timings: dict[str, float]
-    host_measures: dict[str, bool | float | str]
+    covariates: Mapping[str, str | float]
+    phase_timings: Mapping[str, float]
+    host_measures: Mapping[str, bool | float | str]
     variant_key: str
     identity_version: int
     termination: CellTermination
@@ -749,7 +749,7 @@ class ResultReading:
     #: which no rule reads.
     judge_cannot_tell: tuple[str, ...]
     judge_cannot_tell_boundary: Sequence[str]
-    judge_cut_short: dict[str, JudgeCutShort]
+    judge_cut_short: Mapping[str, JudgeCutShort]
     candidate_error: str | None
     infra_error: str | None
     scored_at: str

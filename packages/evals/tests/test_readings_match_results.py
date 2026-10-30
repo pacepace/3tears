@@ -82,11 +82,20 @@ from threetears.evals.kernel.usage_capture import (
     spend_observed,
 )
 from threetears.evals.run.reads import list_runs
-from threetears.evals.schema.models import EvalResult, EvalRun, SecondJudge, SecondJudging
+from threetears.evals.schema.models import (
+    OUTCOME_DIM_ID,
+    TRANSCRIPT_DIM_ID,
+    EvalResult,
+    EvalRun,
+    RubricScore,
+    SecondJudge,
+    SecondJudging,
+)
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_result, memory_storage
 from packages.evals.tests.test_result_reading_fields import (
     CAMPAIGNS,
+    PINNED,
     REPORT_NOW,
     Campaign,
     campaign,
@@ -499,3 +508,54 @@ class _CountingStore(InMemoryDocumentStore):
 def _counted_storage() -> tuple[EvalStorage, _CountingStore]:
     store = _CountingStore()
     return EvalStorage(store), store
+
+
+#: Pinned paths a reading leaves out by design: a score's reasoning, read only by the bundle's trials section, which
+#: re-reads the rows it lists whole.
+LEFT_OUT = frozenset({"outcome_score.reasoning", "rubric_scores[].reasoning", "transcript_score.reasoning"})
+
+
+def _reached(holders: list[Any], segments: list[str]) -> bool:
+    """Whether ``segments`` (a pinned path's steps) reach their end from some holder; a step a holder lacks raises."""
+    live = [holder for holder in holders if holder is not None]
+    if not segments or not live:
+        return bool(live)
+    step, rest = segments[0], segments[1:]
+    if step == "==":
+        return True
+    if step.endswith("()"):
+        return all(callable(getattr(holder, step[:-2])) for holder in live)
+    if step.endswith("[]"):
+        items = [item for holder in live for item in (getattr(holder, step[:-2]) or ())]
+        return _reached(items, rest)
+    return _reached([getattr(holder, step) for holder in live], rest)
+
+
+class TestEveryPinnedPathResolvesOnAReading:
+    """Each attribute path any family reads of a result (``test_result_reading_fields.py``'s pins) resolves on the
+    readings of results that carry it: none fails, and each reaches its end on some reading."""
+
+    def test_over_every_campaign(self) -> None:
+        readings = [ResultReading.of(result) for name in (*CAMPAIGNS, "regressed") for result in stored(name)[2]]
+        paths = sorted(frozenset().union(*PINNED.values()) - LEFT_OUT)
+
+        unreached = [path for path in paths if not _reached(readings, path.split("."))]
+
+        assert not unreached, f"pinned paths no reading reaches: {unreached}"
+
+    def test_a_left_out_path_is_one_the_reading_does_not_carry(self) -> None:
+        def axis(dim: str) -> RubricScore:
+            return RubricScore(dim=dim, score=4, scale="ordinal", axis="capability", reasoning="the judge's words")
+
+        reading = ResultReading.of(
+            make_eval_result(
+                id="r-1",
+                rubric_scores=[axis("conversation.tone")],
+                transcript_score=axis(TRANSCRIPT_DIM_ID),
+                outcome_score=axis(OUTCOME_DIM_ID),
+            )
+        )
+
+        for path in sorted(LEFT_OUT):
+            with pytest.raises(AttributeError):
+                _reached([reading], path.split("."))
