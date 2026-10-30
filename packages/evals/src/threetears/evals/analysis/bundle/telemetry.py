@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from threetears.evals.analysis.reporting import ScoreRecord, self_judging_models
 from threetears.evals.analysis.lenses.program_budget import ProgramBudget
 from threetears.evals.kernel.host.profile import HostProfile
-from threetears.evals.schema.models import EvalResult, RoleUsage
+from threetears.evals.kernel.result_reading import ResultView, UsageView
 from threetears.evals.kernel.provider import sum_optional_tokens
 from threetears.evals.kernel.result_condition import delivered_a_turn
 from threetears.evals.kernel.usage_capture import (
@@ -34,7 +34,7 @@ if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime i
     from threetears.evals.schema.models import EvalRun
 
 
-def _token_rollup(results: list[EvalResult]) -> TokenRollup | None:
+def _token_rollup(results: list[ResultView]) -> TokenRollup | None:
     """Sum token usage across results carrying a usage breakdown, or None.
 
     Sums what was reported (:func:`~threetears.evals.kernel.provider.sum_optional_tokens`, the
@@ -67,7 +67,7 @@ def _token_rollup(results: list[EvalResult]) -> TokenRollup | None:
     )
 
 
-def _token_count_unreported(row: RoleUsage) -> bool:
+def _token_count_unreported(row: UsageView) -> bool:
     """Whether a usage row is token-metered and left its prompt or completion count unreported.
 
     Every role this build knows is token-metered but ``external``, which is metered in its provider's units. A role
@@ -76,7 +76,7 @@ def _token_count_unreported(row: RoleUsage) -> bool:
     whatever the role meters, where reading it as unmetered would claim sums complete that may not be.
 
     :param row: One usage row.
-    :ptype row: RoleUsage
+    :ptype row: UsageView
     :return: ``True`` when the row's prompt or completion count is missing from the sums.
     :rtype: bool
     """
@@ -86,7 +86,7 @@ def _token_count_unreported(row: RoleUsage) -> bool:
     return row.prompt_tokens is None or row.completion_tokens is None
 
 
-def _result_has_error(result: EvalResult) -> bool:
+def _result_has_error(result: ResultView) -> bool:
     """True if a result carries any runner/judge/candidate/infra error.
 
     Deliberately NOT
@@ -101,7 +101,7 @@ def _result_has_error(result: EvalResult) -> bool:
     return bool(result.judge_error or result.candidate_error or result.infra_error)
 
 
-def _measured_prod_costs(run_results: list[EvalResult]) -> list[float]:
+def _measured_prod_costs(run_results: list[ResultView]) -> list[float]:
     """Every production-replicating cost a result actually measured — no placeholders.
 
     A result that evidences nothing to decompose, that observed no production-role spend,
@@ -120,7 +120,7 @@ def _measured_prod_costs(run_results: list[EvalResult]) -> list[float]:
     billed refusal's dollars are no turn's spend, and averaged in they made a refusing configuration cheap.
 
     :param run_results: The run's results.
-    :ptype run_results: list[EvalResult]
+    :ptype run_results: list[ResultView]
     :return: One float per turn that measured a production-replicating cost, in input order.
     :rtype: list[float]
     """
@@ -139,14 +139,14 @@ def _measured_prod_costs(run_results: list[EvalResult]) -> list[float]:
 
 
 def _run_summary(
-    run: EvalRun, run_results: list[EvalResult], reportable: set[str], *, profile: HostProfile
+    run: EvalRun, run_results: list[ResultView], reportable: set[str], *, profile: HostProfile
 ) -> RunSummary:
     """Digest one run + its results into a :class:`RunSummary`.
 
     :param run: The run.
     :ptype run: EvalRun
     :param run_results: That run's results.
-    :ptype run_results: list[EvalResult]
+    :ptype run_results: list[ResultView]
     :param reportable: The levers the campaign's coverage map names — see
         :func:`_reportable_levers`. ``config`` is narrowed to these so the two surfaces
         cannot name different levers for one campaign, and so a contestant property nobody
@@ -187,14 +187,14 @@ def _run_summary(
     )
 
 
-def _run_apparatus(run: EvalRun, run_results: list[EvalResult]) -> RunApparatus | None:
+def _run_apparatus(run: EvalRun, run_results: list[ResultView]) -> RunApparatus | None:
     """The rig ``run`` recorded at launch, copied off it, with its results counted by the execution mode each recorded;
     None where it recorded nothing past a serial run that pinned and declared nothing (``RunApparatus.recorded``).
 
     :param run: The run.
     :ptype run: EvalRun
     :param run_results: That run's results.
-    :ptype run_results: list[EvalResult]
+    :ptype run_results: list[ResultView]
     :return: The apparatus, or None.
     :rtype: RunApparatus | None
     """
@@ -236,7 +236,7 @@ def _model_versions(runs: list[EvalRun], records: list[ScoreRecord]) -> dict[str
 
 
 def _telemetry_rollup(
-    runs: list[EvalRun], results: list[EvalResult], budget: ProgramBudget, *, profile: HostProfile
+    runs: list[EvalRun], results: list[ResultView], budget: ProgramBudget, *, profile: HostProfile
 ) -> TelemetryRollup:
     """Compose the campaign-wide telemetry rollup from results + the budget lens."""
     return TelemetryRollup(

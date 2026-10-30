@@ -106,13 +106,10 @@ from threetears.evals.schema.models import (
 )
 
 if TYPE_CHECKING:
+    from threetears.evals.kernel.result_reading import RepeatView, ResultView, ScoreView, SecondJudgingView
     from threetears.evals.schema.models import (
         CalibrationRating,
-        EvalResult,
-        JudgeRepeat,
         LabelKey,
-        RubricScore,
-        SecondJudging,
     )
 
 
@@ -165,7 +162,7 @@ def sent_settings_from_key(key: str | None) -> ClientRequestSettings | None:
     return None if key is None else ClientRequestSettings.model_validate_json(key)
 
 
-def sent_settings_level(scores: Iterable[RubricScore | None]) -> tuple[str, ...] | None:
+def sent_settings_level(scores: Iterable[ScoreView | None]) -> tuple[str, ...] | None:
     """The distinct request settings ``scores``' calls were sent with, as canonical forms in canonical order.
 
     How a judge that made many calls is named by what it was sent: a second-judge pass (:func:`inter_judge_agreement`,
@@ -202,11 +199,11 @@ def sent_settings_from_level(level: tuple[str, ...] | None) -> list[ClientReques
     return None if level is None else [ClientRequestSettings.model_validate_json(form) for form in level]
 
 
-def judge_key(result: EvalResult, dim: str) -> JudgeKey | None:
+def judge_key(result: ResultView, dim: str) -> JudgeKey | None:
     """The judge behind ``result``'s score on ``dim``, or None when it holds no score there.
 
     :param result: The result.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :param dim: The dimension, as its score spells it.
     :ptype dim: str
     :return: The key: the score's scale, served model and temperature, and the config the result records as having
@@ -400,7 +397,7 @@ class _PairedRatings(NamedTuple):
     read: int
 
 
-def _pair_ratings(ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]) -> _PairedRatings:
+def _pair_ratings(ratings: Iterable[CalibrationRating], results: Iterable[ResultView]) -> _PairedRatings:
     """Pair each rating with the judge's score on its dimension, on its result or the same output — the ONE matching
     rule.
 
@@ -415,7 +412,7 @@ def _pair_ratings(ratings: Iterable[CalibrationRating], results: Iterable[EvalRe
     :ptype ratings: Iterable[CalibrationRating]
     :param results: The results they may rate. A rating whose result is not here, and whose label key reaches no
         score here, is unpaired (``result_unresolved``).
-    :ptype results: Iterable[EvalResult]
+    :ptype results: Iterable[ResultView]
     :return: The pairs grouped by judge, the ratings that could not be paired (and why), and how many were read.
     :rtype: _PairedRatings
     """
@@ -462,14 +459,14 @@ def _pair_ratings(ratings: Iterable[CalibrationRating], results: Iterable[EvalRe
     return _PairedRatings(groups, unpaired, read)
 
 
-def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]) -> JudgeAgreement:
+def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[ResultView]) -> JudgeAgreement:
     """Pair each rating with the judge's score on its dimension, on its result or the same output, and read agreement.
 
     :param ratings: The ratings to read.
     :ptype ratings: Iterable[CalibrationRating]
     :param results: The results they may rate. A rating whose result is not here, and whose label key reaches no
         score here, is unpaired (``result_unresolved``), so hand in every result the ratings were read for.
-    :ptype results: Iterable[EvalResult]
+    :ptype results: Iterable[ResultView]
     :return: The agreement per (dimension, scale, judge, judge config), and the ratings that could not be paired.
     :rtype: JudgeAgreement
     """
@@ -498,7 +495,7 @@ def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[Eval
 
 
 def person_scores_by_result(
-    ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]
+    ratings: Iterable[CalibrationRating], results: Iterable[ResultView]
 ) -> dict[tuple[str, str], list[int]]:
     """Every person's score of a judged dimension of a result, keyed ``(result_id, dimension)`` — the human labels.
 
@@ -514,7 +511,7 @@ def person_scores_by_result(
     :param ratings: The ratings to read.
     :ptype ratings: Iterable[CalibrationRating]
     :param results: The results they may rate.
-    :ptype results: Iterable[EvalResult]
+    :ptype results: Iterable[ResultView]
     :return: Every person's score per rated ``(result_id, dimension)``, in the order the ratings were read; a result
         two people rated carries both.
     :rtype: dict[tuple[str, str], list[int]]
@@ -527,16 +524,16 @@ def person_scores_by_result(
     return scores
 
 
-def _scores_by_label_key(results: Sequence[EvalResult]) -> dict[LabelKey, list[tuple[EvalResult, RubricScore]]]:
+def _scores_by_label_key(results: Sequence[ResultView]) -> dict[LabelKey, list[tuple[ResultView, ScoreView]]]:
     """Every stamped judge score, by the output and criterion it was given on, in result order.
 
     :param results: The results read.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :return: ``{label_key: [(result, score), ...]}`` over every judge score — rubric dimensions and the two dual-score
         axes — that carries a key. A score with none (one restated from a judge trial) is absent.
-    :rtype: dict[LabelKey, list[tuple[EvalResult, RubricScore]]]
+    :rtype: dict[LabelKey, list[tuple[ResultView, ScoreView]]]
     """
-    found: dict[LabelKey, list[tuple[EvalResult, RubricScore]]] = {}
+    found: dict[LabelKey, list[tuple[ResultView, ScoreView]]] = {}
     for result in results:
         for score in (*result.rubric_scores, result.transcript_score, result.outcome_score):
             if score is not None and (key := score.label_key) is not None:
@@ -930,7 +927,7 @@ class JudgeSelfAgreement(EvalDocumentModel):
     )
 
 
-def judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement:
+def judge_self_agreement(results: Iterable[ResultView]) -> JudgeSelfAgreement:
     """Pair each repeated score with the first score it repeated, and read agreement the way calibration does.
 
     The pair is the one the repeat recorded (:class:`~threetears.evals.schema.models.RepeatedScore`),
@@ -946,7 +943,7 @@ def judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement:
     times weighs those few results and no more.)
 
     :param results: The results whose repeats to read.
-    :ptype results: Iterable[EvalResult]
+    :ptype results: Iterable[ResultView]
     :return: The agreement per (dimension, scale, judge, judge config), and the repeated scores that could not be
         paired.
     :rtype: JudgeSelfAgreement
@@ -954,14 +951,14 @@ def judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement:
     return self_agreement_of_repeats((result.id, result.judge_repeats) for result in results)
 
 
-def self_agreement_of_repeats(repeats: Iterable[tuple[str, Sequence[JudgeRepeat]]]) -> JudgeSelfAgreement:
+def self_agreement_of_repeats(repeats: Iterable[tuple[str, Sequence[RepeatView]]]) -> JudgeSelfAgreement:
     """:func:`judge_self_agreement` over repeats held apart from any stored result, each beside the result it repeats.
 
     The one reading, for repeats that were never written to a result — a judge temperature comparison's answers at
     one setting, paired against that setting's first answer (#633) — so they are read by the same code.
 
     :param repeats: ``(result id, its repeats, oldest first)`` per result.
-    :ptype repeats: Iterable[tuple[str, Sequence[JudgeRepeat]]]
+    :ptype repeats: Iterable[tuple[str, Sequence[RepeatView]]]
     :return: As :func:`judge_self_agreement`.
     :rtype: JudgeSelfAgreement
     """
@@ -1166,7 +1163,7 @@ class InterJudgeAgreement(EvalDocumentModel):
 SecondJudgeGroup = tuple[JudgeKey, str, str | None, float | None, tuple[str, ...] | None]
 
 
-def second_judge_group(first: JudgeKey, judging: SecondJudging, dim: str) -> SecondJudgeGroup:
+def second_judge_group(first: JudgeKey, judging: SecondJudgingView, dim: str) -> SecondJudgeGroup:
     """The group one second-judge pair is read in: the first judge, and the second as asked and as sent.
 
     The second judge is named by what it was sent as well as what it was asked, as the first is: two passes asked
@@ -1177,7 +1174,7 @@ def second_judge_group(first: JudgeKey, judging: SecondJudging, dim: str) -> Sec
     :param first: The first judge of the pair.
     :ptype first: JudgeKey
     :param judging: The pass the second answer belongs to.
-    :ptype judging: SecondJudging
+    :ptype judging: SecondJudgingView
     :param dim: The dimension asked.
     :ptype dim: str
     :return: The group.
@@ -1210,7 +1207,7 @@ def second_judge_group_sort_key(key: SecondJudgeGroup) -> tuple[str, ...]:
     )
 
 
-def inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None = None) -> InterJudgeAgreement:
+def inter_judge_agreement(results: Iterable[ResultView], *, pass_id: str | None = None) -> InterJudgeAgreement:
     """Pair each second judge's score with the first score it answers, and read agreement the way calibration does.
 
     The pair is the one the pass recorded (:class:`~threetears.evals.schema.models.SecondJudgeScore`), so a
@@ -1220,7 +1217,7 @@ def inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None 
     undefined one is stated as undefined, with why.
 
     :param results: The results whose second-judge scores to read.
-    :ptype results: Iterable[EvalResult]
+    :ptype results: Iterable[ResultView]
     :param pass_id: Read only this pass's pairs; ``None`` for every pass.
     :ptype pass_id: str | None
     :return: The agreement per (dimension, scale, first judge, second judge), and the scores that could not be paired.
@@ -1252,11 +1249,11 @@ class InterJudgeTally:
         self._unpaired: list[UnpairedSecondScore] = []
         self._read = 0
 
-    def add(self, result: EvalResult) -> None:
+    def add(self, result: ResultView) -> None:
         """Read one result's second-judge scores.
 
         :param result: The result.
-        :ptype result: EvalResult
+        :ptype result: ResultView
         """
         for judging in result.judge_seconds:
             if self._pass_id is not None and judging.pass_id != self._pass_id:

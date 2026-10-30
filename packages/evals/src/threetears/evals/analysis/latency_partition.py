@@ -14,7 +14,7 @@ from threetears.evals.kernel.numbers import format_number
 from threetears.evals.schema.base import EvalBaseModel
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import LatencyMetrics
+    from threetears.evals.kernel.result_reading import LatencyView
 
 
 # How far the parts may overrun the whole before the split is refused rather than
@@ -112,12 +112,12 @@ class LatencyPartition(EvalBaseModel):
         return self
 
 
-def decompose_total_ms(latency: LatencyMetrics | None) -> LatencyPartition:
+def decompose_total_ms(latency: LatencyView | None) -> LatencyPartition:
     """Split one result's ``total_ms`` into its parts and the named remainder.
 
     :param latency: The result's captured latency, or ``None`` for a cell that timed
         nothing whatever.
-    :ptype latency: LatencyMetrics | None
+    :ptype latency: LatencyView | None
     :return: A :class:`LatencyPartition` carrying either the four numbers or a sentence
         naming why they were withheld.
     :rtype: LatencyPartition
