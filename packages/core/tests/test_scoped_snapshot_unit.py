@@ -36,7 +36,7 @@ from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
 from threetears.core.collections import scoped_snapshot as scoped_snapshot_module  # noqa: E402
-from threetears.core.collections.scoped_snapshot import (  # noqa: E402
+from threetears.core.collections.scoped_snapshot import (
     ScopedSnapshot,
     SnapshotPhase,
     SnapshotSource,
@@ -3616,6 +3616,42 @@ async def test_a_scope_read_from_the_rail_as_arrow_is_the_scope_its_dict_rows_ma
         assert (l3.arrow_reads > 0) is arrow
     assert len(held[True]) == len(rows)
     assert held[True] == held[False]
+
+
+async def test_a_cold_load_reads_at_most_a_few_chunks_at_once_however_many_scopes_it_fetches_ahead() -> None:
+    """a new pod loading its copy fetched 16 scopes ahead, each its chunks: more bytes pending on its connection than
+    the server holds for a client (MaxPending, 64 MiB), and the server dropped it as a slow consumer (cobalt dev,
+    2026-10-29). Its object reads are bounded on their own, whatever the scopes fetched ahead."""
+    sizes = {state: 50 for state in ("AK", "AL", "AR", "AZ", "CA", "CO", "CT", "DE", "FL", "GA")}
+    builder, pointers, store, l3, _ = _paged(sizes)
+    await builder.start()
+    await builder.wait_ready(timeout=10)
+    await builder.stop()
+    reading = 0
+    most = 0
+
+    class _Slow(_Store):
+        async def get(self, name: str) -> bytes:
+            nonlocal reading, most
+            reading += 1
+            most = max(most, reading)
+            try:
+                await asyncio.sleep(0.01)
+                return await super().get(name)
+            finally:
+                reading -= 1
+
+    slow = _Slow()
+    slow.objects = store.objects
+    cold, _, _, _ = _snapshot(l3=l3, pointers=pointers, store=slow, l2_concurrency=16, chunk_reads=3)
+    l3.epochs = dict.fromkeys(sizes, 1)
+
+    await cold.start()
+    await cold.wait_ready(timeout=10)
+
+    assert cold.status().source is SnapshotSource.L2
+    assert 1 < most <= 3, f"{most} chunks read at once, against a bound of 3"
+    await cold.stop()
 
 
 async def test_a_staged_publish_of_many_scopes_lists_the_store_once_and_asks_one_retire() -> None:

@@ -8,6 +8,30 @@ packages (bumped in lock-step).
 
 ## v0.84.0 -- 2026-10-29
 
+### core, nats: a pod that loads or rebuilds its copy keeps its event loop and its NATS connection
+
+From cobalt dev, 2026-10-29: a reports pod rebuilding its scoped snapshot stalled its loop, was dropped by the NATS
+server as a slow consumer, and logged unretrieved task exceptions; each publish spent 25 s retiring chunks.
+
+**Fixed:**
+- **SQL labelling (core):** a plain statement's operation is labelled in a few C-level searches. A page's multi-row
+  INSERT took about 20 ms to tokenize a character at a time on the loop, and each page's text differs, so the cache
+  never held it; it now takes about 1 ms. A statement with a literal, a dollar-quoted text or a comment is still read
+  as tokens.
+- **Chunk reads (core):** a `ScopedSnapshot` reads at most `chunk_reads` (default 4) chunks from the object store
+  at once, whatever the scopes it fetches ahead. Sixteen scopes' chunks at once passed the server's MaxPending, and
+  the server cut the pod's connection.
+- **Compaction (core):** `publish_staged` compacts its moved scopes 8 at a time. It did them one after another.
+  Their retires are one sweep (below).
+- **Abandoned calls (nats):** a JetStream call `run_bounded` abandons, at its deadline or because its caller was
+  cancelled, has its outcome taken when it ends. It no longer logs "Task exception was never retrieved".
+
+**Added:**
+- `ScopedSnapshot(chunk_reads=...)`: the bound on chunks read from the object store at once.
+- `threetears.core.backends.statement_operation`: the statement labeller, moved out of `nats_proxy`, which calls it.
+  `statement_operation(query)` gives the label the broker runs a statement by, and `is_resendable(query)` says
+  whether the statement only reads.
+
 ### core: a scoped snapshot catches up the scopes a write in progress has not touched
 
 **Fixed:** a catch-up of scopes behind L3 waited whenever a write was in progress. With loads every 30-40 s on cobalt

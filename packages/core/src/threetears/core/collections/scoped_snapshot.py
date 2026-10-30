@@ -186,6 +186,15 @@ _DEFAULT_L3_CONCURRENCY: Final = 4
 #: What a load holds is these scopes' decoded chunks, never every scope's
 _DEFAULT_L2_CONCURRENCY: Final = 16
 
+#: the chunks one snapshot reads from the object store at once, whatever the scopes it fetches ahead: each read
+#: is the server pushing the chunk's messages to this connection, and a load fetching 16 scopes ahead had more
+#: pending than the server holds for a client (MaxPending, 64 MiB), so the server dropped the pod as a slow consumer
+#: (cobalt dev, 2026-10-29)
+_DEFAULT_CHUNK_READS: Final = 4
+
+#: the moved scopes a publish compacts at once
+_SWEEPS_AT_ONCE: Final = 8
+
 #: how many scopes' fetched chunks a replica holds at once to commit them as one move; a burst of more is
 #: committed in batches of this many
 _DEFAULT_APPLY_BATCH: Final = 64
@@ -739,6 +748,29 @@ async def _in_order[T, R](
         raise
     await _abandon([task for _, task in pending], unwinding=False)
     return whole
+
+
+async def _bounded_each[T](items: Sequence[T], each: Callable[[T], Awaitable[Any]], *, at_once: int) -> None:
+    """``each`` over ``items``, at most ``at_once`` at a time, every one awaited; the first failure raised once all
+    have ended.
+
+    :param items: the items
+    :ptype items: Sequence[T]
+    :param each: what is done to one
+    :ptype each: Callable[[T], Awaitable[Any]]
+    :param at_once: how many at a time
+    :ptype at_once: int
+    :return: nothing
+    :rtype: None
+    """
+    gate = asyncio.Semaphore(max(1, at_once))
+
+    async def one(item: T) -> None:
+        async with gate:
+            await each(item)
+
+    results = await asyncio.gather(*(one(item) for item in items), return_exceptions=True)
+    _raise_first(results, log=log, what="a scope's sweep or compaction failed")
 
 
 async def _abandon(tasks: Sequence[asyncio.Task[Any]], *, unwinding: bool) -> None:
@@ -1439,6 +1471,10 @@ class ScopedSnapshot:
     :param apply_batch: scopes whose moved chunks a replica holds at once to commit them in one swap, so a
         burst of pointers reaches readers as one move; a larger burst is committed in batches of this many
     :ptype apply_batch: int
+    :param chunk_reads: the chunks the snapshot reads from the object store at once, whatever the scopes a load
+        fetches ahead: each read is the server pushing the chunk's messages to this connection, and too many pending
+        has the server drop the pod as a slow consumer
+    :ptype chunk_reads: int
     :param l3_concurrency: scopes a rebuild holds at once: read from L3 beside the one it publishes
     :ptype l3_concurrency: int
     :param claim_ttl: how long a rebuild's claim, or a write claim, lasts once its holder stops renewing
@@ -1472,6 +1508,7 @@ class ScopedSnapshot:
         retire_batch: int = MAX_RETIRED_OBJECTS,
         l2_concurrency: int = _DEFAULT_L2_CONCURRENCY,
         apply_batch: int = _DEFAULT_APPLY_BATCH,
+        chunk_reads: int = _DEFAULT_CHUNK_READS,
         l3_concurrency: int = _DEFAULT_L3_CONCURRENCY,
         claim_ttl: timedelta = _DEFAULT_CLAIM_TTL,
         recheck: timedelta = _DEFAULT_RECHECK,
@@ -1495,6 +1532,8 @@ class ScopedSnapshot:
         self._settled = settled
         self._ensure_buckets = ensure_buckets
         self._l2_concurrency = l2_concurrency
+        #: the chunk reads in flight, across every scope fetched ahead
+        self._chunk_reads = asyncio.Semaphore(max(1, chunk_reads))
         self._apply_batch = max(1, apply_batch)
         self._l3_concurrency = l3_concurrency
         self._claim_ttl = claim_ttl
@@ -2202,7 +2241,8 @@ class ScopedSnapshot:
         :raises _Lost: when it is gone, unreadable, or holds another count
         """
         try:
-            data = await self._store.get(name)
+            async with self._chunk_reads:
+                data = await self._store.get(name)
         except ObjectNotFoundError as exc:
             raise _Lost(f"chunk {name} is gone") from exc
         except ObjectStoreError as exc:
@@ -3360,8 +3400,7 @@ class ScopedSnapshot:
             )
             self._changed.set()
         if self._append:
-            for scope_moved in moved:
-                await self._compact(scope_moved)
+            await _bounded_each(moved, self._compact, at_once=_SWEEPS_AT_ONCE)
         if skipped:
             log.warning(
                 "scoped snapshot %s: %d staged scopes left for the catch-up from L3",
