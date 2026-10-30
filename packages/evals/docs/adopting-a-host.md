@@ -755,7 +755,8 @@ more. Past `EXPORT_PAGE_RESULTS` (1,000) it exports in pages of whole runs (`Sco
 run, so one call never holds the scope. A run past the ceiling, in the scope's pages or named alone, is exported in
 pages of whole cases of it, the cursor naming the case (`page.next_after_case_id`).
 
-The aggregating lenses (`comparison_sets`, `pivot`, `frontier` and `history`, and the `scope_pivot`,
+The aggregating lenses (`comparison_sets`, `pivot`, `frontier`, `history`, `program_budget` and `orphaned_runs`,
+and the `scope_pivot`,
 `scope_frontier` and `scope_history` operations and actions over them) cannot page: part of a pivot, a frontier or a
 history reads as the whole of it. They make the same estimate and hold it to their read budget, before reading
 anything. Each budget is the bytes per result that reader holds at its peak against the memory one call may take,
@@ -763,10 +764,10 @@ measured on the paths a host runs (`threetears.evals.analysis`): `READING_BUDGET
 `comparison_sets`,
 `frontier`, `history` and the regression watch; `PIVOT_READ_BUDGET` (27,108, 1 GiB) for `pivot`; `BUNDLE_READ_BUDGET`
 (28,116, 1 GiB) for a campaign's bundle; `PLANNING_READ_BUDGET` (37,010, 256 MiB) for a launch estimate's planning
-block. `program_budget` and `orphaned_runs` hold no budget and answer a scope of any size: they read each result's
-spend figures off one grouped read, never a result, but hold that read whole before folding it, so their memory still
-grows with the scope (1,683 bytes a result on a store offering grouped reads, up to 10,207 on a store without them,
-whose rows the engine groups).
+block; `SPEND_READ_BUDGET` (105,196, 1 GiB) for `program_budget` and `orphaned_runs`, which read each result's
+spend figures off one grouped read, never a result, but hold that read whole before folding it (1,683 bytes a result
+on a store offering grouped reads, 10,207 on a store without them, whose rows the engine groups). They take no
+filter, so past it they are refused, the remedy naming where to read the spend a page at a time.
 
 - **A scope within the budget** is read whole, as before.
 - **A scope past it** is refused (`VALIDATION_FAILED`, with `details` `runs`, `results_estimated` and

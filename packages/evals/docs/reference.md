@@ -696,8 +696,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`= '—'`
 - **`AS_RECORDED_MODEL`** · constant (str) · The candidate model name the as-recorded candidate runs under.
   <br>`= 'as-recorded'`
-- **`BUNDLE_READ_BUDGET`** · constant (int) · A campaign's context bundle (`assemble_context_bundle`, which a report read assembles), which holds every member result's reading and each fold's work at once.
-  <br>`= 28116`
 - **`CELL_MODEL_VERSION`** · *host contract* · constant (int) · The cell model this module implements, stamped onto every analysis generated under it (`GenerationProvenance.cell_model_version`).
   <br>`= 14`
 - **`EVAL_ANALYSIS_GEN_DEFAULT`** · *host contract* · constant (str) · The analysis generator's default system prompt.
@@ -706,13 +704,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`GLOSSARY`** · constant (dict) · Every term of art a page may use, in one plain sentence each.
 - **`MIN_CASES`** · *host contract* · constant (int) · The fewest independent cases with a usable trial an arm needs before a rate on it is estimated, charted or compared: below it a t interval is too wide and unstable to read (`SMALL_N_BAND_FLOOR`), so a rate is printed as a count ("1 of 2"), never as a percentage, a difference or an interval.
   <br>`= 5`
-- **`PIVOT_READ_BUDGET`** · constant (int) · The pivot (`pivot`), which holds every result's score records and its cells at once.
-  <br>`= 27108`
-- **`PLANNING_READ_BUDGET`** · constant (int) · The planning read a launch estimate makes (`detectable_effects`), which keeps each earlier result's values per reading until every run is read.
-  <br>`= 37010`
 - **`READ_TIER_ROW_BUDGET`** · *host contract* · constant (int) · The readings readers' budget (`READING_BUDGET`) under the name a host already reads; also how many projected score records one call may carry before its observer line is logged at WARNING (#652), a signal set to fire before a page is slow, not a latency limit (`elapsed_ms` rides on the same line for a host that would rather alert on time).
-  <br>`= 66003`
-- **`READING_BUDGET`** · constant (int) · **How many results a read-tier call holds at once, per reader, as its runs' listing estimates them before any is read.** The read tier folds in Python on every request, and a reader whose fold holds something per result holds a budget written as `floor(allowance / bytes per result)`: the bytes per result its read holds at its peak, against the memory one call may take.
   <br>`= 66003`
 - **`REPORTER_KIND`** · constant (str) · The `candidate_kind` a reporter template declares.
   <br>`= 'analysis_reporter'`

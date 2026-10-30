@@ -895,11 +895,6 @@ HOST_CONTRACT: frozenset[str] = frozenset(
 #: (``tests/test_public_surface_is_closed.py``), and promoted here when someone binds to it.
 STABLE: frozenset[str] = frozenset(
     {
-        # The read tier's per-reader read budgets, each set from a measurement its docstring states and moved with it.
-        "threetears.evals.analysis.READING_BUDGET",
-        "threetears.evals.analysis.PIVOT_READ_BUDGET",
-        "threetears.evals.analysis.PLANNING_READ_BUDGET",
-        "threetears.evals.analysis.BUNDLE_READ_BUDGET",
         # Rungs 0 and 1: the command line a TOML file or a host's own entry runs through, its exit codes, and the
         # quick path's seams beside the root's names: a grader, a measure, a world's runner and outcome, a calibration.
         "threetears.evals.quick.EXIT_FAILED",

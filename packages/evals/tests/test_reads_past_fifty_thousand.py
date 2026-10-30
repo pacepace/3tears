@@ -3,15 +3,15 @@
 Each reader's read budget is its measured bytes per result against its allowance (owner, 2026-10-30): the readings
 readers (``history``, ``frontier``, ``comparison_sets``, the regression watch's history and judged tiers) hold
 ``READING_BUDGET``, about 66,000 results, under 256 MiB; the spend lenses (``program_budget``, ``orphaned_runs``) hold
-none; the planning read (``detectable_effects``) holds ``PLANNING_READ_BUDGET``; the pivot and a campaign's bundle hold
+``SPEND_READ_BUDGET``, about 105,000, under 1 GiB; the planning read (``detectable_effects``) holds ``PLANNING_READ_BUDGET``; the pivot and a campaign's bundle hold
 ``PIVOT_READ_BUDGET`` and ``BUNDLE_READ_BUDGET``, about 27,000 and 28,000, under 1 GiB.
 
 Held here over one scope of 30 runs of 1,000 cases × 2 (60,000 results by their matrices and in the store), built once
 per module from cheap rows, read through the reference store as it is and behind
 :class:`~packages.evals.tests.read_path_support.EngineOnlyStore` (the engine's path):
 
-- **answered:** every readings reader and both spend lenses, the same answer on both paths, tracemalloc's peak over
-  the call under 256 MiB;
+- **answered:** every readings reader and both spend lenses, each within its budget, the same answer on both paths,
+  tracemalloc's peak over the call under 256 MiB (the spend lenses' own allowance is 1 GiB; these rows are cheap);
 - **refused before any result is read**, naming its own figure: the pivot, the bundle, and the planning read, whose
   budget is below 60,000.
 
@@ -196,7 +196,7 @@ def test_the_scope_is_past_fifty_thousand_and_inside_the_readings_budget() -> No
     store, runs = _scope()
 
     assert len(store.by_doc_type("eval_result", SCOPE)) == RESULTS == sum(len(r.test_case_ids) * r.k_runs for r in runs)
-    assert 50_000 < RESULTS <= reads.READING_BUDGET
+    assert 50_000 < RESULTS <= min(reads.READING_BUDGET, reads.SPEND_READ_BUDGET)
     assert max(reads.PIVOT_READ_BUDGET, reads.BUNDLE_READ_BUDGET, reads.PLANNING_READ_BUDGET) < RESULTS
 
 

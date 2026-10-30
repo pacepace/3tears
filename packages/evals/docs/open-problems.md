@@ -153,8 +153,8 @@ host has yet needed an unmetered candidate.
 Decided by the owner, 2026-10-27, and set per reader from measurement on 2026-10-30. The aggregating reads (a pivot,
 a frontier, a history, a comparison grouping) and a campaign's bundle work in Python over every result they read, so
 past their measured budget (`threetears.evals.analysis`: about 66,000 results for a history, a frontier or a
-grouping; about 27,000 for a pivot or a bundle) they refuse, naming the filters that narrow the call. The spend
-lenses hold none. Answering such a scope in one
+grouping; about 27,000 for a pivot or a bundle; about 105,000 for the spend lenses) they refuse, naming the filters
+that narrow the call. Answering such a scope in one
 call needs the aggregation pushed down into the store's SQL
 ([#996](https://github.com/pacepace/3tears/issues/996)). No run has a size limit: its reads are paged, though a few
 readers still read a run whole (the CHANGELOG lists them).

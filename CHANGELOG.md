@@ -6,7 +6,7 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: each reader's read budget is measured; the spend lenses hold none, and the bundle and pivot refuse sooner
+### evals: each reader's read budget is measured; the bundle and pivot refuse sooner
 
 **Changed:** the read tier's one budget of 50,000 results is replaced by one per reader, each the bytes per result
 that reader holds at its peak against the memory one call may take (measured 2026-10-30 with tracemalloc on the
@@ -20,13 +20,14 @@ re-measures):
 | `detectable_effects`, a launch estimate's planning block (`PLANNING_READ_BUDGET`) | 37,010 | 7,253 | SQLite, reads hidden | 256 MiB |
 | `pivot` (`PIVOT_READ_BUDGET`) | 27,108 | 39,609 | SQLite | 1 GiB |
 | a campaign's bundle, so `report_read` and every analysis (`BUNDLE_READ_BUDGET`) | 28,116 | 38,189 | SQLite, reads hidden | 1 GiB |
-| `program_budget`, `orphaned_runs` | none | 1,683 to 10,207 | | |
+| `program_budget`, `orphaned_runs` (`SPEND_READ_BUDGET`) | 105,196 | 10,207 | SQLite, reads hidden | 1 GiB |
 
 What a host sees: a history, a frontier, a comparison grouping or a regression watch over a scope of up to 66,003
-results is now answered where it was refused past 50,000. `program_budget` and `orphaned_runs` answer a scope of any
-size and never refuse for size. They read no result, but they hold their one grouped read whole before folding it, so
-their memory grows with the scope: 1,683 bytes a result on a store offering grouped reads (SQLite), up to 10,207 on
-the engine's grouping (a store without them, which Discodon's is today).
+results is now answered where it was refused past 50,000, and `program_budget` and `orphaned_runs` over a scope of
+up to 105,196. The spend lenses read no result, but they hold their one grouped read whole before folding it: 1,683
+bytes a result on a store offering grouped reads (SQLite), 10,207 on the engine's grouping of a store without them
+(Discodon's today), which sets their budget. Past it they refuse as the other readers do, before reading anything,
+saying no narrower call exists and where to read the spend a page at a time.
 
 **Changed, tighter:** a pivot past 27,108 results, and a campaign's bundle past 28,116 (its report, `report_read`, an
 analysis), are now refused where they were answered up to 50,000. A host with a campaign or a pivot scope between
@@ -42,7 +43,7 @@ regression watch's ERROR line reads `past its read budget of <figure>`. No remed
 
 **Changed (provisional):** `reads.hold_to_read_budget` and `reads.narrowed_read_disclosure` take a keyword-only
 `budget`. The planning read reads its runs' readings in the store's own order across them, so on the engine's path
-every run's keys are one call. The four budgets are exported from `threetears.evals.analysis` (stable).
+every run's keys are one call. The five budgets are exported from `threetears.evals.analysis` (provisional).
 
 ### evals: the campaign bundle reads its results as readings, and its kept trials whole by id
 

@@ -28,8 +28,8 @@ the completeness, clock and cassette disclosures every comparison carries.
 :func:`bisect_runs` (which versioned inputs differ between two runs) is internal: the bundle's confound
 scan and ``runs_compare``'s disclosures answer its question on the public surface, and nothing exposes it.
 
-**An aggregate whose fold holds something per result reads at most its measured budget of results**
-(:data:`READING_BUDGET`, :data:`PIVOT_READ_BUDGET`; the spend lenses hold none). Each one estimates its read from the
+**An aggregate reads at most its measured budget of results** (:data:`READING_BUDGET`, :data:`PIVOT_READ_BUDGET`,
+:data:`SPEND_READ_BUDGET`). Each one estimates its read from the
 run listing before reading anything, and a scope estimated past the budget is refused unless the call narrows to runs
 that fit, which it then reads alone; an export pages instead (:data:`EXPORT_PAGE_RESULTS`). The budgets' comment is
 the design: the measurement, the estimate, the refusal, the safety net, and why an aggregate is never paged.
@@ -137,11 +137,7 @@ _NOT_CARRIED = "(not carried by this run)"
 #: **How many results a read-tier call holds at once, per reader, as its runs' listing estimates them before any is
 #: read.** The read tier folds in Python on every request, and a reader whose fold holds something per result holds a
 #: budget written as ``floor(allowance / bytes per result)``: the bytes per result its read holds at its peak, against
-#: the memory one call may take. The spend lenses (:func:`program_budget`, :func:`orphaned_runs`) hold none: they read
-#: no result, only each result's spend figures off one grouped read, and answer a scope of any size. The grouped read is
-#: held whole before it is folded per run, so their memory still grows with the scope: bytes per result at the peak,
-#: memory 2,245, memory engine 4,288, SQLite 1,683, SQLite engine 10,207 (the engine's grouping reads each row by id
-#: and folds it in Python), measured as below.
+#: the memory one call may take.
 #:
 #: **The measurement.** Each figure is the marginal of tracemalloc's peak over the reader's call, ``Δpeak / Δresults``,
 #: on the hot-path corpus (``packages/evals/tests/hot_path_support.py``: 41 runs of production-shaped results, about
@@ -197,6 +193,12 @@ PIVOT_READ_BUDGET = 27_108
 #: SQLite 37,949, SQLite engine 38,189. Set by SQLite engine, against 1 GiB. See :data:`READING_BUDGET` for the
 #: measurement and how to re-measure.
 BUNDLE_READ_BUDGET = 28_116
+
+#: The spend lenses (:func:`program_budget`, :func:`orphaned_runs`), which read no result, only each result's spend
+#: figures off one grouped read, held whole before it is folded per run. Bytes per result at the peak: memory 2,245,
+#: memory engine 4,288, SQLite 1,683, SQLite engine 10,207 (the engine's grouping reads each row by id and groups it in
+#: Python). Set by SQLite engine, against 1 GiB. See :data:`READING_BUDGET` for the measurement and how to re-measure.
+SPEND_READ_BUDGET = 105_196
 
 #: The readings readers' budget (:data:`READING_BUDGET`) under the name a host already reads; also how many projected
 #: score records one call may carry before its observer line is logged at WARNING (#652), a signal set to fire before
@@ -636,7 +638,7 @@ def _aggregate_results[T](
     narrowed: Sequence[EvalRun] | None,
     remedy: str,
     read: Callable[[Sequence[str] | None], _Walk[T]],
-    budget: int | None,
+    budget: int,
 ) -> _Aggregated[T]:
     """The rows an aggregate reads, held to its ``budget`` by its runs' estimate before any is read: the one place an
     aggregate's read is made, its budget held and its path taken.
@@ -650,8 +652,7 @@ def _aggregate_results[T](
     the budget or under is read whole, as before. Past it, the call's ``narrowed`` runs are read when they fit, and the
     call is refused when they do not or when it does not narrow (``None``). A read that returns more than the budget is
     not aggregated: a whole-scope read falls back to the narrowed read, and a narrowed read is refused. No read holds
-    more rows than the budget allows (:func:`_held_to_budget`). A reader whose fold holds nothing per result (``budget``
-    ``None``) reads the scope whole, whatever its size.
+    more rows than the budget allows (:func:`_held_to_budget`).
 
     :param lens: The operation, as the refusal and its log line name it.
     :ptype lens: str
@@ -663,16 +664,13 @@ def _aggregate_results[T](
     :ptype remedy: str
     :param read: The seam read, given the runs to read or ``None`` for the scope.
     :ptype read: Callable[[Sequence[str] | None], _Walk[T]]
-    :param budget: The reader's read budget (:data:`READING_BUDGET` or :data:`PIVOT_READ_BUDGET`), or ``None`` for a
-        reader that holds none.
-    :ptype budget: int | None
+    :param budget: The reader's read budget (:data:`READING_BUDGET`, :data:`PIVOT_READ_BUDGET` or
+        :data:`SPEND_READ_BUDGET`).
+    :ptype budget: int
     :return: The rows read, whether they are the narrowed runs' alone, and the path and store calls of the reads made.
     :rtype: _Aggregated[T]
     :raises ValidationFailedError: The runs this call reads are estimated past the budget, or a read returned more.
     """
-    if budget is None:
-        walk = read(None)
-        return _Aggregated(list(walk), False, walk.path, walk.store_calls)
     whole = sum(_results_estimate(run) for run in corpus)
     calls = 0
     if whole <= budget:
@@ -1275,6 +1273,7 @@ def program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -
         per-run spend with a cumulative series, plus the incomplete-run
         accounting that names the spend a quality view would have dropped.
     :rtype: dict[str, Any]
+    :raises ValidationFailedError: The scope is past :data:`SPEND_READ_BUDGET`, which nothing here narrows.
     """
     # Archived runs are INCLUDED here, unlike every quality surface. Archiving is
     # a measurement curation, not a financial one: a run retired because its
@@ -1284,17 +1283,19 @@ def program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -
     # nonzero only on an integrity gap.
     started = time.perf_counter()
     runs = list_runs(scope_id, include_archived=True)
-    # The spend figures alone, off one grouped read of the store, never a hydrated result. The read is held whole, its
-    # bytes per result stated in the budgets' comment, and no budget holds it.
+    # The spend figures alone, off one grouped read of the store, never a hydrated result. The read is held whole, so it
+    # is held to its budget (SPEND_READ_BUDGET) as every aggregate is.
     read = _aggregate_results(
         storage,
         scope_id,
         "program_budget",
         runs,
         narrowed=None,
-        remedy="",
+        remedy="the program budget takes no filter and counts every run, archived ones too, so no narrower call "
+        "exists: read the spend a page at a time from scope_export's cost_usd rows with run_status 'all', and an "
+        "archived run's by naming it in export_run_ids",
         read=_spend_of(storage, scope_id),
-        budget=None,
+        budget=SPEND_READ_BUDGET,
     )
     budget = compute_program_budget(runs, read.rows).model_dump(mode="json")
     _observe_read("program_budget", scope_id, started, len(runs), len(read.rows), None, read=read)
@@ -1321,20 +1322,22 @@ def orphaned_runs(storage: LensStore, scope_id: str, *, list_runs: RunLister) ->
     :ptype list_runs: RunLister
     :return: A JSON-safe :class:`~threetears.evals.analysis.lenses.orphaned_runs.OrphanedRunsResult`.
     :rtype: dict[str, Any]
+    :raises ValidationFailedError: The scope is past :data:`SPEND_READ_BUDGET`, which nothing here narrows.
     """
     started = time.perf_counter()
     runs = list_runs(scope_id, include_archived=True)
-    # The spend figures alone, off one grouped read of the store, never a hydrated result. The read is held whole, its
-    # bytes per result stated in the budgets' comment, and no budget holds it.
+    # The spend figures alone, off one grouped read of the store, never a hydrated result. The read is held whole, so it
+    # is held to its budget (SPEND_READ_BUDGET) as every aggregate is.
     read = _aggregate_results(
         storage,
         scope_id,
         "orphaned_runs",
         runs,
         narrowed=None,
-        remedy="",
+        remedy="the orphaned-runs scan takes no filter and reads every run, archived ones too, so no narrower call "
+        "exists: compare the runs runs_list names with the run_ids each campaign holds",
         read=_spend_of(storage, scope_id),
-        budget=None,
+        budget=SPEND_READ_BUDGET,
     )
     # Every campaign in the scope is every campaign that can hold one of its runs:
     # membership outside a campaign's own scope is refused at attachment.
@@ -2441,6 +2444,7 @@ __all__ = [
     "PLANNING_READ_BUDGET",
     "READING_BUDGET",
     "READ_TIER_ROW_BUDGET",
+    "SPEND_READ_BUDGET",
     "LensStore",
     "RowColumns",
     "RunLister",

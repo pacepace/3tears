@@ -212,7 +212,7 @@ so its figures are the whole read's, and one that keeps every result keeps it wi
 every read each makes; nothing yet measures the run loop's own peak. A launch's planning block walks each earlier
 run of its template the same way, keeping of each result only its per-case values (`tests/test_power_preflight.py`
 measures its peak). A campaign's bundle, a regression watch's judged tiers, the read tier's aggregates (`pivot`, `history`, `frontier`,
-`comparison_sets`; the spend lenses read grouped figures) and an export's reads (but for a run too large for one page, read by id a page at a time) still read many runs' results
+`comparison_sets`, and the spend lenses' grouped figures) and an export's reads (but for a run too large for one page, read by id a page at a time) still read many runs' results
 in one read each, without their verbatim fields, which none of them reads (`tests/test_bundle_read_leaves_out_verbatim_fields.py` measures the
 bundle's peak); each is refused past its measured read budget (`threetears.evals.analysis.reads`) by its runs'
 matrices before any is read.

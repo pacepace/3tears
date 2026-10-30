@@ -1,10 +1,10 @@
 """A read-tier aggregate reads at most its own read budget of results: past it, it narrows or refuses, never pages.
 
-The aggregates whose fold holds something per result (``comparison_sets``, ``frontier``, ``history``, held to
-``READING_BUDGET``; ``pivot``, held to ``PIVOT_READ_BUDGET``) read a scope's results into Python, and a partial
-aggregate is a wrong answer that looks complete, so a scope too large is refused rather than paged (owner,
-2026-10-27). The spend lenses (``program_budget``, ``orphaned_runs``) fold per run off a grouped read and hold no
-budget (owner, 2026-10-30). Pinned here, through each lens over a store that counts what it is asked for, with the
+The aggregates (``comparison_sets``, ``frontier``, ``history``, held to ``READING_BUDGET``; ``pivot``, held to
+``PIVOT_READ_BUDGET``; the spend lenses ``program_budget`` and ``orphaned_runs``, which hold one grouped read of every
+result's spend figures whole, held to ``SPEND_READ_BUDGET``) read a scope's results into Python, and a partial
+aggregate is a wrong answer that looks complete, so a scope too large is refused rather than paged (owner, 2026-10-27;
+each budget measured, 2026-10-30). Pinned here, through each lens over a store that counts what it is asked for, with the
 budgets patched to a few dozen results:
 
 - **A scope estimated past the budget is refused before anything is read**, naming the estimate, the budget and the
@@ -15,8 +15,9 @@ budgets patched to a few dozen results:
 - **A narrowed answer says what it did not count** (``narrowed_read_disclosure``, absent from a whole read and from a
   bundle's fingerprint while unset): other subjects' results, and, on a judged frontier, the pooling of each judge's
   tier, which a narrowed read takes on one subject's results and so can read another tier.
-- **A scope that fits is read whole, as before**, and a spend lens reads a scope of any size whole.
-- **Each reader is held to its own budget**: the pivot to ``PIVOT_READ_BUDGET``, the others to ``READING_BUDGET``.
+- **A scope that fits is read whole, as before.**
+- **Each reader is held to its own budget**: the pivot to ``PIVOT_READ_BUDGET``, the spend lenses to
+  ``SPEND_READ_BUDGET``, the others to ``READING_BUDGET``.
 - **The safety net**: a read that returns more than the budget (results whose run was deleted) is not aggregated.
 - **The regression watch** reads the history of the completed run's own subject, so a scope past the budget is still
   checked where that subject fits, a judged alert saying where its tier was read; when the subject alone is past it,
@@ -26,7 +27,7 @@ budgets patched to a few dozen results:
 Mutations that turn this file red: ``_aggregate_results`` reading the whole scope before the estimate; its narrowed
 read made whole-scope; ``>=`` for ``>`` against the budget; the safety nets dropped; ``_subject_runs`` keeping only the
 cohort (the status and archival counts then differ); the watch's ``except`` removed; a reader handed another family's
-budget; a spend lens held to a budget again.
+budget; a spend lens's budget dropped.
 """
 
 from __future__ import annotations
@@ -89,7 +90,13 @@ SCOPE = "uni-aggregate-budget"
 BUDGET = 20
 
 #: Every reader family's budget, as the module names it.
-FAMILIES = ("READING_BUDGET", "PIVOT_READ_BUDGET", "BUNDLE_READ_BUDGET", "PLANNING_READ_BUDGET")
+FAMILIES = (
+    "READING_BUDGET",
+    "PIVOT_READ_BUDGET",
+    "BUNDLE_READ_BUDGET",
+    "PLANNING_READ_BUDGET",
+    "SPEND_READ_BUDGET",
+)
 
 
 def hold_every_reader_to(monkeypatch: pytest.MonkeyPatch, budget: int) -> None:
@@ -276,23 +283,27 @@ LENSES: dict[str, Callable[..., Any]] = {
     "orphaned_runs": lambda store, storage, **kw: orphaned_runs(store, SCOPE, list_runs=_lister(storage), **kw),
 }
 
-#: What each budgeted lens's refusal tells its caller to narrow by: the filters it takes.
+#: What each lens's refusal tells its caller to narrow by: the filters it takes, or that it takes none.
 NARROWED_BY = {
     "comparison_sets": ("campaign_id", "run_ids", "run status"),
     "pivot": ("subject_filter", "subject_id"),
     "frontier": ("subject_filter", "subject_id"),
     "history": ("subject_filter", "subject_id"),
+    "program_budget": ("takes no filter", "scope_export"),
+    "orphaned_runs": ("takes no filter", "runs_list"),
 }
 
-#: The spend lenses, which hold no budget.
+#: The spend lenses.
 SPEND_LENSES = ("orphaned_runs", "program_budget")
 
-#: Each budgeted lens's budget, by the name the module gives it.
+#: Each lens's budget, by the name the module gives it.
 BUDGET_OF = {
     "comparison_sets": "READING_BUDGET",
     "frontier": "READING_BUDGET",
     "history": "READING_BUDGET",
     "pivot": "PIVOT_READ_BUDGET",
+    "orphaned_runs": "SPEND_READ_BUDGET",
+    "program_budget": "SPEND_READ_BUDGET",
 }
 
 
@@ -489,24 +500,39 @@ class TestTheSafetyNet:
         }
 
 
-class TestTheSpendLensesHoldNoBudget:
-    """A spend lens folds each result's spend figures per run as its grouped read hands them out, so it reads a scope
-    of any size whole: past every budget by the runs' matrices, and past it by what the read returns."""
+class TestTheSpendLensesAreHeldToTheirBudget:
+    """A spend lens holds its one grouped read of every result's spend figures whole, so it is held to
+    ``SPEND_READ_BUDGET`` as every aggregate is: by the runs' matrices before anything is read, and by what the read
+    returned. It takes no filter, so past it the call is refused."""
 
     @pytest.mark.parametrize("lens", SPEND_LENSES)
-    def test_a_scope_past_every_budget_is_answered_whole(
+    def test_a_scope_past_it_is_refused_reading_nothing(
+        self, lens: str, scope: tuple[EvalStorage, list[EvalRun]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        storage, _ = scope
+        monkeypatch.setattr(reads, "SPEND_READ_BUDGET", 7 * CASES - 1)
+        store = FakeCountingStore(storage)
+
+        with pytest.raises(ValidationFailedError) as refused:
+            LENSES[lens](store, storage)
+
+        assert store.read_nothing()
+        assert refused.value.details == {"runs": 7, "results_estimated": 7 * CASES, "result_budget": 7 * CASES - 1}
+
+    @pytest.mark.parametrize("lens", SPEND_LENSES)
+    def test_at_it_the_scope_is_answered_whole(
         self, lens: str, scope: tuple[EvalStorage, list[EvalRun]], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         storage, _ = scope
         whole = LENSES[lens](storage, storage)
-        hold_every_reader_to(monkeypatch, 1)
+        monkeypatch.setattr(reads, "SPEND_READ_BUDGET", 7 * CASES)
         store = FakeCountingStore(storage)
 
         assert LENSES[lens](store, storage) == whole
         assert store.scope_reads == [7 * CASES] and store.run_reads == []
 
     @pytest.mark.parametrize("lens", SPEND_LENSES)
-    def test_results_no_listing_promised_are_answered_too(self, lens: str, budget: int) -> None:
+    def test_results_no_listing_promised_past_it_are_refused(self, lens: str, budget: int) -> None:
         storage, _ = memory_storage()
         _seed_run(storage, 0, NARROW)
         for index in range(budget):
@@ -515,9 +541,11 @@ class TestTheSpendLensesHoldNoBudget:
             )
         store = FakeCountingStore(storage)
 
-        LENSES[lens](store, storage)
+        with pytest.raises(ValidationFailedError) as refused:
+            LENSES[lens](store, storage)
 
         assert store.scope_reads == [CASES + budget]
+        assert refused.value.details["results_returned"] == CASES + budget
 
 
 class TestEachReaderIsHeldToItsOwnBudget:
@@ -545,6 +573,7 @@ class TestEachReaderIsHeldToItsOwnBudget:
         assert reads.PLANNING_READ_BUDGET == (256 << 20) // 7_253
         assert reads.PIVOT_READ_BUDGET == (1 << 30) // 39_609
         assert reads.BUNDLE_READ_BUDGET == (1 << 30) // 38_189
+        assert reads.SPEND_READ_BUDGET == (1 << 30) // 10_207
         assert reads.READ_TIER_ROW_BUDGET == reads.READING_BUDGET
 
 
