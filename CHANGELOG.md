@@ -34,6 +34,24 @@ holding them in DuckDB is 2.24 GiB PSS; that process, the published store (1.75 
 column is 4.29 GiB, each worker 66 MiB of private memory; four workers each loading their own copy would be 12.5 GiB
 (`scripts/measure-shared-arrow.py`).
 
+### registry, scheduled-jobs: a starting registry replica takes calls once its loaded copies are routable, and a fire a moment fixes is retried once
+
+**Fixed:** on cobalt dev on 2026-10-30 at 12:55Z a scheduled ENR refresh was refused `TOOL_UNAVAILABLE: tool
+enr.reload@1.0 has no available endpoints` during a platform rollout. A new registry replica warm-loads the
+persisted catalog with every copy unavailable until its pod's next heartbeat, and it joined the call queue group at
+once, so it refused calls every other replica could route.
+
+- **registry:** a replica joins the call queue group only once every copy it warm-loaded is available again or gone
+  from the catalog, and at most the heartbeat timeout after the load (a pod that died never announces again). Its
+  health server starts first, and the new `catalog_revived` readiness check reads not-ready while it waits, so a
+  rollout keeps the replicas that can route.
+- **scheduled-jobs:** a dispatcher that returns `JobFireResult(status="failed", retry_after_seconds=N)` has the same
+  fire run once more after `N` seconds. The second result is recorded, whatever it asks. A failure with no retry
+  asked is recorded at once, as before. It is there for the hub's tool-call dispatcher to ask on `TOOL_UNAVAILABLE`.
+
+**Added:** `JobFireResult.retry_after_seconds`; `ToolCatalog.loaded_copies_settled(window)` and
+`ToolCatalog.wait_for_loaded_copies(window)`.
+
 ## v0.85.0 -- 2026-10-29
 
 ### core, acl: a platform pool stops re-sending the session settings it already holds, and a namespace name resolves from cache

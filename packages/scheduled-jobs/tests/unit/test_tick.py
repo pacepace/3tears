@@ -781,3 +781,64 @@ class TestCoalesceHoldsTheScheduleGrid:
         await tick_mod.scheduled_tick_job(store, fires, _routes(_record_success), nats_client=object())
         assert len(fires.created) == 1
         assert store.claims[0]["computed_next_fire"] == due + timedelta(hours=11)
+
+
+class TestAFailureAMomentFixesIsRetriedOnce:
+    """A dispatcher that returns a failure with ``retry_after_seconds`` gets the same fire once more.
+
+    On cobalt dev on 2026-10-30 a scheduled ENR refresh fired during a platform rollout and was refused
+    ``TOOL_UNAVAILABLE`` by a registry replica whose warm-loaded copies were not yet routable; a second try a
+    moment later would have reached the tool. The fire waited for its next interval instead.
+    """
+
+    async def test_a_retried_fire_that_then_succeeds_is_recorded_once_as_succeeded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flips if a failure that asked for a retry is recorded instead of retried, or retried as a new fire."""
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        fires = _FakeFireStore()
+        seen: list[UUID] = []
+
+        async def _cb(_t: JobTrigger, fire_id: UUID) -> JobFireResult:
+            seen.append(fire_id)
+            if len(seen) == 1:
+                return JobFireResult(status="failed", error="TOOL_UNAVAILABLE", retry_after_seconds=0.0)
+            return JobFireResult(status="succeeded")
+
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
+        assert len(seen) == 2 and seen[0] == seen[1]
+        assert len(fires.created) == 1
+        assert len(fires.succeeded) == 1
+        assert fires.failed == []
+
+    async def test_a_fire_is_retried_only_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Flips if a second failure asking for a retry runs the fire a third time, or is not recorded."""
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        fires = _FakeFireStore()
+        calls = 0
+
+        async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
+            nonlocal calls
+            calls += 1
+            return JobFireResult(status="failed", error=f"TOOL_UNAVAILABLE {calls}", retry_after_seconds=0.0)
+
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
+        assert calls == 2
+        assert [failure["error"] for failure in fires.failed] == ["TOOL_UNAVAILABLE 2"]
+
+    async def test_a_failure_with_no_retry_asked_is_recorded_at_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Flips if every failure is retried: a refusal the next try would meet too is recorded on the first."""
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        fires = _FakeFireStore()
+        calls = 0
+
+        async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
+            nonlocal calls
+            calls += 1
+            return JobFireResult(status="failed", error="TOOL_NOT_FOUND")
+
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
+        assert calls == 1 and len(fires.failed) == 1
