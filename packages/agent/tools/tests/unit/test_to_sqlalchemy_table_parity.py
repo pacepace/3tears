@@ -26,10 +26,11 @@ from threetears.core.testing.sqla_parity import assert_tables_equivalent
 def _reference_context_items_table(metadata: sa.MetaData) -> sa.Table:
     """Hand-written reference Table for parity testing.
 
-    Frozen v0.8.0 canonical shape. If prod schema legitimately
-    changes, add a NEW reference function (e.g.
-    ``_reference_context_items_table_v090``) and run parity against
-    the new one in addition to the old.
+    The canonical shape as of agent-tools v005: the v0.8.0 table plus
+    ``agent_id`` (the agent whose turn wrote the row), with both keyed-upsert
+    indexes taking the agent and comparing NULLs as equal. If the schema
+    legitimately changes again, write the new shape here by hand from the
+    migration, never from the collection's declaration.
     """
     if "context_items" in metadata.tables:
         return metadata.tables["context_items"]
@@ -47,6 +48,7 @@ def _reference_context_items_table(metadata: sa.MetaData) -> sa.Table:
         SAColumn("date_accessed", DateTime(timezone=True), nullable=False),
         SAColumn("date_created", DateTime(timezone=True), nullable=False),
         SAColumn("date_updated", DateTime(timezone=True), nullable=False),
+        SAColumn("agent_id", PgUUID(as_uuid=True), nullable=True),
         SAForeignKeyConstraint(
             ["conversation_id"],
             ["conversations.conversation_id"],
@@ -64,18 +66,22 @@ def _reference_context_items_table(metadata: sa.MetaData) -> sa.Table:
             "date_accessed",
         ),
         SAIndex(
-            "ix_context_items_var_key",
+            "ix_context_items_agent_var_key",
             "conversation_id",
+            "agent_id",
             "key",
             unique=True,
             postgresql_where=sa_text("context_type = 'variable'"),
+            postgresql_nulls_not_distinct=True,
         ),
         SAIndex(
-            "ix_context_items_tool_result_key",
+            "ix_context_items_agent_tool_result_key",
             "conversation_id",
+            "agent_id",
             "key",
             unique=True,
             postgresql_where=sa_text("context_type = 'tool_result'"),
+            postgresql_nulls_not_distinct=True,
         ),
     )
 

@@ -1021,6 +1021,27 @@ class MemoryRefEntity(BaseEntity):
         BaseEntity.__setattr__(self, "item_id", value)
 
     @property
+    def agent_id(self) -> UUID | None:
+        """get the agent that surfaced the item (v032); ``None`` for a caller that names none.
+
+        :return: agent UUID or ``None``
+        :rtype: UUID | None
+        """
+        value = self._get_raw("agent_id")
+        if value is None or isinstance(value, UUID):
+            return value
+        return UUID(str(value))
+
+    @agent_id.setter
+    def agent_id(self, value: UUID | None) -> None:
+        """set the agent that surfaced the item.
+
+        :param value: agent UUID or ``None``
+        :ptype value: UUID | None
+        """
+        BaseEntity.__setattr__(self, "agent_id", value)
+
+    @property
     def item_type(self) -> str:
         """get the item-type discriminator (``memory`` / ``media`` / ``chunk``).
 

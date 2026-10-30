@@ -683,6 +683,48 @@ def test_parity_helper_catches_using_regression() -> None:
         assert_tables_equivalent(a, b)
 
 
+def _keyed_by_optional(*, nulls_not_distinct: bool) -> sa.Table:
+    """A table whose unique key has an optional column, NULLs distinct or not."""
+    schema = TableSchema(
+        name="t",
+        primary_key="a",
+        columns=[
+            Column("a", UUID_TYPE),
+            Column("owner", UUID_TYPE, nullable=True),
+            Column("key", STRING_TYPE),
+        ],
+        indexes=(Index("ix_t_owner_key", "owner", "key", unique=True, nulls_not_distinct=nulls_not_distinct),),
+    )
+    return schema.to_sqlalchemy_table(sa.MetaData())
+
+
+def test_nulls_not_distinct_emits_the_dialect_kwarg() -> None:
+    """``nulls_not_distinct=True`` reaches SQLAlchemy as ``postgresql_nulls_not_distinct``, and the DDL says so."""
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    table = _keyed_by_optional(nulls_not_distinct=True)
+    (idx,) = table.indexes
+    assert idx.dialect_kwargs.get("postgresql_nulls_not_distinct") is True
+    assert "NULLS NOT DISTINCT" in str(CreateIndex(idx).compile(dialect=postgresql.dialect()))
+    (plain,) = _keyed_by_optional(nulls_not_distinct=False).indexes
+    assert "NULLS NOT DISTINCT" not in str(CreateIndex(plain).compile(dialect=postgresql.dialect()))
+
+
+def test_parity_helper_catches_nulls_not_distinct_regression() -> None:
+    """Two unique indexes that differ only in how they compare NULLs are not the same index."""
+    with pytest.raises(AssertionError, match="index-signature"):
+        assert_tables_equivalent(
+            _keyed_by_optional(nulls_not_distinct=True), _keyed_by_optional(nulls_not_distinct=False)
+        )
+
+
+def test_nulls_not_distinct_on_an_index_that_is_not_unique_is_refused() -> None:
+    """``nulls_not_distinct`` says how a unique index compares NULLs; on any other index it is a mistake."""
+    with pytest.raises(ValueError, match="not unique"):
+        Index("ix_t_owner", "owner", nulls_not_distinct=True)
+
+
 # ---------------------------------------------------------------------------
 # v0.8.1: UniqueConstraintDef (alembic auto-gen distinguishes UNIQUE
 # constraint from unique index even though pg_indexes does not)

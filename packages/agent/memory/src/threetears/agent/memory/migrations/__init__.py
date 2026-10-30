@@ -100,6 +100,9 @@ version history:
 - v031 sets the columns the collections declare NOT NULL: ``customer_id`` on
   media, media_content and memory_chunks where no row lacks one, and
   ``memories.date_updated`` (a NULL takes the row's ``date_created``).
+- v032 adds ``conversation_memory_refs.agent_id``, the agent that surfaced a
+  ref, backfilled from the memory or chunk it names, else the conversation's
+  own agent.
 
 the three embedding columns (v001 ``memories``, v006 ``media_content``,
 v007 ``memory_chunks``) are created at the width :func:`register` is given
@@ -211,6 +214,7 @@ from threetears.agent.memory.migrations.v030_recompute_memory_chunks_search_vect
 from threetears.agent.memory.migrations.v031_declared_not_null_columns import (
     declared_not_null_columns,
 )
+from threetears.agent.memory.migrations.v032_memory_refs_agent_id import memory_refs_agent_id
 from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, check_embedding_dim
 from threetears.core.data.migrations import (
     MigrationFunc,
@@ -331,6 +335,7 @@ def register(runner: MigrationRunner, *, embedding_dim: int = DEFAULT_EMBEDDING_
     pkg.version(29)(weight_memory_chunk_headings)
     pkg.version(30)(recompute_memory_chunks_search_vector)
     pkg.version(31)(declared_not_null_columns)
+    pkg.version(32)(memory_refs_agent_id)
     runner.register(pkg)
     return pkg
 

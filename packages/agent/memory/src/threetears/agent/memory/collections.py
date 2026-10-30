@@ -4461,6 +4461,8 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
                 server_default="now()",
             ),
             Column("date_updated", DATETIMETZ_TYPE),
+            # the agent that surfaced the item (v032); NULL for a caller that names none
+            Column("agent_id", UUID_TYPE, nullable=True),
         ],
         foreign_keys=(
             SchemaForeignKey(
@@ -4536,8 +4538,12 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
     async def find_by_conversation(
         self,
         conversation_id: UUID,
+        agent_id: UUID | None = None,
     ) -> list[MemoryRefEntity]:
-        """fetch every ref for a conversation, ordered by ``date_created`` asc.
+        """fetch a conversation's refs, ordered by ``date_created`` asc.
+
+        with ``agent_id``, only the refs that agent surfaced: in a
+        conversation several agents share, what one recalled is its own.
 
         absorbs the former ``MemoryLedger.load(pool, conversation_id)``
         SQL into a Collection method. multi-row scan is not primary-
@@ -4549,6 +4555,8 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
 
         :param conversation_id: conversation UUID to scan for
         :ptype conversation_id: UUID
+        :param agent_id: only this agent's refs; ``None`` reads every ref
+        :ptype agent_id: UUID | None
         :return: list of ref entities in chronological order
         :rtype: list[MemoryRefEntity]
         """
@@ -4563,12 +4571,13 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         rows = await self.l3_pool.fetch(
             """
             SELECT conversation_id, item_id, item_type, short_desc,
-                   date_created, date_updated
+                   date_created, date_updated, agent_id
             FROM conversation_memory_refs
-            WHERE conversation_id = $1
+            WHERE conversation_id = $1 AND ($2::uuid IS NULL OR agent_id = $2)
             ORDER BY date_created ASC
             """,
             conversation_id,
+            agent_id,
         )
         entities: list[MemoryRefEntity] = []
         for row in rows:

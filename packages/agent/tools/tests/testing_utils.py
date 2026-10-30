@@ -114,9 +114,12 @@ class FakePool:
             context_id, conversation_id = args[0], args[1]
             context_type = args[2]
             key = args[3]
+            # the agent ($12): the index is (conversation_id, agent_id, key), NULLS NOT DISTINCT
+            agent_id = args[11] if len(args) > 11 else None
             for row in self.rows.values():
                 if (
                     str(row["conversation_id"]) == str(conversation_id)
+                    and row.get("agent_id") == agent_id
                     and row["key"] == key
                     and row["context_type"] == context_type
                 ):
@@ -139,6 +142,7 @@ class FakePool:
                 "date_accessed": args[8],
                 "date_created": args[9],
                 "date_updated": args[10],
+                "agent_id": agent_id,
             }
             self.rows[str(context_id)] = row_data
             return {"context_id": context_id}
@@ -153,8 +157,13 @@ class FakePool:
 
         if "select count" in sql_lower:
             cid = str(args[0])
+            agent_id = args[1] if len(args) > 1 else None
             cnt = sum(
-                1 for r in self.rows.values() if str(r["conversation_id"]) == cid and r["context_type"] == "tool_result"
+                1
+                for r in self.rows.values()
+                if str(r["conversation_id"]) == cid
+                and r["context_type"] == "tool_result"
+                and (agent_id is None or r.get("agent_id") == agent_id)
             )
             return {"cnt": cnt}
 
@@ -165,15 +174,25 @@ class FakePool:
 
         if "select * from context_items" in sql_lower and "where conversation_id" in sql_lower:
             cid = str(args[0])
-            rows = [r for r in self.rows.values() if str(r["conversation_id"]) == cid]
+            agent_id = args[1] if len(args) > 1 else None
+            rows = [
+                r
+                for r in self.rows.values()
+                if str(r["conversation_id"]) == cid and (agent_id is None or r.get("agent_id") == agent_id)
+            ]
             rows.sort(key=lambda r: _naive(r.get("date_created", datetime.min)))
             return rows
 
         if "select context_id from context_items" in sql_lower and "order by date_accessed asc" in sql_lower:
             cid = str(args[0])
             limit = int(args[1])
+            agent_id = args[2] if len(args) > 2 else None
             tool_results = [
-                r for r in self.rows.values() if str(r["conversation_id"]) == cid and r["context_type"] == "tool_result"
+                r
+                for r in self.rows.values()
+                if str(r["conversation_id"]) == cid
+                and r["context_type"] == "tool_result"
+                and (agent_id is None or r.get("agent_id") == agent_id)
             ]
             tool_results.sort(key=lambda r: _naive(r.get("date_accessed", datetime.min)))
             return [{"context_id": r["context_id"]} for r in tool_results[:limit]]
@@ -202,6 +221,8 @@ class FakePool:
                 "date_accessed": args[8],
                 "date_created": args[9],
                 "date_updated": args[10],
+                # agent_id is the last declared column (v005)
+                "agent_id": args[11] if len(args) > 11 else None,
             }
             self.rows[str(context_id)] = row_data
             return "INSERT 0 1"

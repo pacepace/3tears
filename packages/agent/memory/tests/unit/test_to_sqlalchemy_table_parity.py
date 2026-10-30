@@ -419,7 +419,8 @@ def _reference_memory_chunks_table(metadata: sa.MetaData) -> sa.Table:
 def _reference_conversation_memory_refs_table(metadata: sa.MetaData) -> sa.Table:
     """Hand-written reference Table for parity testing.
 
-    Frozen v0.8.0 canonical shape.
+    The v0.8.0 canonical shape plus v032's ``agent_id``, the agent that
+    surfaced the ref.
     """
     if "conversation_memory_refs" in metadata.tables:
         return metadata.tables["conversation_memory_refs"]
@@ -437,6 +438,7 @@ def _reference_conversation_memory_refs_table(metadata: sa.MetaData) -> sa.Table
             server_default=sa_text("now()"),
         ),
         SAColumn("date_updated", DateTime(timezone=True), nullable=False),
+        SAColumn("agent_id", PgUUID(as_uuid=True), nullable=True),
         SAForeignKeyConstraint(
             ["conversation_id"],
             ["conversations.conversation_id"],

@@ -162,6 +162,7 @@ def index_signature(
     str | None,
     tuple[tuple[str, str], ...],
     tuple[tuple[str, str], ...],
+    bool,
 ]:
     """return a structural signature for a SA Index.
 
@@ -175,7 +176,9 @@ def index_signature(
     ``postgresql_with`` axes so a future schema regression that
     flipped an HNSW index to btree, dropped a ``vector_cosine_ops``
     opclass binding, or perturbed the ``m`` / ``ef_construction``
-    parameters does not pass parity silently.
+    parameters does not pass parity silently. The last axis is
+    ``postgresql_nulls_not_distinct``: a unique index whose NULLs collide
+    holds one row per key where the other holds many.
 
     Columns are compared in order and with their direction, as
     Postgres and Alembic auto-gen compare them: ``(a, b)`` is not
@@ -183,10 +186,11 @@ def index_signature(
 
     :param idx: index to summarise
     :ptype idx: sqlalchemy.Index
-    :return: 7-tuple of (name, ordered ``(column, direction)`` pairs, unique,
+    :return: 8-tuple of (name, ordered ``(column, direction)`` pairs, unique,
         compiled where-clause text or ``None``, access-method name or
         ``None``, tuple of sorted ``(column, opclass)`` pairs, tuple
-        of sorted ``(key, value)`` pairs for the ``WITH`` clause)
+        of sorted ``(key, value)`` pairs for the ``WITH`` clause,
+        whether NULLs are not distinct)
     :rtype: tuple
     """
     where = idx.dialect_kwargs.get("postgresql_where")
@@ -205,6 +209,7 @@ def index_signature(
         str(using) if using is not None else None,
         tuple(sorted((str(k), str(v)) for k, v in ops_map.items())),
         tuple(sorted((str(k), str(v)) for k, v in with_map.items())),
+        bool(idx.dialect_kwargs.get("postgresql_nulls_not_distinct")),
     )
 
 

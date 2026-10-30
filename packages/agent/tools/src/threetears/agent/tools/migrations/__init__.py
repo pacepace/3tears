@@ -33,6 +33,9 @@ version history:
   ``long_desc`` NULL -> '' and promotes it to NOT NULL DEFAULT '',
   and adds the FK ``conversation_id -> conversations(conversation_id)
   ON DELETE CASCADE`` so the parity gate stays clean.
+- v004 adds the ``tool_result`` dedup index.
+- v005 adds ``agent_id``, the agent whose turn wrote a row, backfilled from
+  the conversation's own agent, and keys both upsert indexes by it.
 """
 
 from __future__ import annotations
@@ -48,6 +51,9 @@ from threetears.agent.tools.migrations.v003_align_context_items_shape import (
 )
 from threetears.agent.tools.migrations.v004_tool_result_dedup_index import (
     tool_result_dedup_index,
+)
+from threetears.agent.tools.migrations.v005_context_items_agent_id import (
+    context_items_agent_id,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -80,6 +86,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(2)(datetime_to_datetimetz)
     pkg.version(3)(align_context_items_shape)
     pkg.version(4)(tool_result_dedup_index)
+    pkg.version(5)(context_items_agent_id)
     runner.register(pkg)
     return pkg
 
