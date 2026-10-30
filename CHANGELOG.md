@@ -39,7 +39,7 @@ every process that reads them. Guide: `docs/shared-arrow.md`.
   the L1 is behind on now.
 - `DuckDBBackend(compressed=True)` holds the L1's tables in a catalog attached with DuckDB's `COMPRESS` and
   checkpoints after each write on a thread of its own, off the write's path (`request_checkpoint`,
-  `background_checkpoints`): for a copy only written here and read from the shared store.
+  `checkpoint`, `background_checkpoints`): for a copy only written here and read from the shared store.
 
 Measured on Linux with the reports pod's dev tables (9.0M rows, real column types, generated values; two workers):
 one process holding them in DuckDB is 2.17 GiB PSS; that process beside the store and the workers is 4.01 GiB; the

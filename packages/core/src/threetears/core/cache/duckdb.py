@@ -18,7 +18,7 @@ import threading
 import time
 import weakref
 import uuid
-from collections.abc import Collection, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -103,6 +103,9 @@ class PartitionReplacement:
 
 #: whether this process has said pyarrow is missing (once is enough)
 _ARROW_MISSING_SAID = False
+
+#: the name of a compressed backend's checkpointer thread
+CHECKPOINTER_THREAD: Final = "duckdb-l1-checkpointer"
 
 #: the in-memory catalog a compressed backend's tables live in (``DuckDBBackend(compressed=True)``)
 _COMPRESSED_CATALOG: Final = "l1"
@@ -375,7 +378,10 @@ class _Checkpointer:
         self._stopping = False
         held = weakref.ref(backend)
         self._thread = threading.Thread(
-            target=_Checkpointer._run, args=(held, self._wanted, self), name="duckdb-l1-checkpointer", daemon=True
+            target=checkpoint_when_asked,
+            args=(held, self._wanted, lambda: self._stopping),
+            name=CHECKPOINTER_THREAD,
+            daemon=True,
         )
         weakref.finalize(backend, self._wake_to_end)
         self._thread.start()
@@ -401,33 +407,34 @@ class _Checkpointer:
         self._stopping = True
         self._wanted.set()
 
-    @property
-    def stopping(self) -> bool:
-        """whether the thread is to end.
 
-        :return: the flag
-        :rtype: bool
-        """
-        return self._stopping
+def checkpoint_when_asked(
+    backend: Callable[[], DuckDBBackend | None], wanted: threading.Event, stopping: Callable[[], bool]
+) -> None:
+    """a compressed backend's checkpointer thread (:meth:`DuckDBBackend.request_checkpoint`): wait to be asked, then
+    checkpoint once. The wake is cleared before the stop is read, so a stop set at any moment -- even between the wake
+    and its clear -- is seen before the next wait; and the backend is held only while it checkpoints, so one dropped
+    without a reset is collected and the thread ends.
 
-    @staticmethod
-    def _run(held: weakref.ref[DuckDBBackend], wanted: threading.Event, owner: _Checkpointer) -> None:
-        """the thread: wait to be asked; cleared before the stop is read, so a stop set at any moment is seen before
-        the next wait.
-
-        :return: nothing
-        :rtype: None
-        """
-        while True:
-            wanted.wait()
-            wanted.clear()
-            if owner.stopping:
-                return
-            backend = held()
-            if backend is None:
-                return
-            backend._checkpoint_now()  # noqa: SLF001 - the backend's own thread
-            del backend
+    :param backend: the backend, or None once it is gone (a weak reference)
+    :ptype backend: Callable[[], DuckDBBackend | None]
+    :param wanted: set by each request (and by a stop)
+    :ptype wanted: threading.Event
+    :param stopping: whether the thread is to end
+    :ptype stopping: Callable[[], bool]
+    :return: nothing
+    :rtype: None
+    """
+    while True:
+        wanted.wait()
+        wanted.clear()
+        if stopping():
+            return
+        held = backend()
+        if held is None:
+            return
+        held.checkpoint()
+        del held
 
 
 class DuckDBBackend:
@@ -528,9 +535,9 @@ class DuckDBBackend:
             checkpointer = self._checkpointer
         checkpointer.ask()
 
-    def _checkpoint_now(self) -> None:
-        """one checkpoint, under the write lock, counted; a failure is logged and counted, never raised (only memory
-        waits for the next write's).
+    def checkpoint(self) -> None:
+        """checkpoint the tables now, under the write lock, counted (``background_checkpoints``); a failure is logged
+        and counted, never raised (only memory waits for the next one). What the checkpointer thread runs.
 
         :return: nothing
         :rtype: None

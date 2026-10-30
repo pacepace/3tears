@@ -834,11 +834,20 @@ class TestTheSweepRemovesOutsideTheLock:
         rmtree = shutil.rmtree
 
         def watched(path: Any, *args: Any, **kwargs: Any) -> None:
-            held.append(store._state.locked())  # noqa: SLF001 - what the sweep holds while it removes
+            # another thread asks the store what it holds, which takes the store's lock: it waits while the sweep
+            # removing these files holds it
+            asking = threading.Thread(target=store.status)
+            asking.start()
+            asking.join(0.5)
+            held.append(asking.is_alive())
+            askers.append(asking)
             rmtree(path, *args, **kwargs)
 
+        askers: list[threading.Thread] = []
         monkeypatch.setattr(shutil, "rmtree", watched)
         store.publish("v2", {TABLE: _table(2, rows=10)})
+        for asking in askers:
+            asking.join()
         assert store.versions() == ("v2",)
         assert held, "v1's files were removed"
         assert not any(held), "a sweep removed files holding the store's lock"

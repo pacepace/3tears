@@ -21,7 +21,12 @@ from sqlalchemy import Column, Integer, MetaData, String, Table
 duckdb = pytest.importorskip("duckdb")
 pa = pytest.importorskip("pyarrow")
 
-from threetears.core.cache.duckdb import DuckDBBackend, PartitionReplacement  # noqa: E402
+from threetears.core.cache.duckdb import (  # noqa: E402
+    CHECKPOINTER_THREAD,
+    DuckDBBackend,
+    PartitionReplacement,
+    checkpoint_when_asked,
+)
 
 ROWS = 400_000
 
@@ -69,6 +74,15 @@ def _until(condition: Callable[[], bool], what: str, seconds: float = 30.0) -> N
         if time.monotonic() > deadline:
             raise AssertionError(f"never: {what}")
         time.sleep(0.01)
+
+
+def _checkpointers() -> set[threading.Thread]:
+    """the checkpointer threads alive now.
+
+    :return: the threads
+    :rtype: set[threading.Thread]
+    """
+    return {thread for thread in threading.enumerate() if thread.name == CHECKPOINTER_THREAD}
 
 
 def _checkpointed(backend: DuckDBBackend) -> bool:
@@ -136,24 +150,25 @@ class TestCompressedCopy:
             assert cursor.execute("SELECT count(*) FROM results").fetchone() == (ROWS + 10,)
 
     def test_a_plain_backend_asks_for_no_checkpoint(self) -> None:
+        before = _checkpointers()
         plain = DuckDBBackend()
         plain.initialize(_metadata())
         try:
             _fill(plain)
             plain.request_checkpoint()
             assert plain.background_checkpoints == 0
-            assert plain._checkpointer is None  # noqa: SLF001 - no thread was started
+            assert _checkpointers() <= before, "no thread was started"
         finally:
             plain.reset()
 
     def test_a_reset_stops_the_checkpointer(self, compressed: DuckDBBackend) -> None:
+        before = _checkpointers()
         _fill(compressed)
         _until(lambda: compressed.background_checkpoints >= 1, "the checkpointer ran")
-        checkpointer = compressed._checkpointer  # noqa: SLF001 - the thread the reset must stop
-        assert checkpointer is not None
-        thread = checkpointer._thread  # noqa: SLF001
+        started = _checkpointers() - before
+        assert len(started) == 1
         compressed.reset()
-        assert not thread.is_alive()
+        assert not any(thread.is_alive() for thread in started)
 
 
 class TestTheCheckpointerEnds:
@@ -177,13 +192,12 @@ class TestTheCheckpointerEnds:
             assert not resetting.is_alive(), "reset never returned"
 
     def test_a_backend_dropped_without_a_reset_is_collected_and_its_thread_ends(self) -> None:
+        before = _checkpointers()
         backend = DuckDBBackend(compressed=True)
         backend.initialize(_metadata())
         _fill(backend)
         _until(functools.partial(_checkpointed, backend), "the checkpointer ran")
-        checkpointer = backend._checkpointer  # noqa: SLF001 - the thread that must end
-        assert checkpointer is not None
-        thread = checkpointer._thread  # noqa: SLF001
+        (thread,) = _checkpointers() - before
         held = weakref.ref(backend)
         del backend
         gc.collect()
@@ -195,36 +209,27 @@ class TestTheCheckpointerEnds:
         """the window a reset can land in: the thread woke, and the stop and its wake arrive before the thread clears
         the wake. The stop must still end the thread, never be cleared away with the wake."""
 
-        class Owner:
-            stopping = False
-
-        owner = Owner()
+        stopped: list[bool] = []
 
         class StopAtClear(threading.Event):
             def clear(self) -> None:
                 # reset's stop and its wake, just before the thread's clear
-                owner.stopping = True
+                stopped.append(True)
                 self.set()
                 super().clear()
 
         class Backend:
             checkpoints = 0
 
-            def _checkpoint_now(self) -> None:
+            def checkpoint(self) -> None:
                 Backend.checkpoints += 1
 
-        # the checkpointer's loop, reached through a compressed backend's own checkpointer
-        real = DuckDBBackend(compressed=True)
-        real.initialize(_metadata())
-        real.request_checkpoint()
-        made = real._checkpointer  # noqa: SLF001 - the loop under test is its class's
-        assert made is not None
-        loop = type(made)._run  # noqa: SLF001
-        real.reset()
         backend = Backend()
         wanted = StopAtClear()
         wanted.set()
-        thread = threading.Thread(target=loop, args=(lambda: backend, wanted, owner), daemon=True)
+        thread = threading.Thread(
+            target=checkpoint_when_asked, args=(lambda: backend, wanted, lambda: bool(stopped)), daemon=True
+        )
         thread.start()
         thread.join(5)
         assert not thread.is_alive(), "the stop was cleared with the wake: the thread waits forever"

@@ -21,7 +21,7 @@ pytest.importorskip("pyarrow")
 import pyarrow as pa  # noqa: E402
 
 from threetears.core.collections.scoped_snapshot import SnapshotTable, VersionedRead  # noqa: E402
-from threetears.core.collections.shared_snapshot import SharedSnapshot, scope_part  # noqa: E402
+from threetears.core.collections.shared_snapshot import SharedSnapshot  # noqa: E402
 from threetears.core.shared_arrow import SharedArrowStore  # noqa: E402
 
 TABLES = (
@@ -59,7 +59,8 @@ def _rows(cursor: Any, table: str) -> list[tuple[object, ...]]:
 
 
 def _inode(store: SharedArrowStore, version: str, table: str, scope: str) -> int:
-    return (store.root / "versions" / version / f"{table}@{scope_part(scope)}.arrow").stat().st_ino
+    # a plain scope names its part as it is
+    return (store.root / "versions" / version / f"{table}@{scope}.arrow").stat().st_ino
 
 
 @pytest.fixture
@@ -173,8 +174,16 @@ class TestPublishingTheCopy:
 
     @pytest.mark.parametrize(
         ("scope", "plain"),
-        [("VA", True), ("new york", False), ("h-x", False), ("", False), ("CURRENT", False), ("x" * 129, False)],
+        [("VA", True), ("new york", False), ("h-x", False), ("CURRENT", False), ("x" * 129, False)],
     )
-    def test_a_scope_names_its_part_as_it_is_only_when_plain(self, scope: str, plain: bool) -> None:
-        assert (scope_part(scope) == scope) is plain
-        assert scope_part(scope) == scope_part(scope)
+    def test_a_scope_names_its_part_as_it_is_only_when_plain(
+        self, store: SharedArrowStore, scope: str, plain: bool
+    ) -> None:
+        connection = duckdb.connect(":memory:")
+        connection.execute("CREATE TABLE results (race VARCHAR, county VARCHAR, state VARCHAR, votes BIGINT)")
+        connection.execute("CREATE TABLE races (race VARCHAR, state VARCHAR, name VARCHAR)")
+        _set_state(connection, scope, 1)
+        version = SharedSnapshot(store, TABLES).publish(_read(connection, {scope: 1}))
+        parts = {path.name for path in version.path.iterdir() if path.name.startswith("results@")}
+        assert (f"results@{scope}.arrow" in parts) is plain
+        assert len(parts) == 2, "the schema file and the scope's one part"

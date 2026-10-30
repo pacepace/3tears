@@ -43,7 +43,7 @@ from threetears.core.sql_fragments import quote_identifier
 if TYPE_CHECKING:
     from threetears.core.collections.scoped_snapshot import SnapshotTable, VersionedRead
 
-__all__ = ["SharedSnapshot", "scope_part"]
+__all__ = ["SharedSnapshot"]
 
 log = get_logger(__name__)
 
@@ -51,7 +51,7 @@ log = get_logger(__name__)
 _DIGEST_PREFIX: Final = "h-"
 
 
-def scope_part(scope: str) -> str:
+def _scope_part(scope: str) -> str:
     """the part a scope's rows are published as: the scope itself when it is a plain name, else its digest.
 
     :param scope: the scope
@@ -180,10 +180,10 @@ class SharedSnapshot:
                     f"WHERE {quote_identifier(table.scope_column)} = ?"
                 )
                 parts: dict[str, Any] = {
-                    scope_part(str(scope)): query_batches(read.cursor, rows, [scope], batch_rows=self._batch_rows)
+                    _scope_part(str(scope)): query_batches(read.cursor, rows, [scope], batch_rows=self._batch_rows)
                     for scope in writes
                 }
-                parts.update({scope_part(str(scope)): None for scope in drops})
+                parts.update({_scope_part(str(scope)): None for scope in drops})
                 tables[table.name] = Parts(schema=_schema(read.cursor, table.name), parts=parts)
                 written.update(str(scope) for scope in writes)
                 dropped.update(str(scope) for scope in drops)
