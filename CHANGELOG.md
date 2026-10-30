@@ -31,6 +31,24 @@ class for a pool that cannot use `RESET ALL` (YugabyteDB's JSONB codecs). It:
 through the collection's tiers, and is looked up by name again when it no longer carries the name. An absent name is
 read from L3 every time, because a namespace can be created by SQL that no collection write announces.
 
+### nats, core: a scoped snapshot's retire no longer reads every object's metadata once per scope
+
+**Fixed:** retiring a scope's older chunks listed the pod's whole Object Store twice (once per name prefix, filtered
+client-side), and the hub's orphan sweep on each retire it answers listed it once more. Each listing is a consumer
+delivering one metadata message per object. With about 2,300 objects and 51 scopes per epoch, that came to roughly
+7,000 messages per scope. On cobalt dev on 2026-10-29 this showed up as 3,000-4,600 non-client NATS messages/s and
+about 570 standing read consumers during a load test. Now:
+
+- the sweeper lists names once per pass, from the stream's metadata subjects (one `STREAM.INFO`);
+- `publish_staged` retires every scope it moved in one sweep and one ask to the declarer, not one each per scope;
+- `purge_orphan_chunks` reads the metadata only when there are more chunk subjects than objects, since every object
+  names at most one chunk subject. A bucket's empty objects, or objects whose delete stopped between its purges, can
+  hide as many orphans from that count; those orphans go at the first sweep the count lets through.
+
+**Added:** `NatsObjectStore.list_names(prefix=...)`, the sorted names of a bucket's objects from one `STREAM.INFO`.
+A name whose metadata is a deletion marker is listed (`delete` purges and leaves none). Past the server's cap on the
+subjects one answer carries (100,000), it reads the metadata instead.
+
 ### registry: an idle platform no longer rewrites the tool catalog on every heartbeat
 
 **Fixed:** every tool pod re-publishes its manifest with each 15 s heartbeat, and every registry replica hears it.
