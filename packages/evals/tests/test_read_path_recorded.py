@@ -1,4 +1,4 @@
-"""Which path served a read of readings or groups, recorded, and the two paths' answers alike (W4b P4).
+"""Which path served a read of readings or groups, recorded, and the two paths' answers alike.
 
 ``EvalStorage.iter_result_readings`` and ``result_groups`` read on the store's path when the store offers
 ``ResultReadings`` (one ``iter_narrowed`` or one ``grouped`` call), and on the engine's otherwise (keys, then pages
@@ -19,7 +19,8 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 
 - ``EvalStorage.iter_result_readings``: never taking the store's path; taking it for a store without the capability;
   catching the store's failure and reading again on the engine's path; reporting no store call for a read that
-  matched nothing; handing several runs out in the store's order rather than run by run.
+  matched nothing; handing several runs out in the store's order rather than run by run; handing out a row of a run
+  not named; holding every reading of an ``in_store_order`` read; reading its keys run by run on the engine's path.
 - ``EvalStorage.result_groups``: the same, for ``grouped``; reading the engine path's keys run by run, so a
   grouping across runs hands its ``values`` in another order than the store's.
 - the engine path's read by id: asking ``get_many`` for the verbatim fields.
@@ -37,6 +38,7 @@ from typing import Any
 
 import pytest
 
+from threetears.evals.kernel.errors import StorageError
 from threetears.evals.kernel.phase_log import phase_logged
 from threetears.evals.kernel.result_reading import ResultReading
 from threetears.evals.kernel.storage import READINGS_PAGE, EvalStorage
@@ -280,7 +282,7 @@ class TestNoSilentFallback:
             list(walked)
 
         assert store.calls == ["iter_narrowed"], "no key read, no read by id: the engine's path is never taken"
-        assert walked.path == "store"
+        assert (walked.path, walked.store_calls) == ("store", 1), "the call that raised was made, and is counted"
 
     def test_a_narrowed_read_that_fails_part_way_raises_and_is_never_read_again(self) -> None:
         store = _failing(rows_first=2)
@@ -299,6 +301,123 @@ class TestNoSilentFallback:
             EvalStorage(store).result_groups(["run-1"], SCOPE, by=["eval_run_id"], measures=MEASURES)
 
         assert store.calls == ["grouped"]
+
+
+class _StrayRows(CountingStore):
+    """A store offering the capability whose narrowed read ignores ``field_in``: it answers every run's rows."""
+
+    def iter_narrowed(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> Iterator[dict[str, Any]]:
+        return super().iter_narrowed(
+            doc_type, scope_id, exclude=exclude, exclude_in_items=exclude_in_items, field_in=None, **field_eq
+        )
+
+
+class _DrawCountingStore(CountingStore):
+    """The counting store, counting the rows its narrowed reads have handed out so far (``drawn``)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.drawn = 0
+
+    def iter_narrowed(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> Iterator[dict[str, Any]]:
+        for row in super().iter_narrowed(
+            doc_type, scope_id, exclude=exclude, exclude_in_items=exclude_in_items, field_in=field_in, **field_eq
+        ):
+            self.drawn += 1
+            yield row
+
+
+def _holding(store: CountingStore, count: int, runs: Sequence[str]) -> None:
+    """Write ``count`` results into ``store``, dealt over ``runs`` in turn, and forget its calls so far."""
+    storage = EvalStorage(store)
+    for index in range(count):
+        storage.save_eval_result(make_eval_result(id=f"r-{index:05d}", eval_run_id=runs[index % len(runs)]))
+    store.calls.clear()
+
+
+class TestAStrayRunRefused:
+    @pytest.mark.parametrize("in_store_order", [False, True], ids=["run_by_run", "in_store_order"])
+    def test_a_row_of_a_run_not_named_raises_before_any_reading_is_handed_out(self, in_store_order: bool) -> None:
+        store = _StrayRows()
+        _holding(store, 6, ("run-1", "run-2", "run-3"))
+        handed: list[str] = []
+
+        walked = EvalStorage(store).iter_result_readings(["run-1", "run-2"], SCOPE, in_store_order=in_store_order)
+        with pytest.raises(StorageError, match=r"\('r-00002'\) of run 'run-3', none of them"):
+            for reading in walked:
+                handed.append(reading.id)
+
+        assert handed == [], "the page holding the stray row hands out none of its readings"
+        assert (walked.store_calls, store.calls) == (1, ["iter_narrowed"])
+
+
+class TestInStoreOrder:
+    """``in_store_order``: the store's order across the runs, each page handed out as it is read, on both paths."""
+
+    RUNS = ("run-1", "run-2", "run-3")
+    NAMED = ["run-3", "run-1", "run-2"]
+    COUNT = 2 * READINGS_PAGE + 5
+
+    def test_the_store_s_path_hands_out_a_page_as_it_is_read(self) -> None:
+        store = _DrawCountingStore()
+        _holding(store, self.COUNT, self.RUNS)
+
+        walked = iter(EvalStorage(store).iter_result_readings(self.NAMED, SCOPE, in_store_order=True))
+        first = next(walked)
+
+        assert first.id == "r-00000", "the store's own order, not the first run named"
+        assert store.drawn == READINGS_PAGE, "one page drawn from the store before the first reading is handed out"
+        rest = list(walked)
+        assert [first.id, *(reading.id for reading in rest)] == [f"r-{index:05d}" for index in range(self.COUNT)]
+        assert store.calls == ["iter_narrowed"]
+
+    def test_the_default_holds_every_row_of_several_runs_before_the_first_reading(self) -> None:
+        store = _DrawCountingStore()
+        _holding(store, self.COUNT, self.RUNS)
+
+        walked = iter(EvalStorage(store).iter_result_readings(self.NAMED, SCOPE))
+        first = next(walked)
+
+        assert (first.eval_run_id, store.drawn) == ("run-3", self.COUNT)
+
+    def test_the_engine_s_path_reads_every_run_s_keys_in_one_call(self) -> None:
+        store = CountingStore()
+        _holding(store, self.COUNT, self.RUNS)
+
+        walked = EvalStorage(EngineOnlyStore(store)).iter_result_readings(self.NAMED, SCOPE, in_store_order=True)
+        readings = list(walked)
+
+        assert [reading.id for reading in readings] == [f"r-{index:05d}" for index in range(self.COUNT)]
+        assert walked.store_calls == 1 + 3 == len(store.calls)
+        assert store.calls == ["by_doc_type"] + ["get_many"] * 3
+
+    @pytest.mark.parametrize("hide", [False, True], ids=["store", "engine"])
+    def test_no_runs_named_asks_nothing(self, hide: bool) -> None:
+        store = CountingStore()
+        _holding(store, 3, self.RUNS)
+        storage = EvalStorage(EngineOnlyStore(store) if hide else store)
+
+        walked = storage.iter_result_readings([], SCOPE, in_store_order=True)
+
+        assert (list(walked), walked.store_calls, store.calls) == ([], 0, [])
 
 
 class TestStoreCallsExact:
@@ -492,6 +611,30 @@ class TestBothPathsReadAlike:
             ], named
             assert (store_read.path, engine_read.path) == ("store", "engine")
         assert len(readings) < len(whole)
+
+    def test_every_campaign_reads_the_same_readings_in_store_order_on_both_paths(
+        self, campaign_store: tuple[InMemoryDocumentStore, str]
+    ) -> None:
+        """In the store's order across the runs, alike on both paths, and the default's readings in another order."""
+        inner, scope_id = campaign_store
+        on_store, on_engine = _both(inner)
+        runs = list(dict.fromkeys(reading.eval_run_id for reading in on_engine.iter_result_readings(None, scope_id)))
+        named = runs[::-1]
+        stored_order = [
+            row["id"] for row in inner.by_doc_type("eval_result", scope_id, field_in={"eval_run_id": named})
+        ]
+
+        store_read = on_store.iter_result_readings(named, scope_id, in_store_order=True)
+        engine_read = on_engine.iter_result_readings(named, scope_id, in_store_order=True)
+        store_json = [reading_json(reading) for reading in store_read]
+        engine_readings = list(engine_read)
+
+        assert store_json == [reading_json(reading) for reading in engine_readings]
+        assert [reading.id for reading in engine_readings] == stored_order
+        default = [reading_json(reading) for reading in on_store.iter_result_readings(named, scope_id)]
+        assert sorted(store_json) == sorted(default)
+        pages = -(-len(stored_order) // READINGS_PAGE)
+        assert (store_read.store_calls, engine_read.store_calls) == (1, 1 + pages)
 
     @pytest.mark.parametrize("by", [["eval_run_id"], ["model"], []], ids=str)
     def test_every_campaign_reads_the_same_groups_on_both_paths(

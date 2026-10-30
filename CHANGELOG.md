@@ -13,7 +13,11 @@ offers `ResultReadings`: one `iter_narrowed` call, with the verbatim fields (`wo
 judge's prose (`judge_reasoning`, each score's `reasoning`, a re-judge's `cannot_tell` notes) left out, its rows
 hydrated a page at a time; or one `grouped` call. A store without it is read on the engine's path, as before. A store
 that offers the capability and fails raises what it raised, and is never read again on the engine's path. The readings
-and the groups are the same on both paths, in the same order.
+and the groups are the same on both paths, in the same order. A store-path read of several runs holds its readings
+until the store's last row, to hand them out run by run; `iter_result_readings(..., in_store_order=True)` instead hands
+them out a page at a time in the store's order across the runs, on both paths (one key read for every run on the
+engine's path), for a reader that folds page by page and never depends on the order across runs. Each store call is
+counted when it is made, so one that raises is counted too.
 
 **Changed:** on the engine's path, the reads by id leave out the verbatim fields and the judge's prose outside a list
 (`judge_reasoning`, and the transcript and outcome scores' `reasoning`), which no reading carries: 8.7 KB shipped per
