@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.85.0 -- 2026-10-29
+
 ### core, acl: a platform pool stops re-sending the session settings it already holds, and a namespace name resolves from cache
 
 **Fixed:** on cobalt dev on 2026-10-29 most of the YSQL statement mix was session bookkeeping:
