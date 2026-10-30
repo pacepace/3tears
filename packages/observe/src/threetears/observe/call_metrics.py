@@ -31,12 +31,12 @@ try:
 except ImportError:  # NOSILENT: the prometheus extra is optional; the metrics are disabled without it (logged)
     _PROMETHEUS = False
 
-__all__ = ["CALL_DURATION_BUCKETS", "CallMetrics"]
+__all__ = ["CallMetrics"]
 
 log = get_logger(__name__)
 
 #: seconds: a cached answer (milliseconds) through a long tool (minutes)
-CALL_DURATION_BUCKETS: tuple[float, ...] = (
+_CALL_DURATION_BUCKETS: tuple[float, ...] = (
     0.005,
     0.01,
     0.025,
@@ -94,7 +94,7 @@ class CallMetrics:
             f"{prefix}_call_duration_seconds",
             "seconds from a call's arrival to its end, by what was called and how it ended",
             labels,
-            buckets=CALL_DURATION_BUCKETS,
+            buckets=_CALL_DURATION_BUCKETS,
             registry=target,
         )
 

@@ -48,7 +48,7 @@ operation) and the gauge read 0 at every scrape. The gauge itself is right: a ca
   anything else (a caller cannot grow the pod's series). The rate of the duration's `_sum` is the mean number of
   calls in flight, which a scrape interval cannot hide.
 - `threetears.observe.CallMetrics(prefix, label=..., registry=...)`: that counter and histogram for any RPC pod,
-  a no-op without `prometheus_client` like `InflightRequestsGauge`; `CALL_DURATION_BUCKETS`, its buckets.
+  a no-op without `prometheus_client` like `InflightRequestsGauge`.
 - `InflightRequestsGauge.registry`: the registry the gauge is served from, for other metrics to share its
   `/metrics` route.
 
