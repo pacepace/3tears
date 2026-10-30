@@ -12,8 +12,8 @@ packages (bumped in lock-step).
 `isinstance` as `StoreClock` is. `iter_narrowed` yields the rows `by_doc_type` would return for the same predicates, in
 its order, from one backend call, with `exclude` applied and `exclude_in_items` dropping paths inside each object item
 of a list field (`narrow_items`, beside `omit_paths`, is that rule). `grouped` groups those rows by scalar paths and
-answers `count`, `count_null`, `sum_int`, `min`, `max` and `values` (`[row_id, value]` pairs in stored order) per
-group (`GroupMeasure`). It has no float measure: a reader adds the values itself, in order. The in-memory and SQLite
+answers `count`, `count_null`, `sum_int`, `min`, `max` and `values` (`[row_id, value]` pairs in stored order, each
+value exactly as stored, every double to its last bit) per group (`GroupMeasure`). It has no float measure: a reader adds the values itself, in order. The in-memory and SQLite
 stores offer it. All three names are provisional.
 
 `RoutedDocumentStore` offers it when every store a type is placed in does, and sends each read whole to the one store

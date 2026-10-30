@@ -209,11 +209,6 @@ def _measure_columns(kind: str, path: str | None) -> tuple[list[str], list[Any]]
     json_path = _dotted(path)
     if kind == "count_null":
         return [f"count(*) FILTER (WHERE {_TYPE} = 'null')"], [json_path]
-    if kind == "values":
-        # Each pair carries its insertion seq and its JSON type, so the order and the type are restored in Python:
-        # SQLite promises no order inside an aggregate before 3.44 (ORDER BY in an aggregate), and json_extract reads
-        # true as 1. Neither that nor the -> operator (3.38) is used, so this runs on any SQLite with JSON1.
-        return [f"json_group_array(json_array(seq, id, {_TYPE}, json_extract(body, ?)))"], [json_path, json_path]
     if kind == "sum_int":
         return (
             [
@@ -233,9 +228,12 @@ def _measure_columns(kind: str, path: str | None) -> tuple[list[str], list[Any]]
     )
 
 
-def _stored_value(json_type: str, value: Any) -> Any:
-    """A value as stored, from its JSON type and what ``json_extract`` read: ``true`` comes back as ``1``, and an
-    object or a list as its JSON text unless the SQLite build kept its JSON subtype."""
+def _stored_value(json_type: str | None, value: Any) -> Any:
+    """A value as stored, from its JSON type (``None`` when absent) and what ``json_extract`` read.
+
+    ``json_extract`` reads ``true`` as ``1`` and an object or a list as its JSON text; a real comes back as the stored
+    double exactly, and an integer as an integer.
+    """
     if json_type == "true":
         return True
     if json_type == "false":
@@ -251,9 +249,6 @@ def _measure_answer(name: str, kind: str, path: str | None, columns: Sequence[An
     :raises TypeError: ``sum_int`` met a non-integer, or ``min``/``max`` a value that is neither a number nor a
         string, or both numbers and strings.
     """
-    if kind == "values":
-        pairs = sorted(json.loads(columns[0]), key=lambda pair: pair[0])
-        return [[row_id, _stored_value(json_type, value)] for _, row_id, json_type, value in pairs]
     if kind in ("count", "count_null"):
         return columns[0]
     if kind == "sum_int":
@@ -306,10 +301,14 @@ def _narrowed_rows(
             for (body,) in page:
                 yield narrow_items(omit_paths(json.loads(body), exclude), exclude_in_items)
     finally:
-        with lock:
-            cursor.close()
+        # Closing a connection finalises its cursors, and when the iterator is collected the connection may already
+        # be closed (its finaliser runs first), where closing the cursor would raise: so a read's own connection is
+        # closed, and only the shared connection's cursor.
         if reader is not None:
             reader.close()
+        else:
+            with lock:
+                cursor.close()
 
 
 class SqliteDocumentStore:
@@ -324,6 +323,8 @@ class SqliteDocumentStore:
     def __init__(self, path: str | os.PathLike[str]) -> None:
         """Open (or create) the file and its table."""
         self.path = os.fspath(path)
+        # Resolved once, so a narrowed read opens this file even after the process changes directory.
+        self._reader_uri = f"{Path(os.path.abspath(self.path)).as_uri()}?mode=ro"
         self._lock = threading.RLock()
         # Autocommit, so each statement is its own transaction and a read-modify-write opens one explicitly.
         self._db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=30.0)
@@ -542,7 +543,7 @@ class SqliteDocumentStore:
                 cursor = self._db.execute(sql, params)
             return _narrowed_rows(cursor, exclude, exclude_in_items, self._lock, None)
         reader = sqlite3.connect(
-            f"{Path(self.path).absolute().as_uri()}?mode=ro",
+            self._reader_uri,
             uri=True,
             check_same_thread=False,
             isolation_level=None,
@@ -572,9 +573,11 @@ class SqliteDocumentStore:
 
         SQLite groups and aggregates: each ``by`` path by its JSON type and its value (``json_extract`` reads
         ``true`` as ``1``, so the type keeps them apart), ``sum_int`` over values whose ``json_type`` is
-        ``integer``, ``min``/``max`` with the binary collation (code-point order for text), and ``values`` as a
-        ``json_group_array`` of ``[seq, id, json_type, value]``, put in insertion order and given back its JSON type
-        here. The refusals are counted in the same statement and raised here.
+        ``integer``, and ``min``/``max`` with the binary collation (code-point order for text). The refusals are
+        counted in the same statement and raised here. ``values`` rides the same statement as a ``UNION ALL`` of one
+        row per matching document (its seq, id, group key, and each path's ``json_type`` and ``json_extract``),
+        ordered by seq and grouped here: never through SQLite's JSON text, which writes a real at 15 significant
+        digits, so every number comes back exactly as stored.
         See :meth:`~threetears.evals.schema.ResultReadings.grouped`.
 
         :param doc_type: The discriminator to select on.
@@ -600,42 +603,78 @@ class SqliteDocumentStore:
         if where is None:
             return []
         clause, where_params = where
-        columns = ["count(*)"]
-        params: list[Any] = []
-        keys: list[str] = []
+        # The layout both halves share: a tag, the row count or seq, the row id, two columns per by path, the
+        # aggregate measures' columns, then a JSON type and a value per values measure.
+        key_columns: list[str] = []
+        key_params: list[Any] = []
+        group_by: list[str] = []
         for index, path in enumerate(by):
             json_path = _dotted(path)
-            columns += [
+            key_columns += [
                 f"CASE {_TYPE} WHEN 'real' THEN 'integer' ELSE {_TYPE} END AS k{index}t",
                 f"json_extract(body, ?) AS k{index}v",
             ]
-            params += [json_path, json_path, json_path]
-            keys += [f"k{index}t", f"k{index}v"]
+            key_params += [json_path, json_path, json_path]
+            group_by += [f"k{index}t", f"k{index}v"]
+        aggregates: list[str] = []
+        aggregate_params: list[Any] = []
         spans: list[tuple[str, str, str | None, int]] = []
+        listed: list[tuple[str, str]] = []
         for name, (kind, measure_path) in measures.items():
+            if kind == "values" and measure_path is not None:
+                listed.append((name, _dotted(measure_path)))
+                continue
             measure_columns, measure_params = _measure_columns(kind, measure_path)
             spans.append((name, kind, measure_path, len(measure_columns)))
-            columns += measure_columns
-            params += measure_params
-        sql = f"SELECT {', '.join(columns)} FROM documents WHERE {clause}"  # noqa: S608
-        if keys:
-            sql += f" GROUP BY {', '.join(keys)}"
+            aggregates += measure_columns
+            aggregate_params += measure_params
+        listed_padding = ["NULL"] * (2 * len(listed))
+        sql = (
+            f"SELECT 'group', count(*), NULL, {', '.join([*key_columns, *aggregates, *listed_padding]) or 'NULL'} "  # noqa: S608
+            f"FROM documents WHERE {clause}"
+        )
+        if group_by:
+            sql += f" GROUP BY {', '.join(group_by)}"
+        params = [*key_params, *aggregate_params, *where_params]
+        if listed:
+            # Each value as a row of its own, never through SQLite's JSON text, which writes a real at 15 digits:
+            # json_extract hands back the stored double exactly, and the seq puts the rows in insertion order here.
+            value_columns = [f"{column}(body, ?)" for _, _ in listed for column in ("json_type", "json_extract")]
+            sql += (
+                f" UNION ALL SELECT 'value', seq, id, "  # noqa: S608
+                f"{', '.join([*key_columns, *(['NULL'] * len(aggregates)), *value_columns])} "
+                f"FROM documents WHERE {clause}"
+            )
+            params += [*key_params, *[path for _, path in listed for _ in range(2)], *where_params]
         with self._lock:
-            rows = self._db.execute(sql, [*params, *where_params]).fetchall()
-        answers: list[dict[str, Any]] = []
+            rows = self._db.execute(sql, params).fetchall()
+        answers: dict[tuple[Any, ...], dict[str, Any]] = {}
+        listed_rows: list[tuple[Any, ...]] = []
+        at_values = 3 + 2 * len(by) + len(aggregates)
         for row in rows:
-            if not row[0]:
+            key = tuple(row[3 : 3 + 2 * len(by)])
+            if row[0] == "value":
+                listed_rows.append(row)
+                continue
+            if not row[1]:
                 # Without a GROUP BY, an aggregate answers one row even when nothing matched.
                 continue
             answer: dict[str, Any] = {
-                path: _group_value(path, row[1 + 2 * index], row[2 + 2 * index]) for index, path in enumerate(by)
+                path: _group_value(path, row[3 + 2 * index], row[4 + 2 * index]) for index, path in enumerate(by)
             }
-            at = 1 + 2 * len(by)
+            at = 3 + 2 * len(by)
             for name, span_kind, span_path, width in spans:
                 answer[name] = _measure_answer(name, span_kind, span_path, row[at : at + width])
                 at += width
-            answers.append(answer)
-        return answers
+            for name, _ in listed:
+                answer[name] = []
+            answers[key] = answer
+        for row in sorted(listed_rows, key=lambda listed_row: listed_row[1]):
+            answer = answers[tuple(row[3 : 3 + 2 * len(by)])]
+            for index, (name, _) in enumerate(listed):
+                json_type, value = row[at_values + 2 * index], row[at_values + 2 * index + 1]
+                answer[name].append([row[2], _stored_value(json_type, value)])
+        return [{name: answer[name] for name in [*by, *measures]} for answer in answers.values()]
 
     def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
         """Yield the id of every document of one type within a scope.

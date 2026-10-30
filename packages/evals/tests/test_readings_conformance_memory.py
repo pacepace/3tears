@@ -223,6 +223,13 @@ class _ValuesInIdOrder(_PlainFold):
         return sorted(pairs, key=lambda pair: str(pair[0]))
 
 
+class _ValuesThroughText(_PlainFold):
+    """``values`` carries each double through 15-digit text, as SQLite's JSON writer does."""
+
+    def ordered_values(self, pairs: list[list[Any]]) -> list[list[Any]]:
+        return [[row_id, float(f"{value:.15g}") if isinstance(value, float) else value] for row_id, value in pairs]
+
+
 class _AcceptsAnyMeasure(_PlainFold):
     """An unknown kind, or a measure named as a ``by`` path, answers ``None`` rather than being refused."""
 
@@ -363,6 +370,7 @@ _FAULTS: dict[type[DocumentStore], frozenset[str]] = {
     _SumsAnyNumber: frozenset({"grouped.sum_int"}),
     _ComparesAsText: frozenset({"grouped.min_max"}),
     _ValuesInIdOrder: frozenset({"grouped.values_in_stored_order"}),
+    _ValuesThroughText: frozenset({"grouped.values_exact"}),
     _AcceptsAnyMeasure: frozenset({"grouped.undefined_grouping_refused"}),
     _GroupOfNothing: frozenset({"empty.answers"}),
     _SwallowsFailures: frozenset({"failure.raises"}),

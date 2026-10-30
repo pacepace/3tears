@@ -476,6 +476,35 @@ def _values_come_in_stored_order(store: DocumentStore, _install: Callable[[Calla
     _expect_equal(keyed.get(_key("b")), {"run": "b", "cost": [["v1", 0.2]], "extra": [["v1", None]]}, "group b")
 
 
+#: Values a store that carries numbers through text, or compares with Python's ``==``, would hand back changed: a
+#: double needing 17 significant digits, the largest finite double, negative zero, an integral real beside its
+#: integer, and ``false`` beside ``0``.
+_EXACT_VALUES: tuple[Any, ...] = (
+    0.1 + 0.2,
+    123456789.12345678,
+    1.7976931348623157e308,
+    5e-324,
+    -0.0,
+    1,
+    1.0,
+    0,
+    False,
+    "0.1",
+    [1, 2.5, {"k": 0.30000000000000004}],
+    None,
+)
+
+
+def _values_are_exact(store: DocumentStore, _install: Callable[[Callable[[], None]], None]) -> None:
+    _write(store, *(_doc(f"x{index:02d}", run="a", v=value) for index, value in enumerate(_EXACT_VALUES)))
+    _write(store, _doc("x99", run="a"))
+    groups = _grouped(store, ["run"], {"v": ("values", "v")})
+    expected = [[f"x{index:02d}", value] for index, value in enumerate(_EXACT_VALUES)] + [["x99", None]]
+    _expect(len(groups) == 1, f"grouped by one run answered {len(groups)} groups: {groups!r}")
+    # repr tells -0.0 from 0.0, 1.0 from 1 and False from 0, which == does not.
+    _expect_equal(repr(groups[0]["v"]), repr(expected), "values over doubles, zeros, integers and false")
+
+
 def _a_grouping_the_port_does_not_define_is_refused(
     store: DocumentStore, _install: Callable[[Callable[[], None]], None]
 ) -> None:
@@ -588,6 +617,12 @@ RESULT_READINGS_CONFORMANCE_CASES: tuple[ResultReadingsConformanceCase, ...] = (
         "grouped.values_in_stored_order",
         "values gives [row_id, value] pairs in by_doc_type's order within each group",
         _values_come_in_stored_order,
+    ),
+    ResultReadingsConformanceCase(
+        "grouped.values_exact",
+        "values gives each value exactly as stored: every double to its last bit, negative zero, 1 apart from 1.0, "
+        "false apart from 0",
+        _values_are_exact,
     ),
     ResultReadingsConformanceCase(
         "grouped.undefined_grouping_refused",
