@@ -154,6 +154,8 @@ class UsageView(Protocol):
     def unanswered_retried(self) -> int | None: ...
     @property
     def unanswered_lost(self) -> int | None: ...
+    @property
+    def unanswered_reasons(self) -> Mapping[str, int] | None: ...
 
 
 class LatencyView(Protocol):
@@ -238,6 +240,8 @@ class SecondJudgeView(Protocol):
 
     @property
     def model(self) -> str: ...
+    @property
+    def config_ids(self) -> Mapping[str, str] | None: ...
     @property
     def temperature(self) -> float | None: ...
 
@@ -506,7 +510,8 @@ class PreconditionReading:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class UsageReading:
-    """One usage row (:class:`UsageView`), without the reasons a call went unanswered or unpriced."""
+    """One usage row (:class:`UsageView`), without the reasons a call went unpriced. The count of each reason a call
+    went unanswered is carried: each arm's census sums them (``analysis/bundle/trials.py``)."""
 
     role: str
     model: str | None
@@ -525,6 +530,7 @@ class UsageReading:
     sent_settings: tuple[ClientRequestSettings, ...] | None
     unanswered_retried: int | None
     unanswered_lost: int | None
+    unanswered_reasons: Mapping[str, int] | None
 
     @classmethod
     def of(cls, row: RoleUsage, shared: SharedValues) -> UsageReading:
@@ -548,6 +554,7 @@ class UsageReading:
             sent_settings=None if sent is None else tuple(shared.settings(settings) for settings in sent),
             unanswered_retried=row.unanswered_retried,
             unanswered_lost=row.unanswered_lost,
+            unanswered_reasons=None if (reasons := row.unanswered_reasons) is None else shared.mapping(reasons),
         )
 
 
@@ -665,15 +672,22 @@ class SecondScoreReading:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SecondJudgeReading:
-    """The judge a second pass was asked of (:class:`SecondJudgeView`)."""
+    """The judge a second pass was asked of (:class:`SecondJudgeView`): the prompt per dimension it named is carried,
+    since the bundle's judge-change reading names a judge by its prompts (``analysis/bundle/judges.py``)."""
 
     model: str
+    config_ids: Mapping[str, str] | None
     temperature: float | None
 
     @classmethod
     def of(cls, judge: SecondJudge, shared: SharedValues) -> SecondJudgeReading:
         """The reading of a stored judge."""
-        return cls(model=shared.text(judge.model), temperature=judge.temperature)
+        configs = judge.config_ids
+        return cls(
+            model=shared.text(judge.model),
+            config_ids=None if configs is None else shared.names(configs),
+            temperature=judge.temperature,
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
