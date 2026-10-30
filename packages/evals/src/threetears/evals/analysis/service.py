@@ -1596,6 +1596,12 @@ def _assembled_campaign_bundle(
 ) -> CampaignBundle:
     """Assemble every aspect's bundle, the campaign's arms and code's readings into the campaign bundle. Blocking.
 
+    Logs one ``eval.read_tier lens=assemble_context_bundle`` line per assembly
+    (:func:`~threetears.evals.kernel.phase_log.phase_logged`). The store reads happen inside the assembly, so
+    ``fold_ms`` covers the whole of it, store reads and model rebuilding included, until the store reads charge
+    ``store_ms`` and ``hydrate_ms`` themselves; ``render_ms`` is empty, since nothing renders here. ``runs_in`` is
+    the runs the aspects' bundles summarise and ``results_in`` the results those runs produced.
+
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
     :param storage: Where its runs, results and insights are read, and its arms addressed.
@@ -1604,12 +1610,6 @@ def _assembled_campaign_bundle(
     :ptype profile: HostProfile
     :param insights_as_of: The insight ledger's cutoff, or None for now.
     :ptype insights_as_of: str | None
-    Logs one ``eval.read_tier lens=assemble_context_bundle`` line per assembly
-    (:func:`~threetears.evals.kernel.phase_log.phase_logged`). The store reads happen inside the assembly, so
-    ``fold_ms`` covers the whole of it, store reads and model rebuilding included, until the store reads charge
-    ``store_ms`` and ``hydrate_ms`` themselves; ``render_ms`` is empty, since nothing renders here. ``runs_in`` is
-    the distinct runs the aspects' bundles summarise and ``results_in`` the results those runs produced.
-
     :return: The campaign bundle.
     :rtype: CampaignBundle
     """
@@ -1622,8 +1622,9 @@ def _assembled_campaign_bundle(
         ]
         arms = campaign_arms(storage, campaign, profile=profile)
         readings = campaign_readings(campaign, {bundle.aspect: bundle for bundle in bundles}, arms=arms)
-        summarised = {summary.run_id: summary.n_results for bundle in bundles for summary in bundle.run_summaries}
-        took_in(runs=len(summarised), results=sum(summarised.values()))
+        # A run belongs to one aspect at most (the campaign refuses one held twice), so the aspects' counts add.
+        summaries = [summary for bundle in bundles for summary in bundle.run_summaries]
+        took_in(runs=len(summaries), results=sum(summary.n_results for summary in summaries))
         return build_campaign_bundle(campaign, bundles, arms=arms, readings=readings)
 
 

@@ -34,9 +34,9 @@ render_ms= elapsed_ms= path= store_calls=`, plus `raised=<exception class>` when
   empty. On a report line `render_ms` is serializing the report in its form (with `include_sessions`, the
   transcripts' read too), and `fold_ms` is the rest: finding and building the report, its bundle assemblies on the
   code-only path, and reading its analysis.
-- `runs_in` is the distinct runs a bundle's aspects summarise and `results_in` the results they produced. A report
-  line sums its assemblies' counts, and leaves both empty when it assembled none (a report document's page draws its
-  stored snapshot). A report read on the code-only path also logs its bundle's own line, before its own.
+- `runs_in` is the runs a bundle's aspects summarise (a run belongs to one aspect) and `results_in` the results they
+  produced. A report line sums its assemblies' counts, and leaves both empty when it assembled none (a report
+  document's page draws its stored snapshot). A report read on the code-only path also logs its bundle's own line, before its own.
 - `path` and `store_calls` (which read path served the call, and how many store calls it made) are empty for now.
 
 `comparison_sets`, `frontier`, `history`, `program_budget` and `orphaned_runs` now log the `eval.read_tier` line that

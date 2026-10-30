@@ -8,16 +8,18 @@ measured is empty, never zero; the phases add up to the elapsed time, never coun
 Mutations that turn this file red (each run against a saved copy and restored from it):
 
 - ``phase_log.charged``: charging a block's whole time rather than less its nested charges; not reaching the
-  enclosing call's line.
+  enclosing call's line, from its own thread or from a ``run_blocking`` worker.
 - ``phase_log.phase_logged``: not charging the residual phase; writing ``0.0`` for a phase nothing charged; not
   logging when the block raised, or swallowing what it raised; leaving the call open in the context after it ends.
 - ``phase_log.took_in``: not reaching the enclosing call's line.
-- ``service._assembled_campaign_bundle``: no line; counting a run twice when two aspects summarise it.
+- ``service._assembled_campaign_bundle``: no line; counting one aspect's runs and results rather than every aspect's
+  (a run belongs to one aspect at most, so the aspects' counts add).
 - ``ops.analysis.report_read``: no line; serializing outside ``charged("render")``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import threading
@@ -27,10 +29,14 @@ import pytest
 
 from threetears.evals.analysis import assemble_campaign_bundle
 from threetears.evals.kernel import ValidationFailedError
+from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.kernel.phase_log import charged, phase_logged, took_in
 from threetears.evals.ops import report_read
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import analysed_aspect, empty_bundle, make_analysis
+from packages.evals.tests.hot_path_support import HOT_PATH_SCOPE, hot_path_corpus
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture, ops_fixture
 
@@ -167,6 +173,23 @@ class TestTheLine:
         assert [lens for _, lens, _ in lines] == ["before", "after"]
         assert lines[1][2]["runs_in"] == "" and lines[1][2]["store_ms"] == "", "a closed call leaves nothing open"
 
+    def test_a_run_blocking_worker_charges_the_caller_s_open_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        def read() -> None:
+            with charged("store"):
+                time.sleep(NAP_S)
+            took_in(runs=1, results=3)
+
+        async def offloaded() -> None:
+            await run_blocking(None, read)
+
+        with caplog.at_level(logging.INFO, logger=LOGGER), phase_logged("probe", scope_id="s", campaign_id="c"):
+            asyncio.run(offloaded())
+
+        ((_, _, fields),) = _lines(caplog)
+        assert _ms(fields, "store_ms") >= NAP_S * 1000, "the worker's read reached the line its caller opened"
+        assert (fields["runs_in"], fields["results_in"]) == ("1", "3")
+        _phases_add_up(fields)
+
     def test_threads_each_log_their_own_call(self, caplog: pytest.LogCaptureFixture) -> None:
         start = threading.Barrier(2)
 
@@ -187,12 +210,15 @@ class TestTheLine:
         assert intake == {"one": ("1", "10"), "two": ("2", "20")}
 
 
-def _member_counts(fixture: OpsFixture) -> tuple[int, int]:
+def _counts_in_store(storage: EvalStorage, campaign: EvalCampaign, scope_id: str) -> tuple[int, int]:
     """The campaign's member runs that resolve, and the results stored for them, read from the store directly."""
-    storage = fixture.host.eval_host.storage
-    runs = [run for run_id in fixture.campaign.run_ids if (run := storage.load_eval_run(run_id, TOYHOST_SCOPE))]
-    results = sum(len(storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE)) for run in runs)
+    runs = [run for run_id in campaign.run_ids if (run := storage.load_eval_run(run_id, scope_id))]
+    results = sum(len(storage.query_eval_results_by_run(run.id, scope_id)) for run in runs)
     return len(runs), results
+
+
+def _member_counts(fixture: OpsFixture) -> tuple[int, int]:
+    return _counts_in_store(fixture.host.eval_host.storage, fixture.campaign, TOYHOST_SCOPE)
 
 
 class TestTheCallSites:
@@ -214,6 +240,23 @@ class TestTheCallSites:
         assert fields["fold_ms"] == f"{_ms(fields, 'elapsed_ms'):.1f}", "the whole assembly is its fold, for now"
         assert (fields["store_ms"], fields["hydrate_ms"], fields["render_ms"]) == ("", "", "")
         assert (fields["path"], fields["store_calls"]) == ("", "")
+
+    def test_a_two_aspect_assembly_counts_every_aspect_s_runs_and_results(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        corpus = hot_path_corpus(scale=1, two_aspects=True)
+        runs, results = _counts_in_store(corpus.host.storage, corpus.campaign, HOT_PATH_SCOPE)
+        assert results == corpus.n_results
+
+        with caplog.at_level(logging.INFO, logger=LOGGER):
+            bundle = assemble_campaign_bundle(corpus.host, corpus.campaign.id, HOT_PATH_SCOPE)
+
+        assert len(bundle.aspects) == 2
+        first = len(bundle.aspects[0].run_summaries)
+        assert 0 < first < runs, "each aspect holds some of the runs, so one aspect's count is not the whole"
+        ((_, lens, fields),) = _lines(caplog)
+        assert lens == "assemble_context_bundle"
+        assert (fields["runs_in"], fields["results_in"]) == (str(runs), str(results))
 
     @pytest.mark.parametrize("format", ["markdown", "html", "json"])
     def test_a_code_only_report_read_logs_its_bundle_s_line_then_its_own(

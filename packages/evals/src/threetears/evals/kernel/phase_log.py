@@ -27,6 +27,12 @@ the nested call's residual time.
 **Threads.** The open calls and charges live in a :class:`~contextvars.ContextVar`, so each thread and each task
 sees its own, and nothing outlives the call that opened it. A worker that inherits a copy of the caller's context
 (:func:`~threetears.evals.kernel.offload.run_blocking`) charges the caller's open line, under that line's lock.
+
+**Timing a read.** A store read keeps its timing only when it runs where the open call can see it: in the call's own
+thread, or on a worker reached through :func:`~threetears.evals.kernel.offload.run_blocking`, which copies the
+context; a bare ``executor.submit`` starts from an empty context and charges nothing. Never open :func:`charged`
+around a ``yield`` in a lazy generator: the block would time the consumer's work between items, and could close in
+another context than the one it opened in.
 """
 
 from __future__ import annotations
