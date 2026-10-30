@@ -26,7 +26,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from enum import Enum
 from typing import Any
 from unittest import mock
@@ -94,6 +94,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_result, memory_storage
+from packages.evals.tests.read_path_support import CountingStore, EngineOnlyStore
 from packages.evals.tests.test_result_reading_fields import (
     CAMPAIGNS,
     PINNED,
@@ -393,13 +394,16 @@ def reading_json(reading: ResultReading) -> str:
 
 
 class TestTheSeamsHandOutTheReadingsOfAWholeRead:
-    """``EvalStorage.iter_result_readings`` and ``result_groups`` on the engine's path."""
+    """``EvalStorage.iter_result_readings`` and ``result_groups`` on the engine's path: over a store whose narrowed and
+    grouped reads are hidden (``test_read_path_recorded.py`` holds the store's path to the same answers)."""
 
     def test_the_readings_of_named_runs_in_the_store_order_run_by_run(self, enriched: Any) -> None:
-        read, runs, _, _ = enriched
-        storage = read.host.storage
+        read, runs, results, _ = enriched
         named = [run.id for run in runs[:3]]
-        whole = [result for run_id in named for result in storage.query_eval_results_by_run(run_id, read.scope_id)]
+        whole = [
+            result for run_id in named for result in read.host.storage.query_eval_results_by_run(run_id, read.scope_id)
+        ]
+        storage = _engine_storage(results)
 
         walked = storage.iter_result_readings([*named, named[0]], read.scope_id)
         readings = list(walked)
@@ -412,7 +416,7 @@ class TestTheSeamsHandOutTheReadingsOfAWholeRead:
     def test_the_readings_of_a_scope_in_the_store_order(self, enriched: Any) -> None:
         read, _, results, _ = enriched
 
-        walked = read.host.storage.iter_result_readings(None, read.scope_id)
+        walked = _engine_storage(results).iter_result_readings(None, read.scope_id)
 
         assert [reading_json(r) for r in walked] == [reading_json(ResultReading.of(r)) for r in results]
         assert walked.store_calls == 1 + -(-len(results) // READINGS_PAGE)
@@ -466,7 +470,7 @@ class TestTheSeamsHandOutTheReadingsOfAWholeRead:
             "total_ms": ("values", "latency.total_ms"),
         }
         store = InMemoryDocumentStore()
-        storage = EvalStorage(store)
+        storage = EvalStorage(EngineOnlyStore(store))
         for run_id in named:
             for result in read.host.storage.query_eval_results_by_run(run_id, read.scope_id):
                 storage.save_eval_result(result)
@@ -479,7 +483,7 @@ class TestTheSeamsHandOutTheReadingsOfAWholeRead:
         assert as_json(sorted(grouped.groups, key=lambda g: g["eval_run_id"])) == as_json(
             sorted(expected, key=lambda g: g["eval_run_id"])
         )
-        assert (grouped.path, grouped.store_calls) == ("engine", len(named) + 1)
+        assert (grouped.path, grouped.store_calls) == ("engine", 2), "one key read of every run named, one page by id"
 
     def test_shared_values_hold_each_equal_value_once(self, enriched: Any) -> None:
         _, _, results, readings = enriched
@@ -513,27 +517,18 @@ class TestAScoreReadsAsItsScore:
         assert compared > 1000, "too few scores to compare"
 
 
-class _CountingStore(InMemoryDocumentStore):
-    """The reference store, naming each read it is asked for."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.calls: list[str] = []
-
-    def by_doc_type(
-        self, doc_type: str, scope_id: str, *, field_in: Mapping[str, Sequence[Any]] | None = None, **kwargs: Any
-    ) -> list[dict[str, Any]]:
-        self.calls.append("by_doc_type")
-        return super().by_doc_type(doc_type, scope_id, field_in=field_in, **kwargs)
-
-    def get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str) -> list[dict[str, Any]]:
-        self.calls.append("get_many")
-        return super().get_many(doc_type, doc_ids, scope_id)
+def _counted_storage() -> tuple[EvalStorage, CountingStore]:
+    """Storage reading on the engine's path over a store that names each call it is asked for."""
+    store = CountingStore()
+    return EvalStorage(EngineOnlyStore(store)), store
 
 
-def _counted_storage() -> tuple[EvalStorage, _CountingStore]:
-    store = _CountingStore()
-    return EvalStorage(store), store
+def _engine_storage(results: Sequence[EvalResult]) -> EvalStorage:
+    """Storage reading on the engine's path over a store holding ``results``, written in the order given."""
+    storage = EvalStorage(EngineOnlyStore(InMemoryDocumentStore()))
+    for result in results:
+        storage.save_eval_result(result)
+    return storage
 
 
 #: Pinned paths a reading leaves out by design: a score's reasoning, read only by the bundle's trials section, which
