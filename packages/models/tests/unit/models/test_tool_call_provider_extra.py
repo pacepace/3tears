@@ -388,3 +388,71 @@ class TestARequestWithoutExtrasIsUnchanged:
         openai_model(wire).invoke(history)
         plain = _history(AIMessage(content="", tool_calls=answer.tool_calls))
         assert json.dumps(wire.bodies[-1]) == json.dumps(_vanilla_body(plain))
+
+
+class TestWhatCannotBeSentBackIsReported:
+    """fields that cannot reach the next request are logged, so a later 400 can be traced here."""
+
+    @pytest.mark.asyncio
+    async def test_a_conflicting_repeat_keeps_the_first_and_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        deltas = [
+            _delta(_fragment(0, call_id="call_1", name="get_weather", arguments='{"city": ', **_google(_SIG_1))),
+            _delta(_fragment(0, call_id=None, name=None, arguments='"Paris"}', **_google(_SIG_2))),
+        ]
+        wire = ChatCompletionsWire(deltas=deltas, finish="tool_calls")
+        with caplog.at_level("WARNING"):
+            chunks = [chunk async for chunk in openai_model(wire, "gemini-3.5-flash-lite").astream("weather?")]
+        assert _summed(chunks).additional_kwargs[TOOL_CALL_PROVIDER_EXTRA_KEY] == {"call_1": _google(_SIG_1)}
+        assert any("twice with different values" in record.getMessage() for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_a_streamed_call_that_never_gets_an_id_is_dropped_with_a_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        deltas = [_delta(_fragment(0, call_id=None, name="get_weather", arguments="{}", **_google(_SIG_1)))]
+        wire = ChatCompletionsWire(deltas=deltas, finish="tool_calls")
+        with caplog.at_level("WARNING"):
+            chunks = [chunk async for chunk in openai_model(wire, "gemini-3.5-flash-lite").astream("weather?")]
+        assert TOOL_CALL_PROVIDER_EXTRA_KEY not in _summed(chunks).additional_kwargs
+        assert any("never an id" in record.getMessage() for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_a_non_streamed_call_without_an_id_is_reported(self, caplog: pytest.LogCaptureFixture) -> None:
+        message = _parallel_calls_message()
+        del message["tool_calls"][0]["id"]
+        wire = ChatCompletionsWire(message=message, finish="tool_calls")
+        with caplog.at_level("WARNING"):
+            answer = await openai_model(wire, "gemini-3.5-flash-lite").ainvoke("weather?")
+        assert TOOL_CALL_PROVIDER_EXTRA_KEY not in answer.additional_kwargs
+        assert any("but no id" in record.getMessage() for record in caplog.records)
+
+    def test_kept_fields_matching_no_request_call_are_reported(self, caplog: pytest.LogCaptureFixture) -> None:
+        answer = AIMessage(
+            content="",
+            tool_calls=[{"id": "call_1", "name": "get_weather", "args": {"city": "Paris"}}],
+            additional_kwargs={TOOL_CALL_PROVIDER_EXTRA_KEY: {"call_9": _google(_SIG_1)}},
+        )
+        wire = ChatCompletionsWire()
+        with caplog.at_level("WARNING"):
+            openai_model(wire).invoke(_history(answer))
+        assert any("match no tool call" in record.getMessage() for record in caplog.records)
+
+
+class TestAStructuredOutputStreamCarriesOneCopy:
+    """a stream with ``response_format`` ends on a chunk LangChain rebuilds from the whole completion.
+
+    With the locked openai SDK that completion does not carry the fields (its accumulator keeps only the
+    declared ones), so the repeat cannot happen today. The resolver still sends a pre-keyed chunk through
+    the same emit-once check; this pins the outcome against an SDK whose accumulator starts keeping them.
+    """
+
+    @pytest.mark.asyncio
+    async def test_astream_with_response_format(self) -> None:
+        wire = ChatCompletionsWire(deltas=_streamed_parallel_calls(), finish="tool_calls")
+        model = openai_model(wire, "gemini-3.5-flash-lite")
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {"name": "weather", "schema": {"type": "object", "properties": {}}, "strict": False},
+        }
+        chunks = [chunk async for chunk in model.astream("weather?", response_format=response_format)]
+        assert _summed(chunks).additional_kwargs[TOOL_CALL_PROVIDER_EXTRA_KEY] == {"call_1": _google(_SIG_1)}

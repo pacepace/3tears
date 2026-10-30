@@ -58,6 +58,14 @@
 # callers.
 
 [[release]]
+version = "0.86.0"
+since = "v0.85.0"
+summary = """
+A tool call's provider fields kept and sent back on the next request (Gemini 3 thought signatures): no
+3tears-evals name has moved or been removed since 0.85.0, and no judge wording changed.
+"""
+
+[[release]]
 version = "0.85.0"
 since = "v0.84.0"
 summary = """

@@ -80,11 +80,17 @@ def capture_result_extras(result: ChatResult, response_dict: Mapping[str, Any]) 
     for generation, choice in zip(result.generations, choices, strict=False):
         message = generation.message
         raw_calls = ((choice or {}).get("message") or {}).get("tool_calls") or []
-        by_id = {
-            raw["id"]: extras
-            for raw in raw_calls
-            if isinstance(raw, Mapping) and raw.get("id") and (extras := _extras_of(raw))
-        }
+        by_id: dict[str, dict[str, Any]] = {}
+        for raw in raw_calls:
+            if not isinstance(raw, Mapping) or not (extras := _extras_of(raw)):
+                continue
+            if raw.get("id"):
+                by_id[raw["id"]] = extras
+            else:
+                _logger.warning(
+                    "a tool call carried provider fields %s but no id; they cannot be sent back",
+                    sorted(extras),
+                )
         if by_id and isinstance(message, AIMessage):
             message.additional_kwargs[TOOL_CALL_PROVIDER_EXTRA_KEY] = by_id
 
@@ -142,6 +148,14 @@ class StreamExtraResolver:
         for index, extras in stashed.items():
             self._pending.setdefault(index, {}).update(extras)
         fresh: dict[str, dict[str, Any]] = {}
+        # a chunk can arrive already keyed by id: LangChain builds a structured-output stream's final
+        # chunk from the whole completion (``_create_chat_result``), repeating what the deltas carried.
+        # It goes through the same emit-once check, or summing the stream would double the signature.
+        keyed = message.additional_kwargs.pop(TOOL_CALL_PROVIDER_EXTRA_KEY, None) or {}
+        for call_id, extras in keyed.items():
+            new = self._first_seen(call_id, dict(extras))
+            if new:
+                fresh.setdefault(call_id, {}).update(new)
         for index in list(self._pending):
             call_id = self._ids.get(index)
             if call_id is None:
@@ -206,12 +220,19 @@ def reinsert_payload_extras(payload: dict[str, Any], messages: Sequence[Any]) ->
                 kept.update({call_id: dict(fields) for call_id, fields in extras.items() if isinstance(call_id, str)})
     if not kept:
         return
+    placed: set[str] = set()
     for sent in payload.get("messages") or []:
         if not isinstance(sent, dict) or sent.get("role") != "assistant":
             continue
         for call in sent.get("tool_calls") or []:
             call_id = call.get("id") if isinstance(call, dict) else None
             if isinstance(call_id, str) and (fields := kept.get(call_id)):
+                placed.add(call_id)
                 for key, value in fields.items():
                     if key not in _STANDARD_FIELDS:
                         call[key] = value
+    if unplaced := sorted(set(kept) - placed):
+        _logger.warning(
+            "kept provider fields for tool call(s) %s match no tool call in the request; they are not sent",
+            unplaced,
+        )
