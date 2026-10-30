@@ -22,8 +22,9 @@ kit (``threetears.evals.testing``) proves it case by case:
   statement too.
 - **Narrowed and grouped reads** (:class:`~threetears.evals.schema.store_port.ResultReadings`, which this store
   offers): a narrowed read is one statement with :meth:`SqliteDocumentStore.by_doc_type`'s predicates and order,
-  its rows narrowed in Python as they are fetched; a grouped read is one ``GROUP BY`` statement over
-  ``json_extract``, with its refusals counted by ``json_type`` in the same statement.
+  run on a read-only connection of its own (for a file) and its rows narrowed in Python as they are fetched; a
+  grouped read is one ``GROUP BY`` statement over ``json_extract``, with its refusals counted by ``json_type`` in
+  the same statement. Both use only JSON1 functions, ``FILTER`` on an aggregate (SQLite 3.30) and nothing newer.
 
 **Threads and processes.** The port is synchronous; the engine calls it from a blocking-I/O executor, so
 one connection is shared across threads under a lock. The file is opened in WAL mode with a busy timeout,
@@ -46,7 +47,10 @@ import os
 import sqlite3
 import threading
 import uuid
+import weakref
 from collections.abc import Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
+from pathlib import Path
 from typing import Any
 
 from threetears.evals.schema.store_port import (
@@ -206,7 +210,10 @@ def _measure_columns(kind: str, path: str | None) -> tuple[list[str], list[Any]]
     if kind == "count_null":
         return [f"count(*) FILTER (WHERE {_TYPE} = 'null')"], [json_path]
     if kind == "values":
-        return ["json_group_array(json_array(id, body -> ?) ORDER BY seq)"], [json_path]
+        # Each pair carries its insertion seq and its JSON type, so the order and the type are restored in Python:
+        # SQLite promises no order inside an aggregate before 3.44 (ORDER BY in an aggregate), and json_extract reads
+        # true as 1. Neither that nor the -> operator (3.38) is used, so this runs on any SQLite with JSON1.
+        return [f"json_group_array(json_array(seq, id, {_TYPE}, json_extract(body, ?)))"], [json_path, json_path]
     if kind == "sum_int":
         return (
             [
@@ -226,6 +233,18 @@ def _measure_columns(kind: str, path: str | None) -> tuple[list[str], list[Any]]
     )
 
 
+def _stored_value(json_type: str, value: Any) -> Any:
+    """A value as stored, from its JSON type and what ``json_extract`` read: ``true`` comes back as ``1``, and an
+    object or a list as its JSON text unless the SQLite build kept its JSON subtype."""
+    if json_type == "true":
+        return True
+    if json_type == "false":
+        return False
+    if json_type in ("object", "array") and isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
 def _measure_answer(name: str, kind: str, path: str | None, columns: Sequence[Any]) -> Any:
     """One measure's answer from its columns, raising the refusal its kind states.
 
@@ -233,7 +252,8 @@ def _measure_answer(name: str, kind: str, path: str | None, columns: Sequence[An
         string, or both numbers and strings.
     """
     if kind == "values":
-        return json.loads(columns[0])
+        pairs = sorted(json.loads(columns[0]), key=lambda pair: pair[0])
+        return [[row_id, _stored_value(json_type, value)] for _, row_id, json_type, value in pairs]
     if kind in ("count", "count_null"):
         return columns[0]
     if kind == "sum_int":
@@ -263,6 +283,33 @@ def _group_value(path: str, json_type: str, value: Any) -> Any:
     if json_type == "false":
         return False
     return value
+
+
+def _narrowed_rows(
+    cursor: sqlite3.Cursor,
+    exclude: Sequence[str],
+    exclude_in_items: Mapping[str, Sequence[str]],
+    lock: AbstractContextManager[Any],
+    reader: sqlite3.Connection | None,
+) -> Iterator[dict[str, Any]]:
+    """Yield the cursor's rows parsed and narrowed, a page fetched at a time under ``lock``.
+
+    The cursor is closed at the end, and so is ``reader``, the connection opened for this read alone, when there is
+    one. Fetching a page continues the one statement already running; it is not another query.
+    """
+    try:
+        while True:
+            with lock:
+                page = cursor.fetchmany(_STREAM_PAGE)
+            if not page:
+                return
+            for (body,) in page:
+                yield narrow_items(omit_paths(json.loads(body), exclude), exclude_in_items)
+    finally:
+        with lock:
+            cursor.close()
+        if reader is not None:
+            reader.close()
 
 
 class SqliteDocumentStore:
@@ -456,10 +503,16 @@ class SqliteDocumentStore:
         """Yield the rows :meth:`by_doc_type` would return for the same predicates, each narrowed.
 
         One statement, with :meth:`by_doc_type`'s predicates and order, run when this is called. Its rows are fetched
-        a page at a time under the lock, and each is parsed and narrowed in Python as it is yielded, so the bodies are
-        never all held at once. The statement reads the connection the store's writes share: a write this store
-        makes while the rows are still being yielded may or may not be among them, as SQLite promises for a
-        statement still running on one connection. See :meth:`~threetears.evals.schema.ResultReadings.iter_narrowed`.
+        a page at a time, and each is parsed and narrowed in Python as it is yielded, so the bodies are never all
+        held at once.
+
+        For a file, the statement runs on a read-only connection opened for this read alone and closed when the rows
+        run out, when the iterator is closed, or when it is collected. A paused read holds that connection's
+        snapshot, so it sees the rows as they were at the call, and the store's own connection, which writes, holds
+        none: neither this store's writes nor another process's wait on a read left part way. A ``":memory:"`` store
+        has no second process and no second connection to the same database, so its statement runs on the store's
+        own connection, under the lock; a write the store makes while its rows are still being yielded may or may
+        not be among them. See :meth:`~threetears.evals.schema.ResultReadings.iter_narrowed`.
 
         :param doc_type: The discriminator to select on.
         :ptype doc_type: str
@@ -483,25 +536,27 @@ class SqliteDocumentStore:
         if where is None:
             return iter(())
         clause, params = where
-        with self._lock:
-            cursor = self._db.execute(f"SELECT body FROM documents WHERE {clause} ORDER BY seq", params)  # noqa: S608
-        return self._narrowed_rows(cursor, exclude, exclude_in_items)
-
-    def _narrowed_rows(
-        self, cursor: sqlite3.Cursor, exclude: Sequence[str], exclude_in_items: Mapping[str, Sequence[str]]
-    ) -> Iterator[dict[str, Any]]:
-        """Yield the cursor's rows parsed and narrowed, a page fetched at a time; the cursor is closed at the end."""
-        try:
-            while True:
-                with self._lock:
-                    page = cursor.fetchmany(_STREAM_PAGE)
-                if not page:
-                    return
-                for (body,) in page:
-                    yield narrow_items(omit_paths(json.loads(body), exclude), exclude_in_items)
-        finally:
+        sql = f"SELECT body FROM documents WHERE {clause} ORDER BY seq"  # noqa: S608
+        if self.path == ":memory:":
             with self._lock:
-                cursor.close()
+                cursor = self._db.execute(sql, params)
+            return _narrowed_rows(cursor, exclude, exclude_in_items, self._lock, None)
+        reader = sqlite3.connect(
+            f"{Path(self.path).absolute().as_uri()}?mode=ro",
+            uri=True,
+            check_same_thread=False,
+            isolation_level=None,
+            timeout=30.0,
+        )
+        try:
+            cursor = reader.execute(sql, params)
+        except BaseException:
+            reader.close()
+            raise
+        rows = _narrowed_rows(cursor, exclude, exclude_in_items, nullcontext(), reader)
+        # A read never iterated, or dropped part way, still closes its connection when the iterator is collected.
+        weakref.finalize(rows, reader.close)
+        return rows
 
     def grouped(
         self,
@@ -518,7 +573,8 @@ class SqliteDocumentStore:
         SQLite groups and aggregates: each ``by`` path by its JSON type and its value (``json_extract`` reads
         ``true`` as ``1``, so the type keeps them apart), ``sum_int`` over values whose ``json_type`` is
         ``integer``, ``min``/``max`` with the binary collation (code-point order for text), and ``values`` as a
-        ``json_group_array`` ordered by insertion. The refusals are counted in the same statement and raised here.
+        ``json_group_array`` of ``[seq, id, json_type, value]``, put in insertion order and given back its JSON type
+        here. The refusals are counted in the same statement and raised here.
         See :meth:`~threetears.evals.schema.ResultReadings.grouped`.
 
         :param doc_type: The discriminator to select on.
