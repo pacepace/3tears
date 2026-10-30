@@ -280,7 +280,12 @@ class TestTheCallSites:
         assert (page["runs_in"], page["results_in"]) == (bundle["runs_in"], bundle["results_in"])
         assert (page["runs_in"], page["results_in"]) == (str(runs), str(results))
         assert page["render_ms"] != "", "serializing the page is its render"
-        assert _ms(page, "fold_ms") >= _ms(bundle, "elapsed_ms") - ROUNDING_MS, "the assembly is in the read's fold"
+        # The assembly's store and hydration time is charged to those phases of the read too, so the read's fold
+        # holds the rest of the assembly: its elapsed time less what it charged to store and hydrate.
+        charged_inside = sum(_ms(bundle, name) for name in ("store_ms", "hydrate_ms") if bundle[name])
+        assert _ms(page, "fold_ms") >= _ms(bundle, "elapsed_ms") - charged_inside - 2 * ROUNDING_MS, (
+            "the assembly's folding is in the read's fold"
+        )
         assert (page["store_ms"], page["hydrate_ms"]) == (bundle["store_ms"], bundle["hydrate_ms"]) != ("", ""), (
             "the assembly's readings read reaches the read's line"
         )
