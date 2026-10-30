@@ -584,11 +584,14 @@ class ResultStore(Protocol):
         run_id: str | None = None,
         test_case_id: str | None = None,
         model: str | None = None,
+        elide: Sequence[str] = (),
     ) -> list[EvalResult]:
         """See :meth:`EvalStorage.query_eval_results`."""
         ...
 
-    def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
+    def query_eval_results_by_run(
+        self, run_id: str, scope_id: str, /, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
         """See :meth:`EvalStorage.query_eval_results_by_run`."""
         ...
 
@@ -2650,9 +2653,12 @@ class EvalStorage:
         )
         return self._hydrate_all(EvalResult, items)
 
-    def query_eval_results_by_run(self, run_id: str, scope_id: str) -> list[EvalResult]:
-        """Return all results for a specific eval run."""
-        return self.query_eval_results(scope_id, run_id=run_id)
+    def query_eval_results_by_run(
+        self, run_id: str, scope_id: str, /, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
+        """Return all results for a specific eval run, without the fields ``elide`` names
+        (:meth:`query_eval_results`)."""
+        return self.query_eval_results(scope_id, run_id=run_id, elide=elide)
 
     def query_eval_results_by_runs(
         self, run_ids: Sequence[str], scope_id: str, /, *, elide: Sequence[str] = ()

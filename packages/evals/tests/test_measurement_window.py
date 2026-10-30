@@ -9,6 +9,8 @@ on exactly the runs it exists to describe.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 
 import pytest
 
@@ -149,7 +151,7 @@ class _WindowStorage:
             elide_payload,
         )
 
-    def query_eval_results(self, scope_id: str) -> list[EvalResult]:
+    def query_eval_results(self, scope_id: str, *, elide: Sequence[str] = ()) -> list[EvalResult]:
         """Return the seeded results in the scope.
 
         :param scope_id: Partition key.
@@ -157,7 +159,9 @@ class _WindowStorage:
         :return: The matching results.
         :rtype: list[EvalResult]
         """
-        return [r for r in self._results if r.scope_id == scope_id]
+        return [
+            r.model_copy(update=dict.fromkeys(elide)) if elide else r for r in self._results if r.scope_id == scope_id
+        ]
 
 
 # =============================================================================

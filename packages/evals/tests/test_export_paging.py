@@ -85,13 +85,15 @@ class FakeCountingStore:
         #: The rows each read of results by id returned, in call order.
         self.id_reads: list[int] = []
 
-    def query_eval_results(self, scope_id: str, /) -> list[EvalResult]:
-        rows = self._inner.query_eval_results(scope_id)
+    def query_eval_results(self, scope_id: str, /, *, elide: Sequence[str] = ()) -> list[EvalResult]:
+        rows = self._inner.query_eval_results(scope_id, elide=elide)
         self.scope_reads.append(len(rows))
         return rows
 
-    def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
-        rows = self._inner.query_eval_results_by_run(run_id, scope_id)
+    def query_eval_results_by_run(
+        self, run_id: str, scope_id: str, /, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
+        rows = self._inner.query_eval_results_by_run(run_id, scope_id, elide=elide)
         self.run_reads.append((run_id, len(rows)))
         return rows
 

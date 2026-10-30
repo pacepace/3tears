@@ -730,7 +730,9 @@ typed `DefinitionStore` cannot reach a run, and a test of one hands it only that
 
 **Watch the read tier's size.** The lenses that read a whole scope — `pivot` and `export_results` (and the
 `scope_pivot` / `scope_export` operations over them) — project and aggregate every result in Python on each
-call, which suits a scope of dozens-to-hundreds of cells. Each call logs one line on the
+call, which suits a scope of dozens-to-hundreds of cells. The aggregates (`pivot`, `history`, `frontier`,
+`program_budget`, `orphaned_runs`, `comparison_sets`) read results without `world_events` and `kind_payload`, which
+none of them reads, so a store that projects `exclude` never ships those bytes; an export reads results whole. Each call logs one line on the
 `threetears.evals.analysis.reads` logger, at INFO:
 
 ```

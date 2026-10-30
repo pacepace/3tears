@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the read tier's aggregates read results without their verbatim fields
+
+**Fixed:** `pivot`, `history`, `frontier`, `program_budget`, `orphaned_runs` and `comparison_sets` read every result
+they aggregate whole, held only to the read tier's row budget, and a row is not its bytes: a result's world event log
+and its kind's payload are most of them, and no aggregate reads either. Their read, whole-scope or narrowed to a
+subject's runs, now asks the store to leave both out, and every answer is the one a read shipping them gives. Exports
+still read results whole.
+
+**Changed (a host's own lens store):** the `LensStore` port's `query_eval_results` and `query_eval_results_by_run` take
+a keyword-only `elide`, as `EvalStorage`'s do, and the aggregates pass it, so a host that implements the port itself
+must accept it.
+
 ### evals: a campaign's bundle and a regression watch's judged tiers read results without their verbatim fields
 
 **Fixed:** `assemble_context_bundle` read every result of a campaign's runs whole in its one store read, and a 41-run
