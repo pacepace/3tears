@@ -6,9 +6,10 @@ results they were built from. Checked three ways, each output compared as JSON b
 
 - **the families end to end:** the aggregates and the planning block read over the oracle's campaigns, once as
   stored and once with every result the store hydrates handed out as its reading (``EvalResult.from_dict`` patched,
-  as the access recorder patches it). The bundle family is not read on readings here: its trials section reads each
-  listed trial's prose, which a reading leaves out, so it reads readings once it re-reads its kept trials whole;
-  its measure walk, which reads no prose, is held to its output by the oracle;
+  as the access recorder patches it). The bundle family reads readings itself (``EvalStorage.iter_result_readings``)
+  and re-reads the trials it keeps whole, by id, for their prose; it is read once as it is and once with each reading
+  the storage builds handed out as the result it was built of (``ResultReading.of`` patched), so its readers read
+  whole results;
 - **each rule** of the retyped modules (``kernel/result_condition.py``, ``kernel/scoring.py``, the read-side folds of
   ``kernel/usage_capture.py`` and ``analysis/reporting.py``) over the enriched campaign, whose results carry every
   record list;
@@ -100,6 +101,7 @@ from packages.evals.tests.test_result_reading_fields import (
     Campaign,
     campaign,
     read_aggregates,
+    read_bundle,
     read_planning,
     regressed_steps,
 )
@@ -177,8 +179,8 @@ def enriched() -> tuple[Campaign, tuple[EvalRun, ...], tuple[EvalResult, ...], l
 
 
 class TestEveryFamilyReadsReadingsAsResults:
-    """The aggregates and the planning block, over every campaign the recorder reads them over, answer the same
-    whether the store hands out results or their readings."""
+    """The aggregates, the planning block and the bundle, over every campaign the recorder reads them over, answer the
+    same whether their readers read results or their readings."""
 
     @staticmethod
     def _as_readings(family: Callable[..., list[str]], read: Campaign, *args: Any) -> tuple[list[str], int]:
@@ -195,6 +197,30 @@ class TestEveryFamilyReadsReadingsAsResults:
 
         with mock.patch.object(EvalResult, "from_dict", reading_of):
             return family(read, *args), len(handed)
+
+    @staticmethod
+    def _as_results(family: Callable[..., list[str]], read: Campaign) -> tuple[list[str], int]:
+        """``family`` read with every reading the storage builds handed out as the result it was built of, and how
+        many it handed out."""
+        handed: list[str] = []
+
+        def whole(result: EvalResult, shared: SharedValues | None = None) -> EvalResult:
+            handed.append(result.id)
+            return result
+
+        with mock.patch.object(ResultReading, "of", staticmethod(whole)):
+            return family(read), len(handed)
+
+    # The bundle reads readings as it is, so the read it is compared with is the one whose readers read results.
+    @pytest.mark.parametrize("name", CAMPAIGNS)
+    def test_the_bundle(self, name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(analysis_service, "utc_now_iso", lambda: REPORT_NOW)
+        read = campaign(name)
+
+        outputs, handed = self._as_results(read_bundle, read)
+
+        assert handed > 0, "the bundle read no reading, so it read no result in a reading's place"
+        assert read_bundle(read) == outputs
 
     @pytest.mark.parametrize("name", (*CAMPAIGNS, "regressed"))
     def test_the_aggregates(self, name: str, monkeypatch: pytest.MonkeyPatch) -> None:

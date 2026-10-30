@@ -1,7 +1,7 @@
 """A campaign's bundle past the read tier's budget is refused before any result is read, as the aggregates are.
 
-The bundle holds every result of the runs it reads at once, in one batch read (``test_bundle_store_reads``). Until
-the store computes its aggregates (#996), a campaign whose runs' matrices (cases × k) promise more than
+The bundle holds a reading of every result of the runs it reads at once (``test_bundle_store_reads``). Until the
+store computes its aggregates (#996), a campaign whose runs' matrices (cases × k) promise more than
 ``READ_TIER_ROW_BUDGET`` results is refused before that read, in the aggregates' refusal shape, naming how to narrow
 it; a campaign at the budget assembles. The estimate is read off the runs the batch run read already returned.
 
@@ -14,7 +14,7 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 import pytest
@@ -58,6 +58,11 @@ class _ResultReadCounter(InMemoryDocumentStore):
         if doc_type == "eval_result":
             self.result_reads["get_many"] += 1
         return super().get_many(doc_type, doc_ids, scope_id, **kwargs)
+
+    def iter_narrowed(self, doc_type: str, scope_id: str, **kwargs: Any) -> Iterator[dict[str, Any]]:
+        if doc_type == "eval_result":
+            self.result_reads["iter_narrowed"] += 1
+        return super().iter_narrowed(doc_type, scope_id, **kwargs)
 
 
 def _campaign(*, small_cases: int) -> tuple[_ResultReadCounter, EvalStorage, EvalCampaign]:
@@ -115,7 +120,9 @@ class TestABundlePastTheReadBudgetIsRefused:
         bundle = assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
 
         assert sorted(bundle.run_ids) == ["run-large", "run-small"]
-        assert store.result_reads == Counter({"by_doc_type": 1}), "the one batch read of results, as before"
+        # The store narrows its own rows, so the results are one read (D7, test_bundle_store_reads); the trials the
+        # bundle keeps are then read whole, by id, in one more.
+        assert store.result_reads == Counter({"iter_narrowed": 1, "get_many": 1}), "the one read of results"
 
 
 class TestTheBudgetHoldsAReadThatReturnedMoreThanItsRunsPromised:

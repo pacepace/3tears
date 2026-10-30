@@ -419,7 +419,8 @@ async def test_a_generation_makes_no_store_call_on_the_event_loop(monkeypatch: p
     names = (
         "load_campaign",
         "load_eval_runs",
-        "query_eval_results_by_runs",
+        "iter_result_readings",
+        "load_eval_results",
         "query_insights",
         "save_report_snapshot",
         "load_report_snapshot",
