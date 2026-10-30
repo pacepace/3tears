@@ -293,6 +293,32 @@ def _exclude_ignores_absent_and_non_object_paths(store: DocumentStore) -> None:
     )
 
 
+def _exclude_holds_beside_field_in_and_field_eq(store: DocumentStore) -> None:
+    """The read a campaign's bundle makes: every result of several runs, without its verbatim fields."""
+    store.upsert(_doc("r1_m1", run="r1", model="m1", heavy="x" * 64, events=[{"e": 1}], light=1))
+    store.upsert(_doc("r2_m1", run="r2", model="m1", heavy="x" * 64, light=2))
+    store.upsert(_doc("r3_m1", run="r3", model="m1", heavy="x" * 64, light=3))
+    store.upsert(_doc("r1_m2", run="r1", model="m2", heavy="x" * 64, light=4))
+    exclude = ["heavy", "events"]
+    _expect_equal(
+        sorted(
+            store.by_doc_type(_TYPE, _SCOPE, exclude=exclude, field_in={"run": ["r1", "r2"]}),
+            key=lambda document: str(document["id"]),
+        ),
+        [
+            _doc("r1_m1", run="r1", model="m1", light=1),
+            _doc("r1_m2", run="r1", model="m2", light=4),
+            _doc("r2_m1", run="r2", model="m1", light=2),
+        ],
+        "by_doc_type(exclude=['heavy', 'events'], field_in={'run': ['r1', 'r2']})",
+    )
+    _expect_equal(
+        store.by_doc_type(_TYPE, _SCOPE, exclude=exclude, field_in={"run": ["r1", "r3"]}, model="m2"),
+        [_doc("r1_m2", run="r1", model="m2", light=4)],
+        "by_doc_type(exclude=['heavy', 'events'], field_in={'run': ['r1', 'r3']}, model='m2')",
+    )
+
+
 def _keep_returns_only_the_named_fields_present(store: DocumentStore) -> None:
     store.upsert(_doc("d1", a=1, b={"c": 2}, nulled=None, big="x" * 64))
     got = store.get_many(_TYPE, ["d1"], _SCOPE, keep=["id", "a", "b", "nulled", "absent"])
@@ -811,6 +837,11 @@ STORE_CONFORMANCE_CASES: tuple[StoreConformanceCase, ...] = (
         "projection.exclude_ignores_dead_paths",
         "an exclude path that is absent or runs through a non-object is a no-op",
         _exclude_ignores_absent_and_non_object_paths,
+    ),
+    StoreConformanceCase(
+        "projection.exclude_with_field_in",
+        "exclude holds beside field_in and an equality filter, filtering on what it does not drop",
+        _exclude_holds_beside_field_in_and_field_eq,
     ),
     StoreConformanceCase(
         "projection.keep_named_fields",

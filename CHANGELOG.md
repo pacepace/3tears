@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a campaign's bundle and a regression watch's judged tiers read results without their verbatim fields
+
+**Fixed:** `assemble_context_bundle` read every result of a campaign's runs whole in its one store read, and a 41-run
+campaign's report was part of what killed a 2 GB pod (2026-10-30). A result's world event log (`world_events`) and its
+kind's payload (`kind_payload`) are most of its bytes, and no reading of the bundle reads either, so the read now asks
+the store to leave both out: it stays one store call, and the bundle is the one a whole read gives. A regression
+watch's judged tiers read their runs the same way.
+
+**Added:** `EvalStorage.query_eval_results_by_runs` and the `CampaignReadStore` port take `elide`, the fields the store
+leaves out of each result (each reads as none). The verbatim fields are `run_pages.VERBATIM_RESULT_FIELDS`, public now.
+A store conformance case (`projection.exclude_with_field_in`) checks `exclude` beside `field_in` and an equality
+filter, the shape of that read.
+
 ### evals: a launch estimate's planning block reads its template's history a page at a time
 
 **Fixed:** `detectable_effects`, the planning block every launch estimate carries, held every result of every earlier

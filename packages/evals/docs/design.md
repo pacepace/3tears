@@ -211,8 +211,10 @@ so its figures are the whole read's, and one that keeps every result keeps it wi
 (`world_events`, `kind_payload`). `tests/test_run_reads_paged.py` and `tests/test_whole_run_reads_paged.py` record
 every read each makes; nothing yet measures the run loop's own peak. A launch's planning block walks each earlier
 run of its template the same way, keeping of each result only its per-case values (`tests/test_power_preflight.py`
-measures its peak). A campaign's bundle and a regression watch's judged tiers still read many runs' results whole, each refused past `READ_TIER_ROW_BUDGET` by
-its runs' matrices before any is read (#996 is the store computing them).
+measures its peak). A campaign's bundle and a regression watch's judged tiers still read many runs' results in one read, without
+their verbatim fields, which neither reads (`tests/test_bundle_read_leaves_out_verbatim_fields.py` measures the
+bundle's peak); each is refused past `READ_TIER_ROW_BUDGET` by its runs' matrices before any is read (#996 is the store
+computing them).
 
 ## Rationale
 

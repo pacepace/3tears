@@ -788,7 +788,10 @@ operation (`data - text[]`). A store that applies `exclude` after fetching shoul
 the pass holds every row's text at once. Every other reader of a whole run reads it the same way, in the store's
 order: a comparison or bisection of two runs, a run written lost, the witnessed judge ceiling, `results_list`,
 `list_results`, `delete_run` (its ids only), a calibration and the judge passes. A campaign's bundle still reads its
-member runs' results in one batch call, and a regression watch's judged tiers read many runs whole; a launch
+member runs' results in one batch call, and a regression watch's judged tiers read many runs in one, each without
+`world_events` and `kind_payload` (`query_eval_results_by_runs(..., elide=VERBATIM_RESULT_FIELDS)`, a by-type read with
+`exclude` and `field_in` together: the conformance case `projection.exclude_with_field_in` pins that a store projects
+it); a launch
 estimate's planning block (`detectable_effects`) walks each earlier run a page at a time, keeping each result's
 per-case values; past the budget above each reads no result, and the bundle and the tiers are
 refused while a launch estimate is still priced, its planning block saying why in `cannot_estimate`. A reader that keeps

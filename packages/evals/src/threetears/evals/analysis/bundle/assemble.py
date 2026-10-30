@@ -80,6 +80,7 @@ from threetears.evals.kernel.analysis_measures import MeasureCollection, Measure
 from threetears.evals.kernel.campaign import EvalInsight, derive_window
 from threetears.evals.kernel.build_stamp import package_version
 from threetears.evals.kernel.judge_cases import JUDGE_KIND
+from threetears.evals.kernel.run_pages import VERBATIM_RESULT_FIELDS
 from threetears.evals.kernel.declaration import aware_instant, resolve_control_arm
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
@@ -221,8 +222,11 @@ class CampaignReadStore(Protocol):
         """
         ...
 
-    def query_eval_results_by_runs(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
-        """Every result belonging to any of the named runs within a scope, in one read."""
+    def query_eval_results_by_runs(
+        self, run_ids: Sequence[str], scope_id: str, /, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
+        """Every result belonging to any of the named runs within a scope, in one read, each without the fields
+        ``elide`` names: the store never ships them, and each reads as none."""
         ...
 
     def load_case_strata(self, test_case_ids: Sequence[str], scope_id: str, /) -> list[EvalCaseStratum]:
@@ -443,7 +447,9 @@ def assemble_context_bundle(
     # estimate is each run's matrix, off the batch read above; no further read is made to refuse.
     read_runs = [loaded[run_id] for run_id in every_result]
     hold_to_read_budget(_BUNDLE_LENS, scope_id, read_runs, how=_NARROW_THE_BUNDLE)
-    read = storage.query_eval_results_by_runs(list(every_result), scope_id)
+    # Without the verbatim fields (a world's event log, a kind's payload): no reading of the bundle reads them, and they
+    # are most of a result's bytes, so the one read of a campaign's results never ships them.
+    read = storage.query_eval_results_by_runs(list(every_result), scope_id, elide=VERBATIM_RESULT_FIELDS)
     # The safety net: results their runs' matrices did not promise (a run that wrote past its matrix and recorded no
     # completeness) are not assembled past the budget either.
     hold_to_read_budget(_BUNDLE_LENS, scope_id, read_runs, how=_NARROW_THE_BUNDLE, returned=len(read))
