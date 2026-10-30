@@ -760,7 +760,7 @@ and the `scope_pivot`,
 `scope_frontier` and `scope_history` operations and actions over them) cannot page: part of a pivot, a frontier or a
 history reads as the whole of it. They make the same estimate and hold it to their read budget, before reading
 anything. Each budget is the bytes per result that reader holds at its peak against the memory one call may take,
-measured on the paths a host runs (`threetears.evals.analysis`): `READING_BUDGET` (66,003 results, 256 MiB) for
+measured on the paths a host runs (constants of `threetears.evals.analysis.reads`): `READING_BUDGET` (66,003 results, 256 MiB) for
 `comparison_sets`,
 `frontier`, `history` and the regression watch; `PIVOT_READ_BUDGET` (27,108, 1 GiB) for `pivot`; `BUNDLE_READ_BUDGET`
 (28,116, 1 GiB) for a campaign's bundle; `PLANNING_READ_BUDGET` (37,010, 256 MiB) for a launch estimate's planning

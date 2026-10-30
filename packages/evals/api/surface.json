@@ -6516,11 +6516,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.PIVOT_READ_BUDGET": {
-      "kind": "constant (int)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.PivotCell": {
       "kind": "model",
       "signature": "",
@@ -7003,11 +6998,6 @@
     },
     "threetears.evals.analysis.SoundnessRefusal": {
       "kind": "exception",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.SPEND_READ_BUDGET": {
-      "kind": "constant (int)",
       "signature": "",
       "tier": "provisional"
     },

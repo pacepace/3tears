@@ -43,7 +43,8 @@ regression watch's ERROR line reads `past its read budget of <figure>`. No remed
 
 **Changed (provisional):** `reads.hold_to_read_budget` and `reads.narrowed_read_disclosure` take a keyword-only
 `budget`. The planning read reads its runs' readings in the store's own order across them, so on the engine's path
-every run's keys are one call. The five budgets are exported from `threetears.evals.analysis` (provisional).
+every run's keys are one call. All five are constants of `threetears.evals.analysis.reads`; `READING_BUDGET`, `PLANNING_READ_BUDGET` and
+`BUNDLE_READ_BUDGET` are exported from `threetears.evals.analysis` (provisional).
 
 ### evals: the campaign bundle reads its results as readings, and its kept trials whole by id
 
