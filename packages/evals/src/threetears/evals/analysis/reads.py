@@ -187,9 +187,10 @@ def _observe_read(
     started: float,
     runs_in: int,
     results_in: int,
-    records_out: int,
+    records_out: int | None,
     *,
     cells_out: int | str | None = None,
+    refused: bool = False,
 ) -> None:
     """Log one read-tier call's size and wall time, at WARNING once it is past :data:`READ_TIER_ROW_BUDGET`.
 
@@ -199,7 +200,13 @@ def _observe_read(
     and ``cells_out`` the pivot's cells (absent for an export, ``refused`` for a pivot that was refused after
     its projection). A refused call is still logged: it paid for the read all the same.
 
-    :param lens: The operation, as the line names it (``pivot``, ``export_results``).
+    Every aggregate logs one: ``pivot``, ``export_results``, ``comparison_sets``, ``frontier``, ``history``,
+    ``program_budget`` and ``orphaned_runs``. Only the pivot and the export project score records themselves, so
+    the others leave ``records_out`` off their line, and only a projection past the budget makes the line a
+    WARNING (an aggregate's read is already held to the budget before it is made, :func:`_aggregate_results`). A
+    frontier or a history that its lens refused after the read carries ``refused=true``.
+
+    :param lens: The operation, as the line names it (``pivot``, ``export_results``, ``frontier``, ...).
     :ptype lens: str
     :param scope_id: The scope read.
     :ptype scope_id: str
@@ -209,24 +216,28 @@ def _observe_read(
     :ptype runs_in: int
     :param results_in: The results read.
     :ptype results_in: int
-    :param records_out: The score records projected.
-    :ptype records_out: int
+    :param records_out: The score records projected, or ``None`` for a lens that projects none itself.
+    :ptype records_out: int | None
     :param cells_out: The pivot's cell count, ``"refused"``, or ``None`` for a lens that has no cells.
     :ptype cells_out: int | str | None
+    :param refused: The lens refused the call after its read.
+    :ptype refused: bool
     """
     elapsed_ms = (time.perf_counter() - started) * 1000.0
-    over = records_out > READ_TIER_ROW_BUDGET
+    over = records_out is not None and records_out > READ_TIER_ROW_BUDGET
+    records = "" if records_out is None else f" records_out={records_out}"
     cells = "" if cells_out is None else f" cells_out={cells_out}"
     log.log(
         logging.WARNING if over else logging.INFO,
-        "eval.read_tier lens=%s scope_id=%s runs_in=%d results_in=%d records_out=%d%s elapsed_ms=%.1f%s",
+        "eval.read_tier lens=%s scope_id=%s runs_in=%d results_in=%d%s%s elapsed_ms=%.1f%s%s",
         lens,
         scope_id,
         runs_in,
         results_in,
-        records_out,
+        records,
         cells,
         elapsed_ms,
+        " refused=true" if refused else "",
         f" over READ_TIER_ROW_BUDGET={READ_TIER_ROW_BUDGET}" if over else "",
     )
 
@@ -654,6 +665,7 @@ def comparison_sets(
         past :data:`READ_TIER_ROW_BUDGET` (a scope past it is read for those runs alone).
     :raises NotFoundError: ``campaign_id`` names no campaign in the scope.
     """
+    started = time.perf_counter()
     if campaign_id and run_ids:
         # Refused rather than intersected, or one silently preferred. Two scopes is an
         # ambiguous question, and answering a narrower question than the one asked is
@@ -670,19 +682,22 @@ def comparison_sets(
     runs = list_runs(scope_id, status=_status_filter(status))
     # The grouping reads results only for the runs it groups, so a scope past the budget is read for those alone.
     grouped = runs if scope_run_ids is None else [run for run in runs if run.id in set(scope_run_ids)]
+    corpus = list_runs(scope_id, include_archived=True)
     # Exact when narrowed: the grouping reads no result of a run it does not group, so nothing needs disclosing.
     results, _ = _aggregate_results(
         storage,
         scope_id,
         "comparison_sets",
-        list_runs(scope_id, include_archived=True),
+        corpus,
         narrowed=grouped,
         remedy="narrow it to a campaign (campaign_id), to named runs (run_ids) or to one run status (status): a "
         "narrowed grouping reads only its runs' results",
     )
-    return compute_comparison_sets(
+    grouping = compute_comparison_sets(
         runs, results=results, full_windows=full_windows, scope_run_ids=scope_run_ids, profile=profile
     ).model_dump(mode="json")
+    _observe_read("comparison_sets", scope_id, started, len(corpus), len(results), None)
+    return grouping
 
 
 def pivot(
@@ -899,6 +914,7 @@ def frontier(
         can carry — each a question the caller can restate; or a scope past
         :data:`READ_TIER_ROW_BUDGET` not filtered to one subject whose runs fit.
     """
+    started = time.perf_counter()
     try:
         parsed_bar = normalize_bar(bar)
     except FrontierError as e:
@@ -940,12 +956,15 @@ def frontier(
             control_variant_key=(control_variant_key or "").strip() or None,
         )
     except FrontierError as e:
+        _observe_read("frontier", scope_id, started, len(all_runs), len(results), None, refused=True)
         raise ValidationFailedError(e.fault, remedy=e.remedy) from e
     if narrowed and subject is not None:
         # Kept, and said: a judge's agreement here pooled over this subject's results alone, where a whole-scope
         # read pools every subject's, so its tier can differ from the whole read's for the same subject.
         result.narrowed_read_disclosure = narrowed_read_disclosure(subject, tiers=bool(tiers))
-    return result.model_dump(mode="json")
+    dumped = result.model_dump(mode="json")
+    _observe_read("frontier", scope_id, started, len(all_runs), len(results), None)
+    return dumped
 
 
 def history(
@@ -1002,6 +1021,7 @@ def history(
         each a question the caller can restate; or a scope past
         :data:`READ_TIER_ROW_BUDGET` not filtered to one subject whose runs fit.
     """
+    started = time.perf_counter()
     metric = normalize_blank(metric, METRIC_COMPOSITE)
     subject = (subject_id or "").strip() or None
     status = _status_filter(status)
@@ -1032,7 +1052,9 @@ def history(
             profile=profile,
         )
     except HistoryError as e:
+        _observe_read("history", scope_id, started, len(all_runs), len(results), None, refused=True)
         raise ValidationFailedError(e.fault, remedy=e.remedy) from e
+    _observe_read("history", scope_id, started, len(all_runs), len(results), None)
     if narrowed and subject is not None:
         return result.model_copy(update={"narrowed_read_disclosure": narrowed_read_disclosure(subject)})
     return result
@@ -1067,6 +1089,7 @@ def program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -
     # whole job is to count the spend a quality view drops. Excluding them would
     # also push their cost into `unattributed_cost_usd`, which is documented as
     # nonzero only on an integrity gap.
+    started = time.perf_counter()
     runs = list_runs(scope_id, include_archived=True)
     results, _ = _aggregate_results(
         storage,
@@ -1078,7 +1101,9 @@ def program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -
         "exists: read the spend a page at a time from scope_export's cost_usd rows with run_status 'all', and an "
         "archived run's by naming it in export_run_ids",
     )
-    return compute_program_budget(runs, results).model_dump(mode="json")
+    budget = compute_program_budget(runs, results).model_dump(mode="json")
+    _observe_read("program_budget", scope_id, started, len(runs), len(results), None)
+    return budget
 
 
 def orphaned_runs(storage: LensStore, scope_id: str, *, list_runs: RunLister) -> dict[str, Any]:
@@ -1103,6 +1128,7 @@ def orphaned_runs(storage: LensStore, scope_id: str, *, list_runs: RunLister) ->
     :rtype: dict[str, Any]
     :raises ValidationFailedError: The scope is past :data:`READ_TIER_ROW_BUDGET`, which nothing here narrows.
     """
+    started = time.perf_counter()
     runs = list_runs(scope_id, include_archived=True)
     results, _ = _aggregate_results(
         storage,
@@ -1116,7 +1142,9 @@ def orphaned_runs(storage: LensStore, scope_id: str, *, list_runs: RunLister) ->
     # Every campaign in the scope is every campaign that can hold one of its runs:
     # membership outside a campaign's own scope is refused at attachment.
     campaigns = storage.list_campaigns(scope_id)
-    return compute_orphaned_runs(runs, results, [campaign.run_ids for campaign in campaigns]).model_dump(mode="json")
+    orphans = compute_orphaned_runs(runs, results, [campaign.run_ids for campaign in campaigns]).model_dump(mode="json")
+    _observe_read("orphaned_runs", scope_id, started, len(runs), len(results), None)
+    return orphans
 
 
 def _results_estimate(run: EvalRun) -> int:

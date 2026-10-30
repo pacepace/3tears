@@ -1,4 +1,4 @@
-"""The read tier's observer: ``pivot`` and ``export_results`` each log their size and wall time (#652).
+"""The read tier's observer: every aggregate and ``export_results`` log their size and wall time (#652).
 
 The read tier projects and aggregates a whole scope in Python on every call, calibrated to a corpus of
 dozens-to-hundreds of cells. These pin that a host can see that premise being crossed: each call logs one
@@ -12,6 +12,9 @@ Mutations that turn this file red (each run against a saved copy and restored fr
   dropping the ``over READ_TIER_ROW_BUDGET`` suffix.
 - ``reads.pivot`` / ``reads.export_results``: not calling the observer; counting the status-narrowed runs
   as ``runs_in``; counting results as ``records_out``.
+- ``reads.comparison_sets`` / ``frontier`` / ``history`` / ``program_budget`` / ``orphaned_runs``: not calling the
+  observer; counting the status-narrowed runs as ``runs_in``; writing a ``records_out`` they never projected;
+  not logging a frontier or history its lens refused after the read.
 """
 
 from __future__ import annotations
@@ -21,7 +24,17 @@ import re
 
 import pytest
 
-from threetears.evals.analysis import READ_TIER_ROW_BUDGET, export_results, pivot, reads
+from threetears.evals.analysis import (
+    READ_TIER_ROW_BUDGET,
+    comparison_sets,
+    export_results,
+    frontier,
+    history,
+    orphaned_runs,
+    pivot,
+    program_budget,
+    reads,
+)
 from threetears.evals.analysis.reporting import project_score_records
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.storage import EvalStorage
@@ -126,6 +139,55 @@ class TestEachCallReportsWhatItReadAndHowLongItTook:
         _, lens, _, fields = _the_line(caplog)
         assert lens == "pivot"
         assert fields["cells_out"] == "refused"
+        assert fields["results_in"] == "9"
+
+
+#: The aggregates that project no score record themselves, each as a call over the toy scope.
+SILENT_BEFORE = {
+    "comparison_sets": lambda storage, scope_id: comparison_sets(
+        storage, scope_id, list_runs=_lister(storage), profile=PROFILE
+    ),
+    "frontier": lambda storage, scope_id: frontier(storage, scope_id, list_runs=_lister(storage), profile=PROFILE),
+    "history": lambda storage, scope_id: history(storage, scope_id, list_runs=_lister(storage), profile=PROFILE),
+    "program_budget": lambda storage, scope_id: program_budget(storage, scope_id, list_runs=_lister(storage)),
+    "orphaned_runs": lambda storage, scope_id: orphaned_runs(storage, scope_id, list_runs=_lister(storage)),
+}
+
+
+class TestEveryAggregateReportsItsRead:
+    @pytest.mark.parametrize("lens", sorted(SILENT_BEFORE))
+    def test_it_logs_one_line_with_what_it_read_at_info(self, lens: str, caplog: pytest.LogCaptureFixture) -> None:
+        storage, scope_id = _toy_scope()
+        with caplog.at_level(logging.INFO, logger=LOGGER):
+            SILENT_BEFORE[lens](storage, scope_id)
+
+        record, logged_lens, scope, fields = _the_line(caplog)
+        assert record.levelno == logging.INFO
+        assert (logged_lens, scope) == (lens, scope_id)
+        assert fields["runs_in"] == "3", "every run the scope lists, the failed one included: it was read"
+        assert fields["results_in"] == "9"
+        assert "records_out" not in fields, "it projects no score record itself, so it reports none"
+        assert "cells_out" not in fields and "refused" not in fields
+        assert float(fields["elapsed_ms"]) >= 0.0
+
+    def test_a_history_its_lens_refuses_still_reports_the_read(self, caplog: pytest.LogCaptureFixture) -> None:
+        storage, scope_id = _toy_scope()
+        with caplog.at_level(logging.INFO, logger=LOGGER), pytest.raises(ValidationFailedError):
+            history(storage, scope_id, list_runs=_lister(storage), metric="no_such_metric", profile=PROFILE)
+
+        _, lens, _, fields = _the_line(caplog)
+        assert lens == "history"
+        assert fields["refused"] == "true"
+        assert fields["results_in"] == "9"
+
+    def test_a_frontier_its_lens_refuses_still_reports_the_read(self, caplog: pytest.LogCaptureFixture) -> None:
+        storage, scope_id = _toy_scope()
+        with caplog.at_level(logging.INFO, logger=LOGGER), pytest.raises(ValidationFailedError):
+            frontier(storage, scope_id, list_runs=_lister(storage), bar=2.0, profile=PROFILE)
+
+        _, lens, _, fields = _the_line(caplog)
+        assert lens == "frontier"
+        assert fields["refused"] == "true"
         assert fields["results_in"] == "9"
 
 

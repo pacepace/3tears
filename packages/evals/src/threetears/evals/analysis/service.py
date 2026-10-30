@@ -98,6 +98,7 @@ from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
 from threetears.evals.kernel.storage import JobRecordStore
 from threetears.evals.schema.models import EvalTestCase, utc_now_iso
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
+from threetears.evals.kernel.phase_log import phase_logged, took_in
 from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.provider import describe_failure, log_provider_failure, traceback_is_safe
@@ -1603,18 +1604,27 @@ def _assembled_campaign_bundle(
     :ptype profile: HostProfile
     :param insights_as_of: The insight ledger's cutoff, or None for now.
     :ptype insights_as_of: str | None
+    Logs one ``eval.read_tier lens=assemble_context_bundle`` line per assembly
+    (:func:`~threetears.evals.kernel.phase_log.phase_logged`). The store reads happen inside the assembly, so
+    ``fold_ms`` covers the whole of it, store reads and model rebuilding included, until the store reads charge
+    ``store_ms`` and ``hydrate_ms`` themselves; ``render_ms`` is empty, since nothing renders here. ``runs_in`` is
+    the distinct runs the aspects' bundles summarise and ``results_in`` the results those runs produced.
+
     :return: The campaign bundle.
     :rtype: CampaignBundle
     """
-    bundles = [
-        assemble_context_bundle(
-            campaign, aspect=aspect.label, storage=storage, profile=profile, insights_as_of=insights_as_of
-        )
-        for aspect in campaign.aspects
-    ]
-    arms = campaign_arms(storage, campaign, profile=profile)
-    readings = campaign_readings(campaign, {bundle.aspect: bundle for bundle in bundles}, arms=arms)
-    return build_campaign_bundle(campaign, bundles, arms=arms, readings=readings)
+    with phase_logged("assemble_context_bundle", scope_id=campaign.scope_id, campaign_id=campaign.id):
+        bundles = [
+            assemble_context_bundle(
+                campaign, aspect=aspect.label, storage=storage, profile=profile, insights_as_of=insights_as_of
+            )
+            for aspect in campaign.aspects
+        ]
+        arms = campaign_arms(storage, campaign, profile=profile)
+        readings = campaign_readings(campaign, {bundle.aspect: bundle for bundle in bundles}, arms=arms)
+        summarised = {summary.run_id: summary.n_results for bundle in bundles for summary in bundle.run_summaries}
+        took_in(runs=len(summarised), results=sum(summarised.values()))
+        return build_campaign_bundle(campaign, bundles, arms=arms, readings=readings)
 
 
 def assemble_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignBundle:
