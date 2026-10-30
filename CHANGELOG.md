@@ -208,6 +208,14 @@ JSON1 and an aggregate `FILTER` (SQLite 3.30).
 
 **A host need not implement it.** A store without it is read through the port's own methods, with the same answers.
 
+### evals: a judge-kind launch overlaying a stored judge config no longer fails on the event loop
+
+**Fixed:** `launchable_judge_kind`'s launch built the judge kind on the event loop, and building it reads each
+`overlays.config_ids` entry from the store, which refuses a call on the loop's thread (`StoreCalledOnEventLoop`). So a
+judge campaign naming a production judge config failed as its launch job started, while its price check (which built
+the kind off the loop) passed. The launch now builds the kind off the loop too. A launch with no config overlay read
+nothing and was never affected.
+
 ### evals: the read tier's aggregates read results without their verbatim fields
 
 **Fixed:** `pivot`, `history`, `frontier`, `program_budget`, `orphaned_runs` and `comparison_sets` read every result
