@@ -2312,7 +2312,9 @@ def report_read(
     :rtype: ReportDocument
     :raises NotFoundError: No campaign with that id in the scope; or no report document with ``report_doc_id`` in the
         scope, or one written for another campaign.
-    :raises ValidationFailedError: ``include_sessions`` with a form other than ``json``.
+    :raises ValidationFailedError: ``include_sessions`` with a form other than ``json``; or a memo's page refuses what
+        it is laid out over (an aspect with no page, readings of another campaign), which no regeneration line stands
+        in for.
     """
     if include_sessions and format != "json":
         raise ValidationFailedError(
@@ -2320,10 +2322,15 @@ def report_read(
             "page is read by a person, and never holds a transcript",
             remedy="ask for format='json' with include_sessions, or leave include_sessions off for the page",
         )
-    if report_doc_id is None:
-        report = campaign_report(host, campaign_id, scope_id, trials=trials)
-    else:
-        report = report_doc_report(host, campaign_id, scope_id, report_doc_id, trials=trials)
+    try:
+        if report_doc_id is None:
+            report = campaign_report(host, campaign_id, scope_id, trials=trials)
+        else:
+            report = report_doc_report(host, campaign_id, scope_id, report_doc_id, trials=trials)
+    except RefusedInput as refused:
+        # Not a page this version no longer reads (that reads code-only): a memo's page refusing what it is laid out
+        # over, which is the caller's to hear as the refusal it is.
+        raise ValidationFailedError.refusing(refused) from refused
     analysis_id = report.analysis_id or report.unread_analysis_id
     analysis = get_analysis(host.storage, analysis_id, scope_id) if analysis_id is not None else None
     body = serialize_report(report, format, static=static)

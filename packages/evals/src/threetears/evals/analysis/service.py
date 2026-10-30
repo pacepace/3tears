@@ -2318,7 +2318,8 @@ def record_campaign_call(
     :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope, or no analysis ``analysis_id`` in it.
     :raises ValidationFailedError: The campaign is a measurement; the arm is none of the campaign's; the analysis is
-        another campaign's, archived, or not the campaign's report; a broken floor or missed bar of the arm is not overridden, or an override names one the
+        another campaign's, archived, not the campaign's report, or frozen over a bundle of a shape this build no
+        longer reads (generate it again); a broken floor or missed bar of the arm is not overridden, or an override names one the
         arm did not break or miss; or a floor or bar is named twice.
     :raises ConflictError: The campaign changed while its readings were read.
     """
@@ -2326,7 +2327,11 @@ def record_campaign_call(
     if analysis_id is None:
         bundle = _assembled_campaign_bundle(campaign, storage=host.storage, profile=host.profile)
     else:
-        bundle = analysis_campaign_bundle(_reported_analysis(host.storage, campaign_id, scope_id, analysis_id))
+        try:
+            bundle = analysis_campaign_bundle(_reported_analysis(host.storage, campaign_id, scope_id, analysis_id))
+        except RefusedInput as unread:
+            # Frozen over a bundle of another shape: no call can be read against it until it is generated again.
+            raise ValidationFailedError.refusing(unread) from unread
     readings = bundle.readings
     if readings.kind == "measurement":
         raise ValidationFailedError(
@@ -2658,13 +2663,17 @@ def _plan_case(storage: AnalysisStore, analysis: EvalAnalysis) -> _PlanCase:
     prose, so the judged text would not be the one the planner wrote or a reader read.
 
     :raises NotFoundError: The analysis's plan does not resolve.
-    :raises ValidationFailedError: A figure key of the plan does not resolve against the input built from its frozen
-        bundle, or that input's view is over the planner's budget: the plan cannot be judged as written.
+    :raises ValidationFailedError: The analysis was frozen over a bundle of a shape this build no longer reads, or
+        written as a plan it no longer reads; a figure key of the plan does not resolve against the input built from
+        its frozen bundle, or that input's view is over the planner's budget: the plan cannot be judged as written.
     """
-    stored = get_report_plan(storage, analysis)
+    try:
+        stored = get_report_plan(storage, analysis)
+        bundle = analysis_campaign_bundle(analysis)
+    except RefusedInput as unread:
+        raise ValidationFailedError.refusing(unread) from unread
     if stored is None:
         raise ValueError(f"analysis {analysis.id} was read as planned and names no report plan")
-    bundle = analysis_campaign_bundle(analysis)
     built = build_report_input(bundle)
     remedy = "generate the analysis again (analysis_generate), and freeze the new one"
     try:
