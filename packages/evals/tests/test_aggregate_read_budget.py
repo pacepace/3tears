@@ -968,5 +968,6 @@ class TestAnAggregateReadsResultsWithoutTheirVerbatimFields:
         table = LENSES["pivot"](storage, storage, subject_id=NARROW)
 
         assert table.narrowed_read_disclosure is not None, "past the budget, it read the subject's runs alone"
-        assert len(store.excluded) == len(narrow), store.excluded
+        # One read of the subject's runs: a store offering ResultReadings reads them in one narrowed call (D7).
+        assert len(store.excluded) == 1, store.excluded
         assert all(frozenset(VERBATIM_RESULT_FIELDS) <= read for read in store.excluded), store.excluded
