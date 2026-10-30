@@ -36,16 +36,19 @@ from threetears.evals.analysis.stats import (
     paired_t_power,
     variance_components,
 )
-from threetears.evals.analysis import reads
+from threetears.evals.analysis import assemble_context_bundle, reads
 from threetears.evals.analysis.bundle import comparisons
 from threetears.evals.analysis.bundle.comparisons import planning_readings
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.schema.models import EvalResult, RubricScore
+from threetears.evals.kernel.result_condition import candidate_failure_cause, harness_faulted
+from threetears.evals.schema.models import EvalResult, EvalRun, RubricScore
 from threetears.evals.ops import DetectableEffects, LaunchArguments, launch_estimate
 from threetears.evals.ops.lenses import detectable_effects, estimate_text
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.factories import make_eval_result, make_eval_run
+from packages.evals.tests.factories import make_campaign, make_eval_result, make_eval_run
+from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
+from packages.evals.tests.hot_path_support import hot_path_corpus
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT, ops_fixture
 from packages.evals.tests.run_pages_support import BatchRecordingStore
@@ -592,3 +595,50 @@ class TestTheCrossRunRulesHoldAcrossPages:
             "run-b": {"c1": [1.0]},
         }
         assert "conversation.tone" not in readings, "scored once as a boundary, on the first page read: a guardrail"
+
+
+class TestARepeatsValueIsItsResultsSummaryMean:
+    """A repeat's value in the planning read is its one result's mean of each measure, exactly as a summary states it:
+    the read takes each mean without building the summary, so its arithmetic is held here to a summary built over the
+    same result, a run of that one result in an assembled bundle (``run_summaries``). On the production-shaped corpus,
+    whose results carry per-role usage rows (several observations of one measure in one result) beside scalars."""
+
+    def test_on_the_production_shaped_corpus(self) -> None:
+        corpus = hot_path_corpus(cases_per_run=2)
+        storage, scope = corpus.host.storage, corpus.scope_id
+        runs: list[EvalRun] = []
+        results: dict[str, list[EvalResult]] = {}
+        for run in storage.query_eval_runs(scope):
+            for result in storage.query_eval_results_by_run(run.id, scope):
+                # A failure is read as a miss across runs, and a faulted result is out of a scored summary: neither
+                # is the arithmetic this pins.
+                if harness_faulted(result) or candidate_failure_cause(result) is not None:
+                    continue
+                one = run.model_copy(
+                    update={"id": f"{run.id}-{result.id}", "test_case_ids": [result.test_case_id], "k_runs": 1}
+                )
+                runs.append(one)
+                results[one.id] = [result.model_copy(update={"eval_run_id": one.id})]
+        campaign = make_campaign(
+            scope_id=scope,
+            subject_id=corpus.campaign.subject_id,
+            template_id=corpus.template_ids[0],
+            run_ids=[run.id for run in runs],
+        )
+        bundle = assemble_context_bundle(campaign, storage=ToyhostStorage(runs, results), profile=corpus.host.profile)
+        stated = {
+            summary.run_id: {measure.name: measure.mean for measure in summary.measures.measures}
+            for summary in bundle.run_summaries
+        }
+
+        readings = planning_readings(runs, results, profile=corpus.host.profile)
+
+        compared = 0
+        for reading in readings:
+            if reading.reading != "measure":
+                continue
+            for run_id, by_case in reading.repeats.items():
+                ((value,),) = by_case.values()
+                assert value == stated[run_id][reading.name], (reading.name, run_id)
+                compared += 1
+        assert compared > len(runs), "more than one measure compared per result"

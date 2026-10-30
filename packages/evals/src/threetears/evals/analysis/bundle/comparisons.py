@@ -89,7 +89,9 @@ from threetears.evals.analysis.bundle.measures import (
     _as_miss,
     _classifies,
     _grades_otherwise,
-    _measure_collection,
+    _measure_walk_memo,
+    _pool_measures,
+    _pooled_means,
     _miss_counts,
 )
 from threetears.evals.analysis.bundle.mechanisms import (
@@ -130,8 +132,8 @@ def _per_case_values(
 
     A case is the independent draw (rule: count cases, not attempts), so repeats of one case are
     averaged before any test sees them. A measure's per-case value is read off the same walk the
-    cell's own collection is (:func:`_measure_collection`, each measure over its own population), so
-    the value tested and the value the cell reports are one computation; a judged dimension's, off the
+    cell's own collection is (:func:`_pool_measures`, each measure over its own population, its mean the summary's
+    own, :func:`_pooled_means`), so the value tested and the value the cell reports are one computation; a judged dimension's, off the
     non-faulted results' scores, as :func:`_bar_reading` reads one.
 
     :param members: One cell's results, faulted ones included.
@@ -151,9 +153,10 @@ def _per_case_values(
         # The candidate's own spend among them (``production_replicating_cost``, which the walk yields over the
         # turns the candidate took and only where a result measured it): a contrast on cost tests it, never
         # ``cost_usd``, which sums the judge's spend too.
-        for summary in _measure_collection(by_case[case_id], profile=profile, undeclared="scored").measures:
-            if summary.mean is not None:
-                values[("measure", summary.name)][case_id] = summary.mean
+        # Each summary's mean, in the collection's name order, with no summary built (:func:`_pooled_means`).
+        pooled = _pool_measures(by_case[case_id], profile=profile, undeclared="scored")
+        for name, mean in _pooled_means(pooled).items():
+            values[("measure", name)][case_id] = mean
     scores: dict[tuple[str, str], list[float]] = defaultdict(list)
     for result in _non_faulted(members):
         for dimension, record in _judged_values(judged_rows.get(result.id, [])):
@@ -249,15 +252,20 @@ def planning_readings(
                 judged_rows.setdefault(record.result_id, []).append(record)
                 if record.metric == METRIC_SCORE and record.rubric_dim and record.rubric_scale is not None:
                     scales[record.rubric_dim] = record.rubric_scale
-            for result in read:
-                miss = misses.get(result.id)
-                run_repeats.kept.append(
-                    _KeptResult(
-                        order=(result.test_case_id, result.k_iteration, result.id),
-                        values=_per_case_values([result], judged_rows, profile=profile),
-                        as_miss=_per_case_values([miss], judged_rows, profile=profile) if miss is not None else None,
+            # One memo per page, not per read: it holds each walked result, so a read-long memo would hold the history
+            # the page-at-a-time walk exists not to hold. Within the page, each name is described once.
+            with _measure_walk_memo():
+                for result in read:
+                    miss = misses.get(result.id)
+                    run_repeats.kept.append(
+                        _KeptResult(
+                            order=(result.test_case_id, result.k_iteration, result.id),
+                            values=_per_case_values([result], judged_rows, profile=profile),
+                            as_miss=(
+                                _per_case_values([miss], judged_rows, profile=profile) if miss is not None else None
+                            ),
+                        )
                     )
-                )
     repeats: dict[tuple[ReadingKind, str], dict[str, dict[str, list[float]]]] = {}
     for run in runs:
         run_repeats = kept[run.id]
