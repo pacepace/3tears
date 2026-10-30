@@ -140,3 +140,29 @@ Measured, 2026-10-30 (Linux arm64 container, `/dev/shm`, each state's rows side 
 Generated values compress to a twelfth, real ones to a quarter: a real copy adds about 0.3 GiB. One-state change:
 write plain 0.08-0.10 s vs compressed 0.08-0.10 s (LSF), 0.04-0.05 s both (AP); checkpoint 0.17-0.21 / 0.01-0.02 s,
 off the path; publish of the state 0.10-0.15 s, on the path. Every state published: 2.3-5.6 s (a replica's start).
+
+## Where this stands (2026-10-30, paused for the prod release)
+
+- Head `d05e955f2` on `feature/shared-memory-snapshots`. Chunks 01-06 built.
+- Critic `rev-20261030T131014Z-138eb296`: 0 blocking. R-2 to R-13 fixed, and verify-resolutions
+  `rev-20261030T133120Z-1cc9aecb` marked them fixed with 0 findings. R-14 to R-16 were informational and are
+  accepted. O-1 to O-3 are accepted on the record.
+- R-1 is still open: test evidence is not recorded.
+- The full CI run after the verify (CI script, as the workflow runs it) failed `test_public_api_has_a_caller` and
+  `test_slf001_pragma_policy`. Commit `d05e955f2` fixes both: tests reach the code through its front door
+  (`checkpoint_when_asked`, `DuckDBBackend.checkpoint`), `scope_part` is now private, and the ledger names the reports
+  pod as the caller of `SharedArrowReader`, `SharedRead` and `SharedSnapshot`. No Critic pass has run on `d05e955f2`.
+- CI on `d05e955f2` passed lint, typecheck, unit + enforcement, otel floor and mcp 1.x. Integration ran 498 passed and
+  1 failed: `packages/nats/tests/integration/test_credential_renewal_live.py::test_many_renewals_under_a_busy_subscription_lose_and_double_nothing`.
+  Integration passed in the previous run on `623dddfdb` (499 passed), and this branch changes nothing in nats.
+  Re-run it before calling the branch green.
+- Next steps:
+  1. Re-run integration, or the whole CI script, on the head commit and confirm green.
+  2. Record test evidence: `prawduct-hook test-evidence record`, which closes R-1.
+  3. Update the PR #1050 body from `pr1050-body.md` in the scratchpad and fill in the CI line.
+  4. Tell the coordinator when it is green; Pace merges.
+  5. 0.86.0 is held until Pace says go. Two more 3tears changes join that release: tool-call metrics, and the
+     registry not being ready until one heartbeat round.
+- Reports branch `feature/report-computes-in-workers` (worktree `../reports-wt-shm-workers`): the serving move is
+  built and committed, and develop is merged in (#177 cap: a worker fallback goes through `computed`). It waits on
+  0.86.0 for its re-pin. See its build plan, chunk 02.
