@@ -4,7 +4,8 @@ A stored result carries what its cell did verbatim: a world's event log (``world
 (``kind_payload``). They are most of a result's bytes, and a 41-run campaign's bundle read whole held them all at once
 (a 2 GB pod killed on 2026-10-30). The bundle's one read of its results asks the store to leave them out, so:
 
-- **the bundle is the one a whole read gives**: assembled over a store that ships every field anyway, it is equal;
+- **the bundle is the one a whole read gives**: assembled over a store that ships every field anyway, it is equal, a
+  host measure named as a world event's field (``turn``) included: the measure walk reads no event as a measurement;
 - **the read names both fields** for the store to leave out, so a store that projects never ships them;
 - **its peak memory does not grow with them**: a campaign whose results carry tens of kilobytes verbatim each is
   assembled in about the memory of one whose results carry none.
@@ -13,21 +14,40 @@ A stored result carries what its cell did verbatim: a world's event log (``world
 from __future__ import annotations
 
 import tracemalloc
+from dataclasses import replace
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
 from threetears.evals.kernel import EvalStorage
-from threetears.evals.kernel.host import SHARED_CORE, HostProfile, MeasureRegistry
+from threetears.evals.kernel.host import MeasureRegistry
+from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.kernel.run_pages import VERBATIM_RESULT_FIELDS
 from threetears.evals.schema import EvalResult, RubricScore
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.schema import WorldEvent
 from threetears.evals.storage import InMemoryDocumentStore
+from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 from packages.evals.tests.factories import fixture_variant_key, make_campaign, make_eval_result, make_eval_run
 
 _SCOPE = "uni-1"
-_PROFILE = HostProfile(host_id="verbatim", host_sweepables=SHARED_CORE, measures=MeasureRegistry(()))
+#: A host measure named as a world event's field is, which these results do not report: a whole read's walk pooled each
+#: event's turn into it.
+_TURN = MetricDescriptor(
+    name="turn",
+    reader_name="Turns",
+    data_type="numeric",
+    family=next(descriptor.family for descriptor in TOYHOST_MEASURES if descriptor.name == "field_accuracy"),
+    transferability_class="mechanical",
+    attribution_scope="end_to_end",
+    description="How many turns the cell took.",
+    higher_is_better=False,
+    merit_axis="quality",
+)
+_PROFILE = replace(
+    toyhost_profile(),
+    measures=MeasureRegistry((*TOYHOST_MEASURES, _TURN), families=toyhost_profile().measures.families),
+)
 _TONE = "conversation.tone"
 _CASES = [f"case-{index:02d}" for index in range(12)]
 
@@ -96,7 +116,10 @@ def _result(model: str, case_id: str, k: int, *, verbatim: int) -> EvalResult:
         k_iteration=k,
         scored_at=f"2026-10-01T00:{_CASES.index(case_id):02d}:0{k}+00:00",
         variant_key=fixture_variant_key(model),
-        host_measures={"match": (len(case_id) + k + len(model)) % 3 != 0, "fields_stripped": float(k + len(case_id))},
+        host_measures={
+            "match": (len(case_id) + k + len(model)) % 3 != 0,
+            "fields_stripped": float(k + len(case_id)),
+        },
         rubric_scores=[
             RubricScore(
                 dim=_TONE, score=1 + (k + len(model)) % 5, scale="ordinal", axis="capability", judge_temperature=0.0
@@ -110,6 +133,7 @@ def _result(model: str, case_id: str, k: int, *, verbatim: int) -> EvalResult:
                     condition=f"posted-{index}",
                     caused_by="world",
                     event="x" * 400,
+                    turn=index + k,
                 )
                 for index in range(verbatim // 800)
             ]

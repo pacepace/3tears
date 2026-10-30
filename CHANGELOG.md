@@ -12,10 +12,15 @@ packages (bumped in lock-step).
 campaign's report was part of what killed a 2 GB pod (2026-10-30). A result's world event log (`world_events`) and its
 kind's payload (`kind_payload`) are most of its bytes, and no reading of the bundle reads either, so the read now asks
 the store to leave both out: it stays one store call, and the bundle is the one a whole read gives. A regression
-watch's judged tiers read their runs the same way.
+watch's judged tiers read their results the same way, over a subject's runs or the whole scope. The measure walk no
+longer reads a world's event log either: it pooled each event's `turn` into a measure a host declares as `turn` where a
+result did not report one itself.
 
-**Added:** `EvalStorage.query_eval_results_by_runs` and the `CampaignReadStore` port take `elide`, the fields the store
-leaves out of each result (each reads as none). The verbatim fields are `run_pages.VERBATIM_RESULT_FIELDS`, public now.
+**Changed (a host's own read store):** the `CampaignReadStore` port's `query_eval_results_by_runs` takes a keyword-only
+`elide`, the fields the store leaves out of each result (each reads as none), and the bundle passes it, so a host that
+implements the port itself rather than handing over `EvalStorage` must accept it. `EvalStorage.query_eval_results_by_runs`
+and `EvalStorage.query_eval_results` take it too. The verbatim fields are `run_pages.VERBATIM_RESULT_FIELDS`, public
+now.
 A store conformance case (`projection.exclude_with_field_in`) checks `exclude` beside `field_in` and an equality
 filter, the shape of that read.
 

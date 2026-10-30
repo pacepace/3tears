@@ -262,6 +262,7 @@ def results_without_payloads(storage: RunResultsStore, run_id: str, scope_id: st
 
 __all__ = [
     "RUN_RESULTS_PAGE",
+    "VERBATIM_RESULT_FIELDS",
     "ResultKey",
     "RunResultsStore",
     "UnreadableResultKey",

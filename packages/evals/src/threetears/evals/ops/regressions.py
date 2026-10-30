@@ -332,7 +332,7 @@ class RegressionWatch:
         if narrowed is None or subject_id is None:
             # The scope the history read whole: its listing's estimate and what its read returned were both within
             # the read tier's budget, or the history would have read the subject's runs instead (below) or refused.
-            return self.host.storage.query_eval_results(scope_id)
+            return self.host.storage.query_eval_results(scope_id, elide=VERBATIM_RESULT_FIELDS)
         runs = list_runs(self.host, scope_id, include_archived=True)
         subject_runs = [run for run in runs if run.subject_snapshot.subject_id == subject_id]
         # The subject's runs the history read: held to the budget here too, off the listing above and before any

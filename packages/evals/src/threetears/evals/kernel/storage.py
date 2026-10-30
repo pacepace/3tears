@@ -2635,17 +2635,19 @@ class EvalStorage:
         run_id: str | None = None,
         test_case_id: str | None = None,
         model: str | None = None,
+        elide: Sequence[str] = (),
     ) -> list[EvalResult]:
         """Return eval results with optional filters (unpaginated).
 
-        There is no ``include_trace`` switch and no projection: the stored
-        ``eval_result`` document does not contain the turn-by-turn record or the OTel
-        spans at all, so every read is already narrow. The parameter this replaced
-        defaulted to True and was passed ``False`` by all eighteen production call
-        sites — it existed only to ask the database to haul less of a row than the
-        model claimed the row held.
+        There is no ``include_trace`` switch: the stored ``eval_result`` document does not contain the turn-by-turn
+        record or the OTel spans at all. The parameter that switch was defaulted to True and was passed ``False`` by all
+        eighteen production call sites — it existed only to ask the database to haul less of a row than the model
+        claimed the row held. What a row does hold verbatim (a world's event log, a kind's payload) a reader of figures
+        leaves out with ``elide`` (as :meth:`query_eval_results_by_runs` does).
         """
-        items = self._store.by_doc_type("eval_result", scope_id, **self._result_filters(run_id, test_case_id, model))
+        items = self._store.by_doc_type(
+            "eval_result", scope_id, exclude=tuple(elide), **self._result_filters(run_id, test_case_id, model)
+        )
         return self._hydrate_all(EvalResult, items)
 
     def query_eval_results_by_run(self, run_id: str, scope_id: str) -> list[EvalResult]:
