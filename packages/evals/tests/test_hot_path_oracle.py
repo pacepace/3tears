@@ -1,4 +1,4 @@
-"""The report and planning reads give byte-identical output across every change that makes them faster (W4b oracle).
+"""The report and planning reads give byte-identical output across every change that makes them faster.
 
 Each campaign below is read the way a host reads it, and every output is compared, byte for byte and unrounded, with
 the golden captured from the code before any of that work began:

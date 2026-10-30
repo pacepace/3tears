@@ -3,7 +3,8 @@
 A resolver (one per kind, in a ``resolve_*`` module's ``RESOLVERS``) turns a stored chart's
 :class:`~threetears.evals.kernel.report_plan.ChartSpec` into the kit's chart data, reading the rows its query
 selects (:func:`~threetears.evals.analysis.report_rows.query_rows`, the one owner of that selection). It is handed a
-:class:`ChartContext` and returns a :class:`Drawn`. The rules every kind fills by (the P4 design, §3) are here, once:
+:class:`ChartContext` and returns a :class:`Drawn`. The rules every kind fills by (the planned page's design, §3) are
+here, once:
 
 - **Units.** A figure's unit as the page reads it (:func:`figure_unit`): a measure's declared unit; a pass-fail
   rate's scale read from every figure the input holds for it (a share where each lies in 0 to 1, a percent

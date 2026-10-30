@@ -1,4 +1,4 @@
-"""The aggregates, the planning block and the regression watch's judged tiers answer alike on either read path (W4b P5).
+"""The aggregates, the planning block and the regression watch's judged tiers answer alike on either read path.
 
 Every aggregate reads through the reading seams (``EvalStorage.iter_result_readings`` and ``result_groups``), which
 take the store's path when the store offers its narrowed and grouped reads

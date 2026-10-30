@@ -1,4 +1,4 @@
-"""Which attributes of an ``EvalResult`` a reader reads: a test-only recorder over hydrated results (W4b P1).
+"""Which attributes of an ``EvalResult`` a reader reads: a test-only recorder over hydrated results.
 
 The compact per-result reading (``ResultReading``) carries exactly the attributes the readers access, so that set is
 measured, not guessed. :func:`recording_results` serves every result a store hydrates as a **recorded result** while

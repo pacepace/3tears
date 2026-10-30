@@ -30,7 +30,7 @@ from threetears.evals.kernel.host import SHARED_CORE, RolePins, Sweepable, Sweep
 from threetears.evals.schema import SweepableValue
 
 if TYPE_CHECKING:
-    from threetears.evals.kernel.result_reading import ResultView
+    from threetears.evals.kernel import ResultView
     from threetears.evals.schema import EvalRun
 
 #: Where the toy host keeps its own vocabulary on the shared carrier: ``EvalRun.host_payload``,

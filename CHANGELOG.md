@@ -43,7 +43,8 @@ regression watch's ERROR line reads `past its read budget of <figure>`. No remed
 
 **Changed (provisional):** `reads.hold_to_read_budget` and `reads.narrowed_read_disclosure` take a keyword-only
 `budget`. The planning read reads its runs' readings in the store's own order across them, so on the engine's path
-every run's keys are one call. The five budgets are exported from `threetears.evals.analysis` (provisional).
+every run's keys are one call. All five are constants of `threetears.evals.analysis.reads`; `READING_BUDGET`, `PLANNING_READ_BUDGET` and
+`BUNDLE_READ_BUDGET` are exported from `threetears.evals.analysis` (provisional).
 
 ### evals: the campaign bundle reads its results as readings, and its kept trials whole by id
 
@@ -82,7 +83,7 @@ capable store does, and reads by id only the top-level fields its paths name (`k
 
 **Changed:** the `eval.read_tier` line's `path=` and `store_calls=` are filled by these reads: the path that served them
 (`store`, `engine`, or `engine+store` when both served one call) and the store calls they made, each counted when it is
-made. They stay empty for a call that makes none of these reads; no reader reads through them yet.
+made. They stay empty for a call that makes none of these reads.
 
 ### evals: the aggregates, the regression watch and the planning read read compact readings
 
@@ -95,7 +96,7 @@ entry above). A narrowed read (one
 subject's runs) reads its runs one after another, as before; the watch's judged tiers over one subject's runs now read
 them so too, where they read them in one read in the store's order. The planning read's store calls on the engine's
 path are one key read of every run, in the store's order across them, and one read by id per 1,000 results, where it
-read its runs' keys a batch of runs at a time; its refusal past the read budget on what the read returned now comes once
+read each run's keys in a call of its own; its refusal past the read budget on what the read returned now comes once
 the read is walked. The `eval.read_tier` line of each aggregate gains `path=` (`store` or `engine`) and `store_calls=`,
 after `elapsed_ms`.
 
@@ -104,7 +105,7 @@ after `elapsed_ms`.
 `SweepableRegistry.read_all`, `resolve_levers`, `production_footing`, `read_role_pins` and `read_residual`. A reading
 carries only the attributes the engine's readers are measured to read (no judge prose, no `world_events`, no
 `kind_payload`); a reader reading another raises `AttributeError`. A reader annotated `Sequence[EvalResult]` should be
-retyped to `Sequence[ResultView]` (`threetears.evals.kernel.result_reading`) to pass a strict typecheck.
+retyped to `Sequence[ResultView]` (`threetears.evals.kernel`) to pass a strict typecheck.
 `planning_readings` takes the runs' results as one iterable, in any order across runs, where it took a mapping by run.
 `LensStore` gains `iter_result_readings` and `result_groups`, which `EvalStorage` has.
 
@@ -114,17 +115,20 @@ it, and `ResultSpend`, the figures read off a stored row; `compute_program_budge
 
 ### evals: a compact reading of each stored result, and EvalStorage reads of readings and groups
 
-**Added (provisional):** `threetears.evals.kernel.result_reading.ResultReading`, a stored result as the engine's readers
+**Added (provisional):** `threetears.evals.kernel.ResultReading`, a stored result as the engine's readers
 read it: exactly the attributes they access, under the same names, copied from the hydrated `EvalResult` and never
 recomputed, without the judge's prose (`judge_reasoning`, each score's `reasoning`; the "cannot tell" notes are carried
 as the dimensions they name). It holds at most a fifth of a result's bytes (measured 3.4 KB against 28.9 KB at a
 production shape). `ResultView` is the protocol an `EvalResult` and a `ResultReading` both satisfy; the scoring,
-condition, usage and score-projection rules now take it. Two `EvalStorage` reads hand them out on the engine's path:
+condition, usage and score-projection rules now take it. Two `EvalStorage` reads hand them out, on the engine's path
+as below, or on the store's when the store offers it (the entry above):
 `iter_result_readings(run_ids | None, scope_id)` (the results' keys, one read per run named or one for the scope, then
 one `get_many` per 1,000 results, each page hydrated as every read hydrates it and dropped once its readings are built)
 and `result_groups(run_ids | None, scope_id, by=, measures=)` (the `ResultReadings.grouped` answer over the same rows).
-Each says the path that served it (`engine`) and the store calls it made. No reader reads through them yet, and a host
-store needs nothing new.
+Each says the path that served it and the store calls it made. A host store needs nothing new. `ResultView`,
+`ResultReading`, `SharedValues`, the views and readings of a result's record lists (`ScoreView` and `ScoreReading`,
+`UsageView` and `UsageReading`, and the rest), `ReadingsRead`, `GroupsRead` and `ReadPath` are exported from
+`threetears.evals.kernel`.
 
 **Changed:** the bundle's measure walk reads each model type's fields that can hold a number or text, but never the
 judge's prose: a score's `reasoning` and a result's `judge_reasoning`. A host that declares no measure of either name
@@ -147,16 +151,6 @@ another shape still reads code-only, led by the regenerate line). Putting a stor
 checks every aspect's shape before it reads any, so an analysis whose later aspect no longer reads is refused
 without first rebuilding its earlier aspects' bundles.
 
-### evals: a launch estimate's planning block reads its runs' keys a batch of runs at a time
-
-**Changed:** `detectable_effects`, the planning block every launch estimate carries, read the result keys of each
-earlier run of the template in a call of its own. It now makes one read per batch of runs instead of one per run,
-through `EvalStorage.query_eval_result_keys_by_runs(run_ids, scope_id)` (new, provisional): one `by_doc_type` with the
-runs as a `field_in` predicate, the fields a key read leaves out left out, and each row checked as the one-run key read
-checks it. A batch covers runs estimated at up to 5,000 results together (a run past that is read alone), and is reduced
-to its keys before the next is read, so the read holds a batch's rows at most. The block is unchanged. A host store
-needs nothing new: `field_in` is already part of the port.
-
 ### evals: a bundle assembly and a report read each log where their time went; every aggregate logs its read
 
 **Added:** each campaign bundle assembly and each `report_read` logs one `eval.read_tier` line at INFO, whether the call
@@ -175,7 +169,8 @@ render_ms= elapsed_ms= path= store_calls=`, plus `raised=<exception class>` when
 - `runs_in` is the runs a bundle's aspects summarise (a run belongs to one aspect) and `results_in` the results they
   produced. A report line sums its assemblies' counts, and leaves both empty when it assembled none (a report
   document's page draws its stored snapshot). A report read on the code-only path also logs its bundle's own line, before its own.
-- `path` and `store_calls` (which read path served the call, and how many store calls it made) are empty for now.
+- `path` and `store_calls` say which read path served the call's reads of readings and groups, and how many store
+  calls those reads made (the store-path entry above); both are empty when the call made no such read.
 
 `comparison_sets`, `frontier`, `history`, `program_budget` and `orphaned_runs` now log the `eval.read_tier` line that
 `pivot` and `export_results` log (`lens`, `scope_id`, `runs_in`, `results_in`, `elapsed_ms`). They project no score
@@ -189,8 +184,10 @@ the read carries `refused=true`.
 its order, from one backend call, with `exclude` applied and `exclude_in_items` dropping paths inside each object item
 of a list field (`narrow_items`, beside `omit_paths`, is that rule). `grouped` groups those rows by scalar paths and
 answers `count`, `count_null`, `sum_int`, `min`, `max` and `values` (`[row_id, value]` pairs in stored order, each
-value exactly as stored, every double to its last bit) per group (`GroupMeasure`). It has no float measure: a reader adds the values itself, in order. The in-memory and SQLite
-stores offer it. All three names are provisional.
+value exactly as this store's own reads return it, every double to its last bit) per group (`GroupMeasure`). It has no float measure: a reader adds the values itself, in order. The in-memory and SQLite
+stores offer it. `fold_groups(rows, *, by, measures)` is the grouped read's rules as one function, for a store that
+groups rows in Python; the in-memory store and the engine's grouping of a store without the capability both fold
+through it. All four names are provisional.
 
 `RoutedDocumentStore` offers it when every store a type is placed in does, and sends each read whole to the one store
 its type is placed in. `bridge_async_store` offers it when the async store offers `AsyncResultReadings` (provisional,

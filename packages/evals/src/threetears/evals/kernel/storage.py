@@ -107,9 +107,9 @@ from threetears.evals.schema.store_port import (
     ResultReadings,
     StoreClock,
     StoreConflict,
+    fold_groups,
     refuse_on_event_loop,
 )
-from threetears.evals.storage.memory import InMemoryDocumentStore
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.run_pages import (
     VERBATIM_RESULT_FIELDS,
@@ -2818,48 +2818,6 @@ class EvalStorage:
             raise StorageError(f"failed to read the results of eval run {run_id!r}: {e}") from e
         return [_result_key(item, run_id) for item in items]
 
-    def query_eval_result_keys_by_runs(self, run_ids: Sequence[str], scope_id: str, /) -> dict[str, list[ResultKey]]:
-        """The key of every result stored for each of several runs, in one read that ships no other field.
-
-        :meth:`query_eval_result_keys_by_run` for many runs at once: one ``by_doc_type`` with the runs as a ``field_in``
-        predicate, the same fields left out, and each row read into its key by the same checks. For a reader that
-        walks every run of a set a page at a time (a launch's planning read over a template's earlier runs), which
-        otherwise asks the store once per run. A key row still ships the result's scalars and its score objects, so a
-        caller bounds how many results one call covers (the planning read batches its runs).
-
-        **Provisional:** this method may change before it is declared part of the host contract.
-
-        :param run_ids: The runs. Empty asks the store nothing; one named twice is read once.
-        :ptype run_ids: Sequence[str]
-        :param scope_id: The scope they live in.
-        :ptype scope_id: str
-        :return: Each run's keys, in the store's order within the run, under every run asked (an empty list for a run
-            with none stored), in the order first asked.
-        :rtype: dict[str, list[ResultKey]]
-        :raises StorageError: The store failed to answer, or answered with a result of a run not asked for.
-        :raises UnreadableResultKey: A row matched carries no readable key.
-        """
-        keys: dict[str, list[ResultKey]] = {run_id: [] for run_id in run_ids}
-        if not keys:
-            return keys
-        store = self._store
-        try:
-            items = store.by_doc_type(
-                "eval_result", scope_id, exclude=_RESULT_KEY_EXCLUDED, field_in={"eval_run_id": list(keys)}
-            )
-        # prawduct:ok-broad-except — DB read boundary; re-raised as a typed eval error
-        except Exception as e:
-            raise StorageError(f"failed to read the results of eval runs {list(keys)!r}: {e}") from e
-        for item in items:
-            run_id = item.get("eval_run_id")
-            if run_id not in keys:
-                raise StorageError(
-                    f"the store answered a read of eval runs {list(keys)!r} with a result ({item.get('id')!r}) of run "
-                    f"{run_id!r}, none of them"
-                )
-            keys[run_id].append(_result_key(item, run_id))
-        return keys
-
     def load_eval_results(
         self, result_ids: Sequence[str], scope_id: str, /, *, elide: Sequence[str] = ()
     ) -> list[EvalResult]:
@@ -3010,7 +2968,8 @@ class EvalStorage:
         calls = 1
         paths = [*by, *(path for _, path in measures.values() if path is not None)]
         kept = tuple(dict.fromkeys(["id", *(path.split(".", 1)[0] for path in paths)]))
-        folded = InMemoryDocumentStore()
+        # Keyed by id, in the keys' order: a result read twice is one row, where it was first seen.
+        folded: dict[Any, dict[str, Any]] = {}
         for start in range(0, len(ids), READINGS_PAGE):
             page = ids[start : start + READINGS_PAGE]
             served_by("engine", store_calls=1)
@@ -3019,8 +2978,8 @@ class EvalStorage:
                 rows = {row.get("id"): row for row in self._store.get_many("eval_result", page, scope_id, keep=kept)}
             for result_id in page:
                 if (row := rows.get(result_id)) is not None:
-                    folded.upsert(_projected(row, paths, scope_id))
-        return GroupsRead("engine", calls, folded.grouped("eval_result", scope_id, by=by, measures=measures))
+                    folded[row.get("id")] = _projected(row, paths, scope_id)
+        return GroupsRead("engine", calls, fold_groups(folded.values(), by=by, measures=measures))
 
     def _keys_in_store_order(self, runs: list[str] | None, scope_id: str) -> list[ResultKey]:
         """The keys of the runs' results (or the scope's), in one key read, in the store's own order across them; the

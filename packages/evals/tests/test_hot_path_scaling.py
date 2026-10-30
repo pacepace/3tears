@@ -1,4 +1,4 @@
-"""The work a report read does grows with its campaign no faster than the campaign does (W4b done-when #4).
+"""The work a report read does grows with its campaign no faster than the campaign does.
 
 The production-shaped campaign (:mod:`~packages.evals.tests.hot_path_support`) is read at ``scale`` 1, 2 and 4, a
 code-only ``report_read`` in html with the trials table, and each operation it performs is counted, not timed

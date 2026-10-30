@@ -35,6 +35,7 @@ from threetears.evals.schema.store_port import (
     GroupMeasure,
     StoreConflict,
     field_in_values,
+    fold_groups,
     keep_fields,
     narrow_items,
     omit_paths,
@@ -44,97 +45,6 @@ __all__ = ["InMemoryDocumentStore"]
 
 #: The fields that locate a document, which :meth:`InMemoryDocumentStore.merge_fields` refuses to set.
 _LOCATING_FIELDS = frozenset({"id", "scope_id", "doc_type"})
-
-#: The kinds :meth:`InMemoryDocumentStore.grouped` computes; ``count`` alone reads no path.
-_MEASURE_KINDS = frozenset({"count", "count_null", "sum_int", "min", "max", "values"})
-
-
-def _read_path(document: dict[str, Any], path: str) -> Any:
-    """The value at a dotted path through objects; ``None`` when it is absent or runs through a non-object."""
-    node: Any = document
-    for key in path.split("."):
-        if not isinstance(node, dict) or key not in node:
-            return None
-        node = node[key]
-    return node
-
-
-def _check_grouping(by: Sequence[str], measures: Mapping[str, GroupMeasure]) -> None:
-    """Refuse a grouping the port does not define, before any document is read.
-
-    :raises TypeError: ``by`` is a string rather than a sequence of paths.
-    :raises ValueError: A measure's kind is unknown, ``count`` names a path or another kind names none, or a measure
-        name is also a ``by`` path.
-    """
-    if isinstance(by, str):
-        raise TypeError(f"grouped takes a sequence of paths to group by, not a string: by={by!r}")
-    if clash := sorted(set(by) & measures.keys()):
-        raise ValueError(f"a measure name cannot also be a by path: {clash}")
-    for name, (kind, path) in measures.items():
-        if kind not in _MEASURE_KINDS:
-            raise ValueError(f"measure {name!r} has kind {kind!r}; the kinds are {sorted(_MEASURE_KINDS)}")
-        if (kind == "count") != (path is None):
-            raise ValueError(f"measure {name!r}: count reads no path and every other kind reads one, got {path!r}")
-
-
-def _group_key(value: Any, path: str) -> tuple[str, Any]:
-    """A ``by`` value as a group key compared on its JSON type: ``True`` and ``1`` differ, absent and null agree.
-
-    :raises TypeError: The value is an object or a list.
-    """
-    if value is None:
-        return ("null", None)
-    if isinstance(value, bool):
-        return ("boolean", value)
-    if isinstance(value, int | float):
-        return ("number", value)
-    if isinstance(value, str):
-        return ("text", value)
-    raise TypeError(f"grouped groups by scalars, and {path!r} holds {type(value).__name__}: {value!r}")
-
-
-def _measure(rows: list[dict[str, Any]], name: str, kind: str, path: str | None) -> Any:
-    """One measure over one group's rows, in their stored order.
-
-    :raises TypeError: ``sum_int`` met a non-integer, or ``min``/``max`` a value that is neither a number nor a
-        string, or both numbers and strings.
-    """
-    if kind == "count" or path is None:
-        return len(rows)
-    values = [_read_path(row, path) for row in rows]
-    if kind == "count_null":
-        return sum(1 for value in values if value is None)
-    if kind == "values":
-        return [[row.get("id"), copy.deepcopy(value)] for row, value in zip(rows, values, strict=True)]
-    present = [value for value in values if value is not None]
-    if kind == "sum_int":
-        if wrong := [value for value in present if isinstance(value, bool) or not isinstance(value, int)]:
-            raise TypeError(f"measure {name!r} sums JSON integers, and {path!r} holds {wrong[0]!r}")
-        return sum(present)
-    if wrong := [value for value in present if isinstance(value, bool) or not isinstance(value, int | float | str)]:
-        raise TypeError(f"measure {name!r} compares numbers or strings, and {path!r} holds {wrong[0]!r}")
-    texts = [value for value in present if isinstance(value, str)]
-    if texts and len(texts) < len(present):
-        raise TypeError(f"measure {name!r} compares numbers or strings, and {path!r} holds both in one group")
-    if not present:
-        return None
-    return min(present) if kind == "min" else max(present)
-
-
-def _fold_groups(
-    rows: list[dict[str, Any]], by: Sequence[str], measures: Mapping[str, GroupMeasure]
-) -> list[dict[str, Any]]:
-    """Group ``rows`` (in stored order) by the ``by`` paths and compute each measure per group."""
-    groups: dict[tuple[tuple[str, Any], ...], list[dict[str, Any]]] = {}
-    for row in rows:
-        groups.setdefault(tuple(_group_key(_read_path(row, path), path) for path in by), []).append(row)
-    answers: list[dict[str, Any]] = []
-    for key, members in groups.items():
-        answer: dict[str, Any] = {path: value for path, (_, value) in zip(by, key, strict=True)}
-        for name, (kind, path) in measures.items():
-            answer[name] = _measure(members, name, kind, path)
-        answers.append(answer)
-    return answers
 
 
 def _stored_equal(stored: Any, wanted: Any) -> bool:
@@ -361,7 +271,8 @@ class InMemoryDocumentStore:
     ) -> list[dict[str, Any]]:
         """Group the rows :meth:`by_doc_type` would return and compute each measure per group.
 
-        Folded in Python over a snapshot taken in one pass. See
+        Folded in Python over a snapshot taken in one pass, by
+        :func:`~threetears.evals.schema.store_port.fold_groups`. See
         :meth:`~threetears.evals.schema.ResultReadings.grouped` for the measures and their refusals.
 
         :param doc_type: The discriminator to select on.
@@ -382,8 +293,12 @@ class InMemoryDocumentStore:
         :raises TypeError: A measure met a value its kind refuses, a ``by`` value is an object or a list, or a
             predicate is refused.
         """
-        _check_grouping(by, measures)
-        return _fold_groups(self._matching(doc_type, scope_id, field_in, field_eq), by, measures)
+
+        def matching() -> Iterator[dict[str, Any]]:
+            # Lazy, so fold_groups refuses a grouping before any document is read.
+            yield from self._matching(doc_type, scope_id, field_in, field_eq)
+
+        return fold_groups(matching(), by=by, measures=measures)
 
     def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
         """Yield the id of every document of one type within a scope.

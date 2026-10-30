@@ -2,7 +2,7 @@
 
 One assembly walks each result's measures once and holds the walk for every fold that pools the result again
 (``analysis/bundle/measures.py``). What it holds grows with the results read, so it is bounded per result: at most
-:data:`MEMO_BYTES_PER_RESULT`, which keeps the memo under the D8 reading ceiling (256 MiB) at 250,000 results, the
+:data:`MEMO_BYTES_PER_RESULT`, which keeps the memo under the reading ceiling (256 MiB) at 250,000 results, the
 largest reading budget the pushdown plan contemplates. The bytes counted are every allocation made in ``measures.py``
 still live late in the assembly, read when the assembly asks its store for the case strata, after every fold that
 pools the campaign's results has run.
@@ -23,7 +23,7 @@ from threetears.evals.schema import EvalCaseStratum
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.hot_path_support import HotPathCorpus, hot_path_corpus
 
-#: The most the memo may hold per result read: the D8 ceiling (256 MiB) over 250,000 results is about 1,074 bytes.
+#: The most the memo may hold per result read: the reading ceiling (256 MiB) over 250,000 results is about 1,074 bytes.
 MEMO_BYTES_PER_RESULT = 1024
 
 #: What ``measures.py`` may still hold once an assembly has ended, however many results it read: the walk memo is
