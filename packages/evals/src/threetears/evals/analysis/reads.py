@@ -98,6 +98,7 @@ from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN
 from threetears.evals.kernel.run_pages import (
     RunResultsStore,
     read_results,
+    VERBATIM_RESULT_FIELDS,
     results_without_payloads,
     run_case_pages,
     run_result_keys,
@@ -241,12 +242,15 @@ class LensStore(RunResultsStore, Protocol):
     names the thing it partitions by.
     """
 
-    def query_eval_results(self, scope_id: str, /) -> list[EvalResult]:
-        """Every result in a scope, without its trace payload."""
+    def query_eval_results(self, scope_id: str, /, *, elide: Sequence[str] = ()) -> list[EvalResult]:
+        """Every result in a scope, without its trace payload, and without the fields ``elide`` names: the store never
+        ships them, and each reads as none."""
         ...
 
-    def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
-        """Every result one run produced."""
+    def query_eval_results_by_run(
+        self, run_id: str, scope_id: str, /, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
+        """Every result one run produced, without the fields ``elide`` names."""
         ...
 
     def list_campaigns(self, scope_id: str, /) -> list[EvalCampaign]:
@@ -526,8 +530,10 @@ def _aggregate_results(
     :raises ValidationFailedError: The runs this call reads are estimated past the budget, or a read returned more.
     """
     whole = sum(_results_estimate(run) for run in corpus)
+    # Without the verbatim fields (a world's event log, a kind's payload): no aggregate reads them, and they are most of
+    # a result's bytes, so a read held to a row budget never ships them.
     if whole <= READ_TIER_ROW_BUDGET:
-        results = storage.query_eval_results(scope_id)
+        results = storage.query_eval_results(scope_id, elide=VERBATIM_RESULT_FIELDS)
         if len(results) <= READ_TIER_ROW_BUDGET:
             return results, False
         returned = len(results)
@@ -548,7 +554,11 @@ def _aggregate_results(
     estimate = sum(_results_estimate(run) for run in narrowed)
     if estimate > READ_TIER_ROW_BUDGET:
         raise _refuse_past_budget(lens, scope_id, estimate=estimate, runs=len(narrowed), returned=None, how=remedy)
-    results = [res for run in narrowed for res in storage.query_eval_results_by_run(run.id, scope_id)]
+    results = [
+        res
+        for run in narrowed
+        for res in storage.query_eval_results_by_run(run.id, scope_id, elide=VERBATIM_RESULT_FIELDS)
+    ]
     if len(results) > READ_TIER_ROW_BUDGET:
         raise _refuse_past_budget(
             lens, scope_id, estimate=estimate, runs=len(narrowed), returned=len(results), how=remedy
@@ -1238,7 +1248,8 @@ def export_results(
             storage, scope_id, all_runs, requested, status, known_format, profile, started, after_case_id=case_cursor
         )
     if cursor is None and sum(_results_estimate(run) for run in all_runs) <= EXPORT_PAGE_RESULTS:
-        results = storage.query_eval_results(scope_id)
+        # Without the verbatim fields: an export's rows are the projection's, which reads neither.
+        results = storage.query_eval_results(scope_id, elide=VERBATIM_RESULT_FIELDS)
         if len(results) <= EXPORT_PAGE_RESULTS:
             runs = [run for run in cohort if run.status == status] if status else cohort
             projection = project_score_records(
@@ -1323,7 +1334,9 @@ def _export_named(
     # was filtered out still reads as "excluded on request", never "unplaceable". The archived ids are not supplied:
     # the runs come from the CORPUS, so archival narrowed nothing, and calling a later exclusion of an archived run
     # archival would send the reader to un-archive a run that is already selected.
-    results = [res for run in runs for res in storage.query_eval_results_by_run(run.id, scope_id)]
+    results = [
+        res for run in runs for res in storage.query_eval_results_by_run(run.id, scope_id, elide=VERBATIM_RESULT_FIELDS)
+    ]
     projection = project_score_records(
         runs, results, known_run_ids={run.id for run in all_runs}, archived_run_ids=None, profile=profile
     )
@@ -1397,7 +1410,9 @@ def _export_page(
         estimate += size
     after = len(remaining) - len(page)
 
-    results = [res for run in page for res in storage.query_eval_results_by_run(run.id, scope_id)]
+    results = [
+        res for run in page for res in storage.query_eval_results_by_run(run.id, scope_id, elide=VERBATIM_RESULT_FIELDS)
+    ]
     archived_run_ids = {run.id for run in all_runs if run.archived}
     projection = project_score_records(
         page, results, known_run_ids={run.id for run in all_runs}, archived_run_ids=archived_run_ids, profile=profile

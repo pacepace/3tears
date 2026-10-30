@@ -29,8 +29,10 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
+
+from pydantic import BaseModel
 
 import pytest
 
@@ -39,6 +41,7 @@ from threetears.evals.analysis import (
     campaign_report,
     frontier_text,
     comparison_sets,
+    export_results,
     frontier,
     history,
     orphaned_runs,
@@ -57,7 +60,7 @@ from threetears.evals.quick import EXIT_REFUSED, run_cli
 from threetears.evals.ops import RegressionAlert, RegressionSink, RegressionWatch, history_text, pivot_text
 from threetears.evals.run.reads import list_runs
 from threetears.evals.kernel.evidence_tiers import CALIBRATION_MIN_RESULTS
-from threetears.evals.schema import GoalStateOutcome, RoleUsage, RubricScore
+from threetears.evals.schema import GoalStateOutcome, RoleUsage, RubricScore, WorldEvent
 from threetears.evals.schema.models import TRANSCRIPT_DIM_ID, CalibrationRating, EvalResult, EvalRun, EvalTemplate
 from packages.evals.tests.factories import (
     make_calibration_rating,
@@ -98,14 +101,16 @@ class FakeCountingStore:
         #: The run each by-run read was of, in call order.
         self.run_reads: list[str] = []
 
-    def query_eval_results(self, scope_id: str, /) -> list[EvalResult]:
-        rows = self._inner.query_eval_results(scope_id)
+    def query_eval_results(self, scope_id: str, /, *, elide: Sequence[str] = ()) -> list[EvalResult]:
+        rows = self._inner.query_eval_results(scope_id, elide=elide)
         self.scope_reads.append(len(rows))
         return rows
 
-    def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
+    def query_eval_results_by_run(
+        self, run_id: str, scope_id: str, /, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
         self.run_reads.append(run_id)
-        return self._inner.query_eval_results_by_run(run_id, scope_id)
+        return self._inner.query_eval_results_by_run(run_id, scope_id, elide=elide)
 
     def query_eval_result_keys_by_run(self, run_id: str, scope_id: str, /) -> list[ResultKey]:
         self.run_reads.append(run_id)
@@ -751,3 +756,124 @@ def test_a_campaign_report_reads_its_runs_by_id_past_the_budget(monkeypatch: pyt
     assert len(scope_results) > campaign_estimate, "the scope holds results past the budget"
     assert after.basis == before.basis == "code_only"
     assert after.verdicts == before.verdicts
+
+
+class _ExcludeSwitch(InMemoryDocumentStore):
+    """The engine's store, recording what each read of results asked it to leave out, and honouring it or not."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.honour_exclude = True
+        self.excluded: list[frozenset[str]] = []
+
+    def by_doc_type(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        order_by: str | None = None,
+        descending: bool = True,
+        limit: int | None = None,
+        exclude: Sequence[str] = (),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        if doc_type == "eval_result":
+            self.excluded.append(frozenset(exclude))
+        return super().by_doc_type(
+            doc_type,
+            scope_id,
+            order_by=order_by,
+            descending=descending,
+            limit=limit,
+            exclude=exclude if self.honour_exclude else (),
+            field_in=field_in,
+            **field_eq,
+        )
+
+
+def _as_data(answer: object) -> object:
+    return answer.model_dump(mode="json") if isinstance(answer, BaseModel) else answer
+
+
+class TestAnAggregateReadsResultsWithoutTheirVerbatimFields:
+    """No aggregate reads a world's event log or a kind's payload, which are most of a result's bytes, so its read asks
+    the store to leave both out, and its answer is the one a read shipping them gives; so do an export's. The scope's
+    six runs' results each carry a world's events and a payload."""
+
+    @pytest.fixture
+    def carrying(self) -> tuple[_ExcludeSwitch, EvalStorage, list[EvalRun]]:
+        store = _ExcludeSwitch()
+        storage = EvalStorage(store)
+        narrow = [_seed_run(storage, index, NARROW) for index in range(3)]
+        for index in range(3, 6):
+            _seed_run(storage, index, OTHER)
+        for result in storage.query_eval_results(SCOPE):
+            events = [
+                WorldEvent(
+                    kind="event", dimension="hold", condition="posted", caused_by="world", event="x" * 200, turn=turn
+                )
+                for turn in range(1, 4)
+            ]
+            storage.save_eval_result(
+                result.model_copy(update={"world_events": events, "kind_payload": {"transcript": "y" * 2_000}})
+            )
+        return store, storage, narrow
+
+    @pytest.mark.parametrize("lens", sorted(LENSES))
+    def test_its_answer_is_a_whole_reads(
+        self, lens: str, carrying: tuple[_ExcludeSwitch, EvalStorage, list[EvalRun]]
+    ) -> None:
+        store, storage, _ = carrying
+
+        store.honour_exclude = False
+        whole = _as_data(LENSES[lens](storage, storage))
+        store.honour_exclude = True
+        store.excluded.clear()
+        slim = _as_data(LENSES[lens](storage, storage))
+
+        assert slim == whole
+        assert store.excluded and all(frozenset(VERBATIM_RESULT_FIELDS) <= read for read in store.excluded), (
+            store.excluded
+        )
+
+    @pytest.mark.parametrize("read", ["whole_scope", "named_runs", "paged"])
+    def test_an_exports_rows_are_a_whole_reads(
+        self,
+        read: str,
+        monkeypatch: pytest.MonkeyPatch,
+        carrying: tuple[_ExcludeSwitch, EvalStorage, list[EvalRun]],
+    ) -> None:
+        """Read whole when the scope fits a page, by the runs it names, or a page of whole runs at a time."""
+        store, storage, narrow = carrying
+        if read == "paged":
+            monkeypatch.setattr(reads, "EXPORT_PAGE_RESULTS", 2 * CASES)
+        named = [narrow[0].id] if read == "named_runs" else None
+
+        def export() -> object:
+            return _as_data(
+                export_results(storage, SCOPE, list_runs=_lister(storage), fmt="json", run_ids=named, profile=PROFILE)
+            )
+
+        store.honour_exclude = False
+        whole = export()
+        store.honour_exclude = True
+        store.excluded.clear()
+
+        assert export() == whole
+        assert store.excluded and all(frozenset(VERBATIM_RESULT_FIELDS) <= read for read in store.excluded), (
+            store.excluded
+        )
+
+    def test_a_narrowed_read_leaves_them_out_too(
+        self, monkeypatch: pytest.MonkeyPatch, carrying: tuple[_ExcludeSwitch, EvalStorage, list[EvalRun]]
+    ) -> None:
+        store, storage, narrow = carrying
+        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", len(narrow) * CASES)
+        store.excluded.clear()
+
+        table = LENSES["pivot"](storage, storage, subject_id=NARROW)
+
+        assert table.narrowed_read_disclosure is not None, "past the budget, it read the subject's runs alone"
+        assert len(store.excluded) == len(narrow), store.excluded
+        assert all(frozenset(VERBATIM_RESULT_FIELDS) <= read for read in store.excluded), store.excluded

@@ -314,9 +314,13 @@ class ToyhostStorage:
             listed.append(copy)
         return listed
 
-    def query_eval_results_by_run(self, run_id: str, scope_id: str) -> list[EvalResult]:
-        """Every observation of this batch in this scope."""
-        return [r for r in self._results_by_run.get(run_id, []) if r.scope_id == scope_id]
+    def query_eval_results_by_run(self, run_id: str, scope_id: str, *, elide: Sequence[str] = ()) -> list[EvalResult]:
+        """Every observation of this batch in this scope, without the fields ``elide`` names."""
+        return [
+            r.model_copy(update=dict.fromkeys(elide)) if elide else r
+            for r in self._results_by_run.get(run_id, [])
+            if r.scope_id == scope_id
+        ]
 
     def query_eval_results_by_runs(
         self, run_ids: Sequence[str], scope_id: str, *, elide: Sequence[str] = ()
