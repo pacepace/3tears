@@ -12,7 +12,9 @@ recording subclass of its own class (``RecordedEvalResult``). Each nested model 
 a goal outcome) is swapped the same way for a recording subclass of its class, which knows the path it sits at
 (``rubric_scores[]``, ``transcript_score``, ``usage[]``). Nothing is copied or re-validated, and a recorded result is
 an instance of ``EvalResult``, so an ``isinstance`` check, a ``model_copy`` (which keeps the class), a ``model_dump``
-and pydantic's serialization read it exactly as they read the result it was: a proxy object would fail all four.
+and pydantic's serialization read it exactly as they read the result it was: a proxy object would fail all four. A
+recorded model compares as the model it records (``==`` against an unrecorded one, or one recorded at another path,
+is the two models' own equality, which requires one class) and prints under that model's name.
 
 **What a path looks like.** A top-level field is its name (``eval_run_id``); a field of a nested model is its owner's
 path then its own (``transcript_score.score``); an item of a list is ``[]`` (``rubric_scores[].score``,
@@ -277,6 +279,7 @@ class RecordingModel:
     __slots__ = ()
     __recorded_path__: str
     __recorded_fields__: frozenset[str]
+    __recorded_base__: type[BaseModel]
 
     def __getattribute__(self, name: str) -> Any:
         value = object.__getattribute__(self, name)
@@ -293,7 +296,10 @@ class RecordingModel:
 
     def __eq__(self, other: object) -> bool:
         _note(self, "==")
-        equal: bool = super().__eq__(other)
+        # Compared as the two models' own classes compare them: pydantic's equality, and the core shapes' own, both
+        # require one class on both sides, which a recorded model (one class per path) never shares with an
+        # unrecorded one or one recorded elsewhere.
+        equal: bool = _unrecorded(self) == _unrecorded(other)
         return equal
 
     def __hash__(self) -> int:
@@ -303,6 +309,10 @@ class RecordingModel:
     def __repr__(self) -> str:
         _note(self, "repr()")
         return super().__repr__()
+
+    def __repr_name__(self) -> str:
+        """The recorded class's name, so a recorded model prints as the model it is."""
+        return type(self).__recorded_base__.__name__
 
     def __str__(self) -> str:
         _note(self, "str()")
@@ -321,6 +331,23 @@ class RecordingModel:
         return super().__deepcopy__(memo)  # type: ignore[misc]
 
 
+#: The instance state a pydantic model keeps, which a stand-in of the recorded class shares.
+_MODEL_STATE = ("__dict__", "__pydantic_fields_set__", "__pydantic_extra__", "__pydantic_private__")
+
+
+def _unrecorded(value: object) -> object:
+    """``value`` itself, or for a recorded model a stand-in of the class it records sharing its state, unrecorded.
+
+    Only its own class changes: a nested model it holds stays recorded, and compares through this same rule.
+    """
+    if not isinstance(value, RecordingModel):
+        return value
+    stand_in = object.__new__(type(value).__recorded_base__)
+    for name in _MODEL_STATE:
+        object.__setattr__(stand_in, name, object.__getattribute__(value, name))
+    return stand_in
+
+
 def _recording_class(base: type[BaseModel], path: str) -> type[BaseModel]:
     """The recording subclass of ``base`` whose instances sit at ``path``."""
     held = _CLASSES.get((base, path))
@@ -330,6 +357,7 @@ def _recording_class(base: type[BaseModel], path: str) -> type[BaseModel]:
             "__qualname__": f"Recorded{base.__name__}",
             "__recorded_path__": path,
             "__recorded_fields__": frozenset(base.model_fields),
+            "__recorded_base__": base,
         }
         if base.__hash__ is None:
             namespace["__hash__"] = None

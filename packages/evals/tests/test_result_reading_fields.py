@@ -13,7 +13,11 @@ compared with the family's pinned set (:data:`PINNED`), less what that campaign 
 - **planning:** ``detectable_effects``, which reads its history through ``planning_readings``.
 
 The campaigns: the production-shaped corpus at ``scale=1`` and its two-aspect variant, the toy host's corpus campaign,
-and the courier's planner bake-off (read back from the oracle's capture).
+the courier's planner bake-off (read back from the oracle's capture), and two built here. The **enriched** campaign is
+the corpus at four cases a run with every record list filled (re-judges, repeats, second judgings, background
+deliveries, preconditions, world events, simulator usage, latency) and every run's asked request settings equal to
+those sent, so each reader's walk over those items, and the settings tally's equal branch, runs. The **regressed**
+campaign is the corpus with one regressed step added, on which the regression watch reads its judged tiers.
 
 **A red names the attribute and where it was read.** A family reading an attribute outside its pinned set means the
 reading must add it, deliberately; a pinned attribute no campaign reads any more means the reading carries one it
@@ -51,7 +55,23 @@ from threetears.evals.ops import report_read
 from threetears.evals.ops.lenses import detectable_effects, scope_frontier, scope_history, scope_pivot
 from threetears.evals.ops.regressions import RegressionAlert, RegressionWatch
 from threetears.evals.run.reads import list_runs
-from threetears.evals.schema.models import TRANSCRIPT_DIM_ID, EvalResult, EvalRun, RubricScore
+from threetears.evals.schema.models import (
+    TRANSCRIPT_DIM_ID,
+    AsyncDelivery,
+    ClientRequestSettings,
+    EvalResult,
+    EvalRun,
+    JudgeRepeat,
+    JudgeRescore,
+    LatencyMetrics,
+    PreconditionOutcome,
+    RepeatedScore,
+    RubricScore,
+    SecondJudge,
+    SecondJudgeScore,
+    SecondJudging,
+    WorldEvent,
+)
 from packages.evals.tests.factories import make_eval_result, memory_storage
 from packages.evals.tests.fixtures.courierhost import COURIER_SCOPE, COURIER_TEMPLATE_ID, courier_cases
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
@@ -80,6 +100,15 @@ PAGES = (("markdown", "all"), ("json", "table"))
 
 #: The scope of the campaign built for the regression watch: the scaled corpus with one regressed step added.
 REGRESSED_SCOPE = "hot-path-regressed"
+
+#: The scope of the campaign whose results carry every record list the production-shaped corpus leaves empty.
+ENRICHED_SCOPE = "hot-path-enriched"
+
+#: The cases each run of the enriched campaign measures: small, since what it adds is fields, not rows.
+ENRICHED_CASES = 4
+
+#: What the enriched campaign's simulated user was asked to send, and sent.
+SIMULATOR_SENT = ClientRequestSettings(max_tokens=2048, reasoning_effort=None, reasoning_max_tokens=None)
 
 #: The measures the history and the regression watch are read on: every one the history series (the composite, both
 #: judged axes, spend and latency).
@@ -128,6 +157,18 @@ def campaign(name: str) -> Campaign:
             K_RUNS,
             len(ARM_MODELS),
         )
+    if name == "enriched":
+        corpus = hot_path_corpus(scale=1, scope_id=ENRICHED_SCOPE, cases_per_run=ENRICHED_CASES)
+        enrich(corpus.host, ENRICHED_SCOPE)
+        return Campaign(
+            corpus.host,
+            corpus.campaign.id,
+            ENRICHED_SCOPE,
+            corpus.template_ids[0],
+            ENRICHED_CASES,
+            K_RUNS,
+            len(ARM_MODELS),
+        )
     if name == "toyhost":
         fixture = ops_fixture()
         return Campaign(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, toyhost_template().id, 12, 3, 2)
@@ -145,7 +186,131 @@ def campaign(name: str) -> Campaign:
     raise KeyError(name)
 
 
-CAMPAIGNS = ("scaled", "scaled_two_aspects", "toyhost", "courierhost")
+CAMPAIGNS = ("scaled", "scaled_two_aspects", "toyhost", "courierhost", "enriched")
+
+
+def enrich(host: EvalHost, scope_id: str) -> None:
+    """Give every result of the scope each record list the production-shaped corpus leaves empty, and every run the
+    request settings it asked for, so each reader's walk over those records runs.
+
+    Each run asks its judge for exactly what its scores say was sent, and its simulated user for
+    :data:`SIMULATOR_SENT`, which a simulator usage row reports sending: the settings tally's equal branch. Each
+    result gains its latency, a precondition, a world event and two background deliveries (one delivered, one
+    failed and substituted); each judged result also a re-judge, a repeat of every score and a second judge's pass.
+    """
+    storage = host.storage
+    for run in list_runs(host, scope_id):
+        results = storage.query_eval_results_by_run(run.id, scope_id)
+        sent = next((score.judge_sent_settings for result in results for score in result.judge_scores()), None)
+        storage.save_eval_run(
+            run.model_copy(update={"judge_asked_settings": sent, "simulator_asked_settings": SIMULATOR_SENT})
+        )
+        for index, result in enumerate(results):
+            storage.save_eval_result(result.model_copy(update=_enriched(result, index)))
+
+
+def _enriched(result: EvalResult, index: int) -> dict[str, Any]:
+    """The fields :func:`enrich` gives ``result``, the ``index``-th of its run."""
+    judge_row = next(row for row in result.usage if row.role == "judge")
+    simulator_row = judge_row.model_copy(
+        update={"role": "simulator", "model": "simulator-model", "sent_settings": [SIMULATOR_SENT]}
+    )
+    fields: dict[str, Any] = {
+        "usage": [*result.usage, simulator_row],
+        "latency": LatencyMetrics(
+            total_ms=4_000.0 + index, llm_ms=3_000.0, tool_ms=400.0, async_wait_ms=200.0, judge_ms=300.0
+        ),
+        "precondition_outcomes": [
+            PreconditionOutcome(expression="state.ticket.status == 'open'", presumes="an open ticket", held=True)
+        ],
+        "world_events": [
+            WorldEvent(
+                kind="event",
+                dimension="payment_hold",
+                condition="refund_posted",
+                caused_by="world",
+                event="posting-hold",
+                turn=2,
+            )
+        ],
+        "async_deliveries": [
+            AsyncDelivery(
+                tool="lookup_order",
+                status="delivered",
+                model="scout-model",
+                served_model="scout-model-2026-08",
+                acknowledged_turn=1,
+                delivered_turn=2,
+                elapsed_ms=900.0 + index,
+                delivered_items=3,
+                substituted=False,
+                input_tokens=1_200,
+                output_tokens=300,
+                llm_calls=1,
+                cost_usd=0.002,
+                price_source="provider",
+            ),
+            AsyncDelivery(
+                tool="issue_refund", status="failed", elapsed_ms=150.0, error="the refund API refused", substituted=True
+            ),
+        ],
+    }
+    scores = result.judge_scores()
+    if not scores:
+        return fields
+    first = scores[0]
+    fields["judge_rescores"] = [
+        JudgeRescore(
+            dims=[first.dim],
+            prior_judge_error="the judge's reply did not parse as the scoring schema",
+            scores={first.dim: first.score},
+            judge_model="judge-model",
+            usage=[judge_row],
+            cost_usd=0.004,
+        )
+    ]
+    fields["judge_repeats"] = [
+        JudgeRepeat(
+            judge_model="judge-model",
+            scores=[
+                RepeatedScore(
+                    dim=score.dim,
+                    scale=score.scale,
+                    first_score=score.score,
+                    first_served_model=score.served_model,
+                    first_judge_config_id=result.judge_config_ids.get(score.dim),
+                    first_judge_temperature=score.judge_temperature,
+                    first_judge_sent_settings=score.judge_sent_settings,
+                    repeat=score.model_copy(update={"score": max(1, score.score - index % 2)}),
+                )
+                for score in scores
+            ],
+        )
+    ]
+    fields["judge_seconds"] = [
+        SecondJudging(
+            pass_id="second-pass",
+            judge=SecondJudge(model="second-judge-model"),
+            sample_fraction=1.0,
+            sample_seed=0,
+            scores=[
+                SecondJudgeScore(
+                    dim=score.dim,
+                    scale=score.scale,
+                    first_score=score.score,
+                    first_served_model=score.served_model,
+                    first_judge_config_id=result.judge_config_ids.get(score.dim),
+                    first_judge_temperature=score.judge_temperature,
+                    first_judge_sent_settings=score.judge_sent_settings,
+                    second=score.model_copy(
+                        update={"score": min(5, score.score + index % 2), "served_model": "second-judge-model"}
+                    ),
+                )
+                for score in scores
+            ],
+        )
+    ]
+    return fields
 
 
 def add_a_regressed_step(host: EvalHost, scope_id: str) -> None:
@@ -269,7 +434,7 @@ def recorded(read: Campaign, family: Callable[..., list[str]], *args: Any) -> tu
 FAMILIES: dict[str, tuple[Callable[..., list[str]], tuple[str, ...]]] = {
     "bundle": (read_bundle, CAMPAIGNS),
     "aggregates": (read_aggregates, (*CAMPAIGNS, "regressed")),
-    "planning": (read_planning, ("scaled", "toyhost", "courierhost")),
+    "planning": (read_planning, ("scaled", "toyhost", "courierhost", "enriched")),
 }
 
 
@@ -318,6 +483,11 @@ def measured(family: str, name: str) -> Measured:
     return Measured(access, outputs != plain, len(steps), listed)
 
 
+def prose_pins(sites: dict[str, frozenset[str]]) -> frozenset[str]:
+    """Each pinned prose read as ``"<path> at <module function>"``."""
+    return frozenset(f"{path} at {where}" for path, wheres in sites.items() for where in wheres)
+
+
 def _where(site: str) -> str:
     """A call site as a prose pin names it: its module and function, without the line that moves with every edit."""
     location, function = site.split(" ", 1)
@@ -325,12 +495,37 @@ def _where(site: str) -> str:
 
 
 #: Every attribute path each family reads of a result, over every campaign it is read over (see the module
-#: docstring for the path syntax). Sizes: bundle 129, aggregates 75, planning 109.
+#: docstring for the path syntax). Sizes: bundle 183, aggregates 86, planning 138.
+#:
+#: Every record list a result carries is filled in the enriched campaign, so its items' fields are measured, with
+#: three exceptions, each carried whole if P1's reading carries it at all: ``world_events[]`` (no family reads an
+#: item: the measure walk skips the verbatim fields and no reader of these families walks the log),
+#: ``judge_rescores[].usage[]`` (no family reads a re-judge's own usage rows) and ``judge_cut_short{}`` (no campaign
+#: carries a cut-short judge answer, so its items' fields are unmeasured).
 PINNED: dict[str, frozenset[str]] = {
     "bundle": frozenset(
         {
             "account_refused",
             "async_deliveries",
+            "async_deliveries[].acknowledged_turn",
+            "async_deliveries[].cost_usd",
+            "async_deliveries[].delivered_items",
+            "async_deliveries[].delivered_turn",
+            "async_deliveries[].elapsed_ms",
+            "async_deliveries[].error",
+            "async_deliveries[].external_spend",
+            "async_deliveries[].input_tokens",
+            "async_deliveries[].llm_calls",
+            "async_deliveries[].model",
+            "async_deliveries[].output_tokens",
+            "async_deliveries[].price_source",
+            "async_deliveries[].reasoning_tokens",
+            "async_deliveries[].requested_by",
+            "async_deliveries[].served_model",
+            "async_deliveries[].status",
+            "async_deliveries[].substituted",
+            "async_deliveries[].summary",
+            "async_deliveries[].tool",
             "candidate_error",
             "candidate_instance_id",
             "candidate_kind",
@@ -356,10 +551,37 @@ PINNED: dict[str, frozenset[str]] = {
             "judge_model",
             "judge_reasoning",
             "judge_repeats",
+            "judge_repeats[].judge_config_ids",
+            "judge_repeats[].scores",
+            "judge_repeats[].scores[].dim",
+            "judge_repeats[].scores[].first_judge_config_id",
+            "judge_repeats[].scores[].first_served_model",
+            "judge_repeats[].scores[].repeat",
+            "judge_repeats[].scores[].repeat.served_model",
             "judge_rescores",
+            "judge_rescores[].cost_usd",
             "judge_score()",
             "judge_scores()",
             "judge_seconds",
+            "judge_seconds[].judge",
+            "judge_seconds[].judge.model",
+            "judge_seconds[].judge.temperature",
+            "judge_seconds[].judge_config_ids",
+            "judge_seconds[].pass_id",
+            "judge_seconds[].scores",
+            "judge_seconds[].scores[].dim",
+            "judge_seconds[].scores[].first_judge_config_id",
+            "judge_seconds[].scores[].first_judge_sent_settings",
+            "judge_seconds[].scores[].first_judge_sent_settings.model_dump()",
+            "judge_seconds[].scores[].first_judge_temperature",
+            "judge_seconds[].scores[].first_score",
+            "judge_seconds[].scores[].first_served_model",
+            "judge_seconds[].scores[].scale",
+            "judge_seconds[].scores[].second",
+            "judge_seconds[].scores[].second.judge_sent_settings",
+            "judge_seconds[].scores[].second.judge_sent_settings.model_dump()",
+            "judge_seconds[].scores[].second.score",
+            "judge_seconds[].scores[].second.served_model",
             "k_iteration",
             "kind_payload",
             "latency",
@@ -393,6 +615,10 @@ PINNED: dict[str, frozenset[str]] = {
             "outcome_score.served_model",
             "phase_timings",
             "precondition_outcomes",
+            "precondition_outcomes[].detail",
+            "precondition_outcomes[].expression",
+            "precondition_outcomes[].held",
+            "precondition_outcomes[].presumes",
             "rubric_scores",
             "rubric_scores[].axis",
             "rubric_scores[].clears()",
@@ -451,6 +677,10 @@ PINNED: dict[str, frozenset[str]] = {
             "usage[].reasoning_tokens",
             "usage[].role",
             "usage[].sent_settings",
+            "usage[].sent_settings[].==",
+            "usage[].sent_settings[].model_dump()",
+            "usage[].sent_settings[].reasoning_max_tokens",
+            "usage[].sent_settings[].strict_output",
             "usage[].served_model",
             "usage[].unanswered_lost",
             "usage[].unanswered_reasons",
@@ -463,6 +693,7 @@ PINNED: dict[str, frozenset[str]] = {
     "aggregates": frozenset(
         {
             "async_deliveries",
+            "async_deliveries[].substituted",
             "candidate_error",
             "candidate_kind",
             "cost_roles",
@@ -483,7 +714,15 @@ PINNED: dict[str, frozenset[str]] = {
             "judge_error",
             "judge_model",
             "judge_repeats",
+            "judge_repeats[].judge_config_ids",
+            "judge_repeats[].scores",
+            "judge_repeats[].scores[].dim",
+            "judge_repeats[].scores[].first_judge_config_id",
+            "judge_repeats[].scores[].first_served_model",
+            "judge_repeats[].scores[].repeat",
+            "judge_repeats[].scores[].repeat.served_model",
             "judge_rescores",
+            "judge_rescores[].cost_usd",
             "judge_score()",
             "judge_scores()",
             "k_iteration",
@@ -535,6 +774,8 @@ PINNED: dict[str, frozenset[str]] = {
             "usage",
             "usage[].cost_usd",
             "usage[].role",
+            "usage[].sent_settings",
+            "usage[].sent_settings[].model_dump()",
             "usage[].served_model",
             "variant_key",
         }
@@ -543,6 +784,25 @@ PINNED: dict[str, frozenset[str]] = {
         {
             "account_refused",
             "async_deliveries",
+            "async_deliveries[].acknowledged_turn",
+            "async_deliveries[].cost_usd",
+            "async_deliveries[].delivered_items",
+            "async_deliveries[].delivered_turn",
+            "async_deliveries[].elapsed_ms",
+            "async_deliveries[].error",
+            "async_deliveries[].external_spend",
+            "async_deliveries[].input_tokens",
+            "async_deliveries[].llm_calls",
+            "async_deliveries[].model",
+            "async_deliveries[].output_tokens",
+            "async_deliveries[].price_source",
+            "async_deliveries[].reasoning_tokens",
+            "async_deliveries[].requested_by",
+            "async_deliveries[].served_model",
+            "async_deliveries[].status",
+            "async_deliveries[].substituted",
+            "async_deliveries[].summary",
+            "async_deliveries[].tool",
             "candidate_error",
             "candidate_instance_id",
             "candidate_kind",
@@ -573,6 +833,11 @@ PINNED: dict[str, frozenset[str]] = {
             "k_iteration",
             "kind_payload",
             "latency",
+            "latency.async_wait_ms",
+            "latency.judge_ms",
+            "latency.llm_ms",
+            "latency.tool_ms",
+            "latency.total_ms",
             "lease_epoch",
             "metered_calls",
             "metered_calls_refused",
@@ -592,6 +857,10 @@ PINNED: dict[str, frozenset[str]] = {
             "outcome_score.served_model",
             "phase_timings",
             "precondition_outcomes",
+            "precondition_outcomes[].detail",
+            "precondition_outcomes[].expression",
+            "precondition_outcomes[].held",
+            "precondition_outcomes[].presumes",
             "rubric_scores",
             "rubric_scores[].axis",
             "rubric_scores[].criterion_fingerprint",
@@ -643,6 +912,7 @@ PINNED: dict[str, frozenset[str]] = {
             "usage[].reasoning_tokens",
             "usage[].role",
             "usage[].sent_settings",
+            "usage[].sent_settings[].model_dump()",
             "usage[].served_model",
             "usage[].unanswered_lost",
             "usage[].unanswered_reasons",
@@ -655,29 +925,184 @@ PINNED: dict[str, frozenset[str]] = {
 }
 
 #: What each campaign leaves unread of its family's pinned set: a campaign whose results carry no latency, no
-#: judge or no host measure reads none of those attributes, and a campaign missing here reads them all.
+#: judge, no record list or no host measure reads none of those attributes; a campaign missing here reads them
+#: all.
 UNREAD: dict[str, dict[str, frozenset[str]]] = {
     "bundle": {
         "scaled": frozenset(
             {
+                "async_deliveries[].acknowledged_turn",
+                "async_deliveries[].cost_usd",
+                "async_deliveries[].delivered_items",
+                "async_deliveries[].delivered_turn",
+                "async_deliveries[].elapsed_ms",
+                "async_deliveries[].error",
+                "async_deliveries[].external_spend",
+                "async_deliveries[].input_tokens",
+                "async_deliveries[].llm_calls",
+                "async_deliveries[].model",
+                "async_deliveries[].output_tokens",
+                "async_deliveries[].price_source",
+                "async_deliveries[].reasoning_tokens",
+                "async_deliveries[].requested_by",
+                "async_deliveries[].served_model",
+                "async_deliveries[].status",
+                "async_deliveries[].substituted",
+                "async_deliveries[].summary",
+                "async_deliveries[].tool",
+                "judge_repeats[].judge_config_ids",
+                "judge_repeats[].scores",
+                "judge_repeats[].scores[].dim",
+                "judge_repeats[].scores[].first_judge_config_id",
+                "judge_repeats[].scores[].first_served_model",
+                "judge_repeats[].scores[].repeat",
+                "judge_repeats[].scores[].repeat.served_model",
+                "judge_rescores[].cost_usd",
+                "judge_seconds[].judge",
+                "judge_seconds[].judge.model",
+                "judge_seconds[].judge.temperature",
+                "judge_seconds[].judge_config_ids",
+                "judge_seconds[].pass_id",
+                "judge_seconds[].scores",
+                "judge_seconds[].scores[].dim",
+                "judge_seconds[].scores[].first_judge_config_id",
+                "judge_seconds[].scores[].first_judge_sent_settings",
+                "judge_seconds[].scores[].first_judge_sent_settings.model_dump()",
+                "judge_seconds[].scores[].first_judge_temperature",
+                "judge_seconds[].scores[].first_score",
+                "judge_seconds[].scores[].first_served_model",
+                "judge_seconds[].scores[].scale",
+                "judge_seconds[].scores[].second",
+                "judge_seconds[].scores[].second.judge_sent_settings",
+                "judge_seconds[].scores[].second.judge_sent_settings.model_dump()",
+                "judge_seconds[].scores[].second.score",
+                "judge_seconds[].scores[].second.served_model",
                 "latency.async_wait_ms",
                 "latency.judge_ms",
                 "latency.llm_ms",
                 "latency.tool_ms",
                 "latency.total_ms",
+                "precondition_outcomes[].detail",
+                "precondition_outcomes[].expression",
+                "precondition_outcomes[].held",
+                "precondition_outcomes[].presumes",
+                "usage[].sent_settings[].==",
+                "usage[].sent_settings[].model_dump()",
+                "usage[].sent_settings[].reasoning_max_tokens",
+                "usage[].sent_settings[].strict_output",
             }
         ),
         "scaled_two_aspects": frozenset(
             {
+                "async_deliveries[].acknowledged_turn",
+                "async_deliveries[].cost_usd",
+                "async_deliveries[].delivered_items",
+                "async_deliveries[].delivered_turn",
+                "async_deliveries[].elapsed_ms",
+                "async_deliveries[].error",
+                "async_deliveries[].external_spend",
+                "async_deliveries[].input_tokens",
+                "async_deliveries[].llm_calls",
+                "async_deliveries[].model",
+                "async_deliveries[].output_tokens",
+                "async_deliveries[].price_source",
+                "async_deliveries[].reasoning_tokens",
+                "async_deliveries[].requested_by",
+                "async_deliveries[].served_model",
+                "async_deliveries[].status",
+                "async_deliveries[].substituted",
+                "async_deliveries[].summary",
+                "async_deliveries[].tool",
+                "judge_repeats[].judge_config_ids",
+                "judge_repeats[].scores",
+                "judge_repeats[].scores[].dim",
+                "judge_repeats[].scores[].first_judge_config_id",
+                "judge_repeats[].scores[].first_served_model",
+                "judge_repeats[].scores[].repeat",
+                "judge_repeats[].scores[].repeat.served_model",
+                "judge_rescores[].cost_usd",
+                "judge_seconds[].judge",
+                "judge_seconds[].judge.model",
+                "judge_seconds[].judge.temperature",
+                "judge_seconds[].judge_config_ids",
+                "judge_seconds[].pass_id",
+                "judge_seconds[].scores",
+                "judge_seconds[].scores[].dim",
+                "judge_seconds[].scores[].first_judge_config_id",
+                "judge_seconds[].scores[].first_judge_sent_settings",
+                "judge_seconds[].scores[].first_judge_sent_settings.model_dump()",
+                "judge_seconds[].scores[].first_judge_temperature",
+                "judge_seconds[].scores[].first_score",
+                "judge_seconds[].scores[].first_served_model",
+                "judge_seconds[].scores[].scale",
+                "judge_seconds[].scores[].second",
+                "judge_seconds[].scores[].second.judge_sent_settings",
+                "judge_seconds[].scores[].second.judge_sent_settings.model_dump()",
+                "judge_seconds[].scores[].second.score",
+                "judge_seconds[].scores[].second.served_model",
                 "latency.async_wait_ms",
                 "latency.judge_ms",
                 "latency.llm_ms",
                 "latency.tool_ms",
                 "latency.total_ms",
+                "precondition_outcomes[].detail",
+                "precondition_outcomes[].expression",
+                "precondition_outcomes[].held",
+                "precondition_outcomes[].presumes",
+                "usage[].sent_settings[].==",
+                "usage[].sent_settings[].model_dump()",
+                "usage[].sent_settings[].reasoning_max_tokens",
+                "usage[].sent_settings[].strict_output",
             }
         ),
         "toyhost": frozenset(
             {
+                "async_deliveries[].acknowledged_turn",
+                "async_deliveries[].cost_usd",
+                "async_deliveries[].delivered_items",
+                "async_deliveries[].delivered_turn",
+                "async_deliveries[].elapsed_ms",
+                "async_deliveries[].error",
+                "async_deliveries[].external_spend",
+                "async_deliveries[].input_tokens",
+                "async_deliveries[].llm_calls",
+                "async_deliveries[].model",
+                "async_deliveries[].output_tokens",
+                "async_deliveries[].price_source",
+                "async_deliveries[].reasoning_tokens",
+                "async_deliveries[].requested_by",
+                "async_deliveries[].served_model",
+                "async_deliveries[].status",
+                "async_deliveries[].substituted",
+                "async_deliveries[].summary",
+                "async_deliveries[].tool",
+                "judge_repeats[].judge_config_ids",
+                "judge_repeats[].scores",
+                "judge_repeats[].scores[].dim",
+                "judge_repeats[].scores[].first_judge_config_id",
+                "judge_repeats[].scores[].first_served_model",
+                "judge_repeats[].scores[].repeat",
+                "judge_repeats[].scores[].repeat.served_model",
+                "judge_rescores[].cost_usd",
+                "judge_seconds[].judge",
+                "judge_seconds[].judge.model",
+                "judge_seconds[].judge.temperature",
+                "judge_seconds[].judge_config_ids",
+                "judge_seconds[].pass_id",
+                "judge_seconds[].scores",
+                "judge_seconds[].scores[].dim",
+                "judge_seconds[].scores[].first_judge_config_id",
+                "judge_seconds[].scores[].first_judge_sent_settings",
+                "judge_seconds[].scores[].first_judge_sent_settings.model_dump()",
+                "judge_seconds[].scores[].first_judge_temperature",
+                "judge_seconds[].scores[].first_score",
+                "judge_seconds[].scores[].first_served_model",
+                "judge_seconds[].scores[].scale",
+                "judge_seconds[].scores[].second",
+                "judge_seconds[].scores[].second.judge_sent_settings",
+                "judge_seconds[].scores[].second.judge_sent_settings.model_dump()",
+                "judge_seconds[].scores[].second.score",
+                "judge_seconds[].scores[].second.served_model",
                 "outcome_score.axis",
                 "outcome_score.criterion_fingerprint",
                 "outcome_score.dim",
@@ -696,6 +1121,10 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "outcome_score.scale",
                 "outcome_score.score",
                 "outcome_score.served_model",
+                "precondition_outcomes[].detail",
+                "precondition_outcomes[].expression",
+                "precondition_outcomes[].held",
+                "precondition_outcomes[].presumes",
                 "rubric_scores[].judge_sent_settings.==",
                 "rubric_scores[].judge_sent_settings.model_dump()",
                 "rubric_scores[].judge_sent_settings.strict_output",
@@ -713,15 +1142,65 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "transcript_score.scale",
                 "transcript_score.score",
                 "transcript_score.served_model",
+                "usage[].sent_settings[].==",
+                "usage[].sent_settings[].model_dump()",
+                "usage[].sent_settings[].reasoning_max_tokens",
+                "usage[].sent_settings[].strict_output",
             }
         ),
         "courierhost": frozenset(
             {
+                "async_deliveries[].acknowledged_turn",
+                "async_deliveries[].cost_usd",
+                "async_deliveries[].delivered_items",
+                "async_deliveries[].delivered_turn",
+                "async_deliveries[].elapsed_ms",
+                "async_deliveries[].error",
+                "async_deliveries[].external_spend",
+                "async_deliveries[].input_tokens",
+                "async_deliveries[].llm_calls",
+                "async_deliveries[].model",
+                "async_deliveries[].output_tokens",
+                "async_deliveries[].price_source",
+                "async_deliveries[].reasoning_tokens",
+                "async_deliveries[].requested_by",
+                "async_deliveries[].served_model",
+                "async_deliveries[].status",
+                "async_deliveries[].substituted",
+                "async_deliveries[].summary",
+                "async_deliveries[].tool",
                 "goal_state_outcomes[].detail",
                 "goal_state_outcomes[].expression",
                 "goal_state_outcomes[].passed",
+                "judge_repeats[].judge_config_ids",
+                "judge_repeats[].scores",
+                "judge_repeats[].scores[].dim",
+                "judge_repeats[].scores[].first_judge_config_id",
+                "judge_repeats[].scores[].first_served_model",
+                "judge_repeats[].scores[].repeat",
+                "judge_repeats[].scores[].repeat.served_model",
+                "judge_rescores[].cost_usd",
                 "judge_score()",
                 "judge_scores()",
+                "judge_seconds[].judge",
+                "judge_seconds[].judge.model",
+                "judge_seconds[].judge.temperature",
+                "judge_seconds[].judge_config_ids",
+                "judge_seconds[].pass_id",
+                "judge_seconds[].scores",
+                "judge_seconds[].scores[].dim",
+                "judge_seconds[].scores[].first_judge_config_id",
+                "judge_seconds[].scores[].first_judge_sent_settings",
+                "judge_seconds[].scores[].first_judge_sent_settings.model_dump()",
+                "judge_seconds[].scores[].first_judge_temperature",
+                "judge_seconds[].scores[].first_score",
+                "judge_seconds[].scores[].first_served_model",
+                "judge_seconds[].scores[].scale",
+                "judge_seconds[].scores[].second",
+                "judge_seconds[].scores[].second.judge_sent_settings",
+                "judge_seconds[].scores[].second.judge_sent_settings.model_dump()",
+                "judge_seconds[].scores[].second.score",
+                "judge_seconds[].scores[].second.served_model",
                 "latency.async_wait_ms",
                 "latency.judge_ms",
                 "latency.llm_ms",
@@ -745,6 +1224,10 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "outcome_score.scale",
                 "outcome_score.score",
                 "outcome_score.served_model",
+                "precondition_outcomes[].detail",
+                "precondition_outcomes[].expression",
+                "precondition_outcomes[].held",
+                "precondition_outcomes[].presumes",
                 "rubric_scores[].axis",
                 "rubric_scores[].clears()",
                 "rubric_scores[].criterion_fingerprint",
@@ -775,26 +1258,68 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "transcript_score.scale",
                 "transcript_score.score",
                 "transcript_score.served_model",
+                "usage[].sent_settings[].==",
+                "usage[].sent_settings[].model_dump()",
+                "usage[].sent_settings[].reasoning_max_tokens",
+                "usage[].sent_settings[].strict_output",
+            }
+        ),
+        "enriched": frozenset(
+            {
+                "outcome_score.judge_sent_settings.max_tokens",
+                "outcome_score.judge_sent_settings.reasoning_effort",
+                "outcome_score.judge_sent_settings.unsent_reasoning_max_tokens",
             }
         ),
     },
     "aggregates": {
         "scaled": frozenset(
             {
+                "async_deliveries[].substituted",
                 "judge_model",
+                "judge_repeats[].judge_config_ids",
+                "judge_repeats[].scores",
+                "judge_repeats[].scores[].dim",
+                "judge_repeats[].scores[].first_judge_config_id",
+                "judge_repeats[].scores[].first_served_model",
+                "judge_repeats[].scores[].repeat",
+                "judge_repeats[].scores[].repeat.served_model",
+                "judge_rescores[].cost_usd",
                 "latency.total_ms",
+                "usage[].sent_settings",
+                "usage[].sent_settings[].model_dump()",
             }
         ),
         "scaled_two_aspects": frozenset(
             {
+                "async_deliveries[].substituted",
                 "judge_model",
+                "judge_repeats[].judge_config_ids",
+                "judge_repeats[].scores",
+                "judge_repeats[].scores[].dim",
+                "judge_repeats[].scores[].first_judge_config_id",
+                "judge_repeats[].scores[].first_served_model",
+                "judge_repeats[].scores[].repeat",
+                "judge_repeats[].scores[].repeat.served_model",
+                "judge_rescores[].cost_usd",
                 "latency.total_ms",
+                "usage[].sent_settings",
+                "usage[].sent_settings[].model_dump()",
             }
         ),
         "toyhost": frozenset(
             {
+                "async_deliveries[].substituted",
                 "judge_cut_short",
                 "judge_model",
+                "judge_repeats[].judge_config_ids",
+                "judge_repeats[].scores",
+                "judge_repeats[].scores[].dim",
+                "judge_repeats[].scores[].first_judge_config_id",
+                "judge_repeats[].scores[].first_served_model",
+                "judge_repeats[].scores[].repeat",
+                "judge_repeats[].scores[].repeat.served_model",
+                "judge_rescores[].cost_usd",
                 "outcome_score.criterion_fingerprint",
                 "outcome_score.dim",
                 "outcome_score.judge_sent_settings",
@@ -818,13 +1343,24 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "transcript_score.score",
                 "transcript_score.served_model",
                 "turns_delivered",
+                "usage[].sent_settings",
+                "usage[].sent_settings[].model_dump()",
             }
         ),
         "courierhost": frozenset(
             {
+                "async_deliveries[].substituted",
                 "goal_state_outcomes[].expression",
                 "goal_state_outcomes[].passed",
                 "judge_cut_short",
+                "judge_repeats[].judge_config_ids",
+                "judge_repeats[].scores",
+                "judge_repeats[].scores[].dim",
+                "judge_repeats[].scores[].first_judge_config_id",
+                "judge_repeats[].scores[].first_served_model",
+                "judge_repeats[].scores[].repeat",
+                "judge_repeats[].scores[].repeat.served_model",
+                "judge_rescores[].cost_usd",
                 "judge_score()",
                 "judge_scores()",
                 "latency.total_ms",
@@ -863,11 +1399,20 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "transcript_score.score",
                 "transcript_score.served_model",
                 "turns_delivered",
+                "usage[].sent_settings",
+                "usage[].sent_settings[].model_dump()",
+            }
+        ),
+        "enriched": frozenset(
+            {
+                "judge_model",
+                "usage[].cost_usd",
             }
         ),
         "regressed": frozenset(
             {
                 "async_deliveries",
+                "async_deliveries[].substituted",
                 "candidate_kind",
                 "cost_roles",
                 "cost_usd",
@@ -877,7 +1422,15 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "host_measures",
                 "judge_cut_short",
                 "judge_model",
+                "judge_repeats[].judge_config_ids",
+                "judge_repeats[].scores",
+                "judge_repeats[].scores[].dim",
+                "judge_repeats[].scores[].first_judge_config_id",
+                "judge_repeats[].scores[].first_served_model",
+                "judge_repeats[].scores[].repeat",
+                "judge_repeats[].scores[].repeat.served_model",
                 "judge_rescores",
+                "judge_rescores[].cost_usd",
                 "k_iteration",
                 "latency",
                 "latency.total_ms",
@@ -887,14 +1440,68 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "termination",
                 "turns_delivered",
                 "usage[].cost_usd",
+                "usage[].sent_settings",
+                "usage[].sent_settings[].model_dump()",
             }
         ),
     },
     "planning": {
+        "scaled": frozenset(
+            {
+                "async_deliveries[].acknowledged_turn",
+                "async_deliveries[].cost_usd",
+                "async_deliveries[].delivered_items",
+                "async_deliveries[].delivered_turn",
+                "async_deliveries[].elapsed_ms",
+                "async_deliveries[].error",
+                "async_deliveries[].external_spend",
+                "async_deliveries[].input_tokens",
+                "async_deliveries[].llm_calls",
+                "async_deliveries[].model",
+                "async_deliveries[].output_tokens",
+                "async_deliveries[].price_source",
+                "async_deliveries[].reasoning_tokens",
+                "async_deliveries[].requested_by",
+                "async_deliveries[].served_model",
+                "async_deliveries[].status",
+                "async_deliveries[].substituted",
+                "async_deliveries[].summary",
+                "async_deliveries[].tool",
+                "latency.async_wait_ms",
+                "latency.judge_ms",
+                "latency.llm_ms",
+                "latency.tool_ms",
+                "latency.total_ms",
+                "precondition_outcomes[].detail",
+                "precondition_outcomes[].expression",
+                "precondition_outcomes[].held",
+                "precondition_outcomes[].presumes",
+                "usage[].sent_settings[].model_dump()",
+            }
+        ),
         "toyhost": frozenset(
             {
                 "account_refused",
                 "async_deliveries",
+                "async_deliveries[].acknowledged_turn",
+                "async_deliveries[].cost_usd",
+                "async_deliveries[].delivered_items",
+                "async_deliveries[].delivered_turn",
+                "async_deliveries[].elapsed_ms",
+                "async_deliveries[].error",
+                "async_deliveries[].external_spend",
+                "async_deliveries[].input_tokens",
+                "async_deliveries[].llm_calls",
+                "async_deliveries[].model",
+                "async_deliveries[].output_tokens",
+                "async_deliveries[].price_source",
+                "async_deliveries[].reasoning_tokens",
+                "async_deliveries[].requested_by",
+                "async_deliveries[].served_model",
+                "async_deliveries[].status",
+                "async_deliveries[].substituted",
+                "async_deliveries[].summary",
+                "async_deliveries[].tool",
                 "candidate_error",
                 "candidate_instance_id",
                 "candidate_kind",
@@ -925,6 +1532,11 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "k_iteration",
                 "kind_payload",
                 "latency",
+                "latency.async_wait_ms",
+                "latency.judge_ms",
+                "latency.llm_ms",
+                "latency.tool_ms",
+                "latency.total_ms",
                 "lease_epoch",
                 "metered_calls",
                 "metered_calls_refused",
@@ -944,6 +1556,10 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "outcome_score.served_model",
                 "phase_timings",
                 "precondition_outcomes",
+                "precondition_outcomes[].detail",
+                "precondition_outcomes[].expression",
+                "precondition_outcomes[].held",
+                "precondition_outcomes[].presumes",
                 "rubric_scores",
                 "rubric_scores[].axis",
                 "rubric_scores[].criterion_fingerprint",
@@ -995,6 +1611,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "usage[].reasoning_tokens",
                 "usage[].role",
                 "usage[].sent_settings",
+                "usage[].sent_settings[].model_dump()",
                 "usage[].served_model",
                 "usage[].unanswered_lost",
                 "usage[].unanswered_reasons",
@@ -1006,9 +1623,33 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
         ),
         "courierhost": frozenset(
             {
+                "async_deliveries[].acknowledged_turn",
+                "async_deliveries[].cost_usd",
+                "async_deliveries[].delivered_items",
+                "async_deliveries[].delivered_turn",
+                "async_deliveries[].elapsed_ms",
+                "async_deliveries[].error",
+                "async_deliveries[].external_spend",
+                "async_deliveries[].input_tokens",
+                "async_deliveries[].llm_calls",
+                "async_deliveries[].model",
+                "async_deliveries[].output_tokens",
+                "async_deliveries[].price_source",
+                "async_deliveries[].reasoning_tokens",
+                "async_deliveries[].requested_by",
+                "async_deliveries[].served_model",
+                "async_deliveries[].status",
+                "async_deliveries[].substituted",
+                "async_deliveries[].summary",
+                "async_deliveries[].tool",
                 "goal_state_outcomes[].detail",
                 "goal_state_outcomes[].expression",
                 "goal_state_outcomes[].passed",
+                "latency.async_wait_ms",
+                "latency.judge_ms",
+                "latency.llm_ms",
+                "latency.tool_ms",
+                "latency.total_ms",
                 "model_copy()",
                 "outcome_score.axis",
                 "outcome_score.criterion_fingerprint",
@@ -1021,6 +1662,10 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "outcome_score.scale",
                 "outcome_score.score",
                 "outcome_score.served_model",
+                "precondition_outcomes[].detail",
+                "precondition_outcomes[].expression",
+                "precondition_outcomes[].held",
+                "precondition_outcomes[].presumes",
                 "rubric_scores[].axis",
                 "rubric_scores[].criterion_fingerprint",
                 "rubric_scores[].dim",
@@ -1044,6 +1689,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "transcript_score.scale",
                 "transcript_score.score",
                 "transcript_score.served_model",
+                "usage[].sent_settings[].model_dump()",
             }
         ),
     },
@@ -1130,6 +1776,60 @@ PROSE_SITES: dict[str, dict[str, frozenset[str]]] = {
     },
 }
 
+#: What each campaign leaves unread of its family's prose pins (:func:`prose_pins`), as :data:`UNREAD` does.
+PROSE_UNREAD: dict[str, dict[str, frozenset[str]]] = {
+    "bundle": {
+        "toyhost": frozenset(
+            {
+                "outcome_score.reasoning at analysis/bundle/measures.py _scalar_leaves",
+                "outcome_score.reasoning at analysis/bundle/trials.py _row",
+                "transcript_score.reasoning at analysis/bundle/measures.py _scalar_leaves",
+                "transcript_score.reasoning at analysis/bundle/trials.py _row",
+            }
+        ),
+        "courierhost": frozenset(
+            {
+                "outcome_score.reasoning at analysis/bundle/measures.py _scalar_leaves",
+                "outcome_score.reasoning at analysis/bundle/trials.py _row",
+                "rubric_scores[].reasoning at analysis/bundle/measures.py _scalar_leaves",
+                "rubric_scores[].reasoning at analysis/bundle/trials.py _row",
+                "transcript_score.reasoning at analysis/bundle/measures.py _scalar_leaves",
+                "transcript_score.reasoning at analysis/bundle/trials.py _row",
+            }
+        ),
+    },
+    "aggregates": {
+        "regressed": frozenset(
+            {
+                "judge_cannot_tell at analysis/reporting.py project_score_records",
+                "judge_cannot_tell at kernel/scoring.py has_pass_criterion",
+            }
+        ),
+    },
+    "planning": {
+        "toyhost": frozenset(
+            {
+                "judge_cannot_tell at analysis/bundle/measures.py _carrier_leaves",
+                "judge_cannot_tell at analysis/bundle/measures.py _scalar_leaves",
+                "judge_cannot_tell at analysis/reporting.py project_score_records",
+                "judge_cannot_tell at kernel/result_condition.py judged_on_every_dim",
+                "judge_reasoning at analysis/bundle/measures.py _carrier_leaves",
+                "judge_reasoning at analysis/bundle/measures.py _scalar_leaves",
+                "outcome_score.reasoning at analysis/bundle/measures.py _scalar_leaves",
+                "rubric_scores[].reasoning at analysis/bundle/measures.py _scalar_leaves",
+                "transcript_score.reasoning at analysis/bundle/measures.py _scalar_leaves",
+            }
+        ),
+        "courierhost": frozenset(
+            {
+                "outcome_score.reasoning at analysis/bundle/measures.py _scalar_leaves",
+                "rubric_scores[].reasoning at analysis/bundle/measures.py _scalar_leaves",
+                "transcript_score.reasoning at analysis/bundle/measures.py _scalar_leaves",
+            }
+        ),
+    },
+}
+
 
 class TestTheRecorderRecordsWhatIsReadAndChangesNothing:
     """The recorder's own contract, on one stored result: each read is recorded at its path, a truth test of prose apart
@@ -1192,6 +1892,42 @@ class TestTheRecorderRecordsWhatIsReadAndChangesNothing:
             site.startswith("test_result_reading_fields.py:") for sites in access.sites.values() for site in sites
         )
 
+    def test_a_recorded_model_compares_and_prints_as_the_model_it_records(self) -> None:
+        """Equal to an equal unrecorded model, and to an equal one recorded at another path, both ways round; unequal
+        to an unequal one; printed under its own class's name. Each recorded path is a class of its own, and both
+        pydantic's equality and the core shapes' require one class on both sides."""
+        sent = ClientRequestSettings(max_tokens=1024, reasoning_effort="high", reasoning_max_tokens=None)
+        other = ClientRequestSettings(max_tokens=2048, reasoning_effort="high", reasoning_max_tokens=None)
+        storage, _ = memory_storage()
+        stored = make_eval_result(
+            id="r-1",
+            rubric_scores=[
+                RubricScore(
+                    dim="conversation.tone", score=4, scale="ordinal", axis="capability", judge_sent_settings=sent
+                )
+            ],
+            transcript_score=RubricScore(
+                dim=TRANSCRIPT_DIM_ID, score=4, scale="ordinal", axis="capability", judge_sent_settings=sent
+            ),
+        )
+        storage.save_eval_result(stored)
+
+        with recording_results():
+            (result,) = storage.query_eval_results(stored.scope_id)
+        transcript = result.transcript_score
+        assert transcript is not None
+        at_transcript = transcript.judge_sent_settings
+        at_rubric = result.rubric_scores[0].judge_sent_settings
+        assert at_transcript is not None and at_rubric is not None
+
+        assert type(at_transcript) is not type(at_rubric) and type(at_transcript) is not ClientRequestSettings
+        assert at_transcript == sent and sent == at_transcript and not at_transcript != sent
+        assert at_transcript == at_rubric and at_rubric == at_transcript
+        assert at_transcript != other and other != at_transcript
+        assert result == stored and stored == result
+        assert repr(at_transcript) == repr(sent) and str(at_transcript) == str(sent)
+        assert repr(result).startswith("EvalResult(")
+
     def test_a_result_read_outside_the_recorder_is_the_stored_class(self) -> None:
         storage, _ = memory_storage()
         storage.save_eval_result(make_eval_result(id="r-1"))
@@ -1230,11 +1966,17 @@ def test_each_family_reads_exactly_its_pinned_attributes(family: str, name: str)
         "reads it, so the reading carries nothing it need not"
         for path in sorted(expected - read)
     ]
-    for path, by_site in sorted(measurement.access.prose.items()):
-        unpinned = {_where(site) for site in by_site} - PROSE_SITES[family].get(path, frozenset())
-        problems += [
-            f"{family} reads judge prose {path} over {name} at {where}, unpinned" for where in sorted(unpinned)
-        ]
+    prose = frozenset(
+        f"{path} at {_where(site)}" for path, by_site in measurement.access.prose.items() for site in by_site
+    )
+    expected_prose = prose_pins(PROSE_SITES[family]) - PROSE_UNREAD[family].get(name, frozenset())
+    problems += [
+        f"{family} reads judge prose {pin} over {name}, unpinned there" for pin in sorted(prose - expected_prose)
+    ]
+    problems += [
+        f"{family} no longer reads judge prose {pin} over {name}: unpin it there (PROSE_UNREAD), or from the family"
+        for pin in sorted(expected_prose - prose)
+    ]
     if measurement.listed_trials is not None:
         listed = measurement.listed_trials
         if not listed:
@@ -1248,11 +1990,15 @@ def test_each_family_reads_exactly_its_pinned_attributes(family: str, name: str)
 
 @pytest.mark.parametrize("family", sorted(FAMILIES))
 def test_every_pin_is_read_by_some_campaign(family: str) -> None:
-    """A path unread by every campaign is a pin the reading need not carry: the unread table names only what each
-    campaign leaves out of what some other campaign reads."""
+    """A path, or a prose site, unread by every campaign is a pin the reading need not carry: the unread tables name only
+    what each campaign leaves out of what some other campaign reads."""
     _, names = FAMILIES[family]
     never = frozenset.intersection(*(UNREAD[family].get(name, frozenset()) for name in names))
 
+    never_prose = frozenset.intersection(*(PROSE_UNREAD[family].get(name, frozenset()) for name in names))
+
     assert not never, f"{family}: pinned but unread by every campaign: {sorted(never)}"
-    assert set(UNREAD[family]) <= set(names)
+    assert not never_prose, f"{family}: prose pinned but read by no campaign: {sorted(never_prose)}"
+    assert set(UNREAD[family]) <= set(names) and set(PROSE_UNREAD[family]) <= set(names)
     assert all(paths <= PINNED[family] for paths in UNREAD[family].values())
+    assert all(pins <= prose_pins(PROSE_SITES[family]) for pins in PROSE_UNREAD[family].values())
