@@ -516,18 +516,20 @@ def _where(site: str) -> str:
 
 
 #: Every attribute path each family reads of a result, over every campaign it is read over (see the module
-#: docstring for the path syntax). Sizes: bundle 195, aggregates 102, planning 139.
+#: docstring for the path syntax). Sizes: bundle 187, aggregates 102, planning 124.
+#:
+#: The measure walk reads each model type's declared fields, never the judge's prose
+#: (``analysis/bundle/measures.py``), so no family reads ``judge_reasoning``, ``world_events`` or ``kind_payload``
+#: through it, and planning reads no score's ``reasoning``.
 #:
 #: Every record list a result carries is filled in the enriched campaign, so its items' fields are measured, with
-#: three exceptions, each carried whole if P1's reading carries it at all: ``world_events[]`` (no family reads an
-#: item: the measure walk skips the verbatim fields and no reader of these families walks the log),
-#: ``judge_rescores[].usage[]`` (no family reads a re-judge's own usage rows) and ``judge_cut_short{}`` (no campaign
+#: two exceptions: ``judge_rescores[].usage[]`` (no family reads a re-judge's own usage rows, so the reading leaves
+#: them out) and ``judge_cut_short{}`` (carried whole by the reading; no campaign
 #: carries a cut-short judge answer, so its items' fields are unmeasured; one item read is known by reading the code,
 #: ``.sent_settings`` at ``analysis/bundle/cell_reads.py``).
 PINNED: dict[str, frozenset[str]] = {
     "bundle": frozenset(
         {
-            "account_refused",
             "async_deliveries",
             "async_deliveries[].acknowledged_turn",
             "async_deliveries[].cost_usd",
@@ -535,7 +537,6 @@ PINNED: dict[str, frozenset[str]] = {
             "async_deliveries[].delivered_turn",
             "async_deliveries[].elapsed_ms",
             "async_deliveries[].error",
-            "async_deliveries[].external_spend",
             "async_deliveries[].input_tokens",
             "async_deliveries[].llm_calls",
             "async_deliveries[].model",
@@ -572,7 +573,6 @@ PINNED: dict[str, frozenset[str]] = {
             "judge_cut_short",
             "judge_error",
             "judge_model",
-            "judge_reasoning",
             "judge_repeats",
             "judge_repeats[].judge_config_ids",
             "judge_repeats[].scores",
@@ -616,7 +616,6 @@ PINNED: dict[str, frozenset[str]] = {
             "judge_seconds[].scores[].second.score",
             "judge_seconds[].scores[].second.served_model",
             "k_iteration",
-            "kind_payload",
             "latency",
             "latency.async_wait_ms",
             "latency.judge_ms",
@@ -651,7 +650,6 @@ PINNED: dict[str, frozenset[str]] = {
             "precondition_outcomes",
             "precondition_outcomes[].detail",
             "precondition_outcomes[].expression",
-            "precondition_outcomes[].held",
             "precondition_outcomes[].presumes",
             "rubric_scores",
             "rubric_scores[].axis",
@@ -717,11 +715,8 @@ PINNED: dict[str, frozenset[str]] = {
             "usage[].sent_settings[].strict_output",
             "usage[].served_model",
             "usage[].unanswered_lost",
-            "usage[].unanswered_reasons",
             "usage[].unanswered_retried",
-            "usage[].unpriced_reasons",
             "variant_key",
-            "world_events",
         }
     ),
     "aggregates": frozenset(
@@ -832,7 +827,6 @@ PINNED: dict[str, frozenset[str]] = {
     ),
     "planning": frozenset(
         {
-            "account_refused",
             "async_deliveries",
             "async_deliveries[].acknowledged_turn",
             "async_deliveries[].cost_usd",
@@ -840,7 +834,6 @@ PINNED: dict[str, frozenset[str]] = {
             "async_deliveries[].delivered_turn",
             "async_deliveries[].elapsed_ms",
             "async_deliveries[].error",
-            "async_deliveries[].external_spend",
             "async_deliveries[].input_tokens",
             "async_deliveries[].llm_calls",
             "async_deliveries[].model",
@@ -866,7 +859,6 @@ PINNED: dict[str, frozenset[str]] = {
             "goal_state_outcomes[].detail",
             "goal_state_outcomes[].expression",
             "goal_state_outcomes[].passed",
-            "has_trace",
             "host_measures",
             "id",
             "identity_version",
@@ -877,12 +869,7 @@ PINNED: dict[str, frozenset[str]] = {
             "judge_cut_short",
             "judge_error",
             "judge_model",
-            "judge_reasoning",
-            "judge_repeats",
-            "judge_rescores",
-            "judge_seconds",
             "k_iteration",
-            "kind_payload",
             "latency",
             "latency.async_wait_ms",
             "latency.judge_ms",
@@ -902,7 +889,6 @@ PINNED: dict[str, frozenset[str]] = {
             "outcome_score.judge_sent_settings.model_dump()",
             "outcome_score.judge_temperature",
             "outcome_score.output_fingerprint",
-            "outcome_score.reasoning",
             "outcome_score.scale",
             "outcome_score.score",
             "outcome_score.served_model",
@@ -910,7 +896,6 @@ PINNED: dict[str, frozenset[str]] = {
             "precondition_outcomes",
             "precondition_outcomes[].detail",
             "precondition_outcomes[].expression",
-            "precondition_outcomes[].held",
             "precondition_outcomes[].presumes",
             "rubric_scores",
             "rubric_scores[].axis",
@@ -921,7 +906,6 @@ PINNED: dict[str, frozenset[str]] = {
             "rubric_scores[].judge_temperature",
             "rubric_scores[].normalized",
             "rubric_scores[].output_fingerprint",
-            "rubric_scores[].reasoning",
             "rubric_scores[].scale",
             "rubric_scores[].score",
             "rubric_scores[].served_model",
@@ -943,7 +927,6 @@ PINNED: dict[str, frozenset[str]] = {
             "transcript_score.judge_sent_settings.model_dump()",
             "transcript_score.judge_temperature",
             "transcript_score.output_fingerprint",
-            "transcript_score.reasoning",
             "transcript_score.scale",
             "transcript_score.score",
             "transcript_score.served_model",
@@ -966,11 +949,8 @@ PINNED: dict[str, frozenset[str]] = {
             "usage[].sent_settings[].model_dump()",
             "usage[].served_model",
             "usage[].unanswered_lost",
-            "usage[].unanswered_reasons",
             "usage[].unanswered_retried",
-            "usage[].unpriced_reasons",
             "variant_key",
-            "world_events",
         }
     ),
 }
@@ -988,7 +968,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "async_deliveries[].delivered_turn",
                 "async_deliveries[].elapsed_ms",
                 "async_deliveries[].error",
-                "async_deliveries[].external_spend",
                 "async_deliveries[].input_tokens",
                 "async_deliveries[].llm_calls",
                 "async_deliveries[].model",
@@ -1047,8 +1026,8 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "model_copy()",
                 "precondition_outcomes[].detail",
                 "precondition_outcomes[].expression",
-                "precondition_outcomes[].held",
                 "precondition_outcomes[].presumes",
+                "usage[].sent_settings",
                 "usage[].sent_settings[].==",
                 "usage[].sent_settings[].model_dump()",
                 "usage[].sent_settings[].reasoning_max_tokens",
@@ -1063,7 +1042,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "async_deliveries[].delivered_turn",
                 "async_deliveries[].elapsed_ms",
                 "async_deliveries[].error",
-                "async_deliveries[].external_spend",
                 "async_deliveries[].input_tokens",
                 "async_deliveries[].llm_calls",
                 "async_deliveries[].model",
@@ -1122,8 +1100,8 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "model_copy()",
                 "precondition_outcomes[].detail",
                 "precondition_outcomes[].expression",
-                "precondition_outcomes[].held",
                 "precondition_outcomes[].presumes",
+                "usage[].sent_settings",
                 "usage[].sent_settings[].==",
                 "usage[].sent_settings[].model_dump()",
                 "usage[].sent_settings[].reasoning_max_tokens",
@@ -1138,7 +1116,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "async_deliveries[].delivered_turn",
                 "async_deliveries[].elapsed_ms",
                 "async_deliveries[].error",
-                "async_deliveries[].external_spend",
                 "async_deliveries[].input_tokens",
                 "async_deliveries[].llm_calls",
                 "async_deliveries[].model",
@@ -1152,6 +1129,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "async_deliveries[].substituted",
                 "async_deliveries[].summary",
                 "async_deliveries[].tool",
+                "judge_cut_short",
                 "judge_repeats[].judge_config_ids",
                 "judge_repeats[].scores",
                 "judge_repeats[].scores[].cannot_tell",
@@ -1210,7 +1188,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "outcome_score.served_model",
                 "precondition_outcomes[].detail",
                 "precondition_outcomes[].expression",
-                "precondition_outcomes[].held",
                 "precondition_outcomes[].presumes",
                 "rubric_scores[].judge_sent_settings.==",
                 "rubric_scores[].judge_sent_settings.model_dump()",
@@ -1229,6 +1206,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "transcript_score.scale",
                 "transcript_score.score",
                 "transcript_score.served_model",
+                "usage[].sent_settings",
                 "usage[].sent_settings[].==",
                 "usage[].sent_settings[].model_dump()",
                 "usage[].sent_settings[].reasoning_max_tokens",
@@ -1243,7 +1221,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "async_deliveries[].delivered_turn",
                 "async_deliveries[].elapsed_ms",
                 "async_deliveries[].error",
-                "async_deliveries[].external_spend",
                 "async_deliveries[].input_tokens",
                 "async_deliveries[].llm_calls",
                 "async_deliveries[].model",
@@ -1260,6 +1237,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "goal_state_outcomes[].detail",
                 "goal_state_outcomes[].expression",
                 "goal_state_outcomes[].passed",
+                "judge_cut_short",
                 "judge_repeats[].judge_config_ids",
                 "judge_repeats[].scores",
                 "judge_repeats[].scores[].cannot_tell",
@@ -1325,7 +1303,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "outcome_score.served_model",
                 "precondition_outcomes[].detail",
                 "precondition_outcomes[].expression",
-                "precondition_outcomes[].held",
                 "precondition_outcomes[].presumes",
                 "rubric_scores[].axis",
                 "rubric_scores[].clears()",
@@ -1357,6 +1334,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "transcript_score.scale",
                 "transcript_score.score",
                 "transcript_score.served_model",
+                "usage[].sent_settings",
                 "usage[].sent_settings[].==",
                 "usage[].sent_settings[].model_dump()",
                 "usage[].sent_settings[].reasoning_max_tokens",
@@ -1633,7 +1611,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "async_deliveries[].delivered_turn",
                 "async_deliveries[].elapsed_ms",
                 "async_deliveries[].error",
-                "async_deliveries[].external_spend",
                 "async_deliveries[].input_tokens",
                 "async_deliveries[].llm_calls",
                 "async_deliveries[].model",
@@ -1654,14 +1631,13 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "latency.total_ms",
                 "precondition_outcomes[].detail",
                 "precondition_outcomes[].expression",
-                "precondition_outcomes[].held",
                 "precondition_outcomes[].presumes",
+                "usage[].sent_settings",
                 "usage[].sent_settings[].model_dump()",
             }
         ),
         "toyhost": frozenset(
             {
-                "account_refused",
                 "async_deliveries",
                 "async_deliveries[].acknowledged_turn",
                 "async_deliveries[].cost_usd",
@@ -1669,7 +1645,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "async_deliveries[].delivered_turn",
                 "async_deliveries[].elapsed_ms",
                 "async_deliveries[].error",
-                "async_deliveries[].external_spend",
                 "async_deliveries[].input_tokens",
                 "async_deliveries[].llm_calls",
                 "async_deliveries[].model",
@@ -1695,7 +1670,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "goal_state_outcomes[].detail",
                 "goal_state_outcomes[].expression",
                 "goal_state_outcomes[].passed",
-                "has_trace",
                 "host_measures",
                 "id",
                 "identity_version",
@@ -1706,12 +1680,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_cut_short",
                 "judge_error",
                 "judge_model",
-                "judge_reasoning",
-                "judge_repeats",
-                "judge_rescores",
-                "judge_seconds",
                 "k_iteration",
-                "kind_payload",
                 "latency",
                 "latency.async_wait_ms",
                 "latency.judge_ms",
@@ -1731,7 +1700,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "outcome_score.judge_sent_settings.model_dump()",
                 "outcome_score.judge_temperature",
                 "outcome_score.output_fingerprint",
-                "outcome_score.reasoning",
                 "outcome_score.scale",
                 "outcome_score.score",
                 "outcome_score.served_model",
@@ -1739,7 +1707,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "precondition_outcomes",
                 "precondition_outcomes[].detail",
                 "precondition_outcomes[].expression",
-                "precondition_outcomes[].held",
                 "precondition_outcomes[].presumes",
                 "rubric_scores",
                 "rubric_scores[].axis",
@@ -1750,7 +1717,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "rubric_scores[].judge_temperature",
                 "rubric_scores[].normalized",
                 "rubric_scores[].output_fingerprint",
-                "rubric_scores[].reasoning",
                 "rubric_scores[].scale",
                 "rubric_scores[].score",
                 "rubric_scores[].served_model",
@@ -1772,7 +1738,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "transcript_score.judge_sent_settings.model_dump()",
                 "transcript_score.judge_temperature",
                 "transcript_score.output_fingerprint",
-                "transcript_score.reasoning",
                 "transcript_score.scale",
                 "transcript_score.score",
                 "transcript_score.served_model",
@@ -1795,11 +1760,8 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "usage[].sent_settings[].model_dump()",
                 "usage[].served_model",
                 "usage[].unanswered_lost",
-                "usage[].unanswered_reasons",
                 "usage[].unanswered_retried",
-                "usage[].unpriced_reasons",
                 "variant_key",
-                "world_events",
             }
         ),
         "courierhost": frozenset(
@@ -1810,7 +1772,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "async_deliveries[].delivered_turn",
                 "async_deliveries[].elapsed_ms",
                 "async_deliveries[].error",
-                "async_deliveries[].external_spend",
                 "async_deliveries[].input_tokens",
                 "async_deliveries[].llm_calls",
                 "async_deliveries[].model",
@@ -1827,6 +1788,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "goal_state_outcomes[].detail",
                 "goal_state_outcomes[].expression",
                 "goal_state_outcomes[].passed",
+                "judge_cut_short",
                 "latency.async_wait_ms",
                 "latency.judge_ms",
                 "latency.llm_ms",
@@ -1840,13 +1802,11 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "outcome_score.judge_sent_settings.model_dump()",
                 "outcome_score.judge_temperature",
                 "outcome_score.output_fingerprint",
-                "outcome_score.reasoning",
                 "outcome_score.scale",
                 "outcome_score.score",
                 "outcome_score.served_model",
                 "precondition_outcomes[].detail",
                 "precondition_outcomes[].expression",
-                "precondition_outcomes[].held",
                 "precondition_outcomes[].presumes",
                 "rubric_scores[].axis",
                 "rubric_scores[].criterion_fingerprint",
@@ -1856,7 +1816,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "rubric_scores[].judge_temperature",
                 "rubric_scores[].normalized",
                 "rubric_scores[].output_fingerprint",
-                "rubric_scores[].reasoning",
                 "rubric_scores[].scale",
                 "rubric_scores[].score",
                 "rubric_scores[].served_model",
@@ -1867,10 +1826,10 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "transcript_score.judge_sent_settings.model_dump()",
                 "transcript_score.judge_temperature",
                 "transcript_score.output_fingerprint",
-                "transcript_score.reasoning",
                 "transcript_score.scale",
                 "transcript_score.score",
                 "transcript_score.served_model",
+                "usage[].sent_settings",
                 "usage[].sent_settings[].model_dump()",
             }
         ),
@@ -1883,18 +1842,10 @@ PROSE_SITES: dict[str, dict[str, frozenset[str]]] = {
     "bundle": {
         "judge_cannot_tell": frozenset(
             {
-                "analysis/bundle/measures.py _carrier_leaves",
-                "analysis/bundle/measures.py _scalar_leaves",
                 "analysis/bundle/trials.py _row",
                 "analysis/reporting.py project_score_records",
                 "kernel/result_condition.py judged_on_every_dim",
                 "kernel/scoring.py has_pass_criterion",
-            }
-        ),
-        "judge_reasoning": frozenset(
-            {
-                "analysis/bundle/measures.py _carrier_leaves",
-                "analysis/bundle/measures.py _scalar_leaves",
             }
         ),
         "judge_repeats[].scores[].cannot_tell": frozenset(
@@ -1904,19 +1855,16 @@ PROSE_SITES: dict[str, dict[str, frozenset[str]]] = {
         ),
         "outcome_score.reasoning": frozenset(
             {
-                "analysis/bundle/measures.py _scalar_leaves",
                 "analysis/bundle/trials.py _row",
             }
         ),
         "rubric_scores[].reasoning": frozenset(
             {
-                "analysis/bundle/measures.py _scalar_leaves",
                 "analysis/bundle/trials.py _row",
             }
         ),
         "transcript_score.reasoning": frozenset(
             {
-                "analysis/bundle/measures.py _scalar_leaves",
                 "analysis/bundle/trials.py _row",
             }
         ),
@@ -1938,31 +1886,8 @@ PROSE_SITES: dict[str, dict[str, frozenset[str]]] = {
     "planning": {
         "judge_cannot_tell": frozenset(
             {
-                "analysis/bundle/measures.py _carrier_leaves",
-                "analysis/bundle/measures.py _scalar_leaves",
                 "analysis/reporting.py project_score_records",
                 "kernel/result_condition.py judged_on_every_dim",
-            }
-        ),
-        "judge_reasoning": frozenset(
-            {
-                "analysis/bundle/measures.py _carrier_leaves",
-                "analysis/bundle/measures.py _scalar_leaves",
-            }
-        ),
-        "outcome_score.reasoning": frozenset(
-            {
-                "analysis/bundle/measures.py _scalar_leaves",
-            }
-        ),
-        "rubric_scores[].reasoning": frozenset(
-            {
-                "analysis/bundle/measures.py _scalar_leaves",
-            }
-        ),
-        "transcript_score.reasoning": frozenset(
-            {
-                "analysis/bundle/measures.py _scalar_leaves",
             }
         ),
     },
@@ -1984,20 +1909,15 @@ PROSE_UNREAD: dict[str, dict[str, frozenset[str]]] = {
         "toyhost": frozenset(
             {
                 "judge_repeats[].scores[].cannot_tell at analysis/agreement.py self_agreement_of_repeats",
-                "outcome_score.reasoning at analysis/bundle/measures.py _scalar_leaves",
                 "outcome_score.reasoning at analysis/bundle/trials.py _row",
-                "transcript_score.reasoning at analysis/bundle/measures.py _scalar_leaves",
                 "transcript_score.reasoning at analysis/bundle/trials.py _row",
             }
         ),
         "courierhost": frozenset(
             {
                 "judge_repeats[].scores[].cannot_tell at analysis/agreement.py self_agreement_of_repeats",
-                "outcome_score.reasoning at analysis/bundle/measures.py _scalar_leaves",
                 "outcome_score.reasoning at analysis/bundle/trials.py _row",
-                "rubric_scores[].reasoning at analysis/bundle/measures.py _scalar_leaves",
                 "rubric_scores[].reasoning at analysis/bundle/trials.py _row",
-                "transcript_score.reasoning at analysis/bundle/measures.py _scalar_leaves",
                 "transcript_score.reasoning at analysis/bundle/trials.py _row",
             }
         ),
@@ -2034,22 +1954,8 @@ PROSE_UNREAD: dict[str, dict[str, frozenset[str]]] = {
     "planning": {
         "toyhost": frozenset(
             {
-                "judge_cannot_tell at analysis/bundle/measures.py _carrier_leaves",
-                "judge_cannot_tell at analysis/bundle/measures.py _scalar_leaves",
                 "judge_cannot_tell at analysis/reporting.py project_score_records",
                 "judge_cannot_tell at kernel/result_condition.py judged_on_every_dim",
-                "judge_reasoning at analysis/bundle/measures.py _carrier_leaves",
-                "judge_reasoning at analysis/bundle/measures.py _scalar_leaves",
-                "outcome_score.reasoning at analysis/bundle/measures.py _scalar_leaves",
-                "rubric_scores[].reasoning at analysis/bundle/measures.py _scalar_leaves",
-                "transcript_score.reasoning at analysis/bundle/measures.py _scalar_leaves",
-            }
-        ),
-        "courierhost": frozenset(
-            {
-                "outcome_score.reasoning at analysis/bundle/measures.py _scalar_leaves",
-                "rubric_scores[].reasoning at analysis/bundle/measures.py _scalar_leaves",
-                "transcript_score.reasoning at analysis/bundle/measures.py _scalar_leaves",
             }
         ),
     },
