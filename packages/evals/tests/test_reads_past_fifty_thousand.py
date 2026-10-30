@@ -16,7 +16,7 @@ per module from cheap rows, read through the reference store as it is and behind
   budget is below 60,000.
 
 The scope costs about ten seconds to build. The answered reads run under tracemalloc, which multiplies their time:
-the module took about 13 minutes on one pool slot.
+the module took about four minutes on the pool.
 """
 
 from __future__ import annotations
