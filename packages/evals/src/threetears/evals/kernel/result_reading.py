@@ -56,7 +56,6 @@ __all__ = [
     "GoalView",
     "GroupsRead",
     "LatencyView",
-    "ReadPath",
     "ReadingsRead",
     "ResultReading",
     "ResultView",
@@ -482,7 +481,9 @@ class GoalReading:
     @classmethod
     def of(cls, outcome: GoalStateOutcome, shared: SharedValues) -> GoalReading:
         """The reading of a stored outcome."""
-        return cls(expression=shared.text(outcome.expression), passed=outcome.passed, detail=shared.text(outcome.detail))
+        return cls(
+            expression=shared.text(outcome.expression), passed=outcome.passed, detail=shared.text(outcome.detail)
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
