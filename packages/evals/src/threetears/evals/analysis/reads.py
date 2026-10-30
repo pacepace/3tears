@@ -664,6 +664,8 @@ _SPEND_MEASURES: dict[str, GroupMeasure] = {
     "cost_usd": ("values", "cost_usd"),
     "judge_rescores": ("values", "judge_rescores"),
     "cost_roles": ("values", "cost_roles"),
+    "schema_version": ("values", "schema_version"),
+    "schema_minor": ("values", "schema_minor"),
 }
 
 
@@ -685,8 +687,11 @@ class _SpendRows:
                         f"a grouped read of the spend figures answered its columns out of step at result {row_id!r}: "
                         "every column comes in the order its group's rows were read, so a row's figures share a place"
                     )
-                (_, cost), (_, rescores), (_, roles) = figures
-                yield ResultSpend.of_stored(run_id, cost, rescores, roles)
+                (_, cost), (_, rescores), (_, roles), (_, version), (_, minor) = figures
+                # The row's version is read with its figures, so a row a result's read refuses is refused here alike.
+                yield ResultSpend.of_stored(
+                    run_id, cost, rescores, roles, schema_version=version, schema_minor=minor
+                )
 
 
 def _spend_of(storage: LensStore, scope_id: str) -> Callable[[Sequence[str] | None], _Walk[ResultSpend]]:

@@ -214,7 +214,7 @@ class TestTheSpendLensesFoldTheFiguresAsTheResultsFoldThem:
 
         program_budget(storage, read.scope_id, list_runs=_lister(read))  # type: ignore[arg-type]
 
-        assert storage.groupings == [((), ("eval_run_id", "cost_usd", "judge_rescores", "cost_roles"))]
+        assert storage.groupings == [((), ("eval_run_id", "cost_usd", "judge_rescores", "cost_roles", "schema_version", "schema_minor"))]
 
 
 class TestComparisonSetsReadTheirWindowsAndBadgesOffReadings:
@@ -351,6 +351,17 @@ class TestTheSpendLensesRefuseARowAStoredReadRefuses:
         )
 
         assert refused == before
+
+    @pytest.mark.parametrize(
+        ("field", "value"), (("schema_version", 16), ("schema_version", 14), ("schema_version", None), ("schema_minor", -1), ("schema_minor", "11"))
+    )
+    def test_a_stored_row_at_a_version_this_build_does_not_read(self, field: str, value: Any) -> None:
+        _, store, _ = _scope_with(field, value)
+        before = _refusal(lambda: EvalResult.from_dict(dict(store.documents[(REFUSED_SCOPE, "run-1-0")])))
+
+        for path in (EvalStorage(store), EvalStorage(EngineOnlyStore(store))):
+            for lens, call in _spend_lenses(path).items():
+                assert _refusal(call) == before, (field, value, lens)
 
     def test_a_spend_stored_as_an_integer_is_read_as_the_float_a_result_holds(self) -> None:
         spend = ResultSpend.of_stored("run-0", 0, [], ["candidate"])
