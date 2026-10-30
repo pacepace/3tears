@@ -1,4 +1,4 @@
-"""A compact per-result reading reads as the result it was built from, to the byte (W4b P1).
+"""A compact per-result reading reads as the result it was built from, to the byte.
 
 ``ResultReading`` carries exactly what the reader families read of a stored result
 (``test_result_reading_fields.py`` pins that set), so every reader answers a list of readings as it answers the

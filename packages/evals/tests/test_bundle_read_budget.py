@@ -130,7 +130,7 @@ class TestABundlePastTheReadBudgetIsRefused:
         bundle = assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
 
         assert sorted(bundle.run_ids) == ["run-large", "run-small"]
-        # The store narrows its own rows, so the results are one read (D7, test_bundle_store_reads); the trials the
+        # The store narrows its own rows, so the results are one read (test_bundle_store_reads); the trials the
         # bundle keeps are then read whole, by id, in one more.
         assert store.result_reads == Counter({"iter_narrowed": 1, "get_many": 1}), "the one read of results"
 

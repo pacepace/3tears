@@ -6,8 +6,8 @@ Contracts held here:
   recording, each call recorded once, and every run ends in a plan;
 - each replayed plan passes the plan checks against its report input, and is byte for byte the run plan the dataset
   keeps (``rN/runs/<run_id>.plan.json``), so a scored plan is the plan its recording makes;
-- P3's done-when (CONVERGENCE.md P3): every current run passes rubric R1 (the plan checks, and the first evidence
-  section draws its shape's spine), and the Kairo run (r5) matches ``references/r5-kairo-round2.plan.json`` in shape,
+- the convergence plan's done-when (CONVERGENCE.md): every current run passes rubric R1 (the plan checks, and the
+  first evidence section draws its shape's spine), and the Kairo run (r5) matches ``references/r5-kairo-round2.plan.json`` in shape,
   mode, spine and the chart kinds of its sections in order;
 - the replayed runs are the current runs ``recordings/runs.json`` names; every other run plan is a historical record a
   re-record added to, never deleted (``test_plan_dataset.py`` holds those to record soundness);

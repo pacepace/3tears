@@ -1,4 +1,4 @@
-"""A compact per-result reading holds at most a fifth of the bytes of the result it was built from (W4b P1).
+"""A compact per-result reading holds at most a fifth of the bytes of the result it was built from.
 
 A reader that folds a scope holds every result it read, so a result's bytes bound how many results one read can
 answer. Measured at the production shape (the hot-path corpus at 1x: about 3,100 results of about 6.8 KB stored),

@@ -1,4 +1,4 @@
-"""A campaign's bundle is the same bundle whichever path its results are read on (W4b P6).
+"""A campaign's bundle is the same bundle whichever path its results are read on.
 
 Assembly reads a campaign's results as their readings (``EvalStorage.iter_result_readings``): on the store's own path
 (``store``) when the store narrows its rows itself (``ResultReadings``), else on the engine's (``engine``: each run's

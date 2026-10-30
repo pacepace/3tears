@@ -19,8 +19,8 @@ bytes split across its fields as production's rows split theirs) and reads it as
   analyst client, and a catalogue-priced model's ``turn_pricing_refusal`` against a recorded catalogue (no network).
 
 The ranked table lists each phase's share of the read's wall time under the profiler, its cumulative seconds, its
-call counts at each scale (a count, unlike a time, is deterministic), and the chunk of the W4b plan that owns the file
-it lives in. Wall times under ``cProfile`` run about twice the unprofiled ones; the unprofiled baseline of the code-only
+call counts at each scale (a count, unlike a time, is deterministic), and the area of the engine the file it lives in
+belongs to. Wall times under ``cProfile`` run about twice the unprofiled ones; the unprofiled baseline of the code-only
 html read and of the assembly alone are printed first.
 """
 
@@ -66,27 +66,27 @@ from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT, ops
 #: The package's source root, which every profiled file name is shortened against.
 SOURCE = "threetears/evals/"
 
-#: Which W4b chunk owns each file, by path prefix under :data:`SOURCE` (the plan's section 3); first match wins.
+#: Which area of the engine each file belongs to, by path prefix under :data:`SOURCE`; first match wins.
 OWNERS: tuple[tuple[str, str], ...] = (
-    ("analysis/reporting.py", "02 PROJECT"),
-    ("kernel/result_condition.py", "02 PROJECT"),
-    ("kernel/scoring.py", "02 PROJECT"),
-    ("analysis/bundle/", "03 BUNDLE"),
-    ("analysis/cells.py", "03 BUNDLE"),
-    ("analysis/agreement.py", "03 BUNDLE"),
-    ("analysis/judge_profiles.py", "03 BUNDLE"),
-    ("analysis/judge_drift.py", "03 BUNDLE"),
-    ("analysis/contention.py", "03 BUNDLE"),
-    ("analysis/campaign_bundle.py", "04 PAGE"),
-    ("analysis/report/", "04 PAGE"),
-    ("analysis/report_input_build.py", "04 PAGE"),
-    ("kernel/storage.py", "05 STORE"),
-    ("schema/models.py", "05 STORE"),
-    ("ops/lenses.py", "06 PLAN"),
-    ("run/reads.py", "06 PLAN"),
-    ("analysis/service.py", "01 FAILFAST"),
-    ("ops/analysis.py", "01 FAILFAST"),
-    ("actions/catalogue.py", "01 FAILFAST"),
+    ("analysis/reporting.py", "score projection"),
+    ("kernel/result_condition.py", "score projection"),
+    ("kernel/scoring.py", "score projection"),
+    ("analysis/bundle/", "bundle folds"),
+    ("analysis/cells.py", "bundle folds"),
+    ("analysis/agreement.py", "bundle folds"),
+    ("analysis/judge_profiles.py", "bundle folds"),
+    ("analysis/judge_drift.py", "bundle folds"),
+    ("analysis/contention.py", "bundle folds"),
+    ("analysis/campaign_bundle.py", "campaign page"),
+    ("analysis/report/", "campaign page"),
+    ("analysis/report_input_build.py", "campaign page"),
+    ("kernel/storage.py", "store"),
+    ("schema/models.py", "store"),
+    ("ops/lenses.py", "planning read"),
+    ("run/reads.py", "planning read"),
+    ("analysis/service.py", "analysis entry"),
+    ("ops/analysis.py", "analysis entry"),
+    ("actions/catalogue.py", "analysis entry"),
 )
 
 #: The named phases of a report read: ``(label, file under SOURCE, function name)``. The folds are added from the
@@ -153,11 +153,11 @@ def short(path: str) -> str:
 
 
 def owner(path: str) -> str:
-    """The W4b chunk owning ``path``, or ``unowned`` naming the file."""
+    """The area ``path`` belongs to, or ``unowned`` naming the file."""
     name = short(path)
-    for prefix, chunk in OWNERS:
+    for prefix, area in OWNERS:
         if name.startswith(prefix):
-            return chunk
+            return area
     return f"unowned ({name})"
 
 
@@ -228,7 +228,7 @@ def ranked_table(title: str, by_scale: Mapping[int, Profiled]) -> str:
         + " | ".join(f"{scale}x s" for scale in scales)
         + " | "
         + " | ".join(f"{scale}x calls" for scale in scales)
-        + " | Owner |",
+        + " | Area |",
         "|---|---:|" + "---:|" * (2 * len(scales)) + "---|",
     ]
     for label, row in sorted(first.items(), key=lambda item: item[1].seconds, reverse=True):
@@ -389,7 +389,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     corpora = {scale: hot_path_corpus(scale=scale) for scale in (1, 2)}
     size, shares = field_byte_shares(corpora[1])
-    print(f"# W4b hot paths, profiled ({corpora[1].n_results:,} results at 1x, mean {size:,.0f} bytes stored)\n")
+    print(f"# Evals hot paths, profiled ({corpora[1].n_results:,} results at 1x, mean {size:,.0f} bytes stored)\n")
     print(
         "Field shares of a stored result: "
         + ", ".join(f"{name} {share:.1%}" for name, share in list(shares.items())[:10])

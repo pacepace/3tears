@@ -7,7 +7,7 @@ ledger, the archived flag of each analysis an insight names, the kept trials' ju
 results read whole (for the judge's reasons).
 
 The results themselves (archived members' included, when a declared control needs them) are read as their readings
-(``EvalStorage.iter_result_readings``), and how many calls that takes is the path's (owner ruling D7, 2026-10-30):
+(``EvalStorage.iter_result_readings``), and how many calls that takes is the path's (owner ruling, 2026-10-30):
 
 - **the store's path**, over a store that narrows its own rows (``ResultReadings``): one call, however large the
   campaign;

@@ -19,7 +19,7 @@ of the page says it. Code owns the shape (the planner contract sent as `response
 vocabulary), every number (figure keys, whose grammar code appends), and every fact
 (`analysis/report_plan_facts.py`: the signals and shape, the spine, masthead, arm colours and tags, the arms key,
 chart levels, units and axes, the flag's disclosures and what it weakens, the options columns, the full-results
-tables, ids, a durable claim's keys). Whether a rule binds is measured by evaluating the planner (P3 C7), never by checking that a
+tables, ids, a durable claim's keys). Whether a rule binds is measured by evaluating the planner (the planner's eval), never by checking that a
 sentence is present.
 
 **Where the rules come from.** The prompt is new with the report plan (the plan replaces the memo as the one writer,

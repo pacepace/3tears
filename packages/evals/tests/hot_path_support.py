@@ -1,4 +1,4 @@
-"""A campaign shaped like production's largest, for measuring the report and planning reads (W4b).
+"""A campaign shaped like production's largest, for measuring the report and planning reads.
 
 The campaign the hot-path oracle, the scaling test and ``scripts/profile_hot_paths.py`` all read: 41 runs of one
 template over several arms (a control and its candidates), about 3,100 results at ``scale=1`` with two repeats per

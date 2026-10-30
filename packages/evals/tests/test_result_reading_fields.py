@@ -1,4 +1,4 @@
-"""Which ``EvalResult`` attributes each reader family reads, measured and pinned (W4b P1).
+"""Which ``EvalResult`` attributes each reader family reads, measured and pinned.
 
 The compact per-result reading (``ResultReading``) carries exactly the attributes the readers access. This file
 measures that set: each reader family runs over the oracle's campaigns with every result it reads served through
