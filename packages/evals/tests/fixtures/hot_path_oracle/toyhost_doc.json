@@ -1,4 +1,25 @@
 {
+ "@captured_on": "Linux-glibc-2.41",
+ "@confirmed": {
+  "Linux-glibc-2.39": [
+   "body:html:all",
+   "body:html:table",
+   "body:html_static:all",
+   "body:html_static:table",
+   "body:json:all",
+   "body:json:table",
+   "body:markdown:all",
+   "body:markdown:table",
+   "read:html:all",
+   "read:html:table",
+   "read:html_static:all",
+   "read:html_static:table",
+   "read:json:all",
+   "read:json:table",
+   "read:markdown:all",
+   "read:markdown:table"
+  ]
+ },
  "body:html:all": {
   "bytes": 146538,
   "head": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>256tok vs 1024tok · extract_invoice_fields (chunk width sweep)</title>\n<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\"><link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap\">\n<style>/* Layout: decision-memo column (68ch prose) with charts breaking out to a wide band.\n   Host apps override the --host-* tokens only; everything else derives from them. */\n:root{\n  --host-accent:#1f5fbf;\n  --bg:#f5f6f8; --surface:#ffffff; --sunk:#eef0f3;\n  --ink:#11151b; --ink-2:#465061; --muted:#7f8896;\n  --line:#e1e5eb; --base:#c3cad4;\n  --accent:var(--host-accent); --accent-wash:#e6eefa; --on-fill:#ffffff;\n  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#c98500; --s",
