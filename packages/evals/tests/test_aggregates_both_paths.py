@@ -30,18 +30,22 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from threetears.evals.analysis import comparison_sets, orphaned_runs, program_budget
 from threetears.evals.analysis import service as analysis_service
 from threetears.evals.analysis.bundle.comparisons import planning_readings
 from threetears.evals.analysis.lenses.comparison_sets import compute_comparison_sets
 from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
-from threetears.evals.analysis.lenses.program_budget import compute_program_budget
+from threetears.evals.analysis.lenses.program_budget import ResultSpend, compute_program_budget
+from threetears.evals.kernel.errors import StorageError
 from threetears.evals.kernel.result_reading import GroupsRead
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.run.reads import list_runs
+from threetears.evals.schema.models import EvalResult, EvalRun
 from threetears.evals.schema.store_port import DocumentStore, GroupMeasure
 from threetears.evals.storage import InMemoryDocumentStore
+from packages.evals.tests.factories import make_eval_result, make_eval_run, memory_storage
 from packages.evals.tests.hot_path_support import (
     ARM_MODELS,
     CASES_PER_RUN,
@@ -247,6 +251,142 @@ class _RecordsGroupedReads:
     ) -> GroupsRead:
         self.groupings.append((tuple(by), tuple(measures)))
         return self._inner.result_groups(run_ids, scope_id, by=by, measures=measures)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+#: The scope the spend refusals are read in.
+REFUSED_SCOPE = "spend-refused"
+
+#: One stored row's field set to a value a stored result's read refuses, by kind.
+UNREADABLE: dict[str, tuple[str, Any]] = {
+    "a negative spend": ("cost_usd", -1.0),
+    "a role this build does not know": ("cost_roles", ["candidate", "no_such_role"]),
+    "a re-judge missing its fields": ("judge_rescores", [{"cost_usd": 0.01}]),
+    "a re-judge that is no object": ("judge_rescores", ["not a re-judge"]),
+}
+
+
+def _scope_with(
+    field: str | None = None, value: Any = None
+) -> tuple[EvalStorage, InMemoryDocumentStore, list[EvalRun]]:
+    """A scope of two runs of two results each, one row's ``field`` overwritten in the store with ``value``."""
+    storage, store = memory_storage()
+    runs = []
+    for index in range(2):
+        run = make_eval_run(id=f"run-{index}", scope_id=REFUSED_SCOPE, created_at=f"2026-10-30T00:0{index}:00+00:00")
+        storage.save_eval_run(run)
+        runs.append(run)
+        for case in range(2):
+            storage.save_eval_result(
+                make_eval_result(
+                    id=f"{run.id}-{case}", eval_run_id=run.id, scope_id=REFUSED_SCOPE, test_case_id=f"c{case}"
+                )
+            )
+    if field is not None:
+        store.documents[(REFUSED_SCOPE, "run-1-0")][field] = value
+    return storage, store, runs
+
+
+def _refusal(read: Any) -> str:
+    """The ``ValidationError`` ``read`` raises, as text."""
+    with pytest.raises(ValidationError) as refused:
+        read()
+    return str(refused.value)
+
+
+def _spend_lenses(storage: Any) -> dict[str, Any]:
+    """Each spend lens over :data:`REFUSED_SCOPE`, read through ``storage``."""
+
+    def lister(scope_id: str, **kwargs: Any) -> list[EvalRun]:
+        return list(storage.query_eval_runs(scope_id))
+
+    return {
+        "program_budget": lambda: program_budget(storage, REFUSED_SCOPE, list_runs=lister),
+        "orphaned_runs": lambda: orphaned_runs(storage, REFUSED_SCOPE, list_runs=lister),
+    }
+
+
+class TestTheSpendLensesRefuseARowAStoredReadRefuses:
+    """The spend lenses read figures off the store's rows, never a hydrated result, and are refused by a row the
+    stored read of results refuses, with the same ``ValidationError``, on either path."""
+
+    @pytest.mark.parametrize("kind", sorted(UNREADABLE))
+    def test_on_either_path(self, kind: str) -> None:
+        storage, store, _ = _scope_with(*UNREADABLE[kind])
+        before = _refusal(lambda: storage.query_eval_results(REFUSED_SCOPE))
+
+        for path in (storage, EvalStorage(EngineOnlyStore(store))):
+            for lens, call in _spend_lenses(path).items():
+                assert _refusal(call) == before, (kind, lens)
+
+    def test_a_scope_of_readable_rows_is_answered(self) -> None:
+        storage, store, _ = _scope_with()
+
+        for path in (storage, EvalStorage(EngineOnlyStore(store))):
+            budget = _spend_lenses(path)["program_budget"]()
+            assert [row["n_results"] for row in budget["runs"]] == [2, 2]
+            assert json.dumps(budget) == json.dumps(
+                compute_program_budget(
+                    storage.query_eval_runs(REFUSED_SCOPE), storage.query_eval_results(REFUSED_SCOPE)
+                ).model_dump(mode="json")
+            )
+
+    @pytest.mark.parametrize("version", (14, 16, None, "15"))
+    def test_a_version_this_build_does_not_read(self, version: Any) -> None:
+        _, store, _ = _scope_with()
+        row = dict(store.documents[(REFUSED_SCOPE, "run-1-0")], schema_version=version)
+        before = _refusal(lambda: EvalResult.from_dict(row))
+
+        refused = _refusal(
+            lambda: ResultSpend.of_stored(
+                row["eval_run_id"],
+                row["cost_usd"],
+                row.get("judge_rescores"),
+                row["cost_roles"],
+                schema_version=version,
+                schema_minor=row.get("schema_minor"),
+            )
+        )
+
+        assert refused == before
+
+    def test_a_spend_stored_as_an_integer_is_read_as_the_float_a_result_holds(self) -> None:
+        spend = ResultSpend.of_stored("run-0", 0, [], ["candidate"])
+
+        assert spend.cost_usd == 0.0 and type(spend.cost_usd) is float
+
+
+class TestAGroupedReadOutOfStepIsRefused:
+    def test_columns_out_of_step(self) -> None:
+        storage, _, _ = _scope_with()
+
+        with pytest.raises(StorageError, match="out of step at result"):
+            _spend_lenses(_SwapsOneColumn(storage))["program_budget"]()
+
+
+class _SwapsOneColumn:
+    """The engine's storage, answering a grouped read with its ``cost_usd`` column's first two rows swapped."""
+
+    def __init__(self, inner: EvalStorage) -> None:
+        self._inner = inner
+
+    def result_groups(
+        self,
+        run_ids: Sequence[str] | None,
+        scope_id: str,
+        /,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+    ) -> GroupsRead:
+        read = self._inner.result_groups(run_ids, scope_id, by=by, measures=measures)
+        groups = [dict(group) for group in read.groups]
+        column = list(groups[0]["cost_usd"])
+        column[0], column[1] = column[1], column[0]
+        groups[0]["cost_usd"] = column
+        return GroupsRead(read.path, read.store_calls, groups)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
