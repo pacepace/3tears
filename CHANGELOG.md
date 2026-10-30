@@ -20,7 +20,12 @@ when, after the read, that scope is still untouched and at the same epoch: a wri
 transaction of its first rows there, and clears the mark only in the commit that moves the scope's epoch. Scopes
 the write has touched are left for a catch-up after it commits.
 
-**Added:** `Unsettled.epochs` and `Unsettled.pending` (every part's committed version, and the parts the write in
+A writer also stages a scope its copy is behind on, whole from L3: `ScopedSnapshot.stage_from_l3(scope, epoch)`
+reads every table of the scope as L3 holds it once the write's rows are there. One write at a time holds the epochs,
+so those are exactly the scope's rows at the write's epoch. The scope moves with the write instead of waiting for a
+catch-up. A writer that builds its chunks from its copy calls it for a scope the copy is behind on.
+
+**Added:** `ScopedSnapshot.stage_from_l3`. `Unsettled.epochs` and `Unsettled.pending` (every part's committed version, and the parts the write in
 progress has touched, for a writer that records touches), and `EpochSnapshot.pending`. `ScopeEpochs.settled` fills
 them in.
 

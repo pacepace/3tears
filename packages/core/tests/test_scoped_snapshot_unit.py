@@ -528,6 +528,26 @@ async def test_back_to_back_writes_never_keep_a_behind_scope_from_catching_up() 
     await snapshot.stop()
 
 
+async def test_a_writer_stages_a_scope_its_copy_is_behind_on_whole_from_l3() -> None:
+    """a writer stages a scope from its copy only when the copy holds it at the epoch before the write; a scope the
+    copy is behind on was left for a catch-up that writes back to back never let run (cobalt dev, 2026-10-29: VA's
+    counties stopped at 01:15 with the warehouse at 06:36). The writer stages it whole from L3 instead, where its own
+    write's rows already are."""
+    snapshot, pointers, _, l3 = _snapshot()
+    await _started(snapshot, pointers)
+    # L3 moved TX twice without this copy (epochs 2 and 3); this write, version 4, has written its rows
+    l3.rows[0]["votes"] = 44
+    l3.epochs["TX"] = 3
+    staged = await snapshot.stage_from_l3("TX", 4)
+    l3.epochs["TX"] = 4
+
+    moved, skipped = await snapshot.publish_staged([staged], carry_at={"TX": 3})
+
+    assert (moved, skipped) == (["TX"], [])
+    await _until(lambda: _held_votes(snapshot, "TX") == [44], what="the whole stage applied")
+    await snapshot.stop()
+
+
 async def test_a_scope_a_write_touches_while_it_is_read_is_not_caught_up() -> None:
     snapshot, pointers, _, l3 = _snapshot()
     await _started(snapshot, pointers)

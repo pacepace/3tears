@@ -3207,6 +3207,28 @@ class ScopedSnapshot:
             pieces=frozenset(added),
         )
 
+    async def stage_from_l3(self, scope: str, epoch: int) -> StagedScope:
+        """stage every table of a scope whole as L3 holds it now, under ``epoch``: :meth:`stage` for a scope the
+        writer cannot build from this L1.
+
+        For the writer of the write ``epoch`` names, once its rows for the scope are in L3: one write at a time
+        holds the epochs (:mod:`~threetears.core.collections.scope_epochs`), so the scope's rows in L3 are then
+        exactly its rows at ``epoch``. A writer that builds a scope's chunks from this replica's copy can do so only
+        while the copy holds the scope at the epoch before the write; a scope the copy is behind on is staged here
+        instead, so it moves with the write rather than waiting for a catch-up that writes back to back keep from
+        running. Every table is staged whole, so the stage carries nothing from the scope's current chunks.
+
+        :param scope: the scope
+        :ptype scope: str
+        :param epoch: the epoch the write will commit
+        :ptype epoch: int
+        :return: the staged chunks
+        :rtype: StagedScope
+        """
+        read = await self._read_scope(scope)
+        rows = {part.table: part.arrow if part.arrow is not None else [] for part in read}
+        return await self.stage(scope, epoch, rows)
+
     async def _export(self, table: SnapshotTable, scope: str, rows: Sequence[Mapping[str, Any]] | Any) -> Any:
         """the Arrow table a scope of ``table`` holds with ``rows``, typed by this L1, changing nothing.
 
