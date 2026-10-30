@@ -38,7 +38,7 @@ so pinning ``created_at`` alone looked complete while the measurement windows' `
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
 from dataclasses import replace
 from typing import TYPE_CHECKING, Protocol
@@ -168,6 +168,7 @@ from threetears.evals.kernel.host.measures import MeasureRegistry
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.campaign import EvalCampaign
     from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
+    from threetears.evals.kernel.result_reading import ResultView
     from threetears.evals.schema.models import EvalCaseStratum, EvalRun, EvalTemplate, JudgeEvidence
 
 
@@ -175,17 +176,22 @@ log = get_logger(__name__)
 
 
 class CampaignReadStore(Protocol):
-    """The nine reads assembling a campaign's context bundle needs, each a batch.
+    """The ten reads assembling a campaign's context bundle needs, each a batch.
 
-    **Every read is one store call however large the campaign.** A host's store may open a connection per call, so a
-    read per run, per template, per insight or per trial grows with the campaign until it outruns the host's call
-    budget: assembly asks each of these once, or twice for the ratings (the runs', then, only when a judged score
-    carries a label key, the scope's).
+    **Every read but the results is one store call however large the campaign.** A host's store may open a connection
+    per call, so a read per template, per insight or per trial grows with the campaign until it outruns the host's
+    call budget: assembly asks each of these once, or twice for the ratings (the runs', then, only when a judged score
+    carries a label key, the scope's). The results are read as their readings
+    (:meth:`iter_result_readings`), which hold a result in a fraction of its bytes. On
+    :class:`~threetears.evals.kernel.storage.EvalStorage` that is one store call over a store that narrows its own rows
+    (:class:`~threetears.evals.schema.store_port.ResultReadings`), and otherwise one key read per run plus one read by
+    id per :data:`~threetears.evals.kernel.storage.READINGS_PAGE` results. The kept trials are then read whole, by id,
+    in one more call.
 
     Cut to what :func:`assemble_context_bundle` calls rather than to what a
     storage layer offers: the bundle reads member runs (in one batch, without the
-    payload paths the host declares a listing may leave out), each run's results, the
-    stratum each of their cases declares, the
+    payload paths the host declares a listing may leave out), each run's results as readings, the kept trials' results whole (for the judge's
+    reasons), the stratum each of their cases declares, the
     people's calibration ratings of those results, the templates the runs were judged
     against and the scope's stored judge profiles (for the tier of a judge whose own
     evidence decides none), the judge evidence of the trials the bundle keeps, in one read (what each case asked and
@@ -223,11 +229,24 @@ class CampaignReadStore(Protocol):
         """
         ...
 
-    def query_eval_results_by_runs(
-        self, run_ids: Sequence[str], scope_id: str, /, *, elide: Sequence[str] = ()
+    def iter_result_readings(self, run_ids: Sequence[str], scope_id: str, /) -> Iterable[ResultView]:
+        """Every result belonging to any of the named runs within a scope, each as the readers read it
+        (:class:`~threetears.evals.kernel.result_reading.ResultView`): its compact reading, or the result itself.
+
+        Walked once. A run named twice is read once. The order is free: assembly orders the results itself.
+        :meth:`~threetears.evals.kernel.storage.EvalStorage.iter_result_readings` is the reference implementation.
+        """
+        ...
+
+    def load_eval_results(
+        self, result_ids: Sequence[str], scope_id: str, /, *, elide: Sequence[str] = ()
     ) -> list[EvalResult]:
-        """Every result belonging to any of the named runs within a scope, in one read, each without the fields
-        ``elide`` names: the store never ships them, and each reads as none."""
+        """The named results within a scope, in one read by id, each without the fields ``elide`` names (the store
+        never ships them, and each reads as none); an id naming no result there is skipped.
+
+        Read for the trials the bundle keeps (at most :data:`~threetears.evals.analysis.bundle.caps.MAX_TRIALS`), whose
+        rows show the judge's reasons, which a reading leaves out.
+        """
         ...
 
     def load_case_strata(self, test_case_ids: Sequence[str], scope_id: str, /) -> list[EvalCaseStratum]:
@@ -442,7 +461,7 @@ def assemble_context_bundle(
     # The archived members' results are read only when a declared control might have been curated out (below), and
     # then in the same call as the resolved members': one read of results however many runs the campaign holds.
     read_archived = bool(declared_control.variant_keys and archived)
-    every_result: dict[str, list[EvalResult]] = {
+    every_result: dict[str, list[ResultView]] = {
         run_id: [] for run_id in (*run_ids, *(archived if read_archived else ()))
     }
     # Held to the read tier's budget before any result is read, as the aggregates are: the bundle holds every result it
@@ -450,16 +469,16 @@ def assemble_context_bundle(
     # estimate is each run's matrix, off the batch read above; no further read is made to refuse.
     read_runs = [loaded[run_id] for run_id in every_result]
     hold_to_read_budget(_BUNDLE_LENS, scope_id, read_runs, how=_NARROW_THE_BUNDLE)
-    # Without the verbatim fields (a world's event log, a kind's payload): no reading of the bundle reads them, and they
-    # are most of a result's bytes, so the one read of a campaign's results never ships them.
-    read = storage.query_eval_results_by_runs(list(every_result), scope_id, elide=VERBATIM_RESULT_FIELDS)
-    # The safety net: results their runs' matrices did not promise (a run that wrote past its matrix and recorded no
-    # completeness) are not assembled past the budget either.
-    hold_to_read_budget(_BUNDLE_LENS, scope_id, read_runs, how=_NARROW_THE_BUNDLE, returned=len(read))
-    for result in read:
+    # As readings: every fold below reads figures, never the judge's prose, a world's event log or a kind's payload,
+    # which are most of a result's bytes. The trials the bundle keeps are read whole, below, for their prose.
+    returned = 0
+    for result in storage.iter_result_readings(list(every_result), scope_id):
+        returned += 1
         if result.eval_run_id in every_result:
             every_result[result.eval_run_id].append(result)
-    del read
+    # The safety net: results their runs' matrices did not promise (a run that wrote past its matrix and recorded no
+    # completeness) are not assembled past the budget either.
+    hold_to_read_budget(_BUNDLE_LENS, scope_id, read_runs, how=_NARROW_THE_BUNDLE, returned=returned)
     # When the aspect's readings could first be seen: the first stored result of the runs it reads, never a run's
     # creation, nor when the campaign holding them was declared. A criterion set after it (the aspect, its control,
     # margin, bars or floors) is named in `reading_scope.late_criteria`; one set before it reads as pre-registered,
@@ -467,7 +486,7 @@ def assemble_context_bundle(
     first_result_at, untimed_results = _first_result_at(
         [result.scored_at for run_id in run_ids for result in every_result[run_id]]
     )
-    results_by_run: dict[str, list[EvalResult]] = {
+    results_by_run: dict[str, list[ResultView]] = {
         run_id: sorted(every_result[run_id], key=lambda r: r.id) for run_id in run_ids
     }
     # Before anything reads them: a classifier's failure is a miss in every rate, not absent from them all.
@@ -874,6 +893,8 @@ def assemble_context_bundle(
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
         catalog=bundle.measure_catalog,
         load_judge_evidence=lambda result_ids: storage.load_judge_evidence(result_ids, scope_id),
+        # Without the verbatim fields (a world's event log, a kind's payload), which no trial row shows.
+        load_results=lambda result_ids: storage.load_eval_results(result_ids, scope_id, elide=VERBATIM_RESULT_FIELDS),
         rubric_scales={run.id: run.rubric_scales for run in runs},
     )
     bundle.scoreboard = census.scoreboard

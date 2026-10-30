@@ -25,7 +25,7 @@ from threetears.evals.kernel.declaration import (
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import describe_measure
-from threetears.evals.schema.models import EvalResult
+from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.analysis.bundle.caps import (
     _capped,
     _CELL_STATES,
@@ -251,7 +251,7 @@ def _reportable_levers(
 
 
 def _run_axis_identities(
-    axis_id: str, run: EvalRun, results: list[EvalResult], *, profile: HostProfile
+    axis_id: str, run: EvalRun, results: list[ResultView], *, profile: HostProfile
 ) -> set[str] | None:
     """The identities a run's level on one declared axis can be joined to a declared level by, or None if unknown.
 
@@ -263,7 +263,7 @@ def _run_axis_identities(
     :param run: The run.
     :ptype run: EvalRun
     :param results: The run's results.
-    :ptype results: list[EvalResult]
+    :ptype results: list[ResultView]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: The identities, or None when the run's level on the axis cannot be established.
@@ -284,7 +284,7 @@ def _run_axis_identities(
 def _declared_crossing(
     design: AspectDesign | None,
     runs: list[EvalRun],
-    results_by_run: dict[str, list[EvalResult]],
+    results_by_run: dict[str, list[ResultView]],
     *,
     profile: HostProfile,
 ) -> DeclaredCrossing | None:
@@ -301,7 +301,7 @@ def _declared_crossing(
     :param runs: The campaign's resolved runs.
     :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: The crossing, or None when there is no design or it says nothing about combinations — today's reading,
@@ -374,7 +374,7 @@ def _declared_crossing(
 def _declared_level_coverage(
     axis: SweptAxis,
     runs: list[EvalRun],
-    results_by_run: dict[str, list[EvalResult]],
+    results_by_run: dict[str, list[ResultView]],
     *,
     profile: HostProfile,
 ) -> list[DeclaredLevelCoverage]:
@@ -391,7 +391,7 @@ def _declared_level_coverage(
     :param runs: The campaign's resolved runs.
     :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: One entry per declared level, in the declaration's order.
@@ -420,7 +420,7 @@ def _coverage_map(
     records: list[ScoreRecord],
     apparatus_levels: dict[str, dict[str, str | None]],
     design: RealizedDesign,
-    results_by_run: dict[str, list[EvalResult]],
+    results_by_run: dict[str, list[ResultView]],
     declared_design: AspectDesign | None,
     *,
     folds: _SurfaceFolds,
@@ -478,7 +478,7 @@ def _coverage_map(
     :ptype design: RealizedDesign
     :param results_by_run: Each run's results, keyed by run id — the observation side of
         effective-config resolution.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :param declared_design: What the campaign SET OUT to sweep. A declared axis earns a row even
         when nothing resolved it — see :func:`_reportable_levers`.
     :ptype declared_design: AspectDesign | None
@@ -743,7 +743,7 @@ def _factor_aliasing(
 
 def _unexercised_factors(
     runs: list[EvalRun],
-    results_by_run: dict[str, list[EvalResult]],
+    results_by_run: dict[str, list[ResultView]],
     arms: _CampaignArms,
     *,
     profile: HostProfile,

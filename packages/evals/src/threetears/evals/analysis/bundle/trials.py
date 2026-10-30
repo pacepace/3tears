@@ -55,6 +55,7 @@ from threetears.evals.analysis.bundle.schema import (
     TrialRow,
     TrialState,
 )
+from threetears.evals.kernel.errors import ConflictError
 from threetears.evals.kernel.metrics import MATCH_MEASURE, MetricDescriptor, goal_check_measure
 from threetears.evals.kernel.result_condition import (
     candidate_failure_cause,
@@ -71,7 +72,8 @@ from threetears.evals.kernel.provider import sum_optional_tokens
 from threetears.evals.schema.models import OUTCOME_DIM_ID, TRANSCRIPT_DIM_ID, USAGE_ROLES, rubric_dim_scale
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
-    from threetears.evals.schema.models import EvalResult, JudgeEvidence, RoleUsage, RubricScale, RubricScore
+    from threetears.evals.kernel.result_reading import ResultView, UsageView
+    from threetears.evals.schema.models import EvalResult, JudgeEvidence, RubricScale, RubricScore
 
 
 #: How a reserved judge axis is named on a trial, where a reader sees it: never by its stored id.
@@ -79,6 +81,9 @@ _AXIS_NAMES: dict[str, str] = {TRANSCRIPT_DIM_ID: "transcript", OUTCOME_DIM_ID: 
 
 #: How much worse a lost or failed trial is than a passed one, for keeping trials under the cap: lost first.
 _KEEP_WEIGHT: dict[TrialState, int] = {"lost": 2, "failed": 1, "passed": 0}
+
+#: What a caller does when a kept trial's result is gone by the time it is read whole: the runs changed under the read.
+_STALE_TRIALS_REMEDY = "a member run changed while the report was read; read it again"
 
 #: A case id ending in a number, as a generated ``{template}-{index}`` id does.
 _NUMBERED_ID = re.compile(r"(.*)-(\d+)")
@@ -116,11 +121,11 @@ class TrialReading:
     no_criterion: bool = False
 
 
-def read_trial(result: EvalResult, *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]) -> TrialReading:
+def read_trial(result: ResultView, *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]) -> TrialReading:
     """Decide how one trial ended: lost, failed or passed, and why.
 
     :param result: The stored result.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :param rubric_threshold: The 1–5 level a judged dimension must reach to pass, as pass^k reads it.
     :ptype rubric_threshold: int
     :param catalog: The bundle's measure catalog, which names each check and says which scorers are pass/fail.
@@ -143,7 +148,7 @@ def read_trial(result: EvalResult, *, rubric_threshold: int, catalog: Mapping[st
     return TrialReading(state="passed", cause=None, no_criterion=not _has_criterion(result, catalog))
 
 
-def _failed_checks(result: EvalResult, catalog: Mapping[str, MetricDescriptor]) -> list[TrialCheck]:
+def _failed_checks(result: ResultView, catalog: Mapping[str, MetricDescriptor]) -> list[TrialCheck]:
     """Every check the trial failed: each goal check, then a wrong label and each check measure on its wrong side
     (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.is_check`: a boolean, or a scorer graded 0 or 1)."""
     failed = [
@@ -164,7 +169,7 @@ def _failed_checks(result: EvalResult, catalog: Mapping[str, MetricDescriptor]) 
     return failed
 
 
-def _has_criterion(result: EvalResult, catalog: Mapping[str, MetricDescriptor]) -> bool:
+def _has_criterion(result: ResultView, catalog: Mapping[str, MetricDescriptor]) -> bool:
     """Whether anything could have failed the trial: a goal check, a judge, a label, or a pass/fail scorer."""
     if has_pass_criterion(result) or MATCH_MEASURE in result.host_measures:
         return True
@@ -187,7 +192,7 @@ class TrialsAndCensus:
 
 
 def trials_and_census(
-    results: Sequence[EvalResult],
+    results: Sequence[ResultView],
     *,
     arm_order: Sequence[str],
     strata: Mapping[str, str | None],
@@ -195,14 +200,16 @@ def trials_and_census(
     rubric_threshold: int,
     catalog: Mapping[str, MetricDescriptor],
     load_judge_evidence: Callable[[Sequence[str]], Mapping[str, JudgeEvidence]],
+    load_results: Callable[[Sequence[str]], Sequence[EvalResult]],
     rubric_scales: Mapping[str, Mapping[str, RubricScale]],
     names: Mapping[str, str] | None = None,
 ) -> TrialsAndCensus:
     """Every trial's row and every arm's census, over the campaign's results.
 
     :param results: Every result of the resolved member runs, after the bundle's own rewrites (a classifier's failure
-        read as a miss).
-    :ptype results: Sequence[EvalResult]
+        read as a miss), each as the readers read it: its reading or the result. How each trial ended, the census and
+        which trials are kept are read off these.
+    :ptype results: Sequence[ResultView]
     :param arm_order: The arms' variant keys in the order the bundle lists them; an arm absent here is listed after,
         by key.
     :ptype arm_order: Sequence[str]
@@ -220,6 +227,11 @@ def trials_and_census(
         none. Called once, with every kept result that records a trace (``EvalResult.has_trace``), so the trials cost
         one read however many are kept; not called when none does.
     :ptype load_judge_evidence: Callable[[Sequence[str]], Mapping[str, JudgeEvidence]]
+    :param load_results: Reads the named results whole, by id, in one read. Called once, with the kept trials (at most
+        :data:`~threetears.evals.analysis.bundle.caps.MAX_TRIALS`), whose rows show the judge's reasons and its "could
+        not tell" notes, which a reading leaves out; not called when none is kept. Only those fields of a row are read
+        off the whole result, and the bundle's rewrites touch none of them.
+    :ptype load_results: Callable[[Sequence[str]], Sequence[EvalResult]]
     :param rubric_scales: The scale each run's template dims were answered on (``EvalRun.rubric_scales``), by run id:
         what a dim the judge could not tell on is shown on, since that answer carries no score of its own.
     :ptype rubric_scales: Mapping[str, Mapping[str, RubricScale]]
@@ -227,6 +239,7 @@ def trials_and_census(
         are the bundle's ``exclusions`` and ``differential_exclusions``, which the assembler counts off the same
         :func:`~threetears.evals.kernel.result_condition.trial_exclusion`, never counted again here.
     :rtype: TrialsAndCensus
+    :raises ConflictError: A kept trial's result was no longer stored when it was read whole (409).
     """
     readings = {result.id: read_trial(result, rubric_threshold=rubric_threshold, catalog=catalog) for result in results}
     position = {variant: index for index, variant in enumerate(arm_order)}
@@ -245,10 +258,11 @@ def trials_and_census(
     traced = [result.id for result in kept if result.has_trace]
     evidence = load_judge_evidence(traced) if traced else {}
     labels = _case_labels(kept, strata, evidence, names or {})
+    whole = _whole(kept, load_results)
     rows = [
         _row(
             f"T{index}",
-            result,
+            whole[result.id],
             readings[result.id],
             labels[result.test_case_id],
             strata,
@@ -265,7 +279,26 @@ def trials_and_census(
     )
 
 
-def _census(arm: str, results: Sequence[EvalResult], readings: Mapping[str, TrialReading]) -> ArmScoreboard:
+def _whole(
+    kept: Sequence[ResultView], load_results: Callable[[Sequence[str]], Sequence[EvalResult]]
+) -> dict[str, EvalResult]:
+    """The kept trials' results, whole, by id, in one read; none when no trial is kept.
+
+    :raises ConflictError: A kept trial's result was no longer stored: its row would show no reason the judge gave, as
+        though it gave none.
+    """
+    if not kept:
+        return {}
+    whole = {result.id: result for result in load_results([result.id for result in kept])}
+    if missing := [result.id for result in kept if result.id not in whole]:
+        raise ConflictError(
+            f"the kept trials' results {missing!r} were no longer stored when read whole for their rows",
+            remedy=_STALE_TRIALS_REMEDY,
+        )
+    return whole
+
+
+def _census(arm: str, results: Sequence[ResultView], readings: Mapping[str, TrialReading]) -> ArmScoreboard:
     """One arm's census over its trials, with what they cost."""
     states = [readings[result.id] for result in results]
     lost = Counter(reading.cause or "unknown" for reading in states if reading.state == "lost")
@@ -309,7 +342,7 @@ def _census(arm: str, results: Sequence[EvalResult], readings: Mapping[str, Tria
 _TOOL_ROLE = "external"
 
 
-def _pricing(results: Sequence[EvalResult]) -> ArmPricing | None:
+def _pricing(results: Sequence[ResultView]) -> ArmPricing | None:
     """How one arm's production cost was priced, off the rows of the roles a production deployment pays for
     (:func:`~threetears.evals.kernel.usage_capture.production_rows`): the price sources the priced rows name, the
     providers the model rows name (every role but ``external``), the providers the external rows name apart from them,
@@ -319,7 +352,7 @@ def _pricing(results: Sequence[EvalResult]) -> ArmPricing | None:
     its spend is the cost's and its calls are counted, but it is named as tool spend (``tool_providers``).
 
     :param results: The arm's trials.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :return: The pricing; None where no trial recorded a production row.
     :rtype: ArmPricing | None
     """
@@ -338,7 +371,7 @@ def _pricing(results: Sequence[EvalResult]) -> ArmPricing | None:
     )
 
 
-def _unanswered(results: Sequence[EvalResult]) -> list[RoleUnanswered]:
+def _unanswered(results: Sequence[ResultView]) -> list[RoleUnanswered]:
     """Each role's unanswered calls over one arm's trials, for every role a usage row counted them in.
 
     Sums what each row counted (``RoleUsage.unanswered_retried``, ``unanswered_lost``, ``unanswered_reasons``) and
@@ -347,11 +380,11 @@ def _unanswered(results: Sequence[EvalResult]) -> list[RoleUnanswered]:
     None once one of them did not count its calls, since a share over a partial denominator would overstate.
 
     :param results: The arm's trials.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :return: One entry per counting role, the roles in their known order, then any other by name.
     :rtype: list[RoleUnanswered]
     """
-    counting: dict[str, list[RoleUsage]] = {}
+    counting: dict[str, list[UsageView]] = {}
     for result in results:
         for row in result.usage or ():
             if row.unanswered_retried is not None or row.unanswered_lost is not None:
@@ -396,7 +429,7 @@ def _unanswered(results: Sequence[EvalResult]) -> list[RoleUnanswered]:
 
 
 def _case_labels(
-    kept: Sequence[EvalResult],
+    kept: Sequence[ResultView],
     strata: Mapping[str, str | None],
     evidence: Mapping[str, JudgeEvidence],
     names: Mapping[str, str],

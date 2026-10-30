@@ -27,7 +27,7 @@ from threetears.evals.analysis.stats import (
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.values import PooledProductionFooting
 from threetears.evals.kernel.metrics import summary_population
-from threetears.evals.schema.models import EvalResult
+from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.analysis.bundle.schema import (
     _OBSERVED_MECHANISMS,
     ArmMechanismReading,
@@ -56,7 +56,7 @@ from threetears.evals.analysis.bundle.design import _CampaignArms
 _MechanismObservations = dict[str, dict[str, tuple[str, float]]]
 
 
-def _mechanism_value(result: EvalResult, name: str, leaves: _NamedLeaves, *, describe: _Describer) -> float | None:
+def _mechanism_value(result: ResultView, name: str, leaves: _NamedLeaves, *, describe: _Describer) -> float | None:
     """One result's observation of ``name``, read off the result itself, or None when it carries none.
 
     Walks the sources the measure surface walks — the result's own scalars, its covariate and host
@@ -67,7 +67,7 @@ def _mechanism_value(result: EvalResult, name: str, leaves: _NamedLeaves, *, des
     ambiguous result contributes nothing rather than one of its values chosen by order.
 
     :param result: The result to read.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :param name: A measure or covariate name.
     :ptype name: str
     :param leaves: The result's leaves by name, as :func:`_named_leaves` read them.
@@ -95,7 +95,7 @@ def _mechanism_value(result: EvalResult, name: str, leaves: _NamedLeaves, *, des
     return float(value)
 
 
-def _mechanism_observations(results: Sequence[EvalResult], *, profile: HostProfile) -> _MechanismObservations:
+def _mechanism_observations(results: Sequence[ResultView], *, profile: HostProfile) -> _MechanismObservations:
     """Every result's observation of every mechanism a lens here compares across levels.
 
     The names are each declared lever's ``acts_on`` and every covariate read as an observed mechanism
@@ -103,7 +103,7 @@ def _mechanism_observations(results: Sequence[EvalResult], *, profile: HostProfi
     reading of one measure read one set of values.
 
     :param results: Every resolved result in the campaign.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :param profile: The host whose declarations name the mechanisms.
     :ptype profile: HostProfile
     :return: ``{name: {result id: (case id, value)}}``; a result that observed nothing of a name is absent under it.
@@ -125,12 +125,12 @@ def _mechanism_observations(results: Sequence[EvalResult], *, profile: HostProfi
 _NamedLeaves = dict[str, tuple[list[float | str], list[float | str]]]
 
 
-def _named_leaves(result: EvalResult, names: frozenset[str], *, describe: _Describer) -> _NamedLeaves:
+def _named_leaves(result: ResultView, names: frozenset[str], *, describe: _Describer) -> _NamedLeaves:
     """The values of ``names`` the result carries: its own scalars and open maps (``outer``), and the leaves of its
     single sub-models and the measures it implies at the per-result unit (``inner``). A row-level leaf is left out.
 
     :param result: The result to read.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :param names: The names to read.
     :ptype names: frozenset[str]
     :param describe: The host's measure registry.
@@ -375,8 +375,8 @@ def _observed_mechanism_confounds(
 
 
 def _model_contrast_confounds(
-    side_a: Sequence[EvalResult],
-    side_b: Sequence[EvalResult],
+    side_a: Sequence[ResultView],
+    side_b: Sequence[ResultView],
     observations: _MechanismObservations,
     *,
     profile: HostProfile,
@@ -387,9 +387,9 @@ def _model_contrast_confounds(
     them in. A side whose results name no single model is no model contrast, and names nothing.
 
     :param side_a: One side's results.
-    :ptype side_a: Sequence[EvalResult]
+    :ptype side_a: Sequence[ResultView]
     :param side_b: The other side's results.
-    :ptype side_b: Sequence[EvalResult]
+    :ptype side_b: Sequence[ResultView]
     :param observations: The campaign's mechanism observations.
     :ptype observations: _MechanismObservations
     :param profile: The host whose declaration of the model lever names its mechanism.
@@ -413,7 +413,7 @@ def _model_contrast_confounds(
 
 
 def _arm_production_footings(
-    arms: _CampaignArms, results_by_run: Mapping[str, list[EvalResult]], *, profile: HostProfile
+    arms: _CampaignArms, results_by_run: Mapping[str, list[ResultView]], *, profile: HostProfile
 ) -> dict[str, PooledProductionFooting]:
     """Each arm's production footing: what each of its runs set away from production (#571).
 
@@ -424,7 +424,7 @@ def _arm_production_footings(
     :param arms: The campaign's arms. A run that resolved no arm is in none.
     :ptype arms: _CampaignArms
     :param results_by_run: Each run's results.
-    :ptype results_by_run: Mapping[str, list[EvalResult]]
+    :ptype results_by_run: Mapping[str, list[ResultView]]
     :param profile: The host whose declarations are read.
     :ptype profile: HostProfile
     :return: Variant key -> the arm's pooled footing, for every arm.
@@ -445,7 +445,7 @@ def _arm_production_footings(
 
 def _design_with_mechanism_confounds(
     design: RealizedDesign,
-    results_by_run: Mapping[str, list[EvalResult]],
+    results_by_run: Mapping[str, list[ResultView]],
     observations: _MechanismObservations,
     *,
     served: _ServedModels,
@@ -456,7 +456,7 @@ def _design_with_mechanism_confounds(
     :param design: The derived design.
     :ptype design: RealizedDesign
     :param results_by_run: Each run's results.
-    :ptype results_by_run: Mapping[str, list[EvalResult]]
+    :ptype results_by_run: Mapping[str, list[ResultView]]
     :param observations: The campaign's mechanism observations.
     :ptype observations: _MechanismObservations
     :param served: Which model answered each result's candidate calls, from :func:`_served_models`.
@@ -481,14 +481,14 @@ def _design_with_mechanism_confounds(
 
 
 def _arm_mechanisms(
-    arms: _CampaignArms, results_by_run: Mapping[str, list[EvalResult]], observations: _MechanismObservations
+    arms: _CampaignArms, results_by_run: Mapping[str, list[ResultView]], observations: _MechanismObservations
 ) -> list[ArmMechanismReading]:
     """Each arm's mean of every observed-mechanism covariate, saying so where none was measured.
 
     :param arms: The campaign's arms. A run that resolved no arm is in none, and so in no reading.
     :ptype arms: _CampaignArms
     :param results_by_run: Each run's results.
-    :ptype results_by_run: Mapping[str, list[EvalResult]]
+    :ptype results_by_run: Mapping[str, list[ResultView]]
     :param observations: The campaign's mechanism observations.
     :ptype observations: _MechanismObservations
     :return: One reading per arm and covariate, sorted by arm then covariate.
@@ -517,7 +517,7 @@ def _arm_mechanisms(
 _ServedModels = dict[str, ResultServedReading]
 
 
-def _served_models(results: Iterable[EvalResult]) -> _ServedModels:
+def _served_models(results: Iterable[ResultView]) -> _ServedModels:
     """Read which model answered each result's candidate calls, off its candidate usage rows.
 
     ``RoleUsage.served_model`` only — what the provider's response named — and never ``RoleUsage.model``
@@ -525,7 +525,7 @@ def _served_models(results: Iterable[EvalResult]) -> _ServedModels:
     the pointer rather than the model behind it.
 
     :param results: The campaign's results.
-    :ptype results: Iterable[EvalResult]
+    :ptype results: Iterable[ResultView]
     :return: Each result's reading, for the results whose candidate left a usage row.
     :rtype: _ServedModels
     """
@@ -567,14 +567,14 @@ def _served_model_confounds(result_ids: Iterable[str], served: _ServedModels) ->
 
 
 def _arm_served_models(
-    arms: _CampaignArms, results_by_run: Mapping[str, list[EvalResult]], served: _ServedModels
+    arms: _CampaignArms, results_by_run: Mapping[str, list[ResultView]], served: _ServedModels
 ) -> list[ArmServedModel]:
     """Each arm's served models, as the provider's responses named them.
 
     :param arms: The campaign's arms. A run that resolved no arm is in none, and so in no reading.
     :ptype arms: _CampaignArms
     :param results_by_run: Each run's results.
-    :ptype results_by_run: Mapping[str, list[EvalResult]]
+    :ptype results_by_run: Mapping[str, list[ResultView]]
     :param served: The campaign's readings, from :func:`_served_models`.
     :ptype served: _ServedModels
     :return: One reading per arm whose candidate left a usage row, sorted by arm.

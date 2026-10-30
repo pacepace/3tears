@@ -16,6 +16,13 @@ and pydantic's serialization read it exactly as they read the result it was: a p
 recorded model compares as the model it records (``==`` against an unrecorded one, or one recorded at another path,
 is the two models' own equality, which requires one class) and prints under that model's name.
 
+**A reader that reads results as their readings** (``ResultReading.of``, which the storage builds for each result
+it hydrates for a read of readings) is served the recorded result itself in the reading's place: a reading carries
+the attributes of its result under the same names, so what a reader reads of it is what it reads of the result, and
+it is recorded where the reader reads it. Building a real reading would read every attribute it carries, at the
+reading's own module, and record none of the reader's own reads. That a reading answers each reader as its result
+does is proved apart (``test_readings_match_results.py`` and the oracle).
+
 **What a path looks like.** A top-level field is its name (``eval_run_id``); a field of a nested model is its owner's
 path then its own (``transcript_score.score``); an item of a list is ``[]`` (``rubric_scores[].score``,
 ``usage[].cost_usd``) and a value of a mapping ``{}``. A method is its name with ``()`` (``judge_scores()``), and the
@@ -403,7 +410,8 @@ def _record_value(value: object, path: str, owner: str) -> None:
 
 @contextmanager
 def recording_results() -> Iterator[None]:
-    """Serve every ``EvalResult`` a store hydrates inside the block as a recorded result (see the module docstring).
+    """Serve every ``EvalResult`` a store hydrates inside the block as a recorded result, and every reading built of
+    one as that recorded result itself (see the module docstring).
 
     The stored read itself is unchanged: the real ``from_dict`` runs first, and its result's class is swapped after.
 
@@ -421,10 +429,13 @@ def recording_results() -> Iterator[None]:
         _record(result, "", result.id)
         return result
 
-    def reading_of(result: EvalResult, shared: SharedValues | None = None) -> EvalResult:
+    def served_whole(result: EvalResult, shared: SharedValues | None = None) -> EvalResult:
         return result
 
-    with mock.patch.object(EvalResult, "from_dict", recorded_read), mock.patch.object(ResultReading, "of", reading_of):
+    with (
+        mock.patch.object(EvalResult, "from_dict", recorded_read),
+        mock.patch.object(ResultReading, "of", staticmethod(served_whole)),
+    ):
         yield
 
 

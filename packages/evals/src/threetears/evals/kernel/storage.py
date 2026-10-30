@@ -2860,7 +2860,9 @@ class EvalStorage:
             keys[run_id].append(_result_key(item, run_id))
         return keys
 
-    def load_eval_results(self, result_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
+    def load_eval_results(
+        self, result_ids: Sequence[str], scope_id: str, /, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
         """The named results, in one store read by id; an id naming no result there is skipped.
 
         The page read of a run walked a page at a time (:mod:`~threetears.evals.kernel.run_pages`), after its keys
@@ -2870,12 +2872,16 @@ class EvalStorage:
         :ptype result_ids: Sequence[str]
         :param scope_id: The scope they live in.
         :ptype scope_id: str
+        :param elide: Fields of each result the store leaves out (``exclude``), so they are never shipped; each reads as
+            none. The bundle's kept trials elide the verbatim ones
+            (:data:`~threetears.evals.kernel.run_pages.VERBATIM_RESULT_FIELDS`), which their rows never show.
+        :ptype elide: Sequence[str]
         :return: The results, in the store's order.
         :rtype: list[EvalResult]
         """
         if not result_ids:
             return []
-        items = self._store.get_many("eval_result", list(dict.fromkeys(result_ids)), scope_id)
+        items = self._store.get_many("eval_result", list(dict.fromkeys(result_ids)), scope_id, exclude=tuple(elide))
         return self._hydrate_all(EvalResult, items)
 
     def iter_result_readings(

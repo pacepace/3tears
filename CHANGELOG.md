@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the campaign bundle reads its results as readings, and its kept trials whole by id
+
+**Changed:** `assemble_context_bundle` reads a campaign's results through `iter_result_readings`, so it holds each
+result as its compact reading: about 2.7 KB a result where it held 25.4 KB, and a code-only `report_read` of the
+hot-path campaign peaks at 134 MiB where it peaked at 191 (248 MiB where 374 at twice the cases). The trials the
+bundle keeps (at most 500) are read whole, by id, in one more call, for the judge's reasons and "could not tell" notes,
+without the verbatim fields. The bundle, its fingerprint and every page are byte-identical.
+
+**Changed (provisional):** `CampaignReadStore`, and so `AnalysisStore`, names `iter_result_readings` and
+`load_eval_results(..., elide=())` where it named `query_eval_results_by_runs`. On `EvalStorage` the results are one
+store call over a store that offers `ResultReadings`, else one key read per run plus one read per 1,000 results.
+`EvalStorage.load_eval_results` takes a keyword-only `elide`.
+
+**Fixed:** a reading carries a usage row's `unanswered_reasons` and a second judge's `config_ids`, which each arm's
+census and the judge-change reading read.
+
 ### evals: EvalStorage's reads of readings and groups take the store's path when the store offers it
 
 **Added:** `EvalStorage.iter_result_readings` and `result_groups` read on the store's path (`store`) when the store

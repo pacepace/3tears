@@ -56,8 +56,8 @@ from threetears.evals.kernel.metrics import (
     materiality,
     summary_population,
 )
+from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.schema.models import (
-    EvalResult,
     RubricScale,
     rubric_dim_scale,
 )
@@ -127,7 +127,7 @@ _NO_CONTROL_TO_COMPARE_AGAINST = (
 
 
 def _per_case_values(
-    members: list[EvalResult], judged_rows: dict[str, list[ScoreRecord]], *, profile: HostProfile
+    members: list[ResultView], judged_rows: dict[str, list[ScoreRecord]], *, profile: HostProfile
 ) -> dict[tuple[ReadingKind, str], dict[str, float]]:
     """Every numeric reading of one cell, as one mean per case — the unit a family comparison tests.
 
@@ -138,7 +138,7 @@ def _per_case_values(
     non-faulted results' scores, as :func:`_bar_reading` reads one.
 
     :param members: One cell's results, faulted ones included.
-    :ptype members: list[EvalResult]
+    :ptype members: list[ResultView]
     :param judged_rows: Projected judged-score rows by result id.
     :ptype judged_rows: dict[str, list[ScoreRecord]]
     :param profile: The host whose vocabulary this reads.
@@ -146,7 +146,7 @@ def _per_case_values(
     :return: ``{(reading, name): {test_case_id: per-case mean}}`` for every reading with a numeric value.
     :rtype: dict[tuple[ReadingKind, str], dict[str, float]]
     """
-    by_case: dict[str, list[EvalResult]] = defaultdict(list)
+    by_case: dict[str, list[ResultView]] = defaultdict(list)
     for result in members:
         by_case[result.test_case_id].append(result)
     values: dict[tuple[ReadingKind, str], dict[str, float]] = defaultdict(dict)
@@ -364,7 +364,7 @@ _TRIAL_PASS_RANGE = (0.0, 1.0)
 
 
 def _trial_pass_counts(
-    members: list[EvalResult], *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]
+    members: list[ResultView], *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]
 ) -> dict[str, tuple[int, int]]:
     """One cell's overall pass rate per case, as counts: each case's usable trials passed and its usable trials, the
     case's share passed being the one over the other.
@@ -377,7 +377,7 @@ def _trial_pass_counts(
     of its trials passed only because nothing could fail it.
 
     :param members: One cell's results.
-    :ptype members: list[EvalResult]
+    :ptype members: list[ResultView]
     :param rubric_threshold: The 1–5 level a judged dimension must reach to pass.
     :ptype rubric_threshold: int
     :param catalog: The bundle's measure catalog, which says which checks a trial is graded on.
@@ -725,7 +725,7 @@ def _multiple_comparisons(
     aspect: str,
     declared: AspectDeclaration | None,
     realized: RealizedDesign,
-    results_by_cell: dict[_CellKey, list[EvalResult]],
+    results_by_cell: dict[_CellKey, list[ResultView]],
     records: list[ScoreRecord],
     *,
     catalog: dict[str, MetricDescriptor],
@@ -768,7 +768,7 @@ def _multiple_comparisons(
     :param realized: The derived design, for the control arm.
     :ptype realized: RealizedDesign
     :param results_by_cell: Each cell's results.
-    :ptype results_by_cell: dict[_CellKey, list[EvalResult]]
+    :ptype results_by_cell: dict[_CellKey, list[ResultView]]
     :param records: The assembly's score projection rows, where judged scores live.
     :ptype records: list[ScoreRecord]
     :param catalog: The bundle's measure catalog — direction and axis per measure.
@@ -927,7 +927,7 @@ def _multiple_comparisons(
 
 
 def _choice_contrasts(
-    results_by_cell: dict[_CellKey, list[EvalResult]], *, rubric_threshold: int, catalog: dict[str, MetricDescriptor]
+    results_by_cell: dict[_CellKey, list[ResultView]], *, rubric_threshold: int, catalog: dict[str, MetricDescriptor]
 ) -> list[FloorContrast]:
     """With no control, every pair of arms under one rig on the overall pass rate, per case: what a choice's pairwise
     readings read. The pair's ``control`` is the arm first in variant-key order, a position and never a role.

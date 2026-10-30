@@ -19,7 +19,7 @@ from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import IDENTITY_VERSION, resolve_variant_identity
-from threetears.evals.schema.models import EvalResult
+from threetears.evals.kernel.result_reading import ResultView
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun
@@ -61,7 +61,7 @@ def _apparatus_classes(
 
 def _observations(
     runs: list[EvalRun],
-    results_by_run: dict[str, list[EvalResult]],
+    results_by_run: dict[str, list[ResultView]],
     classes: dict[str, ApparatusClass],
     *,
     scope_id: str,
@@ -79,7 +79,7 @@ def _observations(
     :param runs: The campaign's resolved runs, in bundle order.
     :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results, keyed by run id.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :param classes: Run id → apparatus class, from :func:`_apparatus_classes`.
     :ptype classes: dict[str, ApparatusClass]
     :param scope_id: The scope these were read under.
@@ -123,7 +123,7 @@ def _observations(
 
 
 def _variant_key_of(
-    result: EvalResult, run: EvalRun, *, profile: HostProfile
+    result: ResultView, run: EvalRun, *, profile: HostProfile
 ) -> tuple[str, dict[str, SweepableValue], str | None]:
     """This result's variant key, and the lever map that key was digested from.
 
@@ -136,7 +136,7 @@ def _variant_key_of(
     read it, so the arm stays described, while a derivation replays today's predicate and cannot.
 
     :param result: The observation.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :param run: The batch it belongs to.
     :ptype run: EvalRun
     :param profile: The host whose vocabulary this reads.
@@ -171,7 +171,7 @@ def _variant_key_of(
     return result.variant_key, {}, _undescribable_arm_reason(result, run)
 
 
-def _undescribable_arm_reason(result: EvalResult, run: EvalRun) -> str:
+def _undescribable_arm_reason(result: ResultView, run: EvalRun) -> str:
     """Say why this arm's stamped key has no lever map behind it, in numbers an operator can act on.
 
     The two causes need different actions and the text is the only channel that carries the
@@ -185,7 +185,7 @@ def _undescribable_arm_reason(result: EvalResult, run: EvalRun) -> str:
     ago, and the remedy differs entirely.
 
     :param result: The observation whose stamped key cannot be described.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :param run: The batch it belongs to.
     :ptype run: EvalRun
     :return: The reason, for :attr:`~threetears.evals.kernel.campaign.VariantIndexEntry.levels_unavailable`.
@@ -205,14 +205,14 @@ def _undescribable_arm_reason(result: EvalResult, run: EvalRun) -> str:
     )
 
 
-def variant_key_of_run(results: Sequence[EvalResult]) -> str | None:
+def variant_key_of_run(results: Sequence[ResultView]) -> str | None:
     """Which variant a run's observations carried — the authoring side of the control.
 
     A control is a variant key and nobody types a sha256, so the authoring surface points at a
     run and this addresses it. A run is one arm, so it names one variant.
 
     :param results: One run's results, which carry the key the runner stamped on each.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :return: The variant key, or ``None`` for a run with no results yet — a run with no observation
         is in no arm.
     :rtype: str | None

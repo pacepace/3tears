@@ -59,6 +59,8 @@ from threetears.evals.kernel.metrics import (
 )
 from threetears.evals.kernel.covariates import undeclarable_covariates
 
+from threetears.evals.kernel.result_reading import ResultView
+
 # At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.schema.models import (
     goal_check_proofs_as_read,
@@ -314,7 +316,7 @@ _LINEAGE_FIELDS: tuple[str, ...] = _walked_fields(EvalResult)
 _CARRIERS: tuple[tuple[str, bool, tuple[str, ...]], ...] = _carrier_fields()
 
 
-def _carrier_leaves(result: EvalResult, *, describe: _Describer) -> Iterator[tuple[str, float | str, bool, str, str]]:
+def _carrier_leaves(result: ResultView, *, describe: _Describer) -> Iterator[tuple[str, float | str, bool, str, str]]:
     """Yield ``(name, value, report_gaps, carrier, observation_unit)`` for every sub-model's leaves.
 
     This is the whole subject-agnostic mechanism: a result announces what it measured
@@ -366,7 +368,7 @@ def _carrier_leaves(result: EvalResult, *, describe: _Describer) -> Iterator[tup
                 yield name, leaf, report_gaps, field_name, observation_unit
 
 
-def _derived_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool, str, str]]:
+def _derived_leaves(result: ResultView) -> Iterator[tuple[str, float | str, bool, str, str]]:
     """Yield the measures a result implies but does not carry, in the carrier-leaf shape.
 
     Two. ``candidate_output_tokens_per_s`` is the candidate provider's output rate — see
@@ -397,13 +399,13 @@ def _derived_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool
         yield "candidate_output_tokens_per_s", throughput, True, "latency", _PER_RESULT
 
 
-def goal_check_proofs_of(runs: Sequence[EvalRun], results: Iterable[EvalResult]) -> list[GoalCheckProofReading]:
+def goal_check_proofs_of(runs: Sequence[EvalRun], results: Iterable[ResultView]) -> list[GoalCheckProofReading]:
     """Each goal check the runs' results graded, with the proof its runs froze at launch, in the order first met.
 
     :param runs: The member runs.
     :ptype runs: Sequence[EvalRun]
     :param results: Their results.
-    :ptype results: Iterable[EvalResult]
+    :ptype results: Iterable[ResultView]
     :return: One reading per check.
     :rtype: list[GoalCheckProofReading]
     """
@@ -459,7 +461,7 @@ def goal_check_proofs_of(runs: Sequence[EvalRun], results: Iterable[EvalResult])
     return readings
 
 
-def _goal_check_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool, str, str]]:
+def _goal_check_leaves(result: ResultView) -> Iterator[tuple[str, float | str, bool, str, str]]:
     """Yield each goal-state check's verdict on this observation, 1.0 passed and 0.0 not.
 
     The mechanical tier's verdicts, which the bundle carries unconditionally: a bar is a
@@ -482,7 +484,7 @@ def _goal_check_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, b
         yield goal_check_measure(outcome.expression), 1.0 if passed else 0.0, False, "goal_state_outcomes", _PER_RESULT
 
 
-def _failures_as_misses(results_by_run: dict[str, list[EvalResult]]) -> dict[str, list[EvalResult]]:
+def _failures_as_misses(results_by_run: dict[str, list[ResultView]]) -> dict[str, list[ResultView]]:
     """Each run's results, with a classifier's failure that landed no verdict read as a miss.
 
     A classifier kind lands ``match`` on every classification, and a call its model refused lands nothing
@@ -505,9 +507,9 @@ def _failures_as_misses(results_by_run: dict[str, list[EvalResult]]) -> dict[str
     Copied, never written back: what the kind stored is untouched.
 
     :param results_by_run: Each run's stored results.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :return: The same results, each such failure replaced by a copy carrying ``match`` False.
-    :rtype: dict[str, list[EvalResult]]
+    :rtype: dict[str, list[ResultView]]
     """
     classified_cases = {
         result.test_case_id for members in results_by_run.values() for result in members if _classifies(result)
@@ -520,7 +522,7 @@ def _failures_as_misses(results_by_run: dict[str, list[EvalResult]]) -> dict[str
         )
     }
 
-    def read(run_id: str, result: EvalResult) -> EvalResult:
+    def read(run_id: str, result: ResultView) -> ResultView:
         if _miss_counts(result.test_case_id, classified_cases, grading_otherwise=run_id in grading_otherwise):
             return _as_miss(result) or result
         return result
@@ -528,12 +530,12 @@ def _failures_as_misses(results_by_run: dict[str, list[EvalResult]]) -> dict[str
     return {run_id: [read(run_id, result) for result in members] for run_id, members in results_by_run.items()}
 
 
-def _classifies(result: EvalResult) -> bool:
+def _classifies(result: ResultView) -> bool:
     """Whether the result landed a verdict, making its case a classification (:func:`_failures_as_misses`)."""
     return isinstance(result.host_measures.get(MATCH_MEASURE), bool)
 
 
-def _answered_unclassified(result: EvalResult) -> bool:
+def _answered_unclassified(result: ResultView) -> bool:
     """Whether the result was delivered without failing and landed no verdict: on a classified case, its run grades by
     something else (:func:`_failures_as_misses`)."""
     return MATCH_MEASURE not in result.host_measures and classify_result(result) is ResultOutcome.OK
@@ -551,7 +553,7 @@ def _miss_counts(case_id: str, classified_cases: Collection[str], *, grading_oth
     return not grading_otherwise and case_id in classified_cases
 
 
-def _as_miss(result: EvalResult) -> EvalResult | None:
+def _as_miss(result: ResultView) -> ResultView | None:
     """The result read as a miss when it is a candidate failure that landed no verdict, else ``None``; whether it is
     read so turns on its case and its run (:func:`_failures_as_misses`)."""
     if MATCH_MEASURE not in result.host_measures and classify_result(result) is ResultOutcome.CANDIDATE_FAIL:
@@ -559,7 +561,7 @@ def _as_miss(result: EvalResult) -> EvalResult | None:
     return None
 
 
-def _accuracy_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool, str, str]]:
+def _accuracy_leaves(result: ResultView) -> Iterator[tuple[str, float | str, bool, str, str]]:
     """Yield the observation's classifier accuracy, 1.0 matched and 0.0 not, derived from its ``match``.
 
     ``match`` is the boolean a classifier kind lands, and a boolean summarises as a rate with no
@@ -582,7 +584,7 @@ def _accuracy_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, boo
     kind that classifies nothing, and yields nothing: an accuracy for it would be invented.
 
     :param result: The observation.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :yield: ``("accuracy", 1.0 | 0.0, True, "host_measures", "result")`` at most once.
     :rtype: Iterator[tuple[str, float | str, bool, str, str]]
     """
@@ -592,7 +594,7 @@ def _accuracy_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, boo
         yield ACCURACY_MEASURE, 1.0 if hit else 0.0, True, "host_measures", _PER_RESULT
 
 
-def _candidate_output_throughput(result: EvalResult) -> float | None:
+def _candidate_output_throughput(result: ResultView) -> float | None:
     """The candidate's output tokens per second of its own model-call time, or None.
 
     Both halves are the CANDIDATE's: ``llm_ms`` sums the candidate's model-call spans, and the
@@ -602,7 +604,7 @@ def _candidate_output_throughput(result: EvalResult) -> float | None:
     rate, and zero would read as a provider that produced nothing.
 
     :param result: The observation.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: Tokens per second, or None when the candidate's output tokens or a non-zero ``llm_ms``
         is missing.
     :rtype: float | None
@@ -616,7 +618,7 @@ def _candidate_output_throughput(result: EvalResult) -> float | None:
     return sum(counted) / (llm_ms / 1000.0)
 
 
-def _withheld_derived(results: list[EvalResult], reported: Collection[str]) -> list[str]:
+def _withheld_derived(results: list[ResultView], reported: Collection[str]) -> list[str]:
     """Name a derived measure no result could produce, with the reason it could not.
 
     A derived measure is the one kind that can vanish from the bundle without anything
@@ -632,7 +634,7 @@ def _withheld_derived(results: list[EvalResult], reported: Collection[str]) -> l
     ``absent_scopes`` is the right place for.
 
     :param results: The results the collection was built from.
-    :ptype results: list[EvalResult]
+    :ptype results: list[ResultView]
     :param reported: Measure names the walk successfully summarised.
     :ptype reported: Collection[str]
     :return: Entries of the form ``name (reason)``, empty when nothing was withheld. The
@@ -651,7 +653,7 @@ def _withheld_derived(results: list[EvalResult], reported: Collection[str]) -> l
     return [f"orchestration_ms ({reasons.pop()})" if len(reasons) == 1 else "orchestration_ms"]
 
 
-def _lineage_leaves(result: EvalResult, *, describe: _Describer) -> Iterator[tuple[str, float | str, MetricDescriptor]]:
+def _lineage_leaves(result: ResultView, *, describe: _Describer) -> Iterator[tuple[str, float | str, MetricDescriptor]]:
     """Yield the result's own top-level scalars.
 
     Mostly lineage and provenance — ids, a schema version, the k index — with a couple of
@@ -686,7 +688,7 @@ def _lineage_leaves(result: EvalResult, *, describe: _Describer) -> Iterator[tup
 
 
 def _open_map_leaves(
-    result: EvalResult, *, describe: _Describer
+    result: ResultView, *, describe: _Describer
 ) -> Iterator[tuple[str, float | str, MetricDescriptor]]:
     """Yield the result's covariate, phase-timing and host-measure entries — all open key spaces.
 
@@ -732,7 +734,7 @@ def _open_map_leaves(
             yield name, value, describe(name)
 
 
-def _undeclarable_host_entries(results: Sequence[EvalResult]) -> list[str]:
+def _undeclarable_host_entries(results: Sequence[ResultView]) -> list[str]:
     """The unreported-observation entries for host-measure keys the walk dropped as engine-owned.
 
     Each entry is the key with its reason in parentheses, the form
@@ -741,7 +743,7 @@ def _undeclarable_host_entries(results: Sequence[EvalResult]) -> list[str]:
     beside it and the bare name would read as a gap in the engine's reading rather than a drop of the host's.
 
     :param results: The results the walk read.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :return: One entry per dropped key, sorted.
     :rtype: list[str]
     """
@@ -756,7 +758,7 @@ def _undeclarable_host_entries(results: Sequence[EvalResult]) -> list[str]:
     ]
 
 
-def in_population(population: MeasurePopulation, result: EvalResult) -> bool:
+def in_population(population: MeasurePopulation, result: ResultView) -> bool:
     """Whether a result is an observation of a measure read over ``population``.
 
     The one membership rule the measure walk applies, per measure and per result: a result the harness
@@ -769,7 +771,7 @@ def in_population(population: MeasurePopulation, result: EvalResult) -> bool:
         (:func:`~threetears.evals.kernel.metrics.summary_population`).
     :ptype population: MeasurePopulation
     :param result: The result.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: True when the result's observations of the measure count.
     :rtype: bool
     """
@@ -872,7 +874,7 @@ class _CompactWalk:
 
     __slots__ = ("result", "measures", "slots", "values", "members")
 
-    def __init__(self, result: EvalResult, describe: _Describer, memo: _WalkMemo) -> None:
+    def __init__(self, result: ResultView, describe: _Describer, memo: _WalkMemo) -> None:
         self.result = result
         self.measures = describe.measures
         ids: list[int] = []
@@ -969,7 +971,7 @@ def _describer(measures: MeasureRegistry) -> _Describer:
     return _Describer(measures) if memo is None else memo.describer(measures)
 
 
-def _walk_leaves(result: EvalResult, describe: _Describer) -> Iterator[tuple[_Slot, float | str]]:
+def _walk_leaves(result: ResultView, describe: _Describer) -> Iterator[tuple[_Slot, float | str]]:
     """Every leaf the measure walk reads off one result, with its value, in the order :func:`_pool_measures` pools."""
     measures = describe.measures
     outer: tuple[tuple[bool, Iterable[tuple[str, float | str, MetricDescriptor]]], ...] = (
@@ -991,7 +993,7 @@ def _walk_leaves(result: EvalResult, describe: _Describer) -> Iterator[tuple[_Sl
             yield _Slot(source, name, descriptor, carrier, unit, verdict), value
 
 
-def _result_walks(results: Iterable[EvalResult], measures: MeasureRegistry) -> Iterator[tuple[_WalkMemo, _CompactWalk]]:
+def _result_walks(results: Iterable[ResultView], measures: MeasureRegistry) -> Iterator[tuple[_WalkMemo, _CompactWalk]]:
     """Each result's walk, beside the memo whose slots it indexes: the active memo's, else a memo of this call alone."""
     active = _WALK_MEMO.get()
     memo = _WalkMemo() if active is None else active
@@ -1017,7 +1019,7 @@ class _MeasurePool(NamedTuple):
 
 
 def _measure_collection(
-    results: list[EvalResult], *, profile: HostProfile, undeclared: MeasurePopulation
+    results: list[ResultView], *, profile: HostProfile, undeclared: MeasurePopulation
 ) -> MeasureCollection:
     """Build the scope-tagged measure surface over a set of results.
 
@@ -1028,7 +1030,7 @@ def _measure_collection(
 
 
 def _pool_measures(
-    results: Iterable[EvalResult], *, profile: HostProfile, undeclared: MeasurePopulation
+    results: Iterable[ResultView], *, profile: HostProfile, undeclared: MeasurePopulation
 ) -> _MeasurePool:
     """Pool every measure the results carry, each over its own population, without summarising any.
 
@@ -1036,7 +1038,7 @@ def _pool_measures(
     measure's values or its mean (:func:`_pooled_means`) reads them here and builds no summary.
 
     :param results: Every result in scope, faulted and failed ones included.
-    :ptype results: Iterable[EvalResult]
+    :ptype results: Iterable[ResultView]
     :param profile: The host whose registry describes each name.
     :ptype profile: HostProfile
     :param undeclared: The population of the surface asking, for a measure that declares none.
@@ -1150,7 +1152,7 @@ def _pooled_means(pool: _MeasurePool) -> dict[str, float]:
 
 
 def _collect_measures(
-    results: list[EvalResult], *, profile: HostProfile, undeclared: MeasurePopulation
+    results: list[ResultView], *, profile: HostProfile, undeclared: MeasurePopulation
 ) -> tuple[MeasureCollection, dict[str, str], dict[str, _PooledMeasure]]:
     """Build the measure surface, and say what one observation of each measure describes.
 

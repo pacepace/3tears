@@ -342,15 +342,13 @@ class _StampedStore:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
 
-    def query_eval_results_by_runs(
-        self, run_ids: Sequence[str], scope_id: str, *, elide: Sequence[str] = ()
-    ) -> list[EvalResult]:
+    def iter_result_readings(self, run_ids: Sequence[str], scope_id: str) -> list[EvalResult]:
         stamp = {"output_fingerprint": self._key[0], "criterion_fingerprint": self._key[1]}
         return [
             result.model_copy(
                 update={"rubric_scores": [score.model_copy(update=stamp) for score in result.rubric_scores]}
             )
-            for result in self._inner.query_eval_results_by_runs(run_ids, scope_id, elide=elide)
+            for result in self._inner.iter_result_readings(run_ids, scope_id)
         ]
 
 

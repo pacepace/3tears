@@ -231,8 +231,11 @@ class AnalysisStore(CampaignReadStore, JobRecordStore, Protocol):
         read's pass over the run, before it reads the run's results by id a page at a time."""
         ...
 
-    def load_eval_results(self, result_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
-        """The named results within a scope, in one read by id — a page of the calibration read's."""
+    def load_eval_results(
+        self, result_ids: Sequence[str], scope_id: str, /, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
+        """The named results within a scope, in one read by id — a page of the calibration read's — each without the
+        fields ``elide`` names (the bundle's kept trials leave out the verbatim ones)."""
         ...
 
     def query_calibration_ratings(

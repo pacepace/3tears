@@ -792,8 +792,10 @@ drops them one at a time; a store whose fields are top-level keys of a Postgres 
 operation (`data - text[]`). A store that applies `exclude` after fetching should project each row as it reads it, or
 the pass holds every row's text at once. Every other reader of a whole run reads it the same way, in the store's
 order: a comparison or bisection of two runs, a run written lost, the witnessed judge ceiling, `results_list`,
-`list_results`, `delete_run` (its ids only), a calibration and the judge passes. A campaign's bundle still reads its
-member runs' results in one batch call, and a regression watch's judged tiers read many runs in one, each without
+`list_results`, `delete_run` (its ids only), a calibration and the judge passes. A campaign's bundle reads its member
+runs' results as their compact readings (`iter_result_readings`: one call over a store that offers `ResultReadings`,
+else one key read per run and one read by id per 1,000 results), then the trials it keeps whole by id in one more call,
+without the verbatim fields. A regression watch's judged tiers read many runs in one call, each without
 `world_events` and `kind_payload` (`query_eval_results_by_runs(..., elide=VERBATIM_RESULT_FIELDS)`, a by-type read with
 `exclude` and `field_in` together: the conformance case `projection.exclude_with_field_in` pins that a store projects
 it); a launch

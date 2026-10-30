@@ -47,10 +47,12 @@ def test_every_counted_operation_grows_no_faster_than_the_campaign() -> None:
         for phase, counted in read.items():
             by_phase[phase][scale] = counted
 
-    # The guard's own precondition: the scales really double the rows read, or no ratio below says anything.
+    # The guard's own precondition: the scales really double the rows read, or no ratio below says anything. Read off
+    # the scores projected, one set per result read: result validations add the trials the bundle keeps, read whole
+    # again for their prose, which the trials cap (MAX_TRIALS) holds to a constant.
     whole = by_phase["report_read"]
     assert whole[1]["score_records"] > 0, "the read must project scores for this to test anything"
-    assert growth(whole, "result_validations") == pytest.approx([2.0, 2.0], abs=0.1), whole
+    assert growth(whole, "score_records") == pytest.approx([2.0, 2.0], abs=0.1), whole
     excess = {
         (phase, operation): [round(ratio, 3) for ratio in growth(measured, operation)]
         for phase, measured in by_phase.items()
