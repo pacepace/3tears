@@ -134,6 +134,23 @@ async def test_a_write_begun_is_in_progress_until_it_commits(held: _Held) -> Non
     assert dict(settled.epochs) == {"state:VA": 1, "race:va-sen": 1}
 
 
+async def test_a_write_in_progress_names_what_it_touched_and_every_scopes_epoch(held: _Held) -> None:
+    """a reader may read a scope the write has not touched while it runs: the record says which it has."""
+    await _write(held, {"state:VA", "state:MD"})
+    version = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+    await _in_transaction(held.pool, lambda conn: held.epochs.touch(version, {"state:VA"}, conn=conn))
+
+    unsettled = await held.epochs.settled()
+
+    assert isinstance(unsettled, Unsettled)
+    assert unsettled.pending == frozenset({"state:VA"})
+    assert dict(unsettled.epochs or {}) == {"state:VA": 1, "state:MD": 1}
+    await _in_transaction(held.pool, lambda conn: held.epochs.commit(version, set(), conn=conn))
+    settled = await held.epochs.settled()
+    assert isinstance(settled, EpochSnapshot) and settled.pending == frozenset()
+    assert settled.epoch("state:VA") == version
+
+
 async def test_a_commit_moves_only_the_scopes_it_names_and_records_what_each_replaced(held: _Held) -> None:
     await _write(held, {"state:VA", "state:MD", "race:va-sen"})
 

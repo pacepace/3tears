@@ -36,7 +36,7 @@ from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
 from threetears.core.collections import scoped_snapshot as scoped_snapshot_module  # noqa: E402
-from threetears.core.collections.scoped_snapshot import (  # noqa: E402
+from threetears.core.collections.scoped_snapshot import (
     ScopedSnapshot,
     SnapshotPhase,
     SnapshotSource,
@@ -182,6 +182,10 @@ class _Store:
             raise ObjectNotFoundError(f"{name} is not in the store", bucket="objects", name=name)
         return self.objects[name]
 
+    async def list_names(self, *, prefix: str = "") -> list[str]:
+        self.listings += 1
+        return sorted(n for n in self.objects if n.startswith(prefix))
+
     async def list_objects(self, *, prefix: str = "") -> list[ObjectInfo]:
         self.listings += 1
         return [
@@ -207,13 +211,20 @@ class _L3:
         self.statements = 0
         self.epochs: dict[str, int] = {}
         self.writing = False
+        #: the scopes the write in progress has touched, when the writer records them (None: it does not)
+        self.pending: set[str] | None = None
+        #: called after each scope's rows are read, as a write may land while a reader reads
+        self.after_read: Callable[[str], None] = lambda scope: None
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
         self.statements += 1
         if "DISTINCT" in sql:
             return [{"scope": s} for s in sorted({r["state"] for r in self.rows})]
         state = args[0] if args else None
-        return [r for r in self.rows if state is None or r["state"] == state]
+        found = [dict(r) for r in self.rows if state is None or r["state"] == state]
+        if state is not None:
+            self.after_read(state)
+        return found
 
     async def fetchrow(self, sql: str, *args: Any) -> Any:
         return None
@@ -233,7 +244,11 @@ def _snapshot(**options: Any) -> tuple[ScopedSnapshot, _Pointers, _Store, _L3]:
     l3.writing = False
 
     async def settled() -> Any:
-        return Unsettled("a write is in progress") if l3.writing else dict(l3.epochs)
+        if not l3.writing:
+            return dict(l3.epochs)
+        if l3.pending is None:
+            return Unsettled("a write is in progress")
+        return Unsettled("a write is in progress", epochs=dict(l3.epochs), pending=frozenset(l3.pending))
 
     snapshot = ScopedSnapshot(
         name="enr",
@@ -484,6 +499,87 @@ async def test_a_catch_up_that_waits_on_a_write_leaves_the_replica_waiting_not_r
     l3.writing = False
     assert await snapshot.catch_up_from_l3() == ["TX"]
     assert snapshot.status().phase is SnapshotPhase.READY
+    await snapshot.stop()
+
+
+def _held_votes(snapshot: ScopedSnapshot, state: str) -> list[int]:
+    with snapshot.read() as cursor:
+        found = cursor.execute("SELECT votes FROM results WHERE state = ? ORDER BY county", [state]).fetchall()
+    return [int(v) for (v,) in found]
+
+
+async def test_back_to_back_writes_never_keep_a_behind_scope_from_catching_up() -> None:
+    """loads ran every 30-40 s, so a write was nearly always in progress when the catch-up ran, and it waited for one
+    that was not (cobalt dev, 2026-10-29: 42 scopes behind L3 for as long as the loads ran). A scope the write in
+    progress has not touched is caught up while it runs."""
+    snapshot, pointers, _, l3 = _snapshot()
+    await _started(snapshot, pointers)
+    l3.rows[1]["votes"] = 9
+    l3.epochs["DE"] = 2
+    # the next write has begun, and has touched TX only
+    l3.writing, l3.pending = True, {"TX"}
+    l3.rows[0]["votes"] = 99
+
+    caught = await snapshot.catch_up_from_l3()
+
+    assert caught == ["DE"], "a scope the write in progress never touched waited for it"
+    assert _held_votes(snapshot, "DE") == [9]
+    assert _held_votes(snapshot, "TX") == [1], "a scope the write in progress touched was read part way"
+    await snapshot.stop()
+
+
+async def test_a_writer_stages_a_scope_its_copy_is_behind_on_whole_from_l3() -> None:
+    """a writer stages a scope from its copy only when the copy holds it at the epoch before the write; a scope the
+    copy is behind on was left for a catch-up that writes back to back never let run (cobalt dev, 2026-10-29: VA's
+    counties stopped at 01:15 with the warehouse at 06:36). The writer stages it whole from L3 instead, where its own
+    write's rows already are."""
+    snapshot, pointers, _, l3 = _snapshot()
+    await _started(snapshot, pointers)
+    # L3 moved TX twice without this copy (epochs 2 and 3); this write, version 4, has written its rows
+    l3.rows[0]["votes"] = 44
+    l3.epochs["TX"] = 3
+    staged = await snapshot.stage_from_l3("TX", 4)
+    l3.epochs["TX"] = 4
+
+    moved, skipped = await snapshot.publish_staged([staged], carry_at={"TX": 3})
+
+    assert (moved, skipped) == (["TX"], [])
+    await _until(lambda: _held_votes(snapshot, "TX") == [44], what="the whole stage applied")
+    await snapshot.stop()
+
+
+async def test_a_scope_a_write_touches_while_it_is_read_is_not_caught_up() -> None:
+    snapshot, pointers, _, l3 = _snapshot()
+    await _started(snapshot, pointers)
+    l3.rows[1]["votes"] = 9
+    l3.epochs["DE"] = 2
+    l3.writing, l3.pending = True, set()
+
+    def write_lands(scope: str) -> None:
+        assert l3.pending is not None
+        l3.pending.add(scope)
+
+    l3.after_read = write_lands
+
+    assert await snapshot.catch_up_from_l3() == []
+    assert _held_votes(snapshot, "DE") == [2]
+    await snapshot.stop()
+
+
+async def test_a_scope_whose_write_commits_while_it_is_read_is_not_caught_up_at_the_old_epoch() -> None:
+    snapshot, pointers, _, l3 = _snapshot()
+    await _started(snapshot, pointers)
+    l3.rows[1]["votes"] = 9
+    l3.epochs["DE"] = 2
+    l3.writing, l3.pending = True, set()
+
+    def write_commits(scope: str) -> None:
+        l3.epochs[scope] = l3.epochs.get(scope, 0) + 1
+
+    l3.after_read = write_commits
+
+    assert await snapshot.catch_up_from_l3() == []
+    assert _held_votes(snapshot, "DE") == [2]
     await snapshot.stop()
 
 
@@ -1626,6 +1722,7 @@ class _BoundedStore(_Store):
         self.objects[name] = data
 
     async def list_objects(self, *, prefix: str = "") -> list[ObjectInfo]:
+        self.listings += 1
         # every chunk as written long ago: the rule must not care how old a chunk is
         long_ago = datetime(2000, 1, 1, tzinfo=UTC)
         return [
@@ -3519,3 +3616,67 @@ async def test_a_scope_read_from_the_rail_as_arrow_is_the_scope_its_dict_rows_ma
         assert (l3.arrow_reads > 0) is arrow
     assert len(held[True]) == len(rows)
     assert held[True] == held[False]
+
+
+async def test_a_cold_load_reads_at_most_a_few_chunks_at_once_however_many_scopes_it_fetches_ahead() -> None:
+    """a new pod loading its copy fetched 16 scopes ahead, each its chunks: more bytes pending on its connection than
+    the server holds for a client (MaxPending, 64 MiB), and the server dropped it as a slow consumer (cobalt dev,
+    2026-10-29). Its object reads are bounded on their own, whatever the scopes fetched ahead."""
+    sizes = {state: 50 for state in ("AK", "AL", "AR", "AZ", "CA", "CO", "CT", "DE", "FL", "GA")}
+    builder, pointers, store, l3, _ = _paged(sizes)
+    await builder.start()
+    await builder.wait_ready(timeout=10)
+    await builder.stop()
+    reading = 0
+    most = 0
+
+    class _Slow(_Store):
+        async def get(self, name: str) -> bytes:
+            nonlocal reading, most
+            reading += 1
+            most = max(most, reading)
+            try:
+                await asyncio.sleep(0.01)
+                return await super().get(name)
+            finally:
+                reading -= 1
+
+    slow = _Slow()
+    slow.objects = store.objects
+    cold, _, _, _ = _snapshot(l3=l3, pointers=pointers, store=slow, l2_concurrency=16, chunk_reads=3)
+    l3.epochs = dict.fromkeys(sizes, 1)
+
+    await cold.start()
+    await cold.wait_ready(timeout=10)
+
+    assert cold.status().source is SnapshotSource.L2
+    assert 1 < most <= 3, f"{most} chunks read at once, against a bound of 3"
+    await cold.stop()
+
+
+async def test_a_staged_publish_of_many_scopes_lists_the_store_once_and_asks_one_retire() -> None:
+    """the scopes a publish moved retire their older epochs together: one listing and one ask to the declarer,
+    not one of each per scope, since each listing reads the whole bucket and each ask has the declarer sweep it."""
+    store = _BoundedStore(10**9)
+    asks: list[list[str]] = []
+
+    async def retire(names: list[str]) -> None:
+        asks.append(list(names))
+        for name in names:
+            store.objects.pop(name, None)
+
+    snapshot, pointers, _, l3 = _snapshot(store=store, retire=retire)
+    await _started(snapshot, pointers)
+    nevada = await snapshot.stage("NV", 2, _NV_ROWS)
+    texas = await snapshot.stage("TX", 2, _TX_ROWS)
+    l3.epochs.update({"NV": 2, "TX": 2})
+    store.listings = 0
+    asks.clear()
+
+    moved, _ = await snapshot.publish_staged([nevada, texas], carry_at={"NV": 0, "TX": 1})
+
+    assert sorted(moved) == ["NV", "TX"]
+    assert _epochs_held(store, "TX") == {2}, "TX's epoch-1 chunks were kept after its pointer moved"
+    assert store.listings == 1, f"the publish listed the store {store.listings} times"
+    assert len(asks) == 1, f"the publish asked the declarer {len(asks)} times"
+    await snapshot.stop()

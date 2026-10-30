@@ -59,13 +59,13 @@
 
 [[release]]
 version = "unreleased"
-since = "v0.83.0"
+since = "v0.85.0"
 summary = """
 The report kit (none of it is in a final release): a generation is written by the report
 planner, and a planned analysis's page is the page its stored plan draws. An arm and a template's strata may declare
 the names a page prints for them, a reporter case may judge a report plan, and a campaign's report input may be
 frozen for the report analyst's tool, served on a cut of its own. Money is grouped by thousands. No public name
-has moved or been removed since 0.83.0; the durable version and what changed are in `notes`.
+has moved or been removed since 0.85.0; the durable version and what changed are in `notes`.
 """
 notes = [
     "`report_read` (and the campaign's report in every form: markdown, html, static html, json) no longer refuses a campaign whose newest analysis is a memo frozen over a bundle shape this build does not read (a memo frozen at shape 60 on a build reading 64). It returns the code-only page over the campaign's evidence as it stands, led by the one regenerate line with the bundle's shape after it, as a report plan or an unreadable report document already did: `basis` is `code_only`, `analysis_id` the memo's, `needs_regeneration` the line. A host that caught the `RefusedInput` to show \"generate again\" reads `needs_regeneration` instead. `analysis_report`, which reads one analysis by its id, still refuses.",
@@ -112,6 +112,23 @@ notes = [
     "Results read for figures leave out their verbatim fields, `world_events` and `kind_payload` (`run_pages.VERBATIM_RESULT_FIELDS`, newly public): a campaign's bundle, a regression watch's judged tiers, the read tier's aggregates and an export each ask the store to (`exclude`), and a host reader those results reach (a sweepable's `read`, a residual or production reader) sees both as none. A host that implements a store port itself, rather than through `EvalStorage`, accepts a keyword-only `elide: Sequence[str] = ()` on `CampaignReadStore.query_eval_results_by_runs`, `LensStore.query_eval_results` and `LensStore.query_eval_results_by_run` (and `ResultStore`'s two), and leaves those fields out; a store's `by_doc_type` projects `exclude` beside `field_in` (conformance case `projection.exclude_with_field_in`). `EvalStorage.query_eval_results_by_run` takes `run_id` and `scope_id` positionally only, as the ports declared them: a caller passing either by keyword passes them positionally. An export of a run too large for one page reads it by id a page at a time, each page whole. The measure walk no longer reads a world's events: a host measure declared as `turn` no longer pools each event's turn where a result reported none.",
     "A run's results are read a page at a time by every reader that read a run whole (#998), so a host that implements a store port itself, rather than through `EvalStorage`, adds the paged reads where the port declares them: `AnalysisStore` and `CampaignStore` declare the key read `query_eval_result_keys_by_run(run_id, scope_id)` (each result's `ResultKey`) and the read by id `load_eval_results(result_ids, scope_id)` in place of `query_eval_results_by_run`; `LeaseStore` reads through `RunResultsStore` (those two reads); `CurationStore` declares `query_eval_result_ids_by_run` in place of `query_eval_results_by_run`; and `list_results` takes a `RunResultsStore` where it took a `ResultStore`. A store missing one fails at runtime in `delete_run`, `reporter_calibration`, the settling of a lost run or a campaign arm's variant key. `WitnessedJudging.spent` takes `(result id, judge spend)` pairs where it took the run's results. The key read raises `UnreadableResultKey` (`threetears.evals.kernel`, a `StorageError`) for a stored row whose key cannot be read. One behaviour changes: `delete_run` deletes a run this build reads together with a result it cannot reconstruct, where it refused the delete. No public name moved."
 ]
+
+[[release]]
+version = "0.85.0"
+since = "v0.84.0"
+summary = """
+Platform pools that stop re-sending the session settings they hold, and namespace names resolved from cache: no
+3tears-evals name has moved or been removed since 0.84.0, and no judge wording changed.
+"""
+
+[[release]]
+version = "0.84.0"
+since = "v0.83.0"
+summary = """
+An idle registry that no longer rewrites its catalog, L3 reads resent past a hub replica that stopped, and drift
+histograms that cover minutes: no 3tears-evals name has moved or been removed since 0.83.0, and no judge wording
+changed.
+"""
 
 [[release]]
 version = "0.83.0"
