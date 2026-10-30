@@ -691,9 +691,17 @@ class _SubscriptionFeed:
         self._receivers.add(task)
         task.add_done_callback(self._receivers.discard)
 
-    async def release(self, raw_subscription: Any, connection: Any) -> None:
-        """hand over a superseded receiver: stop the server routing to it, keep what it already has
-        and anything still on its way.
+    async def release(self, raw_subscription: Any, connection: Any, *, hold: float = 0.0) -> None:
+        """hand over a superseded receiver: after ``hold``, stop the server routing to it, keeping what it
+        already has and anything still on its way.
+
+        The ``hold`` keeps the superseded member in its queue group beside its successor first. A server
+        matches each published message to the group's members as they stand when it matches, and
+        delivers a moment later; when every member of that match has left by then, the message is
+        dropped -- even though the successor joined meanwhile (nats-server 2.14 and 2.15, under load:
+        8 ms between a match and its delivery was traced, against 2 ms between the successor's ``SUB``
+        and the old member's ``UNSUB``). So the old member leaves only after the hold, the longest
+        request the client declares: a match that old has long been delivered.
 
         :func:`_stop_routing` removes the server's interest and proves the server processed that.
         The receiver keeps running: a message the server picked this member for just before the
@@ -706,9 +714,12 @@ class _SubscriptionFeed:
         :ptype raw_subscription: Any
         :param connection: the nats-py connection that carries it
         :ptype connection: Any
+        :param hold: seconds the superseded member stays in its group beside its successor first
+        :ptype hold: float
         :return: nothing
         :rtype: None
         """
+        await asyncio.sleep(hold)
         try:
             # bounded: the drain waits for the receiver to take each message, and a subscription
             # dropped mid-handover has no receiver left to take them. see the bound's own comment
@@ -871,7 +882,7 @@ class Subscription:
         # sender-posture: primitive -- moves a caller's subscription to a successor connection
         return await connection.subscribe(self._subject.path, queue=self._queue)
 
-    def move_to(self, raw_subscription: Any, connection: Any) -> asyncio.Task[None]:
+    def move_to(self, raw_subscription: Any, connection: Any, *, hold: float = 0.0) -> asyncio.Task[None]:
         """make the successor's subscription current, and hand over the old one's backlog.
 
         The successor receives from here on; the old subscription is drained in the background
@@ -881,6 +892,9 @@ class Subscription:
         :ptype raw_subscription: Any
         :param connection: the successor nats-py connection
         :ptype connection: Any
+        :param hold: seconds the old subscription stays in its group beside the successor before it leaves
+            (:meth:`_SubscriptionFeed.release`)
+        :ptype hold: float
         :return: the task draining the old subscription
         :rtype: asyncio.Task[None]
         """
@@ -895,7 +909,7 @@ class Subscription:
         self.raw_subscription = raw_subscription
         self._connection = connection
         return asyncio.create_task(
-            self._feed.release(previous, previous_connection),
+            self._feed.release(previous, previous_connection, hold=hold),
             name=f"nats-handover:{self._subject.path}",
         )
 
@@ -4002,9 +4016,11 @@ class NatsClient:
            from here on uses it -- but only once the old connection has proved that everything
            already published on it reached the server (:meth:`_settle_publishes`), so a message
            published on the successor never overtakes one published before the renewal;
-        4. stop the server routing to each subscription's old half (:func:`_stop_routing`), whose
-           receiver keeps taking whatever the server had already routed to the old connection
-           until that connection is drained at its retirement, and
+        4. keep each subscription's old half in its group for ``retire_after``, then stop the server
+           routing to it (:func:`_stop_routing`) -- a server drops a message matched to members that
+           have all left by its delivery, so a member leaves only once no match that old remains --
+           its receiver taking whatever the server had already routed to the old connection until
+           that connection is drained at its retirement, and
            rebind each durable push consumer;
         5. keep the old connection open for ``retire_after`` -- the longest request it may be
            carrying -- then drain and close it. Until then a request sent on it still receives its
@@ -4110,7 +4126,9 @@ class NatsClient:
                 # nothing about the credential now in use.
                 self._health_state["auth_violations"] = 0
                 self._health_state["overflow_events"] = 0
-                handovers = [sub.move_to(raw_sub, successor) for sub, raw_sub in moving]
+                # each old half stays in its group until the replaced connection's hold is over
+                hold = retire_after.total_seconds()
+                handovers = [sub.move_to(raw_sub, successor, hold=hold) for sub, raw_sub in moving]
                 self._push_consumers = [consumer for consumer in self._push_consumers if not consumer.is_closed]
                 js = successor.jetstream()
                 handovers.extend(
@@ -4183,10 +4201,11 @@ class NatsClient:
         :rtype: None
         """
         try:
-            # each handover is bounded, and never raises (it logs); gathering them first means the
-            # connection-wide drain below never races one.
+            started = time.monotonic()
+            # each handover holds its old half for ``after`` and is then bounded, and never raises (it
+            # logs); gathering them first means the connection-wide drain below never races one.
             await asyncio.gather(*handovers, return_exceptions=True)
-            await asyncio.sleep(after.total_seconds())
+            await asyncio.sleep(max(0.0, after.total_seconds() - (time.monotonic() - started)))
             await self._drain_retired(connection)
         finally:
             self._forget_connection(connection)

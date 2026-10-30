@@ -283,10 +283,8 @@ async def test_the_handover_moves_every_subscription_before_the_old_half_is_rele
     assert client.raw is successor
     assert [(s.subject, s.queue) for s in successor.subs] == [("events.>", sub.queue)]
     # a round trip settles what was published on the old connection before anything is published
-    # on the successor; then the UNSUB on its own, then a round trip ordered after it. The old half
-    # is NOT drained (forgotten) at its PONG: the server may still deliver a message it picked this
-    # member for just before the UNSUB; the old half ends with its connection's drain.
-    assert current.calls == ["round-trip", "unsub 1", "round-trip"]
+    # on the successor. The old half stays in its group for the hold (retire_after): no UNSUB yet.
+    assert current.calls == ["round-trip"]
     assert not old_half.drained
     await successor.subs[0].queue_in.put(_Msg(b"routed to the successor"))
     await _settle()
@@ -311,9 +309,15 @@ async def test_a_message_the_server_delivers_to_the_old_half_after_its_round_tri
     await client.subscribe(Subject.raw("events.>"), cb=_cb)
     old_half = current.subs[0]
     await client.renew_connection(retire_after=timedelta(seconds=0.2))
+    # hold the PONG of the round trip that follows the UNSUB, and deliver the late message around it
+    current.pong_gate = asyncio.Event()
+    for _ in range(100):
+        if "unsub 1" in current.calls:
+            break
+        await asyncio.sleep(0.01)
+    assert "unsub 1" in current.calls
+    current.pong_gate.set()
     await _settle()
-    assert current.calls[-2:] == ["unsub 1", "round-trip"]
-
     await old_half.queue_in.put(_Msg(b"picked before the UNSUB, delivered after its PONG"))
     await _settle()
     assert received == [b"picked before the UNSUB, delivered after its PONG"]
@@ -323,6 +327,30 @@ async def test_a_message_the_server_delivers_to_the_old_half_after_its_round_tri
             break
         await asyncio.sleep(0.01)
     assert current.drained and old_half.drained, "the old half ends with its connection's retirement"
+    await client.shutdown()
+
+
+async def test_the_old_half_stays_in_its_group_until_the_hold_is_over() -> None:
+    """a server drops a message matched to group members that have all left by its delivery, though a
+    successor joined meanwhile (nats-server 2.14/2.15 under load). So the old half leaves only after
+    the hold: until then both halves are members and any match includes one still there."""
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(current, successor)
+
+    async def _cb(msg: IncomingMessage) -> None:
+        return None
+
+    await client.subscribe(Subject.raw("events.>"), cb=_cb)
+    current.calls.clear()
+    await client.renew_connection(retire_after=timedelta(seconds=0.3))
+    await asyncio.sleep(0.15)
+    assert "unsub 1" not in current.calls, "the old half left its group before the hold was over"
+    for _ in range(100):
+        if "unsub 1" in current.calls:
+            break
+        await asyncio.sleep(0.01)
+    after = current.calls[current.calls.index("unsub 1") :]
+    assert after[:2] == ["unsub 1", "round-trip"], "the UNSUB, then a round trip ordered after it"
     await client.shutdown()
 
 

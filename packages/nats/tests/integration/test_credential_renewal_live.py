@@ -491,8 +491,15 @@ async def test_many_renewals_under_a_busy_subscription_lose_and_double_nothing()
             stream = asyncio.create_task(_stream())
             pod_stream = asyncio.create_task(_pod_stream())
             first = pod.raw
+            renewed = 0
             for _ in range(_STRESS_RENEWALS):
-                await pod.renew_connection(retire_after=timedelta(seconds=0.2))
+                try:
+                    await pod.renew_connection(retire_after=timedelta(seconds=0.2))
+                    renewed += 1
+                except TimeoutError:
+                    # opening the successor timed out (the callout answers on this same, saturated event
+                    # loop): a renewal that fails there changes nothing, and the renewal loop tries again
+                    pass
                 await asyncio.sleep(0.05)
             stop.set()
             await stream
@@ -507,6 +514,7 @@ async def test_many_renewals_under_a_busy_subscription_lose_and_double_nothing()
             assert pod.raw is not first
             assert first.is_closed, "the first connection was never retired"
             assert len(published) > 10 * _STRESS_RENEWALS, "the stream was too slow to exercise the handovers"
+            assert renewed > _STRESS_RENEWALS // 2, f"only {renewed} of {_STRESS_RENEWALS} renewals went through"
             missing = [body for body in published if body not in received]
             assert not missing, f"{len(missing)} of {len(published)} messages lost across renewals: {missing[:5]}"
             doubled = sorted(body for body, count in received.items() if count > 1)

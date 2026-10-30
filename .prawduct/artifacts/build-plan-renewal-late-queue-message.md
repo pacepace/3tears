@@ -32,13 +32,23 @@ fails on the old code. Done.
 nats-py's own flush writes its PING ahead of a SUB still in the pending buffer; the pod's first message was once lost
 to that. Done.
 
-### Chunk 03: The remaining handover loss (open)
+### Chunk 03: The old half stays in its group until the hold is over
 
-Still failing, rarely: 3 of 216 stress runs after chunk 01 (7 of 192 before), one message each, always at the
-boundary where the old connection stops and the new one starts receiving. An observer subscription saw every lost
-message (the server received it); a spy on every pod connection's raw parser input found none of them (no pod
-connection was sent it); no error, disconnect or slow consumer anywhere. Keeping the old member subscribed until
-retirement made it much worse (15 of 72), so removing a queue member is the dangerous step. Next: server tracing
-narrowed to one subject, the queue-group selection and retry path, nats-server issues and changelog, a valid
-no-renewal control; if the cause is nats-server, a minimal reproduction and a 3tears workaround (never remove a queue
-member until its replacement is proven receiving).
+Root cause, traced on the server (nats-server 2.14.2 and 2.15.2, `-V`): the server matches each published message to
+a queue group's members as they stand when it matches, and delivers a moment later; under CPU load 8 ms passed
+between a match and its delivery, against 2 ms between the successor's `SUB` and the old member's `UNSUB`. The
+delivery found the one member of its match gone and dropped the message: never tried against the successor, no error
+anywhere (trace: seq-155191 parsed at .018223, `SUB` m34 .020076, `UNSUB` m33 .022330, delivered only to an observer
+.026869). Minimal reproduction, plain nats-py and a plain server, no 3tears: `qhandover.py` (losses in 10 of 12 runs
+in a Docker network; 12/12 clean with no handovers, 6/6 with only additions, 6/6 with 20 ms between the `SUB` and the
+`UNSUB`).
+
+Workaround: each old half stays in its group for `retire_after` (the longest request the client declares) before
+`_stop_routing`, so no match that old remains when it leaves. It narrows the race to a match outliving the hold; no
+client can see another publisher's pending match, so it is not a proof. Test
+`test_the_old_half_stays_in_its_group_until_the_hold_is_over` fails with the hold removed. Stress (6 parallel loops):
+0 messages lost in 216 runs (was 7 of 192, then 3 of 216 after chunk 01). The stress test now retries a renewal whose
+successor connect timed out (the callout answers on the test's saturated event loop), as the renewal loop does; 3 of
+216 failed on that before.
+
+Upstream: Pace decides whether to file the reproduction with nats-server.
