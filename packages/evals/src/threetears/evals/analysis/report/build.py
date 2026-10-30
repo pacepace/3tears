@@ -481,14 +481,16 @@ def analysis_campaign_bundle(analysis: EvalAnalysis) -> CampaignBundle:
     :ptype analysis: EvalAnalysis
     :return: The bundle, as frozen at generation.
     :rtype: CampaignBundle
-    :raises RefusedInput: The analysis was written over a bundle of another shape.
+    :raises RefusedInput: The analysis was written over a bundle of another shape, refused before any aspect's bundle
+        is read.
     """
     what = f"analysis {analysis.id}"
     remedy = "generate the analysis again (analysis_generate), which assembles the campaign's evidence as it stands"
-    bundles = []
+    # Every aspect's stored shape is checked before any is read: reading one is the costly half, and an analysis
+    # whose later aspect no longer reads is refused without paying for the earlier ones.
     for held in analysis.aspects:
         refuse_a_bundle_of_another_shape(held.bundle, what=what, remedy=remedy)
-        bundles.append(AnalysisContextBundle.from_dict(dict(held.bundle)))
+    bundles = [AnalysisContextBundle.from_dict(dict(held.bundle)) for held in analysis.aspects]
     return CampaignBundle.from_frame(analysis.campaign_bundle, bundles, what=what)
 
 
