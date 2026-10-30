@@ -41,6 +41,7 @@ from threetears.evals.analysis import (
     campaign_report,
     frontier_text,
     comparison_sets,
+    export_results,
     frontier,
     history,
     orphaned_runs,
@@ -797,8 +798,8 @@ def _as_data(answer: object) -> object:
 
 class TestAnAggregateReadsResultsWithoutTheirVerbatimFields:
     """No aggregate reads a world's event log or a kind's payload, which are most of a result's bytes, so its read asks
-    the store to leave both out, and its answer is the one a read shipping them gives: the scope's 28 results each
-    carry a world's events and a payload."""
+    the store to leave both out, and its answer is the one a read shipping them gives; so do an export's. The scope's
+    six runs' results each carry a world's events and a payload."""
 
     @pytest.fixture
     def carrying(self) -> tuple[_ExcludeSwitch, EvalStorage, list[EvalRun]]:
@@ -832,7 +833,37 @@ class TestAnAggregateReadsResultsWithoutTheirVerbatimFields:
         slim = _as_data(LENSES[lens](storage, storage))
 
         assert slim == whole
-        assert frozenset(VERBATIM_RESULT_FIELDS) in store.excluded, store.excluded
+        assert store.excluded and all(frozenset(VERBATIM_RESULT_FIELDS) <= read for read in store.excluded), (
+            store.excluded
+        )
+
+    @pytest.mark.parametrize("read", ["whole_scope", "named_runs", "paged"])
+    def test_an_exports_rows_are_a_whole_reads(
+        self,
+        read: str,
+        monkeypatch: pytest.MonkeyPatch,
+        carrying: tuple[_ExcludeSwitch, EvalStorage, list[EvalRun]],
+    ) -> None:
+        """Read whole when the scope fits a page, by the runs it names, or a page of whole runs at a time."""
+        store, storage, narrow = carrying
+        if read == "paged":
+            monkeypatch.setattr(reads, "EXPORT_PAGE_RESULTS", 2 * CASES)
+        named = [narrow[0].id] if read == "named_runs" else None
+
+        def export() -> object:
+            return _as_data(
+                export_results(storage, SCOPE, list_runs=_lister(storage), fmt="json", run_ids=named, profile=PROFILE)
+            )
+
+        store.honour_exclude = False
+        whole = export()
+        store.honour_exclude = True
+        store.excluded.clear()
+
+        assert export() == whole
+        assert store.excluded and all(frozenset(VERBATIM_RESULT_FIELDS) <= read for read in store.excluded), (
+            store.excluded
+        )
 
     def test_a_narrowed_read_leaves_them_out_too(
         self, monkeypatch: pytest.MonkeyPatch, carrying: tuple[_ExcludeSwitch, EvalStorage, list[EvalRun]]
@@ -844,4 +875,5 @@ class TestAnAggregateReadsResultsWithoutTheirVerbatimFields:
         table = LENSES["pivot"](storage, storage, subject_id=NARROW)
 
         assert table.narrowed_read_disclosure is not None, "past the budget, it read the subject's runs alone"
-        assert store.excluded.count(frozenset(VERBATIM_RESULT_FIELDS)) == len(narrow), store.excluded
+        assert len(store.excluded) == len(narrow), store.excluded
+        assert all(frozenset(VERBATIM_RESULT_FIELDS) <= read for read in store.excluded), store.excluded

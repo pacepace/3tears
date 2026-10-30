@@ -1248,7 +1248,8 @@ def export_results(
             storage, scope_id, all_runs, requested, status, known_format, profile, started, after_case_id=case_cursor
         )
     if cursor is None and sum(_results_estimate(run) for run in all_runs) <= EXPORT_PAGE_RESULTS:
-        results = storage.query_eval_results(scope_id)
+        # Without the verbatim fields: an export's rows are the projection's, which reads neither.
+        results = storage.query_eval_results(scope_id, elide=VERBATIM_RESULT_FIELDS)
         if len(results) <= EXPORT_PAGE_RESULTS:
             runs = [run for run in cohort if run.status == status] if status else cohort
             projection = project_score_records(
@@ -1333,7 +1334,9 @@ def _export_named(
     # was filtered out still reads as "excluded on request", never "unplaceable". The archived ids are not supplied:
     # the runs come from the CORPUS, so archival narrowed nothing, and calling a later exclusion of an archived run
     # archival would send the reader to un-archive a run that is already selected.
-    results = [res for run in runs for res in storage.query_eval_results_by_run(run.id, scope_id)]
+    results = [
+        res for run in runs for res in storage.query_eval_results_by_run(run.id, scope_id, elide=VERBATIM_RESULT_FIELDS)
+    ]
     projection = project_score_records(
         runs, results, known_run_ids={run.id for run in all_runs}, archived_run_ids=None, profile=profile
     )
@@ -1407,7 +1410,9 @@ def _export_page(
         estimate += size
     after = len(remaining) - len(page)
 
-    results = [res for run in page for res in storage.query_eval_results_by_run(run.id, scope_id)]
+    results = [
+        res for run in page for res in storage.query_eval_results_by_run(run.id, scope_id, elide=VERBATIM_RESULT_FIELDS)
+    ]
     archived_run_ids = {run.id for run in all_runs if run.archived}
     projection = project_score_records(
         page, results, known_run_ids={run.id for run in all_runs}, archived_run_ids=archived_run_ids, profile=profile

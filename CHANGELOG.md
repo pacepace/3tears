@@ -11,12 +11,15 @@ packages (bumped in lock-step).
 **Fixed:** `pivot`, `history`, `frontier`, `program_budget`, `orphaned_runs` and `comparison_sets` read every result
 they aggregate whole, held only to the read tier's row budget, and a row is not its bytes: a result's world event log
 and its kind's payload are most of them, and no aggregate reads either. Their read, whole-scope or narrowed to a
-subject's runs, now asks the store to leave both out, and every answer is the one a read shipping them gives. Exports
-still read results whole.
+subject's runs, now asks the store to leave both out, and every answer is the one a read shipping them gives; so do an
+export's reads of a scope, of named runs and of a page of whole runs, whose rows are the same projection's (a run too
+large for one page is read a page at a time by id, each page whole). A host reader those results reach (a sweepable's `read`, a
+residual or production reader) sees both fields as none.
 
 **Changed (a host's own lens store):** the `LensStore` port's `query_eval_results` and `query_eval_results_by_run` take
-a keyword-only `elide`, as `EvalStorage`'s do, and the aggregates pass it, so a host that implements the port itself
-must accept it.
+a keyword-only `elide`, as `EvalStorage`'s and `ResultStore`'s do, and the aggregates and exports pass it, so a host
+that implements either port itself must accept it. `EvalStorage.query_eval_results_by_run`'s `run_id` and `scope_id`
+are now positional-only, as the ports declared them.
 
 ### evals: a campaign's bundle and a regression watch's judged tiers read results without their verbatim fields
 
