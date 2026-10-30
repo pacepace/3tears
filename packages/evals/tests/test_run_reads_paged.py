@@ -16,6 +16,9 @@ it serves:
 - **resumable_jobs** offers a large run read a page at a time, as a single page holding it offers it.
 - **Both stores the engine ships** (in memory, SQLite) serve the two reads: the keys, with what grows with a cell left
   out, then the results by id.
+- **Several runs' keys are one read** (``query_eval_result_keys_by_runs``): each run's keys are the ones its own key read
+  gives, in the store's order within the run, a run with none stored is answered empty, no run asked reads nothing,
+  and a row with no readable key is refused as the one-run read refuses it.
 
 Mutations that turn this file red (each run against a saved copy and restored from it):
 
@@ -25,21 +28,25 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 - ``lenses.history_launch_pricer``: a run of the template's history read whole.
 - ``run_pages.iter_run_results``: a page past ``page_results``.
 - ``storage.query_eval_result_keys_by_run``: ``usage``, ``rubric_scores`` or ``world_events`` no longer left out.
+- ``storage.query_eval_result_keys_by_runs``: one read per run; a run with none dropped from the answer; the row checks
+  skipped.
 """
 
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Mapping, Sequence
 import random
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from threetears.evals.analysis import summary
 from threetears.evals.analysis.summary import summarize_run
-from threetears.evals.kernel import EvalStorage
+from threetears.evals.kernel import EvalStorage, StorageError
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE
+from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, UnreadableResultKey
 from threetears.evals.ops import OpsHost, history_launch_pricer, lenses, run_job_id
 from threetears.evals.run import resumable_jobs, resume_run
 from threetears.evals.run import resume
@@ -288,3 +295,74 @@ class TestEveryShippedStoreServesTheTwoReads:
         whole = summarize_run(host, run.id, SCOPE).model_dump_json()
         monkeypatch.setattr(summary, "RUN_RESULTS_PAGE", 5)
         assert summarize_run(host, run.id, SCOPE).model_dump_json() == whole
+
+
+class TestSeveralRunsKeysAreOneRead:
+    @pytest.mark.parametrize("kind", ["memory", "sqlite"])
+    def test_each_runs_keys_are_its_own_key_reads(self, kind: str, tmp_path: Path) -> None:
+        store = BatchRecordingStore() if kind == "memory" else SqliteDocumentStore(tmp_path / "evals.sqlite")
+        storage = EvalStorage(store)
+        first, second = _large_run(storage, cases=6), _large_run(storage, cases=4)
+        alone = {run.id: storage.query_eval_result_keys_by_run(run.id, SCOPE) for run in (first, second)}
+        if isinstance(store, BatchRecordingStore):
+            store.clear()
+
+        keys = storage.query_eval_result_keys_by_runs([second.id, first.id, "run-with-none", second.id], SCOPE)
+
+        assert list(keys) == [second.id, first.id, "run-with-none"], "every run asked, once, in the order asked"
+        assert keys["run-with-none"] == []
+        assert keys[first.id] == alone[first.id] and keys[second.id] == alone[second.id], "the store's order"
+        if isinstance(store, BatchRecordingStore):
+            assert [keys_only for _, keys_only, _ in store.typed_reads] == [True], "one read, of keys alone"
+            assert set(store.typed_reads[0][0]) == {first.id, second.id, "run-with-none"}
+
+    def test_no_run_asks_the_store_nothing(self) -> None:
+        store = BatchRecordingStore()
+
+        assert EvalStorage(store).query_eval_result_keys_by_runs([], SCOPE) == {}
+        assert store.typed_reads == []
+
+    def test_a_row_with_no_readable_key_is_refused(self) -> None:
+        store = InMemoryDocumentStore()
+        storage = EvalStorage(store)
+        run = _large_run(storage, cases=2)
+        store.upsert(
+            {
+                "doc_type": "eval_result",
+                "id": "keyless",
+                "scope_id": SCOPE,
+                "eval_run_id": run.id,
+                "test_case_id": "tc-0",
+            }
+        )
+
+        with pytest.raises(UnreadableResultKey, match="'keyless'"):
+            storage.query_eval_result_keys_by_runs([run.id], SCOPE)
+
+    def test_a_store_answering_with_a_run_not_asked_for_is_refused(self) -> None:
+        store = _PredicateIgnoringStore()
+        storage = EvalStorage(store)
+        asked, other = _large_run(storage, cases=2), _large_run(storage, cases=2)
+
+        with pytest.raises(StorageError, match=f"of run '{other.id}', none of them"):
+            storage.query_eval_result_keys_by_runs([asked.id], SCOPE)
+
+
+class _PredicateIgnoringStore(InMemoryDocumentStore):
+    """The in-memory store, answering a typed read of results with every result in the scope, whatever runs it named."""
+
+    def by_doc_type(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        order_by: str | None = None,
+        descending: bool = True,
+        limit: int | None = None,
+        exclude: Sequence[str] = (),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        return super().by_doc_type(
+            doc_type, scope_id, order_by=order_by, descending=descending, limit=limit, exclude=exclude, **field_eq
+        )

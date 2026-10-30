@@ -62,6 +62,8 @@ from packages.evals.tests.simulation_support import paired_t_power as reference_
 #: A host measure with a better end (lower), on the quality axis and with no declared range: what a family tests.
 READING = "fields_stripped"
 SCOPE = "power-scope"
+#: The results one key read of the planning read covers at most, by its runs' matrices (about 45 MB of key rows).
+KEY_READ_BATCH_RESULTS = 5_000
 TEMPLATE = "tpl-power"
 
 
@@ -334,6 +336,56 @@ class TestThePlanningReadIsHeldToTheReadBudget:
         assert block.run_ids == ["run-model-a", "run-model-b"] and _reading(block)
         assert all(keys_only for _, keys_only, _ in store.typed_reads), "no run was read whole"
         assert sum(store.id_reads) == 24
+
+    def test_every_runs_keys_are_one_read(self) -> None:
+        store, host = self._host()
+
+        detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
+
+        key_reads = [named for named, keys_only, _ in store.typed_reads if keys_only]
+        assert [sorted(named) for named in key_reads] == [["run-model-a", "run-model-b"]], "one read, not one per run"
+
+    def test_the_keys_are_read_a_batch_of_runs_at_a_time_within_the_batch_bound(self) -> None:
+        store, host = self._host()
+        # Runs whose matrices promise far more results than they hold: a batch is cut by the estimate, before any read.
+        for name, cases in (("wide-1", 2_000), ("wide-2", 2_000), ("wide-3", 2_000), ("past-the-bound", 6_000)):
+            run = make_eval_run(
+                id=f"run-{name}",
+                scope_id=SCOPE,
+                template_id=TEMPLATE,
+                candidate_model=name,
+                status="completed",
+                k_runs=1,
+                test_case_ids=[f"c{index}" for index in range(cases)],
+            )
+            host.storage.save_eval_run(run)
+            for case in ("c0", "c1"):
+                host.storage.save_eval_result(
+                    make_eval_result(
+                        id=f"{name}-{case}",
+                        eval_run_id=run.id,
+                        scope_id=SCOPE,
+                        model=name,
+                        test_case_id=case,
+                        k_iteration=1,
+                        host_measures={READING: 1.0},
+                    )
+                )
+        estimate = {
+            run.id: len(run.test_case_ids) * run.k_runs
+            for run in host.storage.query_eval_runs(SCOPE)
+            if run.template_id == TEMPLATE
+        }
+        store.clear()
+
+        block = detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
+
+        key_reads = [named for named, keys_only, _ in store.typed_reads if keys_only]
+        assert sorted(run for named in key_reads for run in named) == sorted(estimate), "every run's keys read once"
+        assert len(key_reads) > 1
+        for named in key_reads:
+            assert len(named) == 1 or sum(estimate[run] for run in named) <= KEY_READ_BATCH_RESULTS, named
+        assert sorted(block.run_ids) == sorted(estimate)
 
     def test_a_read_returning_more_than_its_runs_promised_past_the_budget_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
