@@ -25,6 +25,7 @@
 "threetears.evals.schema.AsyncDeliveryStatus": "stable",
 "threetears.evals.schema.AsyncDocumentStore": "host-contract",
 "threetears.evals.schema.AsyncExternalSpend": "stable",
+"threetears.evals.schema.AsyncResultReadings": "provisional",
 "threetears.evals.schema.AsyncStoreClock": "host-contract",
 "threetears.evals.schema.attribution_state": "provisional",
 "threetears.evals.schema.bind_cell_identity": "host-contract",

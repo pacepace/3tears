@@ -198,6 +198,7 @@ from threetears.evals.schema.prose import PROSE_SCHEMA_KEY
 from threetears.evals.schema.schema_nesting import NestedSchema, nested_schemas
 from threetears.evals.schema.store_port import (
     AsyncDocumentStore,
+    AsyncResultReadings,
     AsyncStoreClock,
     DocumentStore,
     GroupMeasure,
@@ -322,6 +323,7 @@ __all__ = [
     "OUT_OF_RUN_PURPOSES",
     "StoreClock",
     "ResultReadings",
+    "AsyncResultReadings",
     "GroupMeasure",
     "CancelRequestedAtField",
     "CancelRequestReasonField",

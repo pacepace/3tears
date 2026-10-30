@@ -781,6 +781,7 @@ class AsyncResultReadings(Protocol):
 
 __all__ = [
     "AsyncDocumentStore",
+    "AsyncResultReadings",
     "AsyncStoreClock",
     "DocumentStore",
     "GroupMeasure",

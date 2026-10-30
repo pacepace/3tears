@@ -121,6 +121,11 @@
       "signature": "AsyncExternalSpend(provider: str | None, calls: int, provider_units: int | None = None, provider_unit: str | None = None, money: float | None = None)",
       "tier": "stable"
     },
+    "threetears.evals.schema.AsyncResultReadings": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.AsyncStoreClock": {
       "kind": "protocol",
       "signature": "AsyncStoreClock{now(self) -> datetime}",

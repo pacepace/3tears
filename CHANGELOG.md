@@ -16,6 +16,12 @@ answers `count`, `count_null`, `sum_int`, `min`, `max` and `values` (`[row_id, v
 group (`GroupMeasure`). It has no float measure: a reader adds the values itself, in order. The in-memory and SQLite
 stores offer it. All three names are provisional.
 
+`RoutedDocumentStore` offers it when every store a type is placed in does, and sends each read whole to the one store
+its type is placed in. `bridge_async_store` offers it when the async store offers `AsyncResultReadings` (provisional,
+exported from `threetears.evals.schema`), the same reads awaited: `iter_narrowed` is an async iterator, streamed to
+the engine a batch at a time, and `grouped` is awaited. Each combines with the store's clock as before, and neither
+offers the capability through a method that raises.
+
 `threetears.evals.testing.RESULT_READINGS_CONFORMANCE_CASES` proves a store that offers it, one
 `ResultReadingsConformanceCase` per rule, failures reported as `StoreConformanceFailure`. Each case also takes a hook
 installer: the store calls the hook once per backend round trip, so the kit can count calls and make the backend fail.
