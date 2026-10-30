@@ -578,8 +578,9 @@ class SqliteDocumentStore:
         counted in the same statement and raised here. ``values`` rides the same statement as a ``UNION ALL`` of one
         row per matching document (its seq, id, group key, and each path's ``json_type`` and ``json_extract``),
         ordered by seq and grouped here: never through SQLite's JSON text, which writes a real at 15 significant
-        digits, so every double comes back to its last bit. An integer of 2**63 or more, which SQLite stores as a
-        real, comes back as a float, as this store's own reads return it.
+        digits, so every double comes back to its last bit. One known exception: an integer of 2**63 or more comes
+        back from ``values`` as a float, though this store's own reads (``by_doc_type``, ``iter_narrowed``) return it
+        exactly, because ``json_extract`` reads it as a real.
         See :meth:`~threetears.evals.schema.ResultReadings.grouped`.
 
         :param doc_type: The discriminator to select on.

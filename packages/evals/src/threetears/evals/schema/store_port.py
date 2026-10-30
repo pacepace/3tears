@@ -752,8 +752,9 @@ class ResultReadings(Protocol):
           compare as numbers and strings by code point (binary collation). A group with no values gives ``None``.
         * ``("values", path)``: ``[[row_id, value], ...]``, one pair per row, in :meth:`iter_narrowed`'s order, with
           ``None`` for an absent value, each value exactly as this store's own reads return it (every double to its
-          last bit; a store may change a value as it writes it, as SQLite reads an integer of 2**63 or more back as
-          a float). ``row_id`` is the row's ``id``. The reader folds a float from these, in this
+          last bit; a store may normalise a value as it writes it, as jsonb stores ``-0.0`` as ``0.0``). The SQLite
+          store has one known gap: an integer of 2**63 or more comes back from ``values`` as a float, though its own
+          reads return it exactly. ``row_id`` is the row's ``id``. The reader folds a float from these, in this
           order, so its answer does not depend on how the store adds.
 
         :param doc_type: The discriminator to select on.
