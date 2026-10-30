@@ -516,7 +516,7 @@ def _where(site: str) -> str:
 
 
 #: Every attribute path each family reads of a result, over every campaign it is read over (see the module
-#: docstring for the path syntax). Sizes: bundle 187, aggregates 102, planning 124.
+#: docstring for the path syntax). Sizes: bundle 187, aggregates 100, planning 124.
 #:
 #: The measure walk reads each model type's declared fields, never the judge's prose
 #: (``analysis/bundle/measures.py``), so no family reads ``judge_reasoning``, ``world_events`` or ``kind_payload``
@@ -761,8 +761,6 @@ PINNED: dict[str, frozenset[str]] = {
             "judge_repeats[].scores[].repeat.score",
             "judge_repeats[].scores[].repeat.served_model",
             "judge_repeats[].scores[].scale",
-            "judge_rescores",
-            "judge_rescores[].cost_usd",
             "judge_score()",
             "judge_scores()",
             "k_iteration",
@@ -1372,7 +1370,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].repeat.score",
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
-                "judge_rescores[].cost_usd",
                 "latency.async_wait_ms",
                 "latency.judge_ms",
                 "latency.llm_ms",
@@ -1405,7 +1402,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].repeat.score",
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
-                "judge_rescores[].cost_usd",
                 "latency.async_wait_ms",
                 "latency.judge_ms",
                 "latency.llm_ms",
@@ -1439,7 +1435,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].repeat.score",
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
-                "judge_rescores[].cost_usd",
                 "latency.async_wait_ms",
                 "latency.judge_ms",
                 "latency.llm_ms",
@@ -1496,7 +1491,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].repeat.score",
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
-                "judge_rescores[].cost_usd",
                 "judge_score()",
                 "judge_scores()",
                 "latency.async_wait_ms",
@@ -1581,8 +1575,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].repeat.score",
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
-                "judge_rescores",
-                "judge_rescores[].cost_usd",
                 "k_iteration",
                 "latency",
                 "latency.async_wait_ms",
