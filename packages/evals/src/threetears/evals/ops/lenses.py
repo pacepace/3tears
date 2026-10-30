@@ -96,7 +96,7 @@ from threetears.evals.run.reads import list_runs
 
 from threetears.evals.analysis.lens_text import exclusion_lines
 from threetears.evals.kernel.remedies import FIND_RUN, FIND_TEMPLATE
-from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_keyed_results, iter_run_results
+from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, ResultKey, iter_keyed_results, iter_run_results
 
 
 def _lister(host: EvalHost) -> RunLister:
@@ -885,10 +885,14 @@ def detectable_effects(
     runs = [run for run in list_runs(host, scope_id) if run.template_id == template_id]
     # Every result of every earlier run is read, so the read is held to the read tier's budget as the aggregates are:
     # estimated off the listing above, then counted off the runs' keys, both before any result is read (the store
-    # computing it is #996). Memory is held by the walk below, a page at a time; the budget holds the read's time.
+    # computing it is #996). Memory is held by the key reads, a batch of runs at a time, and by the walk below, a page
+    # at a time; the budget holds the read's time.
     hold_to_read_budget(_PLANNING_LENS, scope_id, runs, how=_NARROW_THE_PLANNING_READ)
-    # One read of every run's keys (its runs a ``field_in`` predicate), not one per run: each is a scan of the scope.
-    keys = host.storage.query_eval_result_keys_by_runs([run.id for run in runs], scope_id)
+    # One read per batch of runs instead of one per run. A key row still ships the result's scalars and its score
+    # objects, so each batch is reduced to its keys before the next is read (:func:`_key_read_batches`).
+    keys: dict[str, list[ResultKey]] = {}
+    for batch in _key_read_batches(runs):
+        keys.update(host.storage.query_eval_result_keys_by_runs([run.id for run in batch], scope_id))
     hold_to_read_budget(
         _PLANNING_LENS, scope_id, runs, how=_NARROW_THE_PLANNING_READ, returned=sum(map(len, keys.values()))
     )
@@ -930,6 +934,39 @@ def detectable_effects(
         for reading in readings
     ]
     return block.model_copy(update={"effects": effects})
+
+
+#: The results one key read of the planning read covers at most, by its runs' estimates: a stored key row, scores and
+#: all, decodes to about 9 KB, so a batch holds about 45 MB of rows before it is reduced to its keys. A run estimated
+#: past it is read alone, as every run was before the reads were batched.
+_KEY_READ_BATCH_RESULTS = 5_000
+
+
+def _key_read_batches(runs: Sequence[EvalRun]) -> list[list[EvalRun]]:
+    """``runs`` in order, cut into the batches the planning read reads the keys of in one call each.
+
+    A batch takes runs while their estimated results stay within :data:`_KEY_READ_BATCH_RESULTS`: each run's matrix
+    (cases × k), or the cells it recorded persisting when those are more, the estimate the read budget counts.
+
+    :param runs: The runs whose keys are read.
+    :ptype runs: Sequence[EvalRun]
+    :return: The batches, every run in exactly one, in ``runs`` order.
+    :rtype: list[list[EvalRun]]
+    """
+    batches: list[list[EvalRun]] = []
+    batch: list[EvalRun] = []
+    held = 0
+    for run in runs:
+        persisted = run.completeness.persisted_cells if run.completeness is not None else 0
+        estimate = max(len(run.test_case_ids) * run.k_runs, persisted)
+        if batch and held + estimate > _KEY_READ_BATCH_RESULTS:
+            batches.append(batch)
+            batch, held = [], 0
+        batch.append(run)
+        held += estimate
+    if batch:
+        batches.append(batch)
+    return batches
 
 
 def _detectable_effect(

@@ -35,14 +35,16 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Mapping, Sequence
 import random
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from threetears.evals.analysis import summary
 from threetears.evals.analysis.summary import summarize_run
-from threetears.evals.kernel import EvalStorage
+from threetears.evals.kernel import EvalStorage, StorageError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, UnreadableResultKey
 from threetears.evals.ops import OpsHost, history_launch_pricer, lenses, run_job_id
@@ -309,14 +311,10 @@ class TestSeveralRunsKeysAreOneRead:
 
         assert list(keys) == [second.id, first.id, "run-with-none"], "every run asked, once, in the order asked"
         assert keys["run-with-none"] == []
+        assert keys[first.id] == alone[first.id] and keys[second.id] == alone[second.id], "the store's order"
         if isinstance(store, BatchRecordingStore):
-            assert keys[first.id] == alone[first.id] and keys[second.id] == alone[second.id], "the store's order"
             assert [keys_only for _, keys_only, _ in store.typed_reads] == [True], "one read, of keys alone"
             assert set(store.typed_reads[0][0]) == {first.id, second.id, "run-with-none"}
-        else:
-            assert {run: sorted(found) for run, found in keys.items() if found} == {
-                run: sorted(found) for run, found in alone.items()
-            }
 
     def test_no_run_asks_the_store_nothing(self) -> None:
         store = BatchRecordingStore()
@@ -340,3 +338,31 @@ class TestSeveralRunsKeysAreOneRead:
 
         with pytest.raises(UnreadableResultKey, match="'keyless'"):
             storage.query_eval_result_keys_by_runs([run.id], SCOPE)
+
+    def test_a_store_answering_with_a_run_not_asked_for_is_refused(self) -> None:
+        store = _PredicateIgnoringStore()
+        storage = EvalStorage(store)
+        asked, other = _large_run(storage, cases=2), _large_run(storage, cases=2)
+
+        with pytest.raises(StorageError, match=f"of run '{other.id}', none of them"):
+            storage.query_eval_result_keys_by_runs([asked.id], SCOPE)
+
+
+class _PredicateIgnoringStore(InMemoryDocumentStore):
+    """The in-memory store, answering a typed read of results with every result in the scope, whatever runs it named."""
+
+    def by_doc_type(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        order_by: str | None = None,
+        descending: bool = True,
+        limit: int | None = None,
+        exclude: Sequence[str] = (),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        return super().by_doc_type(
+            doc_type, scope_id, order_by=order_by, descending=descending, limit=limit, exclude=exclude, **field_eq
+        )

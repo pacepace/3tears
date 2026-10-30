@@ -2749,7 +2749,10 @@ class EvalStorage:
         :meth:`query_eval_result_keys_by_run` for many runs at once: one ``by_doc_type`` with the runs as a ``field_in``
         predicate, the same fields left out, and each row read into its key by the same checks. For a reader that
         walks every run of a set a page at a time (a launch's planning read over a template's earlier runs), which
-        otherwise asks the store once per run.
+        otherwise asks the store once per run. A key row still ships the result's scalars and its score objects, so a
+        caller bounds how many results one call covers (the planning read batches its runs).
+
+        **Provisional:** this method may change before it is declared part of the host contract.
 
         :param run_ids: The runs. Empty asks the store nothing; one named twice is read once.
         :ptype run_ids: Sequence[str]
