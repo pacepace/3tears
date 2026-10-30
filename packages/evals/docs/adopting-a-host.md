@@ -744,8 +744,8 @@ eval.read_tier lens=pivot scope_id=acme runs_in=12 results_in=480 records_out=28
 
 `runs_in` and `results_in` are what the call read, `records_out` the score records it projected, `cells_out`
 the pivot's cells (`refused` when the pivot was refused; absent on an export) and `elapsed_ms` its wall time.
-Once `records_out` passes `READ_TIER_ROW_BUDGET` (60,622, in `threetears.evals.analysis`) the line is logged
-at WARNING and ends `over READ_TIER_ROW_BUDGET=60622`, so you can alert on the level alone. Crossing it means
+Once `records_out` passes `READ_TIER_ROW_BUDGET` (66,003, in `threetears.evals.analysis`) the line is logged
+at WARNING and ends `over READ_TIER_ROW_BUDGET=66003`, so you can alert on the level alone. Crossing it means
 the scope has outgrown the in-Python projection, the signal to push it down into your store; it fires
 before a page is slow, and you can alert on `elapsed_ms` instead.
 
@@ -759,11 +759,14 @@ The aggregating lenses (`comparison_sets`, `pivot`, `frontier` and `history`, an
 `scope_frontier` and `scope_history` operations and actions over them) cannot page: part of a pivot, a frontier or a
 history reads as the whole of it. They make the same estimate and hold it to their read budget, before reading
 anything. Each budget is the bytes per result that reader holds at its peak against the memory one call may take,
-measured (`threetears.evals.analysis.reads`): `READING_BUDGET` (60,622 results, 256 MiB) for `comparison_sets`,
+measured on the paths a host runs (`threetears.evals.analysis`): `READING_BUDGET` (66,003 results, 256 MiB) for
+`comparison_sets`,
 `frontier`, `history` and the regression watch; `PIVOT_READ_BUDGET` (27,108, 1 GiB) for `pivot`; `BUNDLE_READ_BUDGET`
 (28,116, 1 GiB) for a campaign's bundle; `PLANNING_READ_BUDGET` (37,010, 256 MiB) for a launch estimate's planning
-block. `program_budget` and `orphaned_runs` fold each result's spend figures off a grouped read and hold no budget:
-they answer a scope of any size.
+block. `program_budget` and `orphaned_runs` hold no budget and answer a scope of any size: they read each result's
+spend figures off one grouped read, never a result, but hold that read whole before folding it, so their memory still
+grows with the scope (1,683 bytes a result on a store offering grouped reads, up to 10,207 on a store without them,
+whose rows the engine groups).
 
 - **A scope within the budget** is read whole, as before.
 - **A scope past it** is refused (`VALIDATION_FAILED`, with `details` `runs`, `results_estimated` and
