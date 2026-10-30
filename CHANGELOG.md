@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: EvalStorage's reads of readings and groups take the store's path when the store offers it
+
+**Added:** `EvalStorage.iter_result_readings` and `result_groups` read on the store's path (`store`) when the store
+offers `ResultReadings`: one `iter_narrowed` call, with the verbatim fields (`world_events`, `kind_payload`) and the
+judge's prose (`judge_reasoning`, each score's `reasoning`, a re-judge's `cannot_tell` notes) left out, its rows
+hydrated a page at a time; or one `grouped` call. A store without it is read on the engine's path, as before. A store
+that offers the capability and fails raises what it raised, and is never read again on the engine's path. The readings
+and the groups are the same on both paths, in the same order.
+
+**Changed:** on the engine's path, the reads by id leave out the verbatim fields and the judge's prose outside a list
+(`judge_reasoning`, and the transcript and outcome scores' `reasoning`), which no reading carries: 8.7 KB shipped per
+result instead of 10.2 KB on the hot-path campaign (5.0 KB on the store's path). `result_groups` on the engine's path
+reads every run's keys in one call, in the store's order, so a grouping across runs hands its `values` in the order a
+capable store does, and reads by id only the top-level fields its paths name (`keep`).
+
+**Changed:** the `eval.read_tier` line's `path=` and `store_calls=` are filled by these reads: the path that served them
+(`store`, `engine`, or `engine+store` when both served one call) and the store calls they made, each counted when it is
+made. They stay empty for a call that makes none of these reads; no reader reads through them yet.
+
 ### evals: a compact reading of each stored result, and EvalStorage reads of readings and groups
 
 **Added (provisional):** `threetears.evals.kernel.result_reading.ResultReading`, a stored result as the engine's readers
