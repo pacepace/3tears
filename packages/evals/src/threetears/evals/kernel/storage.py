@@ -38,7 +38,8 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
+from itertools import islice
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, cast
 
@@ -103,14 +104,20 @@ from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose, OutOf
 from threetears.evals.schema.store_port import (
     DocumentStore,
     GroupMeasure,
+    ResultReadings,
     StoreClock,
     StoreConflict,
     refuse_on_event_loop,
 )
 from threetears.evals.storage.memory import InMemoryDocumentStore
 from threetears.evals.schema.logs import get_logger
-from threetears.evals.kernel.run_pages import ResultKey, RunResultsStore, UnreadableResultKey
-from threetears.evals.kernel.phase_log import charged
+from threetears.evals.kernel.run_pages import (
+    VERBATIM_RESULT_FIELDS,
+    ResultKey,
+    RunResultsStore,
+    UnreadableResultKey,
+)
+from threetears.evals.kernel.phase_log import charged, served_by
 from threetears.evals.kernel.result_reading import GroupsRead, ReadingsRead, ResultReading, SharedValues
 from threetears.evals.kernel.job_leases import RUN_LOST_STATUS, lease_lapsed, leased_kind_of, settle_tolerantly
 
@@ -167,6 +174,29 @@ _RESULT_KEY_EXCLUDED: Final = (
 #: A page's results are hydrated together and dropped once their readings are built, so a page is what a walk holds
 #: whole at once.
 READINGS_PAGE: Final[int] = 1000
+
+#: The judge's prose a result carries outside any list, which no reading carries
+#: (:class:`~threetears.evals.kernel.result_reading.ResultReading`): its narration and the reserved axes' reasoning.
+_READING_PROSE: Final = ("judge_reasoning", "transcript_score.reasoning", "outcome_score.reasoning")
+
+#: The fields a read of readings leaves out of every stored result it asks for (``exclude``), on either path: the
+#: verbatim fields (:data:`~threetears.evals.kernel.run_pages.VERBATIM_RESULT_FIELDS`), which hold most of a result's
+#: bytes, and the judge's prose outside any list. Each hydrates as none or empty, and no reading carries any of them,
+#: so the readings are those of the whole result.
+_READING_EXCLUDED: Final = (*VERBATIM_RESULT_FIELDS, *_READING_PROSE)
+
+#: The judge's prose inside list items, which no reading carries, left out of each item on the store's path
+#: (``exclude_in_items``): each rubric score's reasoning, and a re-judge's "cannot tell" notes (a re-judge is read for
+#: its spend alone). The prose a list deeper (a repeat's or a second judging's scores) ships: no narrowing reaches it.
+_READING_PROSE_IN_ITEMS: Final[Mapping[str, Sequence[str]]] = {
+    "rubric_scores": ("reasoning",),
+    "judge_rescores": ("cannot_tell",),
+}
+
+
+def _runs_in(runs: list[str] | None) -> dict[str, Sequence[Any]] | None:
+    """The ``field_in`` predicate a read of the runs' results makes: none for the whole scope."""
+    return None if runs is None else {"eval_run_id": runs}
 
 
 def _projected(row: Mapping[str, Any], paths: Sequence[str], scope_id: str) -> dict[str, Any]:
@@ -2852,19 +2882,34 @@ class EvalStorage:
         """Every result of the runs (or of the scope), as its compact reading
         (:class:`~threetears.evals.kernel.result_reading.ResultReading`), walked a page at a time.
 
-        The results' keys are read first, then the results by id, :data:`READINGS_PAGE` at a
-        time, each page when the one before it has been walked. Each result is hydrated as every read hydrates it
-        (upgrades and strict validation unchanged), its reading built, and the result dropped before the next page,
-        so a walk holds one page of results and its readings, never every result. Readings are never built from a
-        stored row: only from the result it hydrates to. Repeated values are held once across the read
-        (:class:`~threetears.evals.kernel.result_reading.SharedValues`).
+        Each result is hydrated as every read hydrates it (upgrades and strict validation unchanged), its reading
+        built, and the result dropped before the next page, so a walk holds one page of results and its readings,
+        never every result. Readings are never built from a stored row: only from the result it hydrates to. Repeated
+        values are held once across the read (:class:`~threetears.evals.kernel.result_reading.SharedValues`). Every
+        stored result is asked for without fields no reading carries: its verbatim fields
+        (:data:`~threetears.evals.kernel.run_pages.VERBATIM_RESULT_FIELDS`) and the judge's prose (its narration, the
+        reserved axes' reasoning and, on the store's path, each score's reasoning), which hydrate as none or empty on a
+        result dropped once its reading is built.
 
-        **Order.** Run by run, in the order the runs are named (each once), and within a run in the store's order, the
-        order a read of the run hands its results out in; with no runs named, the scope's in the store's order. A
-        result removed since its key was read is absent.
+        **The path** is picked by the store, once per read, and reported (:attr:`ReadingsRead.path`, and the
+        ``eval.read_tier`` line's ``path=`` and ``store_calls=`` through
+        :func:`~threetears.evals.kernel.phase_log.served_by`):
 
-        **The path** is the engine's (``engine``): the keys, then reads by id. The read's :attr:`ReadingsRead.store_calls`
-        counts one key read per run named (one for the scope) and one ``get_many`` per page.
+        - ``store``, when the store offers :class:`~threetears.evals.schema.store_port.ResultReadings`: ONE
+          ``iter_narrowed`` call, with the runs as a ``field_in`` predicate, the verbatim fields and the judge's prose
+          left out (``exclude``, and ``exclude_in_items`` for each score's reasoning), its rows hydrated a page at a
+          time as they arrive. :attr:`ReadingsRead.store_calls` is 1 (0 for no runs named). A store that offers the
+          capability and fails raises what it raised; the read is never retried on the engine's path.
+        - ``engine``, otherwise: the results' keys first, then the results by id, :data:`READINGS_PAGE` at a time, each
+          page when the one before it has been walked. :attr:`ReadingsRead.store_calls` counts one key read per run
+          named (one for the scope) and one ``get_many`` per page.
+
+        **Order**, the same on both paths: run by run, in the order the runs are named (each once), and within a run
+        in the store's order, the order a read of the run hands its results out in; with no runs named, the scope's in
+        the store's order. On the engine's path a result removed since its key was read is absent. On the store's
+        path, a read of several runs hands out its first reading once the store's rows have all arrived, since the
+        store answers in its own order across the runs; a read of one run, or of the scope, hands out each page as it
+        is read.
 
         :param run_ids: The runs, or ``None`` for every result of the scope. An empty sequence asks the store nothing.
         :ptype run_ids: Sequence[str] | None
@@ -2872,10 +2917,17 @@ class EvalStorage:
         :ptype scope_id: str
         :return: The readings, walked once.
         :rtype: ReadingsRead
-        :raises StorageError: The store failed to answer a key read.
-        :raises UnreadableResultKey: A row matched carries no readable key.
+        :raises StorageError: The store failed to answer a key read (the engine's path), or answered a read of runs
+            with a result of a run not asked for (the store's path).
+        :raises UnreadableResultKey: A row matched carries no readable key (the engine's path).
         """
-        keys, key_calls = self._reading_keys(run_ids, scope_id)
+        store = self._store
+        runs = None if run_ids is None else list(dict.fromkeys(run_ids))
+        if isinstance(store, ResultReadings):
+            served_by("store", store_calls=0)
+            return ReadingsRead("store", store_calls=0, pages=self._narrowed_pages(store, runs, scope_id))
+        keys, key_calls = self._reading_keys(runs, scope_id)
+        served_by("engine", store_calls=key_calls)
         return ReadingsRead("engine", store_calls=key_calls, pages=self._reading_pages(keys, scope_id))
 
     def result_groups(
@@ -2887,15 +2939,21 @@ class EvalStorage:
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
     ) -> GroupsRead:
-        """The results of the runs (or of the scope) grouped by ``by``, each measure computed per group, as a store's
-        :meth:`~threetears.evals.schema.store_port.ResultReadings.grouped` would answer over the same rows.
+        """The results of the runs (or of the scope) grouped by ``by``, each measure computed per group, as the store's
+        :meth:`~threetears.evals.schema.store_port.ResultReadings.grouped` answers over the same rows.
 
-        Read on the engine's path: the keys, as :meth:`iter_result_readings` reads them, then the stored rows by id, a page at a time, each
-        kept only as the paths ``by`` and the measures read, and folded by the reference store's own fold, so every
-        measure means here what it means on a capable store, and ``values`` come in the read's order
-        (:meth:`iter_result_readings`). A stored row is folded as stored, as a store folds it, not hydrated.
+        **The path** is picked by the store, as :meth:`iter_result_readings` picks it, and reported the same way:
 
-        :param run_ids: The runs, or ``None`` for every result of the scope.
+        - ``store``, when the store offers :class:`~threetears.evals.schema.store_port.ResultReadings`: ONE ``grouped``
+          call, with the runs as a ``field_in`` predicate. A store that offers the capability and fails raises what it
+          raised; the read is never retried on the engine's path.
+        - ``engine``, otherwise: one key read of the runs (or the scope), in the store's order, then the stored rows by
+          id, a page at a time, each kept only as the top-level fields ``by`` and the measures read (``keep``) and
+          then only as their paths, and folded by the reference store's own fold, so every measure means here what it
+          means on a capable store, and ``values`` come in the store's order, as a capable store hands them. A stored
+          row is folded as stored, as a store folds it, not hydrated.
+
+        :param run_ids: The runs, or ``None`` for every result of the scope. An empty sequence asks the store nothing.
         :ptype run_ids: Sequence[str] | None
         :param scope_id: The scope they live in.
         :ptype scope_id: str
@@ -2903,40 +2961,62 @@ class EvalStorage:
         :ptype by: Sequence[str]
         :param measures: Measure name → the measure.
         :ptype measures: Mapping[str, GroupMeasure]
-        :return: The groups, the path (``engine``) and the store calls made: one key read per run (one for the scope)
-            and one ``get_many`` per page.
+        :return: The groups, the path and the store calls made: one ``grouped`` on the store's path; one key read and
+            one ``get_many`` per page on the engine's; none for no runs named.
         :rtype: GroupsRead
-        :raises StorageError: The store failed to answer a key read.
+        :raises StorageError: The store failed to answer the key read (the engine's path).
         :raises ValueError: The grouping is refused, as a store refuses it.
         :raises TypeError: A measure met a value its kind refuses, as a store refuses it.
         """
-        keys, calls = self._reading_keys(run_ids, scope_id)
+        store = self._store
+        runs = None if run_ids is None else list(dict.fromkeys(run_ids))
+        if isinstance(store, ResultReadings):
+            if runs == []:
+                served_by("store", store_calls=0)
+                return GroupsRead("store", 0, [])
+            with charged("store"):
+                groups = store.grouped("eval_result", scope_id, by=by, measures=measures, field_in=_runs_in(runs))
+            served_by("store", store_calls=1)
+            return GroupsRead("store", 1, groups)
+        if runs == []:
+            served_by("engine", store_calls=0)
+            return GroupsRead("engine", 0, [])
+        ids = [key.id for key in self._keys_in_store_order(runs, scope_id)]
+        served_by("engine", store_calls=1)
+        calls = 1
         paths = [*by, *(path for _, path in measures.values() if path is not None)]
+        kept = tuple(dict.fromkeys(["id", *(path.split(".", 1)[0] for path in paths)]))
         folded = InMemoryDocumentStore()
-        ids = [key.id for key in keys]
         for start in range(0, len(ids), READINGS_PAGE):
             page = ids[start : start + READINGS_PAGE]
             with charged("store"):
-                rows = {row.get("id"): row for row in self._store.get_many("eval_result", page, scope_id)}
+                rows = {row.get("id"): row for row in self._store.get_many("eval_result", page, scope_id, keep=kept)}
+            served_by("engine", store_calls=1)
             calls += 1
             for result_id in page:
                 if (row := rows.get(result_id)) is not None:
                     folded.upsert(_projected(row, paths, scope_id))
         return GroupsRead("engine", calls, folded.grouped("eval_result", scope_id, by=by, measures=measures))
 
-    def _reading_keys(self, run_ids: Sequence[str] | None, scope_id: str) -> tuple[list[ResultKey], int]:
-        """The keys a read of readings or groups walks, in its order, and the store calls reading them took: one per
-        run named (each once), or one for the scope."""
-        if run_ids is None:
-            store = self._store
-            try:
-                with charged("store"):
-                    items = store.by_doc_type("eval_result", scope_id, exclude=_RESULT_KEY_EXCLUDED)
-            # prawduct:ok-broad-except — DB read boundary; re-raised as a typed eval error
-            except Exception as e:
-                raise StorageError(f"failed to read the results of scope {scope_id!r}: {e}") from e
-            return [_result_key(item, item.get("eval_run_id")) for item in items], 1
-        runs = list(dict.fromkeys(run_ids))
+    def _keys_in_store_order(self, runs: list[str] | None, scope_id: str) -> list[ResultKey]:
+        """The keys of the runs' results (or the scope's), in one key read, in the store's own order across them."""
+        store = self._store
+        try:
+            with charged("store"):
+                items = store.by_doc_type(
+                    "eval_result", scope_id, exclude=_RESULT_KEY_EXCLUDED, field_in=_runs_in(runs)
+                )
+        # prawduct:ok-broad-except — DB read boundary; re-raised as a typed eval error
+        except Exception as e:
+            asked = f"scope {scope_id!r}" if runs is None else f"eval runs {runs!r}"
+            raise StorageError(f"failed to read the results of {asked}: {e}") from e
+        return [_result_key(item, item.get("eval_run_id")) for item in items]
+
+    def _reading_keys(self, runs: list[str] | None, scope_id: str) -> tuple[list[ResultKey], int]:
+        """The keys a read of readings walks on the engine's path, in its order, and the store calls reading them took:
+        one per run named, or one for the scope."""
+        if runs is None:
+            return self._keys_in_store_order(None, scope_id), 1
         keys: list[ResultKey] = []
         for run_id in runs:
             with charged("store"):
@@ -2945,14 +3025,15 @@ class EvalStorage:
 
     def _reading_pages(self, keys: list[ResultKey], scope_id: str) -> Iterator[tuple[int, list[ResultReading]]]:
         """Each page of ``keys``' results as readings, in the keys' order, read when the walk reaches it: one
-        ``get_many`` a page. The store's time and the hydration's are charged inside each page's reads, never around
-        a ``yield``."""
+        ``get_many`` a page, without the fields no reading carries. The store's time and the hydration's are charged
+        inside each page's reads, never around a ``yield``."""
         shared = SharedValues()
         for start in range(0, len(keys), READINGS_PAGE):
             page = keys[start : start + READINGS_PAGE]
             place = {key.id: index for index, key in enumerate(page)}
             with charged("store"):
-                items = self._store.get_many("eval_result", list(place), scope_id)
+                items = self._store.get_many("eval_result", list(place), scope_id, exclude=_READING_EXCLUDED)
+            served_by("engine", store_calls=1)
             with charged("hydrate"):
                 results = self._hydrate_all(EvalResult, items)
                 results.sort(key=lambda result: place.get(result.id, len(place)))
@@ -2960,6 +3041,62 @@ class EvalStorage:
             # Dropped before the walk goes on, so the next page is read with only this one's readings held.
             del items, results
             yield 1, readings
+
+    def _narrowed_pages(
+        self, store: ResultReadings, runs: list[str] | None, scope_id: str
+    ) -> Iterator[tuple[int, list[ResultReading]]]:
+        """The store's path of :meth:`iter_result_readings`: one ``iter_narrowed`` call, made when the walk begins, its
+        rows hydrated :data:`READINGS_PAGE` at a time as they arrive, then put in the read's order.
+
+        One run, or the scope, is already in the read's order, so each page is handed out as it is read. Several runs
+        come in the store's order across them, so their readings are held by run until the last row has arrived, then
+        handed out run by run. The store's time (each page's rows drawn from the call) and the hydration's are charged
+        inside each page's reads, never around a ``yield``. A walk left part way closes the store's rows when it is
+        closed or collected."""
+        if runs == []:
+            return
+        refuse_on_event_loop()
+        with charged("store"):
+            rows = store.iter_narrowed(
+                "eval_result",
+                scope_id,
+                exclude=_READING_EXCLUDED,
+                exclude_in_items=_READING_PROSE_IN_ITEMS,
+                field_in=_runs_in(runs),
+            )
+        served_by("store", store_calls=1)
+        shared = SharedValues()
+        by_run: dict[str, list[ResultReading]] | None = None
+        if runs is not None and len(runs) > 1:
+            by_run = {run_id: [] for run_id in runs}
+        try:
+            # The call is counted when it is made, before any row arrives: a read that matches nothing still made it.
+            yield 1, []
+            while True:
+                refuse_on_event_loop()
+                with charged("store"):
+                    items = list(islice(rows, READINGS_PAGE))
+                if not items:
+                    break
+                with charged("hydrate"):
+                    readings = [ResultReading.of(result, shared) for result in self._hydrate_all(EvalResult, items)]
+                del items
+                if by_run is None:
+                    yield 0, readings
+                    continue
+                for reading in readings:
+                    held = by_run.get(reading.eval_run_id)
+                    if held is None:
+                        raise StorageError(
+                            f"the store answered a read of eval runs {runs!r} with a result ({reading.id!r}) of run "
+                            f"{reading.eval_run_id!r}, none of them"
+                        )
+                    held.append(reading)
+        finally:
+            if isinstance(rows, Generator):
+                rows.close()
+        if by_run is not None:
+            yield 0, [reading for held in by_run.values() for reading in held]
 
     def query_eval_result_ids_by_run(self, run_id: str, scope_id: str) -> list[str]:
         """The ids of every result stored for one run, read off the rows without reconstructing them.

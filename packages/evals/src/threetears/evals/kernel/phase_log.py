@@ -16,8 +16,10 @@ fold_ms= render_ms= elapsed_ms= path= store_calls=``, plus `` raised=<exception 
   measured here", never zero time.
 - ``runs_in``, ``results_in``: what :func:`took_in` reported during the call, summed; empty when nothing did.
 - ``elapsed_ms``: the call's whole wall time.
-- ``path``, ``store_calls``: which read path served the call and how many store calls it made. Both are empty
-  until the store reads report them.
+- ``path``, ``store_calls``: which read path served the call's reads of readings and groups (``store`` or
+  ``engine``, as :func:`served_by` reports them; ``engine+store`` when reads on both served one call) and how many
+  store calls those reads made. Both are empty when no such read was made, and the store calls are those reads'
+  alone: a call's other reads (a run's record, its template) are not counted.
 
 **Nesting.** A call logged inside another (a bundle assembled inside a report read) logs its own line, and its
 charges and its intake reach the enclosing call's line too: the outer line's phases still add up to its own
@@ -48,7 +50,7 @@ from typing import Literal
 
 from threetears.evals.schema.logs import get_logger
 
-__all__ = ["charged", "phase_logged", "took_in"]
+__all__ = ["charged", "phase_logged", "served_by", "took_in"]
 
 log = get_logger(__name__)
 
@@ -70,7 +72,7 @@ class _CallLine:
         self.charged_ms: dict[Phase, float] = {}
         self.runs_in: int | None = None
         self.results_in: int | None = None
-        self.path = ""
+        self.paths: set[str] = set()
         self.store_calls: int | None = None
         self.lock = threading.Lock()
 
@@ -82,6 +84,11 @@ class _CallLine:
         with self.lock:
             self.runs_in = (self.runs_in or 0) + runs
             self.results_in = (self.results_in or 0) + results
+
+    def serve(self, path: str, store_calls: int) -> None:
+        with self.lock:
+            self.paths.add(path)
+            self.store_calls = (self.store_calls or 0) + store_calls
 
     def message(self, elapsed_ms: float, raised: BaseException | None) -> str:
         with self.lock:
@@ -95,7 +102,7 @@ class _CallLine:
                 f"results_in={_blank(self.results_in)}",
                 *(f"{phase}_ms={_ms(phases.get(phase))}" for phase in _PHASES),
                 f"elapsed_ms={elapsed_ms:.1f}",
-                f"path={self.path}",
+                f"path={'+'.join(sorted(self.paths))}",
                 f"store_calls={_blank(self.store_calls)}",
             ]
         suffix = "" if raised is None else f" raised={type(raised).__name__}"
@@ -205,3 +212,19 @@ def took_in(*, runs: int, results: int) -> None:
     """
     for line in _OPEN.get().lines:
         line.take_in(runs, results)
+
+
+def served_by(path: Literal["store", "engine"], *, store_calls: int) -> None:
+    """Report on every open call's line that a read of readings or groups was served by ``path``, and add the store
+    calls it made to the line's ``store_calls``.
+
+    A read reports each store call when it makes it, so a lazy read walked part way has reported the calls it made.
+
+    :param path: The path that served the read: the store's own narrowed and grouped reads (``store``), or the
+        engine's reads by key and by id (``engine``).
+    :ptype path: Literal["store", "engine"]
+    :param store_calls: The store calls made since the read last reported (zero to report the path alone).
+    :ptype store_calls: int
+    """
+    for line in _OPEN.get().lines:
+        line.serve(path, store_calls)
