@@ -516,19 +516,21 @@ LEFT_OUT = frozenset({"outcome_score.reasoning", "rubric_scores[].reasoning", "t
 
 
 def _reached(holders: list[Any], segments: list[str]) -> bool:
-    """Whether ``segments`` (a pinned path's steps) reach their end from some holder; a step a holder lacks raises."""
+    """Whether ``segments`` (a pinned path's steps) reach their end from some holder: its last step is read off a
+    holder that exists (whatever the value read, ``None`` included). A step a holder lacks raises."""
     live = [holder for holder in holders if holder is not None]
-    if not segments or not live:
-        return bool(live)
+    if not live:
+        return False
     step, rest = segments[0], segments[1:]
     if step == "==":
         return True
     if step.endswith("()"):
         return all(callable(getattr(holder, step[:-2])) for holder in live)
     if step.endswith("[]"):
-        items = [item for holder in live for item in (getattr(holder, step[:-2]) or ())]
-        return _reached(items, rest)
-    return _reached([getattr(holder, step) for holder in live], rest)
+        held = [getattr(holder, step[:-2]) for holder in live]
+        return True if not rest else _reached([item for value in held for item in (value or ())], rest)
+    values = [getattr(holder, step) for holder in live]
+    return True if not rest else _reached(values, rest)
 
 
 class TestEveryPinnedPathResolvesOnAReading:
