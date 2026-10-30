@@ -59,12 +59,16 @@ from pydantic import BaseModel, ValidationError
 from threetears.evals.actions import render
 from threetears.evals.kernel.errors import (
     EvalServiceError,
+    RefusedInput,
     ValidationFailedError,
 )
 from threetears.evals.kernel.refusals import refusal_kind
 from threetears.evals.schema.refusal import REFUSAL_KINDS, KnownRefusalKind, RefusalKind
 from threetears.evals.ops import JobsStarted, OpsHost
 from threetears.evals.run import start_run
+from threetears.evals.schema.logs import get_logger
+
+log = get_logger(__name__)
 
 #: What an action does to the world, which decides the tools that may mount it.
 #:
@@ -787,8 +791,13 @@ class MountedTool:
 
         A refusal the engine raises (:class:`~threetears.evals.kernel.EvalServiceError`) is a refused
         call, rendered with its reason and carrying its kind and status (:meth:`Refusal.of`); a call the
-        catalogue turns away is ``validation_failed`` (422). Anything else the handler raises propagates: it is a
-        defect, and the transport's error path is where a defect belongs.
+        catalogue turns away is ``validation_failed`` (422). A lower layer's refusal that no operation translated
+        (:class:`~threetears.evals.kernel.RefusedInput`, or a subclass) is still a refusal of what the caller asked:
+        it is refused as the operation would have refused it
+        (:meth:`~threetears.evals.kernel.ValidationFailedError.refusing`, 422, its fault and remedy), and one
+        WARNING names the action and the function that raised it, since the translation belongs there. Anything
+        else the handler raises propagates: it is a defect, and the transport's error path is where a defect
+        belongs.
 
         :param arguments: The call's arguments, ``action`` among them.
         :ptype arguments: Mapping[str, Any]
@@ -824,6 +833,21 @@ class MountedTool:
         except EvalServiceError as refused:
             return _refused(
                 render.refuse_by_engine(self, action, refused), Refusal.of(refused), _named(action, refused), name
+            )
+        except RefusedInput as untranslated:
+            log.warning(
+                "action %s: a refusal raised in %s reached the dispatcher untranslated; refused as "
+                "validation_failed, and the operation should translate it: %s",
+                name,
+                _raise_site(untranslated),
+                untranslated.fault,
+            )
+            translated = ValidationFailedError.refusing(untranslated)
+            return _refused(
+                render.refuse_by_engine(self, action, translated),
+                Refusal.of(translated),
+                _named(action, translated),
+                name,
             )
         text, structured = action.render(result), result.model_dump(mode="json")
         if action.paged:
@@ -892,6 +916,17 @@ def _refused(text: str, refusal: Refusal, recovery: Recovery | None, action: str
     return ActionOutcome(
         f"{text}\n{render.recovery_line(recovery.as_data())}", refusal=refusal, action=action, recovery=recovery
     )
+
+
+def _raise_site(error: BaseException) -> str:
+    """Where ``error`` was raised, as ``module:qualified.function``: the innermost frame of its traceback."""
+    trace = error.__traceback__
+    if trace is None:
+        return "<unknown>"
+    while trace.tb_next is not None:
+        trace = trace.tb_next
+    frame = trace.tb_frame
+    return f"{frame.f_globals.get('__name__', '<unknown>')}:{frame.f_code.co_qualname}"
 
 
 def _enum(action: Action, at_fault: Sequence[str]) -> tuple[Any, ...] | None:
