@@ -25,6 +25,7 @@ from threetears.observe.containment import ContainedLevel, contain, contained
 from threetears.observe.erasure import ANONYMIZED_MARKER
 from threetears.observe.periodic import NextDelay, PeriodicTask, TickResult
 from threetears.observe.health import HealthCheck, HealthServer, HealthTier
+from threetears.observe.call_metrics import CALL_DURATION_BUCKETS, CallMetrics
 from threetears.observe.inflight import InflightRequestsGauge
 from threetears.observe.logging import (
     ContextFormatter,
@@ -45,6 +46,8 @@ from threetears.observe.tracing import set_span_attribute, traced
 __all__ = [
     "ANONYMIZED_MARKER",
     "BuildOnce",
+    "CALL_DURATION_BUCKETS",
+    "CallMetrics",
     "ContainedLevel",
     "ContextFormatter",
     "HealthCheck",
