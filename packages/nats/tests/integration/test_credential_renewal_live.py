@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import json
 import logging
 import threading
@@ -40,6 +41,7 @@ from datetime import timedelta
 from typing import Any
 
 import nats
+import nats.aio.client
 import pytest
 
 from threetears.core.testing.containers import check_docker_available
@@ -459,6 +461,45 @@ def _callout_off_the_loop(uri: str, account_seed: bytes) -> Iterator[None]:
 
 
 async def test_many_renewals_under_a_busy_subscription_lose_and_double_nothing() -> None:
+    """every renewal hands the subscription over while messages are streaming onto it (:func:`_stress`)."""
+    await _stress()
+
+
+async def test_renewals_that_fail_after_subscribing_their_successor_lose_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """a quarter of the renewals fail after subscribing their successor: the successor's first subscription is a
+    member of its group for a moment, then its second subscribe times out (as a saturated loop timed one out), and
+    the renewal is retried, as the renewal loop retries. Whatever the server routed to a successor given up still
+    arrives: the give-up path fires (its WARNING once per injected failure) and nothing is lost."""
+    opened = itertools.count()
+    injected: list[int] = []
+
+    async def _establish_failing_a_quarter(servers: list[str], options: dict[str, object], url: str) -> Any:
+        connection = nats.aio.client.Client()
+        await connection.connect(servers, **options)  # type: ignore[arg-type]
+        if next(opened) % 4 == 3:  # never the first connection; a quarter of the successors
+            subscribe = connection.subscribe
+            made = itertools.count()
+
+            async def _second_subscribe_times_out(*args: Any, **kwargs: Any) -> Any:
+                if next(made) == 1:
+                    await asyncio.sleep(0.05)  # the first subscription is a member meanwhile
+                    injected.append(1)
+                    raise TimeoutError("injected: the successor's second subscribe timed out")
+                return await subscribe(*args, **kwargs)
+
+            connection.subscribe = _second_subscribe_times_out  # type: ignore[method-assign]
+        return connection
+
+    caplog.set_level(logging.WARNING, logger="threetears.nats.client")
+    await _stress(establish=_establish_failing_a_quarter, second_subscription=True)
+    gave_up = [r for r in caplog.records if "gives up its successor's subscriptions" in r.getMessage()]
+    assert injected, "no renewal failed after subscribing: the give-up path was not exercised"
+    assert len(gave_up) == len(injected), f"{len(injected)} renewals failed after subscribing, {len(gave_up)} gave up"
+
+
+async def _stress(*, establish: Any = None, second_subscription: bool = False) -> None:
     """every renewal hands the subscription over while messages are streaming onto it.
 
     Each handover opens a moment when both connections are members of the subscription's group and
@@ -489,6 +530,7 @@ async def test_many_renewals_under_a_busy_subscription_lose_and_double_nothing()
                 auth_token=lambda: _TOKEN,
                 inbox_prefix=_INBOX,
                 startup_timeout=timedelta(seconds=15),
+                establish_connection=establish,
             )
             received: Counter[bytes] = Counter()
 
@@ -496,6 +538,13 @@ async def test_many_renewals_under_a_busy_subscription_lose_and_double_nothing()
                 received[bytes(msg.data)] += 1
 
             await pod.subscribe(Subject.raw(f"{_EVENTS}.>"), cb=_on_event)
+            if second_subscription:
+
+                async def _on_nothing(msg: IncomingMessage) -> None:
+                    return None
+
+                # moved after the stream's own: its subscribe is the one a faulty successor times out
+                await pod.subscribe(Subject.raw(_CALLS_SUBJECT), cb=_on_nothing)
             await pod.flush()
 
             published: list[bytes] = []
