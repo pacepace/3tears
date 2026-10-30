@@ -114,6 +114,7 @@
 "threetears.evals.schema.fingerprint_criterion": "provisional",
 "threetears.evals.schema.fingerprint_judged_output": "provisional",
 "threetears.evals.schema.Firings": "provisional",
+"threetears.evals.schema.fold_groups": "provisional",
 "threetears.evals.schema.GoalCheckControl": "stable",
 "threetears.evals.schema.GoalCheckControls": "stable",
 "threetears.evals.schema.GoalCheckIntent": "provisional",

@@ -566,6 +566,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.fold_groups": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.GoalCheckControl": {
       "kind": "model",
       "signature": "GoalCheckControl(check: str, intent: GoalCheckIntent, control: str)",

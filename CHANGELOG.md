@@ -151,13 +151,6 @@ another shape still reads code-only, led by the regenerate line). Putting a stor
 checks every aspect's shape before it reads any, so an analysis whose later aspect no longer reads is refused
 without first rebuilding its earlier aspects' bundles.
 
-### evals: EvalStorage reads several runs' result keys in one call
-
-**Added (provisional):** `EvalStorage.query_eval_result_keys_by_runs(run_ids, scope_id)`: one `by_doc_type` with the
-runs as a `field_in` predicate, the fields a key read leaves out left out, and each row checked as the one-run key read
-checks it. A host store needs nothing new: `field_in` is already part of the port. (A launch estimate's planning block
-reads its runs' readings instead, every run's keys in one call: the aggregates entry above.)
-
 ### evals: a bundle assembly and a report read each log where their time went; every aggregate logs its read
 
 **Added:** each campaign bundle assembly and each `report_read` logs one `eval.read_tier` line at INFO, whether the call
@@ -192,7 +185,9 @@ its order, from one backend call, with `exclude` applied and `exclude_in_items` 
 of a list field (`narrow_items`, beside `omit_paths`, is that rule). `grouped` groups those rows by scalar paths and
 answers `count`, `count_null`, `sum_int`, `min`, `max` and `values` (`[row_id, value]` pairs in stored order, each
 value exactly as stored, every double to its last bit) per group (`GroupMeasure`). It has no float measure: a reader adds the values itself, in order. The in-memory and SQLite
-stores offer it. All three names are provisional.
+stores offer it. `fold_groups(rows, *, by, measures)` is the grouped read's rules as one function, for a store that
+groups rows in Python; the in-memory store and the engine's grouping of a store without the capability both fold
+through it. All four names are provisional.
 
 `RoutedDocumentStore` offers it when every store a type is placed in does, and sends each read whole to the one store
 its type is placed in. `bridge_async_store` offers it when the async store offers `AsyncResultReadings` (provisional,
