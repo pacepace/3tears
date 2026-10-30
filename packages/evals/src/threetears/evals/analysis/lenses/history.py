@@ -76,10 +76,10 @@ from threetears.evals.analysis.stats import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from threetears.evals.kernel.result_reading import ResultView
+    from collections.abc import Callable, Sequence
     from threetears.evals.schema.models import (
         CaseSetRef,
-        EvalResult,
         EvalRun,
     )
 
@@ -465,7 +465,7 @@ class HistoryResult(EvalBaseModel):
     contended_latency_disclosure: str | None = None
 
 
-def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
+def _history_value_of(metric: str) -> Callable[[ResultView], float | None]:
     """Pick the per-result value extractor for a history measure.
 
     :param metric: A measure in :data:`HISTORY_METRICS`.
@@ -473,7 +473,7 @@ def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
     :return: A callable reading the measure off one result, ``None`` when this result
         did not carry it — a null that the aggregation drops rather than counts as
         zero, so an unmeasured latency never reads as instant.
-    :rtype: Callable[[EvalResult], float | None]
+    :rtype: Callable[[ResultView], float | None]
     :raises HistoryError: The metric is not one this surface can series. Unreachable
         when :func:`compute_history` validated first; kept as the honest total answer.
     """
@@ -503,11 +503,11 @@ def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
         )
     if metric in (METRIC_TRANSCRIPT, METRIC_OUTCOME):
 
-        def dual_axis_value(result: EvalResult) -> float | None:
+        def dual_axis_value(result: ResultView) -> float | None:
             """Read one dual-score axis off a result, or ``None`` where it is not a measurement.
 
             :param result: The observation to read.
-            :ptype result: EvalResult
+            :ptype result: ResultView
             :return: The raw 1-5 score, or ``None`` when the axis was not judged, was
                 mis-stamped, or the cell was an apparatus failure.
             :rtype: float | None
@@ -549,7 +549,7 @@ def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
     raise _unknown_history_metric(metric)
 
 
-def _host_measure_value_of(descriptor: MetricDescriptor) -> Callable[[EvalResult], float | None]:
+def _host_measure_value_of(descriptor: MetricDescriptor) -> Callable[[ResultView], float | None]:
     """Pick the per-result reader for a measure the host declared, such as a quick-path scorer's.
 
     A host measure is landed on each result's ``host_measures`` (a scorer's grade on the quick path), so it
@@ -561,7 +561,7 @@ def _host_measure_value_of(descriptor: MetricDescriptor) -> Callable[[EvalResult
     :param descriptor: The host's descriptor of the measure.
     :ptype descriptor: MetricDescriptor
     :return: The per-result reader, ``None`` where the result carries no number for the measure.
-    :rtype: Callable[[EvalResult], float | None]
+    :rtype: Callable[[ResultView], float | None]
     :raises HistoryError: The measure is not numeric, or declares no direction — a series could not say which
         way a step is a decline.
     """
@@ -576,7 +576,7 @@ def _host_measure_value_of(descriptor: MetricDescriptor) -> Callable[[EvalResult
         )
     population = summary_population(descriptor, "scored")
 
-    def host_measure_value(result: EvalResult) -> float | None:
+    def host_measure_value(result: ResultView) -> float | None:
         """Read the declared measure off one result, or ``None`` where it is not an observation of it."""
         value = result.host_measures.get(name)
         if value is None or isinstance(value, str) or not in_population(population, result):
@@ -587,7 +587,7 @@ def _host_measure_value_of(descriptor: MetricDescriptor) -> Callable[[EvalResult
 
 
 def _per_case_means(
-    results: list[EvalResult], value_of: Callable[[EvalResult], float | None]
+    results: Sequence[ResultView], value_of: Callable[[ResultView], float | None]
 ) -> tuple[dict[str, float], int]:
     """Collapse one run's observations to one value per case (k averaged first).
 
@@ -597,9 +597,9 @@ def _per_case_means(
     dropped, so a case counts only where it was actually measured.
 
     :param results: One contestant's results within one run.
-    :ptype results: list[EvalResult]
+    :ptype results: Sequence[ResultView]
     :param value_of: The measure extractor from :func:`_history_value_of`.
-    :ptype value_of: Callable[[EvalResult], float | None]
+    :ptype value_of: Callable[[ResultView], float | None]
     :return: ``(per_case_mean, n_observations)`` — the per-case means keyed by
         ``test_case_id``, and how many observations carried a value.
     :rtype: tuple[dict[str, float], int]
@@ -655,7 +655,7 @@ def _label_epochs_by_case_set(points: list[SeriesPoint], runs: Mapping[str, Eval
 
 def compute_history(
     runs: list[EvalRun],
-    results: list[EvalResult],
+    results: Sequence[ResultView],
     *,
     metric: str = METRIC_COMPOSITE,
     min_absolute_change: float = 0.0,
@@ -703,7 +703,7 @@ def compute_history(
     :param runs: The runs supplying subject identity, suite set, and timestamps.
     :ptype runs: list[EvalRun]
     :param results: The observations to series.
-    :ptype results: list[EvalResult]
+    :ptype results: Sequence[ResultView]
     :param metric: A measure in :data:`HISTORY_METRICS`, or the registry name of its
         aggregate as ``list_metrics`` publishes it (``mean_composite`` for
         ``composite``, and so on through
@@ -780,7 +780,7 @@ def compute_history(
         runs, results, known_run_ids, source="history", archived_run_ids=archived_run_ids
     )
 
-    series_groups: dict[tuple[str, ContestantKey], list[PlacedResult]] = {}
+    series_groups: dict[tuple[str, ContestantKey], list[PlacedResult[ResultView]]] = {}
     subject_labels: dict[str, str] = {}
     # The short runs on these series. Keyed on the completeness record rather than on
     # status, because a `completed` run that lost a cell to a harness exclusion is short
@@ -792,7 +792,7 @@ def compute_history(
     # The observations this answer rests on, narrowed to what survived the subject filter
     # — same population and same reason as `frontier`'s, so the two lenses cannot report
     # different spans over one corpus.
-    considered: list[EvalResult] = []
+    considered: list[ResultView] = []
     considered_keys: list[ContestantKey] = []
     for row in placed:
         if subject_id is not None and row.subject_id != subject_id:
@@ -811,7 +811,7 @@ def compute_history(
     series: list[MeasureSeries] = []
     for (resolved, contestant), rows in series_groups.items():
         runs_in_series: dict[str, EvalRun] = {}
-        rows_by_run: dict[str, list[EvalResult]] = {}
+        rows_by_run: dict[str, list[ResultView]] = {}
         for row in rows:
             runs_in_series[row.run.id] = row.run
             rows_by_run.setdefault(row.run.id, []).append(row.result)

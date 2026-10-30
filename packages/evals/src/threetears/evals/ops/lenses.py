@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import math
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 from datetime import UTC, datetime
 from functools import partial
@@ -96,7 +96,8 @@ from threetears.evals.run.reads import list_runs
 
 from threetears.evals.analysis.lens_text import exclusion_lines
 from threetears.evals.kernel.remedies import FIND_RUN, FIND_TEMPLATE
-from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, ResultKey, iter_keyed_results, iter_run_results
+from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
+from threetears.evals.kernel.result_reading import ResultView
 
 
 def _lister(host: EvalHost) -> RunLister:
@@ -879,28 +880,25 @@ def detectable_effects(
     :rtype: DetectableEffects
     :raises ValidationFailedError: The template's earlier runs are estimated past
         :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` results by their matrices (refused before any result
-        is read), or their result keys count more than it (refused before any result is read too). A launch estimate reports that in the block's
-        ``cannot_estimate`` instead, and is still priced (:func:`launch_estimate`).
+        is read), or their read returned more than it (refused once the read is walked). A launch estimate reports
+        that in the block's ``cannot_estimate`` instead, and is still priced (:func:`launch_estimate`).
     """
     runs = [run for run in list_runs(host, scope_id) if run.template_id == template_id]
     # Every result of every earlier run is read, so the read is held to the read tier's budget as the aggregates are:
-    # estimated off the listing above, then counted off the runs' keys, both before any result is read (the store
-    # computing it is #996). Memory is held by the key reads, a batch of runs at a time, and by the walk below, a page
-    # at a time; the budget holds the read's time.
+    # estimated off the listing above before any result is read, then counted as the read is walked.
     hold_to_read_budget(_PLANNING_LENS, scope_id, runs, how=_NARROW_THE_PLANNING_READ)
-    # One read per batch of runs instead of one per run. A key row still ships the result's scalars and its score
-    # objects, so each batch is reduced to its keys before the next is read (:func:`_key_read_batches`).
-    keys: dict[str, list[ResultKey]] = {}
-    for batch in _key_read_batches(runs):
-        keys.update(host.storage.query_eval_result_keys_by_runs([run.id for run in batch], scope_id))
+    # One read of every earlier run's results, as their compact readings, walked once a page at a time, in any order
+    # across runs, each reading read down to its values before the next page (:func:`planning_readings`):
+    # a template's history read whole held every result of every run at once. The read holds one page of results and
+    # their readings at a time; on the engine's path its key reads are one per run, each holding that run's keys alone.
+    read_counts: dict[str, int] = {}
+    # TODO(W4b P4 merge): pass iter_result_readings(..., in_store_order=True): this read groups by run itself.
+    walk = _counted(host.storage.iter_result_readings([run.id for run in runs], scope_id), read_counts)
+    readings = planning_readings(runs, walk, profile=host.profile)
     hold_to_read_budget(
-        _PLANNING_LENS, scope_id, runs, how=_NARROW_THE_PLANNING_READ, returned=sum(map(len, keys.values()))
+        _PLANNING_LENS, scope_id, runs, how=_NARROW_THE_PLANNING_READ, returned=sum(read_counts.values())
     )
-    runs = [run for run in runs if keys[run.id]]
-    # Each run walked a page at a time in the store's order, each result read down to its values before the next page
-    # (:func:`planning_readings`): a template's history read whole held every result of every run at once.
-    results_by_run = {run.id: iter_keyed_results(host.storage, scope_id, keys[run.id]) for run in runs}
-    readings = planning_readings(runs, results_by_run, profile=host.profile) if runs else []
+    runs = [run for run in runs if run.id in read_counts]
     family_size = max(1, len(readings)) * max(1, n_arms - 1)
     block = DetectableEffects(
         n_cases=n_cases,
@@ -936,37 +934,20 @@ def detectable_effects(
     return block.model_copy(update={"effects": effects})
 
 
-#: The results one key read of the planning read covers at most, by its runs' estimates: a stored key row, scores and
-#: all, decodes to about 9 KB, so a batch holds about 45 MB of rows before it is reduced to its keys. A run estimated
-#: past it is read alone, as every run was before the reads were batched.
-_KEY_READ_BATCH_RESULTS = 5_000
+def _counted(readings: Iterable[ResultView], counts: dict[str, int]) -> Iterator[ResultView]:
+    """``readings``, each handed on as it is read, counted per run into ``counts``: which runs the planning read found
+    results of, and how many, known once the walk ends.
 
-
-def _key_read_batches(runs: Sequence[EvalRun]) -> list[list[EvalRun]]:
-    """``runs`` in order, cut into the batches the planning read reads the keys of in one call each.
-
-    A batch takes runs while their estimated results stay within :data:`_KEY_READ_BATCH_RESULTS`: each run's matrix
-    (cases × k), or the cells it recorded persisting when those are more, the estimate the read budget counts.
-
-    :param runs: The runs whose keys are read.
-    :ptype runs: Sequence[EvalRun]
-    :return: The batches, every run in exactly one, in ``runs`` order.
-    :rtype: list[list[EvalRun]]
+    :param readings: The read's readings, walked once.
+    :ptype readings: Iterable[ResultView]
+    :param counts: Where each run's count is added.
+    :ptype counts: dict[str, int]
+    :return: The readings, in their order.
+    :rtype: Iterator[ResultView]
     """
-    batches: list[list[EvalRun]] = []
-    batch: list[EvalRun] = []
-    held = 0
-    for run in runs:
-        persisted = run.completeness.persisted_cells if run.completeness is not None else 0
-        estimate = max(len(run.test_case_ids) * run.k_runs, persisted)
-        if batch and held + estimate > _KEY_READ_BATCH_RESULTS:
-            batches.append(batch)
-            batch, held = [], 0
-        batch.append(run)
-        held += estimate
-    if batch:
-        batches.append(batch)
-    return batches
+    for reading in readings:
+        counts[reading.eval_run_id] = counts.get(reading.eval_run_id, 0) + 1
+        yield reading
 
 
 def _detectable_effect(

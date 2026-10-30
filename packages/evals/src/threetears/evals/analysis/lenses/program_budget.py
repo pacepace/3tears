@@ -6,17 +6,79 @@ so the budget a program reads is the money it spent rather than the money behind
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Protocol
 
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES
 from threetears.evals.analysis.reporting import _subject_id_of, pooled_cost_compositions
+from threetears.evals.kernel.result_reading import RescoreReading, RescoreView
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import (
-        EvalResult,
-        EvalRun,
-    )
+    from threetears.evals.schema.models import EvalRun
+
+
+class SpendView(Protocol):
+    """A result as the spend views read it: its run, its blended spend, its re-judges' spend and what its spend sums.
+
+    A stored :class:`~threetears.evals.schema.models.EvalResult` and its compact reading satisfy it, and so does
+    :class:`ResultSpend`, the figures alone, which the spend views read off a grouped read of the store.
+    """
+
+    @property
+    def eval_run_id(self) -> str: ...
+    @property
+    def cost_usd(self) -> float | None: ...
+    @property
+    def judge_rescores(self) -> Sequence[RescoreView]: ...
+    @property
+    def cost_roles(self) -> Sequence[str] | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ResultSpend:
+    """One stored result's spend figures (:class:`SpendView`), read off its stored row without hydrating it.
+
+    :ivar eval_run_id: The run it belongs to.
+    :ivar cost_usd: Its blended spend, or ``None`` where it went unpriced.
+    :ivar judge_rescores: Each re-judge's spend.
+    :ivar cost_roles: The roles its blended spend sums, or ``None`` where the row names none.
+    """
+
+    eval_run_id: str
+    cost_usd: float | None
+    judge_rescores: tuple[RescoreReading, ...]
+    cost_roles: tuple[str, ...] | None
+
+    @classmethod
+    def of_stored(cls, eval_run_id: Any, cost_usd: Any, judge_rescores: Any, cost_roles: Any) -> ResultSpend:
+        """The figures as a stored row holds them, read as a hydrated result reads them: a spend as a float (a JSON
+        integer such as ``0`` is ``0.0``), an absent re-judge list as an empty one.
+
+        :param eval_run_id: The row's ``eval_run_id``.
+        :ptype eval_run_id: Any
+        :param cost_usd: The row's ``cost_usd``.
+        :ptype cost_usd: Any
+        :param judge_rescores: The row's ``judge_rescores``, each re-judge as stored; only its ``cost_usd`` is read.
+        :ptype judge_rescores: Any
+        :param cost_roles: The row's ``cost_roles``.
+        :ptype cost_roles: Any
+        :return: The figures.
+        :rtype: ResultSpend
+        """
+        rescores: Iterable[Mapping[str, Any]] = judge_rescores or ()
+        return cls(
+            eval_run_id=str(eval_run_id),
+            cost_usd=_spend(cost_usd),
+            judge_rescores=tuple(RescoreReading(cost_usd=_spend(rescore.get("cost_usd"))) for rescore in rescores),
+            cost_roles=None if cost_roles is None else tuple(str(role) for role in cost_roles),
+        )
+
+
+def _spend(value: Any) -> float | None:
+    """A stored spend as the float a hydrated result holds, or ``None`` when it went unpriced."""
+    return None if value is None else float(value)
 
 
 # A run whose status a quality view drops BY DEFAULT. The read-tier quality
@@ -143,7 +205,7 @@ class ProgramBudget(EvalBaseModel):
     n_unpriced: int = 0
 
 
-def compute_program_budget(runs: list[EvalRun], results: list[EvalResult]) -> ProgramBudget:
+def compute_program_budget(runs: list[EvalRun], results: Sequence[SpendView]) -> ProgramBudget:
     """Sum program-lens spend per run over a scope, excluding nothing.
 
     Deliberately does **not** route through :func:`project_score_records`: that
@@ -158,7 +220,7 @@ def compute_program_budget(runs: list[EvalRun], results: list[EvalResult]) -> Pr
     :ptype runs: list[EvalRun]
     :param results: Every result in the scope. A result's ``cost_usd`` and its
         re-judge spend are attributed to its ``eval_run_id``.
-    :ptype results: list[EvalResult]
+    :ptype results: Sequence[SpendView]
     :return: A :class:`ProgramBudget` — one :class:`BudgetRun` per listed run (zero
         cost for a run with no results), the cumulative series, and the
         incomplete-spend / unattributed-spend accounting that keeps the total
@@ -173,7 +235,7 @@ def compute_program_budget(runs: list[EvalRun], results: list[EvalResult]) -> Pr
     # Grouped alongside the dollars rather than looked up per row later, so a row's
     # disclosure is derived from the same results its total was summed from and the two
     # cannot come to describe different sets.
-    results_by_run: dict[str, list[EvalResult]] = {}
+    results_by_run: dict[str, list[SpendView]] = {}
     # A re-judge's spend rides with the result it re-scored: real program spend on that run,
     # which the result's own ``cost_usd`` deliberately leaves out.
     rejudge_cost = 0.0
@@ -247,4 +309,6 @@ __all__ = [
     "BudgetRun",
     "compute_program_budget",
     "ProgramBudget",
+    "ResultSpend",
+    "SpendView",
 ]

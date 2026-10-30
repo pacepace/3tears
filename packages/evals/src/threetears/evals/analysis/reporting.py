@@ -39,7 +39,7 @@ same-named subjects into one.
 from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Sequence
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 from pydantic import Field, model_validator
 
@@ -1482,15 +1482,10 @@ def _run_factors(
         runs.setdefault(run.id, run)
         results_by_run.setdefault(run.id, []).append(result)
     sweepables = profile.sweepables
-    # A lever's reader is declared over stored results (``Sequence[EvalResult]``), the host contract. The engine's own
-    # readers read only what a compact reading carries (its judge configs and its scores' served models), and no host
-    # reader known reads its results at all; a reader that read outside the view would fail loudly on a reading.
     return {
         run_id: {
             lever: lever_level(value)
-            for lever, value in sorted(
-                sweepables.resolve_levers(run, cast("list[EvalResult]", results_by_run[run_id])).values.items()
-            )
+            for lever, value in sorted(sweepables.resolve_levers(run, results_by_run[run_id]).values.items())
             if lever != CANDIDATE_MODEL_LEVER and value is not None
         }
         for run_id, run in runs.items()

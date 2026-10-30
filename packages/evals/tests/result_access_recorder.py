@@ -51,6 +51,7 @@ import pydantic
 from pydantic import BaseModel
 
 import threetears.evals as evals_package
+from threetears.evals.kernel.result_reading import ResultReading, SharedValues
 from threetears.evals.schema.models import EvalResult
 
 __all__ = [
@@ -405,6 +406,13 @@ def recording_results() -> Iterator[None]:
     """Serve every ``EvalResult`` a store hydrates inside the block as a recorded result (see the module docstring).
 
     The stored read itself is unchanged: the real ``from_dict`` runs first, and its result's class is swapped after.
+
+    **A read of readings hands out the recorded result itself.** A reader reading through
+    ``EvalStorage.iter_result_readings`` is served the compact reading of each result (``ResultReading.of``), which
+    copies every attribute a reading carries: recorded, that copy would read as every family reading all of them. So
+    inside the block the reading of a result is the recorded result, which satisfies the same view, and what is
+    recorded is what the reader itself reads. A reading reads as its result to the byte
+    (``test_readings_match_results.py``), so a family's output is unchanged.
     """
     stored_read: Callable[[dict[str, Any]], EvalResult] = EvalResult.from_dict
 
@@ -413,7 +421,10 @@ def recording_results() -> Iterator[None]:
         _record(result, "", result.id)
         return result
 
-    with mock.patch.object(EvalResult, "from_dict", recorded_read):
+    def reading_of(result: EvalResult, shared: SharedValues | None = None) -> EvalResult:
+        return result
+
+    with mock.patch.object(EvalResult, "from_dict", recorded_read), mock.patch.object(ResultReading, "of", reading_of):
         yield
 
 

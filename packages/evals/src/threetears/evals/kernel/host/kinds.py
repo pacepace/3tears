@@ -87,7 +87,8 @@ from threetears.evals.schema.values import IntervalScale, NominalScale, OrdinalS
 if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
 
-    from threetears.evals.schema.models import EvalResult, EvalRun
+    from threetears.evals.kernel.result_reading import ResultView
+    from threetears.evals.schema.models import EvalRun
 
 #: The longest display a nominal level is shown at before it is cut. A level is joined on its content
 #: hash, so the cut costs a reader nothing but the tail of a long value.
@@ -469,7 +470,7 @@ class KindContract:
     def _reader(self, field_name: str) -> SweepableReader:
         """A reader of one field off a run's frozen overlays."""
 
-        def read(run: EvalRun, _results: Sequence[EvalResult]) -> Any:
+        def read(run: EvalRun, _results: Sequence[ResultView]) -> Any:
             overlays = self._overlays_of(run)
             return None if overlays is None else overlays.get(field_name)
 
@@ -484,7 +485,7 @@ class KindContract:
         to compare against, so its runs read unchecked.
         """
 
-        def departs(run: EvalRun, _results: Sequence[EvalResult]) -> bool | None:
+        def departs(run: EvalRun, _results: Sequence[ResultView]) -> bool | None:
             overlays = self._overlays_of(run)
             if overlays is None:
                 return False
@@ -497,7 +498,7 @@ class KindContract:
     def _member_reader(self, knob: _Knob) -> SweepableReader:
         """A reader of an open family's members: one per entry the run's map holds."""
 
-        def read(run: EvalRun, _results: Sequence[EvalResult]) -> dict[str, Any]:
+        def read(run: EvalRun, _results: Sequence[ResultView]) -> dict[str, Any]:
             overlays = self._overlays_of(run)
             entries = (overlays or {}).get(knob.field_name) or {}
             return {f"{knob.lever}.{key}": value for key, value in entries.items()}
@@ -507,7 +508,7 @@ class KindContract:
     def _residual_reader(self, knob: _Knob) -> ResidualReader:
         """A reader of an open family's map with the named members taken back out."""
 
-        def read(run: EvalRun, _results: Sequence[EvalResult], removed: frozenset[str]) -> dict[str, Any] | None:
+        def read(run: EvalRun, _results: Sequence[ResultView], removed: frozenset[str]) -> dict[str, Any] | None:
             overlays = self._overlays_of(run)
             if overlays is None:
                 return None

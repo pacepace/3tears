@@ -96,8 +96,8 @@ from threetears.evals.analysis.lenses.contestants import (
 from threetears.evals.kernel.usage_capture import count_substituted_deliveries, production_replicating_cost
 
 if TYPE_CHECKING:
+    from threetears.evals.kernel.result_reading import ResultView
     from threetears.evals.schema.models import (
-        EvalResult,
         EvalRun,
     )
 
@@ -887,7 +887,7 @@ class FrontierResult(EvalDocumentModel):
 
 
 def _frontier_point(
-    results: list[EvalResult],
+    results: Sequence[ResultView],
     *,
     contestant: ContestantKey,
     k: int,
@@ -911,7 +911,7 @@ def _frontier_point(
 
     :param results: One contestant's observations (all sharing a model, and a
         ``variant_key`` when captured). Never empty.
-    :ptype results: list[EvalResult]
+    :ptype results: Sequence[ResultView]
     :param contestant: The :func:`contestant_key` these results were grouped under. Passed
         rather than re-derived off ``results[0]``: the key is what placed them
         together, so reading the identity back out of it makes "no row in this pool
@@ -1172,7 +1172,7 @@ class _RunServed(NamedTuple):
     unrecorded: bool
 
 
-def _served_by_run(results: Sequence[EvalResult]) -> dict[str, _RunServed]:
+def _served_by_run(results: Sequence[ResultView]) -> dict[str, _RunServed]:
     """The models the provider's responses named for each run's candidate calls, over one contestant's results.
 
     Read off the candidate usage rows (:func:`~threetears.evals.analysis.reporting.served_reading`), never the id
@@ -1180,7 +1180,7 @@ def _served_by_run(results: Sequence[EvalResult]) -> dict[str, _RunServed]:
     response named no model marks its run unrecorded, whatever its other calls named.
 
     :param results: One contestant's results.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :return: Run id → what its calls named, for every run of ``results``.
     :rtype: dict[str, _RunServed]
     """
@@ -1209,7 +1209,7 @@ class _PointCells(NamedTuple):
 
 
 def _pass_hat_k_cells(
-    results: Sequence[EvalResult], *, runs: Mapping[str, EvalRun], profile: HostProfile | None
+    results: Sequence[ResultView], *, runs: Mapping[str, EvalRun], profile: HostProfile | None
 ) -> _PointCells:
     """Group one contestant's runs into pass^k cells, choose the headline, and say why each other cell stands apart.
 
@@ -1220,7 +1220,7 @@ def _pass_hat_k_cells(
     and the reason are one reading; a headline of one run carries why it pools with nothing.
 
     :param results: One contestant's results, never empty.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :param runs: Every placed run by id; every run of ``results`` is in it.
     :ptype runs: Mapping[str, EvalRun]
     :param profile: The host that re-derives a run's context, or ``None``.
@@ -1437,7 +1437,7 @@ def _cell_detail(
 
 
 def _cell_pass_hat_k(
-    results: Sequence[EvalResult],
+    results: Sequence[ResultView],
     run_ids: Sequence[str],
     of_run: Mapping[str, PassHatKCell],
     *,
@@ -1788,7 +1788,7 @@ def _bar_decision(point: FrontierPoint, bar: float) -> BarDecision:
     return "undecided" if cleared is None else "cleared" if cleared else "missed"
 
 
-def _boundary_values(results: Sequence[EvalResult]) -> dict[str, dict[str, float]]:
+def _boundary_values(results: Sequence[ResultView]) -> dict[str, dict[str, float]]:
     """One contestant's per-case mean on each boundary dimension it was scored on — results the harness spoiled left out."""
     scores: dict[str, dict[str, list[int]]] = {}
     for result in results:
@@ -1800,7 +1800,7 @@ def _boundary_values(results: Sequence[EvalResult]) -> dict[str, dict[str, float
     return {dim: {case: sum(v) / len(v) for case, v in cases.items()} for dim, cases in scores.items()}
 
 
-def _boundary_scales(results: Iterable[EvalResult]) -> dict[str, RubricScale]:
+def _boundary_scales(results: Iterable[ResultView]) -> dict[str, RubricScale]:
     """The scale each boundary dimension was scored on."""
     return {score.dim: score.scale for result in results for score in result.rubric_scores if score.axis == "boundary"}
 
@@ -1814,7 +1814,7 @@ def _boundary_eligible(point: FrontierPoint, control_variant_key: str | None) ->
 
 def _decide_boundary_pillar(
     points: Sequence[FrontierPoint],
-    members: Sequence[Sequence[EvalResult]],
+    members: Sequence[Sequence[ResultView]],
     control_variant_key: str | None,
     margins: Mapping[str, float],
 ) -> tuple[list[str], str | None]:
@@ -1884,7 +1884,7 @@ def _decide_boundary_pillar(
 
 def compute_frontier(
     runs: list[EvalRun],
-    results: list[EvalResult],
+    results: Sequence[ResultView],
     *,
     bar: float | None = None,
     subject_id: str | None = None,
@@ -1971,7 +1971,7 @@ def compute_frontier(
     :param runs: The runs supplying subject identity. Order is irrelevant.
     :ptype runs: list[EvalRun]
     :param results: The observations to rank.
-    :ptype results: list[EvalResult]
+    :ptype results: Sequence[ResultView]
     :param bar: The pass^k threshold the verdict is made against, in ``[0, 1]``.
         ``None`` computes the frontier without a verdict.
     :ptype bar: float | None
@@ -2036,7 +2036,7 @@ def compute_frontier(
         runs, results, known_run_ids, source="frontier", archived_run_ids=archived_run_ids
     )
 
-    by_subject: dict[str, dict[ContestantKey, list[EvalResult]]] = {}
+    by_subject: dict[str, dict[ContestantKey, list[ResultView]]] = {}
     subject_labels: dict[str, str] = {}
     # Every placed run's recorded cassette mode, collected here because a point is
     # built from RESULTS and the mode lives on the RUN — a result carries no cassette
@@ -2062,14 +2062,14 @@ def compute_frontier(
     # downstream still spanned what it spanned, and narrowing to what SURVIVED the subject
     # filter keeps the span from naming a predicate no row in this answer was keyed under
     # — the same rule the cassette-mode and template maps below follow.
-    considered: list[EvalResult] = []
+    considered: list[ResultView] = []
     considered_keys: list[ContestantKey] = []
     # The depth each subject is ranked at: the shallowest k any of its ranked runs was
     # commissioned to (see SubjectFrontier.k).
     k_by_subject: dict[str, int] = {}
     # Each placed run and its results, for the production footing a point's cost names (#571).
     placed_runs: dict[str, EvalRun] = {}
-    results_of_run: dict[str, list[EvalResult]] = {}
+    results_of_run: dict[str, list[ResultView]] = {}
 
     for run, result, resolved in placed:
         if subject_id is not None and resolved != subject_id:
@@ -2274,7 +2274,7 @@ def compute_frontier(
     )
 
 
-def _judged_pass_tier(members: Sequence[EvalResult], tiers: Sequence[JudgeEvidenceTier]) -> JudgedEvidenceTier | None:
+def _judged_pass_tier(members: Sequence[ResultView], tiers: Sequence[JudgeEvidenceTier]) -> JudgedEvidenceTier | None:
     """The tier a contestant's pass^k stands on where a judge scored its criteria, or None where none did.
 
     The judges are those behind the capability scores pass^k conjoins (a boundary dimension is no part of it), on the

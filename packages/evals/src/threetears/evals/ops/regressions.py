@@ -68,9 +68,8 @@ from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.metrics import GradedBy, is_code_graded
-from threetears.evals.schema.models import EvalResult
+from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.kernel.run_pages import VERBATIM_RESULT_FIELDS
 from threetears.evals.ops.lenses import scope_history
 from threetears.evals.run.reads import list_runs
 from threetears.evals.schema.logs import contain, get_logger
@@ -135,7 +134,7 @@ def _graded_by(history: HistoryResult, host: EvalHost) -> GradedBy:
     return "code" if is_code_graded(history.measure, host.profile.measures) else "judge"
 
 
-def _step_judges(metric: str, results: Iterable[EvalResult]) -> set[JudgeKey]:
+def _step_judges(metric: str, results: Iterable[ResultView]) -> set[JudgeKey]:
     """Every judge behind ``metric`` on ``results``: every scored dimension for the composite, else its own axis."""
     dimension = _JUDGED_MEASURES.get(metric)
     keys: set[JudgeKey] = set()
@@ -255,7 +254,7 @@ class RegressionWatch:
         """
         alerts: list[RegressionAlert] = []
         tiers = None
-        results: list[EvalResult] | None = None
+        results: list[ResultView] | None = None
         # Every series the watch alerts on is one of this run's contestants, all of the run's own subject, so the
         # history is read for that subject: a scope past the read tier's budget is still checked wherever the subject
         # fits. A run no longer stored reads the whole scope's history.
@@ -326,21 +325,24 @@ class RegressionWatch:
                 )
         return alerts
 
-    def _judged_results(self, scope_id: str, subject_id: str | None, *, narrowed: str | None) -> list[EvalResult]:
+    def _judged_results(self, scope_id: str, subject_id: str | None, *, narrowed: str | None) -> list[ResultView]:
         """The results a judged step's tiers are read over: the scope's, or, when the history read one subject's runs
         alone (``narrowed`` is its disclosure), that subject's runs' results, every status and archived ones too."""
+        # Read as readings (``iter_result_readings``): no judged tier reads a result's verbatim fields or its judge's
+        # prose, which a reading leaves out.
         if narrowed is None or subject_id is None:
             # The scope the history read whole: its listing's estimate and what its read returned were both within
             # the read tier's budget, or the history would have read the subject's runs instead (below) or refused.
-            return self.host.storage.query_eval_results(scope_id, elide=VERBATIM_RESULT_FIELDS)
+            scope: list[ResultView] = list(self.host.storage.iter_result_readings(None, scope_id))
+            return scope
         runs = list_runs(self.host, scope_id, include_archived=True)
         subject_runs = [run for run in runs if run.subject_snapshot.subject_id == subject_id]
         # The subject's runs the history read: held to the budget here too, off the listing above and before any
-        # result is read, so the tiers are bounded by their own read and never by the history's alone.
+        # result is read, so the tiers are bounded by their own read and never by the history's alone. Read run by run,
+        # in the listing's order, as the history read them.
         hold_to_read_budget(_JUDGED_TIERS, scope_id, subject_runs, how=_NARROW_THE_JUDGED_TIERS)
-        # Without the verbatim fields, which no judged tier reads.
-        results = self.host.storage.query_eval_results_by_runs(
-            [run.id for run in subject_runs], scope_id, elide=VERBATIM_RESULT_FIELDS
+        results: list[ResultView] = list(
+            self.host.storage.iter_result_readings([run.id for run in subject_runs], scope_id)
         )
         hold_to_read_budget(_JUDGED_TIERS, scope_id, subject_runs, how=_NARROW_THE_JUDGED_TIERS, returned=len(results))
         return results

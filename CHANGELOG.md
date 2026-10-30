@@ -29,6 +29,33 @@ capable store does, and reads by id only the top-level fields its paths name (`k
 (`store`, `engine`, or `engine+store` when both served one call) and the store calls they made, each counted when it is
 made. They stay empty for a call that makes none of these reads; no reader reads through them yet.
 
+### evals: the aggregates, the regression watch and the planning read read compact readings
+
+**Changed:** `pivot`, `history`, `frontier`, `comparison_sets`, the regression watch's history and judged tiers, and a
+launch's planning block (`detectable_effects`) read each result as its compact reading (`EvalStorage.iter_result_readings`)
+where they read whole results; `program_budget` and `orphaned_runs` read each result's spend figures (its run,
+`cost_usd`, its re-judges' `cost_usd` and `cost_roles`) off a grouped read's values (`EvalStorage.result_groups`), never
+hydrating a result. Every answer is unchanged, to the byte, and the read budget is unchanged. A narrowed read (one
+subject's runs) reads its runs one after another, as before; the watch's judged tiers over one subject's runs now read
+them so too, where they read them in one read in the store's order. The planning read's store calls on the engine's
+path are one key read per run (each holding that run's keys alone) and one read by id per 1,000 results, where it read
+its runs' keys a batch of runs at a time; its refusal past the read budget on what the read returned now comes once
+the read is walked. The `eval.read_tier` line of each aggregate gains `path=` (`store` or `engine`) and `store_calls=`,
+after `elapsed_ms`.
+
+**Changed (provisional), host contract:** a host lever reader receives readings, not `EvalResult`s.
+`SweepableReader`, `ResidualReader` and `ProductionDepartureReader` take `Sequence[ResultView]`, as do
+`SweepableRegistry.read_all`, `resolve_levers`, `production_footing`, `read_role_pins` and `read_residual`. A reading
+carries only the attributes the engine's readers are measured to read (no judge prose, no `world_events`, no
+`kind_payload`); a reader reading another raises `AttributeError`. A reader annotated `Sequence[EvalResult]` should be
+retyped to `Sequence[ResultView]` (`threetears.evals.kernel.result_reading`) to pass a strict typecheck.
+`planning_readings` takes the runs' results as one iterable, in any order across runs, where it took a mapping by run.
+`LensStore` gains `iter_result_readings` and `result_groups`, which `EvalStorage` has.
+
+**Added (provisional):** `threetears.evals.analysis.lenses.program_budget.SpendView`, a result as the spend lenses read
+it, and `ResultSpend`, the figures read off a stored row; `compute_program_budget` and `compute_orphaned_runs` take any
+`SpendView`.
+
 ### evals: a compact reading of each stored result, and EvalStorage reads of readings and groups
 
 **Added (provisional):** `threetears.evals.kernel.result_reading.ResultReading`, a stored result as the engine's readers
