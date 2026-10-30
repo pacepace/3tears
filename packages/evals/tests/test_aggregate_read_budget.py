@@ -1,9 +1,11 @@
-"""A read-tier aggregate reads at most ``READ_TIER_ROW_BUDGET`` results: past it, it narrows or refuses, never pages.
+"""A read-tier aggregate reads at most its own read budget of results: past it, it narrows or refuses, never pages.
 
-The aggregates (``comparison_sets``, ``pivot``, ``frontier``, ``history``, ``program_budget``, ``orphaned_runs``) read a
-whole scope's results into Python, and a partial aggregate is a wrong answer that looks complete, so a scope too large
-is refused rather than paged (owner, 2026-10-27; the SQL pushdown is #996). Pinned here, through each lens over a store
-that counts what it is asked for, with the budget patched to a few dozen results:
+The aggregates whose fold holds something per result (``comparison_sets``, ``frontier``, ``history``, held to
+``READING_BUDGET``; ``pivot``, held to ``PIVOT_READ_BUDGET``) read a scope's results into Python, and a partial
+aggregate is a wrong answer that looks complete, so a scope too large is refused rather than paged (owner,
+2026-10-27). The spend lenses (``program_budget``, ``orphaned_runs``) fold per run off a grouped read and hold no
+budget (owner, 2026-10-30). Pinned here, through each lens over a store that counts what it is asked for, with the
+budgets patched to a few dozen results:
 
 - **A scope estimated past the budget is refused before anything is read**, naming the estimate, the budget and the
   filters that lens takes.
@@ -13,16 +15,18 @@ that counts what it is asked for, with the budget patched to a few dozen results
 - **A narrowed answer says what it did not count** (``narrowed_read_disclosure``, absent from a whole read and from a
   bundle's fingerprint while unset): other subjects' results, and, on a judged frontier, the pooling of each judge's
   tier, which a narrowed read takes on one subject's results and so can read another tier.
-- **A scope that fits is read whole, as before.**
+- **A scope that fits is read whole, as before**, and a spend lens reads a scope of any size whole.
+- **Each reader is held to its own budget**: the pivot to ``PIVOT_READ_BUDGET``, the others to ``READING_BUDGET``.
 - **The safety net**: a read that returns more than the budget (results whose run was deleted) is not aggregated.
 - **The regression watch** reads the history of the completed run's own subject, so a scope past the budget is still
   checked where that subject fits, a judged alert saying where its tier was read; when the subject alone is past it,
-  the hook logs at ERROR in its own words (nothing to narrow, #996) and delivers nothing, and ``check`` raises.
+  the hook logs at ERROR in its own words (nothing to narrow) and delivers nothing, and ``check`` raises.
 - **A campaign report**, which reads its runs by id, is answered past the budget.
 
 Mutations that turn this file red: ``_aggregate_results`` reading the whole scope before the estimate; its narrowed
 read made whole-scope; ``>=`` for ``>`` against the budget; the safety nets dropped; ``_subject_runs`` keeping only the
-cohort (the status and archival counts then differ); the watch's ``except`` removed.
+cohort (the status and archival counts then differ); the watch's ``except`` removed; a reader handed another family's
+budget; a spend lens held to a budget again.
 """
 
 from __future__ import annotations
@@ -83,6 +87,17 @@ PROFILE = toyhost_profile(every_seat=True)
 SCOPE = "uni-aggregate-budget"
 #: The budget every test reads under, patched in so a scope past it is a few dozen results.
 BUDGET = 20
+
+#: Every reader family's budget, as the module names it.
+FAMILIES = ("READING_BUDGET", "PIVOT_READ_BUDGET", "BUNDLE_READ_BUDGET", "PLANNING_READ_BUDGET")
+
+
+def hold_every_reader_to(monkeypatch: pytest.MonkeyPatch, budget: int) -> None:
+    """Patch every reader family's budget to ``budget``."""
+    for name in FAMILIES:
+        monkeypatch.setattr(reads, name, budget)
+
+
 #: Cases per run (k = 1), so a run holds this many results.
 CASES = 4
 #: The subject a narrowed call asks for: two completed runs, one archived, one failed (16 results).
@@ -213,7 +228,7 @@ def _seed_run(
 
 @pytest.fixture
 def budget(monkeypatch: pytest.MonkeyPatch) -> int:
-    monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", BUDGET)
+    hold_every_reader_to(monkeypatch, BUDGET)
     return BUDGET
 
 
@@ -261,19 +276,28 @@ LENSES: dict[str, Callable[..., Any]] = {
     "orphaned_runs": lambda store, storage, **kw: orphaned_runs(store, SCOPE, list_runs=_lister(storage), **kw),
 }
 
-#: What each lens's refusal tells its caller to narrow by: the filters it takes, or that it takes none.
+#: What each budgeted lens's refusal tells its caller to narrow by: the filters it takes.
 NARROWED_BY = {
     "comparison_sets": ("campaign_id", "run_ids", "run status"),
     "pivot": ("subject_filter", "subject_id"),
     "frontier": ("subject_filter", "subject_id"),
     "history": ("subject_filter", "subject_id"),
-    "program_budget": ("takes no filter", "scope_export"),
-    "orphaned_runs": ("takes no filter", "runs_list"),
+}
+
+#: The spend lenses, which hold no budget.
+SPEND_LENSES = ("orphaned_runs", "program_budget")
+
+#: Each budgeted lens's budget, by the name the module gives it.
+BUDGET_OF = {
+    "comparison_sets": "READING_BUDGET",
+    "frontier": "READING_BUDGET",
+    "history": "READING_BUDGET",
+    "pivot": "PIVOT_READ_BUDGET",
 }
 
 
 class TestAScopePastTheBudgetIsRefusedBeforeAnythingIsRead:
-    @pytest.mark.parametrize("lens", sorted(LENSES))
+    @pytest.mark.parametrize("lens", sorted(NARROWED_BY))
     def test_the_refusal_names_the_estimate_the_budget_and_how_to_narrow(
         self, lens: str, budget: int, scope: tuple[EvalStorage, list[EvalRun]]
     ) -> None:
@@ -303,13 +327,13 @@ class TestAScopePastTheBudgetIsRefusedBeforeAnythingIsRead:
 
         (line,) = [record for record in caplog.records if record.getMessage().startswith("eval.read_tier lens=pivot")]
         assert line.levelno == logging.WARNING
-        assert f"refused runs=7 results_estimated=28 over READ_TIER_ROW_BUDGET={budget}" in line.getMessage()
+        assert f"refused runs=7 results_estimated=28 over result_budget={budget}" in line.getMessage()
 
     def test_a_narrowed_call_still_past_it_is_refused_reading_nothing(
         self, monkeypatch: pytest.MonkeyPatch, scope: tuple[EvalStorage, list[EvalRun]]
     ) -> None:
         storage, _ = scope
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 3 * CASES)
+        hold_every_reader_to(monkeypatch, 3 * CASES)
         store = FakeCountingStore(storage)
 
         with pytest.raises(ValidationFailedError) as refused:
@@ -325,7 +349,7 @@ class TestACallNarrowedToRunsThatFitIsAnswered:
     ) -> None:
         storage, narrow = scope
         whole = LENSES["pivot"](storage, storage, subject_id=NARROW)
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", BUDGET)
+        hold_every_reader_to(monkeypatch, BUDGET)
         store = FakeCountingStore(storage)
 
         table = LENSES["pivot"](store, storage, subject_id=NARROW)
@@ -352,7 +376,7 @@ class TestACallNarrowedToRunsThatFitIsAnswered:
     ) -> None:
         storage, narrow = scope
         whole = LENSES["history"](storage, storage, subject_id=NARROW)
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", BUDGET)
+        hold_every_reader_to(monkeypatch, BUDGET)
         store = FakeCountingStore(storage)
 
         result = LENSES["history"](store, storage, subject_id=NARROW)
@@ -370,7 +394,7 @@ class TestACallNarrowedToRunsThatFitIsAnswered:
     ) -> None:
         storage, narrow = scope
         whole = LENSES["frontier"](storage, storage, subject_id=NARROW)
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", BUDGET)
+        hold_every_reader_to(monkeypatch, BUDGET)
         store = FakeCountingStore(storage)
 
         result = LENSES["frontier"](store, storage, subject_id=NARROW)
@@ -387,7 +411,7 @@ class TestACallNarrowedToRunsThatFitIsAnswered:
     ) -> None:
         storage, _ = scope
         whole = LENSES["comparison_sets"](storage, storage, status="completed")
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", BUDGET)
+        hold_every_reader_to(monkeypatch, BUDGET)
         store = FakeCountingStore(storage)
 
         grouped = LENSES["comparison_sets"](store, storage, status="completed")
@@ -401,7 +425,7 @@ class TestACallNarrowedToRunsThatFitIsAnswered:
         self, lens: str, monkeypatch: pytest.MonkeyPatch, scope: tuple[EvalStorage, list[EvalRun]]
     ) -> None:
         storage, _ = scope
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 7 * CASES)
+        hold_every_reader_to(monkeypatch, 7 * CASES)
         store = FakeCountingStore(storage)
 
         LENSES[lens](store, storage)
@@ -417,7 +441,7 @@ class TestTheSafetyNet:
                 make_eval_result(id=f"orphan-{index}", eval_run_id="deleted", scope_id=SCOPE, test_case_id="tc-0")
             )
 
-    @pytest.mark.parametrize("lens", ["pivot", "program_budget"])
+    @pytest.mark.parametrize("lens", ["pivot", "frontier"])
     def test_a_whole_read_past_the_budget_is_refused_when_the_call_does_not_narrow(
         self, lens: str, budget: int
     ) -> None:
@@ -463,6 +487,65 @@ class TestTheSafetyNet:
             "result_budget": budget,
             "results_returned": budget + 1,
         }
+
+
+class TestTheSpendLensesHoldNoBudget:
+    """A spend lens folds each result's spend figures per run as its grouped read hands them out, so it reads a scope
+    of any size whole: past every budget by the runs' matrices, and past it by what the read returns."""
+
+    @pytest.mark.parametrize("lens", SPEND_LENSES)
+    def test_a_scope_past_every_budget_is_answered_whole(
+        self, lens: str, scope: tuple[EvalStorage, list[EvalRun]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        storage, _ = scope
+        whole = LENSES[lens](storage, storage)
+        hold_every_reader_to(monkeypatch, 1)
+        store = FakeCountingStore(storage)
+
+        assert LENSES[lens](store, storage) == whole
+        assert store.scope_reads == [7 * CASES] and store.run_reads == []
+
+    @pytest.mark.parametrize("lens", SPEND_LENSES)
+    def test_results_no_listing_promised_are_answered_too(self, lens: str, budget: int) -> None:
+        storage, _ = memory_storage()
+        _seed_run(storage, 0, NARROW)
+        for index in range(budget):
+            storage.save_eval_result(
+                make_eval_result(id=f"orphan-{index}", eval_run_id="deleted", scope_id=SCOPE, test_case_id="tc-0")
+            )
+        store = FakeCountingStore(storage)
+
+        LENSES[lens](store, storage)
+
+        assert store.scope_reads == [CASES + budget]
+
+
+class TestEachReaderIsHeldToItsOwnBudget:
+    """Only the reader's own family budget refuses it: a scope past one family's budget and inside every other's is
+    refused by that family's readers alone."""
+
+    @pytest.mark.parametrize("family", sorted(set(BUDGET_OF.values())))
+    def test_only_that_familys_readers_refuse(
+        self, family: str, scope: tuple[EvalStorage, list[EvalRun]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        storage, _ = scope
+        monkeypatch.setattr(reads, family, BUDGET)
+
+        for lens, held_to in sorted(BUDGET_OF.items()):
+            if held_to == family:
+                with pytest.raises(ValidationFailedError) as refused:
+                    LENSES[lens](FakeCountingStore(storage), storage)
+                assert refused.value.details["result_budget"] == BUDGET, lens
+            else:
+                LENSES[lens](FakeCountingStore(storage), storage)
+
+    def test_the_figures_are_the_measured_ones(self) -> None:
+        """Each figure is ``floor(allowance / bytes per result)``, the bytes its docstring states (2026-10-30)."""
+        assert reads.READING_BUDGET == (256 << 20) // 4_428
+        assert reads.PLANNING_READ_BUDGET == (256 << 20) // 7_253
+        assert reads.PIVOT_READ_BUDGET == (1 << 30) // 39_609
+        assert reads.BUNDLE_READ_BUDGET == (1 << 30) // 38_189
+        assert reads.READ_TIER_ROW_BUDGET == reads.READING_BUDGET
 
 
 # =============================================================================
@@ -537,7 +620,7 @@ def test_a_judged_frontier_read_for_one_subject_tiers_its_judge_on_that_subject_
         return frontier(storage, SCOPE, list_runs=_lister(storage), bar=0.5, subject_id=NARROW)
 
     whole = ranked()
-    monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", _JUDGED_CASES + MIN_CASES)
+    hold_every_reader_to(monkeypatch, _JUDGED_CASES + MIN_CASES)
     narrowed = ranked()
 
     # Read whole, the judge's agreement pools both subjects' ratings and calibrates; read for one, half as many
@@ -647,7 +730,7 @@ class TestTheRegressionWatch:
         watch, _ = _watched(others=3)
         whole = watch.check("run-b", SCOPE)
         # The scope holds 60 results, its subject 24.
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 2 * len(_WATCH_CASES))
+        hold_every_reader_to(monkeypatch, 2 * len(_WATCH_CASES))
 
         narrowed = watch.check("run-b", SCOPE)
 
@@ -669,7 +752,7 @@ class TestTheRegressionWatch:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         watch, _ = _watched()
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", BUDGET)
+        hold_every_reader_to(monkeypatch, BUDGET)
 
         with pytest.raises(ValidationFailedError, match="history would aggregate about 24 results"):
             watch.check("run-b", SCOPE)
@@ -678,7 +761,7 @@ class TestTheRegressionWatch:
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         watch, sink = off_loop(_watched)
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", BUDGET)
+        hold_every_reader_to(monkeypatch, BUDGET)
 
         with caplog.at_level(logging.INFO, logger="threetears.evals"):
             await watch("run-b", SCOPE, "completed")
@@ -688,8 +771,8 @@ class TestTheRegressionWatch:
         assert line.levelno == logging.ERROR
         message = line.getMessage()
         assert f"checked nothing on run=run-b scope_id={SCOPE}" in message
-        assert f"holds about 24 results, past READ_TIER_ROW_BUDGET={BUDGET}" in message
-        assert "nothing an operator can narrow" in message and "#996" in message
+        assert f"holds about 24 results, past its read budget of {BUDGET}" in message
+        assert "nothing an operator can narrow, since the watch already reads that subject alone" in message
         assert "subject_filter" not in message and "subject_id" not in message
 
 
@@ -700,7 +783,7 @@ class TestTheRegressionWatchsJudgedTiersAreHeldToTheBudget:
     def test_one_result_past_the_budget_is_refused_reading_no_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
         store = BatchRecordingStore()
         watch, _ = _watched(others=3, store=store)
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 2 * len(_WATCH_CASES) - 1)
+        hold_every_reader_to(monkeypatch, 2 * len(_WATCH_CASES) - 1)
         store.clear()
 
         # The history it reads first refuses on the same runs and estimate; the tiers' own hold is the same bound.
@@ -716,7 +799,7 @@ class TestTheRegressionWatchsJudgedTiersAreHeldToTheBudget:
         store = BatchRecordingStore()
         # On the engine path (the store's narrowed reads hidden), whose store calls are pinned here.
         watch, _ = _watched(others=3, store=EngineOnlyStore(store))
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 2 * len(_WATCH_CASES))
+        hold_every_reader_to(monkeypatch, 2 * len(_WATCH_CASES))
         store.clear()
 
         (_, transcript) = watch.check("run-b", SCOPE)
@@ -757,7 +840,7 @@ class TestTheFrontierCommand:
         scope: tuple[EvalStorage, list[EvalRun]],
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", 3 * CASES)
+        hold_every_reader_to(monkeypatch, 3 * CASES)
         stderr = self._refused(scope[0], capsys, "--subject", NARROW)
 
         assert (
@@ -785,7 +868,7 @@ def test_a_campaign_report_reads_its_runs_by_id_past_the_budget(monkeypatch: pyt
             host.storage.save_eval_result,
             make_eval_result(id=f"outside-{n}", scope_id=TOYHOST_SCOPE, eval_run_id=outside.id, test_case_id="tc-0"),
         )
-    monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", campaign_estimate)
+    hold_every_reader_to(monkeypatch, campaign_estimate)
 
     after = off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE)
 
@@ -962,7 +1045,7 @@ class TestAnAggregateReadsResultsWithoutTheirVerbatimFields:
         self, monkeypatch: pytest.MonkeyPatch, carrying: tuple[_ExcludeSwitch, EvalStorage, list[EvalRun]]
     ) -> None:
         store, storage, narrow = carrying
-        monkeypatch.setattr(reads, "READ_TIER_ROW_BUDGET", len(narrow) * CASES)
+        hold_every_reader_to(monkeypatch, len(narrow) * CASES)
         store.excluded.clear()
 
         table = LENSES["pivot"](storage, storage, subject_id=NARROW)

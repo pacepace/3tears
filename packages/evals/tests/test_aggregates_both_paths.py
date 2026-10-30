@@ -214,7 +214,9 @@ class TestTheSpendLensesFoldTheFiguresAsTheResultsFoldThem:
 
         program_budget(storage, read.scope_id, list_runs=_lister(read))  # type: ignore[arg-type]
 
-        assert storage.groupings == [((), ("eval_run_id", "cost_usd", "judge_rescores", "cost_roles", "schema_version", "schema_minor"))]
+        assert storage.groupings == [
+            ((), ("eval_run_id", "cost_usd", "judge_rescores", "cost_roles", "schema_version", "schema_minor"))
+        ]
 
 
 class TestComparisonSetsReadTheirWindowsAndBadgesOffReadings:
@@ -353,7 +355,14 @@ class TestTheSpendLensesRefuseARowAStoredReadRefuses:
         assert refused == before
 
     @pytest.mark.parametrize(
-        ("field", "value"), (("schema_version", 16), ("schema_version", 14), ("schema_version", None), ("schema_minor", -1), ("schema_minor", "11"))
+        ("field", "value"),
+        (
+            ("schema_version", 16),
+            ("schema_version", 14),
+            ("schema_version", None),
+            ("schema_minor", -1),
+            ("schema_minor", "11"),
+        ),
     )
     def test_a_stored_row_at_a_version_this_build_does_not_read(self, field: str, value: Any) -> None:
         _, store, _ = _scope_with(field, value)

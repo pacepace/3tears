@@ -30,6 +30,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.analysis import reads as read_tier
 from threetears.evals.analysis.reads import (
     RunLister,
     bisect_runs,
@@ -153,7 +154,7 @@ def scope_pivot(
     :rtype: PivotTable
     :raises ValidationFailedError: The pivot cannot be answered honestly — see
         :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate, or the scope is past
-        :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
+        :data:`~threetears.evals.analysis.reads.PIVOT_READ_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
     """
     plan: list[PlannedCost] | None = None
     if predicted_cost is not None:
@@ -219,7 +220,7 @@ def scope_history(
     :return: The series.
     :rtype: HistoryResult
     :raises ValidationFailedError: The metric cannot be seriesed, or the status is no run's, or the scope is past
-        :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
+        :data:`~threetears.evals.analysis.reads.READING_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
     """
     return history(
         host.storage,
@@ -262,7 +263,7 @@ def scope_frontier(
     :return: The frontier.
     :rtype: FrontierResult
     :raises ValidationFailedError: The bar is not a number in ``[0, 1]``, or the status is no run's, or the scope is
-        past :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs
+        past :data:`~threetears.evals.analysis.reads.READING_BUDGET` and ``subject_id`` does not narrow it to runs
         that fit.
     """
     return FrontierResult.model_validate(
@@ -843,7 +844,7 @@ _PLANNING_LENS = "detectable_effects"
 #: How a launch's planning read past the read budget narrows: the refusal's remedy begins with it.
 _NARROW_THE_PLANNING_READ = (
     "archive the template's earlier runs the plan need not read (it leaves archived runs out), or estimate a launch "
-    "of a template with fewer earlier runs; the store computing the planning read for a history of any size is #996"
+    "of a template with fewer earlier runs"
 )
 
 
@@ -879,24 +880,33 @@ def detectable_effects(
     :return: The block.
     :rtype: DetectableEffects
     :raises ValidationFailedError: The template's earlier runs are estimated past
-        :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` results by their matrices (refused before any result
+        :data:`~threetears.evals.analysis.reads.PLANNING_READ_BUDGET` results by their matrices (refused before any result
         is read), or their read returned more than it (refused once the read is walked). A launch estimate reports
         that in the block's ``cannot_estimate`` instead, and is still priced (:func:`launch_estimate`).
     """
     runs = [run for run in list_runs(host, scope_id) if run.template_id == template_id]
     # Every result of every earlier run is read, so the read is held to the read tier's budget as the aggregates are:
     # estimated off the listing above before any result is read, then counted as the read is walked.
-    hold_to_read_budget(_PLANNING_LENS, scope_id, runs, how=_NARROW_THE_PLANNING_READ)
-    # One read of every earlier run's results, as their compact readings, walked once a page at a time, in any order
-    # across runs, each reading read down to its values before the next page (:func:`planning_readings`):
-    # a template's history read whole held every result of every run at once. The read holds one page of results and
-    # their readings at a time; on the engine's path its key reads are one per run, each holding that run's keys alone.
+    hold_to_read_budget(
+        _PLANNING_LENS, scope_id, runs, budget=read_tier.PLANNING_READ_BUDGET, how=_NARROW_THE_PLANNING_READ
+    )
+    # One read of every earlier run's results, as their compact readings, walked once a page at a time in the store's
+    # own order across the runs (``in_store_order``), each reading read down to its values before the next page
+    # (:func:`planning_readings`, which groups by run itself, so the order across runs reaches no answer): a template's
+    # history read whole held every result of every run at once. The read holds one page of results and their readings
+    # at a time, on either path; on the engine's path its key read is one call for every run.
     read_counts: dict[str, int] = {}
-    # TODO(W4b P4 merge): pass iter_result_readings(..., in_store_order=True): this read groups by run itself.
-    walk = _counted(host.storage.iter_result_readings([run.id for run in runs], scope_id), read_counts)
+    walk = _counted(
+        host.storage.iter_result_readings([run.id for run in runs], scope_id, in_store_order=True), read_counts
+    )
     readings = planning_readings(runs, walk, profile=host.profile)
     hold_to_read_budget(
-        _PLANNING_LENS, scope_id, runs, how=_NARROW_THE_PLANNING_READ, returned=sum(read_counts.values())
+        _PLANNING_LENS,
+        scope_id,
+        runs,
+        budget=read_tier.PLANNING_READ_BUDGET,
+        how=_NARROW_THE_PLANNING_READ,
+        returned=sum(read_counts.values()),
     )
     runs = [run for run in runs if run.id in read_counts]
     family_size = max(1, len(readings)) * max(1, n_arms - 1)
