@@ -137,14 +137,19 @@ _NOT_CARRIED = "(not carried by this run)"
 #: **How many results a read-tier call holds at once, per reader, as its runs' listing estimates them before any is
 #: read.** The read tier folds in Python on every request, and a reader whose fold holds something per result holds a
 #: budget written as ``floor(allowance / bytes per result)``: the bytes per result its read holds at its peak, against
-#: the memory one call may take. A reader whose fold holds per run, or per run and case, holds none: the spend lenses
-#: (:func:`program_budget`, :func:`orphaned_runs`) fold each result's spend figures off a grouped read as it arrives and
-#: answer a scope of any size.
+#: the memory one call may take. The spend lenses (:func:`program_budget`, :func:`orphaned_runs`) hold none: they read
+#: no result, only each result's spend figures off one grouped read, and answer a scope of any size. The grouped read is
+#: held whole before it is folded per run, so their memory still grows with the scope: bytes per result at the peak,
+#: memory 2,245, memory engine 4,288, SQLite 1,683, SQLite engine 10,207 (the engine's grouping reads each row by id
+#: and folds it in Python), measured as below.
 #:
 #: **The measurement.** Each figure is the marginal of tracemalloc's peak over the reader's call, ``Δpeak / Δresults``,
 #: on the hot-path corpus (``packages/evals/tests/hot_path_support.py``: 41 runs of production-shaped results, about
-#: 3,200 at 1x and 6,400 at 2x), on every path the package ships (the memory and SQLite stores, each as it is and with
-#: its narrowed reads hidden), the largest kept. Re-measure with
+#: 3,200 at 1x and 6,400 at 2x), on four paths: the memory store's own narrowed reads (``memory``), the memory store
+#: with them hidden (``memory engine``), the SQLite store (``SQLite``) and the SQLite store with them hidden (``SQLite
+#: engine``). The budget is set by the worst of the paths a host runs, the SQLite store's two and the memory store's
+#: engine path (owner ruling 2026-10-30); the memory store's own narrowed read is a reference store's, which no host
+#: serves, and is stated but sets nothing. Re-measure with
 #: ``uv run python packages/evals/scripts/measure_read_budgets.py`` from the repo root, and move a figure here with the
 #: date. Measured 2026-10-30.
 #:
@@ -171,23 +176,26 @@ _NOT_CARRIED = "(not carried by this run)"
 #: wrong answer that looks complete.
 #:
 #: The readings readers: :func:`history`, :func:`frontier`, :func:`comparison_sets`, and the regression watch's history
-#: and judged tiers, which hold each result's compact reading. 4,428 bytes per result at the peak (comparison sets on the
-#: memory store's narrowed reads; 2,936 on the engine's reads), against 256 MiB.
-READING_BUDGET = 60_622
+#: and judged tiers, which hold each result's compact reading. Bytes per result at the peak, the largest over the
+#: family: memory 4,428, memory engine 2,935, SQLite 3,358, SQLite engine 4,067. Set by SQLite engine (the regression
+#: watch), against 256 MiB.
+READING_BUDGET = 66_003
 
 #: The planning read a launch estimate makes (``detectable_effects``), which keeps each earlier result's values per
-#: reading until every run is read. 7,253 bytes per result at the peak (the SQLite store with its narrowed reads hidden),
-#: against 256 MiB. See :data:`READING_BUDGET` for the measurement and how to re-measure.
+#: reading until every run is read. Bytes per result at the peak: memory 4,534, memory engine 6,985, SQLite 3,359,
+#: SQLite engine 7,253. Set by SQLite engine, against 256 MiB. See :data:`READING_BUDGET` for the measurement and how to
+#: re-measure.
 PLANNING_READ_BUDGET = 37_010
 
-#: The pivot (:func:`pivot`), which holds every result's score records and its cells at once. 39,609 bytes per result
-#: at the peak (the SQLite store's narrowed reads), against 1 GiB. See :data:`READING_BUDGET` for the measurement and
-#: how to re-measure.
+#: The pivot (:func:`pivot`), which holds every result's score records and its cells at once. Bytes per result at the
+#: peak: memory 39,031, memory engine 39,037, SQLite 39,609, SQLite engine 39,597. Set by SQLite, against 1 GiB. See
+#: :data:`READING_BUDGET` for the measurement and how to re-measure.
 PIVOT_READ_BUDGET = 27_108
 
 #: A campaign's context bundle (``assemble_context_bundle``, which a report read assembles), which holds every member
-#: result's reading and each fold's work at once. 38,189 bytes per result at the peak (the SQLite store with its narrowed
-#: reads hidden), against 1 GiB. See :data:`READING_BUDGET` for the measurement and how to re-measure.
+#: result's reading and each fold's work at once. Bytes per result at the peak: memory 37,674, memory engine 37,675,
+#: SQLite 37,949, SQLite engine 38,189. Set by SQLite engine, against 1 GiB. See :data:`READING_BUDGET` for the
+#: measurement and how to re-measure.
 BUNDLE_READ_BUDGET = 28_116
 
 #: The readings readers' budget (:data:`READING_BUDGET`) under the name a host already reads; also how many projected
@@ -1276,8 +1284,8 @@ def program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -
     # nonzero only on an integrity gap.
     started = time.perf_counter()
     runs = list_runs(scope_id, include_archived=True)
-    # The spend figures alone, off a grouped read of the store, never a hydrated result; folded per run, so a scope of
-    # any size is read and no budget holds it.
+    # The spend figures alone, off one grouped read of the store, never a hydrated result. The read is held whole, its
+    # bytes per result stated in the budgets' comment, and no budget holds it.
     read = _aggregate_results(
         storage,
         scope_id,
@@ -1316,8 +1324,8 @@ def orphaned_runs(storage: LensStore, scope_id: str, *, list_runs: RunLister) ->
     """
     started = time.perf_counter()
     runs = list_runs(scope_id, include_archived=True)
-    # The spend figures alone, off a grouped read of the store, never a hydrated result; folded per run, so a scope of
-    # any size is read and no budget holds it.
+    # The spend figures alone, off one grouped read of the store, never a hydrated result. The read is held whole, its
+    # bytes per result stated in the budgets' comment, and no budget holds it.
     read = _aggregate_results(
         storage,
         scope_id,
@@ -2427,7 +2435,11 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "BUNDLE_READ_BUDGET",
     "EXPORT_PAGE_RESULTS",
+    "PIVOT_READ_BUDGET",
+    "PLANNING_READ_BUDGET",
+    "READING_BUDGET",
     "READ_TIER_ROW_BUDGET",
     "LensStore",
     "RowColumns",

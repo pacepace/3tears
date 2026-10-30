@@ -372,6 +372,30 @@ class TestTheSpendLensesRefuseARowAStoredReadRefuses:
             for lens, call in _spend_lenses(path).items():
                 assert _refusal(call) == before, (field, value, lens)
 
+    @pytest.mark.parametrize(("field", "value"), (("judge_rescores", None), ("schema_minor", None), ("cost_usd", None)))
+    def test_a_null_reads_as_an_absent_field_where_a_results_read_refuses_it(self, field: str, value: Any) -> None:
+        """A grouped read cannot tell a null from an absent field: an explicit null re-judge list or minor reads as
+        absent, and an absent spend (null in the grouped read) as unpriced. No writer produces such a row."""
+        _, store, _ = _scope_with()
+        row = dict(store.documents[(REFUSED_SCOPE, "run-1-0")])
+        stored = dict(row, **{field: value}) if field != "cost_usd" else {k: v for k, v in row.items() if k != field}
+        _refusal(lambda: EvalResult.from_dict(stored))
+
+        spend = ResultSpend.of_stored(
+            row["eval_run_id"],
+            None if field == "cost_usd" else row["cost_usd"],
+            None if field == "judge_rescores" else row.get("judge_rescores"),
+            row["cost_roles"],
+            schema_version=row["schema_version"],
+            schema_minor=None if field == "schema_minor" else row.get("schema_minor"),
+        )
+
+        assert spend.eval_run_id == row["eval_run_id"]
+        if field == "cost_usd":
+            assert spend.cost_usd is None, "unpriced"
+        if field == "judge_rescores":
+            assert spend.judge_rescores == ()
+
     def test_a_spend_stored_as_an_integer_is_read_as_the_float_a_result_holds(self) -> None:
         spend = ResultSpend.of_stored("run-0", 0, [], ["candidate"])
 

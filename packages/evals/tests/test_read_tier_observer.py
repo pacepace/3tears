@@ -195,7 +195,7 @@ class TestEveryAggregateReportsItsRead:
 class TestPastTheBudgetTheLineIsAWarning:
     def test_the_budget_is_stated(self) -> None:
         """The name a host already reads is the readings readers' measured budget (2026-10-30)."""
-        assert READ_TIER_ROW_BUDGET == reads.READ_TIER_ROW_BUDGET == reads.READING_BUDGET == 60_622
+        assert READ_TIER_ROW_BUDGET == reads.READ_TIER_ROW_BUDGET == reads.READING_BUDGET == 66_003
 
     def test_a_pivot_over_the_budget_warns_and_names_it(
         self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch

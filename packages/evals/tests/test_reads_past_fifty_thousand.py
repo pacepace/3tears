@@ -2,7 +2,7 @@
 
 Each reader's read budget is its measured bytes per result against its allowance (owner, 2026-10-30): the readings
 readers (``history``, ``frontier``, ``comparison_sets``, the regression watch's history and judged tiers) hold
-``READING_BUDGET``, about 60,000 results, under 256 MiB; the spend lenses (``program_budget``, ``orphaned_runs``) hold
+``READING_BUDGET``, about 66,000 results, under 256 MiB; the spend lenses (``program_budget``, ``orphaned_runs``) hold
 none; the planning read (``detectable_effects``) holds ``PLANNING_READ_BUDGET``; the pivot and a campaign's bundle hold
 ``PIVOT_READ_BUDGET`` and ``BUNDLE_READ_BUDGET``, about 27,000 and 28,000, under 1 GiB.
 

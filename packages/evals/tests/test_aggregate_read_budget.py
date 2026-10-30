@@ -541,7 +541,7 @@ class TestEachReaderIsHeldToItsOwnBudget:
 
     def test_the_figures_are_the_measured_ones(self) -> None:
         """Each figure is ``floor(allowance / bytes per result)``, the bytes its docstring states (2026-10-30)."""
-        assert reads.READING_BUDGET == (256 << 20) // 4_428
+        assert reads.READING_BUDGET == (256 << 20) // 4_067
         assert reads.PLANNING_READ_BUDGET == (256 << 20) // 7_253
         assert reads.PIVOT_READ_BUDGET == (1 << 30) // 39_609
         assert reads.BUNDLE_READ_BUDGET == (1 << 30) // 38_189

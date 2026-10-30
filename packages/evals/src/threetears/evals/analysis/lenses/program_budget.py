@@ -85,10 +85,15 @@ class ResultSpend:
     ) -> ResultSpend:
         """The figures as a stored row holds them, read as strictly as the row's hydration reads them.
 
-        Validated by the stored read of a result narrowed to these fields, the stored read of a result narrowed to these fields, with the result's own
-        field definitions: a value a hydrated result refuses (a negative spend, a role this build does not know, a
-        malformed re-judge, a version this build does not read) is refused here with the same ``ValidationError``,
-        and a value it coerces (a JSON integer spend read as a float) is coerced alike.
+        Validated by the stored read of a result narrowed to these fields, with the result's own field definitions: a
+        value a hydrated result refuses (a negative spend, a role this build does not know, a malformed re-judge, a
+        version this build does not read) is refused here with the same ``ValidationError``, and a value it coerces (a
+        JSON integer spend read as a float) is coerced alike.
+
+        **A grouped read cannot tell a null from an absent field**, so neither can this: an explicit null
+        ``judge_rescores`` or ``schema_minor`` is read as absent and accepted (no re-judges; this build's minor), and an
+        absent ``cost_usd`` is read as null, unpriced, where :meth:`EvalResult.from_dict` refuses each of the three. No
+        writer produces such a row: every result is written by its model's dump, which writes each of them.
 
         :param eval_run_id: The row's ``eval_run_id``.
         :ptype eval_run_id: Any

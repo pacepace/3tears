@@ -4976,6 +4976,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.BUNDLE_READ_BUDGET": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "stable"
+    },
     "threetears.evals.analysis.BundleInspection": {
       "kind": "model",
       "signature": "",
@@ -6371,6 +6376,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.PIVOT_READ_BUDGET": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "stable"
+    },
     "threetears.evals.analysis.PivotCell": {
       "kind": "model",
       "signature": "",
@@ -6400,6 +6410,11 @@
       "kind": "model",
       "signature": "",
       "tier": "provisional"
+    },
+    "threetears.evals.analysis.PLANNING_READ_BUDGET": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "stable"
     },
     "threetears.evals.analysis.Precision": {
       "kind": "model",
@@ -6490,6 +6505,11 @@
       "kind": "constant (int)",
       "signature": "",
       "tier": "host-contract"
+    },
+    "threetears.evals.analysis.READING_BUDGET": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "stable"
     },
     "threetears.evals.analysis.ReadingScope": {
       "kind": "model",
