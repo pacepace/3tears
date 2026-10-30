@@ -750,7 +750,8 @@ class ResultReadings(Protocol):
         * ``("min", path)``, ``("max", path)``: the least or greatest value, skipping absent and null values. Numbers
           compare as numbers and strings by code point (binary collation). A group with no values gives ``None``.
         * ``("values", path)``: ``[[row_id, value], ...]``, one pair per row, in :meth:`iter_narrowed`'s order, with
-          ``None`` for an absent value. ``row_id`` is the row's ``id``. The reader folds a float from these, in this
+          ``None`` for an absent value, each value exactly as this store's own reads return it (every double to its
+          last bit). ``row_id`` is the row's ``id``. The reader folds a float from these, in this
           order, so its answer does not depend on how the store adds.
 
         :param doc_type: The discriminator to select on.

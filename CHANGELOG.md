@@ -184,7 +184,7 @@ the read carries `refused=true`.
 its order, from one backend call, with `exclude` applied and `exclude_in_items` dropping paths inside each object item
 of a list field (`narrow_items`, beside `omit_paths`, is that rule). `grouped` groups those rows by scalar paths and
 answers `count`, `count_null`, `sum_int`, `min`, `max` and `values` (`[row_id, value]` pairs in stored order, each
-value exactly as stored, every double to its last bit) per group (`GroupMeasure`). It has no float measure: a reader adds the values itself, in order. The in-memory and SQLite
+value exactly as this store's own reads return it, every double to its last bit) per group (`GroupMeasure`). It has no float measure: a reader adds the values itself, in order. The in-memory and SQLite
 stores offer it. `fold_groups(rows, *, by, measures)` is the grouped read's rules as one function, for a store that
 groups rows in Python; the in-memory store and the engine's grouping of a store without the capability both fold
 through it. All four names are provisional.
