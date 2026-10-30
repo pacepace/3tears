@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a compact reading of each stored result, and EvalStorage reads of readings and groups
+
+**Added (provisional):** `threetears.evals.kernel.result_reading.ResultReading`, a stored result as the engine's readers
+read it: exactly the attributes they access, under the same names, copied from the hydrated `EvalResult` and never
+recomputed, without the judge's prose (`judge_reasoning`, each score's `reasoning`; the "cannot tell" notes are carried
+as the dimensions they name). It holds at most a fifth of a result's bytes (measured 3.4 KB against 28.9 KB at a
+production shape). `ResultView` is the protocol an `EvalResult` and a `ResultReading` both satisfy; the scoring,
+condition, usage and score-projection rules now take it. Two `EvalStorage` reads hand them out on the engine's path:
+`iter_result_readings(run_ids | None, scope_id)` (the results' keys, one read per run named or one for the scope, then
+one `get_many` per 1,000 results, each page hydrated as every read hydrates it and dropped once its readings are built)
+and `result_groups(run_ids | None, scope_id, by=, measures=)` (the `ResultReadings.grouped` answer over the same rows).
+Each says the path that served it (`engine`) and the store calls it made. No reader reads through them yet, and a host
+store needs nothing new.
+
+**Changed:** the bundle's measure walk reads each model type's fields that can hold a number or text, but never the
+judge's prose: a score's `reasoning` and a result's `judge_reasoning`. A host that declares no measure of either name
+sees no change; the walk read the prose and dropped it as undescribed text. A host that declares a measure named
+`reasoning` or `judge_reasoning` no longer has the judge's text pooled into it. Before, `judge_reasoning` pooled the
+judge's narration (beside any value the host reported on `host_measures`), and `reasoning` pooled a score's reasoning where the host
+reported none in the cell (or was listed under `unreported_observations` when two judged scores of a result both held one). Each now pools only
+the values the host reports on `host_measures`, and the judge's prose is neither pooled nor listed unreported.
+
 ### evals: a refusal reaches the caller as a 422 refusal, never as an exception; a stored bundle's shape is checked first
 
 **Fixed:** a lower layer's refusal (`RefusedInput`, or a subclass such as `PivotError` or `DesignRefused`) that an

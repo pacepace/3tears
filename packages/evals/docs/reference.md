@@ -251,7 +251,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`count_substituted`** · function · Count the deliveries a harness supplied, over the delivery record itself.
   <br>`count_substituted(deliveries: Sequence[AsyncDelivery] | None) -> int`
 - **`count_substituted_deliveries`** · function · Count the async deliveries in `result` whose payload a harness supplied.
-  <br>`count_substituted_deliveries(result: EvalResult) -> int`
+  <br>`count_substituted_deliveries(result: ResultView) -> int`
 - **`default_job_timeout`** · *host contract* · function · Enforce a job budget with `asyncio.timeout` and nothing else.
   <br>`default_job_timeout(budget_s: float) -> AsyncIterator[float]`
 - **`extract_json`** · function · Extract a JSON object from provider output.
@@ -263,7 +263,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`judge_case_of`** · function · The judge case a test case carries, or `None` when it carries none.
   <br>`judge_case_of(test_case: EvalTestCase) -> JudgeCase | None`
 - **`production_replicating_cost`** · function · Observed cost of the roles a production deployment would also pay for.
-  <br>`production_replicating_cost(usage: list[RoleUsage], *, substituted_deliveries: int, candidate_kind: str | None) -> float | None`
+  <br>`production_replicating_cost(usage: Sequence[UsageView], *, substituted_deliveries: int, candidate_kind: str | None) -> float | None`
 - **`prompt_drift`** · function · Read a stored copy of a catalogue prompt against the package's shipped default.
   <br>`prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, reset: str, customized: bool = False) -> PromptDrift`
 - **`resolve_variant_identity`** · function · Return the variant identity a reader should show for `run`'s observations.

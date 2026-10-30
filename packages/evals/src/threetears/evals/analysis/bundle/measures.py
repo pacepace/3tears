@@ -1,4 +1,4 @@
-"""The reflective measure walk: every measure a campaign's results carry, pooled into the bundle's measure surface.
+"""The measure walk: every measure a campaign's results carry, pooled into the bundle's measure surface.
 
 :func:`_collect_measures` walks each result's scalar leaves, record carriers, derived and lineage leaves and open
 maps, keeps the measures the registry describes as reportable, and summarises each over its own population
@@ -12,7 +12,19 @@ from collections.abc import Collection, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from itertools import chain
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, get_args
+from types import UnionType
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    Literal,
+    NamedTuple,
+    TypeAliasType,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from pydantic import BaseModel
 
@@ -53,6 +65,7 @@ from threetears.evals.schema.models import (
     stale_goal_check_proofs,
     EvalResult,
     GoalCheckProof,
+    RubricScore,
 )
 from threetears.evals.kernel.result_condition import (
     ResultOutcome,
@@ -196,20 +209,68 @@ def _value_fits(descriptor: MetricDescriptor, value: float | str) -> bool:
     return not isinstance(value, (str, bool))
 
 
-def _scalar_leaves(model: BaseModel) -> Iterator[tuple[str, float | str]]:
-    """Yield ``(field_name, value)`` for each present numeric/string scalar on a model.
+def _scalar_leaves(model: object, names: tuple[str, ...]) -> Iterator[tuple[str, float | str]]:
+    """Yield ``(field_name, value)`` for each present numeric/string scalar of ``names`` on a model.
 
-    Booleans are excluded despite being ints in Python: a boolean measure is a
-    condition, and averaging one into a percentile reads as a rate nobody computed.
+    ``names`` is the model type's walked fields (:data:`_LINEAGE_FIELDS`, or a carrier's in :data:`_CARRIERS`), read by
+    name, so an ``EvalResult`` and its compact reading are walked alike, and a reading without a walked field fails
+    loudly. Booleans are excluded despite being ints in Python: a boolean measure is a condition, and averaging one into
+    a percentile reads as a rate nobody computed.
     """
-    for field_name in type(model).model_fields:
-        value = getattr(model, field_name, None)
+    for field_name in names:
+        value = getattr(model, field_name)
         if value is None or isinstance(value, bool):
             continue
         if isinstance(value, (int, float)):
             yield field_name, float(value)
         elif isinstance(value, str):
             yield field_name, value
+
+
+#: The judge's prose, by the model type that holds it and its field: a score's ``reasoning`` and the result's
+#: ``judge_reasoning``. Text the judge wrote is never a measure, so the walk never reads it, and a compact reading of
+#: a result need not carry it. Named by type and field, not by name alone: a host measure called ``reasoning`` or
+#: ``judge_reasoning`` (on ``host_measures``, or a field of any other carrier) is walked and pooled as any other.
+_WALK_PROSE: frozenset[tuple[type[BaseModel], str]] = frozenset(
+    {(RubricScore, "reasoning"), (EvalResult, "judge_reasoning")}
+)
+
+
+def _hint_types(hint: object) -> Iterator[object]:
+    """Every type a field's resolved hint admits, through unions, ``Annotated``, ``Literal`` and type aliases."""
+    if isinstance(hint, TypeAliasType):
+        yield from _hint_types(hint.__value__)
+        return
+    origin = get_origin(hint)
+    if origin is Literal:
+        yield from (type(value) for value in get_args(hint))
+    elif origin is Annotated:
+        yield from _hint_types(get_args(hint)[0])
+    elif origin is Union or origin is UnionType:
+        for arm in get_args(hint):
+            yield from _hint_types(arm)
+    else:
+        yield hint
+
+
+def _admits_scalar(hint: object) -> bool:
+    """Whether a field so hinted can hold a value :func:`_scalar_leaves` yields: a number or text, never a boolean."""
+    return any(
+        isinstance(admitted, type) and admitted is not bool and issubclass(admitted, (int, float, str))
+        for admitted in _hint_types(hint)
+    )
+
+
+def _walked_fields(model: type[BaseModel]) -> tuple[str, ...]:
+    """A model type's walked fields: each field that can hold a number or text, but the judge's prose, in field order.
+
+    A field that only ever holds a boolean, a list, a mapping or a model never yields a scalar leaf, so leaving it out
+    walks exactly what reading every field did.
+    """
+    hints = get_type_hints(model)
+    return tuple(
+        name for name in model.model_fields if (model, name) not in _WALK_PROSE and _admits_scalar(hints[name])
+    )
 
 
 #: Result fields whose sub-models RECORD something done to the result rather than something
@@ -221,6 +282,36 @@ def _scalar_leaves(model: BaseModel) -> Iterator[tuple[str, float | str]]:
 #: it would pool a repeat's score as a second observation of the candidate's cell. A second judge's scores are the
 #: same: a measurement of the judges, read by ``inter_judge_agreement`` and ``judge_drift``.
 RECORD_CARRIERS: frozenset[str] = frozenset({"judge_rescores", "judge_repeats", "judge_seconds"})
+
+
+def _carrier_fields() -> tuple[tuple[str, bool, tuple[str, ...]], ...]:
+    """Each result field the walk reads as a carrier: ``(field, repeatable, the item model's walked fields)``.
+
+    A carrier is a field holding a model, or a list of them (repeatable); a record carrier (:data:`RECORD_CARRIERS`)
+    and a verbatim field (:data:`~threetears.evals.kernel.run_pages.VERBATIM_RESULT_FIELDS`) are not. A world's event
+    log is what the world did, verbatim, not what the cell measured: walked, each event's ``turn`` would pool into any
+    measure a host declares as ``turn`` that the result did not report itself, and a reader of figures reads results
+    without it.
+    """
+    hints = get_type_hints(EvalResult)
+    carriers: list[tuple[str, bool, tuple[str, ...]]] = []
+    for name in EvalResult.model_fields:
+        if name in RECORD_CARRIERS or name in VERBATIM_RESULT_FIELDS:
+            continue
+        for admitted in _hint_types(hints[name]):
+            repeatable = get_origin(admitted) is list
+            item = get_args(admitted)[0] if repeatable else admitted
+            if isinstance(item, type) and issubclass(item, BaseModel):
+                carriers.append((name, repeatable, _walked_fields(item)))
+                break
+    return tuple(carriers)
+
+
+#: The result's own walked fields (:func:`_walked_fields`), read as its lineage leaves.
+_LINEAGE_FIELDS: tuple[str, ...] = _walked_fields(EvalResult)
+
+#: The result's carriers (:func:`_carrier_fields`), each with the walked fields of its item model, in field order.
+_CARRIERS: tuple[tuple[str, bool, tuple[str, ...]], ...] = _carrier_fields()
 
 
 def _carrier_leaves(result: EvalResult, *, describe: _Describer) -> Iterator[tuple[str, float | str, bool, str, str]]:
@@ -262,21 +353,14 @@ def _carrier_leaves(result: EvalResult, *, describe: _Describer) -> Iterator[tup
     is the only place the difference can be observed, and it says so by name rather than
     leaving each comparison site to re-derive it.
     """
-    for field_name in type(result).model_fields:
-        # A world's event log is what the world did, verbatim, not what the cell measured: walked, each event's ``turn``
-        # pooled into any measure a host declares as ``turn`` that the result did not report itself. A reader of figures
-        # reads results without it (:data:`~threetears.evals.kernel.run_pages.VERBATIM_RESULT_FIELDS`), so the walk leaves
-        # it out and never depends on whether it was read.
-        if field_name in RECORD_CARRIERS or field_name in VERBATIM_RESULT_FIELDS:
+    for field_name, repeatable, names in _CARRIERS:
+        value = getattr(result, field_name)
+        if value is None:
             continue
-        value = getattr(result, field_name, None)
-        repeatable = isinstance(value, list)
-        carriers: list[Any] = [value] if isinstance(value, BaseModel) else value if isinstance(value, list) else []
+        carriers: Sequence[Any] = value if repeatable else (value,)
         observation_unit = f"{field_name}[]" if repeatable else _PER_RESULT
         for item in carriers:
-            if not isinstance(item, BaseModel):
-                continue
-            leaves = list(_scalar_leaves(item))
+            leaves = list(_scalar_leaves(item, names))
             report_gaps = any(describe(name).family is not None for name, _ in leaves)
             for name, leaf in leaves:
                 yield name, leaf, report_gaps, field_name, observation_unit
@@ -585,7 +669,7 @@ def _lineage_leaves(result: EvalResult, *, describe: _Describer) -> Iterator[tup
     :attr:`AnalysisContextBundle.cost_unmeasured` says why.
     """
     observed = spend_observed(result.usage, result.cost_roles)
-    for name, value in _scalar_leaves(result):
+    for name, value in _scalar_leaves(result, _LINEAGE_FIELDS):
         if name == _COST_MEASURE and not observed:
             continue
         yield name, value, describe(name)
