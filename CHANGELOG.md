@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a launch estimate's planning block reads its template's history a page at a time
+
+**Fixed:** `detectable_effects`, the planning block every launch estimate carries, held every result of every earlier
+run of the template at once to read their variances. A host's history of dozens of runs of hundreds of results, each
+tens of kilobytes, was most of a 2 GB pod (2026-10-30). It now walks each run a page at a time and keeps of each result
+only its per-case values; the readings, and so every detectable difference, are unchanged. The read budget is counted
+off the runs' stored keys as well as their matrices, both before any result is read. `planning_readings` takes each
+run's results as an iterable, read once.
+
 ### evals: a static page hides a drawn chart's table, as the default page does
 
 **Changed:** a static page (`report_read(static=True)`) draws each chart as inline SVG on the server, and its table of
@@ -742,8 +751,7 @@ evidence, so a campaign of any size assembles in flat calls, memory and reply si
 read every earlier run of its template whole: it now estimates them off the run listing it already reads and refuses
 past the budget before reading a result, naming archiving the template's earlier runs it need not read (it leaves
 archived runs out), or a template with fewer. A launch estimate is not refused with it: the price does not depend on the
-block, so past the budget by the runs' matrices the block reads none of their results (a read that returned more than
-the budget is read and dropped) and says why in its `cannot_estimate` (the budget, what the runs hold, and the same
+block, so past the budget by the runs' matrices, or by their stored keys, the block reads none of their results and says why in its `cannot_estimate` (the budget, what the runs hold, and the same
 remedy), and the arms' prices, the total and the verdict are returned as within it. `detectable_effects` called on its
 own still refuses. A regression watch's judged tiers, read over the run's subject when its history read that subject
 alone, are held to the budget off the run listing they already read (the history it reads first refuses on the same runs

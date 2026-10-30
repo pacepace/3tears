@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import math
 import random
+import tracemalloc
+from collections.abc import Callable
 from dataclasses import replace
 
 from typing import Any
@@ -35,8 +37,11 @@ from threetears.evals.analysis.stats import (
     variance_components,
 )
 from threetears.evals.analysis import reads
+from threetears.evals.analysis.bundle import comparisons
+from threetears.evals.analysis.bundle.comparisons import planning_readings
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
+from threetears.evals.schema.models import EvalResult, RubricScore
 from threetears.evals.ops import DetectableEffects, LaunchArguments, launch_estimate
 from threetears.evals.ops.lenses import detectable_effects, estimate_text
 from threetears.evals.storage import InMemoryDocumentStore
@@ -159,9 +164,15 @@ class TestTheComponentsAreRecovered:
 
 
 def _store_history(
-    storage: EvalStorage, runs: dict[str, dict[str, list[float]]], *, template_id: str = TEMPLATE, scope: str = SCOPE
+    storage: EvalStorage,
+    runs: dict[str, dict[str, list[float]]],
+    *,
+    template_id: str = TEMPLATE,
+    scope: str = SCOPE,
+    payload: int = 0,
 ) -> None:
-    """Save one run per model, each case's repeats carrying ``READING`` at the given values."""
+    """Save one run per model, each case's repeats carrying ``READING`` at the given values, and ``payload`` characters
+    of a kind's verbatim payload each when it is more than none."""
     for model, by_case in runs.items():
         run = make_eval_run(
             id=f"run-{model}",
@@ -184,6 +195,7 @@ def _store_history(
                         test_case_id=case,
                         k_iteration=repeat,
                         host_measures={READING: value},
+                        kind_payload={"events": f"{model}-{case}-{repeat}:" + "x" * payload} if payload else None,
                     )
                 )
 
@@ -291,8 +303,8 @@ def test_the_launch_estimate_prints_one_line_per_reading() -> None:
 
 
 class TestThePlanningReadIsHeldToTheReadBudget:
-    """Every earlier run's results are held at once, so past the read tier's budget the block is refused before any
-    result is read (#996 is the store computing it). Two runs of 6 cases × 2: 24 results by their matrices."""
+    """Every earlier run's results are read, so past the read tier's budget the block is refused before any result is
+    read (#996 is the store computing it). Two runs of 6 cases × 2: 24 results by their matrices."""
 
     def _host(self) -> tuple[BatchRecordingStore, EvalHost]:
         store = BatchRecordingStore()
@@ -320,7 +332,8 @@ class TestThePlanningReadIsHeldToTheReadBudget:
         block = detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
 
         assert block.run_ids == ["run-model-a", "run-model-b"] and _reading(block)
-        assert sum(rows for _, _, rows in store.typed_reads) == 24
+        assert all(keys_only for _, keys_only, _ in store.typed_reads), "no run was read whole"
+        assert sum(store.id_reads) == 24
 
     def test_a_read_returning_more_than_its_runs_promised_past_the_budget_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
@@ -350,6 +363,7 @@ class TestThePlanningReadIsHeldToTheReadBudget:
             "result_budget": 25,
             "results_returned": 26,
         }
+        assert store.id_reads == [], "counted off the runs' keys, refused before any result was read"
 
 
 class TestALaunchEstimatePastTheBudgetIsPricedAndSaysWhyItCannotPlan:
@@ -408,3 +422,121 @@ class TestALaunchEstimatePastTheBudgetIsPricedAndSaysWhyItCannotPlan:
             detectable_effects(
                 fixture.host.eval_host, TOYHOST_SCOPE, toyhost_template().id, n_cases=6, k_runs=2, n_arms=2
             )
+
+
+def _peak(read: Callable[[], object]) -> int:
+    """The peak memory ``read`` allocates above what was held before it, in bytes."""
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        before = tracemalloc.get_traced_memory()[0]
+        read()
+        return tracemalloc.get_traced_memory()[1] - before
+    finally:
+        tracemalloc.stop()
+
+
+class TestThePlanningReadHoldsAPageNotTheHistory:
+    """The planning block reads every result of every earlier run of the template: in a live history, dozens of runs
+    of hundreds of results, each carrying tens of kilobytes verbatim. Read whole, they were all held at once (a 2 GB
+    pod was killed twice on 2026-10-30 by launch estimates). Walked a page at a time, each result read down to its
+    values before the next page, a history four times as long adds only those values: far less per result than one
+    result weighs."""
+
+    #: The characters of verbatim payload each stored result carries.
+    PAYLOAD = 16_000
+
+    def _runs(self, first: int, last: int) -> dict[str, dict[str, list[float]]]:
+        return {
+            f"model-{index:02d}": {f"c{case}": [case + index / 10, case + 0.5, case + 0.25] for case in range(10)}
+            for index in range(first, last)
+        }
+
+    def test_four_times_the_history_adds_its_values_not_its_results(self) -> None:
+        host = _host()
+        _store_history(host.storage, self._runs(0, 3), payload=self.PAYLOAD)
+
+        def plan() -> DetectableEffects:
+            return detectable_effects(host, SCOPE, TEMPLATE, n_cases=10, k_runs=3, n_arms=2)
+
+        plan()
+        short = _peak(plan)
+        _store_history(host.storage, self._runs(3, 12), payload=self.PAYLOAD)
+        block = plan()
+        long = _peak(plan)
+
+        assert len(block.run_ids) == 12 and _reading(block)
+        added = 9 * 10 * 3
+        # Held whole, each added result costs at least its payload; read down to its values, a small fraction of it.
+        assert (long - short) / added < self.PAYLOAD / 4, (short, long)
+
+
+class TestTheCrossRunRulesHoldAcrossPages:
+    """The planning read keeps each result's values and applies what reads across runs once every run is read, so a
+    rule decided by a later run reaches a result read pages earlier. Each result is its own page here."""
+
+    @pytest.fixture(autouse=True)
+    def _a_result_a_page(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(comparisons, "RUN_RESULTS_PAGE", 1)
+
+    def _result(self, run: str, case: str, k: int, **fields: Any) -> EvalResult:
+        return make_eval_result(
+            id=f"{run}-{case}-{k}",
+            eval_run_id=f"run-{run}",
+            scope_id=SCOPE,
+            model=run,
+            test_case_id=case,
+            k_iteration=k,
+            **fields,
+        )
+
+    def test_a_miss_a_run_grading_otherwise_and_a_boundary_are_read_as_the_whole_history_reads_them(self) -> None:
+        host = _host()
+        refused = {"candidate_error": "refused", "host_measures": {}}
+        boundary_tone = RubricScore(
+            dim="conversation.tone", score=3, scale="ordinal", axis="boundary", judge_temperature=0.0
+        )
+        history = {
+            # Read first: its failure on c1 is a miss only because run b, read last, classifies c1.
+            # Its one page also scores conversation.tone as a boundary: a guardrail, however many capability scores of
+            # it are read after.
+            "c": [self._result("c", "c1", 1, **refused, rubric_scores=[boundary_tone])],
+            # Classifies c0; its failure there is a miss.
+            "a": [
+                self._result("a", "c0", 1, host_measures={"match": True}),
+                self._result("a", "c0", 2, host_measures={"match": True}),
+                self._result("a", "c0", 3, **refused),
+            ],
+            # Classifies c1, but answers c0 without a verdict on its last page: it grades otherwise, so its failure on
+            # c1 is no miss.
+            "b": [
+                self._result("b", "c1", 1, host_measures={"match": True}),
+                self._result("b", "c1", 2, **refused),
+                self._result("b", "c0", 1, host_measures={}),
+            ],
+        }
+        runs = []
+        for model, results in history.items():
+            run = make_eval_run(
+                id=f"run-{model}",
+                scope_id=SCOPE,
+                template_id=TEMPLATE,
+                candidate_model=model,
+                status="completed",
+                k_runs=3,
+                test_case_ids=["c0", "c1"],
+            )
+            host.storage.save_eval_run(run)
+            runs.append(run)
+            for result in results:
+                host.storage.save_eval_result(result)
+        walked = {run.id: iter(history[run.candidate_model]) for run in runs}
+
+        readings = {reading.name: reading for reading in planning_readings(runs, walked, profile=host.profile)}
+
+        assert readings["accuracy"].repeats == {
+            "run-c": {"c1": [0.0]},
+            "run-a": {"c0": [1.0, 1.0, 0.0]},
+            "run-b": {"c1": [1.0]},
+        }
+        assert "conversation.tone" not in readings, "scored once as a boundary, on the first page read: a guardrail"

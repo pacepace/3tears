@@ -8,11 +8,13 @@ family by Holm's method (:func:`_corrected_family`) and decides every guardrail 
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Mapping
+from itertools import batched
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from threetears.evals.analysis.contention import withhold_contended_latency
 from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE
 from threetears.evals.analysis.reporting import (
     METRIC_SCORE,
     ScoreRecord,
@@ -83,8 +85,12 @@ from threetears.evals.analysis.bundle.schema import (
     question_axes,
 )
 from threetears.evals.analysis.bundle.measures import (
-    _failures_as_misses,
+    _answered_unclassified,
+    _as_miss,
+    _classifies,
+    _grades_otherwise,
     _measure_collection,
+    _miss_counts,
 )
 from threetears.evals.analysis.bundle.mechanisms import (
     _MechanismObservations,
@@ -170,8 +176,28 @@ class PlanningReading(NamedTuple):
     repeats: dict[str, dict[str, list[float]]]
 
 
+class _KeptResult(NamedTuple):
+    """What :func:`planning_readings` keeps of one result once it is read: its values, not the result."""
+
+    #: Where it sits among its run's results: its case, ``k`` and id.
+    order: tuple[str, int, str]
+    #: Its per-case value of each reading (:func:`_per_case_values`).
+    values: dict[tuple[ReadingKind, str], dict[str, float]]
+    #: Its values read as a miss, when it is a failure that landed no verdict; which of the two counts turns on every
+    #: run's verdicts, known only once all are read (:func:`_miss_counts`).
+    as_miss: dict[tuple[ReadingKind, str], dict[str, float]] | None
+
+
+class _RunRepeats(NamedTuple):
+    """What :func:`planning_readings` keeps of one run once its results are read."""
+
+    #: The cases the run answered without failing and without landing a verdict (:func:`_grades_otherwise`).
+    answered_unclassified: set[str]
+    kept: list[_KeptResult]
+
+
 def planning_readings(
-    runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], *, profile: HostProfile
+    runs: list[EvalRun], results_by_run: Mapping[str, Iterable[EvalResult]], *, profile: HostProfile
 ) -> list[PlanningReading]:
     """Every reading an unscoped comparison family would test, with each earlier run's per-repeat values.
 
@@ -181,35 +207,68 @@ def planning_readings(
     so a repeat's value here and a case's mean in a comparison are one computation. Guardrails are left out:
     they are held, not tested for a difference; so is latency read under concurrency, which no comparison reads.
 
+    **Each result is read down to its values before the next page is read.** A template's history is every result of
+    every run of it, so nothing here holds more than a page of results and the values read so far: a lazy iterable
+    per run (a paged walk, :mod:`~threetears.evals.kernel.run_pages`) is read once, a run at a
+    time, in ``runs`` order. What reads across runs (a failure that landed no verdict counts as a miss on a case
+    another run classified, :func:`_failures_as_misses`; a dimension any result scored as a boundary is a guardrail;
+    the scale a dimension was answered on) is kept as the few facts it needs and applied once every run is read, so
+    the readings are the ones every run's results read at once give.
+
     :param runs: The earlier runs.
     :ptype runs: list[EvalRun]
-    :param results_by_run: Each run's results.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :param results_by_run: Each run's results, each iterated once.
+    :ptype results_by_run: Mapping[str, Iterable[EvalResult]]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: One entry per reading with a value, sorted by reading kind and name.
     :rtype: list[PlanningReading]
     """
-    results_by_run = _failures_as_misses({run.id: results_by_run.get(run.id, []) for run in runs})
-    # Latency read under concurrency is in no comparison (#701), so it plans none either.
-    results_by_run = {
-        run_id: withhold_contended_latency(run_results, profile.measures)
-        for run_id, run_results in results_by_run.items()
-    }
-    results = [result for run in runs for result in results_by_run[run.id]]
-    projection = project_score_records(runs, results, known_run_ids=None, archived_run_ids=None, profile=profile)
-    judged_rows: dict[str, list[ScoreRecord]] = {}
     # The scale each template dim was answered on: what each run recorded at launch, then what its scores carried.
     scales: dict[str, RubricScale] = {dim: scale for run in runs for dim, scale in run.rubric_scales.items()}
-    for record in projection.records:
-        judged_rows.setdefault(record.result_id, []).append(record)
-        if record.metric == METRIC_SCORE and record.rubric_dim and record.rubric_scale is not None:
-            scales[record.rubric_dim] = record.rubric_scale
-    boundary = _boundary_dimensions(results)
+    classified_cases: set[str] = set()
+    boundary: set[str] = set()
+    kept: dict[str, _RunRepeats] = {}
+    for run in runs:
+        run_repeats = kept[run.id] = _RunRepeats(answered_unclassified=set(), kept=[])
+        for page in batched(results_by_run.get(run.id, ()), RUN_RESULTS_PAGE):
+            for result in page:
+                if _classifies(result):
+                    classified_cases.add(result.test_case_id)
+                if _answered_unclassified(result):
+                    run_repeats.answered_unclassified.add(result.test_case_id)
+            boundary |= _boundary_dimensions(page)
+            # Latency read under concurrency is in no comparison (#701), so it plans none either.
+            read = withhold_contended_latency(page, profile.measures)
+            as_misses = [miss for miss in map(_as_miss, page) if miss is not None]
+            misses = {result.id: result for result in withhold_contended_latency(as_misses, profile.measures)}
+            # A judged score is read off the judge's scores, which a verdict read as a miss leaves as they were.
+            projection = project_score_records([run], read, known_run_ids=None, archived_run_ids=None, profile=profile)
+            judged_rows: dict[str, list[ScoreRecord]] = {}
+            for record in projection.records:
+                judged_rows.setdefault(record.result_id, []).append(record)
+                if record.metric == METRIC_SCORE and record.rubric_dim and record.rubric_scale is not None:
+                    scales[record.rubric_dim] = record.rubric_scale
+            for result in read:
+                miss = misses.get(result.id)
+                run_repeats.kept.append(
+                    _KeptResult(
+                        order=(result.test_case_id, result.k_iteration, result.id),
+                        values=_per_case_values([result], judged_rows, profile=profile),
+                        as_miss=_per_case_values([miss], judged_rows, profile=profile) if miss is not None else None,
+                    )
+                )
     repeats: dict[tuple[ReadingKind, str], dict[str, dict[str, list[float]]]] = {}
     for run in runs:
-        for result in sorted(results_by_run[run.id], key=lambda one: (one.test_case_id, one.k_iteration, one.id)):
-            for reading, by_case in _per_case_values([result], judged_rows, profile=profile).items():
+        run_repeats = kept[run.id]
+        grading_otherwise = _grades_otherwise(run_repeats.answered_unclassified, classified_cases)
+        for kept_result in sorted(run_repeats.kept, key=lambda one: one.order):
+            values = kept_result.values
+            if kept_result.as_miss is not None and _miss_counts(
+                kept_result.order[0], classified_cases, grading_otherwise=grading_otherwise
+            ):
+                values = kept_result.as_miss
+            for reading, by_case in values.items():
                 for case_id, value in by_case.items():
                     repeats.setdefault(reading, {}).setdefault(run.id, {}).setdefault(case_id, []).append(value)
     readings = []
