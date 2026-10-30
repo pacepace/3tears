@@ -1291,7 +1291,10 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         host = launching.eval_host
         model = require_candidate_model(request, None)
         overlays = request.overlays_as(JudgeKindOverlays) if request.overlays is not None else JudgeKindOverlays()
-        kind = judge_kind(
+        # Building the kind reads each overlaid judge config from the store, so it is built off the loop.
+        kind = await run_blocking(
+            host.blocking_executor,
+            judge_kind,
             host.storage,
             host.completion_clients("a judge campaign"),
             model=model,
