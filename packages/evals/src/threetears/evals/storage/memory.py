@@ -9,6 +9,9 @@ every write mints a fresh etag, a conditional write that presents a stale one ra
 moves the etag on as a whole-document write does. It passes every case of the store conformance
 kit (``threetears.evals.testing``).
 
+It offers :class:`~threetears.evals.schema.store_port.ResultReadings` too, computed in Python over a snapshot taken
+in one pass at the call, and passes every case of the readings conformance kit.
+
 It is for tests, examples and a host's first afternoon — nothing persists past the process — and it
 is the shape to compare a real adapter against. It injects nothing into a stored document, so it has
 nothing to strip on the way out: the etag lives beside the document, not in it. Documents are copied
@@ -28,12 +31,110 @@ import threading
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
-from threetears.evals.schema.store_port import StoreConflict, field_in_values, keep_fields, omit_paths
+from threetears.evals.schema.store_port import (
+    GroupMeasure,
+    StoreConflict,
+    field_in_values,
+    keep_fields,
+    narrow_items,
+    omit_paths,
+)
 
 __all__ = ["InMemoryDocumentStore"]
 
 #: The fields that locate a document, which :meth:`InMemoryDocumentStore.merge_fields` refuses to set.
 _LOCATING_FIELDS = frozenset({"id", "scope_id", "doc_type"})
+
+#: The kinds :meth:`InMemoryDocumentStore.grouped` computes; ``count`` alone reads no path.
+_MEASURE_KINDS = frozenset({"count", "count_null", "sum_int", "min", "max", "values"})
+
+
+def _read_path(document: dict[str, Any], path: str) -> Any:
+    """The value at a dotted path through objects; ``None`` when it is absent or runs through a non-object."""
+    node: Any = document
+    for key in path.split("."):
+        if not isinstance(node, dict) or key not in node:
+            return None
+        node = node[key]
+    return node
+
+
+def _check_grouping(by: Sequence[str], measures: Mapping[str, GroupMeasure]) -> None:
+    """Refuse a grouping the port does not define, before any document is read.
+
+    :raises TypeError: ``by`` is a string rather than a sequence of paths.
+    :raises ValueError: A measure's kind is unknown, ``count`` names a path or another kind names none, or a measure
+        name is also a ``by`` path.
+    """
+    if isinstance(by, str):
+        raise TypeError(f"grouped takes a sequence of paths to group by, not a string: by={by!r}")
+    if clash := sorted(set(by) & measures.keys()):
+        raise ValueError(f"a measure name cannot also be a by path: {clash}")
+    for name, (kind, path) in measures.items():
+        if kind not in _MEASURE_KINDS:
+            raise ValueError(f"measure {name!r} has kind {kind!r}; the kinds are {sorted(_MEASURE_KINDS)}")
+        if (kind == "count") != (path is None):
+            raise ValueError(f"measure {name!r}: count reads no path and every other kind reads one, got {path!r}")
+
+
+def _group_key(value: Any, path: str) -> tuple[str, Any]:
+    """A ``by`` value as a group key compared on its JSON type: ``True`` and ``1`` differ, absent and null agree.
+
+    :raises TypeError: The value is an object or a list.
+    """
+    if value is None:
+        return ("null", None)
+    if isinstance(value, bool):
+        return ("boolean", value)
+    if isinstance(value, int | float):
+        return ("number", value)
+    if isinstance(value, str):
+        return ("text", value)
+    raise TypeError(f"grouped groups by scalars, and {path!r} holds {type(value).__name__}: {value!r}")
+
+
+def _measure(rows: list[dict[str, Any]], name: str, kind: str, path: str | None) -> Any:
+    """One measure over one group's rows, in their stored order.
+
+    :raises TypeError: ``sum_int`` met a non-integer, or ``min``/``max`` a value that is neither a number nor a
+        string, or both numbers and strings.
+    """
+    if kind == "count" or path is None:
+        return len(rows)
+    values = [_read_path(row, path) for row in rows]
+    if kind == "count_null":
+        return sum(1 for value in values if value is None)
+    if kind == "values":
+        return [[row.get("id"), copy.deepcopy(value)] for row, value in zip(rows, values, strict=True)]
+    present = [value for value in values if value is not None]
+    if kind == "sum_int":
+        if wrong := [value for value in present if isinstance(value, bool) or not isinstance(value, int)]:
+            raise TypeError(f"measure {name!r} sums JSON integers, and {path!r} holds {wrong[0]!r}")
+        return sum(present)
+    if wrong := [value for value in present if isinstance(value, bool) or not isinstance(value, int | float | str)]:
+        raise TypeError(f"measure {name!r} compares numbers or strings, and {path!r} holds {wrong[0]!r}")
+    texts = [value for value in present if isinstance(value, str)]
+    if texts and len(texts) < len(present):
+        raise TypeError(f"measure {name!r} compares numbers or strings, and {path!r} holds both in one group")
+    if not present:
+        return None
+    return min(present) if kind == "min" else max(present)
+
+
+def _fold_groups(
+    rows: list[dict[str, Any]], by: Sequence[str], measures: Mapping[str, GroupMeasure]
+) -> list[dict[str, Any]]:
+    """Group ``rows`` (in stored order) by the ``by`` paths and compute each measure per group."""
+    groups: dict[tuple[tuple[str, Any], ...], list[dict[str, Any]]] = {}
+    for row in rows:
+        groups.setdefault(tuple(_group_key(_read_path(row, path), path) for path in by), []).append(row)
+    answers: list[dict[str, Any]] = []
+    for key, members in groups.items():
+        answer: dict[str, Any] = {path: value for path, (_, value) in zip(by, key, strict=True)}
+        for name, (kind, path) in measures.items():
+            answer[name] = _measure(members, name, kind, path)
+        answers.append(answer)
+    return answers
 
 
 def _stored_equal(stored: Any, wanted: Any) -> bool:
@@ -174,12 +275,34 @@ class InMemoryDocumentStore:
         :raises TypeError: A ``field_in`` entry is a string rather than a sequence of values, or holds a value that is
             not a scalar.
         """
+        with self._lock:
+            rows = self._matching(doc_type, scope_id, field_in, field_eq)
+            if order_by is not None:
+                rows.sort(
+                    key=lambda d: (d.get(order_by) is not None, d.get(order_by)),
+                    reverse=descending,
+                )
+            if limit is not None:
+                rows = rows[:limit]
+            return [copy.deepcopy(omit_paths(d, exclude)) for d in rows]
+
+    def _matching(
+        self, doc_type: str, scope_id: str, field_in: Mapping[str, Sequence[Any]] | None, field_eq: Mapping[str, Any]
+    ) -> list[dict[str, Any]]:
+        """The documents a typed read selects, in insertion order: one pass over the stored documents.
+
+        Each is a shallow copy taken under the lock, so a later :meth:`merge_fields` (which sets top-level fields in
+        place) never reaches a snapshot; nested values are never changed in place, so sharing them is safe.
+
+        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+        :raises TypeError: A ``field_in`` entry is a string, or holds a value that is not a scalar.
+        """
         members = field_in_values(field_in, field_eq)
         if any(not values for values in members.values()):
             return []
         with self._lock:
-            rows = [
-                document
+            return [
+                dict(document)
                 for (scope, _), document in self.documents.items()
                 if scope == scope_id
                 and document.get("doc_type") == doc_type
@@ -189,14 +312,78 @@ class InMemoryDocumentStore:
                     for field, values in members.items()
                 )
             ]
-            if order_by is not None:
-                rows.sort(
-                    key=lambda d: (d.get(order_by) is not None, d.get(order_by)),
-                    reverse=descending,
-                )
-            if limit is not None:
-                rows = rows[:limit]
-            return [copy.deepcopy(omit_paths(d, exclude)) for d in rows]
+
+    def iter_narrowed(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield the rows :meth:`by_doc_type` would return for the same predicates, each narrowed.
+
+        The rows are a snapshot taken when this is called, in one pass over the stored documents; each is narrowed
+        and copied as it is yielded. See :meth:`~threetears.evals.schema.ResultReadings.iter_narrowed`.
+
+        :param doc_type: The discriminator to select on.
+        :ptype doc_type: str
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param exclude: Dotted paths left out of every row.
+        :ptype exclude: Sequence[str]
+        :param exclude_in_items: List-field path → dotted paths left out of each object item of that list.
+        :ptype exclude_in_items: Mapping[str, Sequence[str]]
+        :param field_in: Field-membership predicates: field → the values it may equal.
+        :ptype field_in: Mapping[str, Sequence[Any]] | None
+        :param **field_eq: Field-equality predicates.
+        :ptype field_eq: Any
+        :return: The narrowed rows, in insertion order.
+        :rtype: Iterator[dict[str, Any]]
+        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+        :raises TypeError: A ``field_in`` entry is a string rather than a sequence of values, or holds a value that is
+            not a scalar.
+        """
+        rows = self._matching(doc_type, scope_id, field_in, field_eq)
+        return (copy.deepcopy(narrow_items(omit_paths(row, exclude), exclude_in_items)) for row in rows)
+
+    def grouped(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        """Group the rows :meth:`by_doc_type` would return and compute each measure per group.
+
+        Folded in Python over a snapshot taken in one pass. See
+        :meth:`~threetears.evals.schema.ResultReadings.grouped` for the measures and their refusals.
+
+        :param doc_type: The discriminator to select on.
+        :ptype doc_type: str
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param by: Dotted paths to group by.
+        :ptype by: Sequence[str]
+        :param measures: Measure name → the measure.
+        :ptype measures: Mapping[str, GroupMeasure]
+        :param field_in: Field-membership predicates: field → the values it may equal.
+        :ptype field_in: Mapping[str, Sequence[Any]] | None
+        :param **field_eq: Field-equality predicates.
+        :ptype field_eq: Any
+        :return: One dict per group, in the order each group was first seen.
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: The grouping is refused, or a field is named in both ``field_in`` and ``field_eq``.
+        :raises TypeError: A measure met a value its kind refuses, a ``by`` value is an object or a list, or a
+            predicate is refused.
+        """
+        _check_grouping(by, measures)
+        return _fold_groups(self._matching(doc_type, scope_id, field_in, field_eq), by, measures)
 
     def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
         """Yield the id of every document of one type within a scope.

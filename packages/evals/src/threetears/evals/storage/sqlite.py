@@ -20,6 +20,10 @@ kit (``threetears.evals.testing``) proves it case by case:
   processes. Every write mints a random etag, so a document deleted and written again never honours a
   token from before. A create-only write is a plain ``INSERT`` the ``(scope_id, id)`` key refuses, one
   statement too.
+- **Narrowed and grouped reads** (:class:`~threetears.evals.schema.store_port.ResultReadings`, which this store
+  offers): a narrowed read is one statement with :meth:`SqliteDocumentStore.by_doc_type`'s predicates and order,
+  its rows narrowed in Python as they are fetched; a grouped read is one ``GROUP BY`` statement over
+  ``json_extract``, with its refusals counted by ``json_type`` in the same statement.
 
 **Threads and processes.** The port is synchronous; the engine calls it from a blocking-I/O executor, so
 one connection is shared across threads under a lock. The file is opened in WAL mode with a busy timeout,
@@ -45,7 +49,14 @@ import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
-from threetears.evals.schema.store_port import StoreConflict, field_in_values, keep_fields, omit_paths
+from threetears.evals.schema.store_port import (
+    GroupMeasure,
+    StoreConflict,
+    field_in_values,
+    keep_fields,
+    narrow_items,
+    omit_paths,
+)
 
 __all__ = ["SQLITE_STORE_LAYOUT", "SqliteDocumentStore"]
 
@@ -54,6 +65,12 @@ SQLITE_STORE_LAYOUT = 1
 
 #: The fields that locate a document, which :meth:`SqliteDocumentStore.merge_fields` refuses to set.
 _LOCATING_FIELDS = frozenset({"id", "scope_id", "doc_type"})
+
+#: The kinds :meth:`SqliteDocumentStore.grouped` computes; ``count`` alone reads no path.
+_MEASURE_KINDS = frozenset({"count", "count_null", "sum_int", "min", "max", "values"})
+
+#: Rows :meth:`SqliteDocumentStore.iter_narrowed` fetches from its one statement at a time, under the lock.
+_STREAM_PAGE = 256
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -122,6 +139,130 @@ def _membership(field: str, values: Sequence[Any]) -> tuple[str, list[Any]]:
         clauses.append("(json_type(body, ?) = 'text' AND json_extract(body, ?) IN (SELECT value FROM json_each(?)))")
         params += [path, path, json.dumps(texts)]
     return f"({' OR '.join(clauses)})", params
+
+
+def _where(
+    doc_type: str, scope_id: str, field_in: Mapping[str, Sequence[Any]] | None, field_eq: Mapping[str, Any]
+) -> tuple[str, list[Any]] | None:
+    """The ``WHERE`` clause of a typed read and its parameters, or ``None`` when a ``field_in`` entry is empty.
+
+    :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+    :raises TypeError: A predicate's value is not a scalar, or a ``field_in`` entry is a string.
+    """
+    members = field_in_values(field_in, field_eq)
+    clauses = ["scope_id = ?", "doc_type = ?"]
+    params: list[Any] = [scope_id, doc_type]
+    for field, value in field_eq.items():
+        clause, values = _predicate(field, value)
+        clauses.append(clause)
+        params += values
+    for field, listed in members.items():
+        clause, values = _membership(field, listed)
+        clauses.append(clause)
+        params += values
+    if any(not listed for listed in members.values()):
+        return None
+    return " AND ".join(clauses), params
+
+
+def _dotted(path: str) -> str:
+    """The SQLite JSON path naming a dotted path through objects, each key quoted as :func:`_path` quotes one."""
+    if '"' in path:
+        raise ValueError(f"a path cannot hold a double quote: {path!r}")
+    return "$" + "".join(f'."{key}"' for key in path.split("."))
+
+
+def _check_grouping(by: Sequence[str], measures: Mapping[str, GroupMeasure]) -> None:
+    """Refuse a grouping the port does not define, before SQLite is asked.
+
+    :raises TypeError: ``by`` is a string rather than a sequence of paths.
+    :raises ValueError: A measure's kind is unknown, ``count`` names a path or another kind names none, or a measure
+        name is also a ``by`` path.
+    """
+    if isinstance(by, str):
+        raise TypeError(f"grouped takes a sequence of paths to group by, not a string: by={by!r}")
+    if clash := sorted(set(by) & measures.keys()):
+        raise ValueError(f"a measure name cannot also be a by path: {clash}")
+    for name, (kind, path) in measures.items():
+        if kind not in _MEASURE_KINDS:
+            raise ValueError(f"measure {name!r} has kind {kind!r}; the kinds are {sorted(_MEASURE_KINDS)}")
+        if (kind == "count") != (path is None):
+            raise ValueError(f"measure {name!r}: count reads no path and every other kind reads one, got {path!r}")
+
+
+#: A stored value's JSON type, with absent read as null.
+_TYPE = "coalesce(json_type(body, ?), 'null')"
+
+
+def _measure_columns(kind: str, path: str | None) -> tuple[list[str], list[Any]]:
+    """The aggregate columns one measure needs, and their parameters.
+
+    ``sum_int`` adds a count of the values it refuses, and ``min``/``max`` the extreme of the numbers, the extreme of
+    the strings and a count of every other value, so the refusals are read from the same statement.
+    """
+    if kind == "count" or path is None:
+        return ["count(*)"], []
+    json_path = _dotted(path)
+    if kind == "count_null":
+        return [f"count(*) FILTER (WHERE {_TYPE} = 'null')"], [json_path]
+    if kind == "values":
+        return ["json_group_array(json_array(id, body -> ?) ORDER BY seq)"], [json_path]
+    if kind == "sum_int":
+        return (
+            [
+                f"coalesce(sum(json_extract(body, ?)) FILTER (WHERE {_TYPE} = 'integer'), 0)",
+                f"count(*) FILTER (WHERE {_TYPE} NOT IN ('integer', 'null'))",
+            ],
+            [json_path, json_path, json_path],
+        )
+    extreme = "min" if kind == "min" else "max"
+    return (
+        [
+            f"{extreme}(json_extract(body, ?)) FILTER (WHERE {_TYPE} IN ('integer', 'real'))",
+            f"{extreme}(json_extract(body, ?)) FILTER (WHERE {_TYPE} = 'text')",
+            f"count(*) FILTER (WHERE {_TYPE} IN ('true', 'false', 'object', 'array'))",
+        ],
+        [json_path, json_path, json_path, json_path, json_path],
+    )
+
+
+def _measure_answer(name: str, kind: str, path: str | None, columns: Sequence[Any]) -> Any:
+    """One measure's answer from its columns, raising the refusal its kind states.
+
+    :raises TypeError: ``sum_int`` met a non-integer, or ``min``/``max`` a value that is neither a number nor a
+        string, or both numbers and strings.
+    """
+    if kind == "values":
+        return json.loads(columns[0])
+    if kind in ("count", "count_null"):
+        return columns[0]
+    if kind == "sum_int":
+        total, refused = columns
+        if refused:
+            raise TypeError(f"measure {name!r} sums JSON integers, and {path!r} holds {refused} value(s) that are not")
+        return total
+    numbers, texts, refused = columns
+    if refused:
+        raise TypeError(
+            f"measure {name!r} compares numbers or strings, and {path!r} holds {refused} value(s) that are neither"
+        )
+    if numbers is not None and texts is not None:
+        raise TypeError(f"measure {name!r} compares numbers or strings, and {path!r} holds both in one group")
+    return numbers if numbers is not None else texts
+
+
+def _group_value(path: str, json_type: str, value: Any) -> Any:
+    """A ``by`` value from its JSON type and its extracted value: SQLite hands back ``true`` as ``1``.
+
+    :raises TypeError: The value is an object or a list.
+    """
+    if json_type in ("object", "array"):
+        raise TypeError(f"grouped groups by scalars, and {path!r} holds a JSON {json_type}: {value}")
+    if json_type == "true":
+        return True
+    if json_type == "false":
+        return False
+    return value
 
 
 class SqliteDocumentStore:
@@ -282,20 +423,11 @@ class SqliteDocumentStore:
         :raises TypeError: A predicate's value is not a scalar, or a ``field_in`` entry is a string rather than a
             sequence of values.
         """
-        members = field_in_values(field_in, field_eq)
-        clauses = ["scope_id = ?", "doc_type = ?"]
-        params: list[Any] = [scope_id, doc_type]
-        for field, value in field_eq.items():
-            clause, values = _predicate(field, value)
-            clauses.append(clause)
-            params += values
-        for field, listed in members.items():
-            clause, values = _membership(field, listed)
-            clauses.append(clause)
-            params += values
-        if any(not listed for listed in members.values()):
+        where = _where(doc_type, scope_id, field_in, field_eq)
+        if where is None:
             return []
-        sql = f"SELECT body FROM documents WHERE {' AND '.join(clauses)}"  # noqa: S608
+        clause, params = where
+        sql = f"SELECT body FROM documents WHERE {clause}"  # noqa: S608
         if order_by is not None:
             # SQLite sorts NULL lowest: first ascending, last descending, which is the port's rule for a
             # missing or null order field. Ties keep insertion order.
@@ -310,6 +442,144 @@ class SqliteDocumentStore:
         # once: the run's result keys, read before its results are read a page at a time, are a few scalars a row.
         with self._lock:
             return [omit_paths(json.loads(row[0]), exclude) for row in self._db.execute(sql, params)]
+
+    def iter_narrowed(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield the rows :meth:`by_doc_type` would return for the same predicates, each narrowed.
+
+        One statement, with :meth:`by_doc_type`'s predicates and order, run when this is called. Its rows are fetched
+        a page at a time under the lock, and each is parsed and narrowed in Python as it is yielded, so the bodies are
+        never all held at once. The statement reads the connection the store's writes share: a write this store
+        makes while the rows are still being yielded may or may not be among them, as SQLite promises for a
+        statement still running on one connection. See :meth:`~threetears.evals.schema.ResultReadings.iter_narrowed`.
+
+        :param doc_type: The discriminator to select on.
+        :ptype doc_type: str
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param exclude: Dotted paths left out of every row.
+        :ptype exclude: Sequence[str]
+        :param exclude_in_items: List-field path → dotted paths left out of each object item of that list.
+        :ptype exclude_in_items: Mapping[str, Sequence[str]]
+        :param field_in: Field-membership predicates: field → the values it may equal.
+        :ptype field_in: Mapping[str, Sequence[Any]] | None
+        :param **field_eq: Field-equality predicates.
+        :ptype field_eq: Any
+        :return: The narrowed rows, in insertion order.
+        :rtype: Iterator[dict[str, Any]]
+        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+        :raises TypeError: A predicate's value is not a scalar, or a ``field_in`` entry is a string rather than a
+            sequence of values.
+        """
+        where = _where(doc_type, scope_id, field_in, field_eq)
+        if where is None:
+            return iter(())
+        clause, params = where
+        with self._lock:
+            cursor = self._db.execute(f"SELECT body FROM documents WHERE {clause} ORDER BY seq", params)  # noqa: S608
+        return self._narrowed_rows(cursor, exclude, exclude_in_items)
+
+    def _narrowed_rows(
+        self, cursor: sqlite3.Cursor, exclude: Sequence[str], exclude_in_items: Mapping[str, Sequence[str]]
+    ) -> Iterator[dict[str, Any]]:
+        """Yield the cursor's rows parsed and narrowed, a page fetched at a time; the cursor is closed at the end."""
+        try:
+            while True:
+                with self._lock:
+                    page = cursor.fetchmany(_STREAM_PAGE)
+                if not page:
+                    return
+                for (body,) in page:
+                    yield narrow_items(omit_paths(json.loads(body), exclude), exclude_in_items)
+        finally:
+            with self._lock:
+                cursor.close()
+
+    def grouped(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        """Group the rows :meth:`by_doc_type` would return and compute each measure per group, in one statement.
+
+        SQLite groups and aggregates: each ``by`` path by its JSON type and its value (``json_extract`` reads
+        ``true`` as ``1``, so the type keeps them apart), ``sum_int`` over values whose ``json_type`` is
+        ``integer``, ``min``/``max`` with the binary collation (code-point order for text), and ``values`` as a
+        ``json_group_array`` ordered by insertion. The refusals are counted in the same statement and raised here.
+        See :meth:`~threetears.evals.schema.ResultReadings.grouped`.
+
+        :param doc_type: The discriminator to select on.
+        :ptype doc_type: str
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param by: Dotted paths to group by.
+        :ptype by: Sequence[str]
+        :param measures: Measure name → the measure.
+        :ptype measures: Mapping[str, GroupMeasure]
+        :param field_in: Field-membership predicates: field → the values it may equal.
+        :ptype field_in: Mapping[str, Sequence[Any]] | None
+        :param **field_eq: Field-equality predicates.
+        :ptype field_eq: Any
+        :return: One dict per group, in no promised order.
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: The grouping is refused, or a field is named in both ``field_in`` and ``field_eq``.
+        :raises TypeError: A measure met a value its kind refuses, a ``by`` value is an object or a list, or a
+            predicate is refused.
+        """
+        _check_grouping(by, measures)
+        where = _where(doc_type, scope_id, field_in, field_eq)
+        if where is None:
+            return []
+        clause, where_params = where
+        columns = ["count(*)"]
+        params: list[Any] = []
+        keys: list[str] = []
+        for index, path in enumerate(by):
+            json_path = _dotted(path)
+            columns += [
+                f"CASE {_TYPE} WHEN 'real' THEN 'integer' ELSE {_TYPE} END AS k{index}t",
+                f"json_extract(body, ?) AS k{index}v",
+            ]
+            params += [json_path, json_path, json_path]
+            keys += [f"k{index}t", f"k{index}v"]
+        spans: list[tuple[str, str, str | None, int]] = []
+        for name, (kind, measure_path) in measures.items():
+            measure_columns, measure_params = _measure_columns(kind, measure_path)
+            spans.append((name, kind, measure_path, len(measure_columns)))
+            columns += measure_columns
+            params += measure_params
+        sql = f"SELECT {', '.join(columns)} FROM documents WHERE {clause}"  # noqa: S608
+        if keys:
+            sql += f" GROUP BY {', '.join(keys)}"
+        with self._lock:
+            rows = self._db.execute(sql, [*params, *where_params]).fetchall()
+        answers: list[dict[str, Any]] = []
+        for row in rows:
+            if not row[0]:
+                # Without a GROUP BY, an aggregate answers one row even when nothing matched.
+                continue
+            answer: dict[str, Any] = {
+                path: _group_value(path, row[1 + 2 * index], row[2 + 2 * index]) for index, path in enumerate(by)
+            }
+            at = 1 + 2 * len(by)
+            for name, span_kind, span_path, width in spans:
+                answer[name] = _measure_answer(name, span_kind, span_path, row[at : at + width])
+                at += width
+            answers.append(answer)
+        return answers
 
     def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
         """Yield the id of every document of one type within a scope.

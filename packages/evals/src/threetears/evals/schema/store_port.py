@@ -58,6 +58,14 @@ offer it is read on each process's own clock, and the processes sharing it must 
 is a separate protocol rather than a method of :class:`DocumentStore`, because a store that cannot tell its own
 time honestly must not be made to pretend: the engine asks ``isinstance(store, StoreClock)``.
 
+**An optional readings capability.** A store that can narrow and group rows itself may also offer
+:class:`ResultReadings`: the rows :meth:`DocumentStore.by_doc_type` would return, narrowed (inside list items too)
+and streamed from one backend call, and per-group counts, integer sums, extremes and ordered values. It is optional
+and provisional. A store that does not offer it is read through the port's own methods, with the same answers. It is
+a separate protocol for :class:`StoreClock`'s reason, detected with ``isinstance(store, ResultReadings)``, so a store
+offers it only by implementing it, never by a method that raises. Its own conformance kit,
+``threetears.evals.testing.RESULT_READINGS_CONFORMANCE_CASES``, proves an implementation.
+
 **Never on the event loop.** The port is synchronous and the engine is async: every call the engine
 makes on a store runs on its blocking-I/O executor, off the loop. The engine's repository over the
 store (:class:`~threetears.evals.kernel.EvalStorage`) refuses a call made on a thread running an event
@@ -80,7 +88,7 @@ import inspect
 import sys
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from datetime import datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 
 class StoreConflict(Exception):
@@ -204,6 +212,42 @@ def keep_fields(document: dict[str, Any], fields: Sequence[str]) -> dict[str, An
     :rtype: dict[str, Any]
     """
     return {key: document[key] for key in fields if key in document}
+
+
+def narrow_items(document: dict[str, Any], exclude_in_items: Mapping[str, Sequence[str]]) -> dict[str, Any]:
+    """Return ``document`` with paths dropped inside its list items — the meaning of ``exclude_in_items``.
+
+    Each key names a list field by a dotted path, read through objects as :func:`omit_paths` reads one. Each value
+    lists the dotted paths dropped from every item of that list, with :func:`omit_paths`'s meaning:
+    ``{"scores": ["reasoning"]}`` keeps every score and drops its ``reasoning``. A field that is absent, a path that
+    runs through something that is not an object, a field that is not a list, and an item that is not an object are
+    each left as they are, never an error, so a bulk read never fails on a document whose payload has another shape.
+
+    Defined here, beside the port, for :func:`omit_paths`'s reason: every implementation of
+    :meth:`ResultReadings.iter_narrowed` that narrows outside its backend applies this one definition.
+
+    :param document: The document. Not mutated.
+    :ptype document: dict[str, Any]
+    :param exclude_in_items: List-field path → the dotted paths dropped from each object item of that list.
+    :ptype exclude_in_items: Mapping[str, Sequence[str]]
+    :return: A copy, sharing every subtree the narrowing does not pass through.
+    :rtype: dict[str, Any]
+    """
+    result = dict(document)
+    for path, item_paths in exclude_in_items.items():
+        *parents, leaf = path.split(".")
+        node = result
+        for key in parents:
+            child = node.get(key)
+            if not isinstance(child, dict):
+                break
+            node[key] = dict(child)
+            node = node[key]
+        else:
+            items = node.get(leaf)
+            if isinstance(items, list):
+                node[leaf] = [omit_paths(item, item_paths) if isinstance(item, dict) else item for item in items]
+    return result
 
 
 def field_in_values(field_in: Mapping[str, Sequence[Any]] | None, field_eq: Mapping[str, Any]) -> dict[str, list[Any]]:
@@ -497,6 +541,126 @@ class StoreClock(Protocol):
         ...
 
 
+#: One measure :meth:`ResultReadings.grouped` computes per group: ``("count", None)``, or a kind and the dotted path
+#: it reads. There is no float measure: a mean or a float sum depends on the order it is added in, so the store
+#: hands the values (``"values"``) and the reader adds them in that order.
+GroupMeasure = tuple[Literal["count"], None] | tuple[Literal["count_null", "sum_int", "min", "max", "values"], str]
+
+
+@runtime_checkable
+class ResultReadings(Protocol):
+    """Narrowed and grouped reads: the optional capability a :class:`DocumentStore` may offer beside its methods.
+
+    For a store that can leave heavy fields out, and count, sum and pick extremes, without shipping every whole
+    document to the engine. It is generic over ``doc_type`` and provisional. A store that does not offer it loses
+    nothing but the speed: the engine reads the same answers through :meth:`DocumentStore.by_doc_type` and
+    :meth:`DocumentStore.get_many`, and folds them itself.
+
+    **Every rule here holds for every implementation.** The conformance kit
+    (``threetears.evals.testing.RESULT_READINGS_CONFORMANCE_CASES``) checks each of them.
+
+    * **Predicates.** ``field_in`` and ``**field_eq`` mean exactly what they mean on :meth:`DocumentStore.by_doc_type`:
+      top-level fields, compared on the stored JSON type (``True`` never equals ``1``; a ``None`` matches the field
+      absent or null), with :func:`field_in_values`'s checks and refusals. An empty ``field_in`` sequence matches
+      nothing, and the backend is not asked.
+    * **Order.** Rows come in the order :meth:`DocumentStore.by_doc_type` returns them with no ``order_by``. That is
+      each store's own order. A store whose own order is not stable between reads gives readers sums that can
+      differ in the last bit from one read to the next, so a stable order (insertion, or ``id``) is advised.
+    * **Paths.** A ``by`` or measure path is dotted through objects (``"usage.input_tokens"``). A path that is
+      absent, or runs through something that is not an object, reads as null.
+    * **Scope.** Every read is within the one scope it names, as every read of the port is.
+    * **Failures raise.** An empty match is ``[]`` or no rows. A backend failure raises, and is never collapsed to an
+      empty answer, which would read as "nothing stored".
+    * **Stripped.** A row is stripped of whatever the store injected on write, as every read of the port is.
+    """
+
+    def iter_narrowed(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield the rows :meth:`DocumentStore.by_doc_type` would return for the same predicates, each narrowed.
+
+        The same rows in the same order, each with :func:`omit_paths` applied for ``exclude`` and then
+        :func:`narrow_items` for ``exclude_in_items``. They come from ONE backend call made when this is called, and
+        are yielded one at a time, so a reader of many large documents never holds them all.
+
+        :param doc_type: The discriminator to select on.
+        :ptype doc_type: str
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param exclude: Dotted paths left out of every row, with :func:`omit_paths`'s meaning.
+        :ptype exclude: Sequence[str]
+        :param exclude_in_items: List-field path → dotted paths left out of each object item of that list, with
+            :func:`narrow_items`'s meaning.
+        :ptype exclude_in_items: Mapping[str, Sequence[str]]
+        :param field_in: Field-membership predicates, as on :meth:`DocumentStore.by_doc_type`.
+        :ptype field_in: Mapping[str, Sequence[Any]] | None
+        :param **field_eq: Field-equality predicates, as on :meth:`DocumentStore.by_doc_type`.
+        :ptype field_eq: Any
+        :return: The narrowed rows.
+        :rtype: Iterator[dict[str, Any]]
+        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+        :raises TypeError: A ``field_in`` entry is a string rather than a sequence of values, or a predicate's value
+            is not a scalar.
+        """
+        ...
+
+    def grouped(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        """Group the rows :meth:`DocumentStore.by_doc_type` would return by ``by``, and compute each measure per group.
+
+        A group is one combination of the ``by`` values, compared on the stored JSON type as a predicate compares
+        (``True`` and ``1`` are two groups; absent and null are one). A ``by`` value is a scalar. No ``by`` paths
+        make one group of every matching row. Each measure, by its kind:
+
+        * ``("count", None)``: the rows in the group.
+        * ``("count_null", path)``: the rows whose value is absent or null.
+        * ``("sum_int", path)``: the sum of the JSON integers, skipping absent and null values. A boolean is not an
+          integer. A group with no integers sums to ``0``.
+        * ``("min", path)``, ``("max", path)``: the least or greatest value, skipping absent and null values. Numbers
+          compare as numbers and strings by code point (binary collation). A group with no values gives ``None``.
+        * ``("values", path)``: ``[[row_id, value], ...]``, one pair per row, in :meth:`iter_narrowed`'s order, with
+          ``None`` for an absent value. ``row_id`` is the row's ``id``. The reader folds a float from these, in this
+          order, so its answer does not depend on how the store adds.
+
+        :param doc_type: The discriminator to select on.
+        :ptype doc_type: str
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param by: Dotted paths to group by.
+        :ptype by: Sequence[str]
+        :param measures: Measure name → the measure. A name is never one of the ``by`` paths.
+        :ptype measures: Mapping[str, GroupMeasure]
+        :param field_in: Field-membership predicates, as on :meth:`DocumentStore.by_doc_type`.
+        :ptype field_in: Mapping[str, Sequence[Any]] | None
+        :param **field_eq: Field-equality predicates, as on :meth:`DocumentStore.by_doc_type`.
+        :ptype field_eq: Any
+        :return: One dict per group: each ``by`` path and its value, then each measure by name. Groups come in no
+            promised order; a reader sorts them. No matching row gives ``[]``.
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: A measure's kind is unknown, ``count`` names a path or another kind names none, a measure
+            name is also a ``by`` path, or a field is named in both ``field_in`` and ``field_eq``.
+        :raises TypeError: ``sum_int`` met a value that is not a JSON integer; ``min`` or ``max`` met a value that is
+            neither a number nor a string, or a group holding both; a ``by`` value is an object or a list; or a
+            predicate is refused as :meth:`DocumentStore.by_doc_type` refuses it.
+        """
+        ...
+
+
 class AsyncDocumentStore(Protocol):
     """:class:`DocumentStore`, every method awaited: the port for a host whose database driver is async.
 
@@ -579,15 +743,54 @@ class AsyncStoreClock(Protocol):
         ...
 
 
+@runtime_checkable
+class AsyncResultReadings(Protocol):
+    """:class:`ResultReadings` for an :class:`AsyncDocumentStore`: the same reads, rule for rule, awaited.
+
+    :meth:`iter_narrowed` is an async iterator and :meth:`grouped` is awaited. Offered on the same terms as
+    :class:`ResultReadings`, and only then: :func:`~threetears.evals.storage.bridge_async_store` presents a store
+    that offers it as a :class:`DocumentStore` that offers :class:`ResultReadings`.
+    """
+
+    def iter_narrowed(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """See :meth:`ResultReadings.iter_narrowed`; an async iterator here."""
+        ...
+
+    async def grouped(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`ResultReadings.grouped`."""
+        ...
+
+
 __all__ = [
     "AsyncDocumentStore",
     "AsyncStoreClock",
     "DocumentStore",
+    "GroupMeasure",
+    "ResultReadings",
     "StoreCalledOnEventLoop",
     "StoreClock",
     "StoreConflict",
     "field_in_values",
     "keep_fields",
+    "narrow_items",
     "omit_paths",
     "refuse_on_event_loop",
 ]
