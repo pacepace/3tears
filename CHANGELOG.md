@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.85.0 -- 2026-10-29
+
+### core, acl: a platform pool stops re-sending the session settings it already holds, and a namespace name resolves from cache
+
+**Fixed:** on cobalt dev on 2026-10-29 most of the YSQL statement mix was session bookkeeping:
+
+- The hub's L3 pool reset `search_path` on every release (about 133/s).
+- Its proxy set `search_path` and `statement_timeout` before every proxied statement (about 17/s each).
+- `NamespaceCollection.get_by_name` read L3 on every call (about 56/s), because the broker resolves a request's
+  namespace by name for each statement.
+
+**Added:** `threetears.core.utils.session_settings_connection_class(search_path=...)` builds an asyncpg connection
+class for a pool that cannot use `RESET ALL` (YugabyteDB's JSONB codecs). It:
+
+- remembers what it last set `search_path` and `statement_timeout` to;
+- sends a plain `SET` outside a transaction only when the value changes;
+- resets `search_path` on release only when it may have moved;
+- forgets a value after a `SET` inside a transaction (a rollback undoes it) and after any statement that names
+  either setting another way.
+
+**Changed:** `NamespaceCollection.get_by_name` holds a found name's row key in the registry's scan cache. Writes to
+`namespaces` evict it, and it is served only while `namespaces` is followed. The row itself is read by that key
+through the collection's tiers, and is looked up by name again when it no longer carries the name. An absent name is
+read from L3 every time, because a namespace can be created by SQL that no collection write announces.
+
 ## v0.84.0 -- 2026-10-29
 
 ### core, nats: a pod that loads or rebuilds its copy keeps its event loop and its NATS connection
