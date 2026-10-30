@@ -16,6 +16,7 @@ import hashlib
 import json
 import threading
 import time
+import weakref
 import uuid
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -361,6 +362,74 @@ def _insert_through_arrow(connection: Any, target: str, columns: Sequence[str], 
     return arrow is not None
 
 
+class _Checkpointer:
+    """a compressed backend's checkpointer: a thread that checkpoints once per wake, after writes ask. It holds the
+    backend weakly, so a backend dropped without :meth:`DuckDBBackend.reset` is collected and its thread ends.
+
+    :param backend: the backend
+    :ptype backend: DuckDBBackend
+    """
+
+    def __init__(self, backend: DuckDBBackend) -> None:
+        self._wanted = threading.Event()
+        self._stopping = False
+        held = weakref.ref(backend)
+        self._thread = threading.Thread(
+            target=_Checkpointer._run, args=(held, self._wanted, self), name="duckdb-l1-checkpointer", daemon=True
+        )
+        weakref.finalize(backend, self._wake_to_end)
+        self._thread.start()
+
+    def ask(self) -> None:
+        """ask for a checkpoint.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._wanted.set()
+
+    def stop(self) -> None:
+        """end the thread, after any checkpoint it is running.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._wake_to_end()
+        self._thread.join()
+
+    def _wake_to_end(self) -> None:
+        self._stopping = True
+        self._wanted.set()
+
+    @property
+    def stopping(self) -> bool:
+        """whether the thread is to end.
+
+        :return: the flag
+        :rtype: bool
+        """
+        return self._stopping
+
+    @staticmethod
+    def _run(held: weakref.ref[DuckDBBackend], wanted: threading.Event, owner: _Checkpointer) -> None:
+        """the thread: wait to be asked; cleared before the stop is read, so a stop set at any moment is seen before
+        the next wait.
+
+        :return: nothing
+        :rtype: None
+        """
+        while True:
+            wanted.wait()
+            wanted.clear()
+            if owner.stopping:
+                return
+            backend = held()
+            if backend is None:
+                return
+            backend._checkpoint_now()  # noqa: SLF001 - the backend's own thread
+            del backend
+
+
 class DuckDBBackend:
     """L1 cache backend using DuckDB in-memory database.
 
@@ -412,10 +481,8 @@ class DuckDBBackend:
         self._reader: Any = None
         self._reader_lock: threading.Lock = threading.Lock()
         self._compressed = compressed
-        #: set by a write that committed; the checkpointer thread clears it and checkpoints
-        self._checkpoint_wanted = threading.Event()
-        self._checkpointer: threading.Thread | None = None
-        self._checkpointer_stop = False
+        #: the thread that checkpoints the compressed tables after writes, once one asks (:meth:`request_checkpoint`)
+        self._checkpointer: _Checkpointer | None = None
         #: checkpoints run by the checkpointer thread, the seconds they took, and the ones that failed (each logged)
         self.background_checkpoints = 0
         self.background_checkpoint_seconds = 0.0
@@ -445,7 +512,8 @@ class DuckDBBackend:
 
     def request_checkpoint(self) -> None:
         """ask the checkpointer thread to checkpoint the compressed tables once the writes in progress are done; any
-        number of requests before it runs make one checkpoint. Nothing when the tables are not compressed.
+        number of requests before it runs make one checkpoint. Nothing when the tables are not compressed, or after
+        :meth:`reset`.
 
         :return: nothing
         :rtype: None
@@ -453,37 +521,32 @@ class DuckDBBackend:
         if not self._compressed:
             return
         with self._pool_lock:
-            if self._checkpointer is None or not self._checkpointer.is_alive():
-                self._checkpointer_stop = False
-                self._checkpointer = threading.Thread(
-                    target=self._checkpoint_when_asked, name="duckdb-l1-checkpointer", daemon=True
-                )
-                self._checkpointer.start()
-        self._checkpoint_wanted.set()
+            if not self._initialized:
+                return
+            if self._checkpointer is None:
+                self._checkpointer = _Checkpointer(self)
+            checkpointer = self._checkpointer
+        checkpointer.ask()
 
-    def _checkpoint_when_asked(self) -> None:
-        """the checkpointer thread: checkpoint each time one is asked for, until the backend is reset.
+    def _checkpoint_now(self) -> None:
+        """one checkpoint, under the write lock, counted; a failure is logged and counted, never raised (only memory
+        waits for the next write's).
 
         :return: nothing
         :rtype: None
         """
-        while True:
-            self._checkpoint_wanted.wait()
-            if self._checkpointer_stop:
+        with self._db_lock:
+            if self._db is None:
                 return
-            self._checkpoint_wanted.clear()
-            with self._db_lock:
-                if self._db is None:
-                    continue
-                started = time.monotonic()
-                try:
-                    self._run_checkpoint()
-                except Exception as exc:  # noqa: BLE001 - only memory waits for the next one
-                    self.background_checkpoints_failed += 1
-                    contain(exc, log=log, what="the compressed L1 could not be checkpointed; the next write asks again")
-                    continue
-                self.background_checkpoints += 1
-                self.background_checkpoint_seconds += time.monotonic() - started
+            started = time.monotonic()
+            try:
+                self._run_checkpoint()
+            except Exception as exc:  # noqa: BLE001 - only memory waits for the next one
+                self.background_checkpoints_failed += 1
+                contain(exc, log=log, what="the compressed L1 could not be checkpointed; the next write asks again")
+                return
+            self.background_checkpoints += 1
+            self.background_checkpoint_seconds += time.monotonic() - started
 
     def _run_checkpoint(self) -> None:
         """checkpoint the tables; the caller holds the write lock. A subclass that must commit something first (DuckDB
@@ -1427,13 +1490,12 @@ class DuckDBBackend:
 
     def reset(self) -> None:
         """Close all connections and clear state."""
-        checkpointer = self._checkpointer
+        with self._pool_lock:
+            checkpointer, self._checkpointer = self._checkpointer, None
+            # no request after this starts another: request_checkpoint sees the backend uninitialized
+            self._initialized = False
         if checkpointer is not None:
-            self._checkpointer_stop = True
-            self._checkpoint_wanted.set()
-            checkpointer.join()
-            self._checkpointer = None
-            self._checkpoint_wanted.clear()
+            checkpointer.stop()
         with self._pool_lock:
             for conn in self._pooled_connections:
                 try:

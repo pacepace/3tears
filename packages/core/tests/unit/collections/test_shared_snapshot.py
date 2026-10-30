@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 
 import pytest
 
@@ -30,7 +31,7 @@ TABLES = (
 
 
 @pytest.fixture
-def copy() -> Iterator[duckdb.DuckDBPyConnection]:
+def copy() -> Iterator[Any]:
     connection = duckdb.connect(":memory:")
     connection.execute("CREATE TABLE results (race VARCHAR, county VARCHAR, state VARCHAR, votes BIGINT)")
     connection.execute("CREATE TABLE races (race VARCHAR, state VARCHAR, name VARCHAR)")
@@ -40,7 +41,7 @@ def copy() -> Iterator[duckdb.DuckDBPyConnection]:
     connection.close()
 
 
-def _set_state(connection: duckdb.DuckDBPyConnection, state: str, votes: int) -> None:
+def _set_state(connection: Any, state: str, votes: int) -> None:
     connection.execute("DELETE FROM results WHERE state = ?", [state])
     connection.execute("DELETE FROM races WHERE state = ?", [state])
     connection.execute(
@@ -49,11 +50,11 @@ def _set_state(connection: duckdb.DuckDBPyConnection, state: str, votes: int) ->
     connection.execute("INSERT INTO races SELECT 'r' || i, ?, 'race ' || i FROM range(3) t(i)", [state])
 
 
-def _read(connection: duckdb.DuckDBPyConnection, epochs: dict[str, int]) -> VersionedRead:
+def _read(connection: Any, epochs: dict[str, int]) -> VersionedRead:
     return VersionedRead(cursor=connection.cursor(), epochs=MappingProxyType(epochs))
 
 
-def _rows(cursor: duckdb.DuckDBPyConnection, table: str) -> list[tuple[object, ...]]:
+def _rows(cursor: Any, table: str) -> list[tuple[object, ...]]:
     return sorted(cursor.execute(f'SELECT * FROM "{table}"').fetchall())
 
 
@@ -67,9 +68,7 @@ def store(tmp_path: Path) -> SharedArrowStore:
 
 
 class TestPublishingTheCopy:
-    def test_a_version_holds_exactly_the_reads_rows(
-        self, store: SharedArrowStore, copy: duckdb.DuckDBPyConnection
-    ) -> None:
+    def test_a_version_holds_exactly_the_reads_rows(self, store: SharedArrowStore, copy: Any) -> None:
         shared = SharedSnapshot(store, TABLES)
         version = shared.publish(_read(copy, {"VA": 1, "GA": 1, "TX": 1}))
         assert version.tables == ("races", "results")
@@ -79,9 +78,7 @@ class TestPublishingTheCopy:
                 assert _rows(read.cursor, table) == _rows(copy, table)
         reader.close()
 
-    def test_a_change_rewrites_only_the_scopes_that_moved(
-        self, store: SharedArrowStore, copy: duckdb.DuckDBPyConnection
-    ) -> None:
+    def test_a_change_rewrites_only_the_scopes_that_moved(self, store: SharedArrowStore, copy: Any) -> None:
         shared = SharedSnapshot(store, TABLES)
         first = shared.publish(_read(copy, {"VA": 1, "GA": 1, "TX": 1}))
         reader = store.reader()
@@ -102,18 +99,14 @@ class TestPublishingTheCopy:
         reader.close()
         assert store.versions() == (second.name,)
 
-    def test_a_version_present_already_writes_nothing(
-        self, store: SharedArrowStore, copy: duckdb.DuckDBPyConnection
-    ) -> None:
+    def test_a_version_present_already_writes_nothing(self, store: SharedArrowStore, copy: Any) -> None:
         shared = SharedSnapshot(store, TABLES)
         first = shared.publish(_read(copy, {"VA": 1, "GA": 1, "TX": 1}))
         again = shared.publish(_read(copy, {"VA": 1, "GA": 1, "TX": 1}))
         assert again == first
         assert shared.published == 1
 
-    def test_a_store_moved_by_another_publisher_is_written_whole(
-        self, store: SharedArrowStore, copy: duckdb.DuckDBPyConnection
-    ) -> None:
+    def test_a_store_moved_by_another_publisher_is_written_whole(self, store: SharedArrowStore, copy: Any) -> None:
         shared = SharedSnapshot(store, TABLES)
         shared.publish(_read(copy, {"VA": 1, "GA": 1, "TX": 1}))
         store.publish("other", {"x": pa.table({"a": [1]})})
@@ -127,7 +120,7 @@ class TestPublishingTheCopy:
         reader.close()
 
     def test_extra_tables_ride_in_every_version_and_names_follow_the_caller(
-        self, store: SharedArrowStore, copy: duckdb.DuckDBPyConnection
+        self, store: SharedArrowStore, copy: Any
     ) -> None:
         shared = SharedSnapshot(
             store,
@@ -145,7 +138,7 @@ class TestPublishingTheCopy:
         reader.close()
 
     def test_a_scope_no_epoch_names_is_written_every_time_and_dropped_once_gone(
-        self, store: SharedArrowStore, copy: duckdb.DuckDBPyConnection
+        self, store: SharedArrowStore, copy: Any
     ) -> None:
         shared = SharedSnapshot(store, TABLES)
         first = shared.publish(_read(copy, {"VA": 1, "GA": 1}))
@@ -165,7 +158,23 @@ class TestPublishingTheCopy:
                 assert _rows(read.cursor, table) == _rows(copy, table)
         reader.close()
 
-    @pytest.mark.parametrize(("scope", "plain"), [("VA", True), ("new york", False), ("h-x", False), ("", False)])
+    def test_a_scope_named_like_a_reserved_name_publishes(self, store: SharedArrowStore) -> None:
+        connection = duckdb.connect(":memory:")
+        connection.execute("CREATE TABLE results (race VARCHAR, county VARCHAR, state VARCHAR, votes BIGINT)")
+        connection.execute("CREATE TABLE races (race VARCHAR, state VARCHAR, name VARCHAR)")
+        for state in ("CURRENT", "x" * 200):
+            _set_state(connection, state, 1)
+        version = SharedSnapshot(store, TABLES).publish(_read(connection, {"CURRENT": 1, "x" * 200: 1}))
+        reader = store.reader()
+        with reader.read() as read:
+            assert _rows(read.cursor, "results") == _rows(connection, "results")
+        reader.close()
+        assert version.tables == ("races", "results")
+
+    @pytest.mark.parametrize(
+        ("scope", "plain"),
+        [("VA", True), ("new york", False), ("h-x", False), ("", False), ("CURRENT", False), ("x" * 129, False)],
+    )
     def test_a_scope_names_its_part_as_it_is_only_when_plain(self, scope: str, plain: bool) -> None:
         assert (scope_part(scope) == scope) is plain
         assert scope_part(scope) == scope_part(scope)

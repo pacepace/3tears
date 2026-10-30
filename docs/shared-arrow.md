@@ -16,11 +16,11 @@ and that work reads, or produces, more data than you want copied per process.
 | Import | `from threetears.core.shared_arrow import SharedArrowStore, SharedArrowPool, JobContext, Parts` |
 | Where the files live | One directory on a memory-backed filesystem: `/dev/shm`, or a Kubernetes `emptyDir` with `medium: Memory`. Never a disk. |
 | Owner | One `SharedArrowStore` per directory, in the serving process. Workers never create or delete anything but their own result slot. |
-| File format | Arrow IPC file format, uncompressed, one file per table. A mapped column is the file's bytes. |
+| File format | Arrow IPC file format, uncompressed, one file per table, or per part for a table given as `Parts`. A mapped column is the file's bytes. |
 | Bound | `max_bytes` on the store covers every version and result together. Set it below the volume's `sizeLimit`: a pod whose `emptyDir` passes its `sizeLimit` is evicted. |
 | What is charged to the pod | The files' pages, once (tmpfs pages count against the pod's memory limit), plus each process's private memory. |
 | Cleanup | By state, never by time: a version goes when it is not current and nobody holds it; a result goes when it is closed or its job ends without a claim. A new store clears what no live process holds. |
-| Blocking calls | `publish`, `publish_query`, `claim`, `sweep`, a reader's `read` and `SharedSnapshot.publish` write, scan or map files: call them from a thread (`asyncio.to_thread`), never on the event loop. `SharedArrowPool.run` does this for you. |
+| Blocking calls | `publish`, `publish_query`, `claim`, `sweep`, `reserve`, `discard`, a lease's `release`, a segment's `close`, a reader's `read` and `SharedSnapshot.publish` write, scan, map or remove files (each of the last five sweeps the directory): call them from a thread (`asyncio.to_thread`), never on the event loop. `SharedArrowPool.run` does this for you, and lets go of what a caller that stops waiting was handed. |
 | Shared files | A version published from a `base` hard-links the files it does not rewrite: they exist once, and the store counts them once. |
 | Platform | Linux and macOS (`flock`, `mmap`). PSS measurements need Linux. |
 
@@ -204,6 +204,8 @@ async def main() -> None:
 ## Hand a worker's result tables back without a pickle
 
 ```python
+import asyncio
+
 import pyarrow as pa
 from threetears.core.shared_arrow import JobContext
 
@@ -216,17 +218,22 @@ def build_rows(context: JobContext, state: str) -> int:
 
 async def caller(pool) -> None:
     result = await pool.run(build_rows, "VA", read=False, result_bytes=256 << 20)
-    with result.segment as segment:          # mapped here; closing it frees the files
-        rows = segment.tables["rows"]
-        print(rows.num_rows, result.value)
+    segment = result.segment                 # mapped here
+    try:
+        print(segment.tables["rows"].num_rows, result.value)
+    finally:
+        await asyncio.to_thread(segment.close)   # closing removes its files: a thread, not the loop
 ```
 
 - `result_bytes` reserves a slot counted at that size against `max_bytes` until it is claimed or discarded; a store
   without room raises `SharedArrowFullError` before the job runs.
 - A worker writing more than its slot holds gets `SharedArrowFullError` in the worker, raised by `run`; nothing is kept.
-- The serving process owns the slot from reservation to release. A job that raises, a caller that stops waiting and
-  a worker that dies mid-write all end with the slot discarded once the worker is done; a dead writer's staging
-  directory is removed because its `flock` died with it.
+- The serving process owns the slot from reservation to release. A job that raises, a caller that stops waiting (at
+  any point: while the job is submitted, run, or its result claimed) and a worker that dies mid-write all end with
+  the slot discarded, or the claimed result closed, once the worker is done; a dead writer's staging directory is
+  removed because its `flock` died with it. A worker's death is logged once per pool it breaks.
+- A slot reserved while a version is being published takes its room from that publish, never from the bound: the
+  publish is refused (`SharedArrowFullError`) rather than pass `max_bytes`. A refused slot is logged.
 - A job given a slot may write nothing: `result.segment` is then `None`.
 - Close the segment when done. Tables taken from it stay valid while it is open; one kept after `close` keeps its
   pages mapped until it is dropped, but its files are already gone from the store's count.

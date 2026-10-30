@@ -12,11 +12,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
+import logging
 import os
 import sys
+import shutil
 import threading
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Any
@@ -739,3 +741,125 @@ class TestPartsAreSharedAcrossVersions:
     def test_a_part_name_is_one_plain_path_segment(self, store: SharedArrowStore, part: str) -> None:
         with pytest.raises(ValueError):
             store.publish("v1", {TABLE: Parts(schema=_table(0, rows=0).schema, parts={part: _table(1, rows=1)})})
+
+
+class TestNothingLeaksWhenTheCallerStopsWaiting:
+    async def test_a_cancel_while_the_job_is_submitted_discards_its_slot(
+        self, store: SharedArrowStore, single: SharedArrowPool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reserving, go, reserved = threading.Event(), threading.Event(), threading.Event()
+        reserve = store.reserve
+
+        def slow_reserve(max_bytes: int) -> Any:
+            reserving.set()
+            go.wait(30)
+            try:
+                return reserve(max_bytes)
+            finally:
+                reserved.set()
+
+        monkeypatch.setattr(store, "reserve", slow_reserve)
+        running = asyncio.ensure_future(single.run(jobs.process_id, read=False, result_bytes=1 << 20))
+        await _until(reserving.is_set, "the submission is reserving its slot")
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+        go.set()
+        await _until(reserved.is_set, "the abandoned submission reserved its slot")
+        await _until(lambda: store.status()["slots_open"] == 0, "the slot of the abandoned submission discarded", 10)
+        assert store.segments() == ()
+
+    async def test_a_cancel_while_the_result_is_claimed_closes_it(
+        self, store: SharedArrowStore, single: SharedArrowPool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        claiming, go, claimed = threading.Event(), threading.Event(), threading.Event()
+        claim = store.claim
+
+        def slow_claim(slot: Any) -> Any:
+            # mapped, the slot the claim's own, before the caller hears of it
+            mapped = claim(slot)
+            claiming.set()
+            go.wait(30)
+            claimed.set()
+            return mapped
+
+        monkeypatch.setattr(store, "claim", slow_claim)
+        running = asyncio.ensure_future(single.run(jobs.make_rows, 10, 1, read=False, result_bytes=1 << 20))
+        await _until(claiming.is_set, "the result is being claimed")
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+        go.set()
+        await _until(claimed.is_set, "the abandoned claim mapped the result")
+        await _until(
+            lambda: store.status()["segments_claimed"] == 0 and store.segments() == (),
+            "the result nobody received closed and gone",
+            10,
+        )
+
+
+class TestTheBoundHoldsUnderConcurrentWriters:
+    def test_a_slot_reserved_while_a_version_is_written_takes_its_room_from_that_write(self, where: Path) -> None:
+        bounded = SharedArrowStore(where / "bounded", max_bytes=10 << 20)
+        schema = pa.schema([("a", pa.int64())])
+        batch = pa.record_batch([pa.array(range(256 * 1024), pa.int64())], schema=schema)  # 2 MiB
+        slots: list[Any] = []
+
+        def batches() -> Iterator[pa.RecordBatch]:
+            yield batch
+            # a compute reserving its result while the publish writes (another thread, in a pod)
+            slots.append(bounded.reserve(6 << 20))
+            yield from [batch] * 3
+
+        with pytest.raises(SharedArrowFullError):
+            bounded.publish("v1", {TABLE: pa.RecordBatchReader.from_batches(schema, batches())})
+        assert len(slots) == 1, "the slot was granted: the publish had written only 2 MiB"
+        assert bounded.held_bytes() + slots[0].max_bytes <= bounded.max_bytes
+        assert bounded.versions() == ()
+
+    def test_a_refused_slot_is_logged(self, where: Path, caplog: pytest.LogCaptureFixture) -> None:
+        small = SharedArrowStore(where / "small", max_bytes=1 << 20)
+        caplog.set_level(logging.WARNING)
+        with pytest.raises(SharedArrowFullError):
+            small.reserve(2 << 20)
+        assert "result slot refused" in caplog.text
+
+
+class TestTheSweepRemovesOutsideTheLock:
+    def test_retired_files_are_removed_with_the_state_lock_free(
+        self, store: SharedArrowStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store.publish("v1", {TABLE: _table(1, rows=10)})
+        held: list[bool] = []
+        rmtree = shutil.rmtree
+
+        def watched(path: Any, *args: Any, **kwargs: Any) -> None:
+            held.append(store._state.locked())  # noqa: SLF001 - what the sweep holds while it removes
+            rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, "rmtree", watched)
+        store.publish("v2", {TABLE: _table(2, rows=10)})
+        assert store.versions() == ("v2",)
+        assert held, "v1's files were removed"
+        assert not any(held), "a sweep removed files holding the store's lock"
+
+
+class TestAWorkersPartsAreChecked:
+    def test_a_slots_part_name_is_one_plain_path_segment(self, store: SharedArrowStore) -> None:
+        slot = store.reserve(1 << 20)
+        schema = _table(0, rows=0).schema
+        with pytest.raises(ValueError):
+            slot.write({TABLE: Parts(schema=schema, parts={"../out": _table(1, rows=10)})})
+        assert not (store.root / f"{TABLE}@..").exists()
+        assert not any(path.name.startswith(f"{TABLE}@") for path in store.root.iterdir())
+        store.discard(slot)
+
+
+class TestAWorkerDeathIsSaid:
+    async def test_a_dead_worker_is_logged_once(
+        self, store: SharedArrowStore, single: SharedArrowPool, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING)
+        with pytest.raises(BrokenProcessPool):
+            await single.run(jobs.die_mid_write, read=False, result_bytes=1 << 20)
+        assert caplog.text.count("worker died") == 1

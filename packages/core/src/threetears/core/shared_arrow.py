@@ -57,7 +57,7 @@ import shutil
 import threading
 import uuid
 import weakref
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
@@ -94,6 +94,8 @@ __all__ = [
     "SharedRead",
     "SharedVersion",
     "epochs_version",
+    "plain_name",
+    "query_batches",
     "read_version",
 ]
 
@@ -145,6 +147,20 @@ def _require_snapshot_extra() -> None:
         raise ImportError(f"shared Arrow needs duckdb and pyarrow: install 3tears[snapshot] ({_SNAPSHOT_EXTRA})")
 
 
+def plain_name(name: str) -> bool:
+    """whether ``name`` may name a version, a table or a part as it is: one visible path segment of
+    ``[A-Za-z0-9._-]``, at most 128 long, and not reserved.
+
+    :param name: the name
+    :ptype name: str
+    :return: True when it may
+    :rtype: bool
+    """
+    return (
+        0 < len(name) <= _NAME_MAX and not name.startswith(".") and set(name) <= _NAME_CHARS and name != _CURRENT_FILE
+    )
+
+
 def _valid_name(name: str, what: str) -> str:
     """``name`` when it is one visible path segment of :data:`_NAME_CHARS`, at most :data:`_NAME_MAX` long.
 
@@ -156,10 +172,11 @@ def _valid_name(name: str, what: str) -> str:
     :rtype: str
     :raises ValueError: when it is not
     """
-    if not name or len(name) > _NAME_MAX or name.startswith(".") or not set(name) <= _NAME_CHARS:
-        raise ValueError(f"a shared Arrow {what} name must be 1-{_NAME_MAX} of [A-Za-z0-9._-], not hidden: {name!r}")
-    if name == _CURRENT_FILE:
-        raise ValueError(f"{name!r} is reserved")
+    if not plain_name(name):
+        raise ValueError(
+            f"a shared Arrow {what} name must be 1-{_NAME_MAX} of [A-Za-z0-9._-], not hidden, not {_CURRENT_FILE!r}: "
+            f"{name!r}"
+        )
     return name
 
 
@@ -216,21 +233,37 @@ def _locked(path: Path, operation: int) -> int | None:
     return descriptor
 
 
-def _removed(path: Path) -> None:
-    """remove a directory: renamed out of its name first, so nothing opens it while its files go.
+def _retiring(path: Path) -> Path | None:
+    """rename a directory out of its name, so nothing opens it again: the caller removes what this returns, outside
+    any lock (removing a version's files takes longer than renaming it).
 
     :param path: the directory
     :ptype path: Path
-    :return: nothing
-    :rtype: None
+    :return: its new name, or None when it was gone already
+    :rtype: Path | None
     """
     gone = path.with_name(f"{_RETIRING_PREFIX}{path.name}-{uuid.uuid7().hex[-8:]}")
     try:
         os.rename(path, gone)
     except FileNotFoundError:
         # NOSILENT: already gone, which is what was wanted
-        return
-    shutil.rmtree(gone, ignore_errors=True)
+        return None
+    return gone
+
+
+def _retire(path: Path, gone: list[Path]) -> None:
+    """rename ``path`` out of its name (:func:`_retiring`) and add it to ``gone``, to be removed after the lock.
+
+    :param path: the directory
+    :ptype path: Path
+    :param gone: what to remove
+    :ptype gone: list[Path]
+    :return: nothing
+    :rtype: None
+    """
+    renamed = _retiring(path)
+    if renamed is not None:
+        gone.append(renamed)
 
 
 def _directory_bytes(path: Path, seen: set[tuple[int, int]] | None = None) -> int:
@@ -307,8 +340,9 @@ def _batches(source: Any) -> tuple[Any, Iterator[Any]]:
     raise TypeError(f"a shared Arrow table is a pyarrow Table or RecordBatchReader, not {type(source).__name__}")
 
 
-def _write_file(path: Path, schema: Any, batches: Iterator[Any], room: int, *, what: str) -> int:
-    """write one uncompressed Arrow IPC file, refusing a batch that would pass ``room``.
+def _write_file(path: Path, schema: Any, batches: Iterator[Any], room: Callable[[], int], *, what: str) -> int:
+    """write one uncompressed Arrow IPC file, refusing a batch that would pass ``room`` (asked before each batch: a
+    store's room shrinks while a publish writes, as results are reserved beside it).
 
     :param path: the file
     :ptype path: Path
@@ -316,8 +350,8 @@ def _write_file(path: Path, schema: Any, batches: Iterator[Any], room: int, *, w
     :ptype schema: pa.Schema
     :param batches: its record batches
     :ptype batches: Iterator[pa.RecordBatch]
-    :param room: the bytes it may take
-    :ptype room: int
+    :param room: the bytes it may take, now
+    :ptype room: Callable[[], int]
     :param what: what it holds, for an error
     :ptype what: str
     :return: the bytes written
@@ -330,8 +364,8 @@ def _write_file(path: Path, schema: Any, batches: Iterator[Any], room: int, *, w
         for batch in batches:
             if not batch.schema.equals(schema):
                 raise ValueError(f"{what}: a batch's columns are not the table's ({batch.schema} vs {schema})")
-            if sink.tell() + batch.nbytes > room:
-                raise SharedArrowFullError(f"{what} would pass its {room} bytes")
+            if sink.tell() + batch.nbytes > room():
+                raise SharedArrowFullError(f"{what} would pass the bytes it may take")
             writer.write_batch(batch)
     return path.stat().st_size
 
@@ -348,7 +382,7 @@ def _file_schema(path: Path) -> Any:
         return ipc.open_file(mapped).schema
 
 
-def _write_tables(directory: Path, tables: Mapping[str, Any], room: int, base: Path | None = None) -> int:
+def _write_tables(directory: Path, tables: Mapping[str, Any], room: Callable[[], int], base: Path | None = None) -> int:
     """write each table as uncompressed Arrow IPC in ``directory``, refusing a batch that would pass ``room``; with a
     ``base`` version, link in every file of it that ``tables`` does not replace.
 
@@ -360,22 +394,29 @@ def _write_tables(directory: Path, tables: Mapping[str, Any], room: int, base: P
     :ptype directory: Path
     :param tables: name -> a table, a reader of its batches, what opens either, or :class:`Parts`
     :ptype tables: Mapping[str, Any]
-    :param room: the bytes every new file together may take
-    :ptype room: int
+    :param room: the bytes every new file together may take, now (asked before each batch)
+    :ptype room: Callable[[], int]
     :param base: the version directory to keep what is not replaced from, or None
     :ptype base: Path | None
     :return: the bytes written
     :rtype: int
     :raises SharedArrowFullError: when they would take more than ``room``
-    :raises ValueError: when a part's columns are not its table's, or a table in parts changed its columns from the
-        base's (publish it without a base)
+    :raises ValueError: when a table or part name is not one plain path segment, a part's columns are not its
+        table's, or a table in parts changed its columns from the base's (publish it without a base)
     """
     written = 0
+
+    def left() -> int:
+        return room() - written
+
     for name, source in tables.items():
         _valid_name(name, "table")
         if isinstance(source, Parts):
+            # every writer's parts checked here, the worker's slot as the serving process's publish
+            for part in source.parts:
+                _valid_name(part, "part")
             schema_file = f"{name}{_PART_SEPARATOR}{_TABLE_SUFFIX}"
-            written += _write_file(directory / schema_file, source.schema, iter(()), room - written, what=name)
+            written += _write_file(directory / schema_file, source.schema, iter(()), left, what=name)
             kept: list[Path] = []
             if base is not None and (base / schema_file).is_file():
                 if not _file_schema(base / schema_file).equals(source.schema):
@@ -398,13 +439,11 @@ def _write_tables(directory: Path, tables: Mapping[str, Any], room: int, base: P
                 if not part_schema.equals(source.schema):
                     raise ValueError(f"table {name!r} part {part!r}: its columns are not the table's")
                 path = directory / f"{name}{_PART_SEPARATOR}{part}{_TABLE_SUFFIX}"
-                written += _write_file(
-                    path, source.schema, batches, room - written, what=f"table {name!r} part {part!r}"
-                )
+                written += _write_file(path, source.schema, batches, left, what=f"table {name!r} part {part!r}")
         else:
             schema, batches = _batches(source)
             path = directory / f"{name}{_TABLE_SUFFIX}"
-            written += _write_file(path, schema, batches, room - written, what=f"table {name!r}")
+            written += _write_file(path, schema, batches, left, what=f"table {name!r}")
     if base is not None:
         for entry in base.iterdir():
             table = _table_of(entry.name)
@@ -622,7 +661,7 @@ class SegmentSlot:
         (staging / _LOCK_FILE).touch()
         descriptor = _locked(staging, fcntl.LOCK_EX)
         try:
-            written = _write_tables(staging, tables, self.max_bytes)
+            written = _write_tables(staging, tables, lambda: self.max_bytes)
             os.rename(staging, target)
         except BaseException:
             shutil.rmtree(staging, ignore_errors=True)
@@ -724,13 +763,18 @@ class MappedSegment(MappedTables):
             on_close(self.name)
 
 
-def _streamed(cursor: Any, sql: str, batch_rows: int) -> Callable[[], Any]:
-    """what opens a query's answer over ``cursor`` as a reader of record batches, when the write reaches it.
+def query_batches(
+    cursor: Any, sql: str, params: Sequence[Any] = (), *, batch_rows: int = DEFAULT_BATCH_ROWS
+) -> Callable[[], Any]:
+    """what opens a query's answer over a DuckDB ``cursor`` as a reader of record batches, only when a write reaches
+    it (a cursor holds one answer at a time): a table to give :meth:`SharedArrowStore.publish`.
 
     :param cursor: the DuckDB cursor
     :ptype cursor: duckdb.DuckDBPyConnection
     :param sql: the query
     :ptype sql: str
+    :param params: its parameters
+    :ptype params: Sequence[Any]
     :param batch_rows: rows per batch
     :ptype batch_rows: int
     :return: the opener
@@ -738,7 +782,7 @@ def _streamed(cursor: Any, sql: str, batch_rows: int) -> Callable[[], Any]:
     """
 
     def opened() -> Any:
-        answer = cursor.execute(sql)
+        answer = cursor.execute(sql, list(params))
         # to_arrow_reader from DuckDB 1.4; fetch_record_batch before it (deprecated since)
         reader = getattr(answer, "to_arrow_reader", None) or answer.fetch_record_batch
         return reader(batch_rows)
@@ -950,7 +994,9 @@ class SharedArrowStore:
         :rtype: SharedVersion
         :raises SharedArrowFullError: as :meth:`publish`
         """
-        return self.publish(version, {table: _streamed(cursor, sql, batch_rows) for table, sql in queries.items()})
+        return self.publish(
+            version, {table: query_batches(cursor, sql, batch_rows=batch_rows) for table, sql in queries.items()}
+        )
 
     def lease(self, version: str | None = None) -> SharedLease:
         """hold a version for a reader: the current one, or one named that the directory still holds.
@@ -1028,12 +1074,19 @@ class SharedArrowStore:
         if max_bytes <= 0:
             raise ValueError("a slot's max_bytes must be positive")
         self.sweep()
+        slot_id: str | None = None
         with self._state:
             if self._committed_bytes() + max_bytes > self._max_bytes:
                 self.refused += 1
-                raise SharedArrowFullError(f"no room for a {max_bytes}-byte result in {self._max_bytes} bytes")
-            slot_id = f"s-{uuid.uuid7().hex}"
-            self._slots[slot_id] = max_bytes
+            else:
+                slot_id = f"s-{uuid.uuid7().hex}"
+                self._slots[slot_id] = max_bytes
+        if slot_id is None:
+            log.warning(
+                "shared Arrow result slot refused: it would pass the store's bytes",
+                extra={"extra_data": {"slot_bytes": max_bytes, "max_bytes": self._max_bytes}},
+            )
+            raise SharedArrowFullError(f"no room for a {max_bytes}-byte result in {self._max_bytes} bytes")
         return SegmentSlot(root=str(self._root), slot_id=slot_id, max_bytes=max_bytes)
 
     def claim(self, slot: SegmentSlot) -> MappedSegment | None:
@@ -1081,10 +1134,14 @@ class SharedArrowStore:
         :return: the versions retired
         :rtype: list[str]
         """
+        gone: list[Path] = []
         with self._state:
-            retired = self._sweep_versions()
-            self._sweep_segments()
+            retired = self._sweep_versions(gone)
+            self._sweep_segments(gone)
             self.retired += len(retired)
+        # renamed out of their names under the lock (nothing opens them again); their files go after it
+        for path in gone:
+            shutil.rmtree(path, ignore_errors=True)
         if retired:
             log.info("shared Arrow versions retired", extra={"extra_data": {"versions": retired}})
         return retired
@@ -1117,10 +1174,12 @@ class SharedArrowStore:
         )
         return held + sum(self._slots.values())
 
-    def _sweep_versions(self) -> list[str]:
-        """remove every version neither current nor held, and every leftover staging directory. Called under
-        ``_state``.
+    def _sweep_versions(self, gone: list[Path]) -> list[str]:
+        """retire every version neither current nor held, and every leftover staging directory: each renamed out of
+        its name into ``gone``, for the caller to remove once it lets go of ``_state``. Called under ``_state``.
 
+        :param gone: what to remove
+        :ptype gone: list[Path]
         :return: the versions retired
         :rtype: list[str]
         """
@@ -1131,13 +1190,13 @@ class SharedArrowStore:
             if not entry.is_dir() or name in (current, self._staging, self._pending):
                 continue
             if name.startswith(_RETIRING_PREFIX):
-                shutil.rmtree(entry, ignore_errors=True)
+                gone.append(entry)
                 continue
             descriptor = _locked(entry, fcntl.LOCK_EX)
             if descriptor is None and (entry / _LOCK_FILE).is_file():
                 continue  # a reader holds it
             try:
-                _removed(entry)
+                _retire(entry, gone)
             finally:
                 if descriptor is not None:
                     os.close(descriptor)
@@ -1145,29 +1204,31 @@ class SharedArrowStore:
                 retired.append(name)
         return retired
 
-    def _sweep_segments(self) -> None:
-        """remove every result no open slot or claim owns, and every staging directory whose writer is gone. Called
-        under ``_state``.
+    def _sweep_segments(self, gone: list[Path]) -> None:
+        """retire every result no open slot or claim owns, and every staging directory whose writer is gone, into
+        ``gone`` (as :meth:`_sweep_versions`). Called under ``_state``.
 
+        :param gone: what to remove
+        :ptype gone: list[Path]
         :return: nothing
         :rtype: None
         """
         for entry in list(self._segments.iterdir()):
             name = entry.name
             if name.startswith(_RETIRING_PREFIX):
-                shutil.rmtree(entry, ignore_errors=True)
+                gone.append(entry)
             elif name.startswith(_STAGING_PREFIX):
                 # a writer still writing holds its lock; one that died, or whose write failed, does not
                 descriptor = _locked(entry, fcntl.LOCK_EX)
                 if descriptor is not None:
                     try:
-                        _removed(entry)
+                        _retire(entry, gone)
                     finally:
                         os.close(descriptor)
                 elif not (entry / _LOCK_FILE).exists():
-                    _removed(entry)
+                    _retire(entry, gone)
             elif name not in self._slots and name not in self._claimed:
-                _removed(entry)
+                _retire(entry, gone)
 
     def _write_version(self, name: str, tables: Mapping[str, Any], base: Path | None = None) -> None:
         """write a version under a staging name and rename it into place whole; on any failure keep nothing.
@@ -1186,7 +1247,15 @@ class SharedArrowStore:
         staging = self._versions / staging_name
         with self._state:
             self._staging = staging_name
-            room = self._max_bytes - self._committed_bytes()
+            # what the directory holds but for open slots, as this write starts (its staging directory not yet made)
+            files = self._committed_bytes() - sum(self._slots.values())
+
+        def room() -> int:
+            # asked before every batch: a slot reserved while this writes takes its room from this write, never
+            # from the bound (reserve counts what this write has staged so far)
+            with self._state:
+                return self._max_bytes - files - sum(self._slots.values())
+
         try:
             staging.mkdir()
             _write_tables(staging, tables, room, base)
@@ -1587,6 +1656,35 @@ class _Handoff:
             self._store.discard(self.slot)
 
 
+def _abandon_submitted(submitting: asyncio.Future[Any]) -> None:
+    """a submission whose caller stopped waiting: once it is done, its slot is discarded when its worker is done.
+
+    :param submitting: the submission, done
+    :ptype submitting: asyncio.Future[tuple[_Handoff, Future[Any]]]
+    :return: nothing
+    :rtype: None
+    """
+    if not submitting.cancelled() and submitting.exception() is None:
+        handoff, future = submitting.result()
+        # a discard sweeps the directory: on a thread, never the event loop this is called on
+        asyncio.get_running_loop().run_in_executor(None, handoff.abandon, future)
+
+
+def _close_claimed(claiming: asyncio.Future[Any]) -> None:
+    """a claim whose caller stopped waiting: once it is done, the result it mapped is closed (its files go).
+
+    :param claiming: the claim, done
+    :ptype claiming: asyncio.Future[MappedSegment | None]
+    :return: nothing
+    :rtype: None
+    """
+    if not claiming.cancelled() and claiming.exception() is None:
+        segment = claiming.result()
+        if segment is not None:
+            # closing removes its files: on a thread, never the event loop this is called on
+            asyncio.get_running_loop().run_in_executor(None, segment.close)
+
+
 class SharedArrowPool:
     """spawned, long-lived worker processes running jobs over a store's versions and handing results back through it.
 
@@ -1655,13 +1753,23 @@ class SharedArrowPool:
         :raises Exception: what the job raised; ``BrokenProcessPool`` when its worker died (the pool is replaced)
         """
         # leased, reserved and submitted on a thread: a fresh pool spawns its workers there, and a lease waits on a
-        # sweep
-        handoff, future = await asyncio.to_thread(self._submit, read, result_bytes, job, args)
+        # sweep. A caller that stops waiting meanwhile leaves the thread to finish; what it took is let go then
+        submitting = asyncio.ensure_future(asyncio.to_thread(self._submit, read, result_bytes, job, args))
+        try:
+            handoff, future = await asyncio.shield(submitting)
+        except asyncio.CancelledError:
+            submitting.add_done_callback(_abandon_submitted)
+            raise
         claimed = False
         try:
             try:
                 value, error, private, worker = await asyncio.wrap_future(future)
             except BrokenProcessPool:
+                if not self._stale:
+                    log.warning(
+                        "shared Arrow worker died; its pool is replaced",
+                        extra={"extra_data": {"pool": self._name}},
+                    )
                 self._stale = True
                 raise
             self.jobs += 1
@@ -1675,7 +1783,13 @@ class SharedArrowPool:
                 raise error
             segment = None
             if handoff.slot is not None:
-                segment = await asyncio.to_thread(self._store.claim, handoff.slot)
+                # the claim maps the result on a thread; a caller that stops waiting meanwhile has it closed there
+                claiming = asyncio.ensure_future(asyncio.to_thread(self._store.claim, handoff.slot))
+                try:
+                    segment = await asyncio.shield(claiming)
+                except asyncio.CancelledError:
+                    claiming.add_done_callback(_close_claimed)
+                    raise
             claimed = True
             return JobResult(value=value, segment=segment)
         finally:

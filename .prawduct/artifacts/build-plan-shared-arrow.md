@@ -1,3 +1,13 @@
+---
+artifact: build-plan
+version: 1
+scope: shared-arrow
+branch: feature/shared-memory-snapshots
+depends_on: []
+governed_by: []
+last_validated: 2026-10-30
+---
+
 # Build plan: shared-memory Arrow for worker processes
 
 Feature, large (new module and API surface). Branch `feature/shared-memory-snapshots` from origin/develop @4695a8262
@@ -37,15 +47,36 @@ Decisions:
 
 ## Chunks
 
-1. Store, versions, leases, sweep; pool with leases; tests first (multi-process readers of one mapping with a Linux
-   PSS check, swap with a reader mid-read, retirement only after every reader lets go, bounded). Done.
-2. Results direction (slots, claim/discard, crash and abandon paths), guide `docs/shared-arrow.md`. Done.
-3. Measurement script and real-size figures. Done.
-4. Reports adoption: separate PR in the reports repo, after a 3tears release carrying this.
-5. The serving process reads the store and drops its own copy (Pace, 2026-10-30: total memory about 1x today, not
-   1.8x): `SharedArrowReader` (`store.reader()`), `Parts` + `publish(base=)` by hard link, `SharedSnapshot` (a
-   scoped snapshot published a scope's part at a time), `ScopedSnapshot.behind`, `DuckDBBackend(compressed=True)`
-   with its checkpoint on a thread of its own. Done.
+### Chunk 01: Store, versions, leases, sweep
+
+Pool with leases; tests first (multi-process readers of one mapping with a Linux PSS check, swap with a reader
+mid-read, retirement only after every reader lets go, bounded). Done.
+
+### Chunk 02: Results direction
+
+Slots, claim/discard, crash and abandon paths; guide `docs/shared-arrow.md`. Done.
+
+### Chunk 03: Measurement
+
+`scripts/measure-shared-arrow.py` and real-size figures. Done.
+
+### Chunk 04: Reports adoption
+
+A separate PR in the reports repo, after a 3tears release carrying this (reports
+`.prawduct/artifacts/build-plan-compute-workers.md`). Not in this PR.
+
+### Chunk 05: The serving process reads the store and drops its own copy
+
+Pace, 2026-10-30: total memory about 1x today, not 1.8x. `SharedArrowReader` (`store.reader()`), `Parts` +
+`publish(base=)` by hard link, `SharedSnapshot` (a scoped snapshot published a scope's part at a time),
+`ScopedSnapshot.behind`, `DuckDBBackend(compressed=True)` with its checkpoint on a thread of its own. Done.
+
+### Chunk 06: Critic findings (rev-20261030T131014Z-138eb296)
+
+A caller cancelled during the pool's submit or claim hop lets go of the slot or the claimed result; a slot reserved
+during a publish takes its room from it; the sweep removes files outside the store's lock; every writer checks part
+names; one naming rule (`plain_name`) and one query helper (`query_batches`) shared with `SharedSnapshot`; refused
+slots and dead workers logged; the checkpointer sees a stop set at any moment and holds its backend weakly. Done.
 
 ## Evidence
 
@@ -74,7 +105,7 @@ Each worker maps all 1.75 GiB (RSS 1.89 GiB) and is charged its share (PSS 0.97 
 is a second copy beside the serving process's DuckDB L1, so the pod pays about 1.8x today's data memory, flat in the
 worker count; naive copies pay (1 + N)x. Publish 2.6-3.5 s, a full scan of every column 1.6-1.9 s per worker.
 
-Chunk 5 decisions:
+Chunk 05 decisions:
 
 - [DECISION] The DuckDB copy is not deleted: it is what applies each change (scope swaps, the reports' retention,
   derived columns, rows kept apart), and Arrow files are immutable. It is held compressed (`ATTACH ':memory:'
@@ -89,7 +120,12 @@ Chunk 5 decisions:
 - [DECISION] Publish and sweep race closed: the version being published is named to the sweep before its rename
   (`_pending`), so a lease released on another thread cannot retire it before it is current.
 
-Chunk 5 evidence. Mutations (scratch, restored): hard links made copies -> 3 tests fail; inode dedupe removed -> 2;
+Chunk 06 evidence. Mutations (scratch, restored), each failing its own new test: submit hop not shielded; claim hop
+not shielded; publish room fixed at its start; refused slot not logged; rmtree under the lock; no part check in the
+writer; worker death silent; the old scope naming rule; stop read before the clear; checkpointer holding the backend
+strongly.
+
+Chunk 05 evidence. Mutations (scratch, restored): hard links made copies -> 3 tests fail; inode dedupe removed -> 2;
 reader keeps a superseded version -> 4; no `_pending` guard -> 1; readers not told at publish -> 1; every scope
 rewritten -> 1; no background checkpoint -> 3; catalog attached without COMPRESS -> 1.
 

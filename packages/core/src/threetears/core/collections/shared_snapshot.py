@@ -28,7 +28,16 @@ from typing import TYPE_CHECKING, Any, Final
 
 from threetears.observe import get_logger
 
-from threetears.core.shared_arrow import DEFAULT_BATCH_ROWS, Parts, SharedArrowStore, SharedVersion, epochs_version
+from threetears.core.cache.duckdb import fetch_arrow
+from threetears.core.shared_arrow import (
+    DEFAULT_BATCH_ROWS,
+    Parts,
+    SharedArrowStore,
+    SharedVersion,
+    epochs_version,
+    plain_name,
+    query_batches,
+)
 from threetears.core.sql_fragments import quote_identifier
 
 if TYPE_CHECKING:
@@ -37,9 +46,6 @@ if TYPE_CHECKING:
 __all__ = ["SharedSnapshot", "scope_part"]
 
 log = get_logger(__name__)
-
-#: the characters a scope may be named by as it is (a part's name is one plain path segment)
-_PLAIN: Final = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
 
 #: the prefix of a part named by its scope's digest, which a scope named as it is never takes
 _DIGEST_PREFIX: Final = "h-"
@@ -53,27 +59,8 @@ def scope_part(scope: str) -> str:
     :return: the part's name
     :rtype: str
     """
-    plain = 0 < len(scope) <= 64 and set(scope) <= _PLAIN and not scope.startswith((".", _DIGEST_PREFIX))
+    plain = plain_name(scope) and not scope.startswith(_DIGEST_PREFIX)
     return scope if plain else _DIGEST_PREFIX + hashlib.sha256(scope.encode()).hexdigest()[:40]
-
-
-def _scope_rows(cursor: Any, table: str, column: str, scope: str, batch_rows: int) -> Callable[[], Any]:
-    """what opens one scope's rows of a table as a reader of record batches, when the write reaches it.
-
-    :return: the opener
-    :rtype: Callable[[], pa.RecordBatchReader]
-    """
-
-    def opened() -> Any:
-        answer = cursor.execute(
-            f"SELECT * FROM {quote_identifier(table)} WHERE {quote_identifier(column)} = ?",  # noqa: S608 - trusted names
-            [scope],
-        )
-        # to_arrow_reader from DuckDB 1.4; fetch_record_batch before it (deprecated since)
-        reader = getattr(answer, "to_arrow_reader", None) or answer.fetch_record_batch
-        return reader(batch_rows)
-
-    return opened
 
 
 def _scopes(cursor: Any, table: SnapshotTable) -> frozenset[Any]:
@@ -103,8 +90,7 @@ def _schema(cursor: Any, table: str) -> Any:
     :rtype: pa.Schema
     """
     answer = cursor.execute(f"SELECT * FROM {quote_identifier(table)} LIMIT 0")  # noqa: S608 - a trusted name
-    fetch = getattr(answer, "to_arrow_table", None) or answer.fetch_arrow_table
-    return fetch().schema
+    return fetch_arrow(answer, 1).schema
 
 
 class SharedSnapshot:
@@ -189,10 +175,12 @@ class SharedSnapshot:
                     key=str,
                 )
                 drops = kept - present[table.name]
+                rows = (
+                    f"SELECT * FROM {quote_identifier(table.name)} "  # noqa: S608 - trusted names
+                    f"WHERE {quote_identifier(table.scope_column)} = ?"
+                )
                 parts: dict[str, Any] = {
-                    scope_part(str(scope)): _scope_rows(
-                        read.cursor, table.name, table.scope_column, scope, self._batch_rows
-                    )
+                    scope_part(str(scope)): query_batches(read.cursor, rows, [scope], batch_rows=self._batch_rows)
                     for scope in writes
                 }
                 parts.update({scope_part(str(scope)): None for scope in drops})
