@@ -3,7 +3,7 @@
 The compact per-result reading (``ResultReading``) carries exactly the attributes the readers access. This file
 measures that set: each reader family runs over the oracle's campaigns with every result it reads served through
 the access recorder (:mod:`~packages.evals.tests.result_access_recorder`), and the attribute paths it read are
-compared with the family's pinned set (:data:`PINNED`).
+compared with the family's pinned set (:data:`PINNED`), less what that campaign leaves unread (:data:`UNREAD`).
 
 - **bundle:** ``assemble_context_bundle`` (through ``assemble_campaign_bundle``, every aspect) and ``report_read``
   code-only, in every form with both trial details;
@@ -21,7 +21,11 @@ need not. Either way the pin moves with the reading, never alone.
 
 **Judge prose is pinned by where it is read** (:data:`PROSE_SITES`): a score's reasoning, the judge's top-level
 reasoning and the judge's "cannot tell" notes, each as a read of its text or as a truth test (``bool(...)``), at
-``module function``.
+``module function``. A read at a site not pinned fails. The bundle's trials section reads prose only of the trials
+the bundle lists.
+
+**One test per family and campaign**, since a recorded read of a production-shaped campaign is minutes of work, and
+the recorder pays for a frame read on every attribute read.
 
 **The recorder changes nothing a reader computes**: every family's output under the recorder is compared, byte for
 byte, with the same calls' output without it.
@@ -269,57 +273,49 @@ FAMILIES: dict[str, tuple[Callable[..., list[str]], tuple[str, ...]]] = {
 }
 
 
+#: Every ``(family, campaign)`` read, one test each: a recorded read of a production-shaped campaign is minutes of work.
+READS = tuple((family, name) for family, (_, names) in FAMILIES.items() for name in names)
+
+
 @dataclass(frozen=True)
 class Measured:
-    """One family read over its campaigns: what it read, over all of them and over each, each campaign whose output
-    the recorder moved, and how many regressed steps the regression watch was checked on."""
+    """One family read over one campaign: what it read, whether the recorder moved its output, how many regressed
+    steps the regression watch was checked on, and the results its bundles list as trials (the bundle family only)."""
 
     access: ResultAccess
-    by_campaign: dict[str, ResultAccess]
-    moved: tuple[str, ...]
+    moved: bool
     regressed_steps: int
-    listed_trials: dict[str, set[str]]
+    listed_trials: frozenset[str] | None
 
 
-def listed_trials(outputs: list[str], n_aspects: int) -> set[str]:
+def listed_trials(outputs: list[str], n_aspects: int) -> frozenset[str]:
     """The ids of the results the bundle family's aspect bundles list as trials (its first ``n_aspects`` outputs, each
     an aspect's JSON then its fingerprint)."""
     decoder = json.JSONDecoder()
-    return {
+    return frozenset(
         str(row["result_id"])
         for output in outputs[:n_aspects]
         for row in decoder.raw_decode(output)[0].get("trials", [])
-    }
+    )
 
 
 @functools.cache
-def measured(family: str) -> Measured:
-    """``family`` read over every campaign it is read over, recorded, once per process."""
-    reader, names = FAMILIES[family]
-    access = ResultAccess()
-    by_campaign: dict[str, ResultAccess] = {}
-    listed: dict[str, set[str]] = {}
-    moved = []
-    steps_read = 0
+def measured(family: str, name: str) -> Measured:
+    """``family`` read over the campaign ``name``, recorded, once per process."""
+    reader, _ = FAMILIES[family]
+    read = campaign(name)
+    args: tuple[Any, ...] = ()
+    steps: list[tuple[str, str]] = []
+    if family == "aggregates":
+        steps = regressed_steps(read)
+        args = (steps,)
+    family_reader = functools.partial(reader, lenses=False) if name == "regressed" else reader
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(analysis_service, "utc_now_iso", lambda: REPORT_NOW)
-        for name in names:
-            read = campaign(name)
-            args: tuple[Any, ...] = ()
-            if family == "aggregates":
-                steps = regressed_steps(read)
-                steps_read += len(steps)
-                args = (steps,)
-            family_reader = functools.partial(reader, lenses=False) if name == "regressed" else reader
-            read_access, outputs, plain = recorded(read, family_reader, *args)
-            access.merge(read_access)
-            by_campaign[name] = read_access
-            if family == "bundle":
-                # The family's outputs are each aspect's bundle, then the campaign's frame, then each page.
-                listed[name] = listed_trials(outputs, len(outputs) - 1 - len(PAGES))
-            if outputs != plain:
-                moved.append(name)
-    return Measured(access, by_campaign, tuple(moved), steps_read, listed)
+        access, outputs, plain = recorded(read, family_reader, *args)
+    # The bundle family's outputs are each aspect's bundle, then the campaign's frame, then each page.
+    listed = listed_trials(outputs, len(outputs) - 1 - len(PAGES)) if family == "bundle" else None
+    return Measured(access, outputs != plain, len(steps), listed)
 
 
 def _where(site: str) -> str:
@@ -658,8 +654,403 @@ PINNED: dict[str, frozenset[str]] = {
     ),
 }
 
+#: What each campaign leaves unread of its family's pinned set: a campaign whose results carry no latency, no
+#: judge or no host measure reads none of those attributes, and a campaign missing here reads them all.
+UNREAD: dict[str, dict[str, frozenset[str]]] = {
+    "bundle": {
+        "scaled": frozenset(
+            {
+                "latency.async_wait_ms",
+                "latency.judge_ms",
+                "latency.llm_ms",
+                "latency.tool_ms",
+                "latency.total_ms",
+            }
+        ),
+        "scaled_two_aspects": frozenset(
+            {
+                "latency.async_wait_ms",
+                "latency.judge_ms",
+                "latency.llm_ms",
+                "latency.tool_ms",
+                "latency.total_ms",
+            }
+        ),
+        "toyhost": frozenset(
+            {
+                "outcome_score.axis",
+                "outcome_score.criterion_fingerprint",
+                "outcome_score.dim",
+                "outcome_score.judge_sent_settings",
+                "outcome_score.judge_sent_settings.==",
+                "outcome_score.judge_sent_settings.max_tokens",
+                "outcome_score.judge_sent_settings.model_dump()",
+                "outcome_score.judge_sent_settings.reasoning_effort",
+                "outcome_score.judge_sent_settings.reasoning_max_tokens",
+                "outcome_score.judge_sent_settings.strict_output",
+                "outcome_score.judge_sent_settings.unsent_reasoning_max_tokens",
+                "outcome_score.judge_temperature",
+                "outcome_score.label_key",
+                "outcome_score.output_fingerprint",
+                "outcome_score.reasoning",
+                "outcome_score.scale",
+                "outcome_score.score",
+                "outcome_score.served_model",
+                "rubric_scores[].judge_sent_settings.==",
+                "rubric_scores[].judge_sent_settings.model_dump()",
+                "rubric_scores[].judge_sent_settings.strict_output",
+                "transcript_score.axis",
+                "transcript_score.criterion_fingerprint",
+                "transcript_score.dim",
+                "transcript_score.judge_sent_settings",
+                "transcript_score.judge_sent_settings.==",
+                "transcript_score.judge_sent_settings.model_dump()",
+                "transcript_score.judge_sent_settings.strict_output",
+                "transcript_score.judge_temperature",
+                "transcript_score.label_key",
+                "transcript_score.output_fingerprint",
+                "transcript_score.reasoning",
+                "transcript_score.scale",
+                "transcript_score.score",
+                "transcript_score.served_model",
+            }
+        ),
+        "courierhost": frozenset(
+            {
+                "goal_state_outcomes[].detail",
+                "goal_state_outcomes[].expression",
+                "goal_state_outcomes[].passed",
+                "judge_score()",
+                "judge_scores()",
+                "latency.async_wait_ms",
+                "latency.judge_ms",
+                "latency.llm_ms",
+                "latency.tool_ms",
+                "latency.total_ms",
+                "outcome_score.axis",
+                "outcome_score.criterion_fingerprint",
+                "outcome_score.dim",
+                "outcome_score.judge_sent_settings",
+                "outcome_score.judge_sent_settings.==",
+                "outcome_score.judge_sent_settings.max_tokens",
+                "outcome_score.judge_sent_settings.model_dump()",
+                "outcome_score.judge_sent_settings.reasoning_effort",
+                "outcome_score.judge_sent_settings.reasoning_max_tokens",
+                "outcome_score.judge_sent_settings.strict_output",
+                "outcome_score.judge_sent_settings.unsent_reasoning_max_tokens",
+                "outcome_score.judge_temperature",
+                "outcome_score.label_key",
+                "outcome_score.output_fingerprint",
+                "outcome_score.reasoning",
+                "outcome_score.scale",
+                "outcome_score.score",
+                "outcome_score.served_model",
+                "rubric_scores[].axis",
+                "rubric_scores[].clears()",
+                "rubric_scores[].criterion_fingerprint",
+                "rubric_scores[].dim",
+                "rubric_scores[].judge_sent_settings",
+                "rubric_scores[].judge_sent_settings.==",
+                "rubric_scores[].judge_sent_settings.model_dump()",
+                "rubric_scores[].judge_sent_settings.strict_output",
+                "rubric_scores[].judge_temperature",
+                "rubric_scores[].label_key",
+                "rubric_scores[].normalized",
+                "rubric_scores[].output_fingerprint",
+                "rubric_scores[].reasoning",
+                "rubric_scores[].scale",
+                "rubric_scores[].score",
+                "rubric_scores[].served_model",
+                "transcript_score.axis",
+                "transcript_score.criterion_fingerprint",
+                "transcript_score.dim",
+                "transcript_score.judge_sent_settings",
+                "transcript_score.judge_sent_settings.==",
+                "transcript_score.judge_sent_settings.model_dump()",
+                "transcript_score.judge_sent_settings.strict_output",
+                "transcript_score.judge_temperature",
+                "transcript_score.label_key",
+                "transcript_score.output_fingerprint",
+                "transcript_score.reasoning",
+                "transcript_score.scale",
+                "transcript_score.score",
+                "transcript_score.served_model",
+            }
+        ),
+    },
+    "aggregates": {
+        "scaled": frozenset(
+            {
+                "judge_model",
+                "latency.total_ms",
+            }
+        ),
+        "scaled_two_aspects": frozenset(
+            {
+                "judge_model",
+                "latency.total_ms",
+            }
+        ),
+        "toyhost": frozenset(
+            {
+                "judge_cut_short",
+                "judge_model",
+                "outcome_score.criterion_fingerprint",
+                "outcome_score.dim",
+                "outcome_score.judge_sent_settings",
+                "outcome_score.judge_sent_settings.model_dump()",
+                "outcome_score.judge_temperature",
+                "outcome_score.label_key",
+                "outcome_score.output_fingerprint",
+                "outcome_score.scale",
+                "outcome_score.score",
+                "outcome_score.served_model",
+                "rubric_scores[].judge_sent_settings.model_dump()",
+                "termination",
+                "transcript_score.criterion_fingerprint",
+                "transcript_score.dim",
+                "transcript_score.judge_sent_settings",
+                "transcript_score.judge_sent_settings.model_dump()",
+                "transcript_score.judge_temperature",
+                "transcript_score.label_key",
+                "transcript_score.output_fingerprint",
+                "transcript_score.scale",
+                "transcript_score.score",
+                "transcript_score.served_model",
+                "turns_delivered",
+            }
+        ),
+        "courierhost": frozenset(
+            {
+                "goal_state_outcomes[].expression",
+                "goal_state_outcomes[].passed",
+                "judge_cut_short",
+                "judge_score()",
+                "judge_scores()",
+                "latency.total_ms",
+                "outcome_score.criterion_fingerprint",
+                "outcome_score.dim",
+                "outcome_score.judge_sent_settings",
+                "outcome_score.judge_sent_settings.model_dump()",
+                "outcome_score.judge_temperature",
+                "outcome_score.label_key",
+                "outcome_score.output_fingerprint",
+                "outcome_score.scale",
+                "outcome_score.score",
+                "outcome_score.served_model",
+                "rubric_scores[].axis",
+                "rubric_scores[].clears()",
+                "rubric_scores[].criterion_fingerprint",
+                "rubric_scores[].dim",
+                "rubric_scores[].judge_sent_settings",
+                "rubric_scores[].judge_sent_settings.model_dump()",
+                "rubric_scores[].judge_temperature",
+                "rubric_scores[].label_key",
+                "rubric_scores[].normalized",
+                "rubric_scores[].output_fingerprint",
+                "rubric_scores[].scale",
+                "rubric_scores[].score",
+                "rubric_scores[].served_model",
+                "termination",
+                "transcript_score.criterion_fingerprint",
+                "transcript_score.dim",
+                "transcript_score.judge_sent_settings",
+                "transcript_score.judge_sent_settings.model_dump()",
+                "transcript_score.judge_temperature",
+                "transcript_score.label_key",
+                "transcript_score.output_fingerprint",
+                "transcript_score.scale",
+                "transcript_score.score",
+                "transcript_score.served_model",
+                "turns_delivered",
+            }
+        ),
+        "regressed": frozenset(
+            {
+                "async_deliveries",
+                "candidate_kind",
+                "cost_roles",
+                "cost_usd",
+                "goal_state_outcomes",
+                "goal_state_outcomes[].expression",
+                "goal_state_outcomes[].passed",
+                "host_measures",
+                "judge_cut_short",
+                "judge_model",
+                "judge_rescores",
+                "k_iteration",
+                "latency",
+                "latency.total_ms",
+                "rubric_scores[].clears()",
+                "scope_id",
+                "scored_at",
+                "termination",
+                "turns_delivered",
+                "usage[].cost_usd",
+            }
+        ),
+    },
+    "planning": {
+        "toyhost": frozenset(
+            {
+                "account_refused",
+                "async_deliveries",
+                "candidate_error",
+                "candidate_instance_id",
+                "candidate_kind",
+                "cost_roles",
+                "cost_usd",
+                "covariates",
+                "doc_type",
+                "eval_run_id",
+                "goal_state_outcomes",
+                "goal_state_outcomes[].detail",
+                "goal_state_outcomes[].expression",
+                "goal_state_outcomes[].passed",
+                "has_trace",
+                "host_measures",
+                "id",
+                "identity_version",
+                "infra_error",
+                "judge_cannot_tell",
+                "judge_cannot_tell_boundary",
+                "judge_config_ids",
+                "judge_cut_short",
+                "judge_error",
+                "judge_model",
+                "judge_reasoning",
+                "judge_repeats",
+                "judge_rescores",
+                "judge_seconds",
+                "k_iteration",
+                "kind_payload",
+                "latency",
+                "lease_epoch",
+                "metered_calls",
+                "metered_calls_refused",
+                "model",
+                "model_copy()",
+                "outcome_score",
+                "outcome_score.axis",
+                "outcome_score.criterion_fingerprint",
+                "outcome_score.dim",
+                "outcome_score.judge_sent_settings",
+                "outcome_score.judge_sent_settings.model_dump()",
+                "outcome_score.judge_temperature",
+                "outcome_score.output_fingerprint",
+                "outcome_score.reasoning",
+                "outcome_score.scale",
+                "outcome_score.score",
+                "outcome_score.served_model",
+                "phase_timings",
+                "precondition_outcomes",
+                "rubric_scores",
+                "rubric_scores[].axis",
+                "rubric_scores[].criterion_fingerprint",
+                "rubric_scores[].dim",
+                "rubric_scores[].judge_sent_settings",
+                "rubric_scores[].judge_sent_settings.model_dump()",
+                "rubric_scores[].judge_temperature",
+                "rubric_scores[].normalized",
+                "rubric_scores[].output_fingerprint",
+                "rubric_scores[].reasoning",
+                "rubric_scores[].scale",
+                "rubric_scores[].score",
+                "rubric_scores[].served_model",
+                "runner_error",
+                "schema_minor",
+                "schema_version",
+                "scope_id",
+                "scored_at",
+                "stop_cause",
+                "subject_id",
+                "superseded_spend_usd",
+                "termination",
+                "test_case_id",
+                "transcript_score",
+                "transcript_score.axis",
+                "transcript_score.criterion_fingerprint",
+                "transcript_score.dim",
+                "transcript_score.judge_sent_settings",
+                "transcript_score.judge_sent_settings.model_dump()",
+                "transcript_score.judge_temperature",
+                "transcript_score.output_fingerprint",
+                "transcript_score.reasoning",
+                "transcript_score.scale",
+                "transcript_score.score",
+                "transcript_score.served_model",
+                "turns_delivered",
+                "usage",
+                "usage[].actor_id",
+                "usage[].call_count",
+                "usage[].completion_tokens",
+                "usage[].cost_usd",
+                "usage[].model",
+                "usage[].price_source",
+                "usage[].prompt_tokens",
+                "usage[].provider",
+                "usage[].provider_unit",
+                "usage[].provider_units",
+                "usage[].purpose",
+                "usage[].reasoning_tokens",
+                "usage[].role",
+                "usage[].sent_settings",
+                "usage[].served_model",
+                "usage[].unanswered_lost",
+                "usage[].unanswered_reasons",
+                "usage[].unanswered_retried",
+                "usage[].unpriced_reasons",
+                "variant_key",
+                "world_events",
+            }
+        ),
+        "courierhost": frozenset(
+            {
+                "goal_state_outcomes[].detail",
+                "goal_state_outcomes[].expression",
+                "goal_state_outcomes[].passed",
+                "model_copy()",
+                "outcome_score.axis",
+                "outcome_score.criterion_fingerprint",
+                "outcome_score.dim",
+                "outcome_score.judge_sent_settings",
+                "outcome_score.judge_sent_settings.model_dump()",
+                "outcome_score.judge_temperature",
+                "outcome_score.output_fingerprint",
+                "outcome_score.reasoning",
+                "outcome_score.scale",
+                "outcome_score.score",
+                "outcome_score.served_model",
+                "rubric_scores[].axis",
+                "rubric_scores[].criterion_fingerprint",
+                "rubric_scores[].dim",
+                "rubric_scores[].judge_sent_settings",
+                "rubric_scores[].judge_sent_settings.model_dump()",
+                "rubric_scores[].judge_temperature",
+                "rubric_scores[].normalized",
+                "rubric_scores[].output_fingerprint",
+                "rubric_scores[].reasoning",
+                "rubric_scores[].scale",
+                "rubric_scores[].score",
+                "rubric_scores[].served_model",
+                "transcript_score.axis",
+                "transcript_score.criterion_fingerprint",
+                "transcript_score.dim",
+                "transcript_score.judge_sent_settings",
+                "transcript_score.judge_sent_settings.model_dump()",
+                "transcript_score.judge_temperature",
+                "transcript_score.output_fingerprint",
+                "transcript_score.reasoning",
+                "transcript_score.scale",
+                "transcript_score.score",
+                "transcript_score.served_model",
+            }
+        ),
+    },
+}
+
 #: Where each family reads judge prose: each prose path (a text read, or ``bool(...)`` for a truth test) and the
-#: ``module function`` sites that read it.
+#: ``module function`` sites that read it, over every campaign.
 PROSE_SITES: dict[str, dict[str, frozenset[str]]] = {
     "bundle": {
         "judge_cannot_tell": frozenset(
@@ -810,44 +1201,58 @@ class TestTheRecorderRecordsWhatIsReadAndChangesNothing:
         assert type(result) is EvalResult
 
 
-@pytest.mark.parametrize("family", sorted(FAMILIES))
-def test_each_family_reads_exactly_its_pinned_attributes(family: str) -> None:
-    measurement = measured(family)
+@pytest.mark.parametrize(("family", "name"), READS, ids=[f"{family}-{name}" for family, name in READS])
+def test_each_family_reads_exactly_its_pinned_attributes(family: str, name: str) -> None:
+    """Over each campaign a family reads exactly its pinned set less what that campaign leaves unread
+    (:data:`UNREAD`), so over its campaigns together it reads exactly its pinned set; its judge prose only where
+    pinned; and (the bundle) its trials section reads the prose of the trials it lists and of no other result (at most
+    ``MAX_TRIALS`` per aspect, never the whole campaign)."""
+    measurement = measured(family, name)
     read = measurement.access.paths
+    expected = PINNED[family] - UNREAD[family].get(name, frozenset())
 
-    assert not measurement.moved, f"the recorder moved {family}'s output over {measurement.moved}"
-    if family == "aggregates":
+    assert not measurement.moved, f"the recorder moved {family}'s output over {name}"
+    if name == "regressed":
         assert measurement.regressed_steps > 0, "the regression watch was never checked on a regressed step"
     problems = [
-        f"{family} reads {path}, outside its pinned set, at {', '.join(sorted(measurement.access.sites[path]))}: "
-        "the reading must carry it, and the pin add it, deliberately"
+        f"{family} reads {path} over {name}, outside its pinned set, at "
+        f"{', '.join(sorted(measurement.access.sites[path]))}: the reading must carry it, and the pin add it, "
+        "deliberately"
         for path in sorted(read - PINNED[family])
     ]
     problems += [
-        f"{family}'s pinned set holds {path}, which no campaign read: the reading need not carry it"
-        for path in sorted(PINNED[family] - read)
+        f"{family} reads {path} over {name}, pinned as unread there (UNREAD), at "
+        f"{', '.join(sorted(measurement.access.sites[path]))}"
+        for path in sorted((read & PINNED[family]) - expected)
     ]
-    assert not problems, "\n".join(problems)
-
-
-@pytest.mark.parametrize("family", sorted(FAMILIES))
-def test_judge_prose_is_read_only_where_it_is_pinned(family: str) -> None:
-    measurement = measured(family)
-    observed = {path: frozenset(_where(site) for site in by_site) for path, by_site in measurement.access.prose.items()}
-
-    assert observed == PROSE_SITES[family]
-
-
-def test_the_trials_section_reads_judge_prose_only_of_the_trials_it_lists() -> None:
-    """The bundle's trials carry each listed trial's judge reasoning (at most ``MAX_TRIALS`` per aspect): it is read of
-    those results and no other, never of the whole campaign's."""
-    measurement = measured("bundle")
-    problems = []
-    for name, access in measurement.by_campaign.items():
-        listed = measurement.listed_trials[name]
-        assert listed, f"{name}'s bundle lists no trial, so this checks nothing there"
-        for path, by_site in access.prose.items():
+    problems += [
+        f"{family} no longer reads {path} over {name}: unpin it there (UNREAD), or from the family if no campaign "
+        "reads it, so the reading carries nothing it need not"
+        for path in sorted(expected - read)
+    ]
+    for path, by_site in sorted(measurement.access.prose.items()):
+        unpinned = {_where(site) for site in by_site} - PROSE_SITES[family].get(path, frozenset())
+        problems += [
+            f"{family} reads judge prose {path} over {name} at {where}, unpinned" for where in sorted(unpinned)
+        ]
+    if measurement.listed_trials is not None:
+        listed = measurement.listed_trials
+        if not listed:
+            problems.append(f"{name}'s bundle lists no trial, so its trials section's prose reads check nothing")
+        for path, by_site in measurement.access.prose.items():
             for site, reads in by_site.items():
                 if _where(site).startswith("analysis/bundle/trials.py ") and not reads.results <= listed:
                     problems.append(f"{name}: {path} read at {site} of {len(reads.results - listed)} unlisted results")
     assert not problems, "\n".join(problems)
+
+
+@pytest.mark.parametrize("family", sorted(FAMILIES))
+def test_every_pin_is_read_by_some_campaign(family: str) -> None:
+    """A path unread by every campaign is a pin the reading need not carry: the unread table names only what each
+    campaign leaves out of what some other campaign reads."""
+    _, names = FAMILIES[family]
+    never = frozenset.intersection(*(UNREAD[family].get(name, frozenset()) for name in names))
+
+    assert not never, f"{family}: pinned but unread by every campaign: {sorted(never)}"
+    assert set(UNREAD[family]) <= set(names)
+    assert all(paths <= PINNED[family] for paths in UNREAD[family].values())

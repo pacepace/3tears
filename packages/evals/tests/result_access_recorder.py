@@ -45,6 +45,7 @@ from types import CodeType, FrameType
 from typing import Any
 from unittest import mock
 
+import pydantic
 from pydantic import BaseModel
 
 import threetears.evals as evals_package
@@ -88,6 +89,10 @@ _SRC = Path(evals_package.__file__).resolve().parent
 
 #: Each call site's name, by code object and line.
 _SITES: dict[tuple[CodeType, int], str] = {}
+
+#: Where pydantic's own source lives: a read it makes (a ``model_copy`` copying, a ``model_dump`` serializing) is not a
+#: reader's.
+_PYDANTIC = str(Path(pydantic.__file__).parent)
 
 
 @dataclass
@@ -172,11 +177,18 @@ def _site(frame: FrameType) -> str:
 
 
 def _caller() -> FrameType | None:
-    """The frame that made the read: the first one outside this module, or None when it is inside pydantic."""
+    """The frame that made the read, or None when pydantic made it.
+
+    Always two frames above :func:`_note`'s caller's caller (``_caller`` <- ``_note`` <- the recording hook <- the
+    reader), found by depth rather than by walking: a frame's attributes are audited, and a test runner's audit hook
+    pays for each one on every read.
+    """
     frame = inspect.currentframe()
-    while frame is not None and frame.f_globals.get("__name__") == __name__:
+    for _ in range(3):
+        if frame is None:
+            return None
         frame = frame.f_back
-    if frame is None or str(frame.f_globals.get("__name__", "")).split(".", 1)[0] == "pydantic":
+    if frame is None or frame.f_code.co_filename.startswith(_PYDANTIC):
         return None
     return frame
 
