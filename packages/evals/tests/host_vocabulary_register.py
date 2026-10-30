@@ -279,6 +279,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "schema/completion.py": {},
     "schema/turns.py": {},
     "kernel/result_condition.py": {},
+    "kernel/result_reading.py": {},
     "kernel/runner_spend.py": {},
     "schema/schema_nesting.py": {},
     "kernel/scoring.py": {},
