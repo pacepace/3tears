@@ -1,7 +1,7 @@
 {
- "@captured_on": "Linux-glibc-2.41",
+ "@captured_on": "Linux-x86_64-glibc-2.41",
  "@confirmed": {
-  "Linux-glibc-2.39": [
+  "Linux-aarch64-glibc-2.39": [
    "body:html:all",
    "body:html:table",
    "body:html_static:all",
@@ -12,6 +12,52 @@
    "body:markdown:table",
    "campaign_fingerprint",
    "fingerprint:extract_invoice_fields",
+   "planning",
+   "read:html:all",
+   "read:html:table",
+   "read:html_static:all",
+   "read:html_static:table",
+   "read:json:all",
+   "read:json:table",
+   "read:markdown:all",
+   "read:markdown:table"
+  ],
+  "Linux-aarch64-glibc-2.41": [
+   "body:html:all",
+   "body:html:table",
+   "body:html_static:all",
+   "body:html_static:table",
+   "body:json:all",
+   "body:json:table",
+   "body:markdown:all",
+   "body:markdown:table",
+   "bundle:extract_invoice_fields",
+   "campaign_fingerprint",
+   "fingerprint:extract_invoice_fields",
+   "frame",
+   "planning",
+   "read:html:all",
+   "read:html:table",
+   "read:html_static:all",
+   "read:html_static:table",
+   "read:json:all",
+   "read:json:table",
+   "read:markdown:all",
+   "read:markdown:table"
+  ],
+  "Linux-x86_64-glibc-2.39": [
+   "body:html:all",
+   "body:html:table",
+   "body:html_static:all",
+   "body:html_static:table",
+   "body:json:all",
+   "body:json:table",
+   "body:markdown:all",
+   "body:markdown:table",
+   "bundle:extract_invoice_fields",
+   "campaign_fingerprint",
+   "fingerprint:extract_invoice_fields",
+   "frame",
    "planning",
    "read:html:all",
    "read:html:table",
@@ -77,7 +123,7 @@
   "sha256": "ce2fb1e1253fda0a10d6dace573ab0bfbfd3460806272f8e1dd7e0a4d31648bf",
   "tail": "elivered\", \"n\": 36, \"n_independent\": 12, \"n_zero\": 0, \"mean\": 920.0, \"p05\": 741.5, \"p50\": 920.0, \"p95\": 1098.5, \"max\": 1110.0, \"sem\": 29.079045876557043, \"ci_low\": 855.997451556074, \"ci_high\": 984.002548443926, \"case_means\": null, \"categories\": {}, \"rate\": null, \"n_true\": null, \"texts\": []}], \"absent_scopes\": [\"subsystem\"], \"unreported_observations\": [\"orchestration_ms (llm_ms, tool_ms were not measured, so the parts cannot account for the whole.)\"]}, \"judged\": [{\"dimension\": \"extraction.layout_fidelity\", \"mean\": 3.3333333333333335, \"sem\": 4.463264492478967e-17, \"n\": 36, \"n_independent\": 12, \"case_means\": null, \"n_infra_excluded\": 0, \"n_cannot_tell\": 0, \"evidence_tier\": \"undetermined\", \"prediction_powered\": null}], \"short_runs\": {}, \"incomplete_runs\": {}, \"strata\": []}], \"time_axis\": null, \"time_axis_withheld\": \"every run started on one day (2026-03-14) and the host labels no build\", \"confound_catalog\": {}, \"prior_insights\": [], \"prior_insights_omitted\": 0, \"retracted_insights\": {}, \"question_declared\": true}"
  },
- "bundle:extract_invoice_fields@Linux-glibc-2.39": {
+ "bundle:extract_invoice_fields@Linux-aarch64-glibc-2.39": {
   "bytes": 90200,
   "head": "{\"schema_version\": 64, \"campaign_id\": \"2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03\", \"subject_id\": \"extractor-config-7\", \"subject_kind\": \"extractor_config\", \"behavior\": \"extract_invoice_fields\", \"aspect\": \"extract_invoice_fields\", \"template_id\": \"\", \"scope_id\": \"toyhost-scope\", \"run_ids\": [\"383ac446-ed59-5edb-940a-a9f2c7ea0b12\", \"69390405-f834-534a-93bd-36b126c67642\"], \"unresolved_run_ids\": [], \"archived_run_ids\": [], \"model_versions\": {\"candidate\": \"extractor-v2\"}, \"window\": {\"start\": \"2026-03-14T09:30:00+00:00\", \"end\": \"2026-03-14T09:30:00+00:00\"}, \"run_summaries\": [{\"run_id\": \"383ac446-ed59-5edb-940a-a9f2c7ea0b12\", \"status\": \"completed\", \"created_at\": \"2026-03-14T09:30:00+00:00\", \"candidate_model\": \"extractor-v2\", \"k_runs\": 3, \"config\": {\"chunk_tokens\": \"1024\"}, \"config_provenance\": {\"chunk_tokens\": \"overridden\"}, \"n_results\": 36, \"n_errors\": 0, \"cost_usd\": 1.08, \"n_cost_unpriced\": 0, \"prod_cost_usd\": 1.08, \"mean_prod_cost_usd\": 0.030000000000000002, \"n_prod_cost_usd\": 36, \"production_footing\": {\"moved\": {}, \"unc",
   "sha256": "bd7387441e43cd59a7f720f44a9042adefde59d0531e2ef4c287b93adab9b3f9",
@@ -95,7 +141,7 @@
   "sha256": "5d8bec5f22bbafa02a3e12452085805719a5397709dc68f968b4caa6ab3be592",
   "tail": "}], \"measures\": [], \"aggregate\": {\"weighting\": {\"basis\": \"equal\", \"weights\": {\"extract_invoice_fields\": 1.0}, \"intervals\": \"aspects_independent\"}, \"level\": 0.95, \"arms\": [{\"arm\": \"4b8240d7a853b161e1dfc2b1ee0bae7c8cd6cdece4c61fb95711c6e272e872b1\", \"arm_label\": \"256tok\", \"pass_rate\": {\"value\": 0.0, \"interval\": [0.0, 12.124700332762039], \"missing\": []}, \"change\": null, \"cost\": {\"value\": 0.02, \"interval\": [0.018733469275048004, 0.021266530724951997], \"missing\": []}, \"cheaper_on\": null, \"dearer_on\": null}, {\"arm\": \"8e0032bccaca6a9cb6693607cc862ae8ad732ea02fc993fc8d3d82c39707fee6\", \"arm_label\": \"1024tok\", \"pass_rate\": {\"value\": 44.44444444444444, \"interval\": [19.93800545958558, 68.9508834293033], \"missing\": []}, \"change\": null, \"cost\": {\"value\": 0.030000000000000002, \"interval\": [0.02810020391257201, 0.031899796087427996], \"missing\": []}, \"cheaper_on\": null, \"dearer_on\": null}]}}, \"aspects\": [{\"aspect\": \"extract_invoice_fields\", \"fingerprint\": \"v2:d62f039526232f1f7b12e9d89df7b64dccb7ff4c0db9595ae04fd64eb79cd5bc\"}]}"
  },
- "frame@Linux-glibc-2.39": {
+ "frame@Linux-aarch64-glibc-2.39": {
   "bytes": 9913,
   "head": "{\"schema_version\": 3, \"campaign_id\": \"2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03\", \"scope_id\": \"toyhost-scope\", \"name\": \"chunk width sweep\", \"subject_id\": \"extractor-config-7\", \"subject_kind\": \"extractor_config\", \"behavior\": \"extract_invoice_fields\", \"declaration\": {\"question\": \"is the wider chunk worth what it costs to retrieve?\", \"declared_at\": \"2026-03-14T09:30:00+00:00\", \"declared_by\": \"\", \"arms\": [], \"aspects\": [{\"label\": \"extract_invoice_fields\", \"template_id\": \"\", \"stratum\": null, \"margin\": null, \"design\": {\"axes\": [{\"axis_id\": \"chunk_tokens\", \"values\": [{\"content_hash\": \"51e8ea280b44e16934d4d611901f3d3afc41789840acdff81942c2f65009cd52\", \"display\": \"256tok\", \"scale\": {\"kind\": \"interval\", \"value\": 256.0, \"unit\": \"tok\"}, \"raw\": 256}, {\"content_hash\": \"e39eef82f61b21e2e7f762fcc4307358f165757f2e77ec855d6992f7e0191932\", \"display\": \"1024tok\", \"scale\": {\"kind\": \"interval\", \"value\": 1024.0, \"unit\": \"tok\"}, \"raw\": 1024}], \"rationale\": \"does a longer chunk carry the whole field or bury it among its neighbours\"}], \"bar",
   "sha256": "61a1cd6a86db72b00218b95ce266ce3ca7664e25f24fe4d56e727268abf9434d",

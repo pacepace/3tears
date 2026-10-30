@@ -32,12 +32,13 @@ capture under ``inputs/`` is written only when it is missing; it is the campaign
 rewritten by a regeneration.
 
 **Every platform is held to its own golden.** The last unrounded digits of some statistics (a t interval's bounds and
-everything computed from them, read through the platform's maths library) differ between C libraries: the same code
-reads ``21.28666989160534`` on glibc 2.41 and ``21.28666989160533`` on glibc 2.39, whatever the machine. A golden
-file's generic entries were captured on the platform it names under ``@captured_on`` (the pool's, glibc 2.41). Every
-other platform (:data:`PLATFORM`: the system and its C library) is compared against its own ``<entry>@<PLATFORM>``, or
-against the generic entry where the file lists it under ``@confirmed`` for that platform, never silently against
-another platform's. A platform with no golden for an entry is a red that says so, carrying the record it read (between
+everything computed from them, read through the platform's maths library) differ between platforms: the same code
+reads ``21.28666989160534`` on the pool and ``21.28666989160533`` in the aarch64 dev container on glibc 2.39, while
+GitHub CI's x86_64 runner on glibc 2.39 reads it as the pool does. Neither the C library nor the machine alone decides
+it, so a platform is both. A golden file's generic entries were captured on the platform it names under
+``@captured_on`` (a pool runner, glibc 2.41). Every other platform (:data:`PLATFORM`: the system, the machine and its C
+library) is compared against its own ``<entry>@<PLATFORM>``, or against the generic entry where the file lists it under
+``@confirmed`` for that platform, never silently against another platform's. A platform with no golden for an entry is a red that says so, carrying the record it read (between
 :data:`OBSERVED` marks) to add once the base commit is confirmed to give it there. Every entry has a golden on every
 platform in :data:`DECLARED_PLATFORMS`, which a test checks. One red lists every entry of its test that moved or has
 no golden. A regeneration (local only: it refuses in CI, on xdist and on testament's runners, and every regenerating
@@ -102,17 +103,22 @@ WHOLE_UP_TO = 4096
 #: How much of a long body's start and end its golden keeps.
 EDGE = 1024
 
-#: The platform a read ran on, as far as its floats' last digits go: the system and its C library, whose maths
-#: library moves them. The machine and the Python build do not: the pool's x86_64 and aarch64 runners, both on glibc
-#: 2.41, read every entry alike, and the dev container on glibc 2.39 reads some apart from them.
-PLATFORM = f"{platform.system()}-{'-'.join(platform.libc_ver())}"
+#: The platform a read ran on, as far as its floats' last digits go: the system, the machine and its C library. The C
+#: library alone does not decide them: the aarch64 dev container on glibc 2.39 reads some entries apart from the pool,
+#: while GitHub CI's x86_64 runner on glibc 2.39 reads every entry as the pool does. The Python build does not move them.
+PLATFORM = f"{platform.system()}-{platform.machine()}-{'-'.join(platform.libc_ver())}"
 
-#: The platform in full, for a red's message: the machine and the Python build too.
-PLATFORM_DETAIL = f"{PLATFORM}-{platform.machine()}-py{platform.python_version()}"
+#: The platform in full, for a red's message: the Python build too.
+PLATFORM_DETAIL = f"{PLATFORM}-py{platform.python_version()}"
 
-#: Every platform the oracle is held on, each with a golden for every entry: the pool's runners, and the development
-#: container a coordinator may read it in.
-DECLARED_PLATFORMS = ("Linux-glibc-2.41", "Linux-glibc-2.39")
+#: Every platform the oracle is held on, each with a golden for every entry: the pool's x86_64 and aarch64 runners,
+#: GitHub CI's x86_64 runner, and the aarch64 development container a coordinator may read it in.
+DECLARED_PLATFORMS = (
+    "Linux-x86_64-glibc-2.41",
+    "Linux-aarch64-glibc-2.41",
+    "Linux-x86_64-glibc-2.39",
+    "Linux-aarch64-glibc-2.39",
+)
 
 #: The key under which a golden file names the platform its generic entries were captured on.
 CAPTURED_ON = "@captured_on"
@@ -433,3 +439,17 @@ def test_every_golden_entry_has_a_golden_on_every_declared_platform(name: str) -
     assert expected <= set(entries), f"{name} lacks goldens for {sorted(expected - set(entries))}"
     missing = {on: [entry for entry in entries if goldens.golden(entry, on) is None] for on in DECLARED_PLATFORMS}
     assert not any(missing.values()), f"{name}: entries with no golden, by platform: {missing}"
+
+
+@pytest.mark.parametrize("variable", ["CI", "PYTEST_XDIST_WORKER", "TESTAMENT_RUNNER"])
+def test_a_regeneration_refuses_to_write_goldens_where_nobody_reviews_them(
+    variable: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A regeneration writes goldens on one local process only: in CI, on an xdist worker or on a testament runner it
+    refuses, naming why."""
+    for name in [name for name in os.environ if name in ("CI", "PYTEST_XDIST_WORKER") or name.startswith("TESTAMENT_")]:
+        monkeypatch.delenv(name)
+    monkeypatch.setenv(variable, "1")
+
+    with pytest.raises(pytest.fail.Exception, match=rf"refuses to write goldens here \({variable} set\)"):
+        refuse_unattended_regeneration()
