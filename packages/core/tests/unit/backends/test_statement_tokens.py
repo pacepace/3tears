@@ -1,5 +1,8 @@
 """A statement's operation, read from a plain statement in a few searches, is exactly the one its tokens give, and a
-page's multi-row ``INSERT`` is labelled in a few milliseconds at most: the event loop labels every statement it sends."""
+page's multi-row ``INSERT`` is labelled in a few milliseconds at most: the event loop labels every statement it sends.
+
+A trailing line comment changes nothing a statement does, and puts it off the plain path onto the tokens, so a
+statement labelled the same with and without one is labelled the same both ways."""
 
 from __future__ import annotations
 
@@ -8,7 +11,10 @@ import time
 
 import pytest
 
-from threetears.core.backends.nats_proxy import _operation_of_tokens, _plain_operation
+from threetears.core.backends.statement_operation import statement_operation
+
+#: a line comment closing a statement: read only as tokens, and changing nothing the statement does
+_READ_AS_TOKENS = "\n-- read as tokens"
 
 #: statements whose names, quoting and words put a keyword or a mark where it is not code
 _TRICKY = [
@@ -75,8 +81,7 @@ _PIECES = [
 
 @pytest.mark.parametrize("statement", _TRICKY)
 def test_a_plain_statement_is_labelled_as_its_tokens_label_it(statement: str) -> None:
-    plain = _plain_operation(statement)
-    assert plain is None or plain == _operation_of_tokens(statement)
+    assert statement_operation(statement) == statement_operation(statement + _READ_AS_TOKENS)
 
 
 def test_any_mix_of_quotes_comments_and_words_is_labelled_the_same_both_ways() -> None:
@@ -84,19 +89,21 @@ def test_any_mix_of_quotes_comments_and_words_is_labelled_the_same_both_ways() -
     plain = 0
     for _ in range(30_000):
         statement = "".join(draw.choice(_PIECES) for _ in range(draw.randrange(1, 14)))
-        label = _plain_operation(statement)
-        plain += label is not None
-        assert label is None or label == _operation_of_tokens(statement), repr(statement)
+        plain += not any(mark in statement for mark in ("'", "--", "/*", "$$", "$t$"))
+        assert statement_operation(statement) == statement_operation(statement + _READ_AS_TOKENS), repr(statement)
     assert plain > 5_000, "the fuzz hardly reached the plain path"
 
 
 def test_a_pages_upsert_is_labelled_in_a_few_milliseconds() -> None:
     rows = ", ".join(f"(${n * 4 + 1}, ${n * 4 + 2}, ${n * 4 + 3}, ${n * 4 + 4})" for n in range(1000))
-    statement = f'INSERT INTO "t" ("a", "b", "c", "d") VALUES {rows} ON CONFLICT ("a") DO UPDATE SET "b" = excluded."b"'
+    # a table of its own per page, as each page's text differs: no label is remembered from the page before
+    pages = [
+        f'INSERT INTO "t{page}" ("a", "b", "c", "d") VALUES {rows} ON CONFLICT ("a") DO UPDATE SET "b" = excluded."b"'
+        for page in range(10)
+    ]
     began = time.perf_counter()
-    for _ in range(10):
-        label = _plain_operation(statement)
-    took = (time.perf_counter() - began) / 10
-    assert label == "upsert" == _operation_of_tokens(statement)
+    labels = {statement_operation(page) for page in pages}
+    took = (time.perf_counter() - began) / len(pages)
+    assert labels == {"upsert"} == {statement_operation(pages[0] + _READ_AS_TOKENS)}
     # about 1 ms on an M-series laptop, against about 20 ms read as tokens
     assert took < 0.005, f"{took * 1000:.2f} ms"

@@ -37,7 +37,6 @@ from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
 from threetears.core.collections import scoped_snapshot as scoped_snapshot_module  # noqa: E402
 from threetears.core.collections.scoped_snapshot import (
-    CHUNK_READS_AT_ONCE,  # noqa: E402
     ScopedSnapshot,
     SnapshotPhase,
     SnapshotSource,
@@ -3547,14 +3546,14 @@ async def test_a_cold_load_reads_at_most_a_few_chunks_at_once_however_many_scope
 
     slow = _Slow()
     slow.objects = store.objects
-    cold, _, _, _ = _snapshot(l3=l3, pointers=pointers, store=slow, l2_concurrency=16)
+    cold, _, _, _ = _snapshot(l3=l3, pointers=pointers, store=slow, l2_concurrency=16, chunk_reads=3)
     l3.epochs = dict.fromkeys(sizes, 1)
 
     await cold.start()
     await cold.wait_ready(timeout=10)
 
     assert cold.status().source is SnapshotSource.L2
-    assert 1 < most <= CHUNK_READS_AT_ONCE, f"{most} chunks read at once"
+    assert 1 < most <= 3, f"{most} chunks read at once, against a bound of 3"
     await cold.stop()
 
 
