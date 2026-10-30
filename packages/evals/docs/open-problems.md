@@ -148,10 +148,13 @@ Decided by the owner, 2026-10-28; no issue filed. A host with no price for a mod
 report is unpriced. A run launch keeps its dollar rule: an arm nobody can price is refused under an enforced cap. No
 host has yet needed an unmetered candidate.
 
-### An aggregate over a scope past 50,000 records is refused (accepted limit)
+### An aggregate over a scope past its read budget is refused (accepted limit)
 
-Decided by the owner, 2026-10-27: refuse now, push the aggregation down later. The aggregating reads (a pivot, a frontier, a history, a budget view) work in Python over every record they read,
-so past `READ_TIER_ROW_BUDGET` they refuse, naming the filters that narrow the call. Answering such a scope in one
+Decided by the owner, 2026-10-27, and set per reader from measurement on 2026-10-30. The aggregating reads (a pivot,
+a frontier, a history, a comparison grouping) and a campaign's bundle work in Python over every result they read, so
+past their measured budget (`threetears.evals.analysis.reads`: about 60,000 results for a history, a frontier or a
+grouping; about 27,000 for a pivot or a bundle) they refuse, naming the filters that narrow the call. The spend
+lenses hold none. Answering such a scope in one
 call needs the aggregation pushed down into the store's SQL
 ([#996](https://github.com/pacepace/3tears/issues/996)). No run has a size limit: its reads are paged, though a few
 readers still read a run whole (the CHANGELOG lists them).

@@ -6,6 +6,40 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: each reader's read budget is measured; the spend lenses hold none, and the bundle and pivot refuse sooner
+
+**Changed:** the read tier's one budget of 50,000 results is replaced by one per reader, each the bytes per result
+that reader holds at its peak against the memory one call may take (measured 2026-10-30 with tracemalloc on the
+hot-path corpus at 1x and 2x, on the memory and SQLite stores, each with and without its narrowed reads, the largest
+kept; `packages/evals/scripts/measure_read_budgets.py` re-measures):
+
+| Reader | Budget (results) | Bytes per result | Allowance |
+|---|---|---|---|
+| `history`, `frontier`, `comparison_sets`, the regression watch (`READING_BUDGET`) | 60,622 | 4,428 | 256 MiB |
+| `detectable_effects`, a launch estimate's planning block (`PLANNING_READ_BUDGET`) | 37,010 | 7,253 | 256 MiB |
+| `pivot` (`PIVOT_READ_BUDGET`) | 27,108 | 39,609 | 1 GiB |
+| a campaign's bundle, so `report_read` and every analysis (`BUNDLE_READ_BUDGET`) | 28,116 | 38,189 | 1 GiB |
+| `program_budget`, `orphaned_runs` | none | | |
+
+What a host sees: a history, a frontier, a comparison grouping or a regression watch over a scope of up to 60,622
+results is now answered where it was refused past 50,000. `program_budget` and `orphaned_runs` answer a scope of any
+size: they fold each result's spend figures off a grouped read and never refuse for size.
+
+**Changed, tighter:** a pivot past 27,108 results, and a campaign's bundle past 28,116 (its report, `report_read`, an
+analysis), are now refused where they were answered up to 50,000. A host with a campaign or a pivot scope between
+those figures and 50,000 narrows it (a pivot to one subject; a campaign to fewer runs, archived members or one aspect),
+as the refusal's remedy says. The planning block of a launch estimate past 37,010 earlier results says it cannot
+estimate, where it read up to 50,000; the estimate is still priced.
+
+**Changed:** `READ_TIER_ROW_BUDGET` stays, as the readings readers' budget (60,622, where it was 50,000), and is still
+the record count past which an `eval.read_tier` line is a WARNING. A refusal's text is unchanged but for its figure;
+its log line now ends `over result_budget=<figure>`, where it ended `over READ_TIER_ROW_BUDGET=<figure>`, and the
+regression watch's ERROR line reads `past its read budget of <figure>`. No remedy cites an issue number.
+
+**Changed (provisional):** `reads.hold_to_read_budget` and `reads.narrowed_read_disclosure` take a keyword-only
+`budget`. The planning read reads its runs' readings in the store's own order across them, so on the engine's path
+every run's keys are one call.
+
 ### evals: the campaign bundle reads its results as readings, and its kept trials whole by id
 
 **Changed:** `assemble_context_bundle` reads a campaign's results through `iter_result_readings`, so it holds each

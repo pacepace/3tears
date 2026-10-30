@@ -299,10 +299,10 @@ cases, a reading says it cannot estimate and why; no default variance is ever us
 assumptions, among them near-normal per-case differences and that only the one comparison differs. The block
 reads every earlier run's results, a page at a time, keeping of each result only its per-case values, so its memory
 holds a page of results and those values (a few of them per reading), never the results themselves. Its read time still grows with the history, so for a template whose earlier runs
-(archived ones left out) hold more than `READ_TIER_ROW_BUDGET` results by their matrices, or by their stored keys, it
+(archived ones left out) hold more than `PLANNING_READ_BUDGET` results by their matrices, or by their stored keys, it
 reads none of their results and says so in its `cannot_estimate`,
 naming the budget and how to narrow (archive earlier runs it need not plan from); the price is still estimated
-and returned, since it does not depend on the block (#996 is the store computing it). `detectable_effects` called
+and returned, since it does not depend on the block. `detectable_effects` called
 on its own refuses past the budget, as the read tier's aggregates do.
 
 A host therefore prices no arm itself: a wrapper that priced assembled runs would be a second rule, and a
