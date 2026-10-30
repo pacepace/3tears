@@ -157,6 +157,16 @@ ALLOWED: dict[tuple[str, str], str] = {
         "one eval file's execution and resets it on leaving; it holds that file's directory, never a host, and a "
         "second host in the same process cannot observe another task's value"
     ),
+    ("threetears/evals/kernel/phase_log.py", "_OPEN"): (
+        "a ContextVar, so its value is per task, never per process: phase_logged sets it around one call's read and "
+        "resets it on leaving; it holds that call's open log lines and phase charges, never a host, and a second "
+        "host in the same process cannot observe another task's value"
+    ),
+    ("threetears/evals/analysis/bundle/measures.py", "_WALK_MEMO"): (
+        "a ContextVar, so its value is per task, never per process: one bundle assembly sets it around its folds and "
+        "resets it on leaving, raised or not; it holds that assembly's measure walks of the results it read, never "
+        "a host, and a second host in the same process cannot observe another task's value"
+    ),
     ("threetears/evals/kernel/job_context.py", "_RUNNING_JOB"): (
         "a ContextVar, so its value is per task, never per process: the job manager sets it around one job's work, "
         "for that task and the tasks it creates, and resets it on leaving; it names a job's record, never a host"

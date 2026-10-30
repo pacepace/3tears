@@ -89,6 +89,7 @@ import inspect
 import sys
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any, Literal, Protocol, runtime_checkable
 
 
@@ -695,7 +696,7 @@ class ResultReadings(Protocol):
         scope_id: str,
         *,
         exclude: Sequence[str] = (),
-        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> Iterator[dict[str, Any]]:
@@ -751,7 +752,8 @@ class ResultReadings(Protocol):
           compare as numbers and strings by code point (binary collation). A group with no values gives ``None``.
         * ``("values", path)``: ``[[row_id, value], ...]``, one pair per row, in :meth:`iter_narrowed`'s order, with
           ``None`` for an absent value, each value exactly as this store's own reads return it (every double to its
-          last bit). ``row_id`` is the row's ``id``. The reader folds a float from these, in this
+          last bit; a store may change a value as it writes it, as SQLite reads an integer of 2**63 or more back as
+          a float). ``row_id`` is the row's ``id``. The reader folds a float from these, in this
           order, so its answer does not depend on how the store adds.
 
         :param doc_type: The discriminator to select on.
@@ -875,7 +877,7 @@ class AsyncResultReadings(Protocol):
         scope_id: str,
         *,
         exclude: Sequence[str] = (),
-        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> AsyncIterator[dict[str, Any]]:

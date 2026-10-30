@@ -783,7 +783,7 @@ class _ReadingRoutedDocumentStore(RoutedDocumentStore):
         scope_id: str,
         *,
         exclude: Sequence[str] = (),
-        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> Iterator[dict[str, Any]]:
