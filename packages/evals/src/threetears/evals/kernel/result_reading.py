@@ -53,14 +53,33 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "GoalReading",
     "GoalView",
     "GroupsRead",
+    "LatencyReading",
     "LatencyView",
+    "PreconditionReading",
+    "PreconditionView",
+    "ReadPath",
     "ReadingsRead",
+    "RepeatReading",
+    "RepeatView",
+    "RepeatedScoreReading",
+    "RepeatedScoreView",
+    "RescoreReading",
+    "RescoreView",
     "ResultReading",
     "ResultView",
+    "ScoreReading",
     "ScoreView",
+    "SecondJudgeReading",
+    "SecondJudgeView",
+    "SecondJudgingReading",
+    "SecondJudgingView",
+    "SecondScoreReading",
+    "SecondScoreView",
     "SharedValues",
+    "UsageReading",
     "UsageView",
 ]
 
