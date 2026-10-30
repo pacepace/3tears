@@ -31,13 +31,21 @@ locally, on one process: ``TESTAMENT=off HOT_PATH_ORACLE_REGEN=1 ./scripts/test.
 capture under ``inputs/`` is written only when it is missing; it is the campaign read, not an output, so it is never
 rewritten by a regeneration.
 
-**A golden is per platform where the platform moves it.** The last unrounded digits of some statistics (a t
-interval's bounds, a sum's last place, read through the platform's maths library) differ between platforms: the same
-code reads ``21.28666989160534`` on one and ``21.28666989160533`` on another. So an entry a platform reads differently
-from where it was captured carries an override, ``<entry>@<PLATFORM>`` (:data:`PLATFORM`: the machine, the C library
-and the Python build), and each platform is held byte for byte to its own. A red's message names the platform and
-carries the record it observed (between :data:`OBSERVED` marks), so an override, or an approved change's goldens, can
-be taken from a pool run's report (``testament run --json``).
+**Every platform is held to its own golden.** The last unrounded digits of some statistics (a t interval's bounds and
+everything computed from them, read through the platform's maths library) differ between C libraries: the same code
+reads ``21.28666989160534`` on glibc 2.41 and ``21.28666989160533`` on glibc 2.39, whatever the machine. A golden
+file's generic entries were captured on the platform it names under ``@captured_on`` (the pool's, glibc 2.41). Every
+other platform (:data:`PLATFORM`: the system and its C library) is compared against its own ``<entry>@<PLATFORM>``, or
+against the generic entry where the file lists it under ``@confirmed`` for that platform, never silently against
+another platform's. A platform with no golden for an entry is a red that says so, carrying the record it read (between
+:data:`OBSERVED` marks) to add once the base commit is confirmed to give it there. Every entry has a golden on every
+platform in :data:`DECLARED_PLATFORMS`, which a test checks. One red lists every entry of its test that moved or has
+no golden. A regeneration (local only: it refuses in CI, on xdist and on testament's runners, and every regenerating
+test fails, naming what it wrote) writes its own platform's goldens; on the capture platform it drops the other
+platforms' overrides and confirmations of each entry it rewrites, so they read as having none until confirmed again.
+
+Floats are not compared at a tolerance, not even those a maths library computes: a tolerance would also pass a sum
+whose order moved its last place, which is what this oracle exists to catch.
 
 The report's clock is pinned (:data:`REPORT_NOW`), the one wall-clock value a code-only page prints.
 """
@@ -94,8 +102,23 @@ WHOLE_UP_TO = 4096
 #: How much of a long body's start and end its golden keeps.
 EDGE = 1024
 
-#: The platform a read ran on, as far as its floats' last digits go: the machine, the C library and the Python build.
-PLATFORM = f"{platform.system()}-{platform.machine()}-{'-'.join(platform.libc_ver())}-py{platform.python_version()}"
+#: The platform a read ran on, as far as its floats' last digits go: the system and its C library, whose maths
+#: library moves them. The machine and the Python build do not: the pool's x86_64 and aarch64 runners, both on glibc
+#: 2.41, read every entry alike, and the dev container on glibc 2.39 reads some apart from them.
+PLATFORM = f"{platform.system()}-{'-'.join(platform.libc_ver())}"
+
+#: The platform in full, for a red's message: the machine and the Python build too.
+PLATFORM_DETAIL = f"{PLATFORM}-{platform.machine()}-py{platform.python_version()}"
+
+#: Every platform the oracle is held on, each with a golden for every entry: the pool's runners, and the development
+#: container a coordinator may read it in.
+DECLARED_PLATFORMS = ("Linux-glibc-2.41", "Linux-glibc-2.39")
+
+#: The key under which a golden file names the platform its generic entries were captured on.
+CAPTURED_ON = "@captured_on"
+
+#: The key under which a golden file lists, per platform, the entries that platform reads exactly as the generic one.
+CONFIRMED = "@confirmed"
 
 #: What brackets the observed record in a red's message, so a pool run's report carries the record it read.
 OBSERVED = "<<observed-record>>"
@@ -198,49 +221,126 @@ def record(text: str) -> dict[str, Any]:
     return {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data), "head": text[:EDGE], "tail": text[-EDGE:]}
 
 
-def _golden_path(name: str) -> Path:
-    return GOLDENS / f"{name}.json"
+def refuse_unattended_regeneration() -> None:
+    """Refuse to write goldens anywhere but one local process: never in CI, on an xdist worker or a testament runner.
 
-
-def _goldens(name: str) -> dict[str, Any]:
-    path = _golden_path(name)
-    if not path.exists():
-        return {}
-    goldens: dict[str, Any] = json.loads(path.read_text())
-    return goldens
-
-
-def check(name: str, entry: str, text: str) -> None:
-    """``text`` against campaign ``name``'s golden ``entry`` on this platform, or written as it under
-    :data:`REGENERATE`.
-
-    The golden is the entry this platform overrides (``<entry>@<PLATFORM>``) where there is one, else the entry
-    itself.
+    Parallel writers would race on each campaign's one file, and goldens written where nobody reviews the diff are a
+    silent re-baseline.
     """
-    observed = record(text)
-    goldens = _goldens(name)
-    if REGENERATE:
-        goldens[entry] = observed
+    unattended = sorted(
+        name for name in os.environ if name in ("CI", "PYTEST_XDIST_WORKER") or name.startswith("TESTAMENT_")
+    )
+    if unattended:
+        pytest.fail(
+            f"HOT_PATH_ORACLE_REGEN refuses to write goldens here ({', '.join(unattended)} set): run it locally"
+        )
+
+
+class Goldens:
+    """One campaign's goldens, read as this platform holds them, and every entry a test compares against them.
+
+    Every entry a test compares is checked before it fails, so one red names every entry that moved, and every
+    entry this platform has no golden for, each with the record it read.
+
+    The file's generic entries were captured on the platform it names under :data:`CAPTURED_ON`. Another platform is
+    compared against its own override, ``<entry>@<PLATFORM>``, or against the generic entry where the file lists the
+    entry as confirmed for that platform (:data:`CONFIRMED`): never silently against a golden of a platform whose
+    floats may read differently in their last place.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.path = GOLDENS / f"{name}.json"
+        self.stored: dict[str, Any] = json.loads(self.path.read_text()) if self.path.exists() else {}
+        self.problems: list[str] = []
+        self.written: list[str] = []
+
+    def golden(self, entry: str, on: str = PLATFORM) -> dict[str, Any] | None:
+        """Platform ``on``'s golden of ``entry``: its override, else the generic entry where it holds there."""
+        override = self.stored.get(f"{entry}@{on}")
+        if override is not None:
+            return dict(override)
+        holds = self.stored.get(CAPTURED_ON) == on or entry in self.stored.get(CONFIRMED, {}).get(on, [])
+        return dict(self.stored[entry]) if holds and entry in self.stored else None
+
+    def entries(self) -> list[str]:
+        """The generic entries the file holds."""
+        return sorted(key for key in self.stored if not key.startswith("@") and "@" not in key)
+
+    def check(self, entry: str, text: str) -> None:
+        """Compare ``text`` with ``entry``'s golden on this platform, or write it under :data:`REGENERATE`."""
+        observed = record(text)
+        if REGENERATE:
+            self.regenerate(entry, observed)
+            return
+        carried = json.dumps(
+            {
+                "campaign": self.name,
+                "entry": entry,
+                "platform": PLATFORM,
+                "detail": PLATFORM_DETAIL,
+                "record": observed,
+            },
+            ensure_ascii=False,
+        )
+        golden = self.golden(entry)
+        if golden is None:
+            self.problems.append(
+                f"{self.name} {entry}: no golden for this platform ({PLATFORM}; the generic goldens were captured on "
+                f"{self.stored.get(CAPTURED_ON)}): add {entry}@{PLATFORM} = the record below, or list the entry as "
+                f"confirmed for it, after confirming the base commit gives it on this platform "
+                f"{OBSERVED}{carried}{OBSERVED}"
+            )
+            return
+        if observed != golden:
+            moved = next(
+                (
+                    index
+                    for index, (was, now) in enumerate(zip(golden.get("text", golden.get("head", "")), text))
+                    if was != now
+                ),
+                None,
+            )
+            self.problems.append(
+                f"{self.name} {entry} moved on {PLATFORM}: {observed.get('bytes', len(text))} bytes now, "
+                f"{golden.get('bytes', len(golden.get('text', '')))} in the golden; first difference in its head at "
+                f"character {moved}; head now {text[:200]!r} {OBSERVED}{carried}{OBSERVED}"
+            )
+
+    def regenerate(self, entry: str, observed: dict[str, Any]) -> None:
+        """Write ``observed`` as this platform's golden of ``entry``.
+
+        On the capture platform it replaces the generic entry, and every other platform's override and confirmation of
+        it is dropped: they described the output it replaces, so each reads as having no golden until confirmed again.
+        On another platform it confirms the generic entry where it is equal, and is written as this platform's
+        override where it is not.
+        """
+        refuse_unattended_regeneration()
+        captured = self.stored.setdefault(CAPTURED_ON, PLATFORM)
+        confirmed: dict[str, list[str]] = self.stored.setdefault(CONFIRMED, {})
+        if captured == PLATFORM:
+            self.stored[entry] = observed
+            for key in [key for key in self.stored if key.startswith(f"{entry}@")]:
+                del self.stored[key]
+            for listed in confirmed.values():
+                if entry in listed:
+                    listed.remove(entry)
+        elif self.stored.get(entry) == observed:
+            self.stored.pop(f"{entry}@{PLATFORM}", None)
+            confirmed[PLATFORM] = sorted({*confirmed.get(PLATFORM, []), entry})
+        else:
+            self.stored[f"{entry}@{PLATFORM}"] = observed
+            confirmed[PLATFORM] = [listed for listed in confirmed.get(PLATFORM, []) if listed != entry]
         GOLDENS.mkdir(parents=True, exist_ok=True)
-        _golden_path(name).write_text(json.dumps(goldens, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
-        return
-    golden = goldens.get(f"{entry}@{PLATFORM}", goldens.get(entry))
-    assert golden is not None, f"{name} has no golden {entry!r}; goldens are written under HOT_PATH_ORACLE_REGEN=1"
-    if observed != golden:
-        moved = next(
-            (
-                index
-                for index, (was, now) in enumerate(zip(golden.get("text", golden.get("head", "")), text))
-                if was != now
-            ),
-            None,
-        )
-        raise AssertionError(
-            f"{name} {entry} moved on {PLATFORM}: {observed.get('bytes', len(text))} bytes now, "
-            f"{golden.get('bytes', len(golden.get('text', '')))} in the golden; first difference in its head at "
-            f"character {moved}; head now {text[:200]!r}; observed record "
-            f"{OBSERVED}{json.dumps(observed, ensure_ascii=False)}{OBSERVED}"
-        )
+        self.path.write_text(json.dumps(self.stored, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
+        self.written.append(entry)
+
+    def assert_unchanged(self) -> None:
+        """Fail naming every entry that moved or has no golden on this platform; under :data:`REGENERATE`, fail naming
+        what was written, so a regenerating run never reads as green."""
+        if self.written:
+            pytest.fail(f"{self.name}: goldens written on {PLATFORM} for {', '.join(self.written)}: review the diff")
+        assert not self.problems, "\n".join(self.problems)
 
 
 @pytest.fixture
@@ -259,12 +359,18 @@ def test_every_aspect_s_bundle_and_the_campaign_frame_are_unchanged(name: str, p
     read = subject(name)
     bundle = assemble_campaign_bundle(read.host, read.campaign_id, read.scope_id)
 
+    goldens = Goldens(name)
+
     assert bundle.aspects, f"{name} assembled no aspect"
+    if not REGENERATE:
+        pinned = sorted(entry.removeprefix("bundle:") for entry in goldens.entries() if entry.startswith("bundle:"))
+        assert sorted(aspect.aspect for aspect in bundle.aspects) == pinned, f"{name}'s aspects are not the pinned ones"
     for aspect in bundle.aspects:
-        check(name, f"bundle:{aspect.aspect}", _json(aspect.to_dict()))
-        check(name, f"fingerprint:{aspect.aspect}", aspect.fingerprint())
-    check(name, "frame", _json(bundle.frame()))
-    check(name, "campaign_fingerprint", bundle.fingerprint())
+        goldens.check(f"bundle:{aspect.aspect}", _json(aspect.to_dict()))
+        goldens.check(f"fingerprint:{aspect.aspect}", aspect.fingerprint())
+    goldens.check("frame", _json(bundle.frame()))
+    goldens.check("campaign_fingerprint", bundle.fingerprint())
+    goldens.assert_unchanged()
 
 
 @pytest.mark.parametrize("trials", TRIALS)
@@ -276,9 +382,11 @@ def test_every_report_read_body_is_unchanged(
     read = subject(name)
     document = report_read(read.host, read.campaign_id, read.scope_id, format=form, static=static, trials=trials)
     form_id = f"{form}_static" if static else form
+    goldens = Goldens(name)
 
-    check(name, f"body:{form_id}:{trials}", document.body)
-    check(name, f"read:{form_id}:{trials}", _json(document.model_dump(mode="json", exclude={"body"})))
+    goldens.check(f"body:{form_id}:{trials}", document.body)
+    goldens.check(f"read:{form_id}:{trials}", _json(document.model_dump(mode="json", exclude={"body"})))
+    goldens.assert_unchanged()
 
 
 @pytest.mark.parametrize("name", WITH_PLANNING)
@@ -295,7 +403,10 @@ def test_the_planning_block_a_launch_estimate_carries_is_unchanged(name: str) ->
         n_arms=planning.n_arms,
     )
 
-    check(name, "planning", block.model_dump_json())
+    goldens = Goldens(name)
+
+    goldens.check("planning", block.model_dump_json())
+    goldens.assert_unchanged()
 
 
 def test_the_scaled_page_states_how_many_trials_it_lists_of_how_many_ran(pinned_clock: None) -> None:
@@ -308,3 +419,17 @@ def test_the_scaled_page_states_how_many_trials_it_lists_of_how_many_ran(pinned_
     body = report_read(read.host, read.campaign_id, read.scope_id, format="markdown").body
 
     assert f"{aspect.trials_omitted} more trials count on the scoreboard and are not listed here" in body
+
+
+@pytest.mark.parametrize("name", CAMPAIGNS)
+def test_every_golden_entry_has_a_golden_on_every_declared_platform(name: str) -> None:
+    """Coverage is checked here, not found by which runner a read lands on: every entry a campaign's goldens hold has
+    a golden on every platform in :data:`DECLARED_PLATFORMS`."""
+    goldens = Goldens(name)
+    entries = goldens.entries()
+    expected = {f"body:{form}:{trials}" for form in ("markdown", "html", "html_static", "json") for trials in TRIALS}
+    expected |= {entry.replace("body:", "read:", 1) for entry in expected}
+
+    assert expected <= set(entries), f"{name} lacks goldens for {sorted(expected - set(entries))}"
+    missing = {on: [entry for entry in entries if goldens.golden(entry, on) is None] for on in DECLARED_PLATFORMS}
+    assert not any(missing.values()), f"{name}: entries with no golden, by platform: {missing}"

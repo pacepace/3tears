@@ -13,6 +13,12 @@ Everything is stored through the real :class:`~threetears.evals.kernel.storage.E
 pay. Every value comes from a seeded generator and every instant is fixed, so two builds are the same corpus byte for
 byte and the bundles assembled from them fingerprint alike.
 
+**Where it departs from production**, so a reader knows what a profile of it cannot show: one subject; two rubric
+criteria beside the transcript and outcome scores; traces that hold only judge evidence; no judge repeats, rescores or
+second judgings; about 2.5% candidate or judge errors and no lost, archived or contended results (so no result is
+copied to read a failure as a miss or to withhold its latency); every row at the current schema minor (so hydration
+upgrades nothing); and four arms dealt round-robin, every group of four runs sharing one slice of cases.
+
 The counting half (:data:`OPERATIONS`, :func:`counting_operations`) counts the operations the scaling test
 bounds, by wrapping the production callables in place for the length of a ``with`` block: no source changes, and
 the wrapped callable still runs.
@@ -339,12 +345,13 @@ def _store_runs(
     template_id: str,
     run_indices: range,
     scale: int,
+    base_cases: int,
 ) -> tuple[list[str], int, str]:
     """Store the runs at ``run_indices`` of ``template_id``, each with its results, traces and cases.
 
     :return: The run ids in order, how many results were stored, and the control arm's variant key.
     """
-    cases_per_run = CASES_PER_RUN * scale
+    cases_per_run = base_cases * scale
     subject = make_subject("support-agent-7", "Support agent, config 7")
     run_ids: list[str] = []
     stored = 0
@@ -415,6 +422,7 @@ def hot_path_corpus(
     scope_id: str = HOT_PATH_SCOPE,
     template_id: str = "tpl-support",
     store: InMemoryDocumentStore | None = None,
+    cases_per_run: int = CASES_PER_RUN,
 ) -> HotPathCorpus:
     """Build the corpus at ``scale`` (1, 2 or 4: the cases each run measures), stored and ready to read.
 
@@ -428,6 +436,9 @@ def hot_path_corpus(
     :ptype template_id: str
     :param store: The store to write it into, beside what it holds; None for a fresh one.
     :ptype store: InMemoryDocumentStore | None
+    :param cases_per_run: The cases each run measures at ``scale=1``; production's shape unless a reader needs a
+        smaller unit (the scaling test, whose ratios do not depend on size).
+    :ptype cases_per_run: int
     :return: The corpus.
     :rtype: HotPathCorpus
     """
@@ -460,7 +471,13 @@ def hot_path_corpus(
     control_key = ""
     for each_template, indices in zip(template_ids, ranges, strict=True):
         run_ids, stored, key = _store_runs(
-            storage, host, scope_id=scope_id, template_id=each_template, run_indices=indices, scale=scale
+            storage,
+            host,
+            scope_id=scope_id,
+            template_id=each_template,
+            run_indices=indices,
+            scale=scale,
+            base_cases=cases_per_run,
         )
         total += stored
         control_key = control_key or key
