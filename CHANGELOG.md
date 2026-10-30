@@ -8,6 +8,32 @@ packages (bumped in lock-step).
 
 ## v0.85.0 -- 2026-10-29
 
+### core: shared-memory Arrow between a serving process and its worker processes
+
+**Added:** `threetears.core.shared_arrow` moves CPU work off a serving process's event loop into worker processes
+without a copy of the data per process and without pickling results. Tables are written once as uncompressed Arrow
+IPC files into a memory-backed directory (`/dev/shm`, or an `emptyDir` with `medium: Memory`) and memory-mapped by
+every process that reads them. Guide: `docs/shared-arrow.md`.
+
+- `SharedArrowStore` (one per directory, in the serving process) publishes data versions (`publish`,
+  `publish_query` streaming a DuckDB answer a batch at a time; a table may be a callable opened when it is written; `epochs_version` names one by a scoped snapshot's
+  epochs) and reserves result slots for workers (`reserve`, `claim`, `discard`).
+- `SharedArrowPool` runs `job(context, *args)` in spawned, long-lived workers: each job reads the version current at
+  submission, leased for its whole run, through `context.version` (mapped tables, or a DuckDB connection over them
+  with no row copied), and may write result tables to `context.result`, claimed back as a mapped `MappedSegment`.
+  A worker whose private memory passes the pool's bound after a job is replaced.
+- Cleanup is by state, never by time: readers and writers hold `flock`s the system drops when they close or die,
+  and a sweep after every publish, release, claim and discard removes every version not current and unheld, every
+  result no slot or claim owns, and every staging directory whose writer is gone. A new store clears what no live
+  process holds.
+- `max_bytes` bounds every version and result together (an open slot counts at its most); a publish, reservation
+  or worker write past it raises `SharedArrowFullError` and keeps nothing.
+
+Measured on Linux with the reports pod's dev tables (9.0M rows, real column types, generated values): one process
+holding them in DuckDB is 2.24 GiB PSS; that process, the published store (1.75 GiB) and four workers scanning every
+column is 4.29 GiB, each worker 66 MiB of private memory; four workers each loading their own copy would be 12.5 GiB
+(`scripts/measure-shared-arrow.py`).
+
 ### core, acl: a platform pool stops re-sending the session settings it already holds, and a namespace name resolves from cache
 
 **Fixed:** on cobalt dev on 2026-10-29 most of the YSQL statement mix was session bookkeeping:
