@@ -10,8 +10,13 @@ a regressed step so the regression watch reads its judged tiers, and reads each 
 path the package ships: the memory and SQLite stores, each as it is (``store``, ``sqlite``) and with its narrowed reads
 hidden (``engine``, ``sqlite_engine``). A reader's bytes per result is the marginal of its peak, ``Δpeak / Δresults``
 between the two scales, so what it holds whatever the scope's size cancels out. The table prints each reader's figure
-per path, and the budget ``floor(allowance / bytes)`` at 256 MiB and at 1 GiB; ``threetears.evals.analysis.reads``
-keeps, per reader family, the largest figure over its readers and paths, and the date it was measured.
+per path, and the budget ``floor(allowance / bytes)`` at 256 MiB and at 1 GiB, then each reader family's budget.
+
+**The rule the budgets follow** (owner ruling, 2026-10-30): a family's budget is set by the largest figure over its
+readers on the paths a HOST runs, the SQLite store with and without its narrowed reads and the memory store without
+them (``sqlite``, ``sqlite_engine``, ``engine``). The memory store's own narrowed read (``store``) is printed for
+comparison and sets nothing: no host serves from it. ``threetears.evals.analysis.reads`` keeps each family's figure,
+its path, its allowance and the date it was measured.
 """
 
 from __future__ import annotations
@@ -92,6 +97,19 @@ def _readers(host: EvalHost, corpus: HotPathCorpus, cases: int, step: tuple[str,
     }
 
 
+#: The paths a host runs, which set a budget; ``store`` (the memory store's own narrowed read) does not.
+HOST_PATHS = ("engine", "sqlite", "sqlite_engine")
+
+#: Each budget in ``threetears.evals.analysis.reads``: its readers here, and the memory one call may take.
+FAMILIES: dict[str, tuple[tuple[str, ...], int]] = {
+    "READING_BUDGET": (("history", "frontier", "comparison_sets", "regression_watch"), 256 << 20),
+    "PLANNING_READ_BUDGET": (("detectable_effects",), 256 << 20),
+    "PIVOT_READ_BUDGET": (("pivot",), 1 << 30),
+    "BUNDLE_READ_BUDGET": (("bundle",), 1 << 30),
+    "SPEND_READ_BUDGET": (("program_budget", "orphaned_runs"), 1 << 30),
+}
+
+
 def _peak(read: Callable[[], Any]) -> int:
     """The peak memory ``read`` allocates above what was held before it, in bytes."""
     gc.collect()
@@ -141,12 +159,20 @@ def main(only: set[str]) -> None:
                         peaks[(reader, path, scale)] = (results, peak)
                         print(f"{scale}x {path:13s} {reader:18s} {results:6d} results {peak:>12d} B")
     print(f"\n{'reader':18s} {'path':13s} {'bytes/result':>12s} {'256 MiB':>8s} {'1 GiB':>8s}")
+    marginals: dict[tuple[str, str], float] = {}
     for (reader, path, scale), (n1, p1) in sorted(peaks.items()):
         if scale == 1:
             n2, p2 = peaks[(reader, path, 2)]
             marginal = (p2 - p1) / (n2 - n1)
+            marginals[(reader, path)] = marginal
             budgets = [str(int(allowance // marginal)) if marginal > 0 else "-" for allowance in (256 << 20, 1 << 30)]
             print(f"{reader:18s} {path:13s} {marginal:12.0f} {budgets[0]:>8s} {budgets[1]:>8s}")
+    print(f"\n{'budget':22s} {'set by':32s} {'bytes/result':>12s} {'results':>8s}")
+    for family, (readers, allowance) in FAMILIES.items():
+        measured = [(marginals[(r, path)], r, path) for r in readers for path in HOST_PATHS if (r, path) in marginals]
+        if measured:
+            worst, reader, path = max(measured)
+            print(f"{family:22s} {reader + ' on ' + path:32s} {worst:12.0f} {int(allowance // worst):8d}")
 
 
 if __name__ == "__main__":

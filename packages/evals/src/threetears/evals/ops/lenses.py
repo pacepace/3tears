@@ -809,9 +809,9 @@ def _planning_block(
     the read tier's budget, the block saying so in ``cannot_estimate``.
 
     The price does not depend on the block, so a planning read past the budget blocks only the block: it is a
-    disclosure on the estimate, never a refusal of it. Runs past the budget by their matrices are not read:
-    :func:`detectable_effects` refused before reading a result (by the runs' matrices, or by their stored keys), and
-    logged the refusal at WARNING. Every other refusal propagates.
+    disclosure on the estimate, never a refusal of it. :func:`detectable_effects` refuses runs past the budget by
+    their matrices before reading any result, and a read that returned more results than the budget once its walk is
+    done; either refusal is logged at WARNING. Every other refusal propagates.
     """
     try:
         return detectable_effects(host, scope_id, template_id, n_cases=n_cases, k_runs=k_runs, n_arms=n_arms)
@@ -824,7 +824,8 @@ def _planning_block(
             if "results_returned" not in details
             else f"returned {details['results_returned']} results"
         )
-        # No reading was read, so the family is the one contrast per arm a launch of these arms would test.
+        # No reading reaches the block (none was read, or the read was refused once walked), so the family is the one
+        # contrast per arm a launch of these arms would test.
         family_size = max(1, n_arms - 1)
         return DetectableEffects(
             n_cases=n_cases,

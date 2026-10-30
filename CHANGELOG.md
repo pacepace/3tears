@@ -68,7 +68,9 @@ census and the judge-change reading read.
 offers `ResultReadings`: one `iter_narrowed` call, with the verbatim fields (`world_events`, `kind_payload`) and the
 judge's prose (`judge_reasoning`, each score's `reasoning`, a re-judge's `cannot_tell` notes) left out, its rows
 hydrated a page at a time; or one `grouped` call. A store without it is read on the engine's path, as before. A store
-that offers the capability and fails raises what it raised, and is never read again on the engine's path. The readings
+that offers the capability and fails raises a `StorageError` (503), as a store failing on the engine's path does,
+and is never read again on the engine's path; a grouping `grouped` refuses (`TypeError`, `ValueError`) is raised as
+it is on both paths. The readings
 and the groups are the same on both paths, in the same order. A store-path read of several runs holds its readings
 until the store's last row, to hand them out run by run; `iter_result_readings(..., in_store_order=True)` instead hands
 them out a page at a time in the store's order across the runs, on both paths (one key read for every run on the
@@ -161,9 +163,10 @@ render_ms= elapsed_ms= path= store_calls=`, plus `raised=<exception class>` when
 
 - `store_ms`, `hydrate_ms`, `fold_ms` and `render_ms` are milliseconds by phase, and add up to `elapsed_ms`, the
   call's wall time. A phase not measured is left empty (`store_ms=`), never written as zero.
-- For now the store reads happen inside the assembly and are not timed apart, so `store_ms` and `hydrate_ms` are empty
-  and `fold_ms` covers the store reads, rebuilding models from them and the folds. On a bundle line `render_ms` is
-  empty. On a report line `render_ms` is serializing the report in its form (with `include_sessions`, the
+- A bundle's read of its results as readings (`iter_result_readings`) charges its store calls to `store_ms` and its
+  rebuilding of results to `hydrate_ms`; `fold_ms` covers the folds and the assembly's other store reads (its runs,
+  its kept trials, its insights). A nested line's charges reach the enclosing line too, so a code-only report line
+  carries its bundle's `store_ms` and `hydrate_ms`. On a bundle line `render_ms` is empty. On a report line `render_ms` is serializing the report in its form (with `include_sessions`, the
   transcripts' read too), and `fold_ms` is the rest: finding and building the report, its bundle assemblies on the
   code-only path, and reading its analysis.
 - `runs_in` is the runs a bundle's aspects summarise (a run belongs to one aspect) and `results_in` the results they
@@ -184,7 +187,8 @@ the read carries `refused=true`.
 its order, from one backend call, with `exclude` applied and `exclude_in_items` dropping paths inside each object item
 of a list field (`narrow_items`, beside `omit_paths`, is that rule). `grouped` groups those rows by scalar paths and
 answers `count`, `count_null`, `sum_int`, `min`, `max` and `values` (`[row_id, value]` pairs in stored order, each
-value exactly as this store's own reads return it, every double to its last bit) per group (`GroupMeasure`). It has no float measure: a reader adds the values itself, in order. The in-memory and SQLite
+value exactly as this store's own reads return it, every double to its last bit; SQLite reads an integer of 2**63
+or more back as a float) per group (`GroupMeasure`). It has no float measure: a reader adds the values itself, in order. The in-memory and SQLite
 stores offer it. `fold_groups(rows, *, by, measures)` is the grouped read's rules as one function, for a store that
 groups rows in Python; the in-memory store and the engine's grouping of a store without the capability both fold
 through it. All four names are provisional.
