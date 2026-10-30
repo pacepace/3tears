@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.86.0 -- 2026-10-30
+
 ### models: a tool call's provider fields come back on the next request (Gemini 3 thought signatures)
 
 **Fixed:** a tool-using agent on Gemini 3 behind an OpenAI-compatible provider failed on its second turn. Google
