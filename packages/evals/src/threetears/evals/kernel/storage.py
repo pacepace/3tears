@@ -2635,24 +2635,28 @@ class EvalStorage:
         run_id: str | None = None,
         test_case_id: str | None = None,
         model: str | None = None,
+        elide: Sequence[str] = (),
     ) -> list[EvalResult]:
         """Return eval results with optional filters (unpaginated).
 
-        There is no ``include_trace`` switch and no projection: the stored
-        ``eval_result`` document does not contain the turn-by-turn record or the OTel
-        spans at all, so every read is already narrow. The parameter this replaced
-        defaulted to True and was passed ``False`` by all eighteen production call
-        sites — it existed only to ask the database to haul less of a row than the
-        model claimed the row held.
+        There is no ``include_trace`` switch: the stored ``eval_result`` document does not contain the turn-by-turn
+        record or the OTel spans at all. The parameter that switch was defaulted to True and was passed ``False`` by all
+        eighteen production call sites — it existed only to ask the database to haul less of a row than the model
+        claimed the row held. What a row does hold verbatim (a world's event log, a kind's payload) a reader of figures
+        leaves out with ``elide`` (as :meth:`query_eval_results_by_runs` does).
         """
-        items = self._store.by_doc_type("eval_result", scope_id, **self._result_filters(run_id, test_case_id, model))
+        items = self._store.by_doc_type(
+            "eval_result", scope_id, exclude=tuple(elide), **self._result_filters(run_id, test_case_id, model)
+        )
         return self._hydrate_all(EvalResult, items)
 
     def query_eval_results_by_run(self, run_id: str, scope_id: str) -> list[EvalResult]:
         """Return all results for a specific eval run."""
         return self.query_eval_results(scope_id, run_id=run_id)
 
-    def query_eval_results_by_runs(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
+    def query_eval_results_by_runs(
+        self, run_ids: Sequence[str], scope_id: str, /, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
         """Return every result of the named runs, in one store call however many runs are named.
 
         The batch form of :meth:`query_eval_results_by_run`, for a reader of a whole campaign's results: one
@@ -2662,12 +2666,18 @@ class EvalStorage:
         :ptype run_ids: Sequence[str]
         :param scope_id: The scope they live in.
         :ptype scope_id: str
+        :param elide: Fields of each result the store leaves out (``exclude``), so they are never shipped; each reads as
+            none. A reader of figures elides the verbatim ones
+            (:data:`~threetears.evals.kernel.run_pages.VERBATIM_RESULT_FIELDS`), which hold most of a result's bytes.
+        :ptype elide: Sequence[str]
         :return: Their results, in the store's order; a caller that needs them by run groups them by ``eval_run_id``.
         :rtype: list[EvalResult]
         """
         if not run_ids:
             return []
-        items = self._store.by_doc_type("eval_result", scope_id, field_in={"eval_run_id": list(dict.fromkeys(run_ids))})
+        items = self._store.by_doc_type(
+            "eval_result", scope_id, exclude=tuple(elide), field_in={"eval_run_id": list(dict.fromkeys(run_ids))}
+        )
         return self._hydrate_all(EvalResult, items)
 
     def query_eval_result_keys_by_run(self, run_id: str, scope_id: str, /) -> list[ResultKey]:

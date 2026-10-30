@@ -21,6 +21,7 @@ from threetears.evals.analysis.stats import (
     proportion_interval,
     small_sample_case_means,
 )
+from threetears.evals.kernel.run_pages import VERBATIM_RESULT_FIELDS
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.scoring import median_unbiased_quantile
 from threetears.evals.kernel.host.profile import HostProfile
@@ -259,7 +260,11 @@ def _carrier_leaves(result: EvalResult, *, profile: HostProfile) -> Iterator[tup
     leaving each comparison site to re-derive it.
     """
     for field_name in type(result).model_fields:
-        if field_name in RECORD_CARRIERS:
+        # A world's event log is what the world did, verbatim, not what the cell measured: walked, each event's ``turn``
+        # pooled into any measure a host declares as ``turn`` that the result did not report itself. A reader of figures
+        # reads results without it (:data:`~threetears.evals.kernel.run_pages.VERBATIM_RESULT_FIELDS`), so the walk leaves
+        # it out and never depends on whether it was read.
+        if field_name in RECORD_CARRIERS or field_name in VERBATIM_RESULT_FIELDS:
             continue
         value = getattr(result, field_name, None)
         repeatable = isinstance(value, list)

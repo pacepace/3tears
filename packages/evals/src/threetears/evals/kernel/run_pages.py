@@ -46,7 +46,7 @@ RUN_RESULTS_PAGE: Final[int] = 200
 #: payload. Each grows without bound with what the cell did, and no reading of a run's results as figures reads either:
 #: the engine's comparisons, counts and calibrations read the scores, outcomes, usage and measures beside them, and a
 #: host reads its kind's payload as the cell ends, into the measures it reports.
-_VERBATIM_RESULT_FIELDS: Final = ("world_events", "kind_payload")
+VERBATIM_RESULT_FIELDS: Final = ("world_events", "kind_payload")
 
 
 class UnreadableResultKey(StorageError):
@@ -235,9 +235,9 @@ def without_payloads(result: EvalResult) -> EvalResult:
     :return: The result as a reader of figures keeps it.
     :rtype: EvalResult
     """
-    if all(getattr(result, name) is None for name in _VERBATIM_RESULT_FIELDS):
+    if all(getattr(result, name) is None for name in VERBATIM_RESULT_FIELDS):
         return result
-    return result.model_copy(update=dict.fromkeys(_VERBATIM_RESULT_FIELDS))
+    return result.model_copy(update=dict.fromkeys(VERBATIM_RESULT_FIELDS))
 
 
 def results_without_payloads(storage: RunResultsStore, run_id: str, scope_id: str) -> list[EvalResult]:
@@ -262,6 +262,7 @@ def results_without_payloads(storage: RunResultsStore, run_id: str, scope_id: st
 
 __all__ = [
     "RUN_RESULTS_PAGE",
+    "VERBATIM_RESULT_FIELDS",
     "ResultKey",
     "RunResultsStore",
     "UnreadableResultKey",

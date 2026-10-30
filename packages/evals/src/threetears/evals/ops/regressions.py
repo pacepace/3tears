@@ -70,6 +70,7 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.metrics import GradedBy, is_code_graded
 from threetears.evals.schema.models import EvalResult
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.run_pages import VERBATIM_RESULT_FIELDS
 from threetears.evals.ops.lenses import scope_history
 from threetears.evals.run.reads import list_runs
 from threetears.evals.schema.logs import contain, get_logger
@@ -331,13 +332,16 @@ class RegressionWatch:
         if narrowed is None or subject_id is None:
             # The scope the history read whole: its listing's estimate and what its read returned were both within
             # the read tier's budget, or the history would have read the subject's runs instead (below) or refused.
-            return self.host.storage.query_eval_results(scope_id)
+            return self.host.storage.query_eval_results(scope_id, elide=VERBATIM_RESULT_FIELDS)
         runs = list_runs(self.host, scope_id, include_archived=True)
         subject_runs = [run for run in runs if run.subject_snapshot.subject_id == subject_id]
         # The subject's runs the history read: held to the budget here too, off the listing above and before any
         # result is read, so the tiers are bounded by their own read and never by the history's alone.
         hold_to_read_budget(_JUDGED_TIERS, scope_id, subject_runs, how=_NARROW_THE_JUDGED_TIERS)
-        results = self.host.storage.query_eval_results_by_runs([run.id for run in subject_runs], scope_id)
+        # Without the verbatim fields, which no judged tier reads.
+        results = self.host.storage.query_eval_results_by_runs(
+            [run.id for run in subject_runs], scope_id, elide=VERBATIM_RESULT_FIELDS
+        )
         hold_to_read_budget(_JUDGED_TIERS, scope_id, subject_runs, how=_NARROW_THE_JUDGED_TIERS, returned=len(results))
         return results
 

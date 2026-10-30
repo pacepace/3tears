@@ -47,6 +47,7 @@ from threetears.evals.analysis import (
     reads,
 )
 from threetears.evals.analysis.lenses.frontier import FrontierResult
+from threetears.evals.kernel.run_pages import VERBATIM_RESULT_FIELDS
 from threetears.evals.kernel import ResultKey, ValidationFailedError
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
@@ -685,6 +686,7 @@ class TestTheRegressionWatchsJudgedTiersAreHeldToTheBudget:
         assert transcript.evidence_tier == "calibrated" and transcript.narrowed_read_disclosure is not None
         subject_reads = [rows for named, _, rows in store.typed_reads if set(named) == {"run-a", "run-b"}]
         assert subject_reads == [24], "the tiers read the subject's 24 in one read of both its runs"
+        assert frozenset(VERBATIM_RESULT_FIELDS) in store.excluded, "without the fields no tier reads"
 
 
 class TestTheFrontierCommand:

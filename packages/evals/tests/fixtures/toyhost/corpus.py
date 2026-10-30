@@ -318,10 +318,14 @@ class ToyhostStorage:
         """Every observation of this batch in this scope."""
         return [r for r in self._results_by_run.get(run_id, []) if r.scope_id == scope_id]
 
-    def query_eval_results_by_runs(self, run_ids: Sequence[str], scope_id: str) -> list[EvalResult]:
-        """Every observation of these batches in this scope, in one read."""
+    def query_eval_results_by_runs(
+        self, run_ids: Sequence[str], scope_id: str, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
+        """Every observation of these batches in this scope, in one read, without the fields ``elide`` names."""
         return [
-            result for run_id in dict.fromkeys(run_ids) for result in self.query_eval_results_by_run(run_id, scope_id)
+            result.model_copy(update=dict.fromkeys(elide)) if elide else result
+            for run_id in dict.fromkeys(run_ids)
+            for result in self.query_eval_results_by_run(run_id, scope_id)
         ]
 
     def query_eval_result_keys_by_run(self, run_id: str, scope_id: str) -> list[ResultKey]:

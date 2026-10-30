@@ -26,6 +26,8 @@ class BatchRecordingStore(ClockedStore):
         #: ``(run ids the read named, whether it read keys and left out what grows with a cell, results handed out)``,
         #: one per typed read of results.
         self.typed_reads: list[tuple[tuple[str, ...], bool, int]] = []
+        #: What each typed read of results asked the store to leave out, in call order.
+        self.excluded: list[frozenset[str]] = []
         #: How many results each read by id handed out, in call order.
         self.id_reads: list[int] = []
 
@@ -61,6 +63,7 @@ class BatchRecordingStore(ClockedStore):
                 set(ResultKey._fields) <= set(row) and HEAVY_RESULT_FIELDS.isdisjoint(row) for row in rows
             )
             self.typed_reads.append((tuple(named), keys_only, len(rows)))
+            self.excluded.append(frozenset(exclude))
         return rows
 
     def get_many(
@@ -79,6 +82,7 @@ class BatchRecordingStore(ClockedStore):
 
     def clear(self) -> None:
         self.typed_reads.clear()
+        self.excluded.clear()
         self.id_reads.clear()
 
     def key_reads_of(self, run_id: str) -> list[int]:
