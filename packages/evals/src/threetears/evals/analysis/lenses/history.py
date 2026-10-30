@@ -436,7 +436,7 @@ class HistoryResult(EvalBaseModel):
     completeness_disclosures: dict[str, str] = {}
     #: How many of ``n_results`` came from those runs — the weight of the caveat.
     n_degraded_observations: int = 0
-    #: Set when the scope was past :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and only one subject's runs
+    #: Set when the scope was past :data:`~threetears.evals.analysis.reads.READING_BUDGET` and only one subject's runs
     #: were read (:func:`~threetears.evals.analysis.reads.history`): the sentence naming the subject and what was
     #: therefore not counted (other subjects' results in ``n_filtered_out``, and results whose run is missing).
     #: ``None`` on a whole-scope read, and then left out of a dump, so an answer read whole serializes, and digests, as

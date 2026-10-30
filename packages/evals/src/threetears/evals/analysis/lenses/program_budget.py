@@ -112,6 +112,7 @@ class ResultSpend:
         # A grouped read reads an absent field as null: each field but the spend (whose null is "unpriced") is left out
         # when null, so it is read as the stored row's absence is read.
         row: dict[str, Any] = {
+            "doc_type": "eval_result",
             "schema_version": space.version if schema_version is _UNREAD else schema_version,
             "cost_usd": cost_usd,
         }
