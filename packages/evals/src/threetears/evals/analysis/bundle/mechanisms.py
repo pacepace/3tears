@@ -11,7 +11,6 @@ import math
 from collections import defaultdict
 from fractions import Fraction
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from itertools import chain
 from typing import Literal, NamedTuple
 
 from threetears.evals.analysis.reporting import (
@@ -27,10 +26,7 @@ from threetears.evals.analysis.stats import (
 )
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.values import PooledProductionFooting
-from threetears.evals.kernel.metrics import (
-    describe_measure,
-    summary_population,
-)
+from threetears.evals.kernel.metrics import summary_population
 from threetears.evals.schema.models import EvalResult
 from threetears.evals.analysis.bundle.schema import (
     _OBSERVED_MECHANISMS,
@@ -45,11 +41,10 @@ from threetears.evals.analysis.bundle.schema import (
 )
 from threetears.evals.analysis.bundle.config import _CANDIDATE_MODEL_LEVER
 from threetears.evals.analysis.bundle.measures import (
-    _carrier_leaves,
-    _derived_leaves,
-    _lineage_leaves,
-    _open_map_leaves,
     _PER_RESULT,
+    _Describer,
+    _describer,
+    _walk_leaves,
     in_population,
 )
 from threetears.evals.analysis.bundle.design import _CampaignArms
@@ -61,7 +56,7 @@ from threetears.evals.analysis.bundle.design import _CampaignArms
 _MechanismObservations = dict[str, dict[str, tuple[str, float]]]
 
 
-def _mechanism_value(result: EvalResult, name: str, *, profile: HostProfile) -> float | None:
+def _mechanism_value(result: EvalResult, name: str, leaves: _NamedLeaves, *, describe: _Describer) -> float | None:
     """One result's observation of ``name``, read off the result itself, or None when it carries none.
 
     Walks the sources the measure surface walks — the result's own scalars, its covariate and host
@@ -75,8 +70,10 @@ def _mechanism_value(result: EvalResult, name: str, *, profile: HostProfile) -> 
     :ptype result: EvalResult
     :param name: A measure or covariate name.
     :ptype name: str
-    :param profile: The host whose measure registry resolves the name's population.
-    :ptype profile: HostProfile
+    :param leaves: The result's leaves by name, as :func:`_named_leaves` read them.
+    :ptype leaves: _NamedLeaves
+    :param describe: The host's measure registry, which resolves the name's population.
+    :ptype describe: _Describer
     :return: The value, or None — a result outside the measure's population (a faulted one outside a ``scored``
         measure's; one that took no turn outside a ``delivered`` one's, which every cost or latency measure
         is read as unless it declares ``all_observed``), no observation, an ambiguous one, or one that is
@@ -86,22 +83,9 @@ def _mechanism_value(result: EvalResult, name: str, *, profile: HostProfile) -> 
     """
     # Over every result where the measure declares nothing, as a mechanism always read — except a turn's
     # time or spend, which every reader takes over the turns taken (`summary_population`).
-    if not in_population(summary_population(describe_measure(name, profile.measures), "all_observed"), result):
+    if not in_population(summary_population(describe(name), "all_observed"), result):
         return None
-    outer = [
-        value
-        for leaf, value, _descriptor in chain(
-            _lineage_leaves(result, profile=profile), _open_map_leaves(result, profile=profile)
-        )
-        if leaf == name
-    ]
-    inner = [
-        value
-        for leaf, value, _gaps, _carrier, unit in chain(
-            _carrier_leaves(result, profile=profile), _derived_leaves(result)
-        )
-        if leaf == name and unit == _PER_RESULT
-    ]
+    outer, inner = leaves.get(name, ((), ()))
     found = outer or inner
     if len(found) != 1:
         return None
@@ -125,16 +109,44 @@ def _mechanism_observations(results: Sequence[EvalResult], *, profile: HostProfi
     :return: ``{name: {result id: (case id, value)}}``; a result that observed nothing of a name is absent under it.
     :rtype: _MechanismObservations
     """
-    names = {measure for _lever, measure in profile.sweepables.mechanisms}
-    names |= set(_OBSERVED_MECHANISMS)
-    observed: _MechanismObservations = {}
-    for name in sorted(names):
-        observed[name] = {
-            result.id: (result.test_case_id, value)
-            for result in results
-            if (value := _mechanism_value(result, name, profile=profile)) is not None
-        }
+    names = sorted({measure for _lever, measure in profile.sweepables.mechanisms} | set(_OBSERVED_MECHANISMS))
+    describe = _describer(profile.measures)
+    observed: _MechanismObservations = {name: {} for name in names}
+    # Result by result, each walked once for every name; each name's entries still land in result order.
+    for result in results:
+        leaves = _named_leaves(result, frozenset(names), describe=describe)
+        for name in names:
+            if (value := _mechanism_value(result, name, leaves, describe=describe)) is not None:
+                observed[name][result.id] = (result.test_case_id, value)
     return observed
+
+
+#: One result's leaves of each name asked for: ``(outer values, per-result carrier values)``, each in walk order.
+_NamedLeaves = dict[str, tuple[list[float | str], list[float | str]]]
+
+
+def _named_leaves(result: EvalResult, names: frozenset[str], *, describe: _Describer) -> _NamedLeaves:
+    """The values of ``names`` the result carries: its own scalars and open maps (``outer``), and the leaves of its
+    single sub-models and the measures it implies at the per-result unit (``inner``). A row-level leaf is left out.
+
+    :param result: The result to read.
+    :ptype result: EvalResult
+    :param names: The names to read.
+    :ptype names: frozenset[str]
+    :param describe: The host's measure registry.
+    :ptype describe: _Describer
+    :return: ``{name: (outer, inner)}`` for each name the result carries at either level.
+    :rtype: _NamedLeaves
+    """
+    leaves: _NamedLeaves = {}
+    for slot, value in _walk_leaves(result, describe):
+        if slot.name not in names:
+            continue
+        if slot.source == "outer":
+            leaves.setdefault(slot.name, ([], []))[0].append(value)
+        elif slot.source == "carrier" and slot.unit == _PER_RESULT:
+            leaves.setdefault(slot.name, ([], []))[1].append(value)
+    return leaves
 
 
 def _per_case_means(values: Mapping[str, tuple[str, float]], result_ids: Collection[str]) -> dict[str, Fraction]:
