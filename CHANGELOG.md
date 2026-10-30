@@ -6,8 +6,6 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.85.0 -- 2026-10-29
-
 ### core: shared-memory Arrow between a serving process and its worker processes
 
 **Added:** `threetears.core.shared_arrow` moves CPU work off a serving process's event loop into worker processes
@@ -33,6 +31,8 @@ Measured on Linux with the reports pod's dev tables (9.0M rows, real column type
 holding them in DuckDB is 2.24 GiB PSS; that process, the published store (1.75 GiB) and four workers scanning every
 column is 4.29 GiB, each worker 66 MiB of private memory; four workers each loading their own copy would be 12.5 GiB
 (`scripts/measure-shared-arrow.py`).
+
+## v0.85.0 -- 2026-10-29
 
 ### core, acl: a platform pool stops re-sending the session settings it already holds, and a namespace name resolves from cache
 
