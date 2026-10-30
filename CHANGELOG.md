@@ -16,7 +16,8 @@ Anything else a handler raises still propagates. `campaign_record` over an analy
 no longer reads, and `reporter_case_freeze` over a planned analysis whose bundle or plan no longer reads, now refuse 422
 naming `analysis_generate`; `report_read` refuses 422 where a memo's page refuses what it is laid out over (a bundle of
 another shape still reads code-only, led by the regenerate line). Putting a stored analysis's bundle back together
-checks every aspect's shape before it reads any, so a refusal costs no assembly.
+checks every aspect's shape before it reads any, so an analysis whose later aspect no longer reads is refused
+without first rebuilding its earlier aspects' bundles.
 
 ### evals: the read tier's aggregates read results without their verbatim fields
 

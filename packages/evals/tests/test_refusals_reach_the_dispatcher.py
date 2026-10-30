@@ -10,24 +10,29 @@ defect to the host (a 500 over MCP or REST), so a refusal of what the caller ask
 - **Translated at the source.** ``campaign_record`` over an analysis frozen at a bundle shape this build no longer
   reads refuses 422 before any result is read and before any aspect's bundle is put back together; ``report_read``
   over one reads code-only, the shape checked before the evidence is assembled; a memo's page that refuses what it is
-  laid out over is a 422. None of them logs the backstop's WARNING.
+  laid out over is a 422; ``reporter_case_freeze`` over a planned analysis whose bundle or plan no longer reads is a
+  422. None of them logs the backstop's WARNING.
 - **The planner's view.** ``analysis_estimate`` reads no run and no result, so the view's budget refusal cannot
   arise there; the planner's preparation, which can meet it, refuses 422.
 """
 
 from __future__ import annotations
 
+import importlib
 import logging
+import pkgutil
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 
 import pytest
 from pydantic import Field
 
+import threetears.evals
 import threetears.evals.analysis.report_input_build as report_input_build
 from threetears.evals.actions import (
     Action,
     ActionCatalogue,
+    ActionOutcome,
     Caller,
     MountedTool,
     Refusal,
@@ -43,6 +48,7 @@ from threetears.evals.analysis.lenses.history import HistoryError
 from threetears.evals.analysis.lenses.pivot import PivotError
 from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
+from threetears.evals.analysis.service import get_report_plan
 from threetears.evals.kernel import RefusedInput, ValidationFailedError
 from threetears.evals.kernel.declaration import DesignRefused, UndeclarableAxisError
 from threetears.evals.kernel.status_filter import StatusFilterError
@@ -53,7 +59,8 @@ from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import analysed_aspect, empty_bundle, make_analysis
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture, planned_generation
+from packages.evals.tests.reporter_case_support import reporter_template
 
 #: The bundle shape v0.75.0 and v0.76.0 froze analyses over, which this build no longer reads.
 SHIPPED_SHAPE = 60
@@ -243,6 +250,10 @@ async def test_an_untranslated_refusal_keeps_the_parameters_its_raiser_named_as_
 
 
 def test_every_refusal_class_of_the_package_is_covered() -> None:
+    # Every module of the package imported, so a subclass in one the catalogue never imports is seen too.
+    for module in pkgutil.walk_packages(threetears.evals.__path__, f"{threetears.evals.__name__}."):
+        importlib.import_module(module.name)
+
     def subclasses(cls: type[RefusedInput]) -> set[type[RefusedInput]]:
         found = {cls}
         for sub in cls.__subclasses__():
@@ -344,6 +355,62 @@ async def test_a_memo_page_refusing_what_it_is_laid_out_over_is_a_422_refusal(
     assert outcome.is_error and outcome.refusal == Refusal(kind="validation_failed", status=422), outcome.text
     assert "another-campaign" in outcome.text and "\nremedy: " in outcome.text
     assert _backstop_warnings(caplog) == []
+
+
+async def _planned_case_freeze(
+    evals: MountedTool, fixture: OpsFixture, analysis_id: str, caplog: pytest.LogCaptureFixture
+) -> ActionOutcome:
+    """``reporter_case_freeze`` of the planned analysis ``analysis_id``, through the dispatcher."""
+    caplog.set_level(logging.WARNING, logger=CATALOGUE_LOGGER)
+    return await evals.call(
+        {
+            "action": "reporter_case_freeze",
+            "template_id": reporter_template().id,
+            "campaign_id": fixture.campaign.id,
+            "recorded_analysis_id": analysis_id,
+        },
+        host=fixture.host,
+        caller=CALLER,
+    )
+
+
+async def test_freezing_a_planned_analysis_frozen_at_another_shape_is_refused_422(
+    evals: MountedTool, caplog: pytest.LogCaptureFixture
+) -> None:
+    fixture = off_loop(ops_fixture)
+    storage = fixture.host.eval_host.storage
+    off_loop(storage.save_template, reporter_template())
+    (planned, _) = await planned_generation(fixture)
+    assert planned.report_plan_id is not None
+    # The planner's own analysis, its plan still readable, its first aspect's bundle frozen at the shipped shape.
+    (first, *rest) = planned.aspects
+    old = first.model_copy(update={"bundle": {**first.bundle, "schema_version": SHIPPED_SHAPE}})
+    off_loop(storage.save_analysis, planned.model_copy(update={"aspects": [old, *rest]}))
+
+    outcome = await _planned_case_freeze(evals, fixture, planned.id, caplog)
+
+    assert outcome.is_error and outcome.refusal == Refusal(kind="validation_failed", status=422), outcome.text
+    assert f"shape {SHIPPED_SHAPE}" in outcome.text and "analysis_generate" in outcome.text
+    assert _backstop_warnings(caplog) == [], "translated by the freeze, not by the backstop"
+
+
+async def test_freezing_a_planned_analysis_whose_plan_no_longer_validates_is_refused_422(
+    evals: MountedTool, caplog: pytest.LogCaptureFixture
+) -> None:
+    fixture = off_loop(ops_fixture)
+    storage = fixture.host.eval_host.storage
+    off_loop(storage.save_template, reporter_template())
+    (planned, _) = await planned_generation(fixture)
+    stored = off_loop(get_report_plan, storage, planned)
+    assert stored is not None
+    moved = {key: value for key, value in stored.plan.items() if key != "headline"}
+    off_loop(storage.save_report_plan, stored.model_copy(update={"plan": moved}))
+
+    outcome = await _planned_case_freeze(evals, fixture, planned.id, caplog)
+
+    assert outcome.is_error and outcome.refusal == Refusal(kind="validation_failed", status=422), outcome.text
+    assert "report plan this build cannot read" in outcome.text and "analysis_generate" in outcome.text
+    assert _backstop_warnings(caplog) == [], "translated by the freeze, not by the backstop"
 
 
 # =============================================================================
