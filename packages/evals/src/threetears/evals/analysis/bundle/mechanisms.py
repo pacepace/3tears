@@ -11,7 +11,6 @@ import math
 from collections import defaultdict
 from fractions import Fraction
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from itertools import chain
 from typing import Literal, NamedTuple
 
 from threetears.evals.analysis.reporting import (
@@ -45,12 +44,8 @@ from threetears.evals.analysis.bundle.schema import (
 )
 from threetears.evals.analysis.bundle.config import _CANDIDATE_MODEL_LEVER
 from threetears.evals.analysis.bundle.measures import (
-    _carrier_leaves,
-    _derived_leaves,
-    _lineage_leaves,
-    _open_map_leaves,
     _PER_RESULT,
-    in_population,
+    _result_walk,
 )
 from threetears.evals.analysis.bundle.design import _CampaignArms
 
@@ -86,21 +81,15 @@ def _mechanism_value(result: EvalResult, name: str, *, profile: HostProfile) -> 
     """
     # Over every result where the measure declares nothing, as a mechanism always read — except a turn's
     # time or spend, which every reader takes over the turns taken (`summary_population`).
-    if not in_population(summary_population(describe_measure(name, profile.measures), "all_observed"), result):
+    walk = _result_walk(result, profile.measures)
+    if not walk.member(summary_population(describe_measure(name, profile.measures), "all_observed")):
         return None
-    outer = [
-        value
-        for leaf, value, _descriptor in chain(
-            _lineage_leaves(result, profile=profile), _open_map_leaves(result, profile=profile)
-        )
-        if leaf == name
-    ]
+    named = walk.named(name)
+    outer = [value for source, _leaf, value, *_rest in named if source == "outer"]
     inner = [
         value
-        for leaf, value, _gaps, _carrier, unit in chain(
-            _carrier_leaves(result, profile=profile), _derived_leaves(result)
-        )
-        if leaf == name and unit == _PER_RESULT
+        for source, _leaf, value, _descriptor, _gaps, _carrier, unit, _reportable, _fits in named
+        if source == "carrier" and unit == _PER_RESULT
     ]
     found = outer or inner
     if len(found) != 1:
