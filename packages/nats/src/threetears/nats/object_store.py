@@ -132,6 +132,10 @@ _EXPECTED_LAST_SUBJECT_SEQUENCE: Final[str] = "Nats-Expected-Last-Subject-Sequen
 
 _DIGEST_PREFIX: Final[str] = "SHA-256="
 
+#: the most subjects one ``STREAM.INFO`` answer carries (the server's ``JSMaxSubjectDetails``); an
+#: answer this full may have been cut short
+_STREAM_INFO_SUBJECTS_CAP: Final[int] = 100_000
+
 
 def object_store_stream_name(bucket: str) -> str:
     """the JetStream stream backing an Object Store bucket.
@@ -572,6 +576,54 @@ class NatsObjectStore:
                 result.append(_public_info(raw))
         return result
 
+    async def list_names(self, *, prefix: str = "") -> list[str]:
+        """the names of the bucket's objects starting with ``prefix``, sorted; one ``STREAM.INFO``.
+
+        Read from the stream's metadata subjects, which carry each name, so a listing costs one
+        request and reply however many objects the bucket holds; :meth:`list_objects` delivers every
+        object's metadata as a message of its own through a consumer. A name whose metadata is a
+        deletion marker is listed (:meth:`delete` purges, leaving none; a foreign client may not),
+        so a caller acting on a name meets its absence the way it meets any other race. Past the
+        server's cap on the subjects one answer carries, the listing reads the metadata instead.
+
+        :param prefix: keep names starting with this; ``""`` lists every object
+        :ptype prefix: str
+        :return: the names
+        :rtype: list[str]
+        :raises ObjectStoreError: when the stream cannot be read or a subject does not decode
+        """
+        meta = f"$O.{self._full_name}.M."
+        subjects = await self._subjects(f"{meta}>", what="object name listing")
+        if len(subjects) >= _STREAM_INFO_SUBJECTS_CAP:
+            return sorted(obj.name for obj in await self.list_objects(prefix=prefix))
+        names: list[str] = []
+        for subject in subjects:
+            try:
+                name = base64.urlsafe_b64decode(subject.removeprefix(meta)).decode("utf-8")
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise ObjectStoreError(f"a metadata subject in {self._full_name} does not decode: {exc}") from exc
+            if name.startswith(prefix):
+                names.append(name)
+        return sorted(names)
+
+    async def _subjects(self, subjects_filter: str, *, what: str) -> dict[str, int]:
+        """the stream's subjects matching ``subjects_filter``, each with its message count; one ``STREAM.INFO``.
+
+        :param subjects_filter: the subjects to count
+        :ptype subjects_filter: str
+        :param what: what the read is, for the deadline and the error
+        :ptype what: str
+        :return: subject -> messages held on it
+        :rtype: dict[str, int]
+        :raises ObjectStoreError: when the stream cannot be read
+        """
+        js = self._client.jetstream_context()
+        try:
+            info = await self._bounded(lambda: js.stream_info(self.stream, subjects_filter=subjects_filter), what=what)
+        except _FAILED as exc:
+            raise ObjectStoreError(f"{what} on {self._full_name} failed: {exc}") from exc
+        return dict(info.state.subjects or {})
+
     async def _list_raw(self) -> list[_NatsObjectInfo]:
         """every object's latest metadata, deleted ones included.
 
@@ -701,6 +753,13 @@ class NatsObjectStore:
                 "unnamed object chunks kept: a write is in flight",
                 extra={"extra_data": {"bucket": self._full_name, "claims": len(claims)}},
             )
+            return 0
+        # every object names at most one chunk subject, so while there are no more chunk subjects than
+        # objects there is no orphan to find, and the metadata (a message per object) is not read. a
+        # bucket's empty objects (no chunks) or objects whose delete stopped between its purges can
+        # hide as many orphans from this count; they go at the first sweep the count lets through
+        objects = await self._subjects(f"$O.{self._full_name}.M.>", what="object name listing")
+        if len(subjects) <= len(objects) < _STREAM_INFO_SUBJECTS_CAP:
             return 0
         named = {raw.nuid for raw in await self._list_raw() if raw.nuid and not raw.deleted}
         try:
