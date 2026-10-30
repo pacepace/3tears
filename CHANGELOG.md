@@ -8,6 +8,22 @@ packages (bumped in lock-step).
 
 ## v0.84.0 -- 2026-10-29
 
+### core: a scoped snapshot catches up the scopes a write in progress has not touched
+
+**Fixed:** a catch-up of scopes behind L3 waited whenever a write was in progress. With loads every 30-40 s on cobalt
+dev on 2026-10-29, a write was nearly always in progress when it ran, so 42 scopes stayed behind L3 for as long as
+the loads ran. A writer stages a state from the copy only at L3's prior epoch, so a state that missed one stage
+missed every later one.
+
+The catch-up now reads, while the write runs, each behind scope the write has not touched. It keeps a scope only
+when, after the read, that scope is still untouched and at the same epoch: a write marks a scope pending in the
+transaction of its first rows there, and clears the mark only in the commit that moves the scope's epoch. Scopes
+the write has touched are left for a catch-up after it commits.
+
+**Added:** `Unsettled.epochs` and `Unsettled.pending` (every part's committed version, and the parts the write in
+progress has touched, for a writer that records touches), and `EpochSnapshot.pending`. `ScopeEpochs.settled` fills
+them in.
+
 ### registry: an idle platform no longer rewrites the tool catalog on every heartbeat
 
 **Fixed:** every tool pod re-publishes its manifest with each 15 s heartbeat, and every registry replica hears it.

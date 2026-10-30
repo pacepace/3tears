@@ -3837,12 +3837,71 @@ class ScopedSnapshot:
             attempts += 1
             before = await self._settled() if self._settled is not None else None
             if isinstance(before, Unsettled):
-                self._wait(flow, f"{reason}; waiting for a write in progress ({before.reason})")
+                if only is not None and before.epochs is not None:
+                    # a write that records what it touched: the scopes it has not touched are read while it runs
+                    result = await self._publish_untouched(only, before, reason=reason, done=done)
+                if result is None or set(result) != only:
+                    self._wait(flow, f"{reason}; waiting for a write in progress ({before.reason})")
                 break
             result = await self._read_and_publish(only, reason=reason, before=before, done=done)
         if result is None and attempts >= _REBUILD_ATTEMPTS:
             self._wait(flow, f"{reason}; writes kept committing while it read; trying again")
         return result
+
+    async def _publish_untouched(
+        self, only: set[str], before: Unsettled, *, reason: str, done: dict[str, int]
+    ) -> list[str]:
+        """publish the scopes of ``only`` a write in progress has not touched, each read while it runs.
+
+        A write marks a scope pending in the transaction of its first rows there, and clears the mark only
+        when it commits, moving the scope's epoch in the same transaction. So a scope that is not pending,
+        and still not pending at the same epoch once its rows have been read, was read whole at that epoch:
+        rows the write committed there during the read would have left it pending, and a commit would have
+        moved its epoch. Anything else is left for a catch-up once the write has committed.
+
+        :param only: the scopes to catch up
+        :ptype only: set[str]
+        :param before: the writer's record before any scope was read, naming every scope's epoch and the pending ones
+        :ptype before: Unsettled
+        :param reason: why, for the status
+        :ptype reason: str
+        :param done: scope -> the epoch it was published at; this adds to it
+        :ptype done: dict[str, int]
+        :return: the scopes published
+        :rtype: list[str]
+        """
+        epochs = before.epochs or {}
+        l3_scopes = await self._l3_scopes()
+        scopes = sorted(scope for scope in only & l3_scopes if scope not in before.pending)
+        published: list[str] = []
+        with self._doing(SnapshotPhase.REBUILDING_FROM_L3, f"catching up beside a write: {reason}", total=len(scopes)):
+            for scope in scopes:
+                epoch = int(epochs.get(scope, 0))
+                rows = await self._read_scope(scope)
+                after = await self._settled() if self._settled is not None else None
+                if isinstance(after, Unsettled):
+                    if after.epochs is None:
+                        break
+                    still = scope not in after.pending and int(after.epochs.get(scope, 0)) == epoch
+                else:
+                    # the write committed: the scope is as read only when its epoch did not move
+                    still = int((await self._epochs()).get(scope, 0)) == epoch
+                if not still:
+                    log.info(
+                        "scoped snapshot %s: scope %r was written while it was read beside a write; left for later",
+                        self._name,
+                        scope,
+                    )
+                    continue
+                async with self._local:
+                    moved, _ = await self._publish_locked(scope, epoch, rows)
+                if moved is not None:
+                    await self._sweeper.retire_older(scope, epoch)
+                done[scope] = epoch
+                published.append(scope)
+        if published:
+            await self._update_index(add=published)
+        return published
 
     async def _read_and_publish(
         self, only: set[str] | None, *, reason: str, before: Any, done: dict[str, int]
