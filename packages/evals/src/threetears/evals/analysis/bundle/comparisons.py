@@ -240,10 +240,10 @@ def planning_readings(
     boundary: set[str] = set()
     kept: dict[str, _RunRepeats] = {}
     for page in batched(results, RUN_RESULTS_PAGE):
-        by_run: dict[str, list[ResultView]] = {}
+        page_runs: dict[str, list[ResultView]] = {}
         for result in page:
-            by_run.setdefault(result.eval_run_id, []).append(result)
-        for run_id, members in by_run.items():
+            page_runs.setdefault(result.eval_run_id, []).append(result)
+        for run_id, members in page_runs.items():
             run = listed.get(run_id)
             if run is None:
                 raise ValueError(f"the planning read handed out a result of run {run_id!r}, none of the runs it read")
