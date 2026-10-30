@@ -186,6 +186,15 @@ _DEFAULT_L3_CONCURRENCY: Final = 4
 #: What a load holds is these scopes' decoded chunks, never every scope's
 _DEFAULT_L2_CONCURRENCY: Final = 16
 
+#: the chunks one snapshot reads from the object store at once, whatever the scopes it fetches ahead: each read
+#: is the server pushing the chunk's messages to this connection, and a load fetching 16 scopes ahead had more
+#: pending than the server holds for a client (MaxPending, 64 MiB), so the server dropped the pod as a slow consumer
+#: (cobalt dev, 2026-10-29)
+_DEFAULT_CHUNK_READS: Final = 4
+
+#: the moved scopes a publish compacts at once
+_SWEEPS_AT_ONCE: Final = 8
+
 #: how many scopes' fetched chunks a replica holds at once to commit them as one move; a burst of more is
 #: committed in batches of this many
 _DEFAULT_APPLY_BATCH: Final = 64
@@ -739,6 +748,29 @@ async def _in_order[T, R](
         raise
     await _abandon([task for _, task in pending], unwinding=False)
     return whole
+
+
+async def _bounded_each[T](items: Sequence[T], each: Callable[[T], Awaitable[Any]], *, at_once: int) -> None:
+    """``each`` over ``items``, at most ``at_once`` at a time, every one awaited; the first failure raised once all
+    have ended.
+
+    :param items: the items
+    :ptype items: Sequence[T]
+    :param each: what is done to one
+    :ptype each: Callable[[T], Awaitable[Any]]
+    :param at_once: how many at a time
+    :ptype at_once: int
+    :return: nothing
+    :rtype: None
+    """
+    gate = asyncio.Semaphore(max(1, at_once))
+
+    async def one(item: T) -> None:
+        async with gate:
+            await each(item)
+
+    results = await asyncio.gather(*(one(item) for item in items), return_exceptions=True)
+    _raise_first(results, log=log, what="a scope's sweep or compaction failed")
 
 
 async def _abandon(tasks: Sequence[asyncio.Task[Any]], *, unwinding: bool) -> None:
@@ -1303,8 +1335,8 @@ class _Sweeper:
         """
         names: list[str] = []
         try:
-            for prefix in prefixes:
-                names += [info.name for info in await self._store.list_objects(prefix=prefix)]
+            # one listing filtered here: each listing reads every name the bucket holds, whatever the prefix
+            names = [name for name in await self._store.list_names() if name.startswith(tuple(prefixes))]
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in retire_names; nothing listed is nothing deleted
             contain(exc, log=log, what=f"scoped snapshot {self._name}: listing chunks for {what} failed: {exc}")
             names = []
@@ -1325,6 +1357,29 @@ class _Sweeper:
         names = await self._listed(self._layout.scope_prefixes(scope), f"scope {scope!r}")
         older = [n for n in names if (e := self._layout.epoch_of(scope, n)) is not None and e < epoch]
         return await self._sweep(older, what=f"scope {scope!r} below epoch {epoch}")
+
+    async def retire_older_many(self, epochs: Mapping[str, int]) -> int:
+        """retire, for each scope, its chunks of epochs before its epoch in ``epochs``; never raises.
+
+        One listing and one sweep for every scope, where :meth:`retire_older` per scope lists the
+        bucket and asks the declarer once each.
+
+        :param epochs: scope -> retire only its chunks below this epoch
+        :ptype epochs: Mapping[str, int]
+        :return: how many were retired
+        :rtype: int
+        """
+        if self._retire is None or not epochs:
+            return 0
+        prefixes = [prefix for scope in epochs for prefix in self._layout.scope_prefixes(scope)]
+        names = await self._listed(prefixes, f"{len(epochs)} scopes")
+        older = [
+            n
+            for scope, epoch in epochs.items()
+            for n in names
+            if (e := self._layout.epoch_of(scope, n)) is not None and e < epoch
+        ]
+        return await self._sweep(older, what=f"{len(epochs)} scopes below their epochs")
 
     async def retire_names_if_unserved(self, names: Sequence[str], *, what: str) -> int:
         """retire the named chunks the rule allows (a write that gave them back); never raises.
@@ -1416,6 +1471,10 @@ class ScopedSnapshot:
     :param apply_batch: scopes whose moved chunks a replica holds at once to commit them in one swap, so a
         burst of pointers reaches readers as one move; a larger burst is committed in batches of this many
     :ptype apply_batch: int
+    :param chunk_reads: the chunks the snapshot reads from the object store at once, whatever the scopes a load
+        fetches ahead: each read is the server pushing the chunk's messages to this connection, and too many pending
+        has the server drop the pod as a slow consumer
+    :ptype chunk_reads: int
     :param l3_concurrency: scopes a rebuild holds at once: read from L3 beside the one it publishes
     :ptype l3_concurrency: int
     :param claim_ttl: how long a rebuild's claim, or a write claim, lasts once its holder stops renewing
@@ -1449,6 +1508,7 @@ class ScopedSnapshot:
         retire_batch: int = MAX_RETIRED_OBJECTS,
         l2_concurrency: int = _DEFAULT_L2_CONCURRENCY,
         apply_batch: int = _DEFAULT_APPLY_BATCH,
+        chunk_reads: int = _DEFAULT_CHUNK_READS,
         l3_concurrency: int = _DEFAULT_L3_CONCURRENCY,
         claim_ttl: timedelta = _DEFAULT_CLAIM_TTL,
         recheck: timedelta = _DEFAULT_RECHECK,
@@ -1472,6 +1532,8 @@ class ScopedSnapshot:
         self._settled = settled
         self._ensure_buckets = ensure_buckets
         self._l2_concurrency = l2_concurrency
+        #: the chunk reads in flight, across every scope fetched ahead
+        self._chunk_reads = asyncio.Semaphore(max(1, chunk_reads))
         self._apply_batch = max(1, apply_batch)
         self._l3_concurrency = l3_concurrency
         self._claim_ttl = claim_ttl
@@ -2179,7 +2241,8 @@ class ScopedSnapshot:
         :raises _Lost: when it is gone, unreadable, or holds another count
         """
         try:
-            data = await self._store.get(name)
+            async with self._chunk_reads:
+                data = await self._store.get(name)
         except ObjectNotFoundError as exc:
             raise _Lost(f"chunk {name} is gone") from exc
         except ObjectStoreError as exc:
@@ -3184,6 +3247,28 @@ class ScopedSnapshot:
             pieces=frozenset(added),
         )
 
+    async def stage_from_l3(self, scope: str, epoch: int) -> StagedScope:
+        """stage every table of a scope whole as L3 holds it now, under ``epoch``: :meth:`stage` for a scope the
+        writer cannot build from this L1.
+
+        For the writer of the write ``epoch`` names, once its rows for the scope are in L3: one write at a time
+        holds the epochs (:mod:`~threetears.core.collections.scope_epochs`), so the scope's rows in L3 are then
+        exactly its rows at ``epoch``. A writer that builds a scope's chunks from this replica's copy can do so only
+        while the copy holds the scope at the epoch before the write; a scope the copy is behind on is staged here
+        instead, so it moves with the write rather than waiting for a catch-up that writes back to back keep from
+        running. Every table is staged whole, so the stage carries nothing from the scope's current chunks.
+
+        :param scope: the scope
+        :ptype scope: str
+        :param epoch: the epoch the write will commit
+        :ptype epoch: int
+        :return: the staged chunks
+        :rtype: StagedScope
+        """
+        read = await self._read_scope(scope)
+        rows = {part.table: part.arrow if part.arrow is not None else [] for part in read}
+        return await self.stage(scope, epoch, rows)
+
     async def _export(self, table: SnapshotTable, scope: str, rows: Sequence[Mapping[str, Any]] | Any) -> Any:
         """the Arrow table a scope of ``table`` holds with ``rows``, typed by this L1, changing nothing.
 
@@ -3310,13 +3395,12 @@ class ScopedSnapshot:
                     await scope.claim.release()
             unserved = [name for scope in staged if scope.scope not in moved for name in scope.objects.values()]
             await self._sweeper.retire_names_if_unserved(unserved, what="stages left unpublished")
-            for scope in staged:
-                if scope.scope in moved:
-                    await self._sweeper.retire_older(scope.scope, scope.epoch)
+            await self._sweeper.retire_older_many(
+                {scope.scope: scope.epoch for scope in staged if scope.scope in moved}
+            )
             self._changed.set()
         if self._append:
-            for scope_moved in moved:
-                await self._compact(scope_moved)
+            await _bounded_each(moved, self._compact, at_once=_SWEEPS_AT_ONCE)
         if skipped:
             log.warning(
                 "scoped snapshot %s: %d staged scopes left for the catch-up from L3",
@@ -3837,12 +3921,73 @@ class ScopedSnapshot:
             attempts += 1
             before = await self._settled() if self._settled is not None else None
             if isinstance(before, Unsettled):
-                self._wait(flow, f"{reason}; waiting for a write in progress ({before.reason})")
+                if only is not None and before.epochs is not None:
+                    # a write that records what it touched: the scopes it has not touched are read while it runs
+                    result = await self._publish_untouched(only, before, reason=reason, done=done)
+                if result is None or set(result) != only:
+                    self._wait(flow, f"{reason}; waiting for a write in progress ({before.reason})")
                 break
             result = await self._read_and_publish(only, reason=reason, before=before, done=done)
         if result is None and attempts >= _REBUILD_ATTEMPTS:
             self._wait(flow, f"{reason}; writes kept committing while it read; trying again")
         return result
+
+    async def _publish_untouched(
+        self, only: set[str], before: Unsettled, *, reason: str, done: dict[str, int]
+    ) -> list[str]:
+        """publish the scopes of ``only`` a write in progress has not touched, each read while it runs.
+
+        A write marks a scope pending in the transaction of its first rows there, and clears the mark only
+        when it commits, moving the scope's epoch in the same transaction. So a scope that is not pending,
+        and still not pending at the same epoch once its rows have been read, was read whole at that epoch:
+        rows the write committed there during the read would have left it pending, and a commit would have
+        moved its epoch. Anything else is left for a catch-up once the write has committed.
+
+        :param only: the scopes to catch up
+        :ptype only: set[str]
+        :param before: the writer's record before any scope was read, naming every scope's epoch and the pending ones
+        :ptype before: Unsettled
+        :param reason: why, for the status
+        :ptype reason: str
+        :param done: scope -> the epoch it was published at; this adds to it
+        :ptype done: dict[str, int]
+        :return: the scopes published
+        :rtype: list[str]
+        """
+        epochs = before.epochs or {}
+        l3_scopes = await self._l3_scopes()
+        scopes = sorted(scope for scope in only & l3_scopes if scope not in before.pending)
+        published: list[str] = []
+        retire: dict[str, int] = {}
+        with self._doing(SnapshotPhase.REBUILDING_FROM_L3, f"catching up beside a write: {reason}", total=len(scopes)):
+            for scope in scopes:
+                epoch = int(epochs.get(scope, 0))
+                rows = await self._read_scope(scope)
+                after = await self._settled() if self._settled is not None else None
+                if isinstance(after, Unsettled):
+                    if after.epochs is None:
+                        break
+                    still = scope not in after.pending and int(after.epochs.get(scope, 0)) == epoch
+                else:
+                    # the write committed: the scope is as read only when its epoch did not move
+                    still = int((await self._epochs()).get(scope, 0)) == epoch
+                if not still:
+                    log.info(
+                        "scoped snapshot %s: scope %r was written while it was read beside a write; left for later",
+                        self._name,
+                        scope,
+                    )
+                    continue
+                async with self._local:
+                    moved, _ = await self._publish_locked(scope, epoch, rows)
+                if moved is not None:
+                    retire[scope] = epoch
+                done[scope] = epoch
+                published.append(scope)
+        if published:
+            await self._update_index(add=published)
+        await self._sweeper.retire_older_many(retire)
+        return published
 
     async def _read_and_publish(
         self, only: set[str] | None, *, reason: str, before: Any, done: dict[str, int]

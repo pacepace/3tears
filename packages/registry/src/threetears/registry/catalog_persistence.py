@@ -2,8 +2,9 @@
 
 the in-memory :class:`~threetears.registry.catalog.ToolCatalog` is what the registry routes from.
 the catalog bucket (``tool_catalog`` by default) is its persisted copy, read only to warm-load a
-starting registry -- but every registration also writes to it, and answers ``CATALOG_UNAVAILABLE``
-when that write fails.
+starting registry -- but every registration that changes an entry also writes to it, and answers
+``CATALOG_UNAVAILABLE`` when that write fails. a re-registration that changes nothing but liveness,
+which is what a pod's heartbeat sends, writes nothing.
 
 the bucket is owned by :class:`threetears.nats.PersistedCopyBucket`, built here by
 :func:`catalog_bucket` so its name and shape are stated once:

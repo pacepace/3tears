@@ -22,13 +22,11 @@ none changes nothing.
 from __future__ import annotations
 
 import asyncio
-import functools
 import json
 import os
-import re
 from datetime import UTC, datetime, timedelta
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Literal, NoReturn
+from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn
 from uuid import UUID, uuid7
 
 import asyncpg
@@ -51,6 +49,7 @@ from threetears.core.backends.protocol import (
     load_wait_seconds,
 )
 from threetears.core.backends.schema_sql import json_default, transport_param
+from threetears.core.backends.statement_operation import is_resendable, statement_operation
 from threetears.core.exceptions import (
     DataLayerUnavailableError,
     DataVersionNotReadyError,
@@ -73,7 +72,7 @@ from threetears.core.security.door_request import (
 # lazy loader and raises at import time on an L1-only install. `subjects` pulls in
 # no client, so it is safe eagerly, as is `errors`; the annotation needs no runtime
 # object because this module has `from __future__ import annotations`.
-from threetears.nats.errors import RequestError
+from threetears.nats.errors import NoRespondersError, RequestError, RequestTimeoutError
 from threetears.nats.subjects import Subject, Subjects
 from threetears.observe import contain, get_logger
 
@@ -118,6 +117,23 @@ DATA_VERSION_SUPERSEDED_ERROR_CODE = "DATA_VERSION_SUPERSEDED"
 #: has not finished. transient: the proxy raises :class:`DataVersionNotReadyError` and the pod
 #: waits. the hub imports this name.
 DATA_VERSION_NOT_READY_ERROR_CODE = "DATA_VERSION_NOT_READY"
+
+#: the broker's ``error_code`` for a request the hub replica running it shut down before finishing: the
+#: replica's bound on leaving its L3 doors ran out with the request still running. Whether a write took
+#: effect is unknown, so a write raises it; a read is sent again. The hub answers it
+#: (``aibots.hub.broker.proxy.REPLICA_LEAVING_ERROR_CODE``); the wire value is the contract.
+_REPLICA_LEAVING_ERROR_CODE = "BROKER_REPLICA_LEAVING"
+
+#: how many times one request is sent, at most, when it may be sent again: unanswered (a hub replica
+#: that received it stopped), routed to no hub, or cut off by a leaving replica. The reply bound applies
+#: to each, so a request is bounded by this many of them.
+_UNANSWERED_ATTEMPTS: Final = 3
+
+#: the pause before a request is sent again, in seconds; doubled before each later attempt
+_UNANSWERED_BACKOFF_SECONDS: Final = 0.2
+
+#: a reply this long or longer is never a refusal, so it is never read for :data:`_REPLICA_LEAVING_ERROR_CODE`
+_REFUSAL_REPLY_MAX_BYTES: Final = 4096
 
 #: SQLSTATE class 23, integrity constraint violation: a deterministic refusal of this statement,
 #: never an infrastructure fault, so it is the one class rebuilt as its asyncpg error rather than
@@ -224,6 +240,44 @@ def _offloaded(params: Sequence[Any]) -> bool:
     :rtype: bool
     """
     return len(params) > _OFFLOAD_PARAMS
+
+
+def _may_send_again(error: RequestError, *, idempotent: bool) -> bool:
+    """whether a request that got no reply may be sent again.
+
+    One no hub received (:class:`NoRespondersError`) ran nowhere, so any request may be. One that timed
+    out may have run on the replica that received it before it stopped, so only a request that changes
+    nothing -- a read -- may be; a write raises, and its caller's own retry decides.
+
+    :param error: why the request got no reply
+    :ptype error: RequestError
+    :param idempotent: whether running the request twice is the same as running it once
+    :ptype idempotent: bool
+    :return: whether to send it again
+    :rtype: bool
+    """
+    return isinstance(error, NoRespondersError) or (idempotent and isinstance(error, RequestTimeoutError))
+
+
+def _cut_off_by_a_leaving_replica(reply: bytes) -> bool:
+    """whether ``reply`` is the broker's :data:`_REPLICA_LEAVING_ERROR_CODE` refusal.
+
+    :param reply: the reply's body
+    :ptype reply: bytes
+    :return: whether the replica running the request stopped before it finished
+    :rtype: bool
+    """
+    if len(reply) >= _REFUSAL_REPLY_MAX_BYTES or _REPLICA_LEAVING_ERROR_CODE.encode() not in reply:
+        return False
+    try:
+        parsed = json.loads(reply)
+    except ValueError:
+        return False
+    return (
+        isinstance(parsed, dict)
+        and parsed.get("success") is False
+        and parsed.get("error_code") == _REPLICA_LEAVING_ERROR_CODE
+    )
 
 
 def _encode_request(payload: dict[str, Any]) -> bytes:
@@ -361,7 +415,7 @@ def check_reply_row_count(query: str, reply: Mapping[str, Any]) -> None:
     """
     if not reply.get("success", False):
         return
-    operation = _detect_operation(query)
+    operation = statement_operation(query)
     if operation.upper() not in _DML_VERBS:
         return
     row_count = reply.get("row_count")
@@ -410,209 +464,6 @@ def _format_execute_tag(operation: str, row_count: Any) -> str:
         # ON CONFLICT DO UPDATE. preserve that convention.
         return f"INSERT 0 {count}"
     return f"{verb} {count}"
-
-
-#: a dollar-quote opener: ``$$`` or ``$tag$``. ``$1`` is a parameter, not a quote.
-_DOLLAR_QUOTE_RE = re.compile(r"\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$")
-
-#: an unquoted word: a keyword or an identifier.
-_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z_0-9$]*")
-
-#: the verbs a statement's label is drawn from, by the word that opens its main clause.
-_MAIN_VERBS = {"SELECT": "select", "INSERT": "insert", "UPDATE": "update", "DELETE": "delete"}
-
-
-def _end_of_quoted(query: str, start: int, quote: str, *, backslash_escapes: bool) -> int:
-    """the index just past a quoted literal or identifier opening at ``start``.
-
-    :param query: the statement
-    :ptype query: str
-    :param start: the index of the opening quote
-    :ptype start: int
-    :param quote: the quote character, doubled inside the text to escape it
-    :ptype quote: str
-    :param backslash_escapes: whether a backslash escapes the next character
-        (an ``E'...'`` string)
-    :ptype backslash_escapes: bool
-    :return: the index after the closing quote, or the end of the text when unclosed
-    :rtype: int
-    """
-    index = start + 1
-    end = len(query)
-    while index < end:
-        char = query[index]
-        if backslash_escapes and char == "\\":
-            index += 2
-        elif char == quote and query.startswith(quote * 2, index):
-            index += 2
-        elif char == quote:
-            end = index
-        else:
-            index += 1
-    return min(end + 1, len(query))
-
-
-def _end_of_block_comment(query: str, start: int) -> int:
-    """the index just past a block comment opening at ``start``; Postgres nests them.
-
-    :param query: the statement
-    :ptype query: str
-    :param start: the index of the opening ``/*``
-    :ptype start: int
-    :return: the index after the matching ``*/``, or the end of the text when unclosed
-    :rtype: int
-    """
-    depth = 0
-    index = start
-    result = len(query)
-    while index < len(query) and result == len(query):
-        if query.startswith("/*", index):
-            depth += 1
-            index += 2
-        elif query.startswith("*/", index):
-            depth -= 1
-            index += 2
-            if depth == 0:
-                result = index
-        else:
-            index += 1
-    return result
-
-
-def _code_tokens(query: str) -> list[str]:
-    """the statement's code as tokens: upper-cased words, ``(``, ``)``, ``,`` and other marks.
-
-    literals, quoted identifiers, dollar-quoted text and comments are consumed
-    whole, so a parenthesis or a keyword inside one is never read as code. A quoted
-    identifier is one ``"`` token: it is a name, never a keyword.
-
-    :param query: the statement
-    :ptype query: str
-    :return: the tokens, in order
-    :rtype: list[str]
-    """
-    tokens: list[str] = []
-    index = 0
-    while index < len(query):
-        char = query[index]
-        dollar = _DOLLAR_QUOTE_RE.match(query, index)
-        word = _WORD_RE.match(query, index)
-        if char.isspace():
-            index += 1
-        elif query.startswith("--", index):
-            newline = query.find("\n", index)
-            index = len(query) if newline == -1 else newline + 1
-        elif query.startswith("/*", index):
-            index = _end_of_block_comment(query, index)
-        elif char == "'":
-            index = _end_of_quoted(query, index, "'", backslash_escapes=False)
-            tokens.append("'")
-        elif char in "Ee" and query.startswith("'", index + 1):
-            index = _end_of_quoted(query, index + 1, "'", backslash_escapes=True)
-            tokens.append("'")
-        elif char == '"':
-            index = _end_of_quoted(query, index, '"', backslash_escapes=False)
-            tokens.append('"')
-        elif dollar is not None:
-            closing = query.find(dollar.group(0), dollar.end())
-            index = len(query) if closing == -1 else closing + len(dollar.group(0))
-            tokens.append("'")
-        elif word is not None:
-            tokens.append(word.group(0).upper())
-            index = word.end()
-        else:
-            tokens.append(char)
-            index += 1
-    return tokens
-
-
-def _after_parens(tokens: list[str], start: int) -> int:
-    """the index just past the parenthesised group opening at ``start``.
-
-    :param tokens: the statement's tokens
-    :ptype tokens: list[str]
-    :param start: the index of a ``(`` token
-    :ptype start: int
-    :return: the index after its matching ``)``, or past the end when unclosed
-    :rtype: int
-    """
-    depth = 0
-    index = start
-    result = len(tokens) + 1
-    while index < len(tokens) and result > len(tokens):
-        if tokens[index] == "(":
-            depth += 1
-        elif tokens[index] == ")":
-            depth -= 1
-            if depth == 0:
-                result = index + 1
-        index += 1
-    return result
-
-
-def _main_clause_index(tokens: list[str]) -> int:
-    """the index of the token opening the statement's main clause, past any ``WITH`` list.
-
-    ``WITH [RECURSIVE] name [(columns)] AS [NOT] [MATERIALIZED] (body) [, ...]``
-    is walked by its grammar, so a CTE whose name is a verb (``WITH update AS ...``)
-    is read as the name it is.
-
-    :param tokens: the statement's tokens
-    :ptype tokens: list[str]
-    :return: the index of the main clause's first token; past the end when the
-        ``WITH`` list does not close
-    :rtype: int
-    """
-    index = 0
-    if tokens[:1] == ["WITH"]:
-        index = 2 if tokens[1:2] == ["RECURSIVE"] else 1
-        more = True
-        while more and index < len(tokens):
-            index += 1  # the CTE's name
-            if tokens[index : index + 1] == ["("]:
-                index = _after_parens(tokens, index)
-            index += 1 if tokens[index : index + 1] == ["AS"] else 0
-            index += 1 if tokens[index : index + 1] == ["NOT"] else 0
-            index += 1 if tokens[index : index + 1] == ["MATERIALIZED"] else 0
-            if tokens[index : index + 1] == ["("]:
-                index = _after_parens(tokens, index)
-            more = tokens[index : index + 1] == [","]
-            index += 1 if more else 0
-    return index
-
-
-#: the statements whose operation is remembered: a bulk write sends one statement text a page after a page
-_DETECTED_STATEMENTS = 64
-
-
-@functools.lru_cache(maxsize=_DETECTED_STATEMENTS)
-def _detect_operation(query: str) -> str:
-    """label a statement with its SQL operation, from the verb of its main clause.
-
-    Remembered per statement text: the label is a function of the text alone, and tokenizing a page's
-    multi-row ``INSERT`` in Python, several times a statement, held the event loop for tens of
-    milliseconds a page.
-
-    The label tells the broker how to run the statement -- a ``select`` is fetched
-    for rows, anything else executed for a count -- and names it in logs. It is the
-    verb Postgres's own command tag would carry: a ``WITH ... INSERT`` is an
-    ``insert``, and a data-modifying CTE under a ``SELECT`` is a ``select``. It is
-    never what authorizes the statement; the broker reads that off the statement.
-
-    :param query: SQL query string
-    :ptype query: str
-    :return: operation type (select, insert, update, delete, upsert); ``select``
-        when the main clause opens with no verb this backend labels
-    :rtype: str
-    """
-    tokens = _code_tokens(query)
-    index = _main_clause_index(tokens)
-    result = _MAIN_VERBS.get(tokens[index], "select") if index < len(tokens) else "select"
-    if result == "insert" and any(
-        tokens[position : position + 2] == ["ON", "CONFLICT"] for position in range(index, len(tokens))
-    ):
-        result = "upsert"
-    return result
 
 
 def _load_result(response: Mapping[str, Any]) -> LoadResult:
@@ -874,10 +725,12 @@ class NatsProxyL3Backend:
         :raises ReplyNotArrowError: when a value is not of its column's type
         :raises DataLayerUnavailableError: if the broker returns an error
         """
-        if _detect_operation(query) != "select":
+        if statement_operation(query) != "select":
             raise ValueError("fetch_arrow reads: its statement is a SELECT")
         payload = self._query_payload(query, list(params), "select", namespace)
-        reply = await self.nats_request_bytes(Subjects.l3_query(namespace=self.ns).path, payload)
+        reply = await self.nats_request_bytes(
+            Subjects.l3_query(namespace=self.ns).path, payload, idempotent=is_resendable(query)
+        )
         parsed = await asyncio.to_thread(reply_rows, reply, types)
         if not parsed.success:
             # a refusal is a short reply: decoded as every other is, and raised as fetch raises it
@@ -978,7 +831,7 @@ class NatsProxyL3Backend:
         :rtype: str
         :raises DataLayerUnavailableError: if broker returns error
         """
-        operation = _detect_operation(query)
+        operation = statement_operation(query)
         response = await self._send_query(query, list(params), operation, namespace)
         return _format_execute_tag(operation, response.get("row_count"))
 
@@ -1289,7 +1142,7 @@ class NatsProxyL3Backend:
             "namespace": ns,
             "queries": [
                 {
-                    "operation": q.get("operation", _detect_operation(q["query"])),
+                    "operation": q.get("operation", statement_operation(q["query"])),
                     "query": q["query"],
                     "params": [transport_param(p) for p in q.get("params", [])],
                 }
@@ -1362,7 +1215,7 @@ class NatsProxyL3Backend:
         :rtype: int
         :raises DataLayerUnavailableError: when no identity token is available, as sending would
         """
-        payload = self._query_payload(query, params, _detect_operation(query), None)
+        payload = self._query_payload(query, params, statement_operation(query), None)
         return len(self.encode_request(Subjects.l3_query(namespace=self.ns).path, payload))
 
     async def _send_query(
@@ -1402,7 +1255,10 @@ class NatsProxyL3Backend:
             else self._query_payload(query, params, operation, namespace, customer_scope=customer_scope)
         )
         subject = Subjects.l3_query(namespace=self.ns).path
-        response = await self.nats_request(subject, payload, offload_encode=offload)
+        # a read sent again changes nothing; a statement that may write, ``RETURNING`` and a writing CTE
+        # included, is never resent
+        reads = operation == "select" and is_resendable(query)
+        response = await self.nats_request(subject, payload, offload_encode=offload, idempotent=reads)
 
         if not response.get("success", False):
             self.raise_for_failed_reply(response, "L3 query")
@@ -1410,7 +1266,7 @@ class NatsProxyL3Backend:
         # a statement that wrote a switched-on table names the generation the broker advanced for
         # it, whether it was sent to execute or, with ``RETURNING``, to fetch; a read names none, and
         # ends no earlier write's scope.
-        record_reply_generations(response, ends_write=operation != "select" or _detect_operation(query) != "select")
+        record_reply_generations(response, ends_write=operation != "select" or statement_operation(query) != "select")
         return response
 
     async def nats_request(
@@ -1420,6 +1276,7 @@ class NatsProxyL3Backend:
         *,
         timeout_s: float | None = None,
         offload_encode: bool = False,
+        idempotent: bool = False,
     ) -> dict[str, Any]:
         """send raw NATS request and parse JSON response.
 
@@ -1444,12 +1301,17 @@ class NatsProxyL3Backend:
         :param offload_encode: encode the request on a thread, for a large one (a page of rows); see
             :meth:`nats_request_bytes`
         :ptype offload_encode: bool
+        :param idempotent: whether the request may be sent again when it goes unanswered; see
+            :meth:`nats_request_bytes`
+        :ptype idempotent: bool
         :return: parsed JSON response dict from broker
         :rtype: dict[str, Any]
         :raises DataLayerUnavailableError: if NATS request times out,
             the broker returns malformed JSON, or the client is closed
         """
-        reply = await self.nats_request_bytes(subject, payload, timeout_s=timeout_s, offload_encode=offload_encode)
+        reply = await self.nats_request_bytes(
+            subject, payload, timeout_s=timeout_s, offload_encode=offload_encode, idempotent=idempotent
+        )
         try:
             result: dict[str, Any] = json.loads(reply)
         except ValueError as exc:
@@ -1464,10 +1326,16 @@ class NatsProxyL3Backend:
         *,
         timeout_s: float | None = None,
         offload_encode: bool = False,
+        idempotent: bool = False,
     ) -> bytes:
         """send a raw NATS request and answer the reply's bytes, undecoded: :meth:`nats_request` before its parse.
 
         For a reader that parses the reply some other way than ``json`` (:meth:`fetch_arrow`).
+
+        A request is sent again, up to :data:`_UNANSWERED_ATTEMPTS` times in all, when no hub received it
+        (any request), and, when ``idempotent``, when it went unanswered within the bound or the replica
+        running it stopped first (:data:`_REPLICA_LEAVING_ERROR_CODE`) -- a hub rollout, which routes the
+        next attempt to a sibling. Each attempt is encoded afresh, so it carries a proof of its own.
 
         :param subject: NATS subject on which to publish the request
         :ptype subject: str
@@ -1479,27 +1347,43 @@ class NatsProxyL3Backend:
             thousand rows is several JSON passes and a proof (:meth:`encode_request`), which on the loop
             held every call the process answers for tens of milliseconds a page
         :ptype offload_encode: bool
+        :param idempotent: whether running the request twice is the same as running it once (a read), so
+            it may be sent again when it goes unanswered
+        :ptype idempotent: bool
         :return: the reply's body
         :rtype: bytes
-        :raises DataLayerUnavailableError: if the NATS request times out or the client is closed
+        :raises DataLayerUnavailableError: if the NATS request times out or the client is closed, on the
+            last attempt it may make
         """
-        payload_bytes = (
-            await asyncio.to_thread(self.encode_request, subject, payload)
-            if offload_encode
-            else self.encode_request(subject, payload)
-        )
         nats_timeout = timeout_s if timeout_s is not None else (self.timeout_ms / 1000) + 2
-
-        try:
-            reply: bytes = await self._nc.request_raw(
-                subject=Subject.raw(subject),
-                payload=payload_bytes,
-                timeout=timedelta(seconds=nats_timeout),
+        attempt = 1
+        while True:
+            payload_bytes = (
+                await asyncio.to_thread(self.encode_request, subject, payload)
+                if offload_encode
+                else self.encode_request(subject, payload)
             )
-        except RequestError as exc:
-            raise DataLayerUnavailableError(f"NATS request failed: subject={subject}: {exc}") from exc
-
-        return reply
+            again: str | None = None
+            try:
+                reply: bytes = await self._nc.request_raw(
+                    subject=Subject.raw(subject),
+                    payload=payload_bytes,
+                    timeout=timedelta(seconds=nats_timeout),
+                )
+            except RequestError as exc:
+                if attempt >= _UNANSWERED_ATTEMPTS or not _may_send_again(exc, idempotent=idempotent):
+                    raise DataLayerUnavailableError(f"NATS request failed: subject={subject}: {exc}") from exc
+                again = f"{type(exc).__name__}: {exc}"
+            else:
+                if not (idempotent and attempt < _UNANSWERED_ATTEMPTS and _cut_off_by_a_leaving_replica(reply)):
+                    return reply
+                again = _REPLICA_LEAVING_ERROR_CODE
+            _logger.warning(
+                "L3 request got no answer; sending it again",
+                extra={"extra_data": {"subject": subject, "attempt": attempt, "reason": again}},
+            )
+            await asyncio.sleep(_UNANSWERED_BACKOFF_SECONDS * 2 ** (attempt - 1))
+            attempt += 1
 
     def current_pop_key(self) -> PopKey | None:
         """the key this backend's requests are proven with, read through its provider now.
@@ -1851,7 +1735,7 @@ class _ProxyConnection:
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.execute")
         return _format_execute_tag(
-            _detect_operation(query),
+            statement_operation(query),
             response.get("row_count"),
         )
 
@@ -2227,7 +2111,8 @@ class _ProxyTransaction:
         :ptype exc_tb: Any
         :return: None
         :rtype: None
-        :raises DataLayerUnavailableError: when commit/rollback fails
+        :raises DataLayerUnavailableError: when the commit fails or goes unanswered; a rollback that
+            fails or goes unanswered is logged, so the exception that ended the transaction is the one raised
         """
         tx_id = self._connection.tx_id
         if tx_id is None:
@@ -2245,8 +2130,22 @@ class _ProxyTransaction:
         try:
             try:
                 response = await self._backend.nats_request(subject, payload)
-            except BaseException:
+            except DataLayerUnavailableError as exc:
                 # no reply, so the commit's outcome is unknown: hand out no earlier commit's token
+                forget_reply_generations(f"its {action} got no reply")
+                if action == "commit":
+                    raise
+                # a rollback no hub answered changes nothing: the session never commits, since the hub
+                # holding it rolls it back when it stops or the session idles out. The exception in
+                # flight is what the caller must see, not this.
+                contain(
+                    exc,
+                    log=_logger,
+                    what="proxy tx.rollback got no answer; the transaction does not commit, and the error that ended it is raised",
+                    extra={"tx_id": str(tx_id)},
+                )
+                return
+            except BaseException:
                 forget_reply_generations(f"its {action} got no reply")
                 raise
             if response.get("success", False) and action == "commit":

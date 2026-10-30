@@ -6,6 +6,132 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.84.0 -- 2026-10-29
+
+### core, nats: a pod that loads or rebuilds its copy keeps its event loop and its NATS connection
+
+From cobalt dev, 2026-10-29: a reports pod rebuilding its scoped snapshot stalled its loop, was dropped by the NATS
+server as a slow consumer, and logged unretrieved task exceptions; each publish spent 25 s retiring chunks.
+
+**Fixed:**
+- **SQL labelling (core):** a plain statement's operation is labelled in a few C-level searches. A page's multi-row
+  INSERT took about 20 ms to tokenize a character at a time on the loop, and each page's text differs, so the cache
+  never held it; it now takes about 1 ms. A statement with a literal, a dollar-quoted text or a comment is still read
+  as tokens.
+- **Chunk reads (core):** a `ScopedSnapshot` reads at most `chunk_reads` (default 4) chunks from the object store
+  at once, whatever the scopes it fetches ahead. Sixteen scopes' chunks at once passed the server's MaxPending, and
+  the server cut the pod's connection.
+- **Compaction (core):** `publish_staged` compacts its moved scopes 8 at a time. It did them one after another.
+  Their retires are one sweep (below).
+- **Abandoned calls (nats):** a JetStream call `run_bounded` abandons, at its deadline or because its caller was
+  cancelled, has its outcome taken when it ends. It no longer logs "Task exception was never retrieved".
+
+**Added:**
+- `ScopedSnapshot(chunk_reads=...)`: the bound on chunks read from the object store at once.
+- `threetears.core.backends.statement_operation`: the statement labeller, moved out of `nats_proxy`, which calls it.
+  `statement_operation(query)` gives the label the broker runs a statement by, and `is_resendable(query)` says
+  whether the statement only reads.
+
+### core: a scoped snapshot catches up the scopes a write in progress has not touched
+
+**Fixed:** a catch-up of scopes behind L3 waited whenever a write was in progress. With loads every 30-40 s on cobalt
+dev on 2026-10-29, a write was nearly always in progress when it ran, so 42 scopes stayed behind L3 for as long as
+the loads ran. A writer stages a state from the copy only at L3's prior epoch, so a state that missed one stage
+missed every later one.
+
+The catch-up now reads, while the write runs, each behind scope the write has not touched. It keeps a scope only
+when, after the read, that scope is still untouched and at the same epoch: a write marks a scope pending in the
+transaction of its first rows there, and clears the mark only in the commit that moves the scope's epoch. Scopes
+the write has touched are left for a catch-up after it commits.
+
+A writer also stages a scope its copy is behind on, whole from L3: `ScopedSnapshot.stage_from_l3(scope, epoch)`
+reads every table of the scope as L3 holds it once the write's rows are there. One write at a time holds the epochs,
+so those are exactly the scope's rows at the write's epoch. The scope moves with the write instead of waiting for a
+catch-up. A writer that builds its chunks from its copy calls it for a scope the copy is behind on.
+
+**Added:** `ScopedSnapshot.stage_from_l3`. `Unsettled.epochs` and `Unsettled.pending` (every part's committed version, and the parts the write in
+progress has touched, for a writer that records touches), and `EpochSnapshot.pending`. `ScopeEpochs.settled` fills
+them in.
+
+### nats, core: a scoped snapshot's retire no longer reads every object's metadata once per scope
+
+**Fixed:** retiring a scope's older chunks listed the pod's whole Object Store twice (once per name prefix, filtered
+client-side), and the hub's orphan sweep on each retire it answers listed it once more. Each listing is a consumer
+delivering one metadata message per object. With about 2,300 objects and 51 scopes per epoch, that came to roughly
+7,000 messages per scope. On cobalt dev on 2026-10-29 this showed up as 3,000-4,600 non-client NATS messages/s and
+about 570 standing read consumers during a load test. Now:
+
+- the sweeper lists names once per pass, from the stream's metadata subjects (one `STREAM.INFO`);
+- `publish_staged` retires every scope it moved in one sweep and one ask to the declarer, not one each per scope;
+- `purge_orphan_chunks` reads the metadata only when there are more chunk subjects than objects, since every object
+  names at most one chunk subject. A bucket's empty objects, or objects whose delete stopped between its purges, can
+  hide as many orphans from that count; those orphans go at the first sweep the count lets through.
+
+**Added:** `NatsObjectStore.list_names(prefix=...)`, the sorted names of a bucket's objects from one `STREAM.INFO`.
+A name whose metadata is a deletion marker is listed (`delete` purges and leaves none). Past the server's cap on the
+subjects one answer carries (100,000), it reads the metadata instead.
+
+### registry: an idle platform no longer rewrites the tool catalog on every heartbeat
+
+**Fixed:** every tool pod re-publishes its manifest with each 15 s heartbeat, and every registry replica hears it.
+`ToolCatalog.register` wrote each of the pod's tools to `KV_tool_catalog` every time and logged `registered tool in
+catalog` for each, because the value carries when the copy last registered and when each definition was last
+announced, so no two writes were alike. On cobalt dev that was about 91 KV writes/s and 45 log lines/s per replica
+with nothing happening. The catalog now writes an entry only when its content changes (a copy, a definition, when a
+definition was first announced, a status, the publisher mark); the liveness instants alone are not written. They
+still advance in memory on every registration, so routing, discovery and the heartbeat sweep judge staleness from
+the latest heartbeat as before, and per-pod liveness stays in the heartbeat rows. A write that fails is retried on
+the entry's next registration, so a replica out of rotation for failed writes still comes back. Once writes
+have failed enough to take a replica out of rotation, every registration writes its entry again, changed or not, so
+an idle platform's next heartbeat still brings the write that puts it back. Short of that, an idle re-registration
+makes no write, so during a bucket outage it is answered as registered instead of `CATALOG_UNAVAILABLE`; the catalog
+routes from memory either way. The persisted shape
+is unchanged, so replicas on either version share the bucket. Registration stays out of a queue group: each
+replica routes from its own in-memory catalog. `registered tool in catalog`, `tool pod registration authorized` and
+`registration completed` log at INFO only for a registration that changed something, DEBUG otherwise.
+
+**Changed:** `ToolCatalog.register` returns `bool`, whether the registration changed the entry, which it then writes
+when a bucket is bound (it returned `None`).
+
+**Changed:** a catalog warm-loaded from the bucket carries liveness instants as of each entry's last content change.
+Its copies load unavailable, as before, and its pod's next heartbeat and registration revive them; a definition the
+pod stopped announcing is dead at load rather than living out the window, and a loaded copy whose pod has no heartbeat
+row is swept at the first sweep and re-added by the pod's next registration.
+
+### channels: a WebSocket peer that leaves is not a contained error
+
+**Fixed:** `WebSocketHandler` recorded every client disconnect as a contained error with a traceback (about 3 an hour
+in Grafana's "Contained errors" panel), because a socket reports one by raising from `receive_text`. A read that
+raises an exception carrying close code 1000, 1001, 1005 or 1006 (starlette's `WebSocketDisconnect` does) is now an
+ordinary departure, logged at DEBUG, during authentication and after it. Any other failure, including a close with
+another code, is still contained.
+
+**Added:** `threetears_websocket_peer_disconnects_total{close_code, phase}` counts every peer disconnect, so a mass of
+abnormal drops (1006) shows on a dashboard. `close_code` is the protocol's own code (1000-1015), `4xxx` for a code a
+client application chose, or `other`; `phase` is `authenticating` or `connected`.
+
+### scheduled-jobs, agent-wake: the drift histograms cover minutes
+
+**Fixed:** `threetears_scheduled_jobs_drift_seconds` used the client library's default buckets, which end at 10 s. A
+fire runs on the next tick, about 30 s apart, so ordinary drift landed in `+Inf` and the dashboard's p95 read 10 s
+whatever the drift was. Its buckets now run from 0.5 s to 600 s, and so do those of
+`threetears_agent_wake_drift_seconds` and `threetears_agent_wake_yield_duration_seconds`, which had the same defaults.
+
+**Added:** `threetears.scheduled_jobs.metrics.TIMING_BUCKETS`, the one bucket tuple both packages use, so their
+dashboards move together.
+
+### core: an L3 read a stopped hub replica never answered is sent again; a write is not
+
+**Fixed:** `NatsProxyL3Backend` raised the first time a request went unanswered, so a hub rollout that stopped the
+replica holding a request failed it after its 7-second bound (cobalt dev, 2026-10-29: `l3.query` in the registry,
+`l3.tx.rollback` in the reports pod). A request is now sent again, up to three times in all, each attempt encoded
+afresh with its own proof: any request no hub received (`NoRespondersError`), and a read (`fetch`, `fetchrow`,
+`fetchval`, `fetch_arrow`) that timed out or that a leaving replica cut off. A read is a `SELECT` none of whose code
+may write: a data-modifying CTE under a `SELECT`, `nextval`, or `FOR UPDATE` is sent once. A write, a statement inside
+a transaction, `tx.begin` and a commit raise as before on a timeout: each may have run. A reply
+`BROKER_REPLICA_LEAVING` is the code a leaving hub replica answers a request it could not finish with. **Changed:** a rollback nobody answers, on the way out of a transaction an exception ended, is logged
+rather than raised, so the caller sees the error that ended the transaction; the transaction never commits.
+
 ## v0.83.0 -- 2026-10-29
 
 ### observe, core: a periodic tick sets its next delay only with `NextDelay`, and never below `min_delay`
