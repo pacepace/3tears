@@ -335,6 +335,14 @@ class TestThePlanningReadIsHeldToTheReadBudget:
         assert all(keys_only for _, keys_only, _ in store.typed_reads), "no run was read whole"
         assert sum(store.id_reads) == 24
 
+    def test_every_runs_keys_are_one_read(self) -> None:
+        store, host = self._host()
+
+        detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
+
+        key_reads = [named for named, keys_only, _ in store.typed_reads if keys_only]
+        assert [sorted(named) for named in key_reads] == [["run-model-a", "run-model-b"]], "one read, not one per run"
+
     def test_a_read_returning_more_than_its_runs_promised_past_the_budget_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

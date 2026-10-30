@@ -19,6 +19,14 @@ another shape still reads code-only, led by the regenerate line). Putting a stor
 checks every aspect's shape before it reads any, so an analysis whose later aspect no longer reads is refused
 without first rebuilding its earlier aspects' bundles.
 
+### evals: a launch estimate's planning block reads its runs' keys in one store call
+
+**Changed:** `detectable_effects`, the planning block every launch estimate carries, read the result keys of each
+earlier run of the template in a call of its own, one scan of the scope per run. It now reads them all in one call,
+through `EvalStorage.query_eval_result_keys_by_runs(run_ids, scope_id)` (new): one `by_doc_type` with the runs as a
+`field_in` predicate, the fields a key read leaves out left out, and each row checked as the one-run key read checks it.
+The block is unchanged. A host store needs nothing new: `field_in` is already part of the port.
+
 ### evals: an optional readings capability for a document store, with its own conformance kit
 
 **Added:** `ResultReadings`, an optional capability a `DocumentStore` may offer beside its methods, detected with

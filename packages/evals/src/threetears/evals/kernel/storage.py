@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, cast
 
@@ -152,6 +152,35 @@ _RESULT_KEY_EXCLUDED: Final = (
     "judge_cannot_tell",
     "judge_cut_short",
 )
+
+
+def _result_key(item: Mapping[str, Any], run_id: object) -> ResultKey:
+    """One stored result row's key (:class:`~threetears.evals.kernel.run_pages.ResultKey`), read off the row without
+    reconstructing it: every field it names is one a result carries at every schema version.
+
+    :param item: The stored row, as a key read ships it.
+    :ptype item: Mapping[str, Any]
+    :param run_id: The run it was read for, which a refusal names.
+    :ptype run_id: object
+    :return: Its key.
+    :rtype: ResultKey
+    :raises UnreadableResultKey: The row carries no readable id, case, ``k``, model or stored time.
+    """
+    result_id, case_id, k, model = (item.get(name) for name in ("id", "test_case_id", "k_iteration", "model"))
+    scored_at = item.get("scored_at", "")
+    if not (
+        isinstance(result_id, str)
+        and isinstance(case_id, str)
+        and isinstance(k, int)
+        and not isinstance(k, bool)
+        and isinstance(model, str)
+        and isinstance(scored_at, str)
+    ):
+        raise UnreadableResultKey(
+            f"a stored result of eval run {run_id!r} ({result_id!r}) carries no readable id, case, k, model "
+            "or stored time, so the run cannot be read a page at a time"
+        )
+    return ResultKey(result_id, case_id, k, model, scored_at)
 
 
 def _payload_exclusions(elide_payload: frozenset[str]) -> list[str]:
@@ -2712,23 +2741,45 @@ class EvalStorage:
         # prawduct:ok-broad-except — DB read boundary; re-raised as a typed eval error
         except Exception as e:
             raise StorageError(f"failed to read the results of eval run {run_id!r}: {e}") from e
-        keys: list[ResultKey] = []
+        return [_result_key(item, run_id) for item in items]
+
+    def query_eval_result_keys_by_runs(self, run_ids: Sequence[str], scope_id: str, /) -> dict[str, list[ResultKey]]:
+        """The key of every result stored for each of several runs, in one read that ships no other field.
+
+        :meth:`query_eval_result_keys_by_run` for many runs at once: one ``by_doc_type`` with the runs as a ``field_in``
+        predicate, the same fields left out, and each row read into its key by the same checks. For a reader that
+        walks every run of a set a page at a time (a launch's planning read over a template's earlier runs), which
+        otherwise asks the store once per run.
+
+        :param run_ids: The runs. Empty asks the store nothing; one named twice is read once.
+        :ptype run_ids: Sequence[str]
+        :param scope_id: The scope they live in.
+        :ptype scope_id: str
+        :return: Each run's keys, in the store's order within the run, under every run asked (an empty list for a run
+            with none stored), in the order first asked.
+        :rtype: dict[str, list[ResultKey]]
+        :raises StorageError: The store failed to answer, or answered with a result of a run not asked for.
+        :raises UnreadableResultKey: A row matched carries no readable key.
+        """
+        keys: dict[str, list[ResultKey]] = {run_id: [] for run_id in run_ids}
+        if not keys:
+            return keys
+        store = self._store
+        try:
+            items = store.by_doc_type(
+                "eval_result", scope_id, exclude=_RESULT_KEY_EXCLUDED, field_in={"eval_run_id": list(keys)}
+            )
+        # prawduct:ok-broad-except — DB read boundary; re-raised as a typed eval error
+        except Exception as e:
+            raise StorageError(f"failed to read the results of eval runs {list(keys)!r}: {e}") from e
         for item in items:
-            result_id, case_id, k, model = (item.get(name) for name in ("id", "test_case_id", "k_iteration", "model"))
-            scored_at = item.get("scored_at", "")
-            if not (
-                isinstance(result_id, str)
-                and isinstance(case_id, str)
-                and isinstance(k, int)
-                and not isinstance(k, bool)
-                and isinstance(model, str)
-                and isinstance(scored_at, str)
-            ):
-                raise UnreadableResultKey(
-                    f"a stored result of eval run {run_id!r} ({result_id!r}) carries no readable id, case, k, model "
-                    "or stored time, so the run cannot be read a page at a time"
+            run_id = item.get("eval_run_id")
+            if run_id not in keys:
+                raise StorageError(
+                    f"the store answered a read of eval runs {list(keys)!r} with a result ({item.get('id')!r}) of run "
+                    f"{run_id!r}, none of them"
                 )
-            keys.append(ResultKey(result_id, case_id, k, model, scored_at))
+            keys[run_id].append(_result_key(item, run_id))
         return keys
 
     def load_eval_results(self, result_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:

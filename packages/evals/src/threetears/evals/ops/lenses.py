@@ -887,7 +887,8 @@ def detectable_effects(
     # estimated off the listing above, then counted off the runs' keys, both before any result is read (the store
     # computing it is #996). Memory is held by the walk below, a page at a time; the budget holds the read's time.
     hold_to_read_budget(_PLANNING_LENS, scope_id, runs, how=_NARROW_THE_PLANNING_READ)
-    keys = {run.id: host.storage.query_eval_result_keys_by_run(run.id, scope_id) for run in runs}
+    # One read of every run's keys (its runs a ``field_in`` predicate), not one per run: each is a scan of the scope.
+    keys = host.storage.query_eval_result_keys_by_runs([run.id for run in runs], scope_id)
     hold_to_read_budget(
         _PLANNING_LENS, scope_id, runs, how=_NARROW_THE_PLANNING_READ, returned=sum(map(len, keys.values()))
     )
