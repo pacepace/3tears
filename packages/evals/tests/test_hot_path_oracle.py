@@ -31,6 +31,14 @@ locally, on one process: ``TESTAMENT=off HOT_PATH_ORACLE_REGEN=1 ./scripts/test.
 capture under ``inputs/`` is written only when it is missing; it is the campaign read, not an output, so it is never
 rewritten by a regeneration.
 
+**A golden is per platform where the platform moves it.** The last unrounded digits of some statistics (a t
+interval's bounds, a sum's last place, read through the platform's maths library) differ between platforms: the same
+code reads ``21.28666989160534`` on one and ``21.28666989160533`` on another. So an entry a platform reads differently
+from where it was captured carries an override, ``<entry>@<PLATFORM>`` (:data:`PLATFORM`: the machine, the C library
+and the Python build), and each platform is held byte for byte to its own. A red's message names the platform and
+carries the record it observed (between :data:`OBSERVED` marks), so an override, or an approved change's goldens, can
+be taken from a pool run's report (``testament run --json``).
+
 The report's clock is pinned (:data:`REPORT_NOW`), the one wall-clock value a code-only page prints.
 """
 
@@ -41,6 +49,7 @@ import functools
 import hashlib
 import json
 import os
+import platform
 from collections.abc import Callable, Coroutine, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -84,6 +93,12 @@ WHOLE_UP_TO = 4096
 
 #: How much of a long body's start and end its golden keeps.
 EDGE = 1024
+
+#: The platform a read ran on, as far as its floats' last digits go: the machine, the C library and the Python build.
+PLATFORM = f"{platform.system()}-{platform.machine()}-{'-'.join(platform.libc_ver())}-py{platform.python_version()}"
+
+#: What brackets the observed record in a red's message, so a pool run's report carries the record it read.
+OBSERVED = "<<observed-record>>"
 
 #: Every form a report is read in: ``(format, static)``.
 FORMS = (("markdown", False), ("html", False), ("html", True), ("json", False))
@@ -196,17 +211,21 @@ def _goldens(name: str) -> dict[str, Any]:
 
 
 def check(name: str, entry: str, text: str) -> None:
-    """``text`` against campaign ``name``'s golden ``entry``, or written as it under :data:`REGENERATE`."""
+    """``text`` against campaign ``name``'s golden ``entry`` on this platform, or written as it under
+    :data:`REGENERATE`.
+
+    The golden is the entry this platform overrides (``<entry>@<PLATFORM>``) where there is one, else the entry
+    itself.
+    """
     observed = record(text)
+    goldens = _goldens(name)
     if REGENERATE:
-        goldens = _goldens(name)
         goldens[entry] = observed
         GOLDENS.mkdir(parents=True, exist_ok=True)
         _golden_path(name).write_text(json.dumps(goldens, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
         return
-    goldens = _goldens(name)
-    assert entry in goldens, f"{name} has no golden {entry!r}; goldens are written under HOT_PATH_ORACLE_REGEN=1"
-    golden = goldens[entry]
+    golden = goldens.get(f"{entry}@{PLATFORM}", goldens.get(entry))
+    assert golden is not None, f"{name} has no golden {entry!r}; goldens are written under HOT_PATH_ORACLE_REGEN=1"
     if observed != golden:
         moved = next(
             (
@@ -217,9 +236,10 @@ def check(name: str, entry: str, text: str) -> None:
             None,
         )
         raise AssertionError(
-            f"{name} {entry} moved: {observed.get('bytes', len(text))} bytes now, "
+            f"{name} {entry} moved on {PLATFORM}: {observed.get('bytes', len(text))} bytes now, "
             f"{golden.get('bytes', len(golden.get('text', '')))} in the golden; first difference in its head at "
-            f"character {moved}; head now {text[:200]!r}"
+            f"character {moved}; head now {text[:200]!r}; observed record "
+            f"{OBSERVED}{json.dumps(observed, ensure_ascii=False)}{OBSERVED}"
         )
 
 
