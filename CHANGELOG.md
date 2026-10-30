@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an optional readings capability for a document store, with its own conformance kit
+
+**Added:** `ResultReadings`, an optional capability a `DocumentStore` may offer beside its methods, detected with
+`isinstance` as `StoreClock` is. `iter_narrowed` yields the rows `by_doc_type` would return for the same predicates, in
+its order, from one backend call, with `exclude` applied and `exclude_in_items` dropping paths inside each object item
+of a list field (`narrow_items`, beside `omit_paths`, is that rule). `grouped` groups those rows by scalar paths and
+answers `count`, `count_null`, `sum_int`, `min`, `max` and `values` (`[row_id, value]` pairs in stored order) per
+group (`GroupMeasure`). It has no float measure: a reader adds the values itself, in order. The in-memory and SQLite
+stores offer it. All three names are provisional.
+
+`threetears.evals.testing.RESULT_READINGS_CONFORMANCE_CASES` proves a store that offers it, one
+`ResultReadingsConformanceCase` per rule, failures reported as `StoreConformanceFailure`. Each case also takes a hook
+installer: the store calls the hook once per backend round trip, so the kit can count calls and make the backend fail.
+
+**A host need not implement it.** A store without it is read through the port's own methods, with the same answers.
+
 ### evals: the read tier's aggregates read results without their verbatim fields
 
 **Fixed:** `pivot`, `history`, `frontier`, `program_budget`, `orphaned_runs` and `comparison_sets` read every result
