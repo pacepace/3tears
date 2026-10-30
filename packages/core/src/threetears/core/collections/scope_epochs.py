@@ -107,7 +107,7 @@ SCOPE_EPOCHS_TABLE: Final = "scope_epochs"
 WHOLE: Final = "*"
 
 #: the columns a snapshot reads
-_COLUMNS: Final = ("scope", "epoch", "previous_epoch", "writing", "date_updated")
+_COLUMNS: Final = ("scope", "epoch", "previous_epoch", "writing", "pending", "date_updated")
 
 #: scopes one statement names when touching
 _TOUCH_BATCH: Final = 500
@@ -177,6 +177,7 @@ class EpochSnapshot:
     :ivar previous: the epoch each scope's last move replaced (None after its first move), by scope;
         :data:`WHOLE`'s is the version before the current one
     :ivar writing_since: when the write in progress began; None when none is
+    :ivar pending: the scopes a write has touched and no commit has moved since (:meth:`ScopeEpochs.touch`)
     """
 
     version: int
@@ -184,6 +185,7 @@ class EpochSnapshot:
     epochs: Mapping[str, int]
     previous: Mapping[str, int | None]
     writing_since: datetime | None = None
+    pending: frozenset[str] = frozenset()
 
     def epoch(self, scope: str) -> int:
         """one scope's epoch; 0 for a scope no write has changed.
@@ -256,8 +258,11 @@ class ScopeEpochs:
         writing_since: datetime | None = None
         epochs: dict[str, int] = {}
         previous: dict[str, int | None] = {}
+        pending: set[str] = set()
         for row in rows:
             scope = str(row["scope"])
+            if scope != WHOLE and row["pending"] is not None:
+                pending.add(scope)
             if scope == WHOLE:
                 version = int(row["epoch"])
                 writing = None if row["writing"] is None else int(row["writing"])
@@ -268,11 +273,19 @@ class ScopeEpochs:
                 epochs[scope] = int(row["epoch"])
                 previous[scope] = None if row["previous_epoch"] is None else int(row["previous_epoch"])
         return EpochSnapshot(
-            version=version, writing=writing, epochs=epochs, previous=previous, writing_since=writing_since
+            version=version,
+            writing=writing,
+            epochs=epochs,
+            previous=previous,
+            writing_since=writing_since,
+            pending=frozenset(pending),
         )
 
     async def settled(self) -> EpochSnapshot | Unsettled:
-        """the snapshot, or :class:`Unsettled` (which write, and how long it has run) while one is in progress.
+        """the snapshot, or :class:`Unsettled` (which write, how long it has run, what it touched) while one is in progress.
+
+        The :class:`Unsettled` names every scope's epoch and the scopes the write has touched, so a reader may
+        read a scope the write has not touched while it runs (a touch commits with the write's first rows there).
 
         :return: the snapshot when no write is in progress
         :rtype: EpochSnapshot | Unsettled
@@ -282,7 +295,11 @@ class ScopeEpochs:
         if snapshot.writing is not None:
             since = snapshot.writing_since
             seconds = None if since is None else round((datetime.now(UTC) - since).total_seconds(), 1)
-            settled = Unsettled(f"write {snapshot.writing} in progress for {seconds} s")
+            settled = Unsettled(
+                f"write {snapshot.writing} in progress for {seconds} s",
+                epochs=snapshot.epochs,
+                pending=snapshot.pending,
+            )
             stalled = seconds is not None and seconds > STALLED_WRITE_SECONDS
             # a write that began long ago and never committed is one that died: say so, with its age
             log.log(

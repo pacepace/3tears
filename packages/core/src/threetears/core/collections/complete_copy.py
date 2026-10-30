@@ -629,10 +629,18 @@ StampT = TypeVar("StampT")
 class Unsettled:
     """the writer's record while a write is in progress: no stamp to build against, and why.
 
+    A writer that records the parts of the data its write has touched names them, with every part's
+    version as last committed: a reader may then read a part the write has not touched, and keep what it
+    read only when that part is still untouched, at the same version, once it has read it.
+
     :ivar reason: what the writer says of the write (which one, how long it has run)
+    :ivar epochs: each part's version as last committed, when the writer records touches; ``None`` when it does not
+    :ivar pending: the parts the write in progress has touched (its rows there may be committed part way)
     """
 
     reason: str
+    epochs: Mapping[str, int] | None = None
+    pending: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
