@@ -692,12 +692,15 @@ class _SubscriptionFeed:
         task.add_done_callback(self._receivers.discard)
 
     async def release(self, raw_subscription: Any, connection: Any) -> None:
-        """hand over a superseded receiver: stop the server routing to it, keep what it already has.
+        """hand over a superseded receiver: stop the server routing to it, keep what it already has
+        and anything still on its way.
 
-        :func:`_stop_routing_then_drain` removes the server's interest, proves by round trip that
-        everything routed there has arrived, and waits for the receiver to have taken each of
-        those messages into the backlog -- so nothing already in flight to the old connection is
-        dropped. Never raises: a connection that closed first has nothing left to hand over.
+        :func:`_stop_routing` removes the server's interest and proves the server processed that.
+        The receiver keeps running: a message the server picked this member for just before the
+        ``UNSUB`` can still arrive after its round trip, and is taken into the backlog as any other.
+        It ends when the replaced connection is drained at its retirement (``NatsClient._retire``),
+        which takes every message still queued. Never raises: a connection that closed first has
+        nothing left to hand over.
 
         :param raw_subscription: the superseded nats-py subscription
         :ptype raw_subscription: Any
@@ -710,10 +713,7 @@ class _SubscriptionFeed:
             # bounded: the drain waits for the receiver to take each message, and a subscription
             # dropped mid-handover has no receiver left to take them. see the bound's own comment
             # for why it is longer than the flushes inside the drain.
-            await asyncio.wait_for(
-                _stop_routing_then_drain(raw_subscription, connection),
-                timeout=_HANDOVER_DRAIN_BOUND_SECONDS,
-            )
+            await asyncio.wait_for(_stop_routing(raw_subscription, connection), timeout=_HANDOVER_DRAIN_BOUND_SECONDS)
         # NOSILENT: logged; the successor is already receiving, so the only loss is whatever the
         # closed connection had not yet handed over, and a closed connection cannot hand it over.
         except Exception as exc:  # noqa: BLE001 -- handover is best-effort once the successor receives
@@ -2044,6 +2044,31 @@ async def round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_SE
     :raises nats.errors.FlushTimeoutError: when no ``PONG`` arrives within ``timeout``
     """
     await _round_trip(connection, timeout=timeout)
+
+
+async def _stop_routing(raw_subscription: Any, connection: Any) -> None:
+    """remove the server's interest in a subscription, keeping it registered here and still received.
+
+    The ``UNSUB`` goes out on its own, then an ordered :func:`_round_trip` proves the server processed
+    it. That round trip does NOT prove every message routed to the subscription has arrived: the
+    server delivers a message from the PUBLISHER's side, which can pick this member of a queue group
+    just before the ``UNSUB`` lands and write the message to this connection just after the ``PONG``.
+    A subscription forgotten at the ``PONG`` (nats-py's ``drain``) then drops that message -- for a
+    queue-group member, lost outright: no other member ever sees it. Found by the live renewal test
+    under load: 1 message in about 100,000, in a few runs of every hundred, with no error anywhere.
+    So the subscription stays registered, and its receiver keeps taking what arrives, until the
+    connection itself is drained (``NatsClient._retire``), which comes only after ``retire_after``.
+
+    :param raw_subscription: the nats-py subscription to stop routing to
+    :ptype raw_subscription: Any
+    :param connection: the nats-py connection carrying it
+    :ptype connection: Any
+    :return: nothing
+    :rtype: None
+    :raises Exception: whatever the connection raises; the caller logs it
+    """
+    await send_unsubscribe(connection, raw_subscription)
+    await _round_trip(connection)
 
 
 async def _stop_routing_then_drain(raw_subscription: Any, connection: Any) -> None:
@@ -3977,8 +4002,9 @@ class NatsClient:
            from here on uses it -- but only once the old connection has proved that everything
            already published on it reached the server (:meth:`_settle_publishes`), so a message
            published on the successor never overtakes one published before the renewal;
-        4. end each subscription's old half (:func:`_stop_routing_then_drain`), so whatever the
-           server had already routed to the old connection still reaches the callbacks, and
+        4. stop the server routing to each subscription's old half (:func:`_stop_routing`), whose
+           receiver keeps taking whatever the server had already routed to the old connection
+           until that connection is drained at its retirement, and
            rebind each durable push consumer;
         5. keep the old connection open for ``retire_after`` -- the longest request it may be
            carrying -- then drain and close it. Until then a request sent on it still receives its

@@ -142,6 +142,10 @@ class _Conn:
         self.published.append((subject, payload))
 
     async def drain(self) -> None:
+        # nats-py drains every subscription still registered, each handing over what is queued
+        for sub in self.subs:
+            if not sub.drained and not sub.unsubscribed:
+                await sub.drain()
         self.drained = True
         self.is_closed = True
 
@@ -254,7 +258,7 @@ async def test_a_successor_that_cannot_take_the_subscriptions_is_closed_and_chan
 
 
 async def test_the_handover_moves_every_subscription_before_the_old_half_is_released() -> None:
-    """subscribe the successor in the same group, make it current, THEN drain the old half.
+    """subscribe the successor in the same group, make it current, THEN stop routing to the old half.
 
     a message the server routed to the old connection before its UNSUB still reaches the callback,
     and so does one routed to the successor: both connections feed the one subscription.
@@ -278,16 +282,47 @@ async def test_the_handover_moves_every_subscription_before_the_old_half_is_rele
 
     assert client.raw is successor
     assert [(s.subject, s.queue) for s in successor.subs] == [("events.>", sub.queue)]
-    assert old_half.drained
     # a round trip settles what was published on the old connection before anything is published
-    # on the successor; then the UNSUB on its own, then a round trip ordered after it, and only then
-    # nats-py's drain, which forgets the subscription.
-    assert current.calls == ["round-trip", "unsub 1", "round-trip", "drain 1"]
+    # on the successor; then the UNSUB on its own, then a round trip ordered after it. The old half
+    # is NOT drained (forgotten) at its PONG: the server may still deliver a message it picked this
+    # member for just before the UNSUB; the old half ends with its connection's drain.
+    assert current.calls == ["round-trip", "unsub 1", "round-trip"]
+    assert not old_half.drained
     await successor.subs[0].queue_in.put(_Msg(b"routed to the successor"))
     await _settle()
     assert received == [b"routed to the old connection", b"routed to the successor"]
     # the old connection is held for the work it carries, not closed with the handover
     assert not current.is_closed
+    await client.shutdown()
+
+
+async def test_a_message_the_server_delivers_to_the_old_half_after_its_round_trip_still_arrives() -> None:
+    """the server picks a queue-group member on the publisher's side, so a message it picked the old
+    half for just before the UNSUB can reach the old connection AFTER the round trip that proved the
+    UNSUB. Lost outright if the old half were forgotten at that PONG: no other member sees it (the
+    live renewal test lost 1 in about 100,000 so). It arrives, until the connection is retired."""
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(current, successor)
+    received: list[bytes] = []
+
+    async def _cb(msg: IncomingMessage) -> None:
+        received.append(bytes(msg.data))
+
+    await client.subscribe(Subject.raw("events.>"), cb=_cb)
+    old_half = current.subs[0]
+    await client.renew_connection(retire_after=timedelta(seconds=0.2))
+    await _settle()
+    assert current.calls[-2:] == ["unsub 1", "round-trip"]
+
+    await old_half.queue_in.put(_Msg(b"picked before the UNSUB, delivered after its PONG"))
+    await _settle()
+    assert received == [b"picked before the UNSUB, delivered after its PONG"]
+
+    for _ in range(100):
+        if current.drained:
+            break
+        await asyncio.sleep(0.01)
+    assert current.drained and old_half.drained, "the old half ends with its connection's retirement"
     await client.shutdown()
 
 

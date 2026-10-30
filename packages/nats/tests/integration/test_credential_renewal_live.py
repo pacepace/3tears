@@ -74,6 +74,8 @@ _QUERY_SUBJECT = "svc.query"
 _EVENTS = "events"
 _CALLS_SUBJECT = "pod.calls"
 _POD_OUT = "podout.seq"
+#: what the pod sends on _POD_OUT to prove the admin's subscription is registered, before its sequence
+_PROBE = b"probe"
 #: the TTL the pod schedules its renewal against, and the TTL the responder mints. Long enough that
 #: the credential never actually expires during the test; the renewal fires early because the
 #: schedule subtracts its margins and the longest request from it.
@@ -460,11 +462,22 @@ async def test_many_renewals_under_a_busy_subscription_lose_and_double_nothing()
             sent_by_pod: list[int] = []
             seen_from_pod: list[int] = []
 
+            probed = asyncio.Event()
+
             async def _on_pod_out(msg: Any) -> None:
-                seen_from_pod.append(int(msg.data))
+                if msg.data == _PROBE:
+                    probed.set()
+                else:
+                    seen_from_pod.append(int(msg.data))
 
             await admin.subscribe(_POD_OUT, cb=_on_pod_out)
-            await admin.flush()
+            # proven registered by a message through it, not by nats-py's flush, whose PING can overtake
+            # the SUB still in its pending buffer: the pod's first message was once lost to exactly that
+            # (a test error, not a renewal's)
+            while not probed.is_set():
+                await pod.publish_raw(subject=Subject.raw(_POD_OUT), payload=_PROBE)
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(probed.wait(), timeout=0.2)
 
             async def _pod_stream() -> None:
                 assert pod is not None
