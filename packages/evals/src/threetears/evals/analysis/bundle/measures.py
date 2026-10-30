@@ -423,11 +423,13 @@ def _failures_as_misses(results_by_run: dict[str, list[EvalResult]]) -> dict[str
     grading_otherwise = {
         run_id
         for run_id, members in results_by_run.items()
-        if any(result.test_case_id in classified_cases and _answered_unclassified(result) for result in members)
+        if _grades_otherwise(
+            (result.test_case_id for result in members if _answered_unclassified(result)), classified_cases
+        )
     }
 
     def read(run_id: str, result: EvalResult) -> EvalResult:
-        if run_id not in grading_otherwise and result.test_case_id in classified_cases:
+        if _miss_counts(result.test_case_id, classified_cases, grading_otherwise=run_id in grading_otherwise):
             return _as_miss(result) or result
         return result
 
@@ -443,6 +445,18 @@ def _answered_unclassified(result: EvalResult) -> bool:
     """Whether the result was delivered without failing and landed no verdict: on a classified case, its run grades by
     something else (:func:`_failures_as_misses`)."""
     return MATCH_MEASURE not in result.host_measures and classify_result(result) is ResultOutcome.OK
+
+
+def _grades_otherwise(answered_unclassified: Iterable[str], classified_cases: Collection[str]) -> bool:
+    """Whether a run that answered these cases without failing and without a verdict grades by something else: it
+    answered a case some run classified (:func:`_failures_as_misses`)."""
+    return any(case_id in classified_cases for case_id in answered_unclassified)
+
+
+def _miss_counts(case_id: str, classified_cases: Collection[str], *, grading_otherwise: bool) -> bool:
+    """Whether a failure on ``case_id`` that landed no verdict is read as a miss: its case is a classification and its
+    run classifies (:func:`_failures_as_misses`)."""
+    return not grading_otherwise and case_id in classified_cases
 
 
 def _as_miss(result: EvalResult) -> EvalResult | None:

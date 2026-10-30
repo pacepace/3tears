@@ -37,8 +37,11 @@ from threetears.evals.analysis.stats import (
     variance_components,
 )
 from threetears.evals.analysis import reads
+from threetears.evals.analysis.bundle import comparisons
+from threetears.evals.analysis.bundle.comparisons import planning_readings
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
+from threetears.evals.schema.models import EvalResult, RubricScore
 from threetears.evals.ops import DetectableEffects, LaunchArguments, launch_estimate
 from threetears.evals.ops.lenses import detectable_effects, estimate_text
 from threetears.evals.storage import InMemoryDocumentStore
@@ -300,8 +303,8 @@ def test_the_launch_estimate_prints_one_line_per_reading() -> None:
 
 
 class TestThePlanningReadIsHeldToTheReadBudget:
-    """Every earlier run's results are held at once, so past the read tier's budget the block is refused before any
-    result is read (#996 is the store computing it). Two runs of 6 cases × 2: 24 results by their matrices."""
+    """Every earlier run's results are read, so past the read tier's budget the block is refused before any result is
+    read (#996 is the store computing it). Two runs of 6 cases × 2: 24 results by their matrices."""
 
     def _host(self) -> tuple[BatchRecordingStore, EvalHost]:
         store = BatchRecordingStore()
@@ -466,3 +469,74 @@ class TestThePlanningReadHoldsAPageNotTheHistory:
         added = 9 * 10 * 3
         # Held whole, each added result costs at least its payload; read down to its values, a small fraction of it.
         assert (long - short) / added < self.PAYLOAD / 4, (short, long)
+
+
+class TestTheCrossRunRulesHoldAcrossPages:
+    """The planning read keeps each result's values and applies what reads across runs once every run is read, so a
+    rule decided by a later run reaches a result read pages earlier. Each result is its own page here."""
+
+    @pytest.fixture(autouse=True)
+    def _a_result_a_page(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(comparisons, "RUN_RESULTS_PAGE", 1)
+
+    def _result(self, run: str, case: str, k: int, **fields: Any) -> EvalResult:
+        return make_eval_result(
+            id=f"{run}-{case}-{k}",
+            eval_run_id=f"run-{run}",
+            scope_id=SCOPE,
+            model=run,
+            test_case_id=case,
+            k_iteration=k,
+            **fields,
+        )
+
+    def test_a_miss_a_run_grading_otherwise_and_a_boundary_are_read_as_the_whole_history_reads_them(self) -> None:
+        host = _host()
+        refused = {"candidate_error": "refused", "host_measures": {}}
+        boundary_tone = RubricScore(
+            dim="conversation.tone", score=3, scale="ordinal", axis="boundary", judge_temperature=0.0
+        )
+        history = {
+            # Read first: its failure on c1 is a miss only because run b, read last, classifies c1.
+            # Its one page also scores conversation.tone as a boundary: a guardrail, however many capability scores of
+            # it are read after.
+            "c": [self._result("c", "c1", 1, **refused, rubric_scores=[boundary_tone])],
+            # Classifies c0; its failure there is a miss.
+            "a": [
+                self._result("a", "c0", 1, host_measures={"match": True}),
+                self._result("a", "c0", 2, host_measures={"match": True}),
+                self._result("a", "c0", 3, **refused),
+            ],
+            # Classifies c1, but answers c0 without a verdict on its last page: it grades otherwise, so its failure on
+            # c1 is no miss.
+            "b": [
+                self._result("b", "c1", 1, host_measures={"match": True}),
+                self._result("b", "c1", 2, **refused),
+                self._result("b", "c0", 1, host_measures={}),
+            ],
+        }
+        runs = []
+        for model, results in history.items():
+            run = make_eval_run(
+                id=f"run-{model}",
+                scope_id=SCOPE,
+                template_id=TEMPLATE,
+                candidate_model=model,
+                status="completed",
+                k_runs=3,
+                test_case_ids=["c0", "c1"],
+            )
+            host.storage.save_eval_run(run)
+            runs.append(run)
+            for result in results:
+                host.storage.save_eval_result(result)
+        walked = {run.id: iter(history[run.candidate_model]) for run in runs}
+
+        readings = {reading.name: reading for reading in planning_readings(runs, walked, profile=host.profile)}
+
+        assert readings["accuracy"].repeats == {
+            "run-c": {"c1": [0.0]},
+            "run-a": {"c0": [1.0, 1.0, 0.0]},
+            "run-b": {"c1": [1.0]},
+        }
+        assert "conversation.tone" not in readings, "scored once as a boundary, on the first page read: a guardrail"

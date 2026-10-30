@@ -88,7 +88,9 @@ from threetears.evals.analysis.bundle.measures import (
     _answered_unclassified,
     _as_miss,
     _classifies,
+    _grades_otherwise,
     _measure_collection,
+    _miss_counts,
 )
 from threetears.evals.analysis.bundle.mechanisms import (
     _MechanismObservations,
@@ -174,20 +176,24 @@ class PlanningReading(NamedTuple):
     repeats: dict[str, dict[str, list[float]]]
 
 
-class _RunRepeats(NamedTuple):
-    """What :func:`planning_readings` keeps of one run once its results are read: their values, not the results."""
+class _KeptResult(NamedTuple):
+    """What :func:`planning_readings` keeps of one result once it is read: its values, not the result."""
 
-    #: The cases the run answered without failing and without landing a verdict (:func:`_failures_as_misses`).
+    #: Where it sits among its run's results: its case, ``k`` and id.
+    order: tuple[str, int, str]
+    #: Its per-case value of each reading (:func:`_per_case_values`).
+    values: dict[tuple[ReadingKind, str], dict[str, float]]
+    #: Its values read as a miss, when it is a failure that landed no verdict; which of the two counts turns on every
+    #: run's verdicts, known only once all are read (:func:`_miss_counts`).
+    as_miss: dict[tuple[ReadingKind, str], dict[str, float]] | None
+
+
+class _RunRepeats(NamedTuple):
+    """What :func:`planning_readings` keeps of one run once its results are read."""
+
+    #: The cases the run answered without failing and without landing a verdict (:func:`_grades_otherwise`).
     answered_unclassified: set[str]
-    #: Per result: its sort key, its per-case values, and its values read as a miss when it is a failure that landed
-    #: no verdict (which of the two counts turns on every run's verdicts, known only once all are read).
-    values: list[
-        tuple[
-            tuple[str, int, str],
-            dict[tuple[ReadingKind, str], dict[str, float]],
-            dict[tuple[ReadingKind, str], dict[str, float]] | None,
-        ]
-    ]
+    kept: list[_KeptResult]
 
 
 def planning_readings(
@@ -203,7 +209,7 @@ def planning_readings(
 
     **Each result is read down to its values before the next page is read.** A template's history is every result of
     every run of it, so nothing here holds more than a page of results and the values read so far: a lazy iterable
-    per run (a paged walk, :func:`~threetears.evals.kernel.run_pages.iter_stored_results`) is read once, a run at a
+    per run (a paged walk, :mod:`~threetears.evals.kernel.run_pages`) is read once, a run at a
     time, in ``runs`` order. What reads across runs (a failure that landed no verdict counts as a miss on a case
     another run classified, :func:`_failures_as_misses`; a dimension any result scored as a boundary is a guardrail;
     the scale a dimension was answered on) is kept as the few facts it needs and applied once every run is read, so
@@ -224,7 +230,7 @@ def planning_readings(
     boundary: set[str] = set()
     kept: dict[str, _RunRepeats] = {}
     for run in runs:
-        run_repeats = kept[run.id] = _RunRepeats(answered_unclassified=set(), values=[])
+        run_repeats = kept[run.id] = _RunRepeats(answered_unclassified=set(), kept=[])
         for page in batched(results_by_run.get(run.id, ()), RUN_RESULTS_PAGE):
             for result in page:
                 if _classifies(result):
@@ -245,20 +251,23 @@ def planning_readings(
                     scales[record.rubric_dim] = record.rubric_scale
             for result in read:
                 miss = misses.get(result.id)
-                run_repeats.values.append(
-                    (
-                        (result.test_case_id, result.k_iteration, result.id),
-                        _per_case_values([result], judged_rows, profile=profile),
-                        _per_case_values([miss], judged_rows, profile=profile) if miss is not None else None,
+                run_repeats.kept.append(
+                    _KeptResult(
+                        order=(result.test_case_id, result.k_iteration, result.id),
+                        values=_per_case_values([result], judged_rows, profile=profile),
+                        as_miss=_per_case_values([miss], judged_rows, profile=profile) if miss is not None else None,
                     )
                 )
     repeats: dict[tuple[ReadingKind, str], dict[str, dict[str, list[float]]]] = {}
     for run in runs:
         run_repeats = kept[run.id]
-        grading_otherwise = not run_repeats.answered_unclassified.isdisjoint(classified_cases)
-        for (result_case, _, _), values, as_miss in sorted(run_repeats.values, key=lambda kept_values: kept_values[0]):
-            if as_miss is not None and not grading_otherwise and result_case in classified_cases:
-                values = as_miss
+        grading_otherwise = _grades_otherwise(run_repeats.answered_unclassified, classified_cases)
+        for kept_result in sorted(run_repeats.kept, key=lambda one: one.order):
+            values = kept_result.values
+            if kept_result.as_miss is not None and _miss_counts(
+                kept_result.order[0], classified_cases, grading_otherwise=grading_otherwise
+            ):
+                values = kept_result.as_miss
             for reading, by_case in values.items():
                 for case_id, value in by_case.items():
                     repeats.setdefault(reading, {}).setdefault(run.id, {}).setdefault(case_id, []).append(value)
