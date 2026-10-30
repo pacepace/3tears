@@ -6,8 +6,6 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.84.0 -- 2026-10-29
-
 ### core, acl: a platform pool stops re-sending the session settings it already holds, and a namespace name resolves from cache
 
 **Fixed:** on cobalt dev on 2026-10-29 most of the YSQL statement mix was session bookkeeping:
@@ -30,6 +28,53 @@ class for a pool that cannot use `RESET ALL` (YugabyteDB's JSONB codecs). It:
 `namespaces` evict it, and it is served only while `namespaces` is followed. The row itself is read by that key
 through the collection's tiers, and is looked up by name again when it no longer carries the name. An absent name is
 read from L3 every time, because a namespace can be created by SQL that no collection write announces.
+
+## v0.84.0 -- 2026-10-29
+
+### core, nats: a pod that loads or rebuilds its copy keeps its event loop and its NATS connection
+
+From cobalt dev, 2026-10-29: a reports pod rebuilding its scoped snapshot stalled its loop, was dropped by the NATS
+server as a slow consumer, and logged unretrieved task exceptions; each publish spent 25 s retiring chunks.
+
+**Fixed:**
+- **SQL labelling (core):** a plain statement's operation is labelled in a few C-level searches. A page's multi-row
+  INSERT took about 20 ms to tokenize a character at a time on the loop, and each page's text differs, so the cache
+  never held it; it now takes about 1 ms. A statement with a literal, a dollar-quoted text or a comment is still read
+  as tokens.
+- **Chunk reads (core):** a `ScopedSnapshot` reads at most `chunk_reads` (default 4) chunks from the object store
+  at once, whatever the scopes it fetches ahead. Sixteen scopes' chunks at once passed the server's MaxPending, and
+  the server cut the pod's connection.
+- **Compaction (core):** `publish_staged` compacts its moved scopes 8 at a time. It did them one after another.
+  Their retires are one sweep (below).
+- **Abandoned calls (nats):** a JetStream call `run_bounded` abandons, at its deadline or because its caller was
+  cancelled, has its outcome taken when it ends. It no longer logs "Task exception was never retrieved".
+
+**Added:**
+- `ScopedSnapshot(chunk_reads=...)`: the bound on chunks read from the object store at once.
+- `threetears.core.backends.statement_operation`: the statement labeller, moved out of `nats_proxy`, which calls it.
+  `statement_operation(query)` gives the label the broker runs a statement by, and `is_resendable(query)` says
+  whether the statement only reads.
+
+### core: a scoped snapshot catches up the scopes a write in progress has not touched
+
+**Fixed:** a catch-up of scopes behind L3 waited whenever a write was in progress. With loads every 30-40 s on cobalt
+dev on 2026-10-29, a write was nearly always in progress when it ran, so 42 scopes stayed behind L3 for as long as
+the loads ran. A writer stages a state from the copy only at L3's prior epoch, so a state that missed one stage
+missed every later one.
+
+The catch-up now reads, while the write runs, each behind scope the write has not touched. It keeps a scope only
+when, after the read, that scope is still untouched and at the same epoch: a write marks a scope pending in the
+transaction of its first rows there, and clears the mark only in the commit that moves the scope's epoch. Scopes
+the write has touched are left for a catch-up after it commits.
+
+A writer also stages a scope its copy is behind on, whole from L3: `ScopedSnapshot.stage_from_l3(scope, epoch)`
+reads every table of the scope as L3 holds it once the write's rows are there. One write at a time holds the epochs,
+so those are exactly the scope's rows at the write's epoch. The scope moves with the write instead of waiting for a
+catch-up. A writer that builds its chunks from its copy calls it for a scope the copy is behind on.
+
+**Added:** `ScopedSnapshot.stage_from_l3`. `Unsettled.epochs` and `Unsettled.pending` (every part's committed version, and the parts the write in
+progress has touched, for a writer that records touches), and `EpochSnapshot.pending`. `ScopeEpochs.settled` fills
+them in.
 
 ### nats, core: a scoped snapshot's retire no longer reads every object's metadata once per scope
 
