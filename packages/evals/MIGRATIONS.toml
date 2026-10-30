@@ -58,6 +58,14 @@
 # callers.
 
 [[release]]
+version = "0.86.0"
+since = "v0.85.0"
+summary = """
+Shared-memory Arrow between a serving process and its worker processes: no 3tears-evals name has moved or been
+removed since 0.85.0, and no judge wording changed.
+"""
+
+[[release]]
 version = "0.85.0"
 since = "v0.84.0"
 summary = """
