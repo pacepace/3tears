@@ -18,7 +18,10 @@ stores offer it. All three names are provisional.
 
 `threetears.evals.testing.RESULT_READINGS_CONFORMANCE_CASES` proves a store that offers it, one
 `ResultReadingsConformanceCase` per rule, failures reported as `StoreConformanceFailure`. Each case also takes a hook
-installer: the store calls the hook once per backend round trip, so the kit can count calls and make the backend fail.
+installer: the store calls the hook once per query it issues (a statement, or a cursor opened, never a page fetched
+from one), so the kit can count queries and make the backend fail. The SQLite store streams a narrowed read of a file
+on a read-only connection of its own, so a read left part way never blocks a write, and needs nothing newer than
+JSON1 and an aggregate `FILTER` (SQLite 3.30).
 
 **A host need not implement it.** A store without it is read through the port's own methods, with the same answers.
 

@@ -11,8 +11,10 @@ store that does not offer the capability needs none of this: the engine reads it
 
 **A case also takes a hook installer.** Two promises are about the backend rather than the answer: a read is ONE
 backend call, and a backend failure raises. No check can see a backend from outside, so the adopter passes
-``install_backend_hook``: a function that takes a callback and arranges for the store to call it once per backend
-round trip (a statement executed, a request sent), replacing any callback installed before. A case counts the calls
+``install_backend_hook``: a function that takes a callback and arranges for the store to call it once per query it
+issues (a statement executed, a cursor opened, a request sent), replacing any callback installed before. Fetching
+the next page of a query already issued is not another query: a store that streams through a server-side cursor
+calls the hook when it opens the cursor and not on each ``FETCH``. A case counts the calls
 with it, or makes the backend fail by installing a callback that raises; the store must let that exception reach the
 caller, as itself or as the cause of its own. Under pytest, for a store whose driver can count its statements::
 
@@ -74,8 +76,9 @@ class ResultReadingsConformanceCase:
 
         :param store: The adapter under test.
         :ptype store: DocumentStore
-        :param install_backend_hook: Takes a callback and makes the store call it once per backend round trip,
-            replacing any callback installed before. An exception the callback raises is the backend failing.
+        :param install_backend_hook: Takes a callback and makes the store call it once per query it issues (a
+            statement executed or a cursor opened, never a page fetched from one), replacing any callback installed
+            before. An exception the callback raises is the backend failing.
         :ptype install_backend_hook: Callable[[Callable[[], None]], None]
         :raises StoreConformanceFailure: The store broke the rule, or does not offer the capability; the message
             names the case, the rule and what was observed. Anything else the store raises propagates unchanged.
@@ -548,7 +551,7 @@ RESULT_READINGS_CONFORMANCE_CASES: tuple[ResultReadingsConformanceCase, ...] = (
     ),
     ResultReadingsConformanceCase(
         "calls.one_per_read",
-        "each iter_narrowed and grouped is one backend call, made at the call, and an empty field_in makes none",
+        "each iter_narrowed and grouped issues one query, at the call, and an empty field_in issues none",
         _each_read_is_one_backend_call,
     ),
     ResultReadingsConformanceCase(

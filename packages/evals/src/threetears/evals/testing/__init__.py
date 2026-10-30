@@ -7,7 +7,7 @@ parametrises over the tuple; a broken rule raises :class:`StoreConformanceFailur
 the rule. Beside it, the readings conformance kit: every rule of the optional
 :class:`~threetears.evals.schema.ResultReadings` capability as a :class:`ResultReadingsConformanceCase`, in
 :data:`RESULT_READINGS_CONFORMANCE_CASES`, for a store that offers it; each case also takes a hook that counts or
-fails the store's backend calls (:mod:`threetears.evals.testing.readings_conformance`). The reader conformance
+fails the queries the store issues (:mod:`threetears.evals.testing.readings_conformance`). The reader conformance
 kit: every promise a host's readers make — JSON-safe, deterministic, order-independent, side-effect free, an open family's members its own, every run deriving a variant key —
 as a :class:`ReaderConformanceCase` over a :class:`ReaderSample` (the profile and runs it produced), in
 :data:`READER_CONFORMANCE_CASES`. The completion check: :func:`check_completion_conformance` takes an instance of a

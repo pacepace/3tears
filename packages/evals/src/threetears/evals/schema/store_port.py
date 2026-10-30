@@ -587,8 +587,9 @@ class ResultReadings(Protocol):
         """Yield the rows :meth:`DocumentStore.by_doc_type` would return for the same predicates, each narrowed.
 
         The same rows in the same order, each with :func:`omit_paths` applied for ``exclude`` and then
-        :func:`narrow_items` for ``exclude_in_items``. They come from ONE backend call made when this is called, and
-        are yielded one at a time, so a reader of many large documents never holds them all.
+        :func:`narrow_items` for ``exclude_in_items``. They come from ONE query issued when this is called (a statement,
+        or a cursor opened; fetching its pages is not another query), and are yielded one at a time, so a reader of
+        many large documents never holds them all.
 
         :param doc_type: The discriminator to select on.
         :ptype doc_type: str
