@@ -52,3 +52,22 @@ successor connect timed out (the callout answers on the test's saturated event l
 216 failed on that before.
 
 Upstream: Pace decides whether to file the reproduction with nats-server.
+
+### Chunk 04: A renewal that fails after subscribing its successor loses nothing routed there
+
+Two strict stress runs lost a block of thousands of messages, each after successor-connect timeouts. A successor's
+subscription is a member of its group from its `SUB`, but nothing received from it until the handover finished; a
+renewal whose round trip on the successor then timed out closed the successor outright, dropping everything routed
+to it. Now a successor's subscription receives from its `SUB` (`Subscription.subscribe_on`), and a renewal that will
+not complete stops routing to each one and drains the candidate rather than closing it (`_discard_candidate`, logged
+as a WARNING). Test `test_a_renewal_that_fails_after_subscribing_its_successor_loses_nothing_routed_there` fails on
+the earlier code. A first cut tracked receivers by `id()` and lost messages when an id was reused (the stress run
+caught it); receivers are tracked by object.
+
+The stress harness, strict: every one of the 100 renewals goes through (up to 5 tries for a timed-out successor
+connect, as the renewal loop retries) and nothing is lost. The callout answers on its own thread, loop and
+connection (it starved on the test's saturated loop); the final wait runs until nothing arrives for 5 s, capped at
+120 s, which fails with what is outstanding. The gated test waits for the handover itself, not a fixed second.
+
+Proof: 216 of 216 strict stress runs clean (6 parallel loops). The give-up path did not fire in that run, so the run
+shows no block loss with the fix and the harness fixes; the unit test is what pins the give-up path.

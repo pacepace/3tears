@@ -354,6 +354,41 @@ async def test_the_old_half_stays_in_its_group_until_the_hold_is_over() -> None:
     await client.shutdown()
 
 
+async def test_a_renewal_that_fails_after_subscribing_its_successor_loses_nothing_routed_there(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """the successor's subscription is a member of its group from its SUB: when the renewal then fails (its round
+    trip on the successor timed out), what the server routed there still reaches the callback -- the successor
+    stops routing and is drained, never closed with messages in it (a stress run lost thousands so)."""
+    monkeypatch.setattr(client_module, "REAUTH_CONNECT_TIMEOUT_SECONDS", 0.2)
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(current, successor)
+    received: list[bytes] = []
+
+    async def _cb(msg: IncomingMessage) -> None:
+        received.append(bytes(msg.data))
+
+    await client.subscribe(Subject.raw("events.>"), cb=_cb)
+    successor.pong_gate = asyncio.Event()  # the successor's round trip never answers in time
+    renewing = asyncio.create_task(client.renew_connection(retire_after=timedelta(seconds=30)))
+    for _ in range(100):
+        if successor.subs:
+            break
+        await asyncio.sleep(0.01)
+    await successor.subs[0].queue_in.put(_Msg(b"routed to the successor before the renewal failed"))
+    await asyncio.sleep(0.4)  # the renewal's round trip has timed out by now
+    successor.pong_gate.set()  # later round trips answer (the connection was slow, not dead)
+    with pytest.raises(TimeoutError):
+        await renewing
+    await _settle()
+
+    assert received == [b"routed to the successor before the renewal failed"]
+    assert client.raw is current
+    assert "unsub 1" in successor.calls, "the successor stopped routing before it went"
+    assert successor.drained, "the successor was drained, not closed with messages in it"
+    await client.shutdown()
+
+
 async def test_the_replaced_connection_is_drained_after_the_hold() -> None:
     current, successor = _Conn("current"), _Conn("successor")
     client = await _connected(current, successor)

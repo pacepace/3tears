@@ -647,7 +647,7 @@ class _SubscriptionFeed:
     :ptype note_reply: Callable[[str, Any], None] | None
     """
 
-    __slots__ = ("_backlog", "_subject", "_note_reply", "_current", "_receivers")
+    __slots__ = ("_backlog", "_subject", "_note_reply", "_current", "_receivers", "_receiving")
 
     def __init__(
         self,
@@ -672,9 +672,37 @@ class _SubscriptionFeed:
         self._note_reply = note_reply
         self._current: Any = None
         self._receivers: set[asyncio.Task[None]] = set()
+        #: the nats-py subscriptions a receiver runs for (the objects, never their ids: an id is reused once its
+        #: object is gone, and a new subscription taken for an old one would get no receiver)
+        self._receiving: set[Any] = set()
+
+    def receive_from(self, raw_subscription: Any, connection: Any) -> None:
+        """start receiving from ``raw_subscription`` into the backlog, without making it current.
+
+        A successor's subscription receives from the moment it is made: it is a member of the subscription's
+        group from its ``SUB`` on, so the server may route a message to it before the move completes -- or
+        before a renewal that then fails gives it up. Harmless twice.
+
+        :param raw_subscription: the nats-py subscription on ``connection``
+        :ptype raw_subscription: Any
+        :param connection: the nats-py connection that carries it
+        :ptype connection: Any
+        :return: nothing
+        :rtype: None
+        """
+        if raw_subscription in self._receiving:
+            return
+        self._receiving.add(raw_subscription)
+        task = asyncio.create_task(
+            self._receive(raw_subscription, connection),
+            name=f"nats-receive:{self._subject.path}",
+        )
+        self._receivers.add(task)
+        task.add_done_callback(self._receivers.discard)
+        task.add_done_callback(lambda _: self._receiving.discard(raw_subscription))
 
     def attach(self, raw_subscription: Any, connection: Any) -> None:
-        """start receiving from ``raw_subscription`` and make it the current receiver.
+        """make ``raw_subscription`` the current receiver, receiving from it if it is not already.
 
         :param raw_subscription: the nats-py subscription on ``connection``
         :ptype raw_subscription: Any
@@ -684,12 +712,7 @@ class _SubscriptionFeed:
         :rtype: None
         """
         self._current = raw_subscription
-        task = asyncio.create_task(
-            self._receive(raw_subscription, connection),
-            name=f"nats-receive:{self._subject.path}",
-        )
-        self._receivers.add(task)
-        task.add_done_callback(self._receivers.discard)
+        self.receive_from(raw_subscription, connection)
 
     async def release(self, raw_subscription: Any, connection: Any, *, hold: float = 0.0) -> None:
         """hand over a superseded receiver: after ``hold``, stop the server routing to it, keeping what it
@@ -870,9 +893,11 @@ class Subscription:
         return self._connection
 
     async def subscribe_on(self, connection: Any) -> Any:
-        """subscribe this subscription's subject and group on a successor connection.
+        """subscribe this subscription's subject and group on a successor connection, and receive from it.
 
-        The first half of a move; nothing receives from it until :meth:`move_to`.
+        The first half of a move. It receives at once: the successor is a member of the group from its ``SUB``,
+        so a message routed to it before :meth:`move_to` -- or before a renewal that fails gives it up
+        (:meth:`give_up_on`) -- reaches the callbacks like any other.
 
         :param connection: the successor nats-py connection
         :ptype connection: Any
@@ -880,7 +905,22 @@ class Subscription:
         :rtype: Any
         """
         # sender-posture: primitive -- moves a caller's subscription to a successor connection
-        return await connection.subscribe(self._subject.path, queue=self._queue)
+        raw = await connection.subscribe(self._subject.path, queue=self._queue)
+        self._feed.receive_from(raw, connection)
+        return raw
+
+    async def give_up_on(self, raw_subscription: Any, connection: Any) -> None:
+        """leave a successor's subscription a renewal will not complete: the server stops routing to it, and what
+        it already received still reaches the callbacks (the successor connection is drained after).
+
+        :param raw_subscription: the successor's nats-py subscription, from :meth:`subscribe_on`
+        :ptype raw_subscription: Any
+        :param connection: the successor nats-py connection
+        :ptype connection: Any
+        :return: nothing
+        :rtype: None
+        """
+        await self._feed.release(raw_subscription, connection)
 
     def move_to(self, raw_subscription: Any, connection: Any, *, hold: float = 0.0) -> asyncio.Task[None]:
         """make the successor's subscription current, and hand over the old one's backlog.
@@ -4058,10 +4098,11 @@ class NatsClient:
         if self._raw.is_closed:
             raise NatsClientError("cannot renew the credential of a closed NATS client; it requires a fresh connect")
         self._lifecycle.begin_renewal()
+        successor: _NatsPyClient | None = None
+        moving: list[tuple[Subscription, Any]] = []
         try:
             successor = await self._open_successor(opener)
             async with self._handover_lock:
-                moving: list[tuple[Subscription, Any]] = []
                 for sub in [s for s in self._subscriptions if not s.is_closed]:
                     # sender-posture: primitive -- moves every caller's subscription to a successor connection
                     moving.append((sub, await sub.subscribe_on(successor)))
@@ -4074,7 +4115,7 @@ class NatsClient:
             # a candidate that never became current is closed on every path out -- an error, a
             # cancellation, an abandon or a shutdown -- because nothing else will ever reach it.
             for stranded in self._lifecycle.end_renewal():
-                await _close_quietly(stranded)
+                await self._discard_candidate(stranded, moving if stranded is successor else [])
         log.info(
             "NATS connection handed over to a successor with a fresh credential",
             extra={
@@ -4085,6 +4126,33 @@ class NatsClient:
                 }
             },
         )
+
+    async def _discard_candidate(self, candidate: _NatsPyClient, moving: list[tuple[Subscription, Any]]) -> None:
+        """close a successor a renewal will not make current.
+
+        Its subscriptions, when any were made, joined their groups at their ``SUB``: the server may have routed
+        messages to them, and closing the connection outright would drop whatever it had not yet handed over --
+        under load, thousands (a renewal whose round trip on its successor timed out after subscribing, while the
+        stream kept flowing). So while the client still serves, each subscription stops routing there first
+        (its receiver taking what arrived) and the candidate is drained; the current connection's members kept
+        receiving throughout. A client that stopped serving closes it outright.
+
+        :param candidate: the successor that will not become current
+        :ptype candidate: nats.aio.client.Client
+        :param moving: each subscription with its nats-py subscription on ``candidate``; empty when none was made
+        :ptype moving: list[tuple[Subscription, Any]]
+        :return: nothing
+        :rtype: None
+        """
+        if not moving or not self._lifecycle.is_live:
+            await _close_quietly(candidate)
+            return
+        log.warning(
+            "a NATS renewal that will not complete gives up its successor's subscriptions; what they received is kept",
+            extra={"extra_data": {"client_name": self._client_name, "subscriptions": len(moving)}},
+        )
+        await asyncio.gather(*(sub.give_up_on(raw, candidate) for sub, raw in moving), return_exceptions=True)
+        await self._drain_retired(candidate)
 
     async def _hand_over(
         self,
