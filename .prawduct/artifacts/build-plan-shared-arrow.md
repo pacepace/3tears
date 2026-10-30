@@ -1,8 +1,7 @@
 # Build plan: shared-memory Arrow for worker processes
 
 Feature, large (new module and API surface). Branch `feature/shared-memory-snapshots` from origin/develop @4695a8262
-(0.85.0, untagged). No version bump while 0.85.0 is untagged; if v0.85.0 is tagged before this merges, the growth
-gate asks for 0.86.0.
+(0.85.0). v0.85.0 was tagged while this was built, so it ships as 0.86.0 (minor bump: new API).
 
 ## Goals
 

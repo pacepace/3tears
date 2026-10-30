@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.86.0 -- 2026-10-29
+
 ### core: shared-memory Arrow between a serving process and its worker processes
 
 **Added:** `threetears.core.shared_arrow` moves CPU work off a serving process's event loop into worker processes
