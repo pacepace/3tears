@@ -104,3 +104,96 @@ async def test_an_unparseable_recorded_mtime_is_warned_with_the_object_named(cap
         info = await store.info("a/b")
     assert info is not None and info.mtime is None
     assert any("a/b" in r.getMessage() and "does not parse" in r.getMessage() for r in caplog.records)
+
+
+# parity-exempt: a JetStream stand-in answering only the stream info a name listing reads; a consumer create fails the test
+class _SubjectsJetStream:
+    """JetStream holding metadata subjects for some names; counts STREAM.INFO and refuses consumers."""
+
+    def __init__(self, bucket: str, names: list[str]) -> None:
+        import base64
+
+        self.infos: list[str | None] = []
+        self._subjects = {f"$O.{bucket}.M.{base64.urlsafe_b64encode(n.encode()).decode()}": 1 for n in names}
+
+    async def stream_info(self, name: str, subjects_filter: str | None = None) -> Any:
+        from types import SimpleNamespace
+
+        self.infos.append(subjects_filter)
+        return SimpleNamespace(state=SimpleNamespace(subjects=dict(self._subjects)))
+
+    async def add_consumer(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("a name listing created a consumer: it reads one message per object")
+
+
+async def test_listing_names_reads_one_stream_info_and_creates_no_consumer() -> None:
+    """listing names is one STREAM.INFO, however many objects the bucket holds: the sweeper lists per publish,
+    and a consumer listing delivers one message per object to every caller."""
+    names = ["enr/TX/1/results", "enr/TX/2/results", "enr/NV/1/results", "enrp/TX/1/results"]
+    js = _SubjectsJetStream("pod-objects", names)
+
+    class _Client:
+        def jetstream_context(self) -> _SubjectsJetStream:
+            return js
+
+    store = NatsObjectStore(client=_Client(), full_name="pod-objects")  # type: ignore[arg-type]
+    assert await store.list_names() == sorted(names)
+    assert await store.list_names(prefix="enr/TX/") == ["enr/TX/1/results", "enr/TX/2/results"]
+    assert js.infos == ["$O.pod-objects.M.>", "$O.pod-objects.M.>"]
+
+
+class _NoClaims:
+    async def list_keys(self) -> list[str]:
+        return []
+
+
+# parity-exempt: a JetStream stand-in answering only the stream infos the orphan sweep reads
+class _ChunksJetStream(_SubjectsJetStream):
+    """JetStream holding named objects and some chunk subjects; a consumer create fails the test."""
+
+    def __init__(self, bucket: str, names: list[str], chunks: list[str]) -> None:
+        super().__init__(bucket, names)
+        self._chunks = {f"$O.{bucket}.C.{nuid}": 1 for nuid in chunks}
+
+    async def stream_info(self, name: str, subjects_filter: str | None = None) -> Any:
+        from types import SimpleNamespace
+
+        self.infos.append(subjects_filter)
+        held = self._chunks if subjects_filter and ".C." in subjects_filter else self._subjects
+        return SimpleNamespace(state=SimpleNamespace(subjects=dict(held)))
+
+
+async def test_the_orphan_sweep_reads_no_metadata_while_no_more_chunk_subjects_than_objects_stand() -> None:
+    """the declarer sweeps on every retire it answers; while every chunk subject can belong to an object
+    (no more of them than objects), there is no orphan to find and the metadata is not read."""
+    js = _ChunksJetStream("pod-objects", ["a", "b"], ["n1", "n2"])
+
+    class _Client:
+        def jetstream_context(self) -> _ChunksJetStream:
+            return js
+
+    store = NatsObjectStore(client=_Client(), full_name="pod-objects")  # type: ignore[arg-type]
+    assert await store.purge_orphan_chunks(pointers=_NoClaims()) == 0  # type: ignore[arg-type]
+    assert js.infos == ["$O.pod-objects.C.>", "$O.pod-objects.M.>"]
+
+
+async def test_listing_names_past_the_servers_subject_cap_reads_the_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    """an answer as full as the server's cap (100,000 subjects) may be cut short: the names come from the metadata."""
+    js = _SubjectsJetStream("pod-objects", [f"a/{n}" for n in range(100_000)])
+
+    class _Client:
+        def jetstream_context(self) -> _SubjectsJetStream:
+            return js
+
+    store = NatsObjectStore(client=_Client(), full_name="pod-objects")  # type: ignore[arg-type]
+    read: list[str] = []
+
+    async def list_objects(self: NatsObjectStore, *, prefix: str = "") -> list[Any]:
+        from types import SimpleNamespace
+
+        read.append(prefix)
+        return [SimpleNamespace(name=n) for n in ("a/2", "a/1")]
+
+    monkeypatch.setattr(NatsObjectStore, "list_objects", list_objects)
+    assert await store.list_names(prefix="a/") == ["a/1", "a/2"]
+    assert read == ["a/"]
