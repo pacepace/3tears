@@ -21,8 +21,8 @@ server as a slow consumer, and logged unretrieved task exceptions; each publish 
 - **Chunk reads (core):** a `ScopedSnapshot` reads at most `chunk_reads` (default 4) chunks from the object store
   at once, whatever the scopes it fetches ahead. Sixteen scopes' chunks at once passed the server's MaxPending, and
   the server cut the pod's connection.
-- **Sweeps (core):** `publish_staged` retires and compacts its moved scopes 8 at a time. It did them one after
-  another.
+- **Compaction (core):** `publish_staged` compacts its moved scopes 8 at a time. It did them one after another.
+  Their retires are one sweep (below).
 - **Abandoned calls (nats):** a JetStream call `run_bounded` abandons, at its deadline or because its caller was
   cancelled, has its outcome taken when it ends. It no longer logs "Task exception was never retrieved".
 
@@ -31,6 +31,24 @@ server as a slow consumer, and logged unretrieved task exceptions; each publish 
 - `threetears.core.backends.statement_operation`: the statement labeller, moved out of `nats_proxy`, which calls it.
   `statement_operation(query)` gives the label the broker runs a statement by, and `is_resendable(query)` says
   whether the statement only reads.
+
+### nats, core: a scoped snapshot's retire no longer reads every object's metadata once per scope
+
+**Fixed:** retiring a scope's older chunks listed the pod's whole Object Store twice (once per name prefix, filtered
+client-side), and the hub's orphan sweep on each retire it answers listed it once more. Each listing is a consumer
+delivering one metadata message per object. With about 2,300 objects and 51 scopes per epoch, that came to roughly
+7,000 messages per scope. On cobalt dev on 2026-10-29 this showed up as 3,000-4,600 non-client NATS messages/s and
+about 570 standing read consumers during a load test. Now:
+
+- the sweeper lists names once per pass, from the stream's metadata subjects (one `STREAM.INFO`);
+- `publish_staged` retires every scope it moved in one sweep and one ask to the declarer, not one each per scope;
+- `purge_orphan_chunks` reads the metadata only when there are more chunk subjects than objects, since every object
+  names at most one chunk subject. A bucket's empty objects, or objects whose delete stopped between its purges, can
+  hide as many orphans from that count; those orphans go at the first sweep the count lets through.
+
+**Added:** `NatsObjectStore.list_names(prefix=...)`, the sorted names of a bucket's objects from one `STREAM.INFO`.
+A name whose metadata is a deletion marker is listed (`delete` purges and leaves none). Past the server's cap on the
+subjects one answer carries (100,000), it reads the metadata instead.
 
 ### registry: an idle platform no longer rewrites the tool catalog on every heartbeat
 

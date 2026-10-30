@@ -192,7 +192,7 @@ _DEFAULT_L2_CONCURRENCY: Final = 16
 #: (cobalt dev, 2026-10-29)
 _DEFAULT_CHUNK_READS: Final = 4
 
-#: the moved scopes a publish retires older chunks of, or compacts, at once
+#: the moved scopes a publish compacts at once
 _SWEEPS_AT_ONCE: Final = 8
 
 #: how many scopes' fetched chunks a replica holds at once to commit them as one move; a burst of more is
@@ -1335,8 +1335,8 @@ class _Sweeper:
         """
         names: list[str] = []
         try:
-            for prefix in prefixes:
-                names += [info.name for info in await self._store.list_objects(prefix=prefix)]
+            # one listing filtered here: each listing reads every name the bucket holds, whatever the prefix
+            names = [name for name in await self._store.list_names() if name.startswith(tuple(prefixes))]
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in retire_names; nothing listed is nothing deleted
             contain(exc, log=log, what=f"scoped snapshot {self._name}: listing chunks for {what} failed: {exc}")
             names = []
@@ -1357,6 +1357,29 @@ class _Sweeper:
         names = await self._listed(self._layout.scope_prefixes(scope), f"scope {scope!r}")
         older = [n for n in names if (e := self._layout.epoch_of(scope, n)) is not None and e < epoch]
         return await self._sweep(older, what=f"scope {scope!r} below epoch {epoch}")
+
+    async def retire_older_many(self, epochs: Mapping[str, int]) -> int:
+        """retire, for each scope, its chunks of epochs before its epoch in ``epochs``; never raises.
+
+        One listing and one sweep for every scope, where :meth:`retire_older` per scope lists the
+        bucket and asks the declarer once each.
+
+        :param epochs: scope -> retire only its chunks below this epoch
+        :ptype epochs: Mapping[str, int]
+        :return: how many were retired
+        :rtype: int
+        """
+        if self._retire is None or not epochs:
+            return 0
+        prefixes = [prefix for scope in epochs for prefix in self._layout.scope_prefixes(scope)]
+        names = await self._listed(prefixes, f"{len(epochs)} scopes")
+        older = [
+            n
+            for scope, epoch in epochs.items()
+            for n in names
+            if (e := self._layout.epoch_of(scope, n)) is not None and e < epoch
+        ]
+        return await self._sweep(older, what=f"{len(epochs)} scopes below their epochs")
 
     async def retire_names_if_unserved(self, names: Sequence[str], *, what: str) -> int:
         """retire the named chunks the rule allows (a write that gave them back); never raises.
@@ -3350,12 +3373,8 @@ class ScopedSnapshot:
                     await scope.claim.release()
             unserved = [name for scope in staged if scope.scope not in moved for name in scope.objects.values()]
             await self._sweeper.retire_names_if_unserved(unserved, what="stages left unpublished")
-            # side by side, a few at once: one scope after another was about half a second a scope, 25 s of a
-            # 51-state publish (cobalt dev, 2026-10-29); retire_older never raises
-            await _bounded_each(
-                [scope for scope in staged if scope.scope in moved],
-                lambda scope: self._sweeper.retire_older(scope.scope, scope.epoch),
-                at_once=_SWEEPS_AT_ONCE,
+            await self._sweeper.retire_older_many(
+                {scope.scope: scope.epoch for scope in staged if scope.scope in moved}
             )
             self._changed.set()
         if self._append:

@@ -182,6 +182,10 @@ class _Store:
             raise ObjectNotFoundError(f"{name} is not in the store", bucket="objects", name=name)
         return self.objects[name]
 
+    async def list_names(self, *, prefix: str = "") -> list[str]:
+        self.listings += 1
+        return sorted(n for n in self.objects if n.startswith(prefix))
+
     async def list_objects(self, *, prefix: str = "") -> list[ObjectInfo]:
         self.listings += 1
         return [
@@ -1626,6 +1630,7 @@ class _BoundedStore(_Store):
         self.objects[name] = data
 
     async def list_objects(self, *, prefix: str = "") -> list[ObjectInfo]:
+        self.listings += 1
         # every chunk as written long ago: the rule must not care how old a chunk is
         long_ago = datetime(2000, 1, 1, tzinfo=UTC)
         return [
@@ -3557,33 +3562,29 @@ async def test_a_cold_load_reads_at_most_a_few_chunks_at_once_however_many_scope
     await cold.stop()
 
 
-async def test_a_publish_retires_the_moved_scopes_older_chunks_side_by_side() -> None:
-    """each moved scope's older chunks were retired one scope after another, about half a second a scope: 25 s of a
-    51-state publish (cobalt dev, 2026-10-29). They are retired side by side, a few at once."""
-    snapshot, pointers, _store, l3 = _retiring_snapshot()
+async def test_a_staged_publish_of_many_scopes_lists_the_store_once_and_asks_one_retire() -> None:
+    """the scopes a publish moved retire their older epochs together: one listing and one ask to the declarer,
+    not one of each per scope, since each listing reads the whole bucket and each ask has the declarer sweep it."""
+    store = _BoundedStore(10**9)
+    asks: list[list[str]] = []
+
+    async def retire(names: list[str]) -> None:
+        asks.append(list(names))
+        for name in names:
+            store.objects.pop(name, None)
+
+    snapshot, pointers, _, l3 = _snapshot(store=store, retire=retire)
     await _started(snapshot, pointers)
     nevada = await snapshot.stage("NV", 2, _NV_ROWS)
     texas = await snapshot.stage("TX", 2, _TX_ROWS)
     l3.epochs.update({"NV": 2, "TX": 2})
-    sweeper = snapshot._sweeper  # noqa: SLF001 -- the retire the publish waits on, timed here
-    retire = sweeper.retire_older
-    running = 0
-    most = 0
+    store.listings = 0
+    asks.clear()
 
-    async def slow_retire(scope: str, epoch: int) -> int:
-        nonlocal running, most
-        running += 1
-        most = max(most, running)
-        try:
-            await asyncio.sleep(0.05)
-            return await retire(scope, epoch)
-        finally:
-            running -= 1
+    moved, _ = await snapshot.publish_staged([nevada, texas], carry_at={"NV": 0, "TX": 1})
 
-    sweeper.retire_older = slow_retire  # type: ignore[method-assign]
-
-    moved, skipped = await snapshot.publish_staged([nevada, texas], carry_at={"NV": 0, "TX": 1})
-
-    assert (sorted(moved), skipped) == (["NV", "TX"], [])
-    assert most == 2, "the moved scopes' older chunks were retired one scope after another"
+    assert sorted(moved) == ["NV", "TX"]
+    assert _epochs_held(store, "TX") == {2}, "TX's epoch-1 chunks were kept after its pointer moved"
+    assert store.listings == 1, f"the publish listed the store {store.listings} times"
+    assert len(asks) == 1, f"the publish asked the declarer {len(asks)} times"
     await snapshot.stop()
