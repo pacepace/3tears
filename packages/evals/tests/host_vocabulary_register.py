@@ -421,6 +421,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "testing/jobs_conformance.py": {},
     "testing/negotiation_conformance.py": {},
     "testing/reader_conformance.py": {},
+    "testing/readings_conformance.py": {},
     "testing/recorded_completions.py": {},
     "testing/recorded_turns.py": {},
     "testing/store_conformance.py": {},

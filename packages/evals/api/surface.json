@@ -121,6 +121,11 @@
       "signature": "AsyncExternalSpend(provider: str | None, calls: int, provider_units: int | None = None, provider_unit: str | None = None, money: float | None = None)",
       "tier": "stable"
     },
+    "threetears.evals.schema.AsyncResultReadings": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.AsyncStoreClock": {
       "kind": "protocol",
       "signature": "AsyncStoreClock{now(self) -> datetime}",
@@ -586,6 +591,11 @@
       "signature": "GoalStateOutcome(expression: str, passed: bool, detail: str = '')",
       "tier": "stable"
     },
+    "threetears.evals.schema.GroupMeasure": {
+      "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.IntervalScale": {
       "kind": "model",
       "signature": "IntervalScale(kind: Literal['interval'] = 'interval', value: float, unit: str | None = None)",
@@ -836,6 +846,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.narrow_items": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.nested_schemas": {
       "kind": "function",
       "signature": "nested_schemas(schema: Mapping[str, Any]) -> Iterator[NestedSchema]",
@@ -1040,6 +1055,11 @@
       "kind": "constant (frozenset)",
       "signature": "",
       "tier": "host-contract"
+    },
+    "threetears.evals.schema.ResultReadings": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.ROLE_MODEL_ORIGINS": {
       "kind": "constant (tuple)",
@@ -7282,6 +7302,16 @@
       "tier": "host-contract"
     },
     "threetears.evals.testing.ReplayedCompletion": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.testing.RESULT_READINGS_CONFORMANCE_CASES": {
+      "kind": "constant (tuple)",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.testing.ResultReadingsConformanceCase": {
       "kind": "dataclass",
       "signature": "",
       "tier": "provisional"

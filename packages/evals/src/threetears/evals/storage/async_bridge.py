@@ -25,6 +25,15 @@ bridged as one offering :class:`~threetears.evals.schema.StoreClock`, so job lea
 database's time; one that does not is bridged without it, so the engine reads its own clock rather than
 being told the store keeps one.
 
+**So do narrowed and grouped reads.** A store offering :class:`~threetears.evals.schema.AsyncResultReadings` is bridged
+as one offering :class:`~threetears.evals.schema.ResultReadings`, and one that does not is bridged without it. The two
+capabilities compose through one table keyed by (clock, readings), so each the bridge offers is a method it has, never
+one that raises. ``grouped`` is one call on the loop. ``iter_narrowed`` streams: the call itself starts the store's
+async iterator on the loop and takes its first rows, so the store's one backend call is made at the call, as the
+capability promises. The rest are taken from the same iterator 256 rows per round trip to the loop, so a long read is
+never held whole. A read abandoned part way closes the store's iterator on the loop, which releases its cursor; the
+thread that abandons it waits for that, so it must be off the loop, as every caller is.
+
 ``iter_by_doc_type`` is drained on the loop and handed back as a list's iterator: its one caller deletes
 what it yields, and a generator held open across threads would hold its cursor while it does.
 """
@@ -35,14 +44,25 @@ import asyncio
 import concurrent.futures
 import contextvars
 import inspect
-from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine, Iterator, Mapping, Sequence
 from datetime import datetime
 from functools import partial
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Final
 
-from threetears.evals.schema.store_port import AsyncDocumentStore, AsyncStoreClock, refuse_on_event_loop
+from threetears.evals.schema.store_port import (
+    AsyncDocumentStore,
+    AsyncResultReadings,
+    AsyncStoreClock,
+    GroupMeasure,
+    refuse_on_event_loop,
+)
 
 __all__ = ["AsyncStoreBridge", "bridge_async_store"]
+
+#: How many rows a bridged ``iter_narrowed`` takes from the store's async iterator per round trip to the loop: enough
+#: that the thread hop costs little per row, few enough that a read never holds much more than one batch.
+_ROWS_PER_HOP: Final[int] = 256
 
 
 class AsyncStoreBridge:
@@ -183,6 +203,111 @@ class ClockedAsyncStoreBridge(AsyncStoreBridge):
         return self._call(clock.now)
 
 
+async def _take(rows: AsyncIterator[dict[str, Any]], count: int) -> tuple[list[dict[str, Any]], bool]:
+    """Take up to ``count`` rows from ``rows``, on the loop: the rows, and whether the iterator is exhausted."""
+    taken: list[dict[str, Any]] = []
+    try:
+        while len(taken) < count:
+            taken.append(await anext(rows))
+    except StopAsyncIteration:
+        return taken, True
+    return taken, False
+
+
+class _ReadingAsyncStoreBridge(AsyncStoreBridge):
+    """An :class:`AsyncStoreBridge` over a store offering :class:`AsyncResultReadings`: it offers ``ResultReadings``."""
+
+    def _readings(self) -> AsyncResultReadings:
+        """The store, as the readings it offers."""
+        store = self.store
+        if not isinstance(store, AsyncResultReadings):
+            raise TypeError(f"{type(store).__name__} offers no readings, so its bridge offers none")
+        return store
+
+    def iter_narrowed(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> Iterator[dict[str, Any]]:
+        """See :meth:`~threetears.evals.schema.ResultReadings.iter_narrowed`: the store's async iterator, streamed.
+
+        This call starts the store's iterator on the loop and takes its first batch of rows, so the
+        store's backend call is made here, and a failure raises here. The iterator returned takes the rest a batch per
+        round trip, and closes the store's iterator on the loop when it is abandoned part way.
+
+        :raises TypeError: The store's ``iter_narrowed`` gave something that is not an async iterator.
+        """
+        readings = self._readings()
+
+        async def opened() -> tuple[AsyncIterator[dict[str, Any]], list[dict[str, Any]], bool]:
+            rows = readings.iter_narrowed(
+                doc_type, scope_id, exclude=exclude, exclude_in_items=exclude_in_items, field_in=field_in, **field_eq
+            )
+            if not isinstance(rows, AsyncIterator):
+                raise TypeError(
+                    f"{type(readings).__name__}.iter_narrowed gave {type(rows).__name__}, not an async iterator "
+                    "(AsyncResultReadings)"
+                )
+            first, exhausted = await _take(rows, _ROWS_PER_HOP)
+            return rows, first, exhausted
+
+        rows, first, exhausted = self._call(opened)
+        return self._streamed(rows, first, exhausted)
+
+    def _streamed(
+        self, rows: AsyncIterator[dict[str, Any]], batch: list[dict[str, Any]], exhausted: bool
+    ) -> Iterator[dict[str, Any]]:
+        """Yield ``batch``, then the rest of ``rows`` a batch per round trip; close ``rows`` if abandoned part way."""
+        try:
+            while True:
+                yield from batch
+                if exhausted:
+                    return
+                # Counted as exhausted while the batch is taken: an iterator that raised is finished, not abandoned.
+                exhausted = True
+                batch, exhausted = self._call(partial(_take, rows, _ROWS_PER_HOP))
+        finally:
+            if not exhausted and isinstance(rows, AsyncGenerator):
+                self._call(rows.aclose)
+
+    def grouped(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`~threetears.evals.schema.ResultReadings.grouped`: the async store's ``grouped``, on its loop."""
+        return self._call(
+            partial(
+                self._readings().grouped, doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq
+            )
+        )
+
+
+class _ClockedReadingAsyncStoreBridge(ClockedAsyncStoreBridge, _ReadingAsyncStoreBridge):
+    """An :class:`AsyncStoreBridge` offering both the store's clock and its readings."""
+
+
+#: The bridge class built for each (clock, readings) the async store offers: the one place the capabilities compose.
+_BRIDGE_CLASSES: Final[Mapping[tuple[bool, bool], type[AsyncStoreBridge]]] = MappingProxyType(
+    {
+        (False, False): AsyncStoreBridge,
+        (True, False): ClockedAsyncStoreBridge,
+        (False, True): _ReadingAsyncStoreBridge,
+        (True, True): _ClockedReadingAsyncStoreBridge,
+    }
+)
+
+
 def bridge_async_store(store: AsyncDocumentStore, loop: asyncio.AbstractEventLoop) -> AsyncStoreBridge:
     """Present ``store`` as the engine's synchronous :class:`~threetears.evals.schema.DocumentStore`.
 
@@ -196,16 +321,26 @@ def bridge_async_store(store: AsyncDocumentStore, loop: asyncio.AbstractEventLoo
     :param loop: The loop its calls run on.
     :ptype loop: asyncio.AbstractEventLoop
     :return: The bridge: one that offers :class:`~threetears.evals.schema.StoreClock` exactly when ``store`` offers
-        :class:`~threetears.evals.schema.AsyncStoreClock`.
+        :class:`~threetears.evals.schema.AsyncStoreClock`, and :class:`~threetears.evals.schema.ResultReadings`
+        exactly when it offers :class:`~threetears.evals.schema.AsyncResultReadings`.
     :rtype: AsyncStoreBridge
     :raises TypeError: ``store`` has a ``now`` that is not a coroutine function: an async store's clock is awaited,
-        and a synchronous one would be the calling process's time passed off as the database's.
+        and a synchronous one would be the calling process's time passed off as the database's. Or it offers the
+        readings with a ``grouped`` that is not a coroutine function, or an ``iter_narrowed`` that is one (it gives an
+        async iterator, not an awaitable).
     """
-    if isinstance(store, AsyncStoreClock):
-        if not inspect.iscoroutinefunction(store.now):
-            raise TypeError(
-                f"{type(store).__name__}.now is not a coroutine function; an async store's clock is awaited "
-                "(AsyncStoreClock), and a store with no clock of its own offers no now at all"
-            )
-        return ClockedAsyncStoreBridge(store, loop)
-    return AsyncStoreBridge(store, loop)
+    if isinstance(store, AsyncStoreClock) and not inspect.iscoroutinefunction(store.now):
+        raise TypeError(
+            f"{type(store).__name__}.now is not a coroutine function; an async store's clock is awaited "
+            "(AsyncStoreClock), and a store with no clock of its own offers no now at all"
+        )
+    if isinstance(store, AsyncResultReadings) and (
+        not inspect.iscoroutinefunction(store.grouped) or inspect.iscoroutinefunction(store.iter_narrowed)
+    ):
+        raise TypeError(
+            f"{type(store).__name__} offers readings in the wrong shape; AsyncResultReadings awaits grouped and "
+            "iterates iter_narrowed with async for, so grouped is a coroutine function and iter_narrowed gives an "
+            "async iterator (an async generator, say), not an awaitable"
+        )
+    clock, readings = isinstance(store, AsyncStoreClock), isinstance(store, AsyncResultReadings)
+    return _BRIDGE_CLASSES[clock, readings](store, loop)
