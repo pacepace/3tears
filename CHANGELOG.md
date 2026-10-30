@@ -32,6 +32,27 @@ server as a slow consumer, and logged unretrieved task exceptions; each publish 
   `statement_operation(query)` gives the label the broker runs a statement by, and `is_resendable(query)` says
   whether the statement only reads.
 
+### core: a scoped snapshot catches up the scopes a write in progress has not touched
+
+**Fixed:** a catch-up of scopes behind L3 waited whenever a write was in progress. With loads every 30-40 s on cobalt
+dev on 2026-10-29, a write was nearly always in progress when it ran, so 42 scopes stayed behind L3 for as long as
+the loads ran. A writer stages a state from the copy only at L3's prior epoch, so a state that missed one stage
+missed every later one.
+
+The catch-up now reads, while the write runs, each behind scope the write has not touched. It keeps a scope only
+when, after the read, that scope is still untouched and at the same epoch: a write marks a scope pending in the
+transaction of its first rows there, and clears the mark only in the commit that moves the scope's epoch. Scopes
+the write has touched are left for a catch-up after it commits.
+
+A writer also stages a scope its copy is behind on, whole from L3: `ScopedSnapshot.stage_from_l3(scope, epoch)`
+reads every table of the scope as L3 holds it once the write's rows are there. One write at a time holds the epochs,
+so those are exactly the scope's rows at the write's epoch. The scope moves with the write instead of waiting for a
+catch-up. A writer that builds its chunks from its copy calls it for a scope the copy is behind on.
+
+**Added:** `ScopedSnapshot.stage_from_l3`. `Unsettled.epochs` and `Unsettled.pending` (every part's committed version, and the parts the write in
+progress has touched, for a writer that records touches), and `EpochSnapshot.pending`. `ScopeEpochs.settled` fills
+them in.
+
 ### nats, core: a scoped snapshot's retire no longer reads every object's metadata once per scope
 
 **Fixed:** retiring a scope's older chunks listed the pod's whole Object Store twice (once per name prefix, filtered
