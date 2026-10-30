@@ -250,6 +250,14 @@ def _truth_only(frame: FrameType) -> bool:
     return verdict
 
 
+def _owner_of(model: object) -> str:
+    """The id of the result ``model`` belongs to: its own for a result (a copy of one, which no hydration saw, too),
+    else the one its hydration recorded, or ``"?"`` for a nested model copied after hydration."""
+    if type(model).__recorded_path__ == "":  # type: ignore[attr-defined]
+        return str(object.__getattribute__(model, "__dict__")["id"])
+    return _OWNERS.get(id(model), "?")
+
+
 def _note(owner: object, name: str, *, prose: bool = False) -> None:
     """Record that ``name`` was read on ``owner``, a recorded object, if a block is recording."""
     access = _SESSION.access
@@ -265,7 +273,7 @@ def _note(owner: object, name: str, *, prose: bool = False) -> None:
             read = f"bool({read})"
         reads = access.prose.setdefault(read, {}).setdefault(site, ProseReads())
         reads.events += 1
-        reads.results.add(_OWNERS.get(id(owner), "?"))
+        reads.results.add(_owner_of(owner))
     access.sites.setdefault(read, set()).add(site)
 
 
