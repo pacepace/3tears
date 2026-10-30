@@ -20,8 +20,13 @@ and `result_groups(run_ids | None, scope_id, by=, measures=)` (the `ResultReadin
 Each says the path that served it (`engine`) and the store calls it made. No reader reads through them yet, and a host
 store needs nothing new.
 
-**Changed:** the bundle's measure walk reads each model type's fields that can hold a number or text, never the
-judge's prose; it read every field and dropped the prose as undescribed text, so every surface is unchanged.
+**Changed:** the bundle's measure walk reads each model type's fields that can hold a number or text, but never the
+judge's prose: a score's `reasoning` and a result's `judge_reasoning`. A host that declares no measure of either name
+sees no change; the walk read the prose and dropped it as undescribed text. A host that declares a measure named
+`reasoning` or `judge_reasoning` no longer has the judge's text pooled into it. Before, `judge_reasoning` pooled the
+judge's narration (beside any value the host reported on `host_measures`), and `reasoning` pooled a score's reasoning where the host
+reported none in the cell (or was listed under `unreported_observations` when two judged scores of a result both held one). Each now pools only
+the values the host reports on `host_measures`, and the judge's prose is neither pooled nor listed unreported.
 
 ### evals: a refusal reaches the caller as a 422 refusal, never as an exception; a stored bundle's shape is checked first
 

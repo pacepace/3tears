@@ -65,6 +65,7 @@ from threetears.evals.schema.models import (
     stale_goal_check_proofs,
     EvalResult,
     GoalCheckProof,
+    RubricScore,
 )
 from threetears.evals.kernel.result_condition import (
     ResultOutcome,
@@ -226,9 +227,13 @@ def _scalar_leaves(model: object, names: tuple[str, ...]) -> Iterator[tuple[str,
             yield field_name, value
 
 
-#: The judge's prose: a score's ``reasoning`` and the result's ``judge_reasoning``. Text the judge wrote is never a
-#: measure, so the walk never reads it, and a compact reading of a result need not carry it.
-_WALK_PROSE: frozenset[str] = frozenset({"reasoning", "judge_reasoning"})
+#: The judge's prose, by the model type that holds it and its field: a score's ``reasoning`` and the result's
+#: ``judge_reasoning``. Text the judge wrote is never a measure, so the walk never reads it, and a compact reading of
+#: a result need not carry it. Named by type and field, not by name alone: a host measure called ``reasoning`` or
+#: ``judge_reasoning`` (on ``host_measures``, or a field of any other carrier) is walked and pooled as any other.
+_WALK_PROSE: frozenset[tuple[type[BaseModel], str]] = frozenset(
+    {(RubricScore, "reasoning"), (EvalResult, "judge_reasoning")}
+)
 
 
 def _hint_types(hint: object) -> Iterator[object]:
@@ -263,7 +268,9 @@ def _walked_fields(model: type[BaseModel]) -> tuple[str, ...]:
     walks exactly what reading every field did.
     """
     hints = get_type_hints(model)
-    return tuple(name for name in model.model_fields if name not in _WALK_PROSE and _admits_scalar(hints[name]))
+    return tuple(
+        name for name in model.model_fields if (model, name) not in _WALK_PROSE and _admits_scalar(hints[name])
+    )
 
 
 #: Result fields whose sub-models RECORD something done to the result rather than something
