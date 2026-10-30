@@ -872,3 +872,31 @@ class TestAWorkerDeathIsSaid:
         with pytest.raises(BrokenProcessPool):
             await single.run(jobs.die_mid_write, read=False, result_bytes=1 << 20)
         assert caplog.text.count("worker died") == 1
+
+
+class TestAWorkersResultBecomesAPart:
+    def test_a_claimed_result_is_linked_into_a_version_never_copied(self, store: SharedArrowStore) -> None:
+        schema = _table(0, rows=0).schema
+        store.publish(
+            "v1", {TABLE: Parts(schema=schema, parts={"VA": _table(1, rows=1000), "GA": _table(2, rows=1000)})}
+        )
+        slot = store.reserve(1 << 20)
+        slot.write({"t.GA": _table(20, rows=1000)})
+        segment = store.claim(slot)
+        assert segment is not None
+        source = segment.files["t.GA"]
+        store.publish("v2", {TABLE: Parts(schema=schema, parts={"GA": source})}, base="v1")
+        assert (store.root / "versions" / "v2" / "t@GA.arrow").stat().st_ino == source.stat().st_ino
+        segment.close()
+        with MappedVersion(store.root, "v2") as mapped:
+            assert mapped.tables[TABLE].column("a").to_pylist() == [20] * 1000 + [1] * 1000
+        assert store.segments() == ()
+
+    def test_a_linked_part_with_other_columns_is_refused(self, store: SharedArrowStore) -> None:
+        slot = store.reserve(1 << 20)
+        slot.write({"other": pa.table({"b": [1]})})
+        segment = store.claim(slot)
+        assert segment is not None
+        with pytest.raises(ValueError, match="columns"):
+            store.publish("v1", {TABLE: Parts(schema=_table(0, rows=0).schema, parts={"VA": segment.files["other"]})})
+        segment.close()

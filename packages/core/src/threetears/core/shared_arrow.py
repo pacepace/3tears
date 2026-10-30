@@ -312,8 +312,9 @@ class Parts:
     ``base=``). Readers see one table: its parts' rows, in part-name order, no row copied.
 
     :ivar schema: the table's columns; every part written must have exactly these
-    :ivar parts: part name -> its rows (as a table may be given to :meth:`SharedArrowStore.publish`), or None to drop
-        that part of the base version's
+    :ivar parts: part name -> its rows (as a table may be given to :meth:`SharedArrowStore.publish`), the ``Path`` of
+        an Arrow IPC file already in the store's directory (a claimed result's, :meth:`MappedSegment.files`) to link
+        as the part, or None to drop that part of the base version's
     """
 
     schema: Any
@@ -435,10 +436,16 @@ def _write_tables(directory: Path, tables: Mapping[str, Any], room: Callable[[],
             for part, rows in source.parts.items():
                 if rows is None:
                     continue
+                path = directory / f"{name}{_PART_SEPARATOR}{part}{_TABLE_SUFFIX}"
+                if isinstance(rows, Path):
+                    # a file already in the store (a worker's result): linked, its pages never copied
+                    if not _file_schema(rows).equals(source.schema):
+                        raise ValueError(f"table {name!r} part {part!r}: its columns are not the table's")
+                    os.link(rows, path)
+                    continue
                 part_schema, batches = _batches(rows)
                 if not part_schema.equals(source.schema):
                     raise ValueError(f"table {name!r} part {part!r}: its columns are not the table's")
-                path = directory / f"{name}{_PART_SEPARATOR}{part}{_TABLE_SUFFIX}"
                 written += _write_file(path, source.schema, batches, left, what=f"table {name!r} part {part!r}")
         else:
             schema, batches = _batches(source)
@@ -744,12 +751,17 @@ class MappedSegment(MappedTables):
     :meth:`close`, which removes them (their pages go once nothing maps them).
 
     :ivar nbytes: the bytes its files hold
+    :ivar files: table name -> its Arrow IPC file, for a publish that links it as a part (:class:`Parts`) while
+        the segment is open: the version then holds the file after :meth:`close`
     """
 
     def __init__(self, slot_id: str, path: Path, on_close: Callable[[str], object]) -> None:
         super().__init__(slot_id, path, lock=False)
         self._on_close: Callable[[str], object] | None = on_close
         self.nbytes = _directory_bytes(path)
+        self.files: Mapping[str, Path] = MappingProxyType(
+            {entry.name[: -len(_TABLE_SUFFIX)]: entry for entry in path.iterdir() if entry.name.endswith(_TABLE_SUFFIX)}
+        )
 
     def close(self) -> None:
         """unmap the result and remove its files. Harmless twice.
