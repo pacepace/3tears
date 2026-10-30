@@ -29,6 +29,31 @@ checks it. A batch covers runs estimated at up to 5,000 results together (a run 
 to its keys before the next is read, so the read holds a batch's rows at most. The block is unchanged. A host store
 needs nothing new: `field_in` is already part of the port.
 
+### evals: a bundle assembly and a report read each log where their time went; every aggregate logs its read
+
+**Added:** each campaign bundle assembly and each `report_read` logs one `eval.read_tier` line at INFO, whether the call
+returned or raised, with `lens=assemble_context_bundle` or `lens=report_read`:
+
+`eval.read_tier lens=<lens> scope_id=<scope> campaign_id=<campaign> runs_in= results_in= store_ms= hydrate_ms= fold_ms=
+render_ms= elapsed_ms= path= store_calls=`, plus `raised=<exception class>` when the call raised.
+
+- `store_ms`, `hydrate_ms`, `fold_ms` and `render_ms` are milliseconds by phase, and add up to `elapsed_ms`, the
+  call's wall time. A phase not measured is left empty (`store_ms=`), never written as zero.
+- For now the store reads happen inside the assembly and are not timed apart, so `store_ms` and `hydrate_ms` are empty
+  and `fold_ms` covers the store reads, rebuilding models from them and the folds. On a bundle line `render_ms` is
+  empty. On a report line `render_ms` is serializing the report in its form (with `include_sessions`, the
+  transcripts' read too), and `fold_ms` is the rest: finding and building the report, its bundle assemblies on the
+  code-only path, and reading its analysis.
+- `runs_in` is the runs a bundle's aspects summarise (a run belongs to one aspect) and `results_in` the results they
+  produced. A report line sums its assemblies' counts, and leaves both empty when it assembled none (a report
+  document's page draws its stored snapshot). A report read on the code-only path also logs its bundle's own line, before its own.
+- `path` and `store_calls` (which read path served the call, and how many store calls it made) are empty for now.
+
+`comparison_sets`, `frontier`, `history`, `program_budget` and `orphaned_runs` now log the `eval.read_tier` line that
+`pivot` and `export_results` log (`lens`, `scope_id`, `runs_in`, `results_in`, `elapsed_ms`). They project no score
+records themselves, so their line has no `records_out` and is always INFO. A frontier or history its lens refuses after
+the read carries `refused=true`.
+
 ### evals: an optional readings capability for a document store, with its own conformance kit
 
 **Added:** `ResultReadings`, an optional capability a `DocumentStore` may offer beside its methods, detected with
