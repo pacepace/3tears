@@ -1,7 +1,43 @@
 {
- "@captured_on": "Linux-glibc-2.41",
+ "@captured_on": "Linux-x86_64-glibc-2.41",
  "@confirmed": {
-  "Linux-glibc-2.39": [
+  "Linux-aarch64-glibc-2.39": [
+   "body:html:all",
+   "body:html:table",
+   "body:html_static:all",
+   "body:html_static:table",
+   "body:json:all",
+   "body:json:table",
+   "body:markdown:all",
+   "body:markdown:table",
+   "read:html:all",
+   "read:html:table",
+   "read:html_static:all",
+   "read:html_static:table",
+   "read:json:all",
+   "read:json:table",
+   "read:markdown:all",
+   "read:markdown:table"
+  ],
+  "Linux-aarch64-glibc-2.41": [
+   "body:html:all",
+   "body:html:table",
+   "body:html_static:all",
+   "body:html_static:table",
+   "body:json:all",
+   "body:json:table",
+   "body:markdown:all",
+   "body:markdown:table",
+   "read:html:all",
+   "read:html:table",
+   "read:html_static:all",
+   "read:html_static:table",
+   "read:json:all",
+   "read:json:table",
+   "read:markdown:all",
+   "read:markdown:table"
+  ],
+  "Linux-x86_64-glibc-2.39": [
    "body:html:all",
    "body:html:table",
    "body:html_static:all",
