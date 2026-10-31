@@ -8,6 +8,12 @@ packages (bumped in lock-step).
 
 ## v0.86.0 -- 2026-10-29
 
+### agent.audit: the hub's invitation status is classified
+
+**Changed:** the hub's `user.create` and `user.invite` audit events record `invitation` (emailed / not_emailed /
+not_sent: whether the invitation email went, never the address or the link). It is declared safe for those two event
+types in `_BUILT_IN_FAMILY_SAFE_KEYS`, where the hub's eraser reads it; every other family's `invitation` stays masked.
+
 ### core: shared-memory Arrow between a serving process and its worker processes
 
 **Added:** `threetears.core.shared_arrow` moves CPU work off a serving process's event loop into worker processes
