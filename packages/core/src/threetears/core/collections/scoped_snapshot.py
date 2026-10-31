@@ -48,7 +48,8 @@ what it computed from it.
 
 **L3 stays the truth.** NATS buckets are memory-backed, so a NATS restart loses the snapshot. A
 replica that finds the pointers gone asks for the buckets again (``ensure_buckets``), takes a claim
--- renewed while it works, released only if still its own -- so one replica does the work, and
+-- renewed while it works, let go once it makes no progress for ``rebuild_stall``, released only if
+still its own -- so one replica does the work, and
 rebuilds every scope from L3, the slow and correct path, while its own L1 keeps answering from what
 it last held; its status says so. A rebuild reads each scope a page at a time, types each page as
 the L1 keeps it, and publishes the scope before it reads past a few more: it holds a few scopes' rows,
@@ -84,6 +85,7 @@ and the last change applied.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import math
@@ -139,6 +141,9 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AppendedScope",
+    "CatchUpOutcome",
+    "CatchUpResult",
+    "ScopeLag",
     "ScopeChange",
     "ScopedSnapshot",
     "SnapshotPhase",
@@ -185,6 +190,19 @@ _DEFAULT_CLAIM_TTL: Final = timedelta(minutes=2)
 
 #: how often a replica waiting on another's rebuild, or on a write in progress, looks again
 _DEFAULT_RECHECK: Final = timedelta(seconds=2)
+
+#: how long a holder of the rebuild claim may go without progress -- a page read from L3, a chunk read or
+#: written, scopes committed here, a pointer or the index moved -- before it lets the claim go and its run (a
+#: rebuild, a catch-up) ends with a TimeoutError; a writer's hold across its commit and publish
+#: (:meth:`ScopedSnapshot.holding_rebuilds`) is renewed no longer than this. The claim's renewal runs on its own
+#: task, so a holder stuck on one await kept renewing it for as long as its process lived: on cobalt prod
+#: (2026-10-31) a catch-up's first read beside a write never answered, and its claim kept every replica's
+#: catch-up out all night while L3 ran 30 scopes ahead of the copy. Each step is seconds to a minute or two on the
+#: largest scope; ten minutes of none is a run that is stuck
+_DEFAULT_REBUILD_STALL: Final = timedelta(minutes=10)
+
+#: the longest a stuck run's watchdog looks away between checks
+_STALL_LOOK_SECONDS: Final = 5.0
 
 #: how many scopes a rebuild holds at once: read from L3 beside each other and the one being published.
 #: What a rebuild holds is these scopes' rows (typed, as the L1 keeps them) and a page of L3's each,
@@ -305,6 +323,66 @@ class SnapshotSource(StrEnum):
 
     L2 = "l2"
     L3 = "l3"
+
+
+class CatchUpResult(StrEnum):
+    """how one catch-up from L3 (:meth:`ScopedSnapshot.catch_up`) ended.
+
+    :cvar CAUGHT_UP: it ran to its end without waiting: every scope behind L3 when it looked was republished
+        (none, when none was behind), and every scope L3 left removed
+    :cvar CLAIM_HELD: another replica (or another run here) holds the rebuild claim; nothing was done, and the
+        holder catches up
+    :cvar WAITED: a write in progress kept it from some scope; what it could read beside the write is republished,
+        and a later catch-up does the rest
+    :cvar STALLED: it made no progress for ``rebuild_stall``, let the claim go and stopped
+    :cvar FAILED: it raised; the error says what
+    """
+
+    CAUGHT_UP = "caught_up"
+    CLAIM_HELD = "claim_held"
+    WAITED = "waited"
+    STALLED = "stalled"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class ScopeLag:
+    """one scope whose epoch in L3 is ahead of the pointer this copy has seen: the catch-up's own test.
+
+    Not :attr:`SnapshotStatus.behind`, which names scopes whose published chunks could not be applied here.
+
+    :ivar l3_epoch: the scope's epoch as L3 records it
+    :ivar pointer_epoch: the epoch of the scope's pointer as this replica last saw it; ``None`` for a scope with
+        no pointer yet
+    """
+
+    l3_epoch: int
+    pointer_epoch: int | None
+
+
+@dataclass(frozen=True)
+class CatchUpOutcome:
+    """what one catch-up from L3 did, and what it left behind.
+
+    :ivar result: how it ended
+    :ivar caught: the scopes it republished, in order
+    :ivar behind: scope -> its lag, for every scope still behind L3 when it ended, against the pointers as this
+        replica sees them then: L3's epochs read again after a catch-up that ran to its end or waited (scopes a write
+        moved meanwhile included), else L3's epochs as it found them
+    :ivar holder: with ``CLAIM_HELD``, the replica holding the claim (its snapshot's replica token), when the
+        claim still named one as it looked
+    :ivar held_since: with ``CLAIM_HELD``, when that holder took the claim
+    :ivar reason: with ``WAITED``, the write it waited on; with ``STALLED`` or ``FAILED``, the error
+    :ivar finished_at: when it ended
+    """
+
+    result: CatchUpResult
+    caught: tuple[str, ...]
+    behind: Mapping[str, ScopeLag]
+    finished_at: datetime
+    holder: str | None = None
+    held_since: datetime | None = None
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -813,6 +891,57 @@ async def _abandon(tasks: Sequence[asyncio.Task[Any]], *, unwinding: bool) -> No
         log.warning("a read abandoned while its run ended had failed: %s: %s", type(error).__name__, error)
 
 
+@dataclass
+class _Headway:
+    """the progress of one run under the rebuild claim: when it last moved, and what moved it.
+
+    :ivar at: :func:`time.monotonic` at its last step
+    :ivar what: that step, for the log of a run that stops making progress
+    """
+
+    at: float
+    what: str
+
+
+#: the run under the rebuild claim the current task belongs to (:meth:`ScopedSnapshot._holding`), inherited by
+#: every task it starts (a rebuild's reads ahead); ``None`` elsewhere. So only the run's own steps count as its
+#: progress: the pointer watch applying another replica's publishes on the same snapshot does not
+_HEADWAY: Final[contextvars.ContextVar[_Headway | None]] = contextvars.ContextVar(
+    "threetears_scoped_snapshot_headway", default=None
+)
+
+
+def _headway(what: str) -> None:
+    """record a step of the run under the rebuild claim the current task belongs to; nothing outside one.
+
+    :param what: the step
+    :ptype what: str
+    :return: nothing
+    :rtype: None
+    """
+    headway = _HEADWAY.get()
+    if headway is not None:
+        headway.at = time.monotonic()
+        headway.what = what
+
+
+class _Stalled(TimeoutError):
+    """a run under the rebuild claim made no progress for ``rebuild_stall``; the claim was let go."""
+
+
+class _CatchUpRecord:
+    """what a catch-up in progress has found and done, kept as it goes so a catch-up that raises still says it."""
+
+    def __init__(self) -> None:
+        self.behind: dict[str, ScopeLag] = {}
+        self.epochs: Mapping[str, int] = {}
+        self.scopes: set[str] = set()
+        self.caught: list[str] = []
+        self.holder: str | None = None
+        self.held_since: datetime | None = None
+        self.claim_held = False
+
+
 class _WriteBegan(Exception):
     """a write began while a rebuild read a scope: what it read is not the scope at its epoch, and the read stops."""
 
@@ -1003,9 +1132,13 @@ class _RebuildClaim:
         self._name = name
         self._held: HeldLease | None = None
 
-    async def take(self) -> bool:
+    async def take(self, *, max_hold: timedelta | None = None) -> bool:
         """take the claim when nobody holds it, and keep renewing it.
 
+        :param max_hold: the longest it is renewed, for a holder that cannot tell its progress (a writer's
+            block); past it the renewal stops and the TTL hands the claim on. ``None`` renews it until released:
+            a run whose progress is watched (:meth:`ScopedSnapshot._holding`) lets it go itself once it stalls
+        :ptype max_hold: timedelta | None
         :return: whether this replica holds it
         :rtype: bool
         """
@@ -1017,6 +1150,7 @@ class _RebuildClaim:
                 name="the snapshot rebuild claim",
                 renew_failure_level=logging.WARNING,
                 log_extra={"snapshot": self._name},
+                max_hold=max_hold,
             )
         except LeaseUnavailable:
             return False
@@ -1554,6 +1688,10 @@ class ScopedSnapshot:
     :param claim_ttl: how long a rebuild's claim, or a write claim, lasts once its holder stops renewing
         it (it died); renewed while held
     :ptype claim_ttl: timedelta
+    :param rebuild_stall: how long a holder of the rebuild claim may go without progress before it lets the
+        claim go and its rebuild or catch-up ends with a TimeoutError; the longest a writer's
+        :meth:`holding_rebuilds` renews it (:data:`_DEFAULT_REBUILD_STALL`)
+    :ptype rebuild_stall: timedelta
     :param recheck: how often a waiting replica looks again
     :ptype recheck: timedelta
     :param pointer_watch_heartbeat: the pointer watch's heartbeat; a lost consumer is replaced after three
@@ -1563,7 +1701,7 @@ class ScopedSnapshot:
     :ptype compact_pieces: int
     :param compact_bytes: how many bytes of pieces it gathers before that
     :ptype compact_bytes: int
-    :raises ValueError: when the name is outside its grammar or names no table
+    :raises ValueError: when the name is outside its grammar or names no table, or ``rebuild_stall`` is not positive
     """
 
     def __init__(
@@ -1586,6 +1724,7 @@ class ScopedSnapshot:
         l3_concurrency: int = _DEFAULT_L3_CONCURRENCY,
         write_check: timedelta = _WRITE_CHECK,
         claim_ttl: timedelta = _DEFAULT_CLAIM_TTL,
+        rebuild_stall: timedelta = _DEFAULT_REBUILD_STALL,
         recheck: timedelta = _DEFAULT_RECHECK,
         pointer_watch_heartbeat: timedelta = timedelta(seconds=5),
         compact_pieces: int = _DEFAULT_COMPACT_PIECES,
@@ -1596,6 +1735,8 @@ class ScopedSnapshot:
             raise ValueError(f"snapshot name {name!r} must be letters, digits, '-' and '_'")
         if not tables:
             raise ValueError("a snapshot holds at least one table")
+        if rebuild_stall <= timedelta(0):
+            raise ValueError(f"rebuild_stall must be positive; got {rebuild_stall}")
         self._name = name
         self._tables = tuple(tables)
         self._append = frozenset(t.name for t in self._tables if t.append_only)
@@ -1613,6 +1754,7 @@ class ScopedSnapshot:
         self._l3_concurrency = l3_concurrency
         self._write_check = write_check
         self._claim_ttl = claim_ttl
+        self._rebuild_stall = rebuild_stall
         self._recheck = recheck
         self._heartbeat = pointer_watch_heartbeat
         self._compact_pieces = max(1, compact_pieces)
@@ -1866,6 +2008,7 @@ class ScopedSnapshot:
         dropped = [scope for scope, epoch in epochs.items() if epoch is None]
         # the worker takes and lets go of the swap lock itself, whatever happens to this task
         await asyncio.to_thread(self._versioned.swap, replacements, put, dropped)
+        _headway(f"committed {len(replacements)} replacements here")
         self._behind = _updated(self._behind, drop=current)
         if count:
             self._count(replacements)
@@ -2016,7 +2159,9 @@ class ScopedSnapshot:
         and its publish, a replica waiting on the write would otherwise read every scope from L3
         (the slow path) only to find the same rows already published. The claim is tried a few times
         (a replica that holds it only to look at the writer's seqlock lets go at once); when another
-        replica is really rebuilding, the block runs without it, which is correct, only slower.
+        replica is really rebuilding, the block runs without it, which is correct, only slower. It is
+        renewed for at most ``rebuild_stall``: a block stuck past that runs on without it, so a writer
+        that never gets through its commit does not keep every replica's rebuild out.
 
         :param attempts: tries at the claim, a tenth of a second apart
         :ptype attempts: int
@@ -2028,7 +2173,7 @@ class ScopedSnapshot:
         for attempt in range(max(1, attempts)):
             if attempt:
                 await asyncio.sleep(0.1)
-            if await claim.take():
+            if await claim.take(max_hold=self._rebuild_stall):
                 held = True
                 break
         try:
@@ -2339,6 +2484,7 @@ class ScopedSnapshot:
         arrow = await asyncio.to_thread(decode_chunk, data)
         if arrow.num_rows != rows:
             raise _Lost(f"chunk {name} holds {arrow.num_rows} rows where its pointer says {rows}")
+        _headway(f"read chunk {name}")
         return arrow
 
     async def _fetch_current(
@@ -2482,6 +2628,11 @@ class ScopedSnapshot:
         self._progress = replace(self._progress, source=source, ready_at=self._progress.ready_at or datetime.now(UTC))
         becoming = not self._ready.is_set()
         self._ready.set()
+        # a flow that has not waited in the run it is in waits no longer: a reader woken by wait_ready sees READY, not
+        # the wait of a run before, which _end_run would clear only once this run has let its claim go
+        for flow, waited in self._waited.items():
+            if not waited:
+                self._waiting.pop(flow, None)
         self._settle()
         if becoming:
             # a listener told of a commit while the copy was not ready yet skipped it; with no later write it
@@ -2549,8 +2700,10 @@ class ScopedSnapshot:
             log.warning(
                 "scoped snapshot %s: rebuilding %s from L3: their chunks kept failing", self._name, sorted(scopes)
             )
-            rebuilt = await self._rebuild_scopes(
-                scopes, reason=f"{len(scopes)} scopes could not be applied", flow="sync"
+            rebuilt = await self._holding(
+                claim,
+                lambda: self._rebuild_scopes(scopes, reason=f"{len(scopes)} scopes could not be applied", flow="sync"),
+                what="a rebuild of scopes that could not be applied",
             )
         finally:
             await claim.release()
@@ -3253,6 +3406,7 @@ class ScopedSnapshot:
             # a replica rebuilding the same scope at the same epoch under the same columns wrote the same rows
             if reused is not None:
                 reused.append(name)
+        _headway(f"wrote chunk {name}")
         return name, len(data)
 
     async def stage(
@@ -3815,6 +3969,7 @@ class ScopedSnapshot:
             moved = await self._pointers_bucket.update(key=key, value=pointer.encode(), revision=revision) is not None
         if moved:
             self._note_seen(pointer)
+            _headway(f"moved scope {pointer.scope!r}'s pointer")
         return moved
 
     async def _move_pointer(self, pointer: _Pointer) -> _Pointer:
@@ -3851,6 +4006,7 @@ class ScopedSnapshot:
         if held is None:
             raise RuntimeError(f"the pointer of scope {pointer.scope!r} kept moving under {_CAS_ATTEMPTS} attempts")
         self._note_seen(held)
+        _headway(f"moved scope {pointer.scope!r}'s pointer")
         return held
 
     def _note_seen(self, pointer: _Pointer) -> None:
@@ -3905,6 +4061,7 @@ class ScopedSnapshot:
         self._index = settled
         self._index_partial = partial
         self._ever_indexed = True
+        _headway("moved the index")
 
     # ------------------------------------------------------------------
     # rebuilding from L3
@@ -3929,6 +4086,7 @@ class ScopedSnapshot:
                     f"cannot hold them, and a copy without them would not be whole"
                 )
             scopes.update(str(scope) for scope in found)
+            _headway(f"listed the scopes of {table.name} in L3")
         return scopes
 
     async def _read_scope(
@@ -4022,6 +4180,7 @@ class ScopedSnapshot:
             async for page in pages:
                 if len(page):
                     parts.append(await self._export(table, scope, page))
+                _headway(f"read a page of {table.name} in scope {scope!r} from L3")
                 if moved is not None and await moved():
                     raise _WriteBegan(f"a write began while {table.name} of scope {scope!r} was read")
         return parts
@@ -4033,6 +4192,78 @@ class ScopedSnapshot:
         :rtype: _RebuildClaim
         """
         return _RebuildClaim(self._rebuild_lease, key=self._layout.claim_key, ttl=self._claim_ttl, name=self._name)
+
+    async def _holding[T](self, claim: _RebuildClaim, work: Callable[[], Coroutine[Any, Any, T]], *, what: str) -> T:
+        """run ``work`` under the claim this replica holds, letting the claim go and stopping it once it stalls.
+
+        The claim's renewal runs on its own task, so it says nothing of the work: a run stuck on one await (an
+        L3 read that never answers, a thread that never comes) renewed its claim for as long as its process lived,
+        and every other replica waited on it. So the run's own steps (:func:`_headway`: pages read, chunks read
+        and written, scopes committed, pointers moved) are watched, and once none has come for ``rebuild_stall``
+        the claim is let go first -- whatever the run is stuck in, no replica waits on it any longer -- and then
+        the run is cancelled.
+
+        :param claim: the claim, taken
+        :ptype claim: _RebuildClaim
+        :param work: the run
+        :ptype work: Callable[[], Coroutine[Any, Any, T]]
+        :param what: the run, for the log
+        :ptype what: str
+        :return: what the run answered
+        :rtype: T
+        :raises TimeoutError: when it made no progress for ``rebuild_stall``; the claim is let go
+        :raises BaseException: what the run raised
+        """
+        headway = _Headway(time.monotonic(), "took the claim")
+
+        async def watched() -> T:
+            # in this task's own context, which every task the run starts inherits; nothing else sees it
+            _HEADWAY.set(headway)
+            return await work()
+
+        task = asyncio.create_task(watched(), name=f"scoped-snapshot-{self._name}-under-claim")
+        stall = self._rebuild_stall.total_seconds()
+        look = min(max(stall / 4, 0.01), _STALL_LOOK_SECONDS)
+        try:
+            while not task.done():
+                await asyncio.wait([task], timeout=look)
+                idle = time.monotonic() - headway.at
+                if task.done() or idle < stall:
+                    continue
+                message = (
+                    f"scoped snapshot {self._name}: {what} made no progress for {idle:.0f} s (its last step: "
+                    f"{headway.what}); it lets the rebuild claim go and stops"
+                )
+                log.error(message, extra={"extra_data": {"snapshot": self._name, "last_step": headway.what}})
+                await claim.release()
+                await self._stop_run(task, stall)
+                raise _Stalled(message)
+        except asyncio.CancelledError:
+            await self._stop_run(task, stall)
+            raise
+        return task.result()
+
+    async def _stop_run(self, task: asyncio.Task[Any], within: float) -> None:
+        """cancel a run under the claim and wait, up to ``within`` seconds, for it to end; its own failure is logged.
+
+        :param task: the run
+        :ptype task: asyncio.Task[Any]
+        :param within: how long to wait for it
+        :ptype within: float
+        :return: nothing
+        :rtype: None
+        """
+        task.cancel()
+        done, _ = await asyncio.wait([task], timeout=within)
+        if not done:
+            log.error(
+                "scoped snapshot %s: a run under the rebuild claim did not end within %.0f s of being stopped; "
+                "it ends on its own, the claim already let go",
+                self._name,
+                within,
+            )
+        elif not task.cancelled() and (error := task.exception()) is not None:
+            log.warning("scoped snapshot %s: a stopped run had failed: %s: %s", self._name, type(error).__name__, error)
 
     async def _rebuild(self, *, reason: str) -> None:
         """rebuild every scope's chunks from L3 under the claim, or wait for whoever holds it.
@@ -4054,7 +4285,9 @@ class ScopedSnapshot:
         if await claim.take():
             kept = False
             try:
-                caught = await self._rebuild_scopes(None, reason=reason, flow="sync")
+                caught = await self._holding(
+                    claim, lambda: self._rebuild_scopes(None, reason=reason, flow="sync"), what="a rebuild from L3"
+                )
             finally:
                 kept = await claim.release()
             # a rebuild that lost its claim meanwhile may have run beside another: it leaves the sweep
@@ -4177,6 +4410,16 @@ class ScopedSnapshot:
                     retire[scope] = epoch
                 done[scope] = epoch
                 published.append(scope)
+                self._progress = replace(self._progress, scopes_done=self._progress.scopes_done + 1)
+                # as the rebuild says each scope it lands: a catch-up of many scopes beside a write is watched by it
+                log.info(
+                    "scoped snapshot %s: caught up scope %r from L3 beside a write (%d of %d)",
+                    self._name,
+                    scope,
+                    self._progress.scopes_done,
+                    self._progress.scopes_total,
+                    extra={"extra_data": {"scope": scope, "epoch": epoch}},
+                )
         if published:
             await self._update_index(add=published)
         await self._sweeper.retire_older_many(retire)
@@ -4346,49 +4589,149 @@ class ScopedSnapshot:
         snapshot does not, and for scopes L3 no longer holds. Runs under the rebuild claim. A
         catch-up that has to wait on a write in progress leaves the status
         WAITING until a later call does not; nothing here calls it again, so its caller schedules
-        the next (the ENR pod's refresh calls it after every publish).
+        the next (the ENR pod's refresh calls it after every publish). :meth:`catch_up` does the same and
+        says how it ended.
 
         :return: the scopes republished
         :rtype: list[str]
         :raises ValueError: when a table holds rows with no scope
+        :raises TimeoutError: when it made no progress for ``rebuild_stall`` (the claim is let go)
         """
+        record = _CatchUpRecord()
         self._begin_run("catch_up")
         try:
-            caught = await self._catch_up()
+            await self._catch_up(record)
         finally:
             self._end_run("catch_up")
-        return caught
+        return list(record.caught)
 
-    async def _catch_up(self) -> list[str]:
-        """the body of :meth:`catch_up_from_l3`.
+    async def catch_up(self) -> CatchUpOutcome:
+        """:meth:`catch_up_from_l3`, answering how it ended rather than only what it republished; never raises.
 
-        :return: the scopes republished
-        :rtype: list[str]
+        A caller that must tell "another replica holds the claim" from "waited on a write" from "nothing was behind"
+        reads :attr:`CatchUpOutcome.result`, not an empty list; :attr:`CatchUpOutcome.behind` names every scope
+        still behind L3 by L3's epoch against the pointer this copy has seen. A failure is logged here and answered
+        as ``FAILED``, a stall as ``STALLED``, each with its error.
+
+        :return: the outcome
+        :rtype: CatchUpOutcome
+        """
+        record = _CatchUpRecord()
+        result = CatchUpResult.CAUGHT_UP
+        reason: str | None = None
+        ran = False
+        self._begin_run("catch_up")
+        try:
+            try:
+                ran = await self._catch_up(record)
+            except _Stalled as exc:
+                # NOSILENT: logged at error where the stall was found; answered as STALLED with its message
+                result, reason = CatchUpResult.STALLED, str(exc)
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- a catch-up's failure is the caller's outcome: logged here and answered as FAILED with its error, never dropped
+                contain(exc, log=log, what=f"scoped snapshot {self._name}: the catch-up from L3 failed")
+                result, reason = CatchUpResult.FAILED, f"{type(exc).__name__}: {exc}"
+            waited = self._waited.get("catch_up", False)
+            wait = self._waiting.get("catch_up")
+        finally:
+            self._end_run("catch_up")
+        if record.claim_held:
+            result = CatchUpResult.CLAIM_HELD
+        elif result is CatchUpResult.CAUGHT_UP and waited:
+            result, reason = CatchUpResult.WAITED, wait
+        # against the pointers as seen now, which every scope it republished has moved: what it did before a stall
+        # or a failure counts too
+        behind = self._lagging(record.epochs, record.scopes)
+        if ran and result in (CatchUpResult.CAUGHT_UP, CatchUpResult.WAITED):
+            # L3 read again: a write may have moved scopes while it ran
+            behind = self._lagging(await self._epochs(), record.scopes)
+        return CatchUpOutcome(
+            result=result,
+            caught=tuple(record.caught),
+            behind=behind,
+            finished_at=datetime.now(UTC),
+            holder=record.holder,
+            held_since=record.held_since,
+            reason=reason,
+        )
+
+    def _lagging(self, epochs: Mapping[str, int], scopes: Iterable[str]) -> dict[str, ScopeLag]:
+        """the scopes whose epoch in L3 is ahead of the pointer this replica has seen.
+
+        :param epochs: each scope's epoch in L3
+        :ptype epochs: Mapping[str, int]
+        :param scopes: the scopes L3 holds
+        :ptype scopes: Iterable[str]
+        :return: scope -> its lag
+        :rtype: dict[str, ScopeLag]
+        """
+        lagging: dict[str, ScopeLag] = {}
+        for scope in sorted(scopes):
+            seen = self._seen.get(scope)
+            l3_epoch = int(epochs.get(scope, 0))
+            if seen is None or l3_epoch > seen.epoch:
+                lagging[scope] = ScopeLag(l3_epoch=l3_epoch, pointer_epoch=None if seen is None else seen.epoch)
+        return lagging
+
+    async def _catch_up(self, record: _CatchUpRecord) -> bool:
+        """the body of :meth:`catch_up_from_l3` and :meth:`catch_up`, recording into ``record`` as it goes.
+
+        :param record: where what it finds and does is kept
+        :ptype record: _CatchUpRecord
+        :return: whether it ran under the claim
+        :rtype: bool
         """
         epochs = await self._epochs()
         l3_scopes = await self._l3_scopes()
-        behind = {
-            scope
-            for scope in l3_scopes
-            if scope not in self._seen or int(epochs.get(scope, 0)) > self._seen[scope].epoch
-        }
+        record.epochs, record.scopes = epochs, set(l3_scopes)
+        record.behind = self._lagging(epochs, l3_scopes)
+        behind = set(record.behind)
         gone = set(self._index or ()) - l3_scopes
-        caught: list[str] = []
+        if not behind and not gone:
+            return False
         claim = self._claim()
-        if (behind or gone) and not await claim.take():
-            log.info("scoped snapshot %s: another replica holds the claim; it catches up", self._name)
-        elif behind or gone:
-            try:
-                if behind:
-                    caught = (
-                        await self._rebuild_scopes(behind, reason=f"{len(behind)} scopes behind L3", flow="catch_up")
-                        or []
-                    )
-                if gone:
-                    await self._remove_scopes(gone)
-            finally:
-                await claim.release()
-        return caught
+        if not await claim.take():
+            holding = await self._rebuild_lease.held(self._layout.claim_key)
+            record.claim_held = True
+            if holding is not None:
+                record.holder, record.held_since = holding.holder, holding.acquired_at
+            log.info(
+                "scoped snapshot %s: another replica holds the claim; it catches up",
+                self._name,
+                extra={
+                    "extra_data": {
+                        "holder": record.holder,
+                        "held_since": None if record.held_since is None else record.held_since.isoformat(),
+                        "behind": len(behind),
+                    }
+                },
+            )
+            return False
+        try:
+            await self._holding(
+                claim, lambda: self._catch_up_under_claim(behind, gone, record), what="a catch-up from L3"
+            )
+        finally:
+            await claim.release()
+        return True
+
+    async def _catch_up_under_claim(self, behind: set[str], gone: set[str], record: _CatchUpRecord) -> None:
+        """what a catch-up does under the claim: rebuild the scopes behind L3, remove the scopes L3 left.
+
+        :param behind: the scopes whose epoch in L3 is ahead of their pointer
+        :ptype behind: set[str]
+        :param gone: the scopes the index names and L3 holds no more
+        :ptype gone: set[str]
+        :param record: where the scopes republished are kept
+        :ptype record: _CatchUpRecord
+        :return: nothing
+        :rtype: None
+        """
+        if behind:
+            record.caught = (
+                await self._rebuild_scopes(behind, reason=f"{len(behind)} scopes behind L3", flow="catch_up") or []
+            )
+        if gone:
+            await self._remove_scopes(gone)
 
     async def _apply_published(self) -> None:
         """apply every scope the index names whose pointer is ahead of this L1, before a rebuild declares ready.
