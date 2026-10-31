@@ -8,6 +8,14 @@ packages (bumped in lock-step).
 
 ## v0.87.0 -- 2026-10-31
 
+### core: an answer's JSON never holds the interpreter lock past one short call, whatever its shape
+
+**Fixed:** `answer_json` writes each encoder call within a work budget (`ANSWER_JSON_BUDGET`, about a millisecond) and
+never more than `ANSWER_JSON_ITEMS` (256) list items. It wrote a short list whole and a mapping keyed by numbers whole:
+a short list of long series held the lock 0.5 s in one call, a numbered mapping 50 ms. A mapping or list too large for
+one call is now written a run at a time, and an item too large for a run is opened, however deep it sits. The text is
+byte-for-byte what it was. New public names: `ANSWER_JSON_BUDGET`, `ANSWER_JSON_ITEMS`, `answer_json_work`.
+
 ### object-store and datasources: two event-loop holds at a load's first export read
 
 **Fixed:** `S3ObjectStore` reads the s3 and sts service models and endpoint data its first client is built from on a
