@@ -49,11 +49,11 @@ from threetears.evals.kernel.metrics import (
     MeasurePopulation,
     MetricDescriptor,
     classifier_label_measure,
-    confusion_of,
     describe_measure,
     describe_phase_timing,
     goal_check_measure,
     is_code_graded,
+    measure_value_misfit,
     summary_population,
     undeclarable_host_measures,
 )
@@ -188,27 +188,6 @@ def _is_reportable(descriptor: MetricDescriptor, measures: MeasureRegistry) -> b
     if descriptor.data_type != "numeric":
         return False
     return descriptor.higher_is_better is not None or descriptor.diagnostic
-
-
-def _value_fits(descriptor: MetricDescriptor, value: float | str) -> bool:
-    """Whether an observation's Python type agrees with what its descriptor claims.
-
-    ``covariates`` is an open ``dict[str, str | float]``, so a value's type is not
-    guaranteed to match the descriptor its key resolves to. Without this check a string
-    arriving under a seeded-numeric name reaches ``float(value)`` and raises out of
-    ``assemble_context_bundle``, destroying the whole analysis over one bad observation.
-    Dropping the observation instead keeps the blast radius at one measure — and the drop
-    is reported rather than silent (see ``MeasureCollection.unreported_observations``).
-    """
-    if descriptor.name == CONFUSION_CELL_MEASURE:
-        # A confusion cell is categorical AND has a format: one that does not split into its two labels
-        # could not be counted into the matrix the per-label statistics are derived from.
-        return isinstance(value, str) and confusion_of(value) is not None
-    if descriptor.data_type in ("categorical", "text"):
-        return isinstance(value, str)
-    if descriptor.data_type == "boolean":
-        return isinstance(value, bool)
-    return not isinstance(value, (str, bool))
 
 
 def _scalar_leaves(model: object, names: tuple[str, ...]) -> Iterator[tuple[str, float | str]]:
@@ -814,12 +793,23 @@ class _Slot(NamedTuple):
     unit: str
     #: What a surface does with it when the result is in its population.
     verdict: _Verdict
+    #: How its value contradicts its descriptor's data type (:func:`measure_value_misfit`); None for a value that fits
+    #: or a leaf left unreported for another reason.
+    misfit: str | None
 
 
 def _verdict(
     descriptor: MetricDescriptor, value: float | str, *, report_gaps: bool, measures: MeasureRegistry
-) -> _Verdict:
-    """What a surface does with a leaf whose result is in its population: the walk's branch order, population aside."""
+) -> tuple[_Verdict, str | None]:
+    """What a surface does with a leaf whose result is in its population: the walk's branch order, population aside.
+
+    Beside the verdict, how the value contradicts its descriptor where that is why it is unreported. A value's
+    Python type is not guaranteed to match its descriptor (``covariates`` is an open ``dict[str, str | float]``, and a
+    result stored before the runner refused a misfit host measure carries one), and without this check a string under
+    a seeded-numeric name reaches ``float(value)`` and raises out of ``assemble_context_bundle``, destroying the whole
+    analysis over one bad observation. Dropping the observation instead keeps the blast radius at one measure, and the
+    drop is named with its reason (``MeasureCollection.unreported_observations``), never coerced.
+    """
     if not _is_reportable(descriptor, measures):
         # An undescribed NUMBER from a telemetry source is the loss worth reporting: a
         # measurement the code emits that the registry cannot explain. Three things stay
@@ -829,9 +819,10 @@ def _verdict(
         # result's lineage fields, where "undescribed" means "not a measure" rather than
         # "a measure nobody described".
         if report_gaps and descriptor.family is None and not isinstance(value, str):
-            return "unreported"
-        return "quiet"
-    return "pooled" if _value_fits(descriptor, value) else "unreported"
+            return "unreported", None
+        return "quiet", None
+    misfit = measure_value_misfit(descriptor, value)
+    return ("pooled", None) if misfit is None else ("unreported", misfit)
 
 
 class _Describer:
@@ -905,7 +896,7 @@ class _WalkMemo:
         self.walks: dict[int, _CompactWalk] = {}
         self.describers: dict[int, _Describer] = {}
         self.slots: list[_Slot] = []
-        self._slot_ids: dict[tuple[str, str, int, str | None, str, str], int] = {}
+        self._slot_ids: dict[tuple[str, str, int, str | None, str, str, str | None], int] = {}
         self._populations: dict[MeasurePopulation, list[int]] = {}
 
     def describer(self, measures: MeasureRegistry) -> _Describer:
@@ -918,7 +909,7 @@ class _WalkMemo:
     def slot_id(self, slot: _Slot) -> int:
         """``slot``'s index in :attr:`slots`, interned on first sight."""
         # The descriptor by identity: it is held in `slots`, so its id is not reused while the memo lives.
-        key = (slot.source, slot.name, id(slot.descriptor), slot.carrier, slot.unit, slot.verdict)
+        key = (slot.source, slot.name, id(slot.descriptor), slot.carrier, slot.unit, slot.verdict, slot.misfit)
         found = self._slot_ids.get(key)
         if found is None:
             found = self._slot_ids[key] = len(self.slots)
@@ -980,8 +971,8 @@ def _walk_leaves(result: ResultView, describe: _Describer) -> Iterator[tuple[_Sl
     )
     for report_gaps, leaves in outer:
         for name, value, descriptor in leaves:
-            verdict = _verdict(descriptor, value, report_gaps=report_gaps, measures=measures)
-            yield _Slot("outer", name, descriptor, None, _PER_RESULT, verdict), value
+            verdict, misfit = _verdict(descriptor, value, report_gaps=report_gaps, measures=measures)
+            yield _Slot("outer", name, descriptor, None, _PER_RESULT, verdict, misfit), value
     inner: tuple[tuple[_LeafSource, Iterable[tuple[str, float | str, bool, str, str]]], ...] = (
         ("carrier", chain(_carrier_leaves(result, describe=describe), _derived_leaves(result))),
         ("verdict", chain(_goal_check_leaves(result), _accuracy_leaves(result))),
@@ -989,8 +980,8 @@ def _walk_leaves(result: ResultView, describe: _Describer) -> Iterator[tuple[_Sl
     for source, carried in inner:
         for name, value, report_gaps, carrier, unit in carried:
             descriptor = describe(name)
-            verdict = _verdict(descriptor, value, report_gaps=report_gaps, measures=measures)
-            yield _Slot(source, name, descriptor, carrier, unit, verdict), value
+            verdict, misfit = _verdict(descriptor, value, report_gaps=report_gaps, measures=measures)
+            yield _Slot(source, name, descriptor, carrier, unit, verdict, misfit), value
 
 
 def _result_walks(results: Iterable[ResultView], measures: MeasureRegistry) -> Iterator[tuple[_WalkMemo, _CompactWalk]]:
@@ -1014,8 +1005,12 @@ class _MeasurePool(NamedTuple):
     pooled: dict[str, _PooledMeasure]
     #: Each pooled measure's observation unit.
     units: dict[str, str]
-    #: Names the walk reached but could not pool: undescribed numbers, misfit values, ambiguous carriers.
+    #: Names the walk reached but could not pool: undescribed numbers, ambiguous carriers.
     unreported: set[str]
+    #: One entry per measure and reason for values whose type contradicts their descriptor, each dropped: the name with
+    #: its reason in parentheses, the form ``unreported_observations`` reads. Named even where the measure pooled other
+    #: values, since the dropped ones are still missing from its statistics.
+    misfits: set[str]
 
 
 def _measure_collection(
@@ -1054,6 +1049,7 @@ def _pool_measures(
     outer: dict[str, _PooledMeasure] = {}
     inner: dict[str, _PooledMeasure] = {}
     unreported: set[str] = set()
+    misfits: set[str] = set()
     carriers_by_name: dict[str, set[str]] = {}
     inner_units: dict[str, str] = {}
 
@@ -1064,7 +1060,7 @@ def _pool_measures(
         members = walk.members
         values = iter(walk.values)
         for slot_id in walk.slots:
-            source, name, descriptor, carrier, unit, verdict = slots[slot_id]
+            source, name, descriptor, carrier, unit, verdict, misfit = slots[slot_id]
             # A value is held for every leaf a surface can pool, so it is read off in step whether or not this one does.
             value = next(values) if verdict == "pooled" else None
             # Outside its population before anything else: a faulted result is not an observation of a
@@ -1079,6 +1075,8 @@ def _pool_measures(
                     )
                     pooled_values.append(value)
                     cases.append(case_id)
+                elif misfit is not None:
+                    misfits.add(f"{name} ({misfit}; dropped, not pooled)")
                 elif verdict == "unreported":
                     unreported.add(name)
             if source != "outer":
@@ -1107,7 +1105,7 @@ def _pool_measures(
     # under it. Names dropped along the way (unreportable, ambiguous) are excluded, so the
     # map is exactly the collection's own vocabulary.
     units = {**inner_units, **dict.fromkeys(outer, _PER_RESULT)}
-    return _MeasurePool(pooled, {name: units[name] for name in pooled}, unreported)
+    return _MeasurePool(pooled, {name: units[name] for name in pooled}, unreported, misfits)
 
 
 def _summarised_by_mean(descriptor: MetricDescriptor) -> bool:
@@ -1218,6 +1216,7 @@ def _collect_measures(
         absent_scopes=[scope for scope in _ATTRIBUTION_SCOPES if scope not in present],
         unreported_observations=sorted(
             (pool.unreported - set(pooled))
+            | pool.misfits
             | set(_withheld_derived(results, pooled))
             | set(_undeclarable_host_entries(results))
         ),

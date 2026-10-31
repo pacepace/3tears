@@ -80,6 +80,7 @@ from threetears.evals.run.runner import (
     judge_witnessed_output,
     refuse_engine_derived_host_measures,
     refuse_inner_agent_usage,
+    refuse_misfit_host_measures,
 )
 
 #: The stop causes only a conversation the engine drove produces — its simulator's two, and its run's cost cap
@@ -388,6 +389,7 @@ async def record_witnessed_cell(
     # built. The assembly makes the two kind refusals again; the variant is handed to it, not re-derived.
     refuse_inner_agent_usage(output.telemetry.usage)
     refuse_engine_derived_host_measures(output.host_measures)
+    refuse_misfit_host_measures(output.host_measures, host.profile.measures)
     # Read off the run exactly as execute_run reads it, so the two key a cell the same way.
     variant = resolve_variant_identity(run=run, profile=host.profile)
 
