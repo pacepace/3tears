@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261031-925c6cf80a45",
+  "input": "r3",
+  "input_digest": "8ed49915119167ef21cff1f2fafe46ccf65af216b00f381724c01ea19af772a0",
+  "plan_digest": "a40af45a4fd8e168d16da55db326c2dabcd46eeb216e39385127439257c763cf",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+    "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "The headline is a decision with an instruction and a reason, naming the table's recommended arm, the only configuration that clears all three gates.",
+      "quote": "Deploy Brisk-S · Few-shot (12 ex.) (E). It is the only configuration that clears latency, overall accuracy, and every cell floor.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: the supporting accuracy and latency figures, then the cell-floor change that would admit the cheaper arm.",
+      "quote": "Lowering the cell floor below 76.7% would allow the cheaper Nano-XS · Few-shot (12 ex.) (H).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "There is no flag, and the one unmeasured risk is stated once, in Watch.",
+      "quote": "Calibration on complex news remains unmeasured.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The confusion section claims errors are mostly medium turns misclassified as simple, but its matrix splits medium errors evenly between simple and complex (5.6% each).",
+      "quote": "Errors concentrate primarily in medium complexity turns misclassified as simple",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Arms, measures and cells use reader names above Full results.",
+      "quote": "Brisk-S · Few-shot (12 ex.) (E) clears all cell floors while Nano-XS · Few-shot (12 ex.) (H) fails on complex news",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the tightest margin (0.7 points on overall accuracy), then an unmeasured risk.",
+      "quote": "The tightest margin is Brisk-S · Few-shot (12 ex.) (E): 90.7% against Overall accuracy at 90%, a clearance of 0.7 points.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure carries two names (Balanced accuracy and Overall accuracy), and the cost sentence repeats its unit.",
+      "quote": "it satisfies all gates with 90.7% Balanced accuracy, clears all nine target cells, and costs $40.00 per 1,000,000 turns per million turns",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The first screen gives what to do, why (the only arm through all gates), and the main risk (the 0.7-point margin).",
+      "quote": "a clearance of 0.7 points",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "Next names a concrete experiment whose success would let the cheaper Nano-XS arm clear the floor and replace the call.",
+      "quote": "Test targeted few-shot examples for complex news on Nano-XS · Few-shot (12 ex.) (H) to evaluate whether its 76.7% accuracy can clear the floor.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence is plain high and has no caveat clauses.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Each figure is the named arm's own value on the measure or cell its sentence names.",
+      "quote": "Brisk-S · Few-shot (12 ex.) (E) delivers 90.7% Balanced accuracy at 184 ms p95 latency.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-31T16:00:53.766986+00:00"
+}

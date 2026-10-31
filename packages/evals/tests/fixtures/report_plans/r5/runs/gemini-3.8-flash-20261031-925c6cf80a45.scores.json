@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261031-925c6cf80a45",
+  "input": "r5",
+  "input_digest": "72ed0db70b6206625e4d179b4062fc9c8f38c8b5af1b0803f12e288b4ccf4511",
+  "plan_digest": "9403e5af916b5a0a0d5c4090e619f7a7f463a26624f80fd90521d28ab6d0c84f",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+    "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "fail",
+      "reason": "The headline says both candidates regress on character adherence, but the first chart's reading for 1017 on character adherence (v2) has an interval of -5.8 to +1.1, which includes zero, so that chart does not show a regression for 1017.",
+      "quote": "Keep September (P): both candidates regress on character adherence and raise production cost.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The first sentence restates the headline, and the second names a hypothetical new candidate instead of what in this evidence would change the answer.",
+      "quote": "September (P) achieves the highest pass rate and lowest spend, while 1017 (B) and qwen3.8-flash (A) degrade character adherence without offering savings.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "Each caveat is stated once (the report-wide ones in the confidence, the scoped ones in Watch, the apparatus and telemetry ones in Method), and the judge-tier mention in Method is a required definition.",
+      "quote": "The judge tier is undetermined; material only if relative judgment bias fails to cancel across arms.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The spine section says both challengers regress, but its forest of readings shows 1017's interval crossing zero.",
+      "quote": "Both challengers stay within the 15-point margin but regress against September (P).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Arms, the aspect, the strata and the measures use their reader names above Full results, and run ids stay out of the prose.",
+      "quote": "Character adherence drops most sharply on off lane prompts.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin (qwen3.8-flash, 2.4 points inside the margin), then the scoped reasoning-ratio confound and the degraded runs.",
+      "quote": "The weakest margin is qwen3.8-flash (A) at -12.6 against -15 on the margin on character adherence (v2) (gap 2.4, interval the multiplicity-corrected 99.69% interval).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "The Watch sentence above the fold carries statistician's grammar and a tangled phrase, and character adherence names both the aspect and persona holds character.",
+      "quote": "(gap 2.4, interval the multiplicity-corrected 99.69% interval)",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The first screen gives what to do (keep September), why (the regressions and higher cost), and the main risk (qwen3.8-flash's thin margin and the confounds).",
+      "quote": "Retain September (P) in production.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Next asks to test an unspecified candidate, with no experiment on these arms whose result could change the call and no decisive direction.",
+      "quote": "Test a candidate that reduces reasoning overhead without collapsing character adherence in the off lane stratum.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "Each confidence clause names the condition under which its caveat would matter to the call.",
+      "quote": "The control arm was designated post hoc; material only if another arm served as the real production reference.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "The 4.7- and 6-point drops come from persona holds character, but the sentence attaches them to character adherence, whose pass-rate changes are 3.0 and 7.6 points.",
+      "quote": "1017 (B) regresses on character adherence by 4.7 points (-8.2 to -1.3) and adds cost.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-31T16:00:54.956691+00:00"
+}
