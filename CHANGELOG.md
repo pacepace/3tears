@@ -8,6 +8,14 @@ packages (bumped in lock-step).
 
 ## v0.87.0 -- 2026-10-31
 
+### object-store and datasources: two event-loop holds at a load's first export read
+
+**Fixed:** `S3ObjectStore` reads the s3 and sts service models and endpoint data its first client is built from on a
+worker thread before opening it; read on the loop, the open held it ~50 ms (cobalt prod, 2026-10-31). An export's
+parquet files are read natively over their bytes (`pq.ParquetFile(pa.BufferReader(...))`): `pq.read_table` over
+`io.BytesIO` imported the dataset machinery on its first read and called back into a Python file object for every
+read, so six reader threads held the loop 0.1 s. No API changes.
+
 ### agent.tools: a slow call never holds the calls behind it
 
 **Changed:** `ToolServer` takes up to `max_calls_in_flight` calls (default `CALLS_IN_FLIGHT`, 64) off its call subject
