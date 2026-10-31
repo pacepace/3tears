@@ -182,8 +182,8 @@ class JobFireResult:
         sets it; a callback that finishes its work before returning leaves
         it ``False``.
     :ivar retry_after_seconds: on a ``'failed'`` result, ask the engine to run
-        the same fire once more after this many seconds (at most
-        ``tick.FIRE_RETRY_MAX_SECONDS``), for a failure that a moment fixes (a
+        the same fire once more after this many seconds (capped by the
+        engine's own ceiling), for a failure that a moment fixes (a
         tool whose pods are being replaced; the hub's scheduled tool call asks
         it on ``TOOL_UNAVAILABLE``). The retry runs off the tick, which goes on
         to its other due fires. The second result is final, whatever it asks.

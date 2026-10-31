@@ -868,7 +868,14 @@ class TestAFailureAMomentFixesIsRetriedOnce:
     async def test_the_pause_a_dispatcher_asks_for_is_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Flips if the engine sleeps for whatever a dispatcher (or an upstream Retry-After it echoes) asks."""
         _patch_lock(monkeypatch, _CtxHealthy())
-        monkeypatch.setattr(tick_mod, "FIRE_RETRY_MAX_SECONDS", 0.05)
+        paused: list[float] = []
+        sleep = asyncio.sleep
+
+        async def _recorded(seconds: float) -> None:
+            paused.append(seconds)
+            await sleep(0)
+
+        monkeypatch.setattr(asyncio, "sleep", _recorded)
         store = _FakeScheduleStore([_FakeDueSchedule()])
         fires = _FakeFireStore()
         calls = 0
@@ -883,6 +890,7 @@ class TestAFailureAMomentFixesIsRetriedOnce:
         await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
         await _settled(fires, 1, seconds=2.0)
         assert calls == 2 and len(fires.succeeded) == 1
+        assert max(paused) <= 60.0, "the retry slept for the hour it was asked"
 
     async def test_the_tick_does_not_wait_out_a_retrys_pause(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Flips if a fire's retry pause holds back the tick (and the cross-pod lock it holds): the tick returns,

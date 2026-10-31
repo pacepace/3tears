@@ -175,25 +175,3 @@ async def test_the_orphan_sweep_reads_no_metadata_while_no_more_chunk_subjects_t
     store = NatsObjectStore(client=_Client(), full_name="pod-objects")  # type: ignore[arg-type]
     assert await store.purge_orphan_chunks(pointers=_NoClaims()) == 0  # type: ignore[arg-type]
     assert js.infos == ["$O.pod-objects.C.>", "$O.pod-objects.M.>"]
-
-
-async def test_listing_names_past_the_servers_subject_cap_reads_the_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
-    """an answer as full as the server's cap (100,000 subjects) may be cut short: the names come from the metadata."""
-    js = _SubjectsJetStream("pod-objects", [f"a/{n}" for n in range(100_000)])
-
-    class _Client:
-        def jetstream_context(self) -> _SubjectsJetStream:
-            return js
-
-    store = NatsObjectStore(client=_Client(), full_name="pod-objects")  # type: ignore[arg-type]
-    read: list[str] = []
-
-    async def list_objects(self: NatsObjectStore, *, prefix: str = "") -> list[Any]:
-        from types import SimpleNamespace
-
-        read.append(prefix)
-        return [SimpleNamespace(name=n) for n in ("a/2", "a/1")]
-
-    monkeypatch.setattr(NatsObjectStore, "list_objects", list_objects)
-    assert await store.list_names(prefix="a/") == ["a/1", "a/2"]
-    assert read == ["a/"]

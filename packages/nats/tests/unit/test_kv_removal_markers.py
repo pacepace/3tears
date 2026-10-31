@@ -15,7 +15,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from nats.js.errors import APIError
+from nats.js.errors import APIError, KeyNotFoundError
 
 from threetears.nats import NatsKvBucket
 from threetears.nats import kv as kv_module
@@ -120,29 +120,34 @@ class TestARemovalWithAMarkerLifetime:
             await _bucket(_Js()).delete(key="k", marker_ttl=timedelta(milliseconds=500))
 
 
-def _latest(key: str, sequence: int, operation: str | None) -> MagicMock:
-    """one key's latest message as the sweep's headers-only listing delivers it."""
-    msg = MagicMock()
-    msg.subject = f"$KV.{_BUCKET}.{key}"
-    msg.headers = {"KV-Operation": operation} if operation else None
-    msg.metadata.sequence.stream = sequence
-    return msg
+# parity-exempt: the one read a key listing makes of each key (nats-py KeyValue.get); full KeyValue parity would be over-mocking
+class _Kv:
+    """each key's latest message, as nats-py's KeyValue.get answers it: a marker raises with its entry."""
+
+    def __init__(self, latest: dict[str, tuple[int, str | None]]) -> None:
+        self._latest = latest
+
+    async def get(self, key: str, revision: int | None = None, validate_keys: bool = True) -> Any:
+        sequence, operation = self._latest[key]
+        entry = MagicMock(key=key, revision=sequence)
+        if operation is not None:
+            raise KeyNotFoundError(entry, operation)
+        return entry
+
+
+_LATEST = {"refresh.enr": (3, None), "enr_answers.a": (5, "DEL"), "enr_answers.b": (6, "PURGE")}
 
 
 class TestTheOwnersSweep:
     @pytest.fixture(autouse=True)
     def _listing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        latest = [
-            _latest("refresh.enr", 3, None),
-            _latest("enr_answers.a", 5, "DEL"),
-            _latest("enr_answers.b", 6, "PURGE"),
-        ]
-        monkeypatch.setattr(kv_module, "read_through_named_consumer", AsyncMock(return_value=latest))
+        subjects = {f"$KV.{_BUCKET}.{key}": 1 for key in _LATEST}
+        monkeypatch.setattr(kv_module, "stream_subjects", AsyncMock(return_value=subjects))
 
     async def test_it_purges_each_marker_below_its_own_sequence_and_no_live_key(self) -> None:
         js = _Js()
 
-        assert await _bucket(js).purge_removal_markers() == 2
+        assert await _bucket(js, _Kv(_LATEST)).purge_removal_markers() == 2
 
         assert js.purged == [
             (f"KV_{_BUCKET}", f"$KV.{_BUCKET}.enr_answers.a", 6),
@@ -152,5 +157,5 @@ class TestTheOwnersSweep:
     async def test_a_dry_run_counts_and_purges_nothing(self) -> None:
         js = _Js()
 
-        assert await _bucket(js).purge_removal_markers(apply=False) == 2
+        assert await _bucket(js, _Kv(_LATEST)).purge_removal_markers(apply=False) == 2
         assert js.purged == []
