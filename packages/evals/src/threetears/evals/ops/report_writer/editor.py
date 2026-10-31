@@ -49,7 +49,7 @@ from threetears.evals.analysis.analyst.skill import SkillText
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report.md_parts import one_line
-from threetears.evals.analysis.report_doc_facts import EditorFact, editor_facts
+from threetears.evals.analysis.report_doc_facts import editor_facts
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.inner_ceilings import EDITOR_ANSWERS
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
@@ -58,7 +58,16 @@ from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.turns import ToolTurnClient
 
-__all__ = ["EditorLimits", "EditorOutcome", "PASS_TOTAL", "Review", "RubricScore", "editor_session", "review_report"]
+__all__ = [
+    "EditorLimits",
+    "EditorOutcome",
+    "PASS_TOTAL",
+    "Review",
+    "RubricScore",
+    "computed_facts",
+    "editor_session",
+    "review_report",
+]
 
 log = get_logger(__name__)
 
@@ -362,7 +371,7 @@ def _request(
         f"The page, as a reader sees it:\n\n{page}",
         "What the analyst left out, and why (omitted):\n" + _omitted(doc),
         "Computed facts, for you to weigh. Code computed each from the snapshot; none is a verdict:\n"
-        + _facts(editor_facts(doc, report_input)),
+        + computed_facts(doc, report_input),
     ]
     if earlier:
         parts.append(
@@ -382,7 +391,17 @@ def _omitted(doc: ReportDoc) -> str:
     return "\n".join(f"- {one_line(item.what)}: {one_line(item.why)}" for item in doc.omitted)
 
 
-def _facts(facts: Sequence[EditorFact]) -> str:
+def computed_facts(doc: ReportDoc, report_input: ReportInput) -> str:
+    """The facts code computes from the snapshot about a document, as the editor reads them: one line each.
+
+    :param doc: The document.
+    :ptype doc: ReportDoc
+    :param report_input: Its snapshot's report input.
+    :ptype report_input: ReportInput
+    :return: The facts, one ``- [kind] path: fact`` line each, or ``- none``.
+    :rtype: str
+    """
+    facts = editor_facts(doc, report_input)
     if not facts:
         return "- none"
     return "\n".join(

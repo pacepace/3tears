@@ -58,8 +58,9 @@ from threetears.evals.ops.report_writer.session import ToolMount
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.logs import contain, get_logger
 
-#: The names the report writer's entry point (``actions/report_writing.py``) calls and returns.
-__all__ = ["ReportNotStored", "ReportWritten", "report_write"]
+#: The names the report writer's entry point (``actions/report_writing.py``) calls, takes and returns. ``AnalystSkill``
+#: is the analysis package's, named here because the entry point, which reaches analysis only through ``ops``, takes it.
+__all__ = ["AnalystSkill", "ReportNotStored", "ReportWritten", "report_write"]
 
 log = get_logger(__name__)
 

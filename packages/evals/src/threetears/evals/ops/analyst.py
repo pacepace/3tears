@@ -313,6 +313,27 @@ async def report_snapshot_freeze(
     return await run_blocking(executor, _kept, storage, snapshot)
 
 
+async def report_snapshot_restore(host: OpsHost, scope_id: str, snapshot: EvalReportSnapshot) -> SnapshotFrozen:
+    """Put a snapshot carried whole elsewhere (a frozen writer case) back in a scope, as a freeze would store it.
+
+    A snapshot's id is derived from its evidence, so restoring one stores exactly the document its id names, or finds
+    it already stored soundly (``reused``), and replaces one stored under the id that a read would refuse, as a freeze
+    does. Only the scope is the caller's: the snapshot is stored in ``scope_id`` whatever scope it was frozen in.
+
+    :param host: The host whose store the analyst tools read.
+    :ptype host: OpsHost
+    :param scope_id: The scope to store it in.
+    :ptype scope_id: str
+    :param snapshot: The snapshot, as it was frozen.
+    :ptype snapshot: EvalReportSnapshot
+    :return: The snapshot, stored or found.
+    :rtype: SnapshotFrozen
+    """
+    eval_host = host.eval_host
+    scoped = snapshot.model_copy(update={"scope_id": scope_id})
+    return await run_blocking(eval_host.blocking_executor, _kept, eval_host.storage, scoped)
+
+
 def sized_page[T](compute: Callable[[int], T], limit: int, fits: Callable[[T], bool] | None) -> T:
     """The page of at most ``limit`` rows ``compute`` builds, as large as ``fits`` passes. Blocking.
 
@@ -726,6 +747,7 @@ __all__ = [
     "capability_gap",
     "report_check",
     "report_snapshot_freeze",
+    "report_snapshot_restore",
     "sized_page",
     "snapshot_input",
 ]

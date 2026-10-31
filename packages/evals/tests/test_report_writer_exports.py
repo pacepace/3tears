@@ -3,7 +3,9 @@
 ``ops/report_writer/analyst.py`` exports what the writing loop calls and leaves ``InvariantVerdict`` out (the loop
 names the checker, not its verdicts). ``actions/report_writing.py``, the report writer's entry point, exports nothing
 yet: its caller is the analysis job of plan §9 (W4), which Discodon's factory runs; the dev command line that writes a
-report today is a test fixture, not production code. ``CLAUDE.md`` holds that no public API exists only for a test, and the caller gate
+report today is a test fixture, not production code. The writer kind's modules (``writer_kind.py``,
+``writer_contract.py``) export what the kind's factory and the kind call; the rest awaits its launcher, its case bank
+and a host's profile. ``CLAUDE.md`` holds that no public API exists only for a test, and the caller gate
 (``tests/enforcement/test_public_api_has_a_caller.py``) reads a module's surface from its ``__all__``, so it cannot
 see the names left out. This test keeps the promise checkable: :data:`_AWAITING_A_CALLER` lists every public name
 left out, and goes red the moment another ``src`` module imports one, so the change that gives it a caller also adds
@@ -20,6 +22,8 @@ import pytest
 
 import threetears.evals.actions.report_writing as report_writing
 import threetears.evals.ops.report_writer.analyst as analyst
+import threetears.evals.ops.report_writer.writer_contract as writer_contract
+import threetears.evals.ops.report_writer.writer_kind as writer_kind
 
 #: Every workspace member's ``src`` tree.
 _REPO = Path(__file__).resolve().parents[3]
@@ -28,7 +32,23 @@ _SOURCES = sorted([*_REPO.glob("packages/*/src"), *_REPO.glob("packages/agent/*/
 #: Per module, the public names it defines and leaves out of its ``__all__`` until a production caller imports them.
 _AWAITING_A_CALLER: dict[ModuleType, frozenset[str]] = {
     analyst: frozenset({"InvariantVerdict"}),
-    report_writing: frozenset({"write_report"}),
+    report_writing: frozenset({"report_writer_kind", "write_report"}),
+    # The writer kind's launcher, its case bank and a host's profile are their callers, none written yet.
+    writer_contract: frozenset(
+        {"EffortWord", "WRITER_KIND", "WRITER_KIND_CONTRACT", "WRITER_KIND_MEASURES", "writer_kind_contract"}
+    ),
+    writer_kind: frozenset(
+        {
+            "PreparedWriter",
+            "WRITER_CASE_KEY",
+            "WriterCase",
+            "log",
+            "writer_case_of",
+            "writer_case_payload",
+            "writer_cell_timeout_s",
+            "writer_subject_components",
+        }
+    ),
 }
 
 

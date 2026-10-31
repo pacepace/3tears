@@ -18,22 +18,25 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Literal, cast
 
 from threetears.evals.actions.analyst import analyst_actions, analyst_tools
 from threetears.evals.actions.catalogue import ActionCatalogue, DEFAULT_PREFIX, Caller, MountedTool, catalogue_primer
 from threetears.evals.ops.analysis import ReportWriter, ReportWriterCall
 from threetears.evals.ops.host import OpsHost
-from threetears.evals.analysis.analyst.skill import AnalystSkill
 from threetears.evals.ops.report_writer.loop import TurnModel, WriterLimits
 from threetears.evals.ops.report_writer.session import ToolOutcome
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.ops.report_writer.write import ReportNotStored as ReportNotStored
 from threetears.evals.ops.report_writer.write import ReportWritten as ReportWritten
-from threetears.evals.ops.report_writer.write import report_write
+from threetears.evals.ops.report_writer.write import AnalystSkill, report_write
+from threetears.evals.ops.report_writer.writer_contract import WriterModels, WriterOverlays
+from threetears.evals.ops.report_writer.writer_kind import ReportWriterKind
 
-#: What ``analysis_generate``'s action hands its job (actions/engine.py). ``write_report`` stays out until a caller
-#: outside this module imports it; ``tests/test_report_writer_exports.py`` lists it as awaiting one.
+#: What ``analysis_generate``'s action hands its job (actions/engine.py). ``write_report`` and ``report_writer_kind``
+#: stay out until a caller outside this module imports them; ``tests/test_report_writer_exports.py`` lists each as
+#: awaiting one.
 __all__ = ["campaign_report_writer"]
 
 
@@ -146,6 +149,50 @@ async def write_report(
         limits=limits,
         tally=tally,
         skill=skill,
+    )
+
+
+def report_writer_kind(
+    host: OpsHost,
+    caller: Caller,
+    *,
+    overlays: WriterOverlays,
+    models: WriterModels,
+    budget: ReportBudget,
+    skills: Mapping[str, AnalystSkill] = MappingProxyType({}),
+    prefix: str = DEFAULT_PREFIX,
+) -> ReportWriterKind:
+    """One report writer arm as a candidate kind, its tools mounted as :func:`write_report` mounts them.
+
+    Each cell writes in ``caller``'s scope, where it restores its case's snapshot, and its tool calls run as
+    ``caller``; the gap note stores nothing, so a cell leaves no gap and no report in the scope.
+
+    :param host: The host whose store the tools read.
+    :ptype host: OpsHost
+    :param caller: Who the cells' tool calls run as, and the scope they read.
+    :ptype caller: Caller
+    :param overlays: The arm's overlays, as the launch validated them.
+    :ptype overlays: WriterOverlays
+    :param models: The host's model factory: the arm's candidate model at a reasoning effort.
+    :ptype models: WriterModels
+    :param budget: Each report's budget.
+    :ptype budget: ReportBudget
+    :param skills: The skill versions the launch may run, by digest; the shipped skill is always one.
+    :ptype skills: Mapping[str, AnalystSkill]
+    :param prefix: The host's prefix for its eval tools.
+    :ptype prefix: str
+    :return: The arm's kind.
+    :rtype: ReportWriterKind
+    """
+    return ReportWriterKind(
+        host=host,
+        scope_id=caller.scope_id,
+        overlays=overlays,
+        models=models,
+        budget=budget,
+        analyst_mount=_mount(host, caller, prefix=prefix, role="analyst"),
+        editor_mount=_mount(host, caller, prefix=prefix, role="editor"),
+        skills=skills,
     )
 
 
