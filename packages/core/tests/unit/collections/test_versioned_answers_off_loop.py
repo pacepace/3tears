@@ -138,6 +138,73 @@ class TestAnswerJson:
         assert max(sizes) <= 256, f"an encoder call wrote {max(sizes)} items at once"
 
 
+#: the type ``answer_json`` returns, a ``bytearray`` whose pieces are added as they are written
+_Answer = type(answer_json(None))
+
+
+class TestTheAnswerIsNeverCopiedWhole:
+    """a ``"".join`` of the pieces into one ``str``, and its ``encode`` for gzip, each held the interpreter lock for
+    one copy of the whole answer: 32-40 ms for 51 MB on a 4-core CI runner (2026-10-31)."""
+
+    def test_each_piece_is_added_as_it_is_written(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        answer = _series(6, 20_000)
+        added: list[int] = []
+        original = _Answer.append
+
+        def recording(self: _Answer, piece: str) -> None:
+            added.append(len(piece))
+            original(self, piece)
+
+        monkeypatch.setattr(_Answer, "append", recording)
+        text = answer_json(answer)
+        assert sum(added) == len(text)
+        assert max(added) * 100 < len(text), f"one piece of {max(added)} characters in an answer of {len(text)}"
+
+    def test_it_reads_as_the_text_it_holds(self) -> None:
+        answer = {"rows": [{"n": n, "s": "é\n"} for n in range(3000)], "nan": float("nan")}
+        text = answer_json(answer)
+        plain = json.dumps({**answer, "nan": None}, default=str)
+        assert isinstance(text, bytearray)
+        assert text == plain and not text != plain
+        assert text != plain[:-1] + " " and text != plain + " "
+        assert len(text) == len(plain)
+        assert '"n": 2999' in text and "é" not in text and "NaN" not in text
+        assert str(text) == plain
+        assert json.loads(text) == json.loads(plain)
+        assert text.encode("utf-8") is text and text.encode("ascii") is text
+        assert text.encode("utf-16") == plain.encode("utf-16")
+        assert bytes(text) == plain.encode("ascii")
+
+    async def test_it_is_gzipped_as_it_is_to_the_same_bytes_as_its_text(self) -> None:
+        answer = _series(3, 5_000)
+        expected = gzip.compress(json.dumps(answer).encode("utf-8"), mtime=0)
+        assert await _gz(answer_json(answer)) == expected
+
+    async def test_a_computed_answer_json_is_stored_and_given(self) -> None:
+        answer = _series(3, 5_000)
+
+        async def compute() -> _Answer:
+            return answer_json(answer)
+
+        answers = _answers()
+        given = await answers.answer_with_outcome("v1", "series", compute, order=1)
+        assert given.outcome is AnswerOutcome.COMPUTED
+        assert gzip.decompress(given.body) == json.dumps(answer).encode("utf-8")
+        again = await answers.answer_with_outcome("v1", "series", compute, order=1)
+        assert again.outcome is AnswerOutcome.READ and again.body == given.body
+
+
+async def _gz(text: _Answer) -> bytes:
+    """the answer's gzip, as the answers write it."""
+    answers = _answers()
+
+    async def compute() -> _Answer:
+        return text
+
+    await answers.retire_older_than(5)
+    return (await answers.answer_with_outcome("v1", "page", compute, order=1)).body
+
+
 #: how much later than a thread running plain Python the event loop may run while an answer is written: one
 #: encoder call's worth. Any thread running Python costs the loop a few switch intervals (5 ms each) a tick, 15-40 ms
 #: on a laptop; what this rules out is one call holding the lock for a whole answer (0.9 s for the series, 2026-10-31)

@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: an answer's JSON is never copied whole in one call
+
+**Fixed:** `answer_json` wrote its answer in budgeted pieces, then joined them with one `"".join` into one `str`, and
+`VersionedAnswers` encoded that `str` to bytes for gzip: two copies of the whole answer, each holding the interpreter
+lock for the whole of it (51 MB: 5 ms each on a laptop, 32-40 ms on a 4-core CI runner, where it failed the event
+loop's timing test). `answer_json` now adds each piece to the answer's bytes as it is written and returns them, a
+`bytearray` of the ASCII text that equals the `str` it holds, reads as text (`len`, `in`, `str`, `json.loads`), and
+encodes to UTF-8 as itself; `VersionedAnswers` gzips it as it is. A `compute` may return the text or its UTF-8
+bytes. The bytes are exactly `json.dumps`' as before. No new public names; a caller that annotated `answer_json`'s
+result as `str` annotates it `bytearray`.
+
 ## v0.87.0 -- 2026-10-31
 
 ### core: an answer's JSON never holds the interpreter lock past one short call, whatever its shape
