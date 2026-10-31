@@ -29,6 +29,27 @@ attempt takes the claim. `holding_rebuilds` renews a writer's hold for at most `
 without it. A catch-up beside a write now counts and logs each scope it lands. New `ScopedSnapshot` keyword:
 `rebuild_stall` (default 10 minutes).
 
+### core: a large cached answer is stored and read without holding the event loop
+
+**Fixed:** `VersionedAnswers` decoded a row's base64 body on the event loop at every L1 or L2 read (9-15 ms at
+9.4 MB of gzip), wrote it with one `b64encode` call, and stored and read the row with `json.dumps` and `json.loads`
+over the whole body on the loop (16 ms and 10 ms). The body is now decoded a megabyte per call on a worker thread (a
+small one inline), and an answer computed here is handed back from the gzip bytes in hand, never decoded. The row's
+L2 bytes are written on the worker thread, a slice of base64 per call, and handed to L2 as written; a row is read by
+its layout, the body taken as it stands, and anything else still goes through `json.loads`. The stored bytes, and
+`GivenAnswer.body`, are exactly what they were. No API changes.
+
+### core: an answer's JSON is never copied whole in one call
+
+**Fixed:** `answer_json` wrote its answer in budgeted pieces, then joined them with one `"".join` into one `str`, and
+`VersionedAnswers` encoded that `str` to bytes for gzip: two copies of the whole answer, each holding the interpreter
+lock for the whole of it (51 MB: 5 ms each on a laptop, 32-40 ms on a 4-core CI runner, where it failed the event
+loop's timing test). `answer_json` now adds each piece to the answer's bytes as it is written and returns them, a
+`bytearray` of the ASCII text that equals the `str` it holds, reads as text (`len`, `in`, `str`, `json.loads`), and
+encodes to UTF-8 as itself; `VersionedAnswers` gzips it as it is. A `compute` may return the text or its UTF-8
+bytes. The bytes are exactly `json.dumps`' as before. No new public names; a caller that annotated `answer_json`'s
+result as `str` annotates it `bytearray`.
+
 ## v0.87.0 -- 2026-10-31
 
 ### core: an answer's JSON never holds the interpreter lock past one short call, whatever its shape
