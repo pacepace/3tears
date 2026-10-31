@@ -453,6 +453,10 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # The floor under a subject arm's largest judge or simulator call, priced before launch through the engine's
     # own judge service and simulator prompts. Shared contract from the day it existed: it names no host.
     "run/call_floor.py",
+    # How a failed provider call lands on a candidate's output (account, provider or candidate), shared by every kind
+    # the engine ships. Shared contract from the day it existed: it reads the engine's own failure description and
+    # names no host.
+    "kernel/failed_call.py",
     # How a run's cells are executed, serially or several at once: the runner's own seam, which a host may fill
     # with its own pool. It names no host and reads nothing a host owns.
     "run/executor.py",

@@ -86,7 +86,7 @@ from threetears.evals.schema.values import SweepableValue
 log = get_logger(__name__)
 
 #: The key under which a writer case lives inside ``EvalTestCase.host_payload``.
-WRITER_CASE_KEY: Final = "writer_case"
+WRITER_CASE_KEY = "writer_case"
 
 #: Why a turn counted as sent has no usage: its reply never came.
 _UNRETURNED = "the turn was sent and its reply never came"

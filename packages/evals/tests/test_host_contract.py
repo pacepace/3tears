@@ -724,6 +724,9 @@ _SELF_KEYED_PAYLOAD_READERS: dict[str, tuple[tuple[str, str], ...]] = {
     # The judge kind's case is a frozen output, criterion and labels (JudgeCase, #628), defined, written and read
     # in this one module; the kind and the freeze in run/judge_kind.py go through its writer and reader.
     "kernel/judge_cases.py": (("JUDGE_CASE_KEY", "judge_case_payload"),),
+    # The report writer's case is a frozen report snapshot and the notes it withholds (WriterCase), defined, written and
+    # read in this one module; the bank mints through its writer and the kind reads through its reader.
+    "ops/report_writer/writer_kind.py": (("WRITER_CASE_KEY", "writer_case_payload"),),
     # An eval's kind hands the runner the caller's case, which the eval stored under its own key
     # in this module, beside a classifier's expected label under another of its own; the payload is this
     # module's schema, not a host's. Separately, a comparison's plainly named arm states its name on
