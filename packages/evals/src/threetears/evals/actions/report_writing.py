@@ -24,6 +24,7 @@ from threetears.evals.actions.analyst import analyst_actions, analyst_tools
 from threetears.evals.actions.catalogue import ActionCatalogue, DEFAULT_PREFIX, Caller, MountedTool, catalogue_primer
 from threetears.evals.ops.analysis import ReportWriter, ReportWriterCall
 from threetears.evals.ops.host import OpsHost
+from threetears.evals.analysis.analyst.skill import AnalystSkill
 from threetears.evals.ops.report_writer.loop import TurnModel, WriterLimits
 from threetears.evals.ops.report_writer.session import ToolOutcome
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
@@ -94,6 +95,7 @@ async def write_report(
     limits: WriterLimits | None = None,
     prefix: str = DEFAULT_PREFIX,
     tally: Tally | None = None,
+    skill: AnalystSkill | None = None,
 ) -> ReportWritten:
     """Write a report over one frozen snapshot, and store what its ending stores (the module docstring).
 
@@ -119,9 +121,12 @@ async def write_report(
     :ptype prefix: str
     :param tally: The tally every turn is counted in, when the caller keeps it; a fresh one when ``None``.
     :ptype tally: Tally | None
+    :param skill: The skill both sessions start from, when the write runs a version of it under test; the shipped
+        skill when ``None``.
+    :ptype skill: AnalystSkill | None
     :return: How it ended, the stored document if any, and the generation record.
     :rtype: ReportWritten
-    :raises ValueError: Not exactly one of the sources named.
+    :raises ValueError: Not exactly one of the sources named, or ``withhold`` naming a note the skill has none of.
     :raises ReportNotStored: The loop ended with a document to store, and the store gate or the store refused it;
         the run's record rides on it (:attr:`ReportNotStored.written`), raised from the cause.
     :raises EvalServiceError: The freeze or the snapshot's read refused (no such campaign, analysis or snapshot).
@@ -140,6 +145,7 @@ async def write_report(
         withhold=withhold,
         limits=limits,
         tally=tally,
+        skill=skill,
     )
 
 

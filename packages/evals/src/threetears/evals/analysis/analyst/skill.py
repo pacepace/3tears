@@ -179,6 +179,5 @@ def load_skill() -> AnalystSkill:
 
 
 #: The names with a production caller: the report writer's sessions take their system text as a ``SkillText``, and its
-#: entry point loads the skill. ``AnalystSkill`` joins them with its first production caller outside this module
-#: (``tests/test_analyst_skill_exports.py`` holds the list).
-__all__: list[str] = ["SkillText", "load_skill"]
+#: entry point loads the shipped skill, or takes an ``AnalystSkill`` a write runs as a version under test.
+__all__: list[str] = ["AnalystSkill", "SkillText", "load_skill"]
