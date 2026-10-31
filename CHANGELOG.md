@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.87.0 -- 2026-10-31
+
 ### agent.tools: a held replica answers its control tools
 
 **Added:** `ToolServer.hold_calls(answering=...)` names the tools a held replica answers while its copy loads, and
