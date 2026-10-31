@@ -49,6 +49,9 @@ partition: 01 then 02 serial (02 builds on 01's seam); 03 and 04 delegated in is
 - 02: effort is in, through a host model factory (`WriterModels`) called with the effort word. Levers: `skill`, `reasoning_effort`, `revisions`.
 - 02: a `WriterCase` embeds the whole snapshot and restores it into the run's scope. Snapshot ids come from content, so the restored snapshot is the frozen one. Caveat: analyst tools that read other stored documents still read the host's store.
 - 02: `invoke` drives `write_rounds` directly; a cell stores no report document and no gap.
+- 04: `writer_case_mint` takes a campaign, an analysis or a frozen snapshot. A case is keyed on its source: an exact re-mint returns the stored case, and a different one is refused, because stored cases never change.
+- 04: the split goes by group. A host names a group for related campaigns, or the source key is the group. A group keeps its recorded side; a new group's side comes from the sha256 of `writer-split:<group>` against `held_out_fraction` (default 0.3). Seed: 5 held-out (Kairo, the four r2 cases), 7 dev. Inferred defaults (the fraction and the prefix), not owner words.
+- 04: `WriterCase.case_version = 1` with `origin` (host, minted_by, source, campaign or analysis, group, side, set, fraction, the skill digest the notes were checked against).
 
 **Level:** Medium. The kind's shape is clear from `analysis_reporter`. Unknown: whether a full writer run (a multi-session tool loop) fits a single cell's invoke under the existing cell timeout and cost seats. Chunk 02's first step checks that against one replayed prototype5 case.
 
@@ -76,6 +79,8 @@ Type: code
 - Every bounce kind the analyst records (unparsed, shape, validity, invariant, max_tokens) is a measure, read through a typed accessor on `Tally`, not bare strings.
 - The revisions cap has one public source.
 - One shared failure-owner mapping replaces the three copies (reporter, judge and writer kinds).
+- The launcher admits a launch over a named case set (chunk 04's sets), as the reporter's does over its bank.
+- A writer-case retire op, so a moved campaign can be re-minted (chunk 04's refusal names it).
 - New tests: the failure routing, prepare's refusals, and the launcher's deadline.
 - Done when: rev-20261031T213525Z-a63c4302's warnings R-2, R-3, R-4, R-6, R-7, R-8, R-9 and R-10 are fixed, and a scripted launch through the launcher runs under the writer's own deadline.
 
