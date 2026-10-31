@@ -29,7 +29,9 @@ reasoning and the judge's "cannot tell" notes, each as a read of its text or as 
 the bundle lists.
 
 **One test per family and campaign**, since a recorded read of a production-shaped campaign is minutes of work, and
-the recorder pays for a frame read on every attribute read.
+the recorder pays for a frame read on every attribute read. The bundle family is read in parts (:data:`BUNDLE_PARTS`),
+one test each: the aspects' bundles with the campaign's frame, and each page. Each page assembles the bundle it
+renders, so each part reads the family's whole pinned set, and is held to it alone; the parts run side by side.
 
 **The recorder changes nothing a reader computes**: every family's output under the recorder is compared, byte for
 byte, with the same calls' output without it.
@@ -368,14 +370,22 @@ def _lister(host: EvalHost) -> Callable[..., list[EvalRun]]:
     return lambda scope_id, **kwargs: list_runs(host, scope_id, **kwargs)
 
 
-def read_bundle(read: Campaign) -> list[str]:
-    """The bundle family: every aspect's bundle and its fingerprint, the campaign's frame, then the code-only pages."""
-    bundle = assemble_campaign_bundle(read.host, read.campaign_id, read.scope_id)
-    outputs = [_json(aspect.to_dict()) + aspect.fingerprint() for aspect in bundle.aspects]
-    outputs.append(_json(bundle.frame()) + bundle.fingerprint())
-    for form, trials in PAGES:
-        outputs.append(report_read(read.host, read.campaign_id, read.scope_id, format=form, trials=trials).body)
-    return outputs
+#: The bundle family's parts, each read and checked on its own: the assembly (every aspect's bundle and the campaign's
+#: frame), then each page of :data:`PAGES` as ``<format>-<trials>``.
+ASSEMBLY = "assembly"
+BUNDLE_PARTS = (ASSEMBLY, *(f"{form}-{trials}" for form, trials in PAGES))
+
+
+def read_bundle(read: Campaign, part: str) -> list[str]:
+    """One part of the bundle family: every aspect's bundle and its fingerprint then the campaign's frame
+    (:data:`ASSEMBLY`), or one code-only page (``<format>-<trials>``)."""
+    if part == ASSEMBLY:
+        bundle = assemble_campaign_bundle(read.host, read.campaign_id, read.scope_id)
+        outputs = [_json(aspect.to_dict()) + aspect.fingerprint() for aspect in bundle.aspects]
+        outputs.append(_json(bundle.frame()) + bundle.fingerprint())
+        return outputs
+    ((form, trials),) = [(form, trials) for form, trials in PAGES if part == f"{form}-{trials}"]
+    return [report_read(read.host, read.campaign_id, read.scope_id, format=form, trials=trials).body]
 
 
 def regressed_steps(read: Campaign) -> list[tuple[str, str]]:
@@ -459,8 +469,14 @@ FAMILIES: dict[str, tuple[Callable[..., list[str]], tuple[str, ...]]] = {
 }
 
 
-#: Every ``(family, campaign)`` read, one test each: a recorded read of a production-shaped campaign is minutes of work.
-READS = tuple((family, name) for family, (_, names) in FAMILIES.items() for name in names)
+#: Every ``(family, campaign, part)`` read, one test each: a recorded read of a production-shaped campaign is minutes of
+#: work. Only the bundle family has parts (:data:`BUNDLE_PARTS`); another family's part is ``""``, its whole read.
+READS = tuple(
+    (family, name, part)
+    for family, (_, names) in FAMILIES.items()
+    for name in names
+    for part in (BUNDLE_PARTS if family == "bundle" else ("",))
+)
 
 
 @dataclass(frozen=True)
@@ -475,8 +491,8 @@ class Measured:
 
 
 def listed_trials(outputs: list[str], n_aspects: int) -> frozenset[str]:
-    """The ids of the results the bundle family's aspect bundles list as trials (its first ``n_aspects`` outputs, each
-    an aspect's JSON then its fingerprint)."""
+    """The ids of the results the bundle family's aspect bundles list as trials (the assembly's first ``n_aspects``
+    outputs, each an aspect's JSON then its fingerprint)."""
     decoder = json.JSONDecoder()
     return frozenset(
         str(row["result_id"])
@@ -486,8 +502,8 @@ def listed_trials(outputs: list[str], n_aspects: int) -> frozenset[str]:
 
 
 @functools.cache
-def measured(family: str, name: str) -> Measured:
-    """``family`` read over the campaign ``name``, recorded, once per process."""
+def measured(family: str, name: str, part: str = "") -> Measured:
+    """``family`` read over the campaign ``name`` (the bundle family's ``part`` of it), recorded, once per process."""
     reader, _ = FAMILIES[family]
     read = campaign(name)
     args: tuple[Any, ...] = ()
@@ -495,12 +511,18 @@ def measured(family: str, name: str) -> Measured:
     if family == "aggregates":
         steps = regressed_steps(read)
         args = (steps,)
+    if family == "bundle":
+        args = (part,)
     family_reader = functools.partial(reader, lenses=False) if name == "regressed" else reader
+    listed = None
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(analysis_service, "utc_now_iso", lambda: REPORT_NOW)
         access, outputs, plain = recorded(read, family_reader, *args)
-    # The bundle family's outputs are each aspect's bundle, then the campaign's frame, then each page.
-    listed = listed_trials(outputs, len(outputs) - 1 - len(PAGES)) if family == "bundle" else None
+        if family == "bundle":
+            # A page lists the trials of the bundle it assembles, which is the assembly's, read here unrecorded: its
+            # outputs are each aspect's bundle, then the campaign's frame.
+            assembled = plain if part == ASSEMBLY else read_bundle(read, ASSEMBLY)
+            listed = listed_trials(assembled, len(assembled) - 1)
     return Measured(access, outputs != plain, len(steps), listed)
 
 
@@ -2061,13 +2083,18 @@ class TestTheRecorderRecordsWhatIsReadAndChangesNothing:
         assert type(result) is EvalResult
 
 
-@pytest.mark.parametrize(("family", "name"), READS, ids=[f"{family}-{name}" for family, name in READS])
-def test_each_family_reads_exactly_its_pinned_attributes(family: str, name: str) -> None:
+@pytest.mark.parametrize(
+    ("family", "name", "part"),
+    READS,
+    ids=["-".join(filter(None, (family, name, part))) for family, name, part in READS],
+)
+def test_each_family_reads_exactly_its_pinned_attributes(family: str, name: str, part: str) -> None:
     """Over each campaign a family reads exactly its pinned set less what that campaign leaves unread
     (:data:`UNREAD`), so over its campaigns together it reads exactly its pinned set; its judge prose only where
     pinned; and (the bundle) its trials section reads the prose of the trials it lists and of no other result (at most
-    ``MAX_TRIALS`` per aspect, never the whole campaign)."""
-    measurement = measured(family, name)
+    ``MAX_TRIALS`` per aspect, never the whole campaign). The bundle family is held to all of this in each of its
+    parts (:data:`BUNDLE_PARTS`)."""
+    measurement = measured(family, name, part)
     read = measurement.access.paths
     expected = PINNED[family] - UNREAD[family].get(name, frozenset())
 

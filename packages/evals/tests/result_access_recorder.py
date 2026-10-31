@@ -150,9 +150,11 @@ class ResultAccess:
 
 
 class _Session:
-    """The one recording block running: what it read, and the caches its classification fills."""
+    """The one recording block running: what it read, and the frame read last with its code (see :func:`_caller`)."""
 
     access: ResultAccess | None = None
+    frame: FrameType | None = None
+    code: CodeType | None = None
 
 
 _SESSION = _Session()
@@ -175,32 +177,43 @@ def _joined(prefix: str, name: str) -> str:
     return f"{prefix}.{name}" if prefix else name
 
 
-def _site(frame: FrameType) -> str:
+def _site(frame: FrameType, code: CodeType) -> str:
     """``frame``'s call site: its file relative to the evals source (or its name, outside it), line and function."""
-    key = (frame.f_code, frame.f_lineno)
+    key = (code, frame.f_lineno)
     site = _SITES.get(key)
     if site is None:
-        path = Path(frame.f_code.co_filename).resolve()
+        path = Path(code.co_filename).resolve()
         shown = str(path.relative_to(_SRC)) if path.is_relative_to(_SRC) else path.name
-        site = _SITES[key] = f"{shown}:{frame.f_lineno} {frame.f_code.co_name}"
+        site = _SITES[key] = f"{shown}:{frame.f_lineno} {code.co_name}"
     return site
 
 
-def _caller() -> FrameType | None:
-    """The frame that made the read, or None when pydantic made it.
+def _caller() -> tuple[FrameType, CodeType] | None:
+    """The frame that made the read and its code, or None when pydantic made it.
 
-    Always two frames above :func:`_note`'s caller's caller (``_caller`` <- ``_note`` <- the recording hook <- the
-    reader), found by depth rather than by walking: a frame's attributes are audited, and a test runner's audit hook
-    pays for each one on every read.
+    Always three frames above this one (``_caller`` <- ``_note`` <- the recording hook <- the reader), found by depth
+    rather than by matching each frame's code. A test runner's audit hook pays for each audited frame operation on
+    every read (fetching the current frame, and reading a frame's ``f_code``; ``f_back`` is not audited), and a reader
+    makes millions of reads, so the code of the frame read last is held with that frame: a loop's reads, one frame's,
+    fetch its code once. The held frame is a strong reference, so a frame matched by identity is that frame, never a
+    later one at a reused address.
     """
     frame = inspect.currentframe()
     for _ in range(3):
         if frame is None:
             return None
         frame = frame.f_back
-    if frame is None or frame.f_code.co_filename.startswith(_PYDANTIC):
+    if frame is None:
         return None
-    return frame
+    held = _SESSION.frame
+    if frame is held:
+        code = _SESSION.code
+    else:
+        code = frame.f_code
+        _SESSION.frame, _SESSION.code = frame, code
+    if code is None or code.co_filename.startswith(_PYDANTIC):
+        return None
+    return frame, code
 
 
 def _parsed(filename: str) -> tuple[dict[tuple[int, int, int, int], ast.Attribute], dict[ast.AST, ast.AST]]:
@@ -240,18 +253,18 @@ def _in_truth_context(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> bool:
         return False
 
 
-def _truth_only(frame: FrameType) -> bool:
-    """Whether the read ``frame`` is making is a truth test of the value (see the module docstring)."""
-    key = (frame.f_code, frame.f_lasti)
+def _truth_only(frame: FrameType, code: CodeType) -> bool:
+    """Whether the read ``frame`` (running ``code``) is making is a truth test of the value (see the module docstring)."""
+    key = (code, frame.f_lasti)
     verdict = _TRUTH.get(key)
     if verdict is None:
-        positions = list(frame.f_code.co_positions())
+        positions = list(code.co_positions())
         index = frame.f_lasti // 2
         verdict = False
         if 0 <= index < len(positions):
             lineno, end_lineno, col, end_col = positions[index]
             if None not in (lineno, end_lineno, col, end_col):
-                nodes, parents = _parsed(frame.f_code.co_filename)
+                nodes, parents = _parsed(code.co_filename)
                 node = nodes.get((lineno, end_lineno, col, end_col))  # type: ignore[arg-type]
                 verdict = node is not None and _in_truth_context(node, parents)
         _TRUTH[key] = verdict
@@ -271,13 +284,14 @@ def _note(owner: object, name: str, *, prose: bool = False) -> None:
     access = _SESSION.access
     if access is None:
         return
-    frame = _caller()
-    if frame is None:
+    caller = _caller()
+    if caller is None:
         return
-    site = _site(frame)
+    frame, code = caller
+    site = _site(frame, code)
     read = _joined(type(owner).__recorded_path__, name)  # type: ignore[attr-defined]
     if prose:
-        if _truth_only(frame):
+        if _truth_only(frame, code):
             read = f"bool({read})"
         reads = access.prose.setdefault(read, {}).setdefault(site, ProseReads())
         reads.events += 1
@@ -450,3 +464,4 @@ def recording() -> Iterator[ResultAccess]:
         yield access
     finally:
         _SESSION.access = None
+        _SESSION.frame = _SESSION.code = None
