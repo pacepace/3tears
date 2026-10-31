@@ -3704,9 +3704,89 @@ class ScopedSnapshot:
                     objects[table.name] = staged.objects[table.name]
                     counts[table.name] = staged.rows[table.name]
                     compacted[table.name] = time.time()
+            elif current is None or current.epoch < staged.epoch:
+                # nothing can be carried (the pointer is not at the epoch the writer saw -- behind it, a stage of an
+                # earlier write skipped -- or holds other columns, or there is none): left to the catch-up, the scope
+                # stayed behind for as long as writes ran back to back, every later partial write skipped the same
+                # way (cobalt prod, 2026-10-31). Never onto a pointer at the stage's epoch or past it
+                filled = await self._filled_from_l3(staged, [*missing, *appended], objects, counts, compacted)
+                if filled:
+                    pieces.clear()
+                result = result if filled else None
             else:
                 result = None
         return result
+
+    async def _filled_from_l3(
+        self,
+        staged: StagedScope,
+        tables: Sequence[SnapshotTable],
+        objects: dict[str, str],
+        counts: dict[str, int],
+        compacted: dict[str, float],
+    ) -> bool:
+        """complete a stage whose pointer cannot carry: the tables it left out, and those it appended to, read whole
+        from L3 and staged under its epoch, only while L3 holds the scope exactly at that epoch.
+
+        L3 holds a scope at the stage's epoch when its epoch is the stage's and no write in progress has touched it,
+        both before and after the read: a write's rows there would have marked it pending, and a commit would have
+        moved its epoch. Then the tables read are the scope's at that epoch, as the tables the stage wrote are, and
+        the pointer holds every table at the one epoch it names. Anything else answers False, and the stage is left
+        to the catch-up as before.
+
+        :param staged: the stage, its write committed
+        :ptype staged: StagedScope
+        :param tables: the tables to read whole from L3
+        :ptype tables: Sequence[SnapshotTable]
+        :param objects: the pointer's chunks, filled here
+        :ptype objects: dict[str, str]
+        :param counts: the pointer's row counts, filled here
+        :ptype counts: dict[str, int]
+        :param compacted: when each table's base was last made whole, filled here
+        :ptype compacted: dict[str, float]
+        :return: whether every table was filled
+        :rtype: bool
+        """
+        if self._settled is None or (staged.claim is not None and not staged.claim.held):
+            return False
+
+        async def at_epoch() -> Any:
+            """the writer's record when L3 holds the scope at the stage's epoch now; None when it does not."""
+            settled = await self._settled() if self._settled is not None else None
+            if isinstance(settled, Unsettled) and (settled.epochs is None or staged.scope in settled.pending):
+                return None
+            held = int((await self._epochs()).get(staged.scope, 0))
+            return settled if held == staged.epoch else None
+
+        before = await at_epoch()
+        if before is None:
+            return False
+        read = await self._read_scope(staged.scope, tables=tables)
+        after = await at_epoch()
+        if after is None or (not isinstance(before, Unsettled) and after != before):
+            log.info(
+                "scoped snapshot %s: scope %r was written while its untouched tables were read from L3; left for "
+                "the catch-up",
+                self._name,
+                staged.scope,
+            )
+            return False
+        by_name = {table.name: table for table in tables}
+        for part in read:
+            table = by_name[part.table]
+            arrow = part.arrow if part.arrow is not None else await self._export(table, staged.scope, [])
+            _still_held(staged.claim, f"filling scope {staged.scope!r}'s {table.name} from L3")
+            objects[table.name], _ = await self._put_chunk(staged.scope, staged.epoch, table, arrow)
+            counts[table.name] = arrow.num_rows
+            compacted[table.name] = time.time()
+        log.info(
+            "scoped snapshot %s: scope %r's pointer was not at the epoch its writer saw; the tables its stage left "
+            "out were read from L3 at the stage's epoch",
+            self._name,
+            staged.scope,
+            extra={"extra_data": {"scope": staged.scope, "epoch": staged.epoch, "tables": sorted(by_name)}},
+        )
+        return True
 
     async def _exist(self, names: Iterable[str]) -> bool:
         """whether every named chunk is in the store.
@@ -3849,7 +3929,10 @@ class ScopedSnapshot:
         return scopes
 
     async def _read_scope(
-        self, scope: str, moved: Callable[[], Awaitable[bool]] | None = None
+        self,
+        scope: str,
+        moved: Callable[[], Awaitable[bool]] | None = None,
+        tables: Sequence[SnapshotTable] | None = None,
     ) -> list[PartitionReplacement]:
         """every row of one scope in each table, from L3, as the replacements that make this L1 hold them.
 
@@ -3863,12 +3946,14 @@ class ScopedSnapshot:
         :ptype scope: str
         :param moved: asked between pages: whether a write has begun since the read started, which stops it
         :ptype moved: Callable[[], Awaitable[bool]] | None
+        :param tables: the tables to read; every table when ``None``
+        :ptype tables: Sequence[SnapshotTable] | None
         :return: one replacement per table, its rows an Arrow table (``None`` for none)
         :rtype: list[PartitionReplacement]
         :raises _WriteBegan: when ``moved`` says a write began
         """
         result: list[PartitionReplacement] = []
-        for table in self._tables:
+        for table in self._tables if tables is None else tables:
             parts: list[Any] | None = None
             types = _rail_types(self._backend.column_types(table.name)) if isinstance(self._l3, ArrowL3Reader) else None
             if types is not None:

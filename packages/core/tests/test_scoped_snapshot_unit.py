@@ -3853,3 +3853,113 @@ async def test_a_rebuild_says_each_scope_it_publishes_with_its_rows_and_seconds(
     ]
     assert all("read_seconds" in r.extra_data and "publish_seconds" in r.extra_data for r in lines)  # type: ignore[attr-defined]
     await snapshot.stop()
+
+
+# ----------------------------------------------------------------------
+# two side writes on one scope, each changing its own tables (cobalt prod, 2026-10-31): AP's whole tables and
+# LSF's appended ones, loaded as separate writes into one snapshot. Every write's data reaches the pointer, with
+# nothing left for a catch-up that writes back to back keep from running
+# ----------------------------------------------------------------------
+
+
+async def _side_writer() -> tuple[ScopedSnapshot, ScopedSnapshot, _Pointers, _TwoTableL3]:
+    """a writer and a second replica over the append-only results and the whole-chunk totals, both ready at epoch 1."""
+    tables = (*_APPEND, SnapshotTable(name="totals", scope_column="state", key=("state",)))
+    pointers, store, l3 = _Pointers(), _Store(), _TwoTableL3()
+    writer, _, _, _ = _snapshot(tables=tables, pointers=pointers, store=store, backend=_two_table_backend(), l3=l3)
+    replica, _, _, _ = _snapshot(tables=tables, pointers=pointers, store=store, backend=_two_table_backend(), l3=l3)
+    await _started(writer, pointers)
+    await replica.start()
+    await replica.wait_ready(timeout=5)
+    return writer, replica, pointers, l3
+
+
+def _tx_totals(snapshot: ScopedSnapshot) -> list[tuple[str, int]]:
+    with snapshot.read() as cursor:
+        return cursor.execute("SELECT state, total FROM totals WHERE state = 'TX'").fetchall()
+
+
+async def _serves(replica: ScopedSnapshot, epoch: int, counties: list[tuple[str, int]], total: int) -> None:
+    await _until(lambda: replica.applied_epoch("TX") == epoch, what=f"the replica applied epoch {epoch}")
+    assert _tx_counties(replica) == counties
+    assert _tx_totals(replica) == [("TX", total)]
+
+
+async def test_two_side_writes_whose_commits_interleave_both_reach_the_pointer() -> None:
+    """the LSF write took its epochs before the AP write committed: by its publish the AP write had moved the pointer
+    past the epoch it carries from, and its stage was left for a catch-up that never ran."""
+    writer, replica, pointers, l3 = await _side_writer()
+    ap = await writer.stage("TX", 2, {"totals": [{"state": "TX", "total": 4}]})
+    lsf = await writer.stage("TX", 3, {}, added={"results": [_county("c3", 3)]})
+    # L3 after both commits: the AP write's totals at 2, the LSF write's row at 3
+    l3.totals[0]["total"] = 4
+    l3.rows.append(_county("c3", 3))
+    l3.epochs["TX"] = 3
+
+    assert await writer.publish_staged([ap], carry_at={"TX": 1}) == (["TX"], [])
+    moved, skipped = await writer.publish_staged([lsf], carry_at={"TX": 1})
+
+    assert (moved, skipped) == (["TX"], []), "the second side's stage was left for the catch-up"
+    assert json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 3
+    await _serves(replica, 3, [("c1", 1), ("c3", 3)], 4)
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_write_after_one_left_behind_still_moves_the_scope_with_l3s_rows_for_what_it_left_out() -> None:
+    """a scope whose pointer is behind its L3 epoch (a write's stage was skipped) is not left behind by every write
+    after: each one's untouched tables come from L3, which holds the scope at the write's epoch."""
+    writer, replica, pointers, l3 = await _side_writer()
+    # a write at 2 changed the totals and its pointer never moved
+    l3.totals[0]["total"] = 4
+    l3.epochs["TX"] = 2
+    lsf = await writer.stage("TX", 3, {}, added={"results": [_county("c3", 3)]})
+    l3.rows.append(_county("c3", 3))
+    l3.epochs["TX"] = 3
+
+    moved, skipped = await writer.publish_staged([lsf], carry_at={"TX": 2})
+
+    assert (moved, skipped) == (["TX"], []), "a scope behind its L3 epoch was left behind again"
+    await _serves(replica, 3, [("c1", 1), ("c3", 3)], 4)
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_scope_behind_is_left_for_the_catch_up_while_a_write_in_progress_has_touched_it() -> None:
+    """L3 is read for the tables a stage left out only when it holds the scope at the stage's epoch: never while a
+    later write has rows there, so the pointer never claims an epoch's data it does not hold."""
+    writer, replica, pointers, l3 = await _side_writer()
+    before = pointers.entries["enr.s.TX"][0]
+    l3.totals[0]["total"] = 4
+    l3.epochs["TX"] = 2
+    lsf = await writer.stage("TX", 3, {}, added={"results": [_county("c3", 3)]})
+    l3.rows.append(_county("c3", 3))
+    l3.epochs["TX"] = 3
+    # the next write has begun, and has already written TX's totals
+    l3.writing, l3.pending = True, {"TX"}
+    l3.totals[0]["total"] = 9
+
+    moved, skipped = await writer.publish_staged([lsf], carry_at={"TX": 2})
+
+    assert (moved, skipped) == ([], ["TX"])
+    assert pointers.entries["enr.s.TX"][0] == before, "a pointer took rows of a write that has not committed"
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_scope_already_past_the_stage_is_not_moved_back() -> None:
+    writer, replica, pointers, l3 = await _side_writer()
+    l3.totals[0]["total"] = 4
+    l3.epochs["TX"] = 2
+    lsf = await writer.stage("TX", 3, {}, added={"results": [_county("c3", 3)]})
+    l3.rows.append(_county("c3", 3))
+    # a later write committed at 4 before this publish
+    l3.epochs["TX"] = 4
+    before = pointers.entries["enr.s.TX"][0]
+
+    moved, _ = await writer.publish_staged([lsf], carry_at={"TX": 2})
+
+    assert moved == []
+    assert pointers.entries["enr.s.TX"][0] == before, "a pointer took L3's rows of a later epoch as the stage's"
+    await writer.stop()
+    await replica.stop()
