@@ -11,9 +11,9 @@
   "analyst_rounds": 3,
   "editor_rounds": 3,
   "tally": {
-    "turns": 43,
-    "tool_calls": 63,
-    "bounces": 1,
-    "cost_usd": 4.139236399999999
+    "turns": 34,
+    "tool_calls": 55,
+    "bounces": 0,
+    "cost_usd": 3.0497832000000002
   }
 }

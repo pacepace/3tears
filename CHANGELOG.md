@@ -6,6 +6,35 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a multi-aspect report shows every aspect; each aspect states how a trial passes; contrasts state their cases
+
+**Changed:** with more than one aspect, the arms table gives each aspect a column group (pass rate with passes over
+usable trials, cost, trials usable), the options table splits the plan's pass-rate and cost columns per aspect, and the
+by-measure table has a row per aspect and arm. A single-aspect page reads as before. The cost uplift is still the lead
+aspect's alone.
+
+**Added:** each aspect on the report input carries `pass_rule` (a `PassRule`: the criteria in force, the threshold and
+its pass^k label, the judged dimensions that count, the boundary ones left out, the checks that fail a trial alone, and
+`no_criterion`, the trials that passed with nothing to fail them), plus `graded_by` and a one-sentence `description`.
+A contrast carries `n_cases` (and `control_n_cases` where an unpaired test read a different number), `paired` and
+`pairing_r`. The analyst cites them as figure keys. Contrasts were already per case, so no figure changes. Every new
+field is left out when unset, so a stored input digests as before. A snapshot frozen again from a campaign whose
+aspects state a pass rule has a new content address, so it is a new snapshot.
+
+### evals: a host measure whose value does not fit its declared type is refused before the result is written
+
+**Changed:** a run (and a witnessed cell) refuses a host measure whose value does not fit its declared data type,
+before any judge is paid for, with a `ValueError` that names the measure and both types. A number is never coerced to
+a boolean. A mismatch already stored is still kept out of the statistics, and its entry in the bundle's unreported
+observations now says why, e.g. `top_up_never (declared boolean, recorded as a number; dropped, not pooled)`.
+
+### evals: a should_fix first raised after round 1 gets a revision; a finished page counts its open findings at the top
+
+**Changed:** a should_fix finding new in a later review now gets one more revision while the writer's revision budget
+remains. It still never blocks, so the page is stored finished, never as a draft for it. A round-1 finding still open
+after the last revision still makes a draft. A finished page with findings open says so under its title ("2 review
+findings open, listed at the end."), in markdown, HTML and text.
+
 ### evals: served chart data, SVG coordinates and interval glyphs round computed floats to twelve figures
 
 **Changed:** a served page's chart data (the JSON in each chart's `data-chart` attribute) gives every float to 12

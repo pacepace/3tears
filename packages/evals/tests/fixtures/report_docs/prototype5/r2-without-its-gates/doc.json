@@ -1,9 +1,9 @@
 {
   "schema": "report-doc/1",
   "story": "tradeoff",
-  "headline": "Run every planner with a retry; past that, picking a model is an unpriced trade in which each extra point of pass rate costs more, steepest for Atlas-M.",
-  "lede": "With a retry, {arm:brisk-s.low.r1} passes {measure.pass_rate.brisk-s.low.r1.mean} for {cost_per_month.brisk-s.low.r1} a month; {arm:atlas-m.high.r1} passes {compare.atlas-m.high.r1.brisk-s.low.r1.pass_rate.overall.difference|abs} points more for {cost.gap.atlas-m.high.r1.brisk-s.low.r1.monthly|abs} more a month. A declared pass-rate floor or price per point would turn this trade into a decision.",
-  "flag": "Nothing was declared in advance: no control, no floor, no price per point. The planner's owner makes this call, after settling what the monthly volume counts.",
+  "headline": "Turn on a retry whichever planner is chosen; beyond Brisk-S at low reasoning, each extra point of pass rate costs far more and this run can't tell it apart. Nobody declared what a point is worth.",
+  "lede": "A retry raised the pass-rate estimate in every model and reasoning pairing, clear of zero in all but Atlas-M at high reasoning, for cents per thousand calls. Below {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} a month per point a Nano-XS setup is the best buy; above {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point}, Brisk-S at high reasoning.",
+  "flag": null,
   "recommends": [],
   "confidence": {
     "form": "high_if_immaterial",
@@ -11,31 +11,31 @@
       {
         "id": "nothing_declared",
         "label": null,
-        "material_if": "only once the owner sets a floor or a price per point: that line then picks the option, and the lean below holds only if it lands in the lean's band.",
+        "material_if": "It decides the pick. The high applies to the retry finding and to which configurations form the frontier; the lean is a low-confidence call that holds only for a price per point between {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} and {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month, and a declared price outside that band moves it.",
         "checked": null
       },
       {
         "id": "no_control",
         "label": null,
-        "material_if": "only for gaps whose interval sits near zero: every gap here is read unpaired, which errs wide, so a paired re-read could separate Brisk-S's high reasoning from its low, but would not undo a gap already clear of zero.",
+        "material_if": "Only if pairing would reorder close neighbours. Every interval here is read as independent, wider than a paired one; pairing could separate the two Brisk-S retry configurations. That would confirm the upper step's gain is real but not move the lean, which rests on the price band, not on whether a step clears zero.",
         "checked": null
       },
       {
         "id": "best_of_n",
         "label": null,
-        "material_if": "only for thin leads, and Atlas-M at high reasoning with a retry is the thin lead it means: the top of {n_candidates|words} configurations, ahead of the lean by an uncorrected interval whose low end is {compare.atlas-m.high.r1.brisk-s.low.r1.pass_rate.overall.low} points, so its true lead may be smaller or nil. The lean holds either way, since it rests on what each point costs, not on beating Atlas-M.",
+        "material_if": "Where the lean leads its neighbour by little: the best of {n_candidates|words} configurations reads high by chance, so a fresh run would likely read the lean lower. Its lead over Nano-XS at high reasoning with a retry is {compare.brisk-s.low.r1.nano-xs.high.r1.pass_rate.overall.interval} points, so chance alone is unlikely to reverse it.",
         "checked": null
       },
       {
-        "id": "analyst:cost-routing",
+        "id": "analyst:routing_unknown",
         "label": "Cost routing unknown",
-        "material_if": "only if another provider serves these models at other prices: no configuration names who served it, so the cost order, every cost multiple between models and every price on the page hold for this run's routing only.",
+        "material_if": "Only if another provider's prices would reorder the models. The input names no provider for any model, so every cost and price here belongs to this run's routing, not to the models.",
         "checked": null
       },
       {
-        "id": "analyst:volume-unit",
-        "label": "Monthly volume's unit unstated",
-        "material_if": "only if the declared {meta.volume_per_month} a month counts tasks rather than calls: then every monthly cost, every price per point and every band in the explore rows grows by the configurations' calls per task, between {measure.calls_per_task.atlas-m.high.r1.mean} and {measure.calls_per_task.nano-xs.off.r1.mean} on the frontier, and an owner pricing a point against today's bands could land in the wrong one. The owner should settle the unit before pricing.",
+        "id": "analyst:volume_unit",
+        "label": "Volume unit unnamed",
+        "material_if": "Only for the monthly figures and the band edges. The declared {meta.volume_per_month} a month names no unit; if it counts tasks rather than calls, every monthly cost and price per point scales by calls per task ({measure.calls_per_task.nano-xs.high.r1.mean} for Nano-XS at high reasoning with a retry, {measure.calls_per_task.brisk-s.low.r1.mean} for the lean, {measure.calls_per_task.brisk-s.high.r1.mean} for Brisk-S at high reasoning), raising both edges of the lean's band. Costs per thousand calls and which configurations sit on the frontier do not change.",
         "checked": null
       }
     ]
@@ -43,29 +43,29 @@
   "decision": [
     {
       "slot": "the_trade",
-      "text": "Cost against pass rate. The cheapest configuration, {arm:nano-xs.off.r0}, passes {measure.pass_rate.nano-xs.off.r0.mean} for {cost_per_month.nano-xs.off.r0} a month; the highest, {arm:atlas-m.high.r1}, passes {measure.pass_rate.atlas-m.high.r1.mean} for {cost_per_month.atlas-m.high.r1}. Every option between them on the frontier runs with a retry."
+      "text": "{arm:nano-xs.high.r1} costs {cost_per_month.nano-xs.high.r1} a month; {arm:brisk-s.low.r1} costs {cost_per_month.brisk-s.low.r1} and passes {compare.brisk-s.low.r1.nano-xs.high.r1.pass_rate.overall.difference|abs} points more, a gap clear of zero. Every step above that buys gains this run cannot separate from zero."
     },
     {
       "slot": "where_it_flips",
-      "text": "Each step up the frontier costs more per point a month: {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} from {arm:nano-xs.high.r1} to {arm:brisk-s.low.r1}, {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} on to {arm:brisk-s.high.r1}, and {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point} on to {arm:atlas-m.high.r1}. These prices are point estimates; the last two steps buy gains this run cannot tell from zero. Every band is listed under What you could change."
+      "text": "On point prices with no interval: below {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} a month per point, a Nano-XS configuration; up to {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point}, {arm:brisk-s.low.r1}; above that, {arm:brisk-s.high.r1}; Atlas-M only above {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point}."
     },
     {
       "slot": "our_lean",
-      "text": "Ours, not a declared rule: {arm:brisk-s.low.r1}, for a point worth between {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} and {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month. It is clearly ahead of {arm:nano-xs.high.r1} (interval {compare.brisk-s.low.r1.nano-xs.high.r1.pass_rate.overall.interval} points), and the next step up buys a gain not separated from zero."
+      "text": "Ours, not a declared rule, and low-confidence: {arm:brisk-s.low.r1}, the best buy while a point is worth between the two prices above. The step above it adds {compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.difference|abs} points, interval {compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.interval}, for {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_cost_gap|abs} more a month; a rerun that separates the two would confirm that gain, and the price per point would still decide."
     },
     {
       "slot": "watch",
-      "text": "{arm:atlas-m.high.r1} is ahead of the lean, with an interval of {compare.atlas-m.high.r1.brisk-s.low.r1.pass_rate.overall.interval} points that clears zero only narrowly, read unpaired and uncorrected across {n_candidates|words} configurations, at {cost.gap.atlas-m.high.r1.brisk-s.low.r1.multiple} its cost at this run's unnamed routing. No margin or floor was declared, so no option sits near a line."
+      "text": "A retry lengthens the latency tail, not the median: on Brisk-S at low reasoning, p95 goes from {measure.latency_ms.brisk-s.low.r0.p95} to {measure.latency_ms.brisk-s.low.r1.p95} while p50 stays {measure.latency_ms.brisk-s.low.r1.p50}. No latency budget was declared, so this binds nothing yet."
     },
     {
       "slot": "what_settles_it",
-      "text": "A declaration first: the owner settles what the monthly volume counts, then sets a pass-rate floor or a price per point. Then a re-run of Brisk-S at high against low reasoning, both with a retry, at {settle.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.cases_needed_80} cases each (the size for independent arms; fewer if paired on the same cases), tells them apart four times in five."
+      "text": "The planner owner declares a price per point of pass rate or a pass-rate floor. Telling the two Brisk-S configurations apart four times in five takes about {settle.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.cases_needed_80} cases per arm; a run of today's size reads them the wrong way round {settle.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.wrong_side} of the time."
     }
   ],
   "claims": [
     {
       "id": "frontier",
-      "text": "Cost and pass rate trade along one frontier: from {arm:nano-xs.off.r0} to {arm:atlas-m.high.r1}, cost per thousand calls rises {cost.gap.atlas-m.high.r1.nano-xs.off.r0.multiple} at this run's unnamed routing, and {count.frontier.pass_rate|words} configurations sit on it.",
+      "text": "Brisk-S holds the middle of the frontier: every Atlas-M configuration but the most expensive is matched or beaten by a cheaper Brisk-S one.",
       "weight": "lead",
       "evidence": [
         {
@@ -84,9 +84,134 @@
             "small_multiples_by": "none"
           },
           "reference": null,
-          "emphasis": "brisk-s.low.r1",
-          "caption": "Cost per thousand calls, on a log scale, against pass rate for every configuration, at this run's unnamed provider routing; the table below names the frontier's configurations."
+          "emphasis": "",
+          "caption": "Pass rate against cost per thousand calls, log cost axis, for all {n_candidates|words} configurations; {count.frontier.pass_rate|words} are the best buy at some price per point. {arm:brisk-s.low.r0} is beaten by nothing cheaper but is never the best buy at any single price."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "retry",
+      "text": "A retry buys more pass rate per dollar than more reasoning: on Brisk-S at low reasoning it adds {lever.retry.brisk-s.low.r0.brisk-s.low.r1.pass_rate.effect|abs} points, clear of zero, while cost per thousand calls moves only from {measure.cost_per_1k.brisk-s.low.r0.mean} to {measure.cost_per_1k.brisk-s.low.r1.mean}; moving on to high reasoning adds {lever.reasoning.brisk-s.low.r1.brisk-s.high.r1.pass_rate.effect|abs}, not clear of zero, and raises it to {measure.cost_per_1k.brisk-s.high.r1.mean}.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "diverging_bars",
+          "query": {
+            "source": "levers",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
+              "brisk-s.off.r0",
+              "brisk-s.off.r1",
+              "brisk-s.low.r0",
+              "brisk-s.low.r1",
+              "brisk-s.high.r0",
+              "brisk-s.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Within Brisk-S, the pass-rate change from moving one setting, in points, with intervals read as independent arms. At high reasoning a retry's interval only just clears zero at its low end. In the last rows reasoning's point estimate is smaller once a retry is on, but none of those differences is told apart from zero."
         },
+        {
+          "block": "table",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "cost_per_1k"
+            ],
+            "arms": [
+              "nano-xs.off.r0",
+              "nano-xs.off.r1",
+              "brisk-s.off.r0",
+              "brisk-s.off.r1",
+              "brisk-s.low.r0",
+              "brisk-s.low.r1",
+              "brisk-s.high.r0",
+              "brisk-s.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Cost per thousand calls for each Brisk-S configuration, and for Nano-XS with reasoning off, with and without a retry: a retry adds little, higher reasoning a lot."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "retry_models",
+      "text": "The retry gain is largest on the smallest model: {lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.effect|abs} points for Nano-XS with reasoning off against {lever.retry.atlas-m.off.r0.atlas-m.off.r1.pass_rate.effect|abs} for Atlas-M, a difference clear of zero. On Atlas-M at high reasoning the retry gain is not clear of zero ({compare.atlas-m.high.r1.atlas-m.high.r0.pass_rate.overall.interval}).",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "table",
+          "query": {
+            "source": "levers",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
+              "atlas-m.off.r0",
+              "atlas-m.off.r1",
+              "nano-xs.off.r0",
+              "nano-xs.off.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Retry and model effects among the reasoning-off configurations of Atlas-M and Nano-XS, in points, with intervals read as independent arms."
+        },
+        {
+          "block": "dot_interval",
+          "query": {
+            "source": "compare",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
+              "atlas-m.high.r1",
+              "atlas-m.high.r0"
+            ],
+            "strata": [
+              "overall"
+            ],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Atlas-M at high reasoning, with a retry less without, pass-rate points, interval read as independent arms."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "prices",
+      "text": "The price of a point climbs steeply along the frontier, from {price.nano-xs.off.r0.nano-xs.off.r1.pass_rate.monthly_per_point} a month for Nano-XS's retry to {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point} for the last step to Atlas-M.",
+      "weight": "support",
+      "evidence": [
         {
           "block": "table",
           "query": {
@@ -103,91 +228,49 @@
           },
           "reference": null,
           "emphasis": "",
-          "caption": "The frontier configurations in order, each step with its price per point of pass rate a month; point estimates at the declared volume."
+          "caption": "Monthly price per extra point of pass rate at the declared {meta.volume_per_month} a month, a volume whose unit the input does not name, for each step between neighbouring best-buy configurations; point prices, no interval."
         }
       ],
-      "caveats": [
-        "analyst:cost-routing"
-      ],
+      "caveats": [],
       "durable": false
     },
     {
-      "id": "retry",
-      "text": "A retry lifts pass rate for every model, most where the model is weakest: {lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.effect} points for {arm:nano-xs.off.r0}, against {lever.retry.atlas-m.high.r0.atlas-m.high.r1.pass_rate.effect} for {arm:atlas-m.high.r0}, the only pairing whose interval reaches zero. At this run's unnamed routing it adds at most {cost.gap.atlas-m.high.r1.atlas-m.high.r0.per_1k|abs} per thousand calls.",
+      "id": "atlas",
+      "text": "Atlas-M's best configuration is not told apart from Brisk-S's best on pass rate and costs {measure.cost_per_1k.atlas-m.high.r1.mean} per thousand calls against {measure.cost_per_1k.brisk-s.high.r1.mean}.",
       "weight": "support",
       "evidence": [
         {
           "block": "dot_interval",
           "query": {
-            "source": "levers",
+            "source": "compare",
             "aspect": "",
             "measures": [
               "pass_rate"
             ],
             "arms": [
-              "nano-xs.off.r0",
-              "nano-xs.off.r1",
-              "brisk-s.low.r0",
-              "brisk-s.low.r1",
-              "atlas-m.high.r0",
-              "atlas-m.high.r1"
+              "atlas-m.high.r1",
+              "brisk-s.high.r1"
             ],
-            "strata": [],
+            "strata": [
+              "overall"
+            ],
             "limit": 0,
             "transform": "none",
             "small_multiples_by": "none"
           },
           "reference": null,
           "emphasis": "",
-          "caption": "Pass-rate gain from adding a retry, in points, with unpaired intervals, for one configuration per model."
+          "caption": "Atlas-M less Brisk-S, both at high reasoning with a retry, pass-rate points, interval read as independent arms."
         },
         {
-          "block": "dot_interval",
+          "block": "table",
           "query": {
-            "source": "levers",
+            "source": "measures",
             "aspect": "",
             "measures": [
-              "pass_rate"
+              "cost_per_1k"
             ],
             "arms": [
-              "nano-xs.low.r0",
-              "nano-xs.low.r1",
-              "brisk-s.high.r0",
-              "brisk-s.high.r1",
-              "atlas-m.off.r0",
-              "atlas-m.off.r1"
-            ],
-            "strata": [],
-            "limit": 0,
-            "transform": "none",
-            "small_multiples_by": "none"
-          },
-          "reference": null,
-          "emphasis": "",
-          "caption": "The same gain for another configuration per model; the remaining pairings' rates, without intervals, are in Every arm by measure."
-        }
-      ],
-      "caveats": [
-        "analyst:cost-routing"
-      ],
-      "durable": false
-    },
-    {
-      "id": "top",
-      "text": "At the top, neither the bigger model nor more reasoning is told apart on its own: with a retry, Brisk-S trails Atlas-M by {lever.model.atlas-m.low.r1.brisk-s.low.r1.pass_rate.effect|abs} points at low reasoning, and high reasoning adds {lever.reasoning.brisk-s.low.r1.brisk-s.high.r1.pass_rate.effect} for Brisk-S; both intervals cross zero. At this run's unnamed routing, Atlas-M costs {cost.gap.atlas-m.low.r1.brisk-s.low.r1.multiple} as much at the same settings.",
-      "weight": "support",
-      "evidence": [
-        {
-          "block": "dot_interval",
-          "query": {
-            "source": "levers",
-            "aspect": "",
-            "measures": [
-              "pass_rate"
-            ],
-            "arms": [
-              "atlas-m.low.r1",
-              "brisk-s.low.r1",
               "atlas-m.high.r1",
               "brisk-s.high.r1"
             ],
@@ -198,58 +281,15 @@
           },
           "reference": null,
           "emphasis": "",
-          "caption": "Effect of switching model or raising reasoning among the retry configurations of Atlas-M and Brisk-S, in points, with unpaired intervals."
-        }
-      ],
-      "caveats": [
-        "no_control",
-        "analyst:cost-routing"
-      ],
-      "durable": false
-    },
-    {
-      "id": "latency",
-      "text": "Model and reasoning set the median latency; the retry leaves the median unchanged in every pair shown and lengthens the slow tail, {arm:brisk-s.low.r1} reading {measure.latency_ms.brisk-s.low.r1.p95} at p95 against {measure.latency_ms.brisk-s.low.r0.p95} without it. No latency budget was declared.",
-      "weight": "support",
-      "evidence": [
-        {
-          "block": "range_bars",
-          "query": {
-            "source": "measures",
-            "aspect": "",
-            "measures": [
-              "latency_ms"
-            ],
-            "arms": [
-              "nano-xs.off.r0",
-              "nano-xs.off.r1",
-              "nano-xs.low.r0",
-              "nano-xs.low.r1",
-              "nano-xs.high.r0",
-              "nano-xs.high.r1",
-              "brisk-s.low.r0",
-              "brisk-s.low.r1",
-              "brisk-s.high.r0",
-              "brisk-s.high.r1",
-              "atlas-m.high.r0",
-              "atlas-m.high.r1"
-            ],
-            "strata": [],
-            "limit": 0,
-            "transform": "none",
-            "small_multiples_by": "none"
-          },
-          "reference": null,
-          "emphasis": "",
-          "caption": "Latency from median to p95 for every frontier configuration beside its twin with or without a retry."
+          "caption": "Cost per thousand calls for the two, rounded to the cent, at this run's routing."
         }
       ],
       "caveats": [],
       "durable": false
     },
     {
-      "id": "tasks",
-      "text": "Multi-hop questions are the weakest task for each of the three frontier options shown; the lean passes {task.multihop.brisk-s.low.r1.pass_rate.mean} there against {task.single.brisk-s.low.r1.pass_rate.mean} on single lookups.",
+      "id": "multihop",
+      "text": "{task.multihop.name} is the weakest task for each configuration shown, and high reasoning's gain on Brisk-S is largest there: {compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.task.multihop.difference|abs} points against {compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.task.single.difference|abs} on single lookups.",
       "weight": "detail",
       "evidence": [
         {
@@ -263,6 +303,7 @@
             "arms": [
               "nano-xs.high.r1",
               "brisk-s.low.r1",
+              "brisk-s.high.r1",
               "atlas-m.high.r1"
             ],
             "strata": [],
@@ -272,7 +313,34 @@
           },
           "reference": null,
           "emphasis": "",
-          "caption": "Pass rate by task; the snapshot states no case count per task, so these rows carry no interval and are descriptive."
+          "caption": "Pass rate by task for four best-buy configurations; the task figures state no case counts, so they carry no interval and read as descriptive leads."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "latency",
+      "text": "Reasoning and model size move the whole latency range; a retry stretches only the tail, and every Atlas-M configuration is slower at p95 than any Brisk-S one.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "range_bars",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "latency_ms"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Latency from p50 to p95 for each configuration, in milliseconds; no budget was declared."
         }
       ],
       "caveats": [],
@@ -280,7 +348,7 @@
     },
     {
       "id": "failures",
-      "text": "The lean's kept failures each break differently: a multi-hop question collapsed into one search, a date window off by a day, and an ambiguous name searched instead of asked about. The snapshot does not say how many failures they were kept from.",
+      "text": "The few kept failure cards show what failures look like, not how often each kind occurs. The lean configuration's cards each fail differently: the first collapses two hops into one query, the second misplaces a date window by a day, the third guesses an entity where the expected answer asks. The fourth, from Nano-XS at low reasoning with a retry already on, is malformed output that survived the retry; its own note says a retry recovers most such cases.",
       "weight": "detail",
       "evidence": [
         {
@@ -289,9 +357,7 @@
             "source": "examples",
             "aspect": "",
             "measures": [],
-            "arms": [
-              "brisk-s.low.r1"
-            ],
+            "arms": [],
             "strata": [],
             "limit": 0,
             "transform": "none",
@@ -299,7 +365,7 @@
           },
           "reference": null,
           "emphasis": "",
-          "caption": "Every failure the snapshot keeps for the lean, one per task where kept; a sample, not a count."
+          "caption": "Every failure card the snapshot kept; how many failures each configuration had in all is not stated."
         }
       ],
       "caveats": [],
@@ -308,92 +374,105 @@
   ],
   "explore": [
     {
-      "control": "What a point of pass rate is worth a month",
-      "binds": "Which configuration to run",
-      "outcome": "Below {price.nano-xs.off.r0.nano-xs.off.r1.pass_rate.monthly_per_point} a point, {arm:nano-xs.off.r0}; {price.nano-xs.off.r0.nano-xs.off.r1.pass_rate.monthly_per_point} to {price.nano-xs.off.r1.nano-xs.low.r1.pass_rate.monthly_per_point}, {arm:nano-xs.off.r1}; {price.nano-xs.off.r1.nano-xs.low.r1.pass_rate.monthly_per_point} to {price.nano-xs.low.r1.nano-xs.high.r1.pass_rate.monthly_per_point}, {arm:nano-xs.low.r1}; {price.nano-xs.low.r1.nano-xs.high.r1.pass_rate.monthly_per_point} to {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point}, {arm:nano-xs.high.r1}; {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} to {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point}, {arm:brisk-s.low.r1}; {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} to {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point}, {arm:brisk-s.high.r1}; above that, {arm:atlas-m.high.r1}. Point estimates, read with the volume as calls; if it counts tasks, every band grows by the calls per task."
+      "control": "Price of a point of pass rate per month",
+      "binds": "Which configuration is the best buy",
+      "outcome": "Below {price.nano-xs.high.r1.brisk-s.low.r1.pass_rate.monthly_per_point} a Nano-XS configuration; from there to {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point}, {arm:brisk-s.low.r1}; to {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point}, {arm:brisk-s.high.r1}; above it, {arm:atlas-m.high.r1}. These edges assume the monthly volume counts calls."
     },
     {
       "control": "A pass-rate floor",
-      "binds": "The cheapest configuration that meets it",
-      "outcome": "Read on point estimates: a floor up to {measure.pass_rate.nano-xs.high.r1.mean} keeps a Nano-XS configuration; up to {measure.pass_rate.brisk-s.high.r1.mean}, a Brisk-S one; above that, only {arm:atlas-m.high.r1}."
+      "binds": "Which configurations are acceptable at all",
+      "outcome": "A floor above {measure.pass_rate.nano-xs.high.r1.mean} rules out every Nano-XS configuration, and the cheapest left is {arm:brisk-s.low.r0} at {measure.pass_rate.brisk-s.low.r0.mean}; above {measure.pass_rate.brisk-s.high.r1.mean}, only {arm:atlas-m.high.r1} remains."
+    },
+    {
+      "control": "A p95 latency budget",
+      "binds": "Whether Atlas-M or high reasoning can be used",
+      "outcome": "A budget under {measure.latency_ms.brisk-s.high.r1.p95} rules out every Atlas-M configuration and Brisk-S at high reasoning with a retry; the lean fits any budget from {measure.latency_ms.brisk-s.low.r1.p95} up."
     }
   ],
   "omitted": [
     {
-      "what": "No-retry configurations other than the cheapest",
-      "why": "Each passes less often than its own retry twin, which costs a little more; the retry claim shows the gain, and their rates are in Every arm by measure."
+      "what": "Reasoning and model effects for Atlas-M and Nano-XS beyond the rows shown",
+      "why": "They point the same way as Brisk-S's and don't change the frontier; the appendix holds all of them."
     },
     {
-      "what": "Calls per task",
-      "why": "Varies little across configurations and decides nothing; it enters only the volume caveat."
+      "what": "Calls per task as a claim",
+      "why": "It moves within a narrow range and changes no per-thousand cost order; its one bearing, scaling every monthly figure and both band edges if the volume counts tasks, is carried in the confidence."
     },
     {
-      "what": "Extra calls and outcome measures",
-      "why": "The snapshot lists them but holds no figures for either."
+      "what": "Outcome and extra-calls measures",
+      "why": "The snapshot holds no figures for them."
     },
     {
-      "what": "Model and reasoning effects without a retry, and their interactions",
-      "why": "Off the frontier; they don't change which options a decider would weigh. Each arm's rates are in Every arm by measure; the effects' intervals are not on the page."
+      "what": "Configurations that are never the best buy",
+      "why": "Each is beaten by a cheaper one or, like Brisk-S at low reasoning with no retry, is never the best buy at any single price per point; that one matters only under a pass-rate floor, which the explore row names. All appear in the frontier chart and the appendix."
     },
     {
-      "what": "Per-task gaps between configurations",
-      "why": "No case counts per task, so no interval; descriptive only and the order matches overall."
+      "what": "Per-task intervals and per-task routing",
+      "why": "Task figures state no case counts, and no task carries a traffic share, so no routed mix can be read or priced."
     }
   ],
   "next": [
     {
-      "text": "The planner's owner settles what the monthly volume counts, then declares a pass-rate floor or a price per point of pass rate.",
-      "settles": "Which configuration to run: the explore bands then pick one."
+      "text": "The planner owner declares a price per point of pass rate, or a pass-rate floor, and a p95 latency budget.",
+      "settles": "Turns the priced trade into a decision among the best-buy configurations."
     },
     {
-      "text": "Re-run Brisk-S at low and high reasoning, both with a retry, at {settle.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.cases_needed_80} cases each; that is the size for independent arms, and fewer suffice if both run the same cases paired.",
-      "settles": "Whether high reasoning's gain over the lean is real, which a run of today's size reads the wrong way {settle.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.wrong_side} of the time."
+      "text": "Rerun {arm:brisk-s.low.r1} against {arm:brisk-s.high.r1} on the same fresh cases, at about {settle.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.cases_needed_80} cases per arm (fewer if read paired).",
+      "settles": "Whether high reasoning's gain on Brisk-S is real, so that a price above the upper band edge buys a confirmed gain; a fresh run also checks the lean against chance among many configurations."
     },
     {
-      "text": "Target multi-hop planning on Brisk-S (explicit decomposition of the question into hops) and re-test, recording case counts per task so task figures carry intervals.",
-      "settles": "Whether the lean's gap to Atlas-M closes on its weakest task."
+      "text": "Run Brisk-S with high reasoning on multi-hop questions and low reasoning elsewhere, with a retry, as a measured configuration.",
+      "settles": "Whether a mix keeps most of high reasoning's gain for part of its cost; nobody has run it, so no figure prices it yet."
     },
     {
-      "text": "Record the provider behind each configuration.",
-      "settles": "Whether the cost order and the monthly prices hold outside this run."
+      "text": "Record which provider served each model and what the monthly volume counts.",
+      "settles": "Whether the costs belong to the models or to this run's routing, and where the band edges really sit."
     }
   ],
   "method": [
     {
-      "term": "Cases",
-      "text": "Each of the {n_candidates|words} configurations ran {scoreboard.brisk-s.low.r1.cases} cases with no lost or failed trials; repeats are not stated. Configurations cross {count.levels.model|words} models, {count.levels.reasoning|words} reasoning levels, and a retry or none.",
+      "term": "Design",
+      "text": "A full grid of {count.levels.model|words} models, {count.levels.reasoning|words} reasoning levels and retry on or off: {n_candidates|words} configurations, no control. Each ran {scoreboard.brisk-s.low.r1.cases} cases, none lost; repeats are not stated.",
       "caveats": []
     },
     {
       "term": "Pass",
-      "text": "The pipeline's pass or fail grade on each planned query. Failures are classed as a missing call, wrong arguments, the wrong tool or malformed output; the snapshot defines pass no further. On ambiguous entities the expected answer is a clarifying question.",
+      "text": "The input does not state what makes a trial pass. Failure cards name missing calls, wrong arguments, wrong tools and malformed output as failure classes.",
       "caveats": []
     },
     {
       "term": "Intervals",
-      "text": "Read at {lever.retry.nano-xs.off.r0.nano-xs.off.r1.pass_rate.level} from each configuration's binomial spread over its cases and combined as if the configurations ran different cases, which errs wide; uncorrected for the number of comparisons. Per-task figures carry none.",
+      "text": "At {compare.brisk-s.low.r1.nano-xs.high.r1.pass_rate.overall.level}, computed from each pass rate's binomial spread over its cases, two configurations' spreads combined as if independent; no correction for the many comparisons. Task figures state no counts and carry no interval.",
+      "caveats": []
+    },
+    {
+      "term": "Best buy and frontier",
+      "text": "A configuration is a best buy if, at some price per point of pass rate, no other gives more pass rate for its cost. The lean is read on that price band alone, never on whether a step's gain clears zero.",
+      "caveats": []
+    },
+    {
+      "term": "What we weighed and kept",
+      "text": "The headline keeps 'turn on a retry' for every planner although on Atlas-M at high reasoning its gain is not clear of zero: its estimate is positive there and its cost small, and the page says so beside the figure. The confidence stays high only for the retry finding and the frontier's shape; the lean is stated as low-confidence and conditional on a price per point. Interactions between retry and reasoning are described by their estimates and never called real, since none is told apart from zero.",
       "caveats": []
     },
     {
       "term": "Cost",
-      "text": "Cost per thousand calls as measured, at a provider routing no configuration names. Monthly figures use the declared {meta.volume_per_month} a month, whose unit the campaign does not state.",
-      "caveats": [
-        "analyst:volume-unit"
-      ]
-    },
-    {
-      "term": "Latency",
-      "text": "Median and p95 per configuration; no budget was declared.",
+      "text": "Cost per thousand calls as this run measured it; monthly figures at the declared {meta.volume_per_month}, a volume whose unit the input does not name. No provider is named for any model.",
       "caveats": []
     },
     {
-      "term": "Not compared",
-      "text": "No control and no criteria were declared, so no option is read against a line.",
+      "term": "Prices per point",
+      "text": "Cost gap over pass-rate gain between neighbouring best-buy configurations, on point estimates; no interval.",
+      "caveats": []
+    },
+    {
+      "term": "Latency",
+      "text": "p50 and p95 per configuration, in milliseconds; no budget declared.",
       "caveats": []
     },
     {
       "term": "Source",
-      "text": "{meta.provenance}",
+      "text": "{meta.provenance}, run {meta.run_date}.",
       "caveats": []
     }
   ]

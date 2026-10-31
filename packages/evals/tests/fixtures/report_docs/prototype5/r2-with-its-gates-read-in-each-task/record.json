@@ -1,5 +1,5 @@
 {
-  "id": "01a18940-addf-717e-9b49-1f8688f24ec6",
+  "id": "01a1923b-76e7-7500-962a-fcffe670caac",
   "doc_type": "eval_report_doc",
   "schema_version": 14,
   "scope_id": "toyhost-scope",
@@ -8,73 +8,69 @@
   "doc": {
     "schema": "report-doc/1",
     "story": "diagnosis",
-    "headline": "Ship none yet: the {count.passing.pass_rate|words} configurations that hold the {criteria.pass_rate.threshold} pass rate in every task run far past the {criteria.p95.threshold} p95 latency budget.",
-    "lede": "{arm:brisk-s.high.r1}, the cheaper of the two that hold every task, reads a p95 of {measure.latency_ms.brisk-s.high.r1.p95} overall, so its slowest task is at least that slow. A budget covering that task, once read, or a Brisk-S fix that lifts multi-hop and ambiguous-entity planning within the budget would change the answer.",
-    "flag": "Latency was read only over all tasks, never within each one, so the per-task latency gate is inferred from the overall p95, not read.",
+    "headline": "No configuration clears both gates: the two that hold a {criteria.pass_rate.threshold} pass rate in every task run past the {criteria.p95.threshold} latency budget, and every one inside the budget misses the pass rate, always on multi-hop.",
+    "lede": "Brisk-S with high reasoning and a retry holds the pass rate everywhere, its thinnest task {criteria.pass_rate.brisk-s.high.r1.multihop.gap|abs} points over the gate, but reaches {measure.latency_ms.brisk-s.high.r1.p95} at p95. A budget that admits it, or a low-reasoning configuration that fixes multi-hop, would change the answer.",
+    "flag": "Pass rates over all tasks, as the options table prints them, are not the gate: it reads each task. Latency was measured only over all tasks, so every latency verdict here is inferred from the overall p95.",
     "recommends": [],
     "confidence": {
       "form": "high_if_immaterial",
       "caveats": [
         {
-          "id": "analyst:per_task_latency",
-          "label": "Latency read only overall",
-          "material_if": "only if a task's own p95 sits far below the overall one, enough that a configuration holding the pass rate everywhere comes under {criteria.p95.threshold} in every task; with overall p95 readings of {measure.latency_ms.brisk-s.high.r1.p95} and {measure.latency_ms.atlas-m.high.r1.p95}, at least one task must miss if the tasks split the cases between them.",
-          "checked": null
-        },
-        {
-          "id": "analyst:task_counts",
-          "label": "Per-task pass rates state no count",
-          "material_if": "if the misses of {arm:brisk-s.low.r1} are noise: assuming each task held its traffic share of the cases, its multi-hop miss reads the wrong way {assumed.share.settle.criteria.pass_rate.brisk-s.low.r1.task.multihop.wrong_side} of the time and its ambiguous-entity miss {assumed.share.settle.criteria.pass_rate.brisk-s.low.r1.task.disamb.wrong_side}. Were both truly to clear, it would hold every task while under the budget overall and become the pick, pending per-task latency.",
+          "id": "no_control",
+          "label": null,
+          "material_if": "Only for the claim that Brisk-S and Atlas-M at high reasoning with a retry are not told apart: with no control they compare unpaired, which reads wider than a paired test would. The finding that nothing clears both gates compares no two configurations.",
           "checked": null
         },
         {
           "id": "best_of_n",
           "label": null,
-          "material_if": "only in the direction of the hold: {arm:brisk-s.high.r1} is the best of {n_candidates|int} configurations and clears multi-hop by {criteria.pass_rate.brisk-s.high.r1.multihop.gap|abs|pts} points, so a fresh run would tend to read it lower and leave only {arm:atlas-m.high.r1}, which clears multi-hop by {criteria.pass_rate.atlas-m.high.r1.multihop.gap|abs|pts} points, holding the pass rate everywhere, at a slower p95.",
+          "material_if": "Only for Brisk-S with high reasoning and a retry clearing multi-hop by {criteria.pass_rate.brisk-s.high.r1.multihop.gap|abs} points: as the best of {n_candidates} configurations it likely reads high, so a fresh run would more likely put it under the gate, which still leaves nothing clearing both.",
           "checked": null
         },
         {
-          "id": "no_control",
-          "label": null,
-          "material_if": "only for the comparison of the two configurations that hold the pass rate, which reads their own spreads unpaired; the hold compares each configuration with the declared lines, not with a baseline.",
+          "id": "analyst:task_latency_unmeasured",
+          "label": "Per-task latency unmeasured",
+          "material_if": "Only if a configuration inside the budget over all tasks also cleared the pass rate; none does today. For the two that hold the pass rate, a p95 over all tasks past the budget means at least one task is past it too, provided each case belongs to one task.",
+          "checked": null
+        },
+        {
+          "id": "analyst:task_counts_unstated",
+          "label": "Task pass rates state no count",
+          "material_if": "Only if Brisk-S with low reasoning and a retry truly clears multi-hop and ambiguous entities. Under counts assumed from traffic shares, a run of today's size reads its multi-hop miss the wrong way {assumed.share.settle.criteria.pass_rate.brisk-s.low.r1.task.multihop.wrong_side} of the time and its ambiguous-entity miss {assumed.share.settle.criteria.pass_rate.brisk-s.low.r1.task.disamb.wrong_side}, and its date-math figure sits exactly on the gate. To clear both gates it would need both misses and the date-math reading to land on the passing side together, and its unmeasured per-task latency to stay within {criteria.p95.threshold}. The counts are assumed, so the true spread could be wider than these chances suggest.",
           "checked": null
         }
       ]
     },
     "decision": [
       {
-        "slot": "recommendation",
-        "text": "Hold: {count.surviving|words} of the {count.arms|int} configurations clear both gates. The {count.undecided|words} left undecided are so only because latency was never read within a task, and both run past the budget overall."
+        "slot": "what_is_tangled",
+        "text": "The pass-rate gate and the latency budget pull against each other through the reasoning setting. Both configurations that hold the pass rate everywhere use high reasoning, which puts p95 past the budget. The closest one inside the budget, Brisk-S with low reasoning and a retry ({measure.latency_ms.brisk-s.low.r1.p95} at p95), misses the pass rate on multi-hop by {criteria.pass_rate.brisk-s.low.r1.multihop.gap|abs} points and on ambiguous entities by {criteria.pass_rate.brisk-s.low.r1.disamb.gap|abs}."
       },
       {
-        "slot": "why_not",
-        "text": "{arm:brisk-s.high.r1} holds every task's pass rate but reads a p95 of {measure.latency_ms.brisk-s.high.r1.p95} overall; {arm:atlas-m.high.r1} holds it too at {measure.latency_ms.atlas-m.high.r1.p95} and, as this run's unnamed provider routing served it, costs {cost.gap.atlas-m.high.r1.brisk-s.high.r1.multiple} as much."
+        "slot": "known_despite_it",
+        "text": "Of the two that hold the pass rate, Brisk-S with high reasoning and a retry is not told apart from Atlas-M with the same settings ({compare.brisk-s.high.r1.atlas-m.high.r1.pass_rate.overall.difference} points, interval {compare.brisk-s.high.r1.atlas-m.high.r1.pass_rate.overall.interval}), and Atlas-M costs {cost.gap.atlas-m.high.r1.brisk-s.high.r1.multiple} as much per 1,000 calls at this run's routing."
       },
       {
-        "slot": "why_not",
-        "text": "{arm:brisk-s.low.r1}, the closest within the budget overall at {measure.latency_ms.brisk-s.low.r1.p95}, misses the pass rate on multi-hop and on ambiguous entities."
-      },
-      {
-        "slot": "watch",
-        "text": "{arm:brisk-s.high.r1} clears multi-hop by only {criteria.pass_rate.brisk-s.high.r1.multihop.gap|abs|pts} points, ambiguous entities by {criteria.pass_rate.brisk-s.high.r1.disamb.gap|abs|pts} and date math by {criteria.pass_rate.brisk-s.high.r1.datemath.gap|abs|pts}. If each task held its traffic share of the cases, a run this size would read them on the wrong side {assumed.share.settle.criteria.pass_rate.brisk-s.high.r1.task.multihop.wrong_side}, {assumed.share.settle.criteria.pass_rate.brisk-s.high.r1.task.disamb.wrong_side} and {assumed.share.settle.criteria.pass_rate.brisk-s.high.r1.task.datemath.wrong_side} of the time."
+        "slot": "our_lean",
+        "text": "Ours, not a call: if the latency owner can accept a per-task budget that covers Brisk-S with high reasoning and a retry in its slowest task, it is the configuration to confirm. That budget is at least {measure.latency_ms.brisk-s.high.r1.p95}, its p95 over all tasks, and likely more on multi-hop; the exact figure stays unknown until per-task latency is measured. Under today's budget, nothing measured qualifies."
       },
       {
         "slot": "watch",
-        "text": "On the other side of the hold, {arm:brisk-s.low.r1} misses multi-hop by {criteria.pass_rate.brisk-s.low.r1.multihop.gap|abs|pts} points and ambiguous entities by {criteria.pass_rate.brisk-s.low.r1.disamb.gap|abs|pts}, and sits on the line in date math. On the same assumed counts these read the wrong way {assumed.share.settle.criteria.pass_rate.brisk-s.low.r1.task.multihop.wrong_side}, {assumed.share.settle.criteria.pass_rate.brisk-s.low.r1.task.disamb.wrong_side} and {assumed.share.settle.criteria.pass_rate.brisk-s.low.r1.task.datemath.wrong_side} of the time; a rerun there could turn the hold into a pick."
+        "text": "Brisk-S with high reasoning and a retry clears every task on its point estimate alone. Under counts assumed from traffic shares, a run of today's size would read it under the gate {assumed.share.settle.criteria.pass_rate.brisk-s.high.r1.task.multihop.wrong_side} of the time on multi-hop, {assumed.share.settle.criteria.pass_rate.brisk-s.high.r1.task.disamb.wrong_side} on ambiguous entities, {assumed.share.settle.criteria.pass_rate.brisk-s.high.r1.task.datemath.wrong_side} on date math and {assumed.share.settle.criteria.pass_rate.brisk-s.high.r1.task.single.wrong_side} on single lookups."
       },
       {
         "slot": "what_settles_it",
-        "text": "First, p95 latency read within each task for the configurations nearest both lines; then the latency owner declaring whether the {criteria.p95.threshold} budget is firm."
+        "text": "Per-task p95 latency for the two Brisk-S configurations with a retry, and a declaration from the latency owner on whether the per-task budget is firm."
       }
     ],
     "claims": [
       {
-        "id": "c1",
-        "text": "Only {count.passing.pass_rate|words} of the {count.arms|int} configurations hold the {criteria.pass_rate.threshold} pass rate in every task, both at high reasoning with a retry; every other configuration falls short on multi-hop.",
+        "id": "pass-rate-gate",
+        "text": "Only {count.passing.pass_rate|words} of the {n_candidates|words} configurations hold the pass rate in every task, both with high reasoning and a retry; multi-hop lookups are where every other configuration falls short.",
         "weight": "lead",
         "evidence": [
           {
-            "block": "heatmap",
+            "block": "dot_interval",
             "query": {
               "source": "tasks",
               "aspect": "",
@@ -82,31 +78,29 @@
                 "pass_rate"
               ],
               "arms": [
-                "brisk-s.high.r1",
                 "atlas-m.high.r1",
+                "brisk-s.high.r1",
                 "atlas-m.high.r0",
                 "atlas-m.low.r1",
-                "brisk-s.high.r0",
-                "brisk-s.low.r1"
+                "brisk-s.low.r1",
+                "brisk-s.high.r0"
               ],
               "strata": [],
               "limit": 0,
               "transform": "none",
-              "small_multiples_by": "none"
+              "small_multiples_by": "task"
             },
             "reference": "floor",
             "emphasis": "",
-            "caption": "Pass rate by task for the six configurations nearest the {criteria.pass_rate.threshold} gate; the rest sit further below it."
+            "caption": "Pass rate per task for the six configurations nearest the gate, one panel per task, with the {criteria.pass_rate.threshold} gate line. Task figures state no count, so no interval is drawn."
           }
         ],
-        "caveats": [
-          "analyst:task_counts"
-        ],
+        "caveats": [],
         "durable": false
       },
       {
-        "id": "c2",
-        "text": "Both run far past the {criteria.p95.threshold} latency budget overall, and since a configuration's slowest task is at least as slow as the whole, each misses the budget in at least one task.",
+        "id": "latency-budget",
+        "text": "Both run past the latency budget: Brisk-S with high reasoning and a retry reaches {measure.latency_ms.brisk-s.high.r1.p95} at p95 over all tasks and Atlas-M {measure.latency_ms.atlas-m.high.r1.p95}, while every configuration inside the budget misses the pass rate somewhere.",
         "weight": "lead",
         "evidence": [
           {
@@ -117,16 +111,7 @@
               "measures": [
                 "latency_ms"
               ],
-              "arms": [
-                "brisk-s.high.r1",
-                "atlas-m.high.r1",
-                "atlas-m.high.r0",
-                "atlas-m.low.r1",
-                "brisk-s.high.r0",
-                "brisk-s.low.r1",
-                "brisk-s.low.r0",
-                "nano-xs.high.r1"
-              ],
+              "arms": [],
               "strata": [],
               "limit": 0,
               "transform": "none",
@@ -134,21 +119,19 @@
             },
             "reference": "budget",
             "emphasis": "",
-            "caption": "Latency from p50 to p95 over all tasks, against the {criteria.p95.threshold} budget the gate sets within each task."
+            "caption": "Latency from p50 to p95 over all tasks for all {n_candidates|words} configurations, with the {criteria.p95.threshold} budget line, which is declared per task."
           }
         ],
-        "caveats": [
-          "analyst:per_task_latency"
-        ],
+        "caveats": [],
         "durable": false
       },
       {
-        "id": "c3",
-        "text": "Every configuration under the budget overall misses the pass rate in at least one task; the closest, {arm:brisk-s.low.r1}, misses multi-hop by {criteria.pass_rate.brisk-s.low.r1.multihop.gap|abs|pts} points and ambiguous entities by {criteria.pass_rate.brisk-s.low.r1.disamb.gap|abs|pts}, and sits exactly on the line in date math.",
+        "id": "reasoning-trade",
+        "text": "For Brisk-S with a retry, high reasoning is what carries multi-hop across the gate, from {task.multihop.brisk-s.low.r1.pass_rate.mean} at low reasoning to {task.multihop.brisk-s.high.r1.pass_rate.mean}, and it is also what takes p95 over all tasks from {measure.latency_ms.brisk-s.low.r1.p95} to {measure.latency_ms.brisk-s.high.r1.p95} and costs {cost.gap.brisk-s.high.r1.brisk-s.low.r1.multiple} as much per 1,000 calls at this run's routing. Task figures carry no interval, and over all tasks the same move is not separated from zero ({lever.reasoning.brisk-s.low.r1.brisk-s.high.r1.pass_rate.effect} points, interval {lever.reasoning.brisk-s.low.r1.brisk-s.high.r1.pass_rate.interval}).",
         "weight": "support",
         "evidence": [
           {
-            "block": "heatmap",
+            "block": "dot_interval",
             "query": {
               "source": "tasks",
               "aspect": "",
@@ -157,86 +140,27 @@
               ],
               "arms": [
                 "brisk-s.low.r1",
-                "brisk-s.low.r0",
-                "nano-xs.high.r1",
-                "brisk-s.off.r1",
-                "brisk-s.off.r0",
-                "nano-xs.high.r0",
-                "nano-xs.low.r1",
-                "nano-xs.low.r0",
-                "nano-xs.off.r1",
-                "nano-xs.off.r0"
+                "brisk-s.high.r1"
               ],
               "strata": [],
               "limit": 0,
               "transform": "none",
-              "small_multiples_by": "none"
+              "small_multiples_by": "task"
             },
             "reference": "floor",
             "emphasis": "",
-            "caption": "Pass rate by task for the ten configurations whose overall p95 is under the {criteria.p95.threshold} budget, against the {criteria.pass_rate.threshold} gate."
+            "caption": "Pass rate per task for Brisk-S with a retry at low and at high reasoning, with the {criteria.pass_rate.threshold} gate line."
           },
           {
-            "block": "examples",
-            "query": {
-              "source": "examples",
-              "aspect": "",
-              "measures": [],
-              "arms": [
-                "brisk-s.low.r1"
-              ],
-              "strata": [],
-              "limit": 0,
-              "transform": "none",
-              "small_multiples_by": "none"
-            },
-            "reference": null,
-            "emphasis": "",
-            "caption": "Kept failures of the closest configuration, one each from multi-hop, date math and ambiguous entities: the first collapses two hops into one query, the second is an off-by-one date window in a task it holds exactly on the line, the third answers an ambiguous name without asking. How many failures each was kept from is not stated; they show kinds of failure, not shares."
-          }
-        ],
-        "caveats": [
-          "analyst:task_counts"
-        ],
-        "durable": false
-      },
-      {
-        "id": "c4",
-        "text": "Of the two that hold the pass rate, {arm:atlas-m.high.r1} costs {cost.gap.atlas-m.high.r1.brisk-s.high.r1.multiple} as much as {arm:brisk-s.high.r1} as this run served them, with no provider named for either, so the ratio may not hold under another routing; their pass rates are not told apart.",
-        "weight": "support",
-        "evidence": [
-          {
-            "block": "bars",
+            "block": "range_bars",
             "query": {
               "source": "measures",
               "aspect": "",
               "measures": [
-                "cost_per_1k"
+                "latency_ms"
               ],
               "arms": [
-                "atlas-m.high.r1",
-                "brisk-s.high.r1",
-                "brisk-s.low.r1"
-              ],
-              "strata": [],
-              "limit": 0,
-              "transform": "none",
-              "small_multiples_by": "none"
-            },
-            "reference": null,
-            "emphasis": "",
-            "caption": "Cost per 1,000 calls at this run's unnamed routing. If the declared monthly volume counts calls, Atlas-M costs {cost.gap.atlas-m.high.r1.brisk-s.high.r1.monthly|abs|usd_whole} more a month; if it counts tasks, which each make more than one call, the gap is larger."
-          },
-          {
-            "block": "dot_interval",
-            "query": {
-              "source": "levers",
-              "aspect": "",
-              "measures": [
-                "pass_rate"
-              ],
-              "arms": [
-                "atlas-m.high.r1",
+                "brisk-s.low.r1",
                 "brisk-s.high.r1"
               ],
               "strata": [],
@@ -244,118 +168,177 @@
               "transform": "none",
               "small_multiples_by": "none"
             },
-            "reference": null,
+            "reference": "budget",
             "emphasis": "",
-            "caption": "Pass rate change moving from Atlas-M to Brisk-S at high reasoning with a retry, computed before the rates are rounded, with its unpaired interval, which crosses zero."
+            "caption": "The same two configurations' latency from p50 to p95 over all tasks, with the {criteria.p95.threshold} budget line."
           }
         ],
-        "caveats": [
-          "no_control"
+        "caveats": [],
+        "durable": false
+      },
+      {
+        "id": "brisk-vs-atlas",
+        "text": "Brisk-S with high reasoning and a retry is not told apart from Atlas-M with the same settings on pass rate ({compare.brisk-s.high.r1.atlas-m.high.r1.pass_rate.overall.difference} points), and Atlas-M costs {cost.gap.atlas-m.high.r1.brisk-s.high.r1.multiple} as much per 1,000 calls; the snapshot names no provider for either, so that cost belongs to this run's unknown routing.",
+        "weight": "support",
+        "evidence": [
+          {
+            "block": "diverging_bars",
+            "query": {
+              "source": "compare",
+              "aspect": "",
+              "measures": [
+                "pass_rate"
+              ],
+              "arms": [
+                "brisk-s.high.r1",
+                "atlas-m.high.r1"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Brisk-S less Atlas-M, both with high reasoning and a retry, in pass-rate points: overall with its unpaired interval, and per task as point differences."
+          }
         ],
+        "caveats": [],
+        "durable": false
+      },
+      {
+        "id": "overall-not-gate",
+        "text": "Over all tasks, Atlas-M with low reasoning and a retry ({measure.pass_rate.atlas-m.low.r1.mean}), Atlas-M with high reasoning and no retry ({measure.pass_rate.atlas-m.high.r0.mean}) and Brisk-S with low reasoning and a retry ({measure.pass_rate.brisk-s.low.r1.mean}) read above the gate, yet each misses it on multi-hop ({task.multihop.atlas-m.low.r1.pass_rate.mean}, {task.multihop.atlas-m.high.r0.pass_rate.mean} and {task.multihop.brisk-s.low.r1.pass_rate.mean}).",
+        "weight": "detail",
+        "evidence": [
+          {
+            "block": "dot_interval",
+            "query": {
+              "source": "tasks",
+              "aspect": "",
+              "measures": [
+                "pass_rate"
+              ],
+              "arms": [
+                "atlas-m.low.r1",
+                "atlas-m.high.r0",
+                "brisk-s.low.r1"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "task"
+            },
+            "reference": "floor",
+            "emphasis": "",
+            "caption": "Pass rate per task for the configurations whose rate over all tasks reads above the gate without holding it in every task, with the {criteria.pass_rate.threshold} gate line."
+          }
+        ],
+        "caveats": [],
         "durable": false
       }
     ],
     "explore": [
       {
         "control": "Latency budget (p95)",
-        "binds": "Which configurations can ship at all",
-        "outcome": "Below {measure.latency_ms.brisk-s.high.r1.p95}, no budget admits a configuration that holds the pass rate everywhere. To admit {arm:brisk-s.high.r1}, the budget must cover its slowest task's p95, which is at least that overall figure and not yet read."
+        "binds": "Whether the high-reasoning configurations, the only ones holding the pass rate, are allowed",
+        "outcome": "Brisk-S with high reasoning and a retry needs a per-task budget of at least {measure.latency_ms.brisk-s.high.r1.p95}, its p95 over all tasks, and Atlas-M at least {measure.latency_ms.atlas-m.high.r1.p95}; each likely needs more in its slowest task. Below those, nothing measured passes both. No budget value can be read per task, as declared, until per-task latency is measured."
       },
       {
-        "control": "Pass rate gate",
-        "binds": "Whether a configuration within the budget qualifies",
-        "outcome": "At a line of {criteria.pass_rate.brisk-s.low.r1.multihop.value} or lower, {arm:brisk-s.low.r1} holds every task while staying under the budget overall; above it, no configuration within the budget does."
+        "control": "Pass-rate gate",
+        "binds": "Whether the configurations inside the latency budget qualify",
+        "outcome": "Brisk-S with low reasoning and a retry, the closest inside the budget, has its lowest task at {task.multihop.brisk-s.low.r1.pass_rate.mean}; a gate at or below that would pass it on pass rate, its per-task latency still unknown."
       }
     ],
     "omitted": [
       {
-        "what": "The Nano-XS configurations as leads",
-        "why": "Each misses the pass rate in every task; they appear only in the under-budget table."
+        "what": "Monthly cost at the declared volume",
+        "why": "The declared volume does not say what it counts, so a monthly figure could be off by the calls each unit holds; cost is given per 1,000 calls."
       },
       {
-        "what": "Overall pass rate per configuration",
-        "why": "The gate reads each task; the overall rate hides the multi-hop shortfall that decides it."
+        "what": "Nano-XS per-task figures",
+        "why": "Every Nano-XS configuration misses the gate in every task; the best reads {measure.pass_rate.nano-xs.high.r1.mean} over all tasks. They stay in the full tables, and none is among the configurations nearest the gate."
       },
       {
-        "what": "Retry and reasoning effects across the whole grid",
-        "why": "A retry raises the pass rate in every configuration; the grid's effects describe how the two leading configurations were reached, not which ships. They stay in the appendix."
+        "what": "What the retry buys on its own",
+        "why": "It lifts pass rate at every reasoning level, with intervals that barely clear zero on a descriptive read; both configurations near the gate already use it, so it does not choose between them."
       },
       {
-        "what": "Calls per task and p50 latency",
-        "why": "Neither is gated, and neither changes which configuration clears both lines."
+        "what": "Model and retry interactions across the grid (the retry helps Nano-XS more than Atlas-M)",
+        "why": "Nano-XS is far from the gate in every configuration; the interaction does not change which configurations come close."
       },
       {
-        "what": "Extra calls and outcome measures",
-        "why": "The snapshot holds no figures for them."
+        "what": "Calls per task, extra calls and outcome",
+        "why": "Extra calls and outcome hold no figures; calls per task describes the planner's work, not either gate."
+      },
+      {
+        "what": "Failure examples",
+        "why": "The snapshot keeps none."
       }
     ],
     "next": [
       {
-        "text": "Read p95 latency within each task for {arm:brisk-s.high.r1}, {arm:atlas-m.high.r1} and {arm:brisk-s.low.r1}.",
-        "settles": "Whether the latency gate fails in each task as the overall p95 implies, how high a budget would have to go to admit the configurations that hold the pass rate, and whether single lookups, {task.single.share} of traffic, could go to a configuration within the budget while the harder tasks go elsewhere."
+        "text": "Measure p95 latency per task for Brisk-S with low reasoning and a retry and with high reasoning and a retry: re-slice the run's per-case timings by task if the run kept them (the snapshot holds none), otherwise rerun both with timing on the same cases.",
+        "settles": "Whether either meets the budget where it was declared; if the low-reasoning one stays inside it in every task, multi-hop and ambiguous-entity pass rate is its only obstacle."
       },
       {
-        "text": "The latency owner declares whether the {criteria.p95.threshold} budget is firm. To admit {arm:brisk-s.high.r1} it would have to rise to at least {measure.latency_ms.brisk-s.high.r1.p95}, its exact level pending the per-task read.",
-        "settles": "Whether {arm:brisk-s.high.r1} is a candidate at all; if it is, it costs less than the only other configuration that holds every task."
+        "text": "The latency owner declares whether the per-task budget is firm, or what per-task p95 high reasoning may take.",
+        "settles": "Whether Brisk-S with high reasoning and a retry becomes the pick; at this run's routing, no rerun of the same configuration would bring its p95 inside today's budget."
       },
       {
-        "text": "Rerun {arm:brisk-s.low.r1} on multi-hop and ambiguous-entity cases: confirming its misses four times in five takes about {assumed.share.settle.criteria.pass_rate.brisk-s.low.r1.task.multihop.cases_needed_two_sided_80|int} and {assumed.share.settle.criteria.pass_rate.brisk-s.low.r1.task.disamb.cases_needed_two_sided_80|int} cases respectively, on assumed task counts.",
-        "settles": "Whether the closest configuration within the budget truly misses, or holds every task and becomes the pick."
+        "text": "Run Brisk-S with a retry, high reasoning on multi-hop and ambiguous-entity requests and low reasoning elsewhere, measured per task on pass rate and latency.",
+        "settles": "Whether any configuration clears both gates; nobody has run this mix, so no figure states its pass rate, latency or cost."
       },
       {
-        "text": "Fix Brisk-S's multi-hop decomposition and its clarifying question on ambiguous names at low reasoning with a retry, then rerun those two tasks.",
-        "settles": "Whether a configuration within the budget can hold the pass rate everywhere, which would make it the pick."
-      },
-      {
-        "text": "If the budget rises, rerun {arm:brisk-s.high.r1} on fresh multi-hop cases: confirming its thin clearance four times in five takes about {assumed.share.settle.criteria.pass_rate.brisk-s.high.r1.task.multihop.cases_needed_two_sided_80|int} cases, on assumed task counts.",
-        "settles": "Whether its multi-hop pass rate truly clears the gate or was the luck of the best of many."
+        "text": "If the high-reasoning Brisk-S is chosen, rerun its multi-hop set at {assumed.share.settle.criteria.pass_rate.brisk-s.high.r1.task.multihop.cases_needed_two_sided_80} multi-hop cases, the size that settles its clearance four times in five under counts assumed from traffic shares.",
+        "settles": "Whether its clearance on multi-hop, {criteria.pass_rate.brisk-s.high.r1.multihop.gap|abs} points, is real."
       }
     ],
     "method": [
       {
-        "term": "Design",
-        "text": "{count.arms|int} configurations crossing {count.levels.model|words} models, {count.levels.reasoning|words} reasoning levels and retry on or off, each run on {scoreboard.brisk-s.high.r1.cases|int} cases with none lost. There is no baseline configuration.",
+        "term": "Cases",
+        "text": "{scoreboard.brisk-s.high.r1.cases} planner tasks per configuration, none lost, across four tasks: single lookup ({task.single.share} of traffic), multi-hop ({task.multihop.share}), date and unit math ({task.datemath.share}) and ambiguous entity ({task.disamb.share}). No repeats are stated.",
+        "caveats": []
+      },
+      {
+        "term": "Pass",
+        "text": "The snapshot does not state what makes a planner task pass; pass rate is the share of tasks it counts as passed.",
+        "caveats": []
+      },
+      {
+        "term": "Gates",
+        "text": "Declared: a pass rate of at least {criteria.pass_rate.threshold} in each task, and p95 latency of at most {criteria.p95.threshold} in each task. Both are read as gates on the point estimate; a configuration with no figure at a place a gate reads is undecided there, not failed. A pass rate over all tasks is shown for reference only and is never the gate.",
+        "caveats": [
+          "analyst:task_latency_unmeasured"
+        ]
+      },
+      {
+        "term": "Intervals",
+        "text": "Overall pass-rate intervals are computed from each configuration's cases (binomial, at the level the tables print); differences between configurations combine the two unpaired and are descriptive. Task pass rates state no count, so they carry no interval; run sizes for them assume each task holds its traffic share of the cases.",
+        "caveats": [
+          "analyst:task_counts_unstated"
+        ]
+      },
+      {
+        "term": "Latency",
+        "text": "p50 and p95 over all tasks, with no interval; no per-task latency is held in the snapshot, and whether the run kept per-case timings is not stated.",
+        "caveats": []
+      },
+      {
+        "term": "Cost",
+        "text": "Cost per 1,000 calls as measured in this run. The snapshot names each configuration's model but no provider, so the routing behind each cost, and behind each latency, is unknown. The declared volume, {meta.volume_per_month} a month, does not say what it counts.",
+        "caveats": []
+      },
+      {
+        "term": "Comparison",
+        "text": "Eighteen configurations crossing three models, three reasoning levels and a retry; no control, so every comparison is between two configurations' own figures.",
         "caveats": [
           "no_control"
         ]
       },
       {
-        "term": "Tasks",
-        "text": "Single lookup, multi-hop, date and unit math, and ambiguous entity, with traffic shares of {task.single.share}, {task.multihop.share}, {task.datemath.share} and {task.disamb.share}. Cases per task are not stated; case counts and wrong-side odds quoted for reruns assume each task held its traffic share of the cases.",
-        "caveats": [
-          "analyst:task_counts"
-        ]
-      },
-      {
-        "term": "Pass",
-        "text": "The campaign does not define a pass in words; the failure cards compare the planner's tool calls and arguments with the expected ones.",
-        "caveats": []
-      },
-      {
-        "term": "Gates",
-        "text": "Pass rate at least {criteria.pass_rate.threshold} in each task, and p95 latency at most {criteria.p95.threshold} in each task. Both are read on point estimates; per-task pass rates carry no interval.",
-        "caveats": []
-      },
-      {
-        "term": "Latency",
-        "text": "Only p50 and p95 over all tasks were recorded, so the per-task latency gate has no figure for any configuration. A configuration's slowest task has a p95 at least as high as its overall one.",
-        "caveats": [
-          "analyst:per_task_latency"
-        ]
-      },
-      {
-        "term": "Intervals",
-        "text": "The one interval shown is {lever.model.atlas-m.high.r1.brisk-s.high.r1.pass_rate.level}, unpaired, from each configuration's binomial spread over its cases; it reads wider than a paired one would.",
-        "caveats": []
-      },
-      {
-        "term": "Cost",
-        "text": "Cost per 1,000 calls as this run was served; no provider is named for any configuration, so the routing behind the costs is unknown and the cost order may not hold under another. Monthly figures use the declared volume of {meta.volume_per_month|int}, read as calls; the campaign does not say what it counts. How many trials reported a cost is not stated.",
-        "caveats": []
-      },
-      {
         "term": "Source",
-        "text": "{meta.provenance}, run {meta.run_date}.",
+        "text": "{meta.provenance}",
         "caveats": []
       }
     ]
@@ -363,20 +346,20 @@
   "ending": "stored",
   "findings": [
     {
-      "claim": "",
+      "claim": "reasoning-trade",
       "severity": "should_fix",
-      "finding": "The third next step reruns Brisk-S low with a retry on multi-hop and ambiguous-entity cases and says the result settles whether it 'holds every task and becomes the pick'. Two things that step does not settle also stand in the way. Its date-math pass rate is exactly on the 97% line, so on assumed counts it reads the wrong way half the time. And its overall p95 is 513 ms, so its slowest task is at least that slow and has not been read against 600 ms. Fix: add date-math cases to the rerun, and change the outcome to 'becomes the pick only if date math also holds and its per-task p95 stays under 600 ms'. Match the confidence clause's 'pending per-task latency' wording.",
-      "id": "f2.1",
-      "since": 2
+      "finding": "The claim rests its caution on the overall high-versus-low difference for Brisk-S with a retry, +0.8 points (interval -0.4 to +2.1, key compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.*). It also cites a 2.1x cost ratio ($0.633 against $0.302). Neither figure is in either block, which show only the per-task points and latency. Add an overall row with its interval to the pass-rate block, or a small diverging block as in brisk-vs-atlas, so a reader can see the qualifier the claim leans on.",
+      "id": "f3.1",
+      "since": 3
     }
   ],
   "generation": {
     "format": 2,
     "model": "claude-opus-5-5",
     "skill": {
-      "analyst": "91b0b70e4859932092e2b771214a2e40e56c33027d5a053fa76af6b874edee36",
+      "analyst": "cebe563f330717750fbecb0b75b7148eac26f235fe54560e59db33a273c24bcb",
       "editor": "07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611",
-      "package": "2a7662d928b0a734f76e2e75cef229af1160ef58b8c4e2face59f9b12bb4647a"
+      "package": "db31bf62aa68ced72dcfb3eef1835b4bb3ba13e4904f1c6c26878590f9cc1507"
     },
     "tally": {
       "turns": [
@@ -387,16 +370,16 @@
           "turn": 0,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 39575,
-          "output_tokens": 435,
-          "reasoning_tokens": 65,
+          "input_tokens": 39816,
+          "output_tokens": 438,
+          "reasoning_tokens": 67,
           "cache_read_tokens": 0,
-          "cache_write_tokens": 39571,
-          "cost_usd": 0.206571,
+          "cache_write_tokens": 39812,
+          "cost_usd": 0.207836,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 4.115210585063323,
+          "wall_s": 4.039124336093664,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -409,16 +392,16 @@
           "turn": 1,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 49232,
-          "output_tokens": 619,
+          "input_tokens": 47126,
+          "output_tokens": 443,
           "reasoning_tokens": 0,
-          "cache_read_tokens": 39571,
-          "cache_write_tokens": 9659,
-          "cost_usd": 0.0685972,
+          "cache_read_tokens": 39812,
+          "cache_write_tokens": 7312,
+          "cost_usd": 0.0533904,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 4.612057543126866,
+          "wall_s": 3.600640792865306,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -431,16 +414,16 @@
           "turn": 2,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 62390,
-          "output_tokens": 1135,
-          "reasoning_tokens": 699,
-          "cache_read_tokens": 49230,
-          "cache_write_tokens": 13158,
-          "cost_usd": 0.098344,
+          "input_tokens": 56820,
+          "output_tokens": 1552,
+          "reasoning_tokens": 1083,
+          "cache_read_tokens": 47124,
+          "cache_write_tokens": 9694,
+          "cost_usd": 0.0889428,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 11.548033588100225,
+          "wall_s": 15.256052423035726,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -453,16 +436,16 @@
           "turn": 3,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 70037,
-          "output_tokens": 618,
-          "reasoning_tokens": 66,
-          "cache_read_tokens": 62388,
-          "cache_write_tokens": 7647,
-          "cost_usd": 0.0630806,
+          "input_tokens": 63780,
+          "output_tokens": 543,
+          "reasoning_tokens": 260,
+          "cache_read_tokens": 56818,
+          "cache_write_tokens": 6960,
+          "cost_usd": 0.0570316,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 6.324661293998361,
+          "wall_s": 6.163904753047973,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -475,16 +458,16 @@
           "turn": 4,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 83581,
-          "output_tokens": 1049,
-          "reasoning_tokens": 687,
-          "cache_read_tokens": 70035,
-          "cache_write_tokens": 13544,
-          "cost_usd": 0.102715,
+          "input_tokens": 71452,
+          "output_tokens": 1222,
+          "reasoning_tokens": 682,
+          "cache_read_tokens": 63778,
+          "cache_write_tokens": 7672,
+          "cost_usd": 0.0755636,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 10.839861839078367,
+          "wall_s": 12.36079808906652,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -497,16 +480,16 @@
           "turn": 5,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 93892,
-          "output_tokens": 239,
-          "reasoning_tokens": 107,
-          "cache_read_tokens": 83579,
-          "cache_write_tokens": 10311,
-          "cost_usd": 0.0730588,
+          "input_tokens": 79845,
+          "output_tokens": 511,
+          "reasoning_tokens": 203,
+          "cache_read_tokens": 71450,
+          "cache_write_tokens": 8393,
+          "cost_usd": 0.066483,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 2.9295438351109624,
+          "wall_s": 5.375212543876842,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -519,16 +502,16 @@
           "turn": 6,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 94331,
-          "output_tokens": 76,
-          "reasoning_tokens": 0,
-          "cache_read_tokens": 93890,
-          "cache_write_tokens": 439,
-          "cost_usd": 0.022501,
+          "input_tokens": 88886,
+          "output_tokens": 1400,
+          "reasoning_tokens": 1062,
+          "cache_read_tokens": 79843,
+          "cache_write_tokens": 9041,
+          "cost_usd": 0.0891816,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 1.145867916988209,
+          "wall_s": 15.560596632072702,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -541,16 +524,16 @@
           "turn": 7,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 98923,
-          "output_tokens": 155,
-          "reasoning_tokens": 0,
-          "cache_read_tokens": 94329,
-          "cache_write_tokens": 4592,
-          "cost_usd": 0.0449338,
+          "input_tokens": 97051,
+          "output_tokens": 756,
+          "reasoning_tokens": 499,
+          "cache_read_tokens": 88884,
+          "cache_write_tokens": 8165,
+          "cost_usd": 0.0737298,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 1.5409375419840217,
+          "wall_s": 8.136371836997569,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -563,16 +546,16 @@
           "turn": 8,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 102495,
-          "output_tokens": 394,
-          "reasoning_tokens": 28,
-          "cache_read_tokens": 98921,
-          "cache_write_tokens": 3572,
-          "cost_usd": 0.0455322,
+          "input_tokens": 98911,
+          "output_tokens": 1451,
+          "reasoning_tokens": 1069,
+          "cache_read_tokens": 97049,
+          "cache_write_tokens": 1860,
+          "cost_usd": 0.0577378,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 4.057888709940016,
+          "wall_s": 15.429242589976639,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -585,16 +568,16 @@
           "turn": 9,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 107100,
-          "output_tokens": 1791,
-          "reasoning_tokens": 1537,
-          "cache_read_tokens": 102493,
-          "cache_write_tokens": 4605,
-          "cost_usd": 0.0793516,
+          "input_tokens": 101583,
+          "output_tokens": 345,
+          "reasoning_tokens": 53,
+          "cache_read_tokens": 98909,
+          "cache_write_tokens": 2672,
+          "cost_usd": 0.0400498,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 17.94484250782989,
+          "wall_s": 3.6466424600221217,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -607,16 +590,16 @@
           "turn": 10,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 111538,
-          "output_tokens": 695,
-          "reasoning_tokens": 414,
-          "cache_read_tokens": 107098,
-          "cache_write_tokens": 4438,
-          "cost_usd": 0.0575176,
+          "input_tokens": 103364,
+          "output_tokens": 491,
+          "reasoning_tokens": 119,
+          "cache_read_tokens": 101581,
+          "cache_write_tokens": 1781,
+          "cost_usd": 0.0390492,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 7.596823503030464,
+          "wall_s": 5.4302580030635,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -629,16 +612,16 @@
           "turn": 11,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 113199,
-          "output_tokens": 371,
-          "reasoning_tokens": 95,
-          "cache_read_tokens": 111536,
-          "cache_write_tokens": 1661,
-          "cost_usd": 0.0380402,
+          "input_tokens": 105864,
+          "output_tokens": 421,
+          "reasoning_tokens": 124,
+          "cache_read_tokens": 103362,
+          "cache_write_tokens": 2500,
+          "cost_usd": 0.0416004,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 3.6960277929902077,
+          "wall_s": 4.290891252225265,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -651,16 +634,16 @@
           "turn": 12,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 114852,
-          "output_tokens": 339,
-          "reasoning_tokens": 60,
-          "cache_read_tokens": 113197,
-          "cache_write_tokens": 1653,
-          "cost_usd": 0.0376924,
+          "input_tokens": 107963,
+          "output_tokens": 664,
+          "reasoning_tokens": 311,
+          "cache_read_tokens": 105862,
+          "cache_write_tokens": 2099,
+          "cost_usd": 0.0449554,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 4.3060440849512815,
+          "wall_s": 6.767332877963781,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -673,16 +656,16 @@
           "turn": 13,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 115755,
-          "output_tokens": 333,
-          "reasoning_tokens": 31,
-          "cache_read_tokens": 114850,
-          "cache_write_tokens": 903,
-          "cost_usd": 0.034153,
+          "input_tokens": 110958,
+          "output_tokens": 505,
+          "reasoning_tokens": 30,
+          "cache_read_tokens": 107961,
+          "cache_write_tokens": 2995,
+          "cost_usd": 0.0466752,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 3.6000512100290507,
+          "wall_s": 5.682184043107554,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -695,16 +678,16 @@
           "turn": 14,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 116752,
-          "output_tokens": 416,
-          "reasoning_tokens": 164,
-          "cache_read_tokens": 115753,
-          "cache_write_tokens": 997,
-          "cost_usd": 0.0364636,
+          "input_tokens": 111974,
+          "output_tokens": 467,
+          "reasoning_tokens": 72,
+          "cache_read_tokens": 110956,
+          "cache_write_tokens": 1016,
+          "cost_usd": 0.0366192,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 4.40028291894123,
+          "wall_s": 5.645899836206809,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -717,16 +700,16 @@
           "turn": 15,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 119357,
-          "output_tokens": 2811,
-          "reasoning_tokens": 2397,
-          "cache_read_tokens": 116750,
-          "cache_write_tokens": 2605,
-          "cost_usd": 0.092603,
+          "input_tokens": 114222,
+          "output_tokens": 438,
+          "reasoning_tokens": 205,
+          "cache_read_tokens": 111972,
+          "cache_write_tokens": 2248,
+          "cost_usd": 0.0424024,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 30.578882680041716,
+          "wall_s": 5.082014544866979,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -739,16 +722,16 @@
           "turn": 16,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 125882,
-          "output_tokens": 602,
-          "reasoning_tokens": 179,
-          "cache_read_tokens": 119355,
-          "cache_write_tokens": 6525,
-          "cost_usd": 0.068544,
+          "input_tokens": 115250,
+          "output_tokens": 2766,
+          "reasoning_tokens": 2370,
+          "cache_read_tokens": 114220,
+          "cache_write_tokens": 1028,
+          "cost_usd": 0.083312,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 6.826916669961065,
+          "wall_s": 29.605510096997023,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -761,16 +744,16 @@
           "turn": 17,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 127178,
-          "output_tokens": 501,
-          "reasoning_tokens": 133,
-          "cache_read_tokens": 125880,
-          "cache_write_tokens": 1296,
-          "cost_usd": 0.041684,
+          "input_tokens": 120741,
+          "output_tokens": 856,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 115248,
+          "cache_write_tokens": 5491,
+          "cost_usd": 0.0676326,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 5.532826544018462,
+          "wall_s": 9.412004337878898,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -783,16 +766,16 @@
           "turn": 18,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 128584,
-          "output_tokens": 1225,
-          "reasoning_tokens": 109,
-          "cache_read_tokens": 127176,
-          "cache_write_tokens": 1406,
-          "cost_usd": 0.0569732,
+          "input_tokens": 122104,
+          "output_tokens": 290,
+          "reasoning_tokens": 86,
+          "cache_read_tokens": 120739,
+          "cache_write_tokens": 1363,
+          "cost_usd": 0.0367708,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 11.834966921946034,
+          "wall_s": 3.386690334882587,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -805,16 +788,16 @@
           "turn": 19,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 130457,
-          "output_tokens": 9532,
-          "reasoning_tokens": 4749,
-          "cache_read_tokens": 128582,
-          "cache_write_tokens": 1873,
-          "cost_usd": 0.2257294,
+          "input_tokens": 122663,
+          "output_tokens": 9645,
+          "reasoning_tokens": 4507,
+          "cache_read_tokens": 122102,
+          "cache_write_tokens": 559,
+          "cost_usd": 0.2201234,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 85.22871724702418,
+          "wall_s": 82.32491224608384,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -827,16 +810,16 @@
           "turn": 20,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 145145,
-          "output_tokens": 5432,
-          "reasoning_tokens": 428,
-          "cache_read_tokens": 130455,
-          "cache_write_tokens": 14610,
-          "cost_usd": 0.208101,
+          "input_tokens": 137820,
+          "output_tokens": 5569,
+          "reasoning_tokens": 270,
+          "cache_read_tokens": 122661,
+          "cache_write_tokens": 15079,
+          "cost_usd": 0.2116272,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 37.60005947621539,
+          "wall_s": 37.421927640913054,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -849,16 +832,16 @@
           "turn": 21,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 88584,
-          "output_tokens": 5477,
-          "reasoning_tokens": 252,
-          "cache_read_tokens": 29550,
-          "cache_write_tokens": 59032,
-          "cost_usd": 0.410618,
+          "input_tokens": 149141,
+          "output_tokens": 6140,
+          "reasoning_tokens": 311,
+          "cache_read_tokens": 137740,
+          "cache_write_tokens": 11321,
+          "cost_usd": 0.207273,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "end_turn",
-          "wall_s": 37.195259891916066,
+          "wall_s": 42.2484351019375,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -871,16 +854,16 @@
           "turn": 0,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 18788,
-          "output_tokens": 6202,
-          "reasoning_tokens": 5879,
+          "input_tokens": 21209,
+          "output_tokens": 7048,
+          "reasoning_tokens": 6700,
           "cache_read_tokens": 6589,
-          "cache_write_tokens": 12195,
-          "cost_usd": 0.1863488,
+          "cache_write_tokens": 14616,
+          "cost_usd": 0.2153738,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 59.68398265191354,
+          "wall_s": 67.9479859478306,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -893,16 +876,16 @@
           "turn": 1,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 35463,
-          "output_tokens": 658,
-          "reasoning_tokens": 177,
-          "cache_read_tokens": 18784,
-          "cache_write_tokens": 16677,
-          "cost_usd": 0.1003098,
+          "input_tokens": 38785,
+          "output_tokens": 613,
+          "reasoning_tokens": 73,
+          "cache_read_tokens": 21205,
+          "cache_write_tokens": 17578,
+          "cost_usd": 0.104399,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 6.763082419987768,
+          "wall_s": 6.734747918788344,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -915,16 +898,16 @@
           "turn": 2,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 44347,
-          "output_tokens": 1278,
-          "reasoning_tokens": 921,
-          "cache_read_tokens": 35461,
-          "cache_write_tokens": 8884,
-          "cost_usd": 0.0770802,
+          "input_tokens": 50233,
+          "output_tokens": 510,
+          "reasoning_tokens": 162,
+          "cache_read_tokens": 38783,
+          "cache_write_tokens": 11448,
+          "cost_usd": 0.0752046,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 14.064839463913813,
+          "wall_s": 5.954711503116414,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -937,16 +920,16 @@
           "turn": 3,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 49691,
-          "output_tokens": 401,
-          "reasoning_tokens": 46,
-          "cache_read_tokens": 44345,
-          "cache_write_tokens": 5344,
-          "cost_usd": 0.043617,
+          "input_tokens": 56667,
+          "output_tokens": 916,
+          "reasoning_tokens": 556,
+          "cache_read_tokens": 50231,
+          "cache_write_tokens": 6434,
+          "cost_usd": 0.0605442,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 5.068951918976381,
+          "wall_s": 10.145795046817511,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -959,16 +942,16 @@
           "turn": 4,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 55535,
-          "output_tokens": 4911,
-          "reasoning_tokens": 2365,
-          "cache_read_tokens": 49689,
-          "cache_write_tokens": 5844,
-          "cost_usd": 0.1373858,
+          "input_tokens": 61477,
+          "output_tokens": 4160,
+          "reasoning_tokens": 1618,
+          "cache_read_tokens": 56665,
+          "cache_write_tokens": 4810,
+          "cost_usd": 0.118591,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "end_turn",
-          "wall_s": 47.221138772089034,
+          "wall_s": 41.69303160184063,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -981,16 +964,16 @@
           "turn": 22,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 96622,
-          "output_tokens": 1128,
-          "reasoning_tokens": 564,
-          "cache_read_tokens": 88582,
-          "cache_write_tokens": 8036,
-          "cost_usd": 0.0804724,
+          "input_tokens": 97822,
+          "output_tokens": 1347,
+          "reasoning_tokens": 706,
+          "cache_read_tokens": 29791,
+          "cache_write_tokens": 68027,
+          "cost_usd": 0.3730492,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 12.229483047034591,
+          "wall_s": 14.25880367285572,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1003,16 +986,16 @@
           "turn": 23,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 99503,
-          "output_tokens": 7923,
-          "reasoning_tokens": 1748,
-          "cache_read_tokens": 96618,
-          "cache_write_tokens": 2883,
-          "cost_usd": 0.1922066,
+          "input_tokens": 102344,
+          "output_tokens": 1849,
+          "reasoning_tokens": 1286,
+          "cache_read_tokens": 97818,
+          "cache_write_tokens": 4524,
+          "cost_usd": 0.0791716,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 58.76739590195939,
+          "wall_s": 17.80289954994805,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1025,16 +1008,38 @@
           "turn": 24,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 112677,
-          "output_tokens": 7084,
-          "reasoning_tokens": 226,
-          "cache_read_tokens": 99501,
-          "cache_write_tokens": 13174,
-          "cost_usd": 0.2274582,
+          "input_tokens": 106413,
+          "output_tokens": 6320,
+          "reasoning_tokens": 23,
+          "cache_read_tokens": 102342,
+          "cache_write_tokens": 4069,
+          "cost_usd": 0.1672214,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 42.96401414484717,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 25,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 118077,
+          "output_tokens": 7231,
+          "reasoning_tokens": 151,
+          "cache_read_tokens": 106411,
+          "cache_write_tokens": 11664,
+          "cost_usd": 0.2242302,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "end_turn",
-          "wall_s": 49.16589273116551,
+          "wall_s": 49.384979063877836,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1047,16 +1052,16 @@
           "turn": 0,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 21256,
-          "output_tokens": 2839,
-          "reasoning_tokens": 2492,
+          "input_tokens": 22942,
+          "output_tokens": 5037,
+          "reasoning_tokens": 4390,
           "cache_read_tokens": 6589,
-          "cache_write_tokens": 14663,
-          "cost_usd": 0.1314288,
+          "cache_write_tokens": 16349,
+          "cost_usd": 0.1838188,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 27.383089012932032,
+          "wall_s": 47.26506131305359,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1069,16 +1074,16 @@
           "turn": 1,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 29424,
-          "output_tokens": 711,
-          "reasoning_tokens": 84,
-          "cache_read_tokens": 21252,
-          "cache_write_tokens": 8170,
-          "cost_usd": 0.0593284,
+          "input_tokens": 37315,
+          "output_tokens": 622,
+          "reasoning_tokens": 83,
+          "cache_read_tokens": 22938,
+          "cache_write_tokens": 14375,
+          "cost_usd": 0.0889106,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "tool_use",
-          "wall_s": 6.682466211961582,
+          "wall_s": 10.843913129996508,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1091,38 +1096,126 @@
           "turn": 2,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 35104,
-          "output_tokens": 501,
-          "reasoning_tokens": 299,
-          "cache_read_tokens": 29422,
-          "cache_write_tokens": 5680,
-          "cost_usd": 0.0443124,
+          "input_tokens": 44742,
+          "output_tokens": 2445,
+          "reasoning_tokens": 715,
+          "cache_read_tokens": 37313,
+          "cache_write_tokens": 7427,
+          "cost_usd": 0.0935056,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
-          "stop_reason": "tool_use",
-          "wall_s": 5.687774960882962,
+          "stop_reason": "end_turn",
+          "wall_s": 22.614128968911245,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
           "input_transformations": []
         },
         {
-          "session": "editor-2",
-          "role": "editor",
-          "round": 2,
-          "turn": 3,
+          "session": "analyst",
+          "role": "analyst",
+          "round": 3,
+          "turn": 26,
           "model": "claude-opus-5-5",
           "served_model": "claude-opus-5-5",
-          "input_tokens": 38965,
-          "output_tokens": 2565,
-          "reasoning_tokens": 1080,
-          "cache_read_tokens": 35102,
-          "cache_write_tokens": 3861,
-          "cost_usd": 0.0776334,
+          "input_tokens": 127006,
+          "output_tokens": 497,
+          "reasoning_tokens": 205,
+          "cache_read_tokens": 118075,
+          "cache_write_tokens": 8927,
+          "cost_usd": 0.078206,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 4.798768836073577,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 3,
+          "turn": 27,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 128931,
+          "output_tokens": 6604,
+          "reasoning_tokens": 29,
+          "cache_read_tokens": 127002,
+          "cache_write_tokens": 1927,
+          "cost_usd": 0.1671234,
           "price_source": "anthropic-published:2026-10-28",
           "pricing_failure": null,
           "stop_reason": "end_turn",
-          "wall_s": 24.90232071909122,
+          "wall_s": 43.57829235191457,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-3",
+          "role": "editor",
+          "round": 3,
+          "turn": 0,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 22161,
+          "output_tokens": 2734,
+          "reasoning_tokens": 2272,
+          "cache_read_tokens": 6589,
+          "cache_write_tokens": 15568,
+          "cost_usd": 0.1338538,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 24.182005260838196,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-3",
+          "role": "editor",
+          "round": 3,
+          "turn": 1,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 34556,
+          "output_tokens": 400,
+          "reasoning_tokens": 77,
+          "cache_read_tokens": 22157,
+          "cache_write_tokens": 12397,
+          "cost_usd": 0.0744244,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 4.002331543015316,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-3",
+          "role": "editor",
+          "round": 3,
+          "turn": 2,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 43624,
+          "output_tokens": 2346,
+          "reasoning_tokens": 677,
+          "cache_read_tokens": 34554,
+          "cache_write_tokens": 9068,
+          "cost_usd": 0.0991788,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 22.172723843948916,
           "refused": null,
           "admitted_on_estimate": false,
           "sent_binding": "error",
@@ -1131,124 +1224,157 @@
       ],
       "by_role": {
         "analyst": {
-          "turns": 25,
-          "input_tokens": 2547641,
-          "output_tokens": 50380,
-          "reasoning_tokens": 14738,
-          "cache_read_tokens": 2319319,
-          "cache_write_tokens": 228190,
-          "cost_usd": 2.6129418,
+          "turns": 28,
+          "input_tokens": 2847927,
+          "output_tokens": 60761,
+          "reasoning_tokens": 15783,
+          "cache_read_tokens": 2599510,
+          "cache_write_tokens": 248199,
+          "cost_usd": 2.976989,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
-          "tool_calls": 42,
+          "tool_calls": 45,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 423.6185359824449
+          "wall_s": 499.6544043926988
         },
         "editor": {
-          "turns": 9,
-          "input_tokens": 328573,
-          "output_tokens": 20066,
-          "reasoning_tokens": 13343,
-          "cache_read_tokens": 247233,
-          "cache_write_tokens": 81318,
-          "cost_usd": 0.8574446,
+          "turns": 11,
+          "input_tokens": 433711,
+          "output_tokens": 26831,
+          "reasoning_tokens": 17323,
+          "cache_read_tokens": 303613,
+          "cache_write_tokens": 130070,
+          "cost_usd": 1.2478046,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
-          "tool_calls": 16,
+          "tool_calls": 22,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 197.45764613174833
+          "wall_s": 263.5564360781573
         }
       },
       "by_round": {
         "analyst:1": {
           "turns": 22,
-          "input_tokens": 2238839,
-          "output_tokens": 34245,
-          "reasoning_tokens": 12200,
-          "cache_read_tokens": 2034618,
-          "cache_write_tokens": 204097,
-          "cost_usd": 2.1128046,
+          "input_tokens": 2167334,
+          "output_tokens": 36913,
+          "reasoning_tokens": 13383,
+          "cache_read_tokens": 2018071,
+          "cache_write_tokens": 149061,
+          "cost_usd": 1.8879872,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
-          "tool_calls": 39,
+          "tool_calls": 38,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 303.4557643022854
+          "wall_s": 326.86664677318186
         },
         "analyst:2": {
-          "turns": 3,
-          "input_tokens": 308802,
-          "output_tokens": 16135,
-          "reasoning_tokens": 2538,
-          "cache_read_tokens": 284701,
-          "cache_write_tokens": 24093,
-          "cost_usd": 0.5001372,
-          "unpriced_turns": 0,
-          "unpriced_reasons": [],
-          "admitted_on_estimate": 0,
-          "tool_calls": 3,
-          "bounces": 0,
-          "bounce_kinds": {},
-          "wall_s": 120.1627716801595
-        },
-        "editor:1": {
-          "turns": 5,
-          "input_tokens": 203824,
-          "output_tokens": 13450,
-          "reasoning_tokens": 9388,
-          "cache_read_tokens": 154868,
-          "cache_write_tokens": 48944,
-          "cost_usd": 0.5447416,
-          "unpriced_turns": 0,
-          "unpriced_reasons": [],
-          "admitted_on_estimate": 0,
-          "tool_calls": 10,
-          "bounces": 0,
-          "bounce_kinds": {},
-          "wall_s": 132.80199522688054
-        },
-        "editor:2": {
           "turns": 4,
-          "input_tokens": 124749,
-          "output_tokens": 6616,
-          "reasoning_tokens": 3955,
-          "cache_read_tokens": 92365,
-          "cache_write_tokens": 32374,
-          "cost_usd": 0.312703,
+          "input_tokens": 424656,
+          "output_tokens": 16747,
+          "reasoning_tokens": 2166,
+          "cache_read_tokens": 336362,
+          "cache_write_tokens": 88284,
+          "cost_usd": 0.8436724,
           "unpriced_turns": 0,
           "unpriced_reasons": [],
           "admitted_on_estimate": 0,
           "tool_calls": 6,
           "bounces": 0,
           "bounce_kinds": {},
-          "wall_s": 64.6556509048678
+          "wall_s": 124.41069643152878
+        },
+        "analyst:3": {
+          "turns": 2,
+          "input_tokens": 255937,
+          "output_tokens": 7101,
+          "reasoning_tokens": 234,
+          "cache_read_tokens": 245077,
+          "cache_write_tokens": 10854,
+          "cost_usd": 0.2453294,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 1,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 48.37706118798815
+        },
+        "editor:1": {
+          "turns": 5,
+          "input_tokens": 228371,
+          "output_tokens": 13247,
+          "reasoning_tokens": 9109,
+          "cache_read_tokens": 173473,
+          "cache_write_tokens": 54886,
+          "cost_usd": 0.5741126000000001,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 10,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 132.4762720183935
+        },
+        "editor:2": {
+          "turns": 3,
+          "input_tokens": 104999,
+          "output_tokens": 8104,
+          "reasoning_tokens": 5188,
+          "cache_read_tokens": 66840,
+          "cache_write_tokens": 38151,
+          "cost_usd": 0.366235,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 7,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 80.72310341196135
+        },
+        "editor:3": {
+          "turns": 3,
+          "input_tokens": 100341,
+          "output_tokens": 5480,
+          "reasoning_tokens": 3026,
+          "cache_read_tokens": 63300,
+          "cache_write_tokens": 37033,
+          "cost_usd": 0.307457,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 5,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 50.35706064780243
         }
       },
       "total": {
-        "turns": 34,
-        "input_tokens": 2876214,
-        "output_tokens": 70446,
-        "reasoning_tokens": 28081,
-        "cache_read_tokens": 2566552,
-        "cache_write_tokens": 309508,
-        "cost_usd": 3.4703864000000006,
+        "turns": 39,
+        "input_tokens": 3281638,
+        "output_tokens": 87592,
+        "reasoning_tokens": 33106,
+        "cache_read_tokens": 2903123,
+        "cache_write_tokens": 378269,
+        "cost_usd": 4.2247936,
         "unpriced_turns": 0,
         "unpriced_reasons": [],
         "admitted_on_estimate": 0,
-        "tool_calls": 58,
+        "tool_calls": 67,
         "bounces": 0,
         "bounce_kinds": {},
-        "wall_s": 621.0761821141932
+        "wall_s": 763.210840470856
       },
       "transcripts": {
-        "analyst": "6cd10402dc7d69f861c8af46b634d8dc1830053250d02cd6e8c16cc9f4abefe6",
-        "editor-1": "5004785e9255cdd8eaba2486d491f1dd90b51a0f12e1af95d14bc8e3b39add02",
-        "editor-2": "4c8f29be8ffdae2a696ee8b7f97123a35c13ab0e01d1bb754e3c5399ed69c4ec"
+        "analyst": "55c13d77637937f65dbb57722acf0e65b925d72e5e3ba20ed87faf4ba2530dd7",
+        "editor-1": "56fdae8f20ba7afbe5d165371f6366cc9d8511ae2e9b88e27f8141f0a1268558",
+        "editor-2": "b8ffa04a07ea009a7a2e7a82d06e7a124ef325729777a15a5fc76d81351ca341",
+        "editor-3": "c7e7ecb77992abe212ee1e516872336d1a5bfa623585e337a486bc55ac53c81d"
       }
     },
     "reviews": [
@@ -1258,93 +1384,101 @@
           {
             "n": 1,
             "name": "First screen",
-            "score": 1,
-            "reason": "The headline, the decision block and c1 make the hold clear, give the reason (the two configurations that hold 97% in every task have overall p95s of 870 ms and 2551 ms) and name the main risk. But the lede and the Recommendation say a budget at or above 870 ms 'would change the answer'. The overall p95 is only the lowest such a budget could be. The latency gate applies within each task, so at least one task's p95 for Brisk-S · reasoning high · 1 retry must be at or above 870 ms. A latency owner who moves the budget to 870 ms would not be enough to qualify it."
+            "score": 2,
+            "reason": "The headline, lede and decision block say it plainly: no configuration clears both gates. The two that hold 97% in every task, Brisk-S and Atlas-M with high reasoning and a retry, run at 870 ms and 2551 ms at p95. Everything inside the budget misses on multi-hop. Watch names the main risk: Brisk-S high's multi-hop clearance of 0.3 points would read under the gate 37.4% of the time. options_dominance agrees: it finds no survivors, and only those two are undecided, on latency alone. One weak spot: the Options table prints overall pass rate, where Atlas-M low with a retry (97.9%) and Brisk-S low with a retry (97.1%) look as if they pass a gate they fail per task."
           },
           {
             "n": 2,
             "name": "Coherent story",
-            "score": 2,
-            "reason": "I checked each claim row by row against its block and the appendix. c1 holds: only Atlas-M · high · retry (97.9%) and Brisk-S · high · retry (97.3%) pass multi-hop, and every other configuration misses there. c2 holds: J at 513 ms, I at 465 ms and S at 450 ms are under 600 ms, and each misses some task. c3's gaps (95.6%, 96.4%, 97.0%) and c4's 5.5× ($3.477 vs $0.633) match the data. Nothing contradicts the headline."
+            "score": 1,
+            "reason": "pass-rate-gate, latency-budget, brisk-vs-atlas and full-grid each match their blocks row by row. But reasoning-lever ends 'the retry is the lever that lifts pass rate clearly' and reads reasoning low-to-high as +0.8 overall, not separated from zero. That sits against the page's own 'What is tangled', which says both gates pull against each other through the reasoning setting. On the gate that matters, multi-hop, moving reasoning from low to high (95.6% to 97.3%) is what crosses the line. The claim never says so, so a reader comes away unsure whether high reasoning is needed."
           },
           {
             "n": 3,
             "name": "Honest emphasis",
-            "score": 1,
-            "reason": "L's thin clearances are shown, with wrong-side odds of 37.4%, 29.9% and 16.5%, which I confirmed. But the hold also depends on the closest configuration under the budget, Brisk-S · low · retry, really missing the gate, and that is framed more firmly than the data allow. The per-task clause says its 1.4-point multi-hop miss means 'the hold does not rest on' the counts. Assuming each task got its traffic share of cases, that miss reads on the wrong side 11.9% of the time, the 0.6-point ambiguous-entity miss 33.3%, and date math sits on the line at 50%. None of J's margins appear in Watch."
+            "score": 2,
+            "reason": "The pick's weak axes are in view: its 0.3-point multi-hop clearance, the chance a rerun reads each task under the gate, the best-of-18 inflation, 870 ms against 600, and routing that the snapshot does not name. One overstatement: reasoning-lever's 'clearly' rests on a retry effect whose interval starts at +0.035, on a block whose own note says 'never a test'."
           },
           {
             "n": 4,
             "name": "Sound elision",
             "score": 2,
-            "reason": "Nothing omitted would change the decision. Nano-XS misses in every task; overall pass rate, calls per task and p50 latency are not gated; and the snapshot holds no figures for extra calls or outcome."
+            "reason": "Nothing omitted bears on the call. Monthly cost is rightly withheld because the volume unit is undeclared. The Nano-XS interactions are far from the gate. The snapshot has no failure examples. Calls per task bears on neither gate."
           },
           {
             "n": 5,
             "name": "Confounds handled",
-            "score": 1,
-            "reason": "The overall-only latency reading is handled well: if the tasks split the cases, the overall p95 above 600 ms forces at least one task over 600 ms. The unnamed provider is not handled where it matters. Method says the routing behind the costs is unknown, but c4 and the 'Why not the others' line give the 5.5× ratio and $11,376 a month as if they belonged to the models."
+            "score": 2,
+            "reason": "Per-task latency is carried as an inference, and its condition (each case in one task) matches what code implies for both high-reasoning arms. No control, best-of-n and the unstated task counts each have a scoped clause. Unknown routing is attached to the cost ratio. I re-ran the settle figures (37.4%, 11.9%, 33.3%, and 22,911 cases for the two-sided interval at 80%) and they reproduce."
           },
           {
             "n": 6,
             "name": "Actionable next steps",
-            "score": 2,
-            "reason": "Each step names an action and what it would settle: per-task p95, a declaration on the budget, a fix-and-rerun on the two weak tasks, and a 22,911-case confirmation, which I checked against the two-sided 80% size. The second step's '870 ms' target inherits the problem in item 1."
+            "score": 1,
+            "reason": "Each step names what it would settle. Two problems could slow a reader. Step 1 says to measure per-task p95 'on the cases already run', but Method says no per-task latency was recorded, so it is unclear whether a rerun is needed. Step 2 says 'no further run can bring its p95 inside today's budget', but latency also depends on the serving routing, which the snapshot does not name."
           },
           {
             "n": 7,
             "name": "Evidence fits claims",
             "score": 1,
-            "reason": "c3's claim is about gaps (1.4 points, 0.6, exactly on the line), but its block shows only three failure examples, so none of those figures is drawn. c2's second half (every configuration under the budget misses the pass rate somewhere) is not drawn in its latency block either. c1's heatmap and c4's bars and interval do fit their claims."
+            "reason": "full-grid claims every Nano-XS configuration misses the gate 'in all four tasks', yet its block shows only overall pass rates. reasoning-lever's block leaves out the multi-hop movement and the latency cost that make reasoning matter to this decision. It also prints '+0.03535' to five digits next to one-decimal neighbours. pass-rate-gate, latency-budget and brisk-vs-atlas each show their own figures clearly."
           }
         ],
         "findings": [
           {
-            "claim": "c4",
-            "severity": "must_fix",
-            "finding": "c4, its caption and the decision's 'costs 5.5 times as much' line compare costs ($3.48 vs $0.63 per 1,000 calls, $11,376 a month) with no provider named for either model. The snapshot does not say who served Atlas-M or Brisk-S, and only Method mentions that. Fix: say in the c4 sentence and in the decision line that no provider is named for either configuration, so the 5.5× ratio and the monthly gap reflect this run's unnamed routing and may not hold under another one.",
+            "claim": "reasoning-lever",
+            "severity": "should_fix",
+            "finding": "The claim says the retry is 'the lever that lifts pass rate clearly' and that reasoning low-to-high adds only +0.8 overall (-0.4 to +2.1). That leads a reader to discount reasoning, but the decision turns on it. On multi-hop, Brisk-S with a retry goes from 95.6% at low reasoning to 97.3% at high, which is what crosses the gate. The same move takes p95 from 513 ms to 870 ms. Off-to-low reasoning is also a clear lift (+2.5, +0.9 to +4.1). Fix: restate the claim as the trade this decision faces, multi-hop pass rate against p95 and cost, and add those per-task and latency figures to the block. Drop 'clearly', since the high-reasoning retry effect's interval starts at +0.035 and the block's note says it is not a test. Print that bound at one decimal like its neighbours.",
             "id": "f1.1",
             "since": 1
           },
           {
-            "claim": "",
-            "severity": "must_fix",
-            "finding": "The lede ('A budget at or above that p95… would change the answer') and the second next step ('could rise to 870 ms') treat 870 ms as enough for Brisk-S · reasoning high · 1 retry. The page's own argument in the latency clause shows the opposite. The gate applies within each task, and if the tasks split the cases, at least one task's p95 must be at or above the overall 870 ms. Multi-hop, with 2 to 3 calls, is likely slower still. Fix: say the budget would need to cover L's slowest task's p95, which is at least 870 ms and has not been read. Make the per-task latency read the first thing that would change the answer, and phrase the budget declaration as 'at least 870 ms, exact level pending the per-task read'.",
+            "claim": "full-grid",
+            "severity": "should_fix",
+            "finding": "The claim says every Nano-XS configuration misses the gate in all four tasks, but the block shows only overall pass rates, so the claim's own figure is not in its block. Either add the Nano-XS per-task rows (the best, high reasoning with a retry, peaks at 95.8% on single lookups) or reword the claim to what the block shows: Nano-XS tops out at 94.8% overall.",
             "id": "f1.2",
             "since": 1
           },
           {
             "claim": "",
             "severity": "should_fix",
-            "finding": "Confidence and Watch understate the risk on the side of the hold that could flip it toward a ship. The per-task-counts clause says configurations under the budget miss 'by at least 1.4 points somewhere, so the hold does not rest on them'. Assuming each task got its traffic share of cases, Brisk-S · low · retry's 1.4-point multi-hop miss reads on the wrong side 11.9% of the time, its 0.6-point ambiguous-entity miss 33.3%, and its date math is on the line. Fix: quote the 11.9% in that clause and add J's multi-hop and ambiguous-entity margins to Watch, since a rerun there is what could turn the hold into a pick. Separately, the best-of-n clause says a lower re-read of L would 'leave no configuration holding the pass rate everywhere'. That is wrong, because Atlas-M · high · retry clears multi-hop by 0.9 points and ambiguous entities by 1.3. Say 'would leave only Atlas-M · high · retry holding'.",
+            "finding": "The first-screen Options table prints overall pass rate under 'Pass rate'. Atlas-M low with a retry (97.9%), Brisk-S low with a retry (97.1%) and Atlas-M high without a retry (97.7%) all read above the 97% gate, yet each fails it per task. Label the column as over all tasks and add each option's lowest task, or its gate status, so the table cannot be read as a pass list.",
             "id": "f1.3",
             "since": 1
           },
           {
-            "claim": "c3",
+            "claim": "",
             "severity": "should_fix",
-            "finding": "c3's sentence rests on J's per-task gaps (multi-hop 95.6%, ambiguous entity 96.4%, date math 97.0% against 97%), but its block holds only three failure examples, so the claim's own figures are not drawn. c2's second half (every configuration under the budget misses somewhere) has the same problem. Fix: give c3 a block showing per-task pass rates against the 97% line for the configurations under the budget (J, I, S), and keep the examples as a second block. Also fix the examples caption: it says 'one per task where it struggles', but J holds date math at exactly 97.0%. It also lists the examples in the order first, third, second, and does not say how many failures each was kept from.",
+            "finding": "The lean says that if the latency owner accepts 'a p95 near 870 ms over all tasks', Brisk-S high with a retry is the one to confirm. The budget is declared per task, and multi-hop requests, at 2 to 3 calls, likely have a p95 above the 870 ms overall figure. Accepting 870 ms overall would therefore not admit the configuration under the budget as declared. Say that the owner must accept a per-task budget covering its slowest task, which stays unknown until per-task latency is measured. That would match the 'What you could change' row.",
             "id": "f1.4",
             "since": 1
           },
           {
-            "claim": "c4",
+            "claim": "",
             "severity": "should_fix",
-            "finding": "The $11,376-a-month gap prices the 4,000,000 monthly volume as calls. Method says the volume's unit is not stated, and these configurations make about 1.45 calls per task. If the volume counts tasks, the gap is about 45% larger. Say in the caption that the monthly gap assumes the volume counts calls. A smaller point: the dot reads -0.7 while the options table's rounded rates (98.0% vs 98.6%) suggest -0.6. Add a note that the difference is computed before rounding.",
+            "finding": "Two next steps need tightening. Step 1 asks for per-task p95 'on the cases already run', but Method says no per-task latency was recorded. State whether per-case timings exist to re-slice, or that a timed rerun is needed. Step 2 says 'no further run can bring its p95 inside today's budget'. Latency is partly the serving routing's, and the snapshot names no provider, so limit it to 'at this run's routing'.",
             "id": "f1.5",
+            "since": 1
+          },
+          {
+            "claim": "",
+            "severity": "should_fix",
+            "finding": "The confidence reads High over four open caveats. Three clauses say why the call holds. The task-counts clause gives the chances that Brisk-S low with a retry is misread (11.9% on multi-hop, 33.3% on ambiguous entities) but stops short of the reason: to clear both gates it would need both misses to flip together and its untested per-task latency to stay inside 600 ms. Add that sentence, and note that the counts are assumed from traffic shares, so the true spread could be wider.",
+            "id": "f1.6",
             "since": 1
           }
         ],
         "resolved": [],
-        "total": 10,
-        "passes": false,
-        "must_fix": true,
+        "total": 11,
+        "passes": true,
+        "must_fix": false,
         "blocking": [
           "f1.1",
           "f1.2",
           "f1.3",
           "f1.4",
-          "f1.5"
+          "f1.5",
+          "f1.6"
         ]
       },
       {
@@ -1354,51 +1488,58 @@
             "n": 1,
             "name": "First screen",
             "score": 2,
-            "reason": "The headline, lede and decision block say what to do: ship none yet. They say why: the only two configurations that hold 97% in every task, Brisk-S high with a retry and Atlas-M high with a retry, read overall p95s of 870 ms and 2551 ms against a 600 ms budget. They also name the main risks: per-task latency was never read, the hold-side configuration Brisk-S low with a retry could flip on a rerun, and Brisk-S high with a retry clears multi-hop by only 0.3 points. c1 then shows the per-task pass-rate picture."
+            "reason": "The headline says no configuration clears both gates. The lede names the one closest to doing so (Brisk-S high with a retry, 0.3 points over on its thinnest task but 870 ms at p95) and says what would change the answer. The flag warns that the Options table's overall pass rates are not the gate and that latency verdicts are inferred from the overall p95. Watch states the main risk with chances I reproduced: 37.4%, 29.9%, 16.5% and 0.3%."
           },
           {
             "n": 2,
             "name": "Coherent story",
             "score": 2,
-            "reason": "c1 is the pass-rate filter, c2 the latency filter and c3 shows that nothing under the budget clears every task. c4 compares the two survivors. Each sentence matches its table. c1's multi-hop rows and c3's ten under-budget configurations all sit below 97% on multi-hop. c3's 95.6%, 96.4% and 97.0% match the gate figures. c2 rests on the fact that a configuration's slowest task is at least as slow as its overall p95, which holds if the tasks split the cases. The code also reads the two survivors as undecided only on latency."
+            "reason": "Each claim matches its block row by row. pass-rate-gate: only F and L pass multi-hop (97.9%, 97.3%), and every other configuration misses there, as the gate table confirms. latency-budget: 870 ms and 2551 ms against 600 ms. reasoning-trade: 95.6% to 97.3%, and 513 ms to 870 ms. brisk-vs-atlas: -0.7 (-1.7 to +0.4), which arms_compare reproduces. overall-not-gate: D, E and J on multi-hop are 96.4%, 96.6% and 95.6%. options_dominance under gates leaves no survivors, with F and L undecided only on per-task latency. The page's argument that those two miss somewhere is sound: if every task's p95 were within the budget, the overall p95 would be too."
           },
           {
             "n": 3,
             "name": "Honest emphasis",
             "score": 2,
-            "reason": "Watch gives Brisk-S high with a retry's thin margins (0.3, 0.6 and 0.9 points; 37.4%, 29.9% and 16.5% wrong-side odds on assumed counts). It also gives the hold-side margins of Brisk-S low with a retry (11.9%, 33.3% and 50%, which I confirmed). c4 says the two survivors' pass rates are not told apart (-0.7, interval -1.7 to +0.4). The cost ratio is limited to this run's unnamed routing."
+            "reason": "Brisk-S high with a retry has its weak points stated plainly: its 0.3-point multi-hop margin, the 37.4% chance a run would read it under the gate, the best-of-18 caveat, and an 870 ms p95 that is a floor, not the per-task figure. reasoning-trade says the overall low-to-high move is not separated from zero (+0.8, -0.4 to +2.1). brisk-vs-atlas says its interval is unpaired."
           },
           {
             "n": 4,
             "name": "Sound elision",
             "score": 2,
-            "reason": "None of the omitted items would move the hold. The Nano-XS configurations miss every task. The overall pass rate and the grid effects do not decide the gates. p50 and calls per task are not gated. The gate sweep from 94% to 98% never changes the call, because latency is unread for every arm."
+            "reason": "Nothing omitted would change the decision. The best Nano-XS configuration reads 94.8% overall and misses every task. The snapshot keeps no failure examples. Monthly cost is left out with a stated reason. Neither the retry effect nor the interactions separates the two configurations near the gate."
           },
           {
             "n": 5,
             "name": "Confounds handled",
             "score": 2,
-            "reason": "The page carries the unread per-task latency, the unstated per-task counts (with the assumption stated each time), best-of-18, the missing control and the unnamed provider routing. Each appears in the story, the confidence clauses and the next steps. The confidence clauses say what would make each caveat matter and why the hold stands until then."
+            "reason": "Unknown routing is named for cost and latency, in Method, in brisk-vs-atlas and in next step 2. Unmeasured per-task latency, unstated task counts, the missing control and best-of-18 selection are each scoped in the confidence line, and next steps follow up on them. The task-counts clause now says what would have to happen together for Brisk-S low with a retry to clear both gates, and that the assumed counts could understate the spread."
           },
           {
             "n": 6,
             "name": "Actionable next steps",
             "score": 2,
-            "reason": "Each step names a read, a declaration or a rerun, with case counts I confirmed (1,685 and 7,567 for Brisk-S low with a retry), and says what it would settle. One overreach is noted below."
+            "reason": "Each step names an action and what it settles: re-slicing per-case timings, or a timed rerun if none were kept; a declaration from the latency owner, limited to this run's routing; an untested mixed-reasoning configuration; and a multi-hop rerun at 22,911 cases. That size matches the two-sided four-in-five figure from settle_cases."
           },
           {
             "n": 7,
             "name": "Evidence fits claims",
-            "score": 2,
-            "reason": "c1 and c3 draw their per-task rates against the 97% line. c2 draws the overall p50-to-p95 ranges against the budget, and its caption says the gate is per task. c4 draws both the cost bars and the interval on the pass-rate gap, with the rounding note. c3's example caption now matches its order and says the examples show kinds of failure, not shares."
+            "score": 1,
+            "reason": "Each block carries its claim's figures, and the claims would change if the values flipped. But pass-rate-gate's caption calls its six rows 'the six configurations nearest the gate', and it includes Nano-XS high with a retry (multi-hop 93.5%). It leaves out Brisk-S high without a retry (95.5%) and Atlas-M low without a retry (94.1%), and both are nearer the gate in every task."
           }
         ],
         "findings": [
           {
-            "claim": "",
+            "claim": "pass-rate-gate",
             "severity": "should_fix",
-            "finding": "The third next step reruns Brisk-S low with a retry on multi-hop and ambiguous-entity cases and says the result settles whether it 'holds every task and becomes the pick'. Two things that step does not settle also stand in the way. Its date-math pass rate is exactly on the 97% line, so on assumed counts it reads the wrong way half the time. And its overall p95 is 513 ms, so its slowest task is at least that slow and has not been read against 600 ms. Fix: add date-math cases to the rerun, and change the outcome to 'becomes the pick only if date math also holds and its per-task p95 stays under 600 ms'. Match the confidence clause's 'pending per-task latency' wording.",
+            "finding": "The caption says the block shows the six configurations nearest the gate, but it includes Nano-XS high with a retry (93.5% multi-hop, 94.7% date math). It omits Brisk-S high without a retry (97.6%, 95.5%, 96.6%, 96.1%), which is nearer in every task, and Atlas-M low without a retry is also nearer. Either replace the Nano-XS row with Brisk-S high without a retry, or reword the caption to 'the five nearest the gate and the best Nano-XS'.",
             "id": "f2.1",
+            "since": 2
+          },
+          {
+            "claim": "reasoning-trade",
+            "severity": "should_fix",
+            "finding": "The claim says high reasoning 'costs 2.1 times as much per 1,000 calls' ($0.633 against $0.302) with no word on who served the calls. The decision block and brisk-vs-atlas both tie their cost figures to this run's unknown routing. Add 'at this run's routing' here too, so the ratio is not read as a property of the setting alone.",
+            "id": "f2.2",
             "since": 2
           }
         ],
@@ -1407,7 +1548,72 @@
           "f1.2",
           "f1.3",
           "f1.4",
-          "f1.5"
+          "f1.5",
+          "f1.6"
+        ],
+        "total": 13,
+        "passes": true,
+        "must_fix": false,
+        "blocking": []
+      },
+      {
+        "round": 3,
+        "items": [
+          {
+            "n": 1,
+            "name": "First screen",
+            "score": 2,
+            "reason": "The headline says what is unresolved: no configuration clears both gates. The two that hold 97% in every task, Brisk-S and Atlas-M at high reasoning with a retry, run past 600 ms at p95 (870 ms and 2551 ms). Every configuration inside the budget misses on multi-hop. The decision block names the lean, which depends on a per-task budget of at least 870 ms. Its Watch line gives the main risk: the 0.3-point multi-hop clearance reads under the gate 37.4% of the time, under counts assumed from traffic shares, and that figure matches settle_cases. The first claim, pass-rate-gate, shows the per-task picture behind it."
+          },
+          {
+            "n": 2,
+            "name": "Coherent story",
+            "score": 2,
+            "reason": "I read each claim against its table row by row and nothing contradicts. In pass-rate-gate, only the two high-reasoning, retry configurations clear all four tasks, and every other one fails multi-hop. This matches options_dominance, where every other configuration fails multi-hop. In overall-not-gate, the three configurations above the gate over all tasks (97.9%, 97.7%, 97.1%) each miss multi-hop (96.4%, 96.6%, 95.6%). In brisk-vs-atlas, the per-task differences of -0.6 to -0.7 match the task rows. Code returns no survivors and leaves both high-reasoning, retry configurations undecided on per-task latency, with an inferred miss. The lede says the latency verdicts are inferred from the overall p95."
+          },
+          {
+            "n": 3,
+            "name": "Honest emphasis",
+            "score": 2,
+            "reason": "The leaned-on configuration's weak axes are visible. Its multi-hop margin is 0.3 points, its ambiguous-entity and date-math chances of reading under the gate are 29.9% and 16.5%, and best-of-18 selection likely reads it high. reasoning-trade states that over all tasks the high-reasoning lift is not separated from zero (+0.8, interval -0.4 to +2.1). Every cost ratio now names this run's routing. The confidence form stays High, but each caveat says which finding it touches and why the call holds until then."
+          },
+          {
+            "n": 4,
+            "name": "Sound elision",
+            "score": 2,
+            "reason": "Nothing omitted would move the decision. Nano-XS misses every task; its best configuration reads 93.5% on multi-hop and 95.8% on single lookups. The retry's effect alone and the interactions do not separate the two configurations near the gate. Monthly cost is left out for a stated reason about volume units. The snapshot keeps no failure examples."
+          },
+          {
+            "n": 5,
+            "name": "Confounds handled",
+            "score": 2,
+            "reason": "Per-task latency is unmeasured. The page carries that gap into the lede, the caveat (with a correct argument that an overall p95 past the line implies at least one task past it), the lean and the first next step. Unknown routing is named on every cost. Task counts are unstated, and the page sizes them under an explicit assumption. Best-of-18 selection is noted, along with which way it cuts."
+          },
+          {
+            "n": 6,
+            "name": "Actionable next steps",
+            "score": 2,
+            "reason": "Each step names an experiment or a declaration and what it settles. Measure per-task p95 for both Brisk-S configurations with a retry. Get the latency owner's declaration on the per-task budget. Run a per-task mix of reasoning levels. Run a multi-hop rerun at 22,911 cases; settle_cases gives that as the two-sided, four-in-five size for the multi-hop clearance."
+          },
+          {
+            "n": 7,
+            "name": "Evidence fits claims",
+            "score": 2,
+            "reason": "pass-rate-gate now shows the six configurations nearest the gate, matching its caption. latency-budget shows all eighteen p95 values against the line. brisk-vs-atlas draws the gap with its unpaired interval. One small gap: reasoning-trade cites the overall +0.8 (interval -0.4 to +2.1) and the 2.1x cost ratio, but its blocks show neither."
+          }
+        ],
+        "findings": [
+          {
+            "claim": "reasoning-trade",
+            "severity": "should_fix",
+            "finding": "The claim rests its caution on the overall high-versus-low difference for Brisk-S with a retry, +0.8 points (interval -0.4 to +2.1, key compare.brisk-s.high.r1.brisk-s.low.r1.pass_rate.overall.*). It also cites a 2.1x cost ratio ($0.633 against $0.302). Neither figure is in either block, which show only the per-task points and latency. Add an overall row with its interval to the pass-rate block, or a small diverging block as in brisk-vs-atlas, so a reader can see the qualifier the claim leans on.",
+            "id": "f3.1",
+            "since": 3
+          }
+        ],
+        "resolved": [
+          "f2.1",
+          "f2.2"
         ],
         "total": 14,
         "passes": true,
@@ -1417,22 +1623,27 @@
     ],
     "sessions": {
       "analyst": {
-        "digest": "6cd10402dc7d69f861c8af46b634d8dc1830053250d02cd6e8c16cc9f4abefe6",
-        "turns": 25,
-        "ref": "01a18940-addf-717e-9b49-1f8688f24ec6:session:analyst"
+        "digest": "55c13d77637937f65dbb57722acf0e65b925d72e5e3ba20ed87faf4ba2530dd7",
+        "turns": 28,
+        "ref": "01a1923b-76e7-7500-962a-fcffe670caac:session:analyst"
       },
       "editor-1": {
-        "digest": "5004785e9255cdd8eaba2486d491f1dd90b51a0f12e1af95d14bc8e3b39add02",
+        "digest": "56fdae8f20ba7afbe5d165371f6366cc9d8511ae2e9b88e27f8141f0a1268558",
         "turns": 5,
-        "ref": "01a18940-addf-717e-9b49-1f8688f24ec6:session:editor-1"
+        "ref": "01a1923b-76e7-7500-962a-fcffe670caac:session:editor-1"
       },
       "editor-2": {
-        "digest": "4c8f29be8ffdae2a696ee8b7f97123a35c13ab0e01d1bb754e3c5399ed69c4ec",
-        "turns": 4,
-        "ref": "01a18940-addf-717e-9b49-1f8688f24ec6:session:editor-2"
+        "digest": "b8ffa04a07ea009a7a2e7a82d06e7a124ef325729777a15a5fc76d81351ca341",
+        "turns": 3,
+        "ref": "01a1923b-76e7-7500-962a-fcffe670caac:session:editor-2"
+      },
+      "editor-3": {
+        "digest": "c7e7ecb77992abe212ee1e516872336d1a5bfa623585e337a486bc55ac53c81d",
+        "turns": 3,
+        "ref": "01a1923b-76e7-7500-962a-fcffe670caac:session:editor-3"
       }
     }
   },
   "created_by": "agent:test",
-  "created_at": "2026-10-29T20:01:19.841545+00:00"
+  "created_at": "2026-10-31T13:52:13.033747+00:00"
 }
