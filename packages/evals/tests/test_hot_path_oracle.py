@@ -34,13 +34,18 @@ locally, on one process: ``TESTAMENT=off HOT_PATH_ORACLE_REGEN=1 ./scripts/test.
 capture under ``inputs/`` is written only when it is missing; it is the campaign read, not an output, so it is never
 rewritten by a regeneration.
 
-**One golden set holds on every platform.** The last digits of some statistics (a t interval's bounds and everything
+**One golden set, the pool's, holds on every platform but for one named exception.** The last digits of some statistics (a t interval's bounds and everything
 computed from them, read through the platform's maths library) differ between platforms: the same code reads
 ``21.28666989160534`` on the pool and ``21.28666989160533`` in the aarch64 dev container on glibc 2.39. By house rule
 those digits are not a difference: a bundle is compared through ``identity_json``, as its fingerprint is, and a served
 page rounds every computed float it serializes (its JSON, the kit's ``data-chart``, the static page's SVG
-coordinates), so a body is compared as served, byte for byte. A value that falls on a twelfth-figure rounding boundary
-is the rule's one stated exception. One red lists every entry of its test that moved, carrying the record it read
+coordinates and interval glyphs), so a body is compared as served, byte for byte. A value that falls on a
+twelfth-figure rounding boundary is the rule's one stated exception, and the fixture holds one: a ``hedges_g`` of
+``scaled_two_aspects`` (its small-sample factor subtracts two large log-gammas) rounds to neighbouring twelfth figures
+on the aarch64 dev container on glibc 2.39 and on the pool, so that aspect's fingerprint, the campaign's and every
+body that prints them differ there. Those entries, and only those (:data:`PLATFORM_OVERRIDES`), carry a second golden
+for that platform until a fingerprint over inputs retires the case (#1062); an override of any other entry fails. The
+goldens are the pool's (GitHub CI's x86_64 runner on glibc 2.39 reads them too). One red lists every entry of its test that moved, carrying the record it read
 (between :data:`OBSERVED` marks). A regeneration is local only: it refuses in CI, on xdist and on testament's runners,
 and every regenerating test fails, naming what it wrote.
 
@@ -109,6 +114,33 @@ EDGE = 1024
 #: The platform a read ran on, for a red's message: the system, the machine, its C library and the Python build. Every
 #: platform is held to the same goldens; a red names where it was read so a platform-only one is seen as such.
 PLATFORM = f"{platform.system()}-{platform.machine()}-{'-'.join(platform.libc_ver())}-py{platform.python_version()}"
+
+#: The platform as far as the one override goes: the machine and its C library.
+PLATFORM_KEY = f"{platform.machine()}-{'-'.join(platform.libc_ver())}"
+
+#: The one platform an override is held for: the aarch64 dev container on glibc 2.39.
+OVERRIDE_PLATFORM = "aarch64-glibc-2.39"
+
+#: The entries held a second time for :data:`OVERRIDE_PLATFORM`, by campaign, and no others. A ``hedges_g`` of
+#: ``scaled_two_aspects``' ``tpl-support`` sits on a twelfth-figure rounding boundary that the platform's ``lgamma``
+#: decides, so the aspect's bundle (compared through ``identity_json``), its fingerprint, the campaign's frame and
+#: fingerprint, and every body printing a fingerprint differ there. #1062 (a fingerprint over inputs) is the fix; this
+#: table, :data:`OVERRIDE_PLATFORM` and every ``@`` entry in the goldens are deleted when it lands.
+PLATFORM_OVERRIDES: dict[str, frozenset[str]] = {
+    "scaled_two_aspects": frozenset(
+        {
+            "bundle:tpl-support",
+            "fingerprint:tpl-support",
+            "frame",
+            "campaign_fingerprint",
+            *(
+                f"body:{form}:{trials}"
+                for form in ("markdown", "html", "html_static", "json")
+                for trials in ("table", "all")
+            ),
+        }
+    ),
+}
 
 #: What brackets the observed record in a red's message, so a pool run's report carries the record it read.
 OBSERVED = "<<observed-record>>"
@@ -230,8 +262,8 @@ class Goldens:
     """One campaign's goldens, and every entry a test compares against them.
 
     Every entry a test compares is checked before it fails, so one red names every entry that moved, and every entry
-    the file has no golden for, each with the record it read. The file holds one golden per entry, the same on every
-    platform.
+    the file has no golden for, each with the record it read. The file holds one golden per entry, the pool's, and,
+    for an entry :data:`PLATFORM_OVERRIDES` names, ``<entry>@<OVERRIDE_PLATFORM>`` beside it, read there instead.
     """
 
     def __init__(self, name: str) -> None:
@@ -242,8 +274,18 @@ class Goldens:
         self.written: list[str] = []
 
     def entries(self) -> list[str]:
-        """The entries the file holds."""
-        return sorted(self.stored)
+        """The entries the file holds, without the overrides."""
+        return sorted(key for key in self.stored if "@" not in key)
+
+    def overrides(self) -> list[str]:
+        """The overrides the file holds, each ``<entry>@<platform>``."""
+        return sorted(key for key in self.stored if "@" in key)
+
+    def key(self, entry: str) -> str:
+        """Where ``entry``'s golden is held for this platform: its override where :data:`PLATFORM_OVERRIDES` names it
+        and this is :data:`OVERRIDE_PLATFORM`, else the entry itself."""
+        overridden = PLATFORM_KEY == OVERRIDE_PLATFORM and entry in PLATFORM_OVERRIDES.get(self.name, frozenset())
+        return f"{entry}@{OVERRIDE_PLATFORM}" if overridden else entry
 
     def check(self, entry: str, text: str) -> None:
         """Compare ``text`` with ``entry``'s golden, or write it under :data:`REGENERATE`."""
@@ -254,7 +296,7 @@ class Goldens:
         carried = json.dumps(
             {"campaign": self.name, "entry": entry, "platform": PLATFORM, "record": observed}, ensure_ascii=False
         )
-        golden = self.stored.get(entry)
+        golden = self.stored.get(self.key(entry))
         if golden is None:
             self.problems.append(
                 f"{self.name} {entry}: no golden; a regeneration writes it {OBSERVED}{carried}{OBSERVED}"
@@ -276,10 +318,10 @@ class Goldens:
             )
 
     def regenerate(self, entry: str, observed: dict[str, Any]) -> None:
-        """Write ``observed`` as ``entry``'s golden."""
+        """Write ``observed`` as ``entry``'s golden for this platform (:meth:`key`): on :data:`OVERRIDE_PLATFORM` an
+        overridden entry's override, never the pool's golden beside it, which a pool red's record supplies."""
         refuse_unattended_regeneration()
-        self.stored = {key: value for key, value in self.stored.items() if "@" not in key}
-        self.stored[entry] = observed
+        self.stored[self.key(entry)] = observed
         GOLDENS.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self.stored, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
         self.written.append(entry)
@@ -371,15 +413,21 @@ def test_the_scaled_page_states_how_many_trials_it_lists_of_how_many_ran(pinned_
 
 
 @pytest.mark.parametrize("name", CAMPAIGNS)
-def test_every_campaign_holds_one_golden_per_form_for_every_platform(name: str) -> None:
-    """Every form of every campaign's page has its golden, and none is held for one platform alone: one golden set is
-    valid everywhere (see the module docstring)."""
-    entries = set(Goldens(name).entries())
+def test_every_campaign_holds_one_golden_per_form_and_overrides_only_the_named_entries(name: str) -> None:
+    """Every form of every campaign's page has its golden, and the only goldens held for one platform are the
+    overrides :data:`PLATFORM_OVERRIDES` names, each beside the pool's: an override of any other entry, or for any
+    other platform, fails here (see the module docstring)."""
+    goldens = Goldens(name)
+    entries = set(goldens.entries())
     expected = {f"body:{form}:{trials}" for form in ("markdown", "html", "html_static", "json") for trials in TRIALS}
     expected |= {entry.replace("body:", "read:", 1) for entry in expected}
 
     assert expected <= entries, f"{name} lacks goldens for {sorted(expected - entries)}"
-    assert not [entry for entry in entries if "@" in entry], f"{name} holds a golden keyed to a platform"
+    named = PLATFORM_OVERRIDES.get(name, frozenset())
+    assert set(goldens.overrides()) == {f"{entry}@{OVERRIDE_PLATFORM}" for entry in named}, (
+        f"{name}'s overrides are not the named ones (#1062): {goldens.overrides()}"
+    )
+    assert named <= entries, f"{name} overrides an entry with no pool golden beside it"
 
 
 @pytest.mark.parametrize("variable", ["CI", "PYTEST_XDIST_WORKER", "TESTAMENT_RUNNER"])
