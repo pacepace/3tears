@@ -29,6 +29,8 @@ a boolean. A mismatch already stored is still kept out of the statistics, and it
 observations now says why, e.g. `top_up_never (declared boolean, recorded as a number; dropped, not pooled)`. A measure
 described with no data type is read as numeric, so text or a bool under one is refused too; a name nobody describes
 is not checked. `assemble_completed_cell` takes `measures=` and makes the same refusal itself.
+A measure declared with a better end or as a diagnostic and no data type is now refused where it is registered
+(`MeasureRegistrationError`, naming it): no bundle would have carried it. Declare its data type.
 
 ### evals: a should_fix first raised after round 1 gets a revision; a finished page counts its open findings at the top
 

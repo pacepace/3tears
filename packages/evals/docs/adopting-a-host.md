@@ -87,7 +87,8 @@ pass it to every entrypoint. It holds:
   you declare (`MetricDescriptor`) carries a `reader_name`, the few words a table header, chart title or axis
   label prints in place of its key ("Output speed", not `candidate_output_tokens_per_s`). `MeasureRegistry`
   refuses a measure without one, and one whose `reader_name` matches another measure's (yours or the engine's,
-  ignoring case), so the mistake surfaces at startup, not on a chart. The key stays what the store files the
+  ignoring case), so the mistake surfaces at startup, not on a chart. It refuses a measure with a better end
+  (`higher_is_better`) or declared a `diagnostic` and no `data_type` too, since no bundle would carry it. The key stays what the store files the
   number under and what a reader cites. Your bars (`BarRegistry`, each a `Bar`, with any per-behavior
   `PassThreshold`) can be built in code or kept as data: `load_bar_registry(mapping)` reads
   `{"bars": [...], "pass_thresholds": [...]}`, each entry its type's fields. It refuses a field it does not

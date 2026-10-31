@@ -1681,7 +1681,6 @@ def test_a_host_measure_declaring_no_data_type_is_read_as_numeric_and_refuses_te
                 transferability_class="mechanical",
                 attribution_scope="end_to_end",
                 description="queue_jumps, for the test.",
-                higher_is_better=False,
             ),
         )
     )
