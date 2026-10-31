@@ -266,3 +266,34 @@ class TestTheLoopRunsWhileALargeTableIsHanded:
         await ticker
         assert result.value["sha256"] == digest
         assert late < LOOP_MAY_BE_LATE, f"the loop ran {late * 1000:.1f} ms late while the table was handed"
+
+
+class TestHandOffsSideBySide:
+    def test_a_hand_off_is_never_swept_before_its_worker_maps_it_while_others_are_handed_and_released(
+        self, store: SharedArrowStore, executor: ProcessPoolExecutor
+    ) -> None:
+        """hand-offs made, mapped and released on many threads at once, as a pod's exports are while a load stages
+        51 states side by side on its 8 executor threads: every one is still there when its worker maps it.
+
+        A hand-off renamed into its name before it was held let a sweep on another thread (each hand and release
+        sweeps) retire it in between: its worker found it gone ("shared Arrow 'h-...' is gone"), on the first
+        concurrent export (reports, 2026-10-31).
+        """
+        table = pa.table({"v": list(range(2_000))})
+        gone: list[str] = []
+
+        def export(_: int) -> None:
+            with store.handing({"t": table}) as handed:
+                try:
+                    seen = executor.submit(jobs.digest_of_handed, handed, "t").result()
+                except LookupError as exc:
+                    gone.append(str(exc))
+                else:
+                    assert seen["rows"] == table.num_rows
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(8) as threads:
+            list(threads.map(export, range(306)))
+        assert gone == [], f"{len(gone)} of 306 hand-offs were swept before their worker mapped them: {gone[:3]}"
+        assert store.handoffs() == () and _hidden(store) == []
