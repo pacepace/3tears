@@ -63,12 +63,12 @@ Type: code
 
 ### Chunk 02: The `report_writer` candidate kind
 Type: code
-- new `analysis/writer_kind.py` and new `analysis/writer_contract.py`, mirroring `reporter_kind.py` and `reporter_contract.py`.
-- Overlays: `analyst_skill` and `editor_skill` (content-addressed), `reasoning_effort`, `limits`. The skill texts travel as subject components.
+- `ops/report_writer/writer_kind.py` and `ops/report_writer/writer_contract.py`, mirroring `reporter_kind.py` and `reporter_contract.py` (in `ops/`, because `analysis` may not import `ops`).
+- Overlays: `skill` (the whole skill's content digest; an arm naming none records the shipped digest), `reasoning_effort` and `revisions`. The skill digest travels as a subject component.
 - Case: a frozen writer case, meaning the report snapshot plus the exemplar note it withholds.
 - `invoke` runs `write_rounds` and returns the page as the output, with the objective measures.
-- Step 0: replay one prototype5 case through the kind and check that it fits the cell timeout and the spend seat.
-- Done when: a replayed campaign of two arms (shipped skill against a one-line-edited skill) over two recorded cases produces runs, both arms keyed apart by the skill lever, and the objective measures land on results.
+- Step 0: check one prototype5 case's recorded turn time through the kind and check that it fits the cell timeout and the spend seat.
+- Done when: a replayed campaign of two arms (shipped skill against a one-line-edited skill) over two scripted cases produces runs, both arms keyed apart by the skill lever, and the objective measures land on results.
 
 ### Chunk 02b: Writer launcher and the review fixes
 Type: code
