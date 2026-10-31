@@ -2612,8 +2612,8 @@ class TestAHeldReplicaAnswersOnlyItsControlTools:
     async def test_a_control_call_is_answered_and_a_readers_call_is_left_to_the_siblings(self) -> None:
         server, rec, control, reader = self._replica(FakeReplayGuard())
 
-        await server._handle_held_call(self._msg("test.reset"))  # noqa: SLF001 -- the held subscription's callback
-        await server._handle_held_call(self._msg("test.rows"))  # noqa: SLF001 -- the held subscription's callback
+        await server.handle_held_call(self._msg("test.reset"))
+        await server.handle_held_call(self._msg("test.rows"))
 
         assert control.runs == 1 and reader.runs == 0
         assert len(rec.replies) == 1, "the reader's call got an answer from the held replica"
@@ -2626,7 +2626,7 @@ class TestAHeldReplicaAnswersOnlyItsControlTools:
         serving.open_calls()
         msg = self._msg("test.reset")
 
-        await asyncio.gather(held._handle_held_call(msg), serving.handle_call(msg))  # noqa: SLF001 -- held cb
+        await asyncio.gather(held.handle_held_call(msg), serving.handle_call(msg))
 
         assert held_control.runs + serving_control.runs == 1
         replies = held_rec.replies + serving_rec.replies
@@ -2670,9 +2670,9 @@ class TestAHeldReplicaAnswersOnlyItsControlTools:
         serving.open_calls()
         msg = self._msg("test.reset")
 
-        await held._handle_held_call(msg)  # noqa: SLF001 -- the held subscription's callback
+        await held.handle_held_call(msg)
         await serving.handle_call(msg)
-        await held._handle_held_call(msg)  # noqa: SLF001 -- the held subscription's callback
+        await held.handle_held_call(msg)
         await serving.handle_call(msg)
 
         assert held_control.runs + serving_control.runs == 1
@@ -2688,7 +2688,7 @@ class TestAHeldReplicaAnswersOnlyItsControlTools:
         serving.open_calls()
         msg = self._msg("test.reset")
 
-        await held._handle_held_call(msg)  # noqa: SLF001 -- the held subscription's callback
+        await held.handle_held_call(msg)
         await serving.handle_call(msg)
 
         def outcomes(server: ToolServer) -> dict[str, float]:

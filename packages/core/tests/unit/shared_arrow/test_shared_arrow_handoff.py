@@ -183,6 +183,7 @@ class TestTheHandOffGoesWhenTheWorkerIsDone:
     ) -> None:
         signals = tmp_path / "signals"
         handed = store.hand({"t": pa.table({"a": [1, 2]})})
+        assert (store.status()["handoffs_open"], store.status()["handoffs_held"]) == (1, 1)
         future = executor.submit(jobs.hold_handed_on_signal, handed, str(signals))
         deadline = time.monotonic() + 30
         while not (signals / "mapped").exists():
@@ -190,10 +191,12 @@ class TestTheHandOffGoesWhenTheWorkerIsDone:
             time.sleep(0.01)
         store.release(handed)
         assert store.handoffs() == (handed.handoff_id,), "the worker's mapping holds it"
+        assert (store.status()["handoffs_open"], store.status()["handoffs_held"]) == (0, 1)
         (signals / "go").touch()
         assert future.result() == 2
         store.sweep()
         assert store.handoffs() == ()
+        assert (store.status()["handoffs_open"], store.status()["handoffs_held"]) == (0, 0)
 
     def test_a_hand_off_released_before_its_worker_maps_it_is_gone_to_the_worker(
         self, store: SharedArrowStore, executor: ProcessPoolExecutor

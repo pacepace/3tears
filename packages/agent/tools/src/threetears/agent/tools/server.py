@@ -1963,7 +1963,7 @@ class ToolServer:
             try:
                 # sender-posture: signed-envelope -- the call subject's own envelope, verified as every call is
                 subscription = await self._subscribe_or_drop(
-                    subject=call_subject, queue=queue, cb=self._handle_held_call
+                    subject=call_subject, queue=queue, cb=self.handle_held_call
                 )
             except SubscribeError as exc:
                 # NOSILENT: logged, and asked again: a held replica that could not subscribe answers no control
@@ -2042,10 +2042,12 @@ class ToolServer:
         self._dropping_subscriptions.add(dropping)
         dropping.add_done_callback(self._dropping_subscriptions.discard)
 
-    async def _handle_held_call(self, msg: IncomingMessage) -> None:
+    async def handle_held_call(self, msg: IncomingMessage) -> None:
         """a call handed to the held group: answered when it names a control tool, else left to the call group.
 
-        Bound by the held subscription (:meth:`hold_calls`) as its ``cb``.
+        The NATS callback of the held subscription (:meth:`answer_while_held`), public for the reason
+        :meth:`handle_call` is: production binds it as the subscription's ``cb``, and a test delivers a call
+        through the same door NATS does. The name and single-``msg`` shape are part of that contract.
 
         :param msg: the call
         :ptype msg: IncomingMessage
