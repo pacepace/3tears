@@ -74,6 +74,17 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowStore",
+        attr_name="_claimed_bytes",
+        rationale=(
+            "the bytes each result this process claimed still holds in its own memory-backed directory, until "
+            "the sweep removes its files; it counts this pod's own files against this process's byte cap, so "
+            "another pod has nothing to do with it, and a restart takes the directory over and removes every "
+            "result in it, as _slots"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/search/src/threetears/search/standalone.py",
         class_name="_Breakers",
         attr_name="_circuits",
