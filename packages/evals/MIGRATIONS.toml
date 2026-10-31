@@ -58,6 +58,14 @@
 # callers.
 
 [[release]]
+version = "unreleased"
+since = "v0.87.0"
+summary = """
+An answer's JSON is never copied whole in one call: no 3tears-evals name has moved or been removed since 0.87.0, and
+no judge wording changed.
+"""
+
+[[release]]
 version = "0.87.0"
 since = "v0.86.0"
 summary = """
