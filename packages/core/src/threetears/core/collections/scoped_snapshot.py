@@ -138,7 +138,6 @@ __all__ = [
     "SnapshotTable",
     "StagedScope",
     "VersionedRead",
-    "WRITE_CHECK",
     "decode_chunk",
     "encode_chunk",
     "open_tool_pod_snapshot",
@@ -234,7 +233,7 @@ _REBUILD_ATTEMPTS: Final = 3
 #: how often a rebuild reading a scope from L3 asks whether a write has begun since it started, by default: a write
 #: that began (a reset's clear, which empties the tables) ends the read within this, rather than after the scope's
 #: last page -- minutes for a large scope, while the write waits on the rows the read holds open
-WRITE_CHECK: Final = timedelta(seconds=5)
+_WRITE_CHECK: Final = timedelta(seconds=5)
 
 #: how many times a compare-and-set on a pointer or the index is tried against a racing writer
 _CAS_ATTEMPTS: Final = 16
@@ -1488,7 +1487,7 @@ class ScopedSnapshot:
     :param l3_concurrency: scopes a rebuild holds at once: read from L3 beside the one it publishes
     :ptype l3_concurrency: int
     :param write_check: how often a rebuild reading a scope asks whether a write has begun, which stops the read
-        (:data:`WRITE_CHECK`)
+        (:data:`_WRITE_CHECK`)
     :ptype write_check: timedelta
     :param claim_ttl: how long a rebuild's claim, or a write claim, lasts once its holder stops renewing
         it (it died); renewed while held
@@ -1523,7 +1522,7 @@ class ScopedSnapshot:
         apply_batch: int = _DEFAULT_APPLY_BATCH,
         chunk_reads: int = _DEFAULT_CHUNK_READS,
         l3_concurrency: int = _DEFAULT_L3_CONCURRENCY,
-        write_check: timedelta = WRITE_CHECK,
+        write_check: timedelta = _WRITE_CHECK,
         claim_ttl: timedelta = _DEFAULT_CLAIM_TTL,
         recheck: timedelta = _DEFAULT_RECHECK,
         pointer_watch_heartbeat: timedelta = timedelta(seconds=5),

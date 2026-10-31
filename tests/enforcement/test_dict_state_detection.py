@@ -85,6 +85,26 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowStore",
+        attr_name="_handing",
+        rationale=(
+            "the hand-offs this process is writing now into its own memory-backed directory for its own worker "
+            "processes, each with the bytes it may take; another pod has nothing to do with them, and a restart "
+            "takes the directory over and removes every hand-off in it, as _slots"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowStore",
+        attr_name="_handed_bytes",
+        rationale=(
+            "the bytes each hand-off this process wrote still holds in its own memory-backed directory, until the "
+            "sweep removes its files; it counts this pod's own files against this process's byte cap, as "
+            "_claimed_bytes"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/search/src/threetears/search/standalone.py",
         class_name="_Breakers",
         attr_name="_circuits",

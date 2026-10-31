@@ -17,7 +17,6 @@ from threetears.agent.tools.server import (
     CallRequest,
     CallResponse,
     HeartbeatMessage,
-    OUTCOME_ANSWERED_BY_SIBLING,
     RegistrationManifest,
     ToolManifestEntry,
     ToolServer,
@@ -2639,7 +2638,7 @@ class TestAHeldReplicaAnswersOnlyItsControlTools:
             return found
 
         assert outcomes(held) == {"success": 1.0}
-        assert outcomes(serving) == {OUTCOME_ANSWERED_BY_SIBLING: 1.0}, "the sibling's silence is counted apart"
+        assert outcomes(serving) == {"answered_by_sibling": 1.0}, "the sibling's silence is counted apart"
 
         def audits(rec: RecordingNatsClient) -> list[str]:
             return [

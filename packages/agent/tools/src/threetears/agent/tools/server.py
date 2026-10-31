@@ -118,7 +118,6 @@ __all__ = [
     "DiscoveryProbeToolEntry",
     "FINAL_REFUSAL_CODES",
     "HeartbeatMessage",
-    "OUTCOME_ANSWERED_BY_SIBLING",
     "ProbeAck",
     "RefusedTool",
     "RegistrationManifest",
@@ -990,7 +989,7 @@ class _AssertionGateRefusal:
 #: group, :data:`HELD_QUEUE_SUFFIX`) whose nonce the sibling recorded first. The sibling runs, answers, counts
 #: and audits the call; this replica stays silent and counts it under this outcome on /metrics, apart from
 #: ``failure``, and publishes no audit row: the call happened once.
-OUTCOME_ANSWERED_BY_SIBLING: Final = "answered_by_sibling"
+_OUTCOME_ANSWERED_BY_SIBLING: Final = "answered_by_sibling"
 
 
 class HardCallTimeout(Exception):
@@ -3775,7 +3774,7 @@ class ToolServer:
             assertion_refusal = await self._verify_proxy_assertion(request)
             if assertion_refusal is not None and assertion_refusal.duplicate:
                 # not a failure: the call ran once, on the sibling, which counts and audits it
-                outcome = OUTCOME_ANSWERED_BY_SIBLING
+                outcome = _OUTCOME_ANSWERED_BY_SIBLING
                 log.info(
                     "a call handed to this replica and a sibling is answered by the sibling",
                     extra={"extra_data": {"tool_key": tool_key, "correlation_id": correlation_id_log}},
@@ -3948,7 +3947,7 @@ class ToolServer:
         finally:
             duration_ms = (time.monotonic() - start_monotonic) * 1000.0
             self._count_call(tool_name=tool_name, tool_version=tool_version, outcome=outcome, duration_ms=duration_ms)
-            if outcome != OUTCOME_ANSWERED_BY_SIBLING:
+            if outcome != _OUTCOME_ANSWERED_BY_SIBLING:
                 # the sibling that answers the call audits it; a second row would record one call twice
                 await self._publish_baseline_audit(
                     request=request,
@@ -4127,7 +4126,7 @@ class ToolServer:
         :ptype tool_name: str
         :param tool_version: the version the call named
         :ptype tool_version: str
-        :param outcome: ``success`` / ``failure`` / ``error``, or :data:`OUTCOME_ANSWERED_BY_SIBLING`
+        :param outcome: ``success`` / ``failure`` / ``error``, or :data:`_OUTCOME_ANSWERED_BY_SIBLING`
         :ptype outcome: str
         :param duration_ms: milliseconds from the call's arrival to its end
         :ptype duration_ms: float
