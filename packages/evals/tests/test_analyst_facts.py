@@ -205,24 +205,27 @@ def _two_aspects() -> ReportInput:
 
 
 def test_the_overview_cites_each_aspects_pass_rule_by_its_keys() -> None:
-    """Kairo's pass rule reads off the overview with every figure under an `aspects.<aspect>.` key; an input frozen
-    before the rule existed (r4, four aspects) states none, and its overview leaves the row out."""
+    """Kairo's pass rule reads off the overview in one aspect row: its label and the trials with nothing to fail them
+    cited under `aspects.<aspect>.` keys, the dimensions that count named beside them, and the rule's level and sentence
+    citable under the same prefix; an input frozen before the rule existed (r4, four aspects) states none, and its
+    overview leaves the fields out."""
     snapshot, held = _held(KAIRO)
     (row,) = campaign_overview(held, snapshot.id).aspects
-    rule = row.pass_rule
-    assert rule is not None
     keyed = f"aspects.{row.aspect}"
-    assert [figure.key for figure in (rule.rule, rule.threshold, rule.no_criterion)] == [
-        f"{keyed}.pass_rule",
-        f"{keyed}.pass_threshold",
-        f"{keyed}.no_criterion",
-    ]
-    assert (rule.threshold.reads, rule.no_criterion.reads) == ("3", "0")
-    assert rule.sentence is not None and rule.sentence.key == f"{keyed}.description"
-    assert rule.criteria == ["goal_checks", "rubric"] and row.graded_by == "judged"
+    assert row.pass_rule is not None and row.no_criterion is not None
+    assert (row.pass_rule.key, row.no_criterion.key) == (f"{keyed}.pass_rule", f"{keyed}.no_criterion")
+    assert (row.pass_rule.reads, row.no_criterion.reads) == (
+        "pass^k (k=1, every goal check and criterion >= 3 of 5)",
+        "0",
+    )
+    assert row.counted == ["persona.booth_stays_offstage", "persona.holds_character"] and row.guardrails == []
+    assert row.graded_by == "judged"
+    assert resolve(f"{keyed}.pass_threshold", held).value == 3
+    assert str(resolve(f"{keyed}.description", held).value).startswith("A trial passes when")
     _, r4 = _held("r4")
     assert r4.aspects and all(aspect.pass_rule is None for aspect in r4.aspects)
-    assert all("pass_rule" not in aspect for aspect in campaign_overview(r4, "s").model_dump()["aspects"])
+    fields = {"pass_rule", "no_criterion", "counted", "guardrails"}
+    assert all(fields.isdisjoint(aspect) for aspect in campaign_overview(r4, "s").model_dump()["aspects"])
 
 
 @pytest.mark.parametrize("name", FIXTURES)
@@ -262,21 +265,11 @@ def test_the_overview_lists_the_inputs_own_arms_aspects_measures_criteria_and_ca
         assert [(figure.key, figure.value) for figure in aspect_row.depth] == per_arm
         rule = aspect.pass_rule
         if rule is None:
-            assert aspect_row.pass_rule is None
+            assert (aspect_row.pass_rule, aspect_row.no_criterion, aspect_row.counted) == (None, None, [])
             continue
-        assert aspect_row.pass_rule is not None
-        row_rule = aspect_row.pass_rule
-        assert (row_rule.rule.value, row_rule.threshold.value, row_rule.no_criterion.value) == (
-            rule.label,
-            rule.threshold,
-            rule.no_criterion,
-        )
-        assert (row_rule.criteria, row_rule.dimensions, row_rule.boundary, row_rule.checks) == (
-            rule.criteria,
-            rule.dimensions,
-            rule.boundary,
-            rule.checks,
-        )
+        assert aspect_row.pass_rule is not None and aspect_row.no_criterion is not None
+        assert (aspect_row.pass_rule.value, aspect_row.no_criterion.value) == (rule.label, rule.no_criterion)
+        assert (aspect_row.counted, aspect_row.guardrails) == (rule.dimensions, rule.boundary)
 
     assert [(row.key, row.source) for row in overview.measures] == [
         *((key, "measure") for key in held.measures),

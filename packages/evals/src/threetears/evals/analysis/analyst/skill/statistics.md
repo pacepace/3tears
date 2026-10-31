@@ -83,7 +83,7 @@ The snapshot keeps a few failures per slice. `examples_list` says how many it ke
 
 Depth is how many times each arm ran each case. Arms can differ when old runs pool forward. **pass^k**, the chance that all k repeats of a case pass, measures reliability. It compares arms only at their common depth, the fewest repeats any arm gave a shared case. Above that, one arm is measured on more chances to fail. These figures describe the method. They go in Method or the appendix unless reliability is the question asked.
 
-What a pass is, each aspect's `pass_rule` in `campaign_overview` states: the checks and judged dimensions a trial must clear, the level (`aspects.<aspect>.pass_threshold`), the rule in a sentence (`aspects.<aspect>.description`), and `no_criterion`, the trials that passed with nothing to fail them. Cite it in `method`; never describe the rule from memory.
+What a pass is, each aspect's row in `campaign_overview` states: `pass_rule` (every goal check, and the level each judged dimension in `counted` must reach), `guardrails` (judged dimensions it does not count) and `no_criterion` (trials that passed with nothing to fail them). `aspects.<aspect>.pass_threshold` is the level and `aspects.<aspect>.description` the rule in a sentence. Cite them in `method`; never describe the rule from memory.
 
 ## Judges and calibration
 

@@ -225,24 +225,6 @@ class _Fact(BaseModel):
 # --- shared ---------------------------------------------------------------------------------------------------------
 
 
-def _pass_rule(report_input: ReportInput, aspect: Aspect) -> PassRuleRow | None:
-    """How a trial on the aspect passes, each figure cited by its key; None where the input states no pass rule."""
-    rule = aspect.pass_rule
-    if rule is None:
-        return None
-    keyed = f"aspects.{aspect.id}"
-    return PassRuleRow(
-        rule=cite(f"{keyed}.pass_rule", report_input),
-        sentence=cite_if(f"{keyed}.description", report_input),
-        threshold=cite(f"{keyed}.pass_threshold", report_input),
-        no_criterion=cite(f"{keyed}.no_criterion", report_input),
-        criteria=list(rule.criteria),
-        dimensions=rule.dimensions,
-        boundary=rule.boundary,
-        checks=rule.checks,
-    )
-
-
 def _figures(keys: Iterable[str], report_input: ReportInput) -> list[CitedFigure]:
     """The figures the keys name that the input states, in the keys' order."""
     return [figure for key in keys if (figure := cite_if(key, report_input)) is not None]
@@ -324,36 +306,35 @@ class ArmRow(_Fact):
     )
 
 
-class PassRuleRow(_Fact):
-    """How a trial on one aspect passes, as code decides it: what it is held to, and at what level."""
-
-    rule: CitedFigure = Field(
-        description="The pass^k label the pages print for it (`aspects.<aspect>.pass_rule`): its depth and criteria."
-    )
-    sentence: CitedFigure | None = Field(description="The rule in one sentence (`aspects.<aspect>.description`).")
-    threshold: CitedFigure = Field(
-        description="The 1 to 5 level a counted judged dimension must reach (`aspects.<aspect>.pass_threshold`)."
-    )
-    no_criterion: CitedFigure = Field(
-        description="Trials that passed with nothing to fail them, every arm's (`aspects.<aspect>.no_criterion`)."
-    )
-    criteria: list[str] = Field(description="What a trial is held to: goal_checks, rubric, both, or neither.")
-    dimensions: list[str] = Field(description="The judged dimensions that count, by key.")
-    boundary: list[str] = Field(description="The judged dimensions that do not count, by key: guardrails.")
-    checks: list[str] = Field(description="The checks that fail a trial on their own, by measure key.")
-
-
 class AspectRow(_Fact):
-    """One aspect: whether it is asked, how it is graded, its margin, and which rows it holds."""
+    """One aspect: whether it is asked, how it is graded and how a trial on it passes, its margin, and which rows it
+    holds."""
 
     aspect: str = Field(description="The aspect's id, as every `aspects.<aspect>.` key names it.")
     asked: bool | None = Field(description="Whether the campaign's question asks about it.")
     graded_by: str | None = Field(description="judged (a judge, with any checks beside it) or checked (checks alone).")
-    # Left out where the input states no pass rule, so an older snapshot's overview reads as it did.
-    pass_rule: PassRuleRow | None = Field(
+    # The four below are left out where the input states no pass rule, so an older snapshot's overview reads as it did;
+    # the rule's sentence is `aspects.<aspect>.description` and its level `.pass_threshold`, cited where written.
+    pass_rule: CitedFigure | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
-        description="How a trial on it passes: the criteria, the threshold, the dimensions and checks that count.",
+        description="How a trial on it passes, as the pages label it (`aspects.<aspect>.pass_rule`): the depth, every "
+        "goal check, and the level each counted judged dimension must reach.",
+    )
+    no_criterion: CitedFigure | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Trials that passed with nothing to fail them, every arm's (`aspects.<aspect>.no_criterion`).",
+    )
+    counted: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The judged dimensions a pass counts, by key.",
+    )
+    guardrails: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The judged dimensions a pass does not count, by key: guardrails, decided apart.",
     )
     margin: CitedFigure | None = Field(description="Its non-inferiority margin, in points, where one is declared.")
     cases: CitedFigure | None = Field(
@@ -740,7 +721,10 @@ def campaign_overview(
             aspect=aspect.id,
             asked=aspect.asked,
             graded_by=aspect.graded_by,
-            pass_rule=_pass_rule(report_input, aspect),
+            pass_rule=cite_if(f"aspects.{aspect.id}.pass_rule", report_input),
+            no_criterion=cite_if(f"aspects.{aspect.id}.no_criterion", report_input),
+            counted=aspect.pass_rule.dimensions if aspect.pass_rule is not None else [],
+            guardrails=aspect.pass_rule.boundary if aspect.pass_rule is not None else [],
             margin=cite_if(f"aspects.{aspect.id}.margin", report_input),
             cases=cite_if(f"aspects.{aspect.id}.cases", report_input),
             repeats=cite_if(f"aspects.{aspect.id}.repeats", report_input),
