@@ -53,6 +53,7 @@ from threetears.evals.analysis.report_doc_facts import editor_facts
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.inner_ceilings import EDITOR_ANSWERS
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
+from threetears.evals.ops.report_writer.rubric import shipped_rubric
 from threetears.evals.ops.report_writer.session import SessionLimits, SessionStop, ToolMount, ToolSession
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.logs import contain, get_logger
@@ -71,16 +72,9 @@ __all__ = [
 
 log = get_logger(__name__)
 
-#: The rubric's items, in the order ``editor.md`` numbers them: item ``n`` is ``_RUBRIC[n - 1]``.
-_RUBRIC: Final = (
-    "First screen",
-    "Coherent story",
-    "Honest emphasis",
-    "Sound elision",
-    "Confounds handled",
-    "Actionable next steps",
-    "Evidence fits claims",
-)
+#: The rubric's item names, in the order the shipped ``editor.md`` numbers them, read from it: item ``n`` is
+#: ``_RUBRIC[n - 1]``.
+_RUBRIC: Final = tuple(item.name for item in shipped_rubric().items)
 
 #: The highest score an item takes.
 _TOP_SCORE: Final = 2
