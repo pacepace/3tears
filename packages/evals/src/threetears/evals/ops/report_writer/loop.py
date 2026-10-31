@@ -8,22 +8,24 @@
 2. The editor reviews the document in a session of its own
    (:func:`~threetears.evals.ops.report_writer.editor.review_report`), given the page, ``omitted``, the computed facts
    and its earlier findings, and nothing of the analyst's session.
-3. A review that passes with no blocking finding open (:attr:`~threetears.evals.ops.report_writer.editor.Review.blocking`)
-   ends the loop ``stored``. In round 1 every finding blocks; after it, every ``must_fix`` does, and every finding an
-   earlier review raised and this one marks still open, of any severity, while a ``should_fix`` first raised in this
-   review does not (owner ruling 2026-10-29, option 3). Otherwise the analyst revises in its own conversation, sent
-   the review (each item's score and reason, and every finding, the blocking ones marked), and the editor reviews the
-   revision. :attr:`WriterLimits.revisions` revisions at most (2, so at most 3 reviews); a review that does not clear
-   after the last ends the loop ``stored_with_findings``.
+3. A review that passes with no finding open
+   (:attr:`~threetears.evals.ops.report_writer.editor.Review.settles`) ends the loop ``stored``. Otherwise the analyst
+   revises in its own conversation, sent the review (each item's score and reason, and every finding, the blocking
+   ones marked), and the editor reviews the revision. :attr:`WriterLimits.revisions` revisions at most (2, so at most
+   3 reviews). After the last, a review that passes with no blocking finding open
+   (:attr:`~threetears.evals.ops.report_writer.editor.Review.blocking`) ends the loop ``stored``, its findings listed
+   open, and any other ends it ``stored_with_findings``. Every ``must_fix`` blocks, and every finding first raised in
+   round 1; a ``should_fix`` first raised in a later review never does, new or carried (owner rulings 2026-10-29 and
+   2026-10-31): it is given a revision while one remains, and alone it never makes the report a draft.
 
 **Endings** (plan §4.4), each a value the caller stores or reports:
 
-- ``stored``: a review cleared the document, which is stored finished, with any new ``should_fix`` findings of its
-  last review listed open;
+- ``stored``: a review cleared the document, which is stored finished, with any ``should_fix`` findings of its last
+  review that block nothing listed open;
 - ``stored_with_findings``: the revisions ran out; the last document is stored with its review's findings, a draft;
 - ``over_budget``: the report's budget refused a turn, or the analyst called a tool after it was told to
-  submit. The last document a review was read for is stored with that review's findings, a draft (a review that
-  cleared it would have ended the loop ``stored``); with none, nothing;
+  submit. The last document a review was read for is stored with that review's findings, a draft; with none,
+  nothing;
 - ``refused``: a submission still had faults after its round's bounces; nothing is stored, the faults are returned;
 - ``review_failed``: the editor's answer could not be read twice; nothing is stored;
 - ``failed``: the model refused, a reply stopped short, or the client failed (the provider, after its own retries);
@@ -33,6 +35,13 @@
 skill texts, the checker and every limit come from the caller, and no condition here reads the document's story, a
 claim, or what kind of eval the snapshot holds: what ends a round is the checks, the review's scores and its
 structured findings.
+
+**A revision a cleared review sends is a chance, not a gate.** Where the review that sent it cleared the report (it
+passed with only findings open that block nothing), a revision that ends without a review of its own on the
+budget, on its faults or on an unreadable review (``over_budget``, ``refused``, ``review_failed``) ends the loop
+``stored`` instead, with that review's document and findings: what cleared is never lost, nor made a draft, by the
+chance taken to improve it. A ``failed`` round still ends the loop ``failed``, its failure reaching the caller: a
+client's failure, or a recorded run asked a turn its recording lacks, is never stored over.
 
 **A stored document is finished or a draft, and code says which.** Owner rulings 2026-10-29: the loop revises until
 no blocking finding is open, and a page is never served as finished while one is. Only ``stored`` stores a finished
@@ -77,6 +86,9 @@ log = get_logger(__name__)
 
 #: How the writing loop ended (the module docstring says when, and what is stored).
 WriterEnding = Literal["stored", "stored_with_findings", "over_budget", "refused", "review_failed", "failed"]
+
+#: How a revision a cleared review sent may end and still leave that review's report stored finished.
+_CHANCE_ENDINGS: Final[frozenset[WriterEnding]] = frozenset({"over_budget", "refused", "review_failed"})
 
 #: The most revisions a report is given (ANALYST §4): so at most three reviews.
 _MOST_REVISIONS: Final = 2
@@ -155,7 +167,8 @@ class WritingOutcome:
     :ivar analyst_rounds: The analyst's rounds begun: the draft, then each revision.
     :ivar editor_rounds: The review rounds begun.
     :ivar faults: The faults of a submission that ended the loop ``refused``; empty otherwise.
-    :ivar reason: Why the loop ended other than ``stored``, in a sentence.
+    :ivar reason: Why the loop ended other than ``stored``, in a sentence; for a ``stored`` the revision of a cleared
+        review did not improve on, how that revision ended.
     :ivar sessions: Every session begun, by name, as a stored value, whatever the ending: the analyst's
         (``AnalystSession.to_json()``, under ``analyst``) and each review round's (``ToolSession.to_json()``, under
         ``editor-<round>``).
@@ -246,7 +259,7 @@ async def write_rounds(
         drafted = await analyst.draft()
         while True:
             if drafted.ending != "submitted" or drafted.doc is None:
-                return _not_submitted(drafted, seen, analyst)
+                return _kept_if_cleared(_not_submitted(drafted, seen, analyst), seen, analyst)
             doc = drafted.doc
             seen.editor_rounds += 1
             reviewed = await review_report(
@@ -265,13 +278,15 @@ async def write_rounds(
             )
             seen.editors[editor_session(drafted.round)] = reviewed.session
             if reviewed.ending != "reviewed" or reviewed.review is None:
-                return _not_reviewed(reviewed, seen, analyst)
+                return _kept_if_cleared(_not_reviewed(reviewed, seen, analyst), seen, analyst)
             review = reviewed.review
             seen.reviews.append(review)
             seen.reviewed.append(doc)
-            if review.clears:
+            if review.settles:
                 return _outcome("stored", seen, analyst, stores=True)
             if drafted.round > held.revisions:
+                if review.clears:
+                    return _outcome("stored", seen, analyst, stores=True)
                 return _outcome(
                     "stored_with_findings",
                     seen,
@@ -287,6 +302,33 @@ async def write_rounds(
         # a refused reply, which the engine cannot name by type. The tally, the caller's, keeps every turn sent.
         contain(exc, log=log, what="the report writing loop failed and ends failed", level="error")
         return _outcome("failed", seen, analyst, reason=f"{type(exc).__name__}: {exc}", failure=exc)
+
+
+def _kept_if_cleared(ended: WritingOutcome, seen: _Rounds, analyst: AnalystSession) -> WritingOutcome:
+    """``ended``, or ``stored`` with the last reviewed document where the review that sent this revision cleared it
+    and the revision ended on the budget, on its faults or on an unreadable review; a ``failed`` one is kept.
+
+    Only a review that clears with findings open sends a revision it does not need (:attr:`Review.settles`), so a
+    cleared last review means the round that ended short was that revision.
+    """
+    if ended.ending not in _CHANCE_ENDINGS or not seen.reviews or not seen.reviews[-1].clears:
+        return ended
+    cleared = seen.reviews[-1].round
+    log.warning(
+        "the revision after the review of round %d, which cleared the report, ended %s (%s); the cleared report is "
+        "stored",
+        cleared,
+        ended.ending,
+        ended.reason,
+    )
+    return _outcome(
+        "stored",
+        seen,
+        analyst,
+        stores=True,
+        reason=f"the revision after the review of round {cleared}, which cleared the report, ended {ended.ending}: "
+        f"{ended.reason}",
+    )
 
 
 def _not_submitted(drafted: AnalystOutcome, seen: _Rounds, analyst: AnalystSession) -> WritingOutcome:
@@ -335,11 +377,12 @@ def _outcome(
 
 def _revision_request(review: Review) -> str:
     """What the analyst is sent to revise by: the review as the editor wrote it, its total and pass as code read it."""
-    verdict = (
-        "passes on its scores, and holds findings that block it"
-        if review.passes
-        else f"does not pass: a report passes with no item at 0 and a total of at least {PASS_TOTAL}"
-    )
+    if not review.passes:
+        verdict = f"does not pass: a report passes with no item at 0 and a total of at least {PASS_TOTAL}"
+    elif review.blocking:
+        verdict = "passes on its scores, and holds findings that block it"
+    else:
+        verdict = "passes on its scores, and holds findings that do not block it"
     scores = "\n".join(_scored(item) for item in review.items)
     blocking = {finding.id for finding in review.blocking}
     findings = (

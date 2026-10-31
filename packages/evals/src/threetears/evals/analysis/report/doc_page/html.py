@@ -6,8 +6,9 @@ The page is the kit's, as the planned page lays it out (:mod:`~threetears.evals.
 with no class, style or script of its own:
 
 - ``.page`` > ``.mast``; on a draft, code's one line saying its editor's review left findings open, as a
-  ``.callout.warn`` (``data-part="draft"``), first after the masthead; where part of a stored document no longer
-  reads, code's note as a ``.callout.warn`` (``data-part="degraded"``);
+  ``.callout.warn`` (``data-part="draft"``), first after the masthead; on a finished page with findings open, code's
+  one line counting them, as a ``.callout`` (``data-part="open"``) linked to where they are listed; where part of a
+  stored document no longer reads, code's note as a ``.callout.warn`` (``data-part="degraded"``);
 - ``.bluf``: the ``h1`` headline, the ``.lede``, the amber ``.flag`` where the document has one, the confidence
   (``data-part="confidence"``: amber where caveats stay open or the evidence is weak, a muted ``.callout`` for plain
   high; each caveat its label in bold, then its clause, a checked one as ``li.checked``), the ``.decision`` grid (an
@@ -17,8 +18,9 @@ with no class, style or script of its own:
   block's ``.fig`` (or the table of its values), its caption and code's lines as ``.cap``;
 - the explore table and the next steps, each its own ``section``;
 - the appendix under its ``.part`` divider (``data-part="appendix"``): the arms key, every table the input holds,
-  what was left out and why, Method under its own heading (``dl.method``), the review findings left open, and the made
-  line; the caveats a claim or a Method term lands, by label, as code's ``.cap`` line under it;
+  what was left out and why, Method under its own heading (``dl.method``), the review findings left open
+  (``id="findings"``), and the made line; the caveats a claim or a Method term lands, by label, as code's ``.cap``
+  line under it;
 - the kit's script, last, on the default page only.
 
 **Nothing written into a field can make the page run or load anything**, as on every page this package writes: every
@@ -44,6 +46,7 @@ from threetears.evals.analysis.report.doc_page.model import (
     DocTerm,
     caveats_line,
     draft_line,
+    open_findings_line,
 )
 from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
@@ -196,7 +199,7 @@ def _finding(finding: DocFinding) -> str:
 
 def _findings(findings: Sequence[DocFinding]) -> str:
     items = "".join(_finding(finding) for finding in findings)
-    return f'<section data-part="findings"><h3>{escape(FINDINGS_TITLE)}</h3><ul>{items}</ul></section>'
+    return f'<section data-part="findings" id="findings"><h3>{escape(FINDINGS_TITLE)}</h3><ul>{items}</ul></section>'
 
 
 def _appendix(page: DocPage) -> list[str]:
@@ -256,6 +259,11 @@ def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] 
         '<article data-page="doc">',
         _masthead(page.masthead),
         *([f'<p class="callout warn" data-part="draft">{escape(draft_line(page))}</p>'] if page.draft else []),
+        *(
+            [f'<p class="callout" data-part="open"><a href="#findings">{escape(opened)}</a></p>']
+            if (opened := open_findings_line(page))
+            else []
+        ),
         *([f'<p class="callout warn" data-part="degraded">{escape(page.degraded)}</p>'] if page.degraded else []),
         '<div class="bluf">',
         *bluf,

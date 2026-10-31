@@ -9,7 +9,9 @@ Contracts held here:
 
 - **rounds**: a review that passes with no finding open ends ``stored`` in round 1, finished; a failed review, a
   ``must_fix`` or a ``should_fix`` sends the analyst back in its own conversation, at most twice, and three reviews
-  that do not clear end ``stored_with_findings``, a draft whose page says so first (owner ruling 2026-10-29);
+  that do not clear end ``stored_with_findings``, a draft whose page says so first (owner ruling 2026-10-29); a
+  ``should_fix`` first raised after round 1 is sent back while a revision remains and never makes a draft, and a
+  revision it sends that ends short stores the report it cleared, finished (owner ruling 2026-10-31);
 - **endings** (plan §4.4): ``over_budget`` stores the last reviewed document with its review's findings, or nothing
   when no review was read; ``refused``, ``review_failed`` and ``failed`` store nothing, and the tally keeps every turn;
 - **the editor**: an unreadable answer is asked for once more, and a second ends ``review_failed``; its request
@@ -273,16 +275,84 @@ async def test_a_loop_out_of_revisions_with_should_fix_findings_open_stores_a_dr
     assert [finding.finding for finding in page.findings] == [SHOULD_FIX["finding"], other["finding"]]
 
 
-# --- carried and new findings after round 1 (owner ruling 2026-10-29, option 3) --------------------------------------
+# --- carried and new findings after round 1 (owner rulings 2026-10-29, option 3, and 2026-10-31) --------------------
 
 #: A should_fix a later review raises for the first time.
 LATE: Final = {"claim": "report", "severity": "should_fix", "finding": "Say the run's date in the lede."}
 
 
-async def test_a_round_two_review_with_only_new_should_fix_findings_stores_a_finished_report_listing_them() -> None:
+async def test_a_new_should_fix_in_round_two_gets_one_more_revision_and_stays_open_on_a_finished_report() -> None:
+    """The Kairo pilot's shape: a should_fix new in round 2, with a revision left, is sent back once more; still open
+    after it, it blocks nothing, and the report is stored finished, the finding listed open and counted at the top."""
     host = off_loop(seeded_host)
+    analyst_client = analyst(reply(submitted()), reply(submitted()), reply(submitted(revised())))
     model = FakeTurnModel(
-        analyst=analyst(reply(submitted()), reply(submitted(revised()))),
+        analyst=analyst_client,
+        editor_1=editor(reply(review(findings=[SHOULD_FIX]))),
+        editor_2=FakeToolTurnClient(reply(review(findings=[marked(LATE, "new")], resolved=["f1.1"]))),
+        editor_3=FakeToolTurnClient(reply(review(findings=[marked(LATE, "f2.1")]))),
+    )
+
+    result = await written(model, host=host)
+
+    assert result.ending == "stored", result.outcome.reason
+    assert model.asked == ["analyst", "editor-1", "editor-2", "editor-3"], "one more revision, and no fourth review"
+    second, third = result.outcome.reviews[1:]
+    assert second.clears and not second.settles and second.blocking == ()
+    asked = _texts({"messages": [analyst_client.requests[-1]["messages"][-1]]})
+    assert "holds findings that do not block it" in asked and f"- f2.1 [should_fix] report: {LATE['finding']}" in asked
+    assert third.clears and third.blocking == () and third.findings[0].since == 2, "carried, it still blocks nothing"
+    (stored,) = _stored(host)
+    assert stored.ending == "stored" and not stored.draft
+    assert stored.findings == [kept(LATE, "f2.1", 2)], "counted in the stored record"
+    assert len(stored.doc["omitted"]) == len(revised()["omitted"]), "the revised document is the one stored"
+    page = result.page
+    assert page is not None and not page.draft
+    assert [finding.finding for finding in page.findings] == [LATE["finding"]], "listed open where open findings are"
+    text = doc_page_text(page)
+    assert "Draft" not in text
+    assert [line for line in text.splitlines() if line][1] == "1 review finding open, listed at the end."
+
+
+async def test_a_new_should_fix_in_round_two_that_its_revision_resolves_stores_a_clean_report() -> None:
+    model = FakeTurnModel(
+        analyst=analyst(reply(submitted()), reply(submitted()), reply(submitted(revised()))),
+        editor_1=editor(reply(review(findings=[SHOULD_FIX]))),
+        editor_2=FakeToolTurnClient(reply(review(findings=[marked(LATE, "new")], resolved=["f1.1"]))),
+        editor_3=FakeToolTurnClient(reply(review(resolved=["f2.1"]))),
+    )
+
+    result = await written(model)
+
+    assert result.ending == "stored" and result.outcome.editor_rounds == 3, result.outcome.reason
+    assert result.stored is not None and result.stored.findings == [] and not result.stored.draft
+    assert result.page is not None and result.page.findings == []
+    assert "open, listed at the end" not in doc_page_text(result.page)
+
+
+async def test_a_new_should_fix_in_the_last_round_stores_a_finished_report_at_once() -> None:
+    model = FakeTurnModel(
+        analyst=analyst(reply(submitted()), reply(submitted()), reply(submitted(revised()))),
+        editor_1=editor(reply(review(findings=[MUST_FIX]))),
+        editor_2=FakeToolTurnClient(reply(review(findings=[marked(MUST_FIX, "f1.1")]))),
+        editor_3=FakeToolTurnClient(reply(review(findings=[marked(LATE, "new")], resolved=["f1.1"]))),
+    )
+
+    result = await written(model)
+
+    assert result.ending == "stored", result.outcome.reason
+    assert model.asked == ["analyst", "editor-1", "editor-2", "editor-3"], "no revision past the two"
+    assert result.outcome.analyst_rounds == 3
+    assert result.stored is not None and not result.stored.draft
+    assert result.stored.findings == [kept(LATE, "f3.1", 3)]
+
+
+async def test_the_budget_refusing_the_revision_a_cleared_review_sent_stores_that_report_finished() -> None:
+    host = off_loop(seeded_host)
+    analyst_client = analyst(reply(submitted()), reply(submitted()), reply(submitted(revised())))
+    analyst_client.ceilings[3] = 1000.0
+    model = FakeTurnModel(
+        analyst=analyst_client,
         editor_1=editor(reply(review(findings=[SHOULD_FIX]))),
         editor_2=FakeToolTurnClient(reply(review(findings=[marked(LATE, "new")], resolved=["f1.1"]))),
     )
@@ -290,16 +360,41 @@ async def test_a_round_two_review_with_only_new_should_fix_findings_stores_a_fin
     result = await written(model, host=host)
 
     assert result.ending == "stored", result.outcome.reason
-    assert model.asked == ["analyst", "editor-1", "editor-2"], "the new should_fix sends no third round"
-    second = result.outcome.reviews[1]
-    assert second.clears and second.blocking == () and second.findings[0].since == 2
+    assert "cleared the report, ended over_budget" in result.outcome.reason
+    assert len(analyst_client.requests) == 3, "the revision's turn was refused before it was sent"
     (stored,) = _stored(host)
-    assert stored.ending == "stored" and not stored.draft
-    assert stored.findings == [kept(LATE, "f2.1", 2)], "counted in the stored record"
-    page = result.page
-    assert page is not None and not page.draft
-    assert [finding.finding for finding in page.findings] == [LATE["finding"]], "listed open where open findings are"
-    assert "Draft" not in doc_page_text(page)
+    assert stored.ending == "stored" and not stored.draft and stored.findings == [kept(LATE, "f2.1", 2)]
+    assert ReportDoc.model_validate(stored.doc) == ReportDoc.model_validate(DOC), "the reviewed report, not a later one"
+
+
+async def test_a_refused_revision_after_a_cleared_review_stores_the_cleared_report_finished() -> None:
+    broken = copy.deepcopy(DOC)
+    broken["method"] = []
+    model = FakeTurnModel(
+        analyst=analyst(reply(submitted()), reply(submitted()), *(reply(submitted(broken)) for _ in range(4))),
+        editor_1=editor(reply(review(findings=[SHOULD_FIX]))),
+        editor_2=FakeToolTurnClient(reply(review(findings=[marked(LATE, "new")], resolved=["f1.1"]))),
+    )
+
+    result = await written(model)
+
+    assert result.ending == "stored" and "ended refused" in result.outcome.reason
+    assert model.asked == ["analyst", "editor-1", "editor-2"], "a refused submission costs no editor call"
+    assert result.stored is not None and not result.stored.draft and result.stored.doc["method"]
+
+
+async def test_a_client_failure_in_the_revision_a_cleared_review_sent_still_ends_failed() -> None:
+    """A failure reaches the caller: the cleared report is not stored over it."""
+    model = FakeTurnModel(
+        analyst=analyst(reply(submitted()), reply(submitted()), ConnectionError("the provider refused the connection")),
+        editor_1=editor(reply(review(findings=[SHOULD_FIX]))),
+        editor_2=FakeToolTurnClient(reply(review(findings=[marked(LATE, "new")], resolved=["f1.1"]))),
+    )
+
+    result = await written(model)
+
+    assert result.ending == "failed" and result.stored is None
+    assert "ConnectionError" in result.outcome.reason and result.outcome.failure is not None
 
 
 async def test_a_round_two_review_that_keeps_an_earlier_should_fix_open_revises() -> None:
@@ -342,6 +437,7 @@ async def test_out_of_revisions_with_only_new_should_fix_findings_is_no_draft() 
     result = await written(model, limits=WriterLimits(revisions=1))
 
     assert result.ending == "stored", result.outcome.reason
+    assert model.asked == ["analyst", "editor-1", "editor-2"], "with no revision left, no third round"
     assert result.stored is not None and not result.stored.draft and len(result.stored.findings) == 1
     assert result.page is not None and not result.page.draft
 

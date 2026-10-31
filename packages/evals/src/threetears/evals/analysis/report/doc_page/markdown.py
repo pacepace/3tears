@@ -2,10 +2,10 @@
 
 Line for line what :func:`~threetears.evals.analysis.report.doc_page.html.doc_page_html` lays out, so a reader of
 Markdown checks every number the page draws: the masthead line, a draft's line (code's, saying its editor's review
-left findings open), code's note where part of a stored document no longer reads, the headline as the page's heading,
-the lede, the flag, the confidence (each caveat's label, then its clause or code's checked line), the decision's
-entries, the options table, each claim (its text as a heading, the labels of
-the caveats it lands, each block's values, notes, caption and code's lines), explore and the next steps, then the
+left findings open) or a finished page's line counting the findings left open, code's note where part of a stored
+document no longer reads, the headline as the page's heading, the lede, the flag, the confidence (each caveat's
+label, then its clause or code's checked line), the decision's entries, the options table, each claim (its text as a
+heading, the labels of the caveats it lands, each block's values, notes, caption and code's lines), explore and the next steps, then the
 appendix under its heading: the arms key, every table the input holds, what was left out and why, Method under its
 own heading (each term with the labels of the caveats it lands), the review findings left open, and the made line.
 
@@ -21,7 +21,13 @@ from collections.abc import Iterator, Sequence
 
 from threetears.evals.analysis.analyst.blocks import values_table
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
-from threetears.evals.analysis.report.doc_page.model import DocClaim, DocPage, caveats_line, draft_line
+from threetears.evals.analysis.report.doc_page.model import (
+    DocClaim,
+    DocPage,
+    caveats_line,
+    draft_line,
+    open_findings_line,
+)
 from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
     CHECKED_MARK,
@@ -83,6 +89,8 @@ def _lines(page: DocPage) -> Iterator[list[str]]:
     yield [_masthead(page.masthead)]
     if page.draft:
         yield [inert(f"**{draft_line(page)}**")]
+    if opened := open_findings_line(page):
+        yield [inert(f"_{opened}_")]
     if page.degraded:
         yield [inert(f"**{page.degraded}**")]
     yield [f"# {one_line(page.headline)}"]

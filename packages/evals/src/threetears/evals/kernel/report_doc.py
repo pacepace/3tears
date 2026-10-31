@@ -454,10 +454,10 @@ class ReportFinding(_Doc):
     """One review finding the editor left unresolved, which the page prints in Method.
 
     ``severity`` ``must_fix`` always blocks a review from clearing. Whether a ``should_fix`` blocks depends on when it
-    was raised (owner ruling 2026-10-29): in round 1 every finding blocks; after it, one carried over from an earlier
-    review blocks and one first raised in this review does not. ``id`` and ``since`` say which: code gives each finding
-    its id where it is first raised, and a later review that marks a finding as continuing an earlier one keeps that
-    finding's id and round. A finding stored before the ruling carries neither (``""`` and ``0``).
+    was raised (owner rulings 2026-10-29 and 2026-10-31): one first raised in round 1 blocks while a review carries it,
+    and one first raised in a later review never does, though it is sent back for revision while revisions remain.
+    ``id`` and ``since`` say which: code gives each finding its id where it is first raised, and a later review that
+    marks a finding as continuing an earlier one keeps that finding's id and round. A finding stored before the ruling carries neither (``""`` and ``0``).
     """
 
     claim: str = Field(description="The claim it is about, by id; empty for the page as a whole.")
@@ -577,10 +577,10 @@ class EvalReportDoc(EvalDocumentModel):
         """Whether the document is a draft: its editor's review left a blocking finding open, so its page says so first.
 
         Code decides it from how the loop ended and the review's structured findings, never from prose (owner rulings
-        2026-10-29): every ending but ``stored`` keeps a draft, since only a review with no blocking finding open ends
-        the loop ``stored``. A ``stored`` document may carry findings a later review first raised as ``should_fix``,
-        which block nothing and leave it finished; one carrying a finding with no id was stored by a build before
-        findings had ids, which stored its ``should_fix`` findings open, and is a draft.
+        2026-10-29 and 2026-10-31): every ending but ``stored`` keeps a draft, since only a review with no blocking
+        finding open ends the loop ``stored``. A ``stored`` document may carry ``should_fix`` findings first raised
+        after round 1, which block nothing and leave it finished; one carrying a finding with no id was stored by a build
+        before findings had ids, which stored its ``should_fix`` findings open, and is a draft.
 
         :return: True for a draft; False for a finished document.
         :rtype: bool

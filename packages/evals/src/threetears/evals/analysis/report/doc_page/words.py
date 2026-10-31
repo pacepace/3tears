@@ -145,6 +145,10 @@ DRAFT_OPEN = "Draft: its editor's review left {count} open."
 #: A draft's line where its editor's review failed on its scores alone and left no finding to list.
 DRAFT_UNCLEARED = "Draft: its editor's review did not pass it."
 
+#: A finished page's line near its top where its editor's review left findings open that block nothing, each listed
+#: under :data:`FINDINGS_TITLE`, last in the appendix. ``{count}`` is how many, with its noun (``1 review finding``).
+FINDINGS_OPEN = "{count} open, listed at the end."
+
 #: The heading of the editor's findings left unresolved, in Method.
 FINDINGS_TITLE = "Review findings left open"
 
