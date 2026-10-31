@@ -151,13 +151,17 @@ from threetears.evals.analysis.report_input import (
 from threetears.evals.analysis.report_margins import (
     CriterionFigure,
     Margin,
+    aspect_board,
     criterion_aspect,
     criterion_figures,
     criterion_misses,
+    criterion_other_aspect,
     criterion_passes,
     criterion_places,
     criterion_unknowns,
     flip_margin,
+    lead_aspect,
+    on_aspect,
     surviving_arms,
     undecided_arms,
     weakest_margin,
@@ -451,14 +455,6 @@ def _aspect_by_id(report_input: ReportInput, aspect_id: str) -> Aspect:
     return next(aspect for aspect in report_input.aspects if aspect.id == aspect_id)
 
 
-def _is_lead(report_input: ReportInput, aspect_id: str) -> bool:
-    """Whether an aspect is the lead one, whose figures the input's by-arm maps hold: the first the campaign asks
-    about, else the first (:mod:`~threetears.evals.analysis.report_input`)."""
-    asked = [aspect.id for aspect in report_input.aspects if aspect.asked]
-    lead = asked[0] if asked else next((aspect.id for aspect in report_input.aspects), None)
-    return aspect_id == lead
-
-
 def on_lead_aspect(report_input: ReportInput, contrast: Contrast) -> bool:
     """Whether a contrast is read on the lead aspect, the one an arm's overall figures (the by-arm maps) belong to: it
     names that aspect, or none. A contrast on another aspect pairs another aspect's figures, never the overall ones.
@@ -470,7 +466,7 @@ def on_lead_aspect(report_input: ReportInput, contrast: Contrast) -> bool:
     :return: Whether the contrast pairs the overall figures.
     :rtype: bool
     """
-    return contrast.aspect is None or _is_lead(report_input, contrast.aspect)
+    return contrast.aspect is None or contrast.aspect == lead_aspect(report_input)
 
 
 def _held_apart(
@@ -809,24 +805,18 @@ def _judged_stat(report_input: ReportInput, values: tuple[str, ...], path: str) 
     return _stat_figure(path, stat, statistic, scale, unit, f"the dimension's {statistic}")
 
 
-def _on_aspect(table: Measure | Judged, aspect_id: str, report_input: ReportInput) -> Mapping[str, Stat]:
-    """A measure's or judged dimension's figures on one aspect, by arm: ``per_arm`` on the lead aspect, else
-    ``by_aspect``'s entry for it."""
-    return table.per_arm if _is_lead(report_input, aspect_id) else table.by_aspect.get(aspect_id, {})
-
-
 def _aspect_judged_dimensions(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
-    return [key for key, judged in report_input.judged.items() if _on_aspect(judged, prior[0], report_input)]
+    return [key for key, judged in report_input.judged.items() if on_aspect(report_input, judged, prior[0])]
 
 
 def _aspect_judged_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
     aspect_id, dimension = prior
-    return list(_on_aspect(report_input.judged[dimension], aspect_id, report_input))
+    return list(on_aspect(report_input, report_input.judged[dimension], aspect_id))
 
 
 def _aspect_judged(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     aspect_id, dimension, arm_id, statistic = values
-    stat = _on_aspect(report_input.judged[dimension], aspect_id, report_input)[arm_id]
+    stat = on_aspect(report_input, report_input.judged[dimension], aspect_id)[arm_id]
     scale, unit = _scale_of(report_input, dimension)
     return _stat_figure(path, stat, statistic, scale, unit, f"the dimension's {statistic} on the aspect")
 
@@ -1007,7 +997,7 @@ def cost_ruler(report_input: ReportInput) -> MoneyRuler:
     return money_ruler(_costs_per_thousand(report_input).values(), per=1000, start=1000)
 
 
-def aspect_costs_per_thousand(report_input: ReportInput, aspect_id: str) -> dict[str, float]:
+def aspect_costs_per_thousand(report_input: ReportInput, aspect_id: str | None) -> dict[str, float]:
     """Each arm's cost per 1,000 of what it counts on one aspect, by the one cost rule's source read on that aspect.
 
     On the lead aspect it is the page's cost (``cost_per_1k.<arm>``). On another, it is the same source's figures
@@ -1017,18 +1007,18 @@ def aspect_costs_per_thousand(report_input: ReportInput, aspect_id: str) -> dict
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
-    :param aspect_id: The aspect, by id.
-    :ptype aspect_id: str
+    :param aspect_id: The aspect, by id; None for the lead aspect.
+    :ptype aspect_id: str | None
     :return: Each arm's cost per 1,000, by arm; empty where the aspect holds none.
     :rtype: dict[str, float]
     """
-    if _is_lead(report_input, aspect_id):
+    if aspect_id is None or aspect_id == lead_aspect(report_input):
         return _costs_per_thousand(report_input)
     source = _cost_source(report_input)[0]
     if source == _SCOREBOARD_COST:
         return {
             arm: row.reply_cost_usd * 1000
-            for arm, row in _aspect_board(report_input, aspect_id).items()
+            for arm, row in aspect_board(report_input, aspect_id).items()
             if row.reply_cost_usd is not None
         }
     measure = report_input.measures.get(source)
@@ -1091,19 +1081,19 @@ def _stat_figure(path: str, stat: Stat, statistic: str, scale: Scale, unit: str,
 
 
 def _aspect_measures(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
-    return [key for key, measure in report_input.measures.items() if _on_aspect(measure, prior[0], report_input)]
+    return [key for key, measure in report_input.measures.items() if on_aspect(report_input, measure, prior[0])]
 
 
 def _aspect_measure_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
     aspect_id, key = prior
-    return list(_on_aspect(report_input.measures[key], aspect_id, report_input))
+    return list(on_aspect(report_input, report_input.measures[key], aspect_id))
 
 
 def _aspect_measure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     aspect_id, key, arm_id, statistic = values
     measure = report_input.measures[key]
     scale, unit = _measure_scale(measure)
-    stat = _on_aspect(measure, aspect_id, report_input)[arm_id]
+    stat = on_aspect(report_input, measure, aspect_id)[arm_id]
     return _stat_figure(path, stat, statistic, scale, unit, f"the measure's {statistic} on the aspect")
 
 
@@ -1161,21 +1151,13 @@ def _scoreboard(report_input: ReportInput, values: tuple[str, ...], path: str) -
     return _board_figure(report_input.scoreboard[arm_id], statistic, path)
 
 
-def _aspect_board(report_input: ReportInput, aspect_id: str) -> Mapping[str, ScoreboardRow]:
-    """How each arm's trials came out on one aspect: its own scoreboard, else, on the lead aspect, the input's."""
-    board = _aspect_by_id(report_input, aspect_id).scoreboard
-    if board is not None:
-        return board
-    return report_input.scoreboard if _is_lead(report_input, aspect_id) else {}
-
-
 def _aspect_board_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
-    return list(_aspect_board(report_input, prior[0]))
+    return list(aspect_board(report_input, prior[0]))
 
 
 def _aspect_scoreboard(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     aspect_id, arm_id, statistic = values
-    return _board_figure(_aspect_board(report_input, aspect_id)[arm_id], statistic, path)
+    return _board_figure(aspect_board(report_input, aspect_id)[arm_id], statistic, path)
 
 
 def _board_figure(row: ScoreboardRow, statistic: str, path: str) -> Figure:
@@ -2843,7 +2825,7 @@ _UNANSWERED_RULE = (
 
 def _unanswered_rows(report_input: ReportInput, aspect_id: str | None, arm_id: str) -> list[Unanswered]:
     """The arm's unanswered calls by role, on one aspect (the lead's where none is named), in the input's role order."""
-    board = report_input.scoreboard if aspect_id is None else _aspect_board(report_input, aspect_id)
+    board = aspect_board(report_input, aspect_id)
     row = board.get(arm_id)
     return list((row.unanswered or {}).values()) if row is not None else []
 
@@ -2853,7 +2835,7 @@ def _unanswered_arms(report_input: ReportInput, _: tuple[str, ...] = ()) -> list
 
 
 def _aspect_unanswered_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
-    return [arm for arm, row in _aspect_board(report_input, prior[0]).items() if row.unanswered]
+    return [arm for arm, row in aspect_board(report_input, prior[0]).items() if row.unanswered]
 
 
 def _unanswered_sum(rows: Sequence[Unanswered], field: str) -> int | None:
@@ -3569,10 +3551,7 @@ def _held_where(
         per_arm = None if table is None else table.per_arm if aspect is None else table.by_aspect.get(aspect, {})
         stat = per_arm.get(arm_id) if per_arm is not None else None
         held = {candidate.id for candidate in report_input.aspects}
-        boards = (
-            report_input.scoreboard if aspect is None else _aspect_board(report_input, aspect) if aspect in held else {}
-        )
-        board = boards.get(arm_id)
+        board = (aspect_board(report_input, aspect) if aspect is None or aspect in held else {}).get(arm_id)
         if board is not None and board.usable is not None:
             fallback = (board.usable, "trials", board.cases, _COUNT_SOURCES["trials"])
         elif board is not None:
@@ -4109,12 +4088,6 @@ def _criterion_wheres(report_input: ReportInput, criterion: Criterion, arm_id: s
     return found
 
 
-def _criterion_other_aspect(report_input: ReportInput, criterion: Criterion) -> str | None:
-    """The aspect a criterion reads where it is not the lead one (whose figures sit in ``by_aspect``); None for the
-    lead's."""
-    return None if criterion.aspect is None or _is_lead(report_input, criterion.aspect) else criterion.aspect
-
-
 def _settle_criterion_figure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     criterion_id, arm_id, where, field = values
     criterion = _criterion(report_input, criterion_id)
@@ -4122,7 +4095,7 @@ def _settle_criterion_figure(report_input: ReportInput, values: tuple[str, ...],
         raise _unstated(
             path, f"reads a {criterion.statistic}, which states no spread to size a design by; settle reads a mean"
         )
-    aspect = _criterion_other_aspect(report_input, criterion)
+    aspect = criterion_other_aspect(report_input, criterion)
     spread = _spread(report_input, arm_id, criterion.measure, where, path, aspect)
     if field in _SETTLE_COUNT_FIELDS:
         return _criterion_count(report_input, path, spread, (arm_id, criterion.measure, where, aspect), field)
@@ -4238,7 +4211,7 @@ def _aspect_spread(report_input: ReportInput, key: str, aspect_id: str, arm_id: 
     """An arm's spread on a measure on one aspect, from its own statistic there: its interval, half-width, standard
     error, or a pass/fail rate's binomial spread from its own count."""
     table = report_input.measures[key]
-    stat = _on_aspect(table, aspect_id, report_input).get(arm_id)
+    stat = on_aspect(report_input, table, aspect_id).get(arm_id)
     if stat is None:
         raise _unstated(path, f"reads {arm_id}'s figure on {key!r} on {aspect_id}, which the input does not state")
     count = stat.n if stat.n is not None else stat.n_cases
@@ -4337,7 +4310,7 @@ def _passing_board(report_input: ReportInput, aspect_id: str) -> dict[str, Score
     """The arms an aspect's scoreboard states a pass rate for: trials passed, and usable trials above none."""
     return {
         arm: row
-        for arm, row in _aspect_board(report_input, aspect_id).items()
+        for arm, row in aspect_board(report_input, aspect_id).items()
         if row.passed is not None and row.usable is not None and row.usable > 0
     }
 
@@ -6298,6 +6271,28 @@ def resolve(key: str, report_input: ReportInput) -> Figure:
     return figure
 
 
+def held_figure(key: str, report_input: ReportInput) -> Figure | None:
+    """The figure a key built by code names, or None where the input holds none for it.
+
+    For a table's cell, whose key code builds from an id the input holds and a family it reads, so a key that does
+    not resolve means the input holds no such figure there, which the cell says with a dash. Never for a key a planner
+    or an analyst wrote, which is refused by name (:func:`resolve`).
+
+    :param key: The path, without braces or filters.
+    :ptype key: str
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The figure, or None.
+    :rtype: Figure | None
+    """
+    try:
+        return resolve(key, report_input)
+    except UnresolvableReference:
+        # NOSILENT: the caller's key is code's, so a refusal is the input holding no such figure, which the caller
+        # states as a dash; a refusal of a written key reaches its writer through resolve.
+        return None
+
+
 def _frameless(refused: UnresolvableReference) -> UnresolvableReference:
     """A copy of a refusal that holds no frame: its type and message, its cause copied the same way, and whether a
     traceback shows its context, as a first raise has it.
@@ -7432,6 +7427,7 @@ def figure_key_pages() -> dict[str, str]:
 
 __all__ = [
     "aspect_costs_per_thousand",
+    "held_figure",
     "cost_arms",
     "cost_ruler",
     "FILTER_SPELLINGS",

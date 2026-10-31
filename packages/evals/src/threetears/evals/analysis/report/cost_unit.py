@@ -35,6 +35,7 @@ from dataclasses import dataclass
 
 from threetears.evals.kernel.numbers import MoneyForm, format_number, group_thousands, money_form
 from threetears.evals.analysis.report_input import Measure, ReportInput
+from threetears.evals.analysis.report_margins import aspect_board
 
 __all__ = [
     "PRICED_SHARE_TEMPLATE",
@@ -116,7 +117,7 @@ PRICED_SHARE_TEMPLATE = "{priced} of {calls} calls priced"
 PRICED_TRIALS_TEMPLATE = "{priced} of {trials} trials priced"
 
 
-def priced_in_part(report_input: ReportInput, arm: str) -> str | None:
+def priced_in_part(report_input: ReportInput, arm: str, aspect: str | None = None) -> str | None:
     """Whether an arm's cost counts only part of its calls, as its pricing says (``ScoreboardRow.pricing``): the words
     every surface states beside such an amount (``850 of 897 calls priced``); None where all were priced, or the input
     does not say.
@@ -125,10 +126,13 @@ def priced_in_part(report_input: ReportInput, arm: str) -> str | None:
     :ptype report_input: ReportInput
     :param arm: The arm, by id.
     :ptype arm: str
+    :param aspect: The aspect whose scoreboard says (:func:`~threetears.evals.analysis.report_margins.aspect_board`);
+        None for the lead aspect's, the input's own.
+    :ptype aspect: str | None
     :return: The words, or None.
     :rtype: str | None
     """
-    row = report_input.scoreboard.get(arm)
+    row = aspect_board(report_input, aspect).get(arm)
     pricing = row.pricing if row is not None else None
     if (
         pricing is None

@@ -50,15 +50,26 @@ from dataclasses import dataclass
 from typing import Literal
 
 from threetears.evals.analysis.cell_mean import NoCellMean, cell_mean_interval
-from threetears.evals.analysis.report_input import Aspect, Criterion, Judged, Measure, Reading, ReportInput, Stat
+from threetears.evals.analysis.report_input import (
+    Aspect,
+    Criterion,
+    Judged,
+    Measure,
+    Reading,
+    ReportInput,
+    ScoreboardRow,
+    Stat,
+)
 
 __all__ = [
     "CriterionFigure",
     "CriterionPlace",
     "Margin",
+    "aspect_board",
     "criterion_aspect",
     "criterion_figures",
     "criterion_misses",
+    "criterion_other_aspect",
     "criterion_passes",
     "criterion_places",
     "criterion_place",
@@ -66,6 +77,7 @@ __all__ = [
     "flip_margin",
     "lead_aspect",
     "margins",
+    "on_aspect",
     "surviving_arms",
     "undecided_arms",
     "weakest_margin",
@@ -244,6 +256,42 @@ def lead_aspect(report_input: ReportInput) -> str | None:
     return asked[0] if asked else next((aspect.id for aspect in report_input.aspects), None)
 
 
+def aspect_board(report_input: ReportInput, aspect_id: str | None) -> Mapping[str, ScoreboardRow]:
+    """How each arm's trials came out on one aspect: its own scoreboard, else, on the lead aspect, the input's.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param aspect_id: The aspect, by id; None for the lead aspect's, which the input's scoreboard holds.
+    :ptype aspect_id: str | None
+    :return: Each arm's row, by arm; empty on an aspect other than the lead that holds no scoreboard.
+    :rtype: Mapping[str, ScoreboardRow]
+    """
+    if aspect_id is None:
+        return report_input.scoreboard
+    board = next(aspect for aspect in report_input.aspects if aspect.id == aspect_id).scoreboard
+    if board is not None:
+        return board
+    return report_input.scoreboard if aspect_id == lead_aspect(report_input) else {}
+
+
+def on_aspect(report_input: ReportInput, table: Measure | Judged, aspect_id: str | None) -> Mapping[str, Stat]:
+    """A measure's or judged dimension's figures on one aspect, by arm: ``per_arm`` on the lead aspect, else its
+    ``by_aspect`` entry, which an aspect it was not read on lacks.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param table: The measure or judged dimension.
+    :ptype table: Measure | Judged
+    :param aspect_id: The aspect, by id; None for the lead aspect.
+    :ptype aspect_id: str | None
+    :return: Each arm's stat, by arm.
+    :rtype: Mapping[str, Stat]
+    """
+    if aspect_id is None or aspect_id == lead_aspect(report_input):
+        return table.per_arm
+    return table.by_aspect.get(aspect_id, {})
+
+
 def criterion_aspect(report_input: ReportInput, criterion: Criterion) -> str | None:
     """The aspect whose figures a criterion reads (this module's Which aspect's figure): the one it names, else the
     lead aspect (the first asked, else the first).
@@ -258,9 +306,17 @@ def criterion_aspect(report_input: ReportInput, criterion: Criterion) -> str | N
     return criterion.aspect if criterion.aspect is not None else lead_aspect(report_input)
 
 
-def _other_aspect(report_input: ReportInput, criterion: Criterion) -> str | None:
+def criterion_other_aspect(report_input: ReportInput, criterion: Criterion) -> str | None:
     """The aspect a criterion reads where it is not the lead one, whose figures sit in ``by_aspect``; None for the
-    lead's."""
+    lead's.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param criterion: The declared criterion.
+    :ptype criterion: Criterion
+    :return: The aspect's id, or None.
+    :rtype: str | None
+    """
     if criterion.aspect is None or criterion.aspect == lead_aspect(report_input):
         return None
     return criterion.aspect
@@ -271,7 +327,7 @@ def _stat_at(
 ) -> Stat | None:
     """The arm's stat on the criterion's measure at one of its places, on the criterion's aspect; None where the input
     states none (a task's or cell's figure for an aspect other than the lead, which the input never holds)."""
-    other = _other_aspect(report_input, criterion)
+    other = criterion_other_aspect(report_input, criterion)
     if (cell is not None or task is not None) and other is not None:
         return None
     if cell is not None:
@@ -284,7 +340,7 @@ def _stat_at(
         figures = table.get(criterion.measure)
         if figures is None:
             continue
-        per_arm = figures.per_arm if other is None else figures.by_aspect.get(other, {})
+        per_arm = on_aspect(report_input, figures, other)
         if arm in per_arm:
             return per_arm[arm]
     return None
@@ -328,7 +384,7 @@ def _derived_interval(report_input: ReportInput, criterion: Criterion, arm: str)
     """The interval derived for an arm's overall mean on the criterion's lead-aspect figure, where it is the plain mean
     of its target-matrix cells and every cell states a spread (:func:`~threetears.evals.analysis.cell_mean
     .cell_mean_interval`); None where it is not, or the criterion reads another aspect, whose figures no cell holds."""
-    if _other_aspect(report_input, criterion) is not None:
+    if criterion_other_aspect(report_input, criterion) is not None:
         return None
     try:
         return cell_mean_interval(report_input, criterion.measure, arm).interval

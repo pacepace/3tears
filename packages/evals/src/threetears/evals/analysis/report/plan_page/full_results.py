@@ -55,13 +55,13 @@ from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, money_columns
 from threetears.evals.analysis.report.charts import ChartStatus
-from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.cost_unit import PRICED_SHARE_TEMPLATE, money_ruler, priced_in_part
+from threetears.evals.analysis.report.cost_unit import money_ruler, priced_in_part
 from threetears.evals.analysis.report.figure_keys import (
     aspect_costs_per_thousand,
     cost_basis,
     cost_ruler,
     format_figure,
+    held_figure,
     resolve,
 )
 from threetears.evals.analysis.report.plan_page.charting import (
@@ -80,6 +80,7 @@ from threetears.evals.analysis.report.plan_page.look import (
     quantity_of,
 )
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
+from threetears.evals.analysis.report.plan_page.tables import pass_rate_cell
 from threetears.evals.analysis.report.plan_page.words import (
     ASPECTS_TABLE_ORDER,
     CONTRAST_VERDICT_WORDS,
@@ -91,11 +92,10 @@ from threetears.evals.analysis.report.plan_page.words import (
     LINE_TEMPLATES,
     NO_FIGURE,
     OVERALL,
-    PASSES_TEMPLATE,
 )
 from threetears.evals.analysis.report_gates import GateCheck, gate_check
 from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, Judged, Measure, ReportInput, Stat
-from threetears.evals.analysis.report_margins import criterion_figures, criterion_places, lead_aspect
+from threetears.evals.analysis.report_margins import aspect_board, criterion_figures, criterion_places, on_aspect
 from threetears.evals.analysis.style import humanize
 from threetears.evals.kernel.report_plan import ReportPlan
 
@@ -188,38 +188,23 @@ def _stated(report_input: ReportInput, key: str, stat: Stat | None, *, kind: str
 # --- arms by measure -------------------------------------------------------------------------------------------------
 
 
-def _pass_rate(report_input: ReportInput, arm: str) -> TableCell:
-    row = report_input.scoreboard.get(arm)
-    if row is None or row.passed is None or not row.usable:
-        return TableCell(value=None)
-    drawn = quantity("share")
-    return TableCell(
-        value=figure_text(row.passed / row.usable * drawn.factor, drawn),
-        flag=PASSES_TEMPLATE.format(passed=row.passed, usable=row.usable),
-    )
-
-
 def _cost(report_input: ReportInput, arm: str) -> TableCell:
     """The arm's cost by the package's one cost rule (the ``cost_per_1k`` figure), a number drawn per the count the
     column's head names (:func:`~threetears.evals.analysis.report.figure_keys.cost_ruler`), its priced share beside it
     where only part of its calls were priced."""
-    try:
-        figure = resolve(f"cost_per_1k.{arm}", report_input)
-        if not isinstance(figure.value, float):
-            return TableCell(value=None)
-        drawn = cost_ruler(report_input).drawn(figure.value)
-        return TableCell(value=drawn, unit=MONEY, flag=priced_in_part(report_input, arm))
-    except UnresolvableReference:
-        # NOSILENT: the key is code's, built from an arm id, so one that does not resolve means the input holds no
-        # cost for the arm, which the cell says with a dash.
+    figure = held_figure(f"cost_per_1k.{arm}", report_input)
+    if figure is None or not isinstance(figure.value, float):
         return TableCell(value=None)
+    return TableCell(
+        value=cost_ruler(report_input).drawn(figure.value), unit=MONEY, flag=priced_in_part(report_input, arm)
+    )
 
 
 def _arms_by_measure(report_input: ReportInput, look: PageLook) -> list[TableBlock]:
     if len(aspects := _measured_aspects(report_input)) > 1:
         return _arms_by_aspect_and_measure(report_input, look, aspects)
     arms = [arm.id for arm in report_input.arms]
-    passing = any(_pass_rate(report_input, arm).value is not None for arm in arms)
+    passing = any(pass_rate_cell(report_input, arm).value is not None for arm in arms)
 
     judged = [key for key, held in report_input.judged.items() if any(arm in held.per_arm for arm in arms)]
     measures = [
@@ -250,7 +235,7 @@ def _arms_by_measure(report_input: ReportInput, look: PageLook) -> list[TableBlo
     for arm in arms:
         cells = {"arm": _chip(look, arm)}
         if passing:
-            cells["pass_rate"] = _pass_rate(report_input, arm)
+            cells["pass_rate"] = pass_rate_cell(report_input, arm)
         for key in judged:
             cells[f"judged:{key}"] = _stated(
                 report_input, key, report_input.judged[key].per_arm.get(arm), kind="judged"
@@ -263,52 +248,6 @@ def _arms_by_measure(report_input: ReportInput, look: PageLook) -> list[TableBlo
     return [_table("arms_by_measure", columns, rows, "in the campaign's arm order")]
 
 
-def _on_aspect(report_input: ReportInput, table: Measure | Judged, aspect: str) -> Mapping[str, Stat]:
-    """A measure's or judged dimension's figures on one aspect, by arm: ``per_arm`` on the lead aspect, else its
-    ``by_aspect`` entry, which an aspect it was not read on lacks."""
-    return table.per_arm if aspect == lead_aspect(report_input) else table.by_aspect.get(aspect, {})
-
-
-def _figure_value(key: str, report_input: ReportInput) -> float | None:
-    """The number a key names, or None where the input holds none."""
-    try:
-        figure = resolve(key, report_input)
-    except UnresolvableReference:
-        # NOSILENT: every key here is built by code from an aspect and an arm id, so one that does not resolve means
-        # the input holds no such figure there, which the cell says with a dash.
-        return None
-    return figure.value if isinstance(figure.value, float) else None
-
-
-def _aspect_pass_rate(report_input: ReportInput, aspect: str, arm: str) -> TableCell:
-    """An arm's pass rate on one aspect, its passes over its usable trials beside it."""
-    passed = _figure_value(f"aspects.{aspect}.scoreboard.{arm}.passed", report_input)
-    usable = _figure_value(f"aspects.{aspect}.scoreboard.{arm}.usable", report_input)
-    if passed is None or not usable:
-        return TableCell(value=None)
-    drawn = quantity("share")
-    return TableCell(
-        value=figure_text(passed / usable * drawn.factor, drawn),
-        flag=PASSES_TEMPLATE.format(passed=int(passed), usable=int(usable)),
-    )
-
-
-def _aspect_priced_in_part(report_input: ReportInput, aspect: Aspect, arm: str) -> str | None:
-    """Whether an arm's cost on one aspect counts only part of its calls, in words; None where all were priced."""
-    if aspect.scoreboard is None:
-        return priced_in_part(report_input, arm) if aspect.id == lead_aspect(report_input) else None
-    row = aspect.scoreboard.get(arm)
-    pricing = row.pricing if row is not None else None
-    if (
-        pricing is None
-        or pricing.calls is None
-        or pricing.priced_calls is None
-        or pricing.priced_calls >= pricing.calls
-    ):
-        return None
-    return PRICED_SHARE_TEMPLATE.format(priced=pricing.priced_calls, calls=pricing.calls)
-
-
 def _measured_aspects(report_input: ReportInput) -> list[Aspect]:
     """The aspects some arm holds a figure on, in the input's order: a usable trial, a measure's or a judged
     dimension's figure."""
@@ -316,10 +255,8 @@ def _measured_aspects(report_input: ReportInput) -> list[Aspect]:
     return [
         aspect
         for aspect in report_input.aspects
-        if any(
-            _figure_value(f"aspects.{aspect.id}.scoreboard.{arm.id}.usable", report_input) for arm in report_input.arms
-        )
-        or any(_on_aspect(report_input, table, aspect.id) for table in tables)
+        if any(row.usable for row in aspect_board(report_input, aspect.id).values())
+        or any(on_aspect(report_input, table, aspect.id) for table in tables)
     ]
 
 
@@ -329,11 +266,11 @@ def _arms_by_aspect_and_measure(report_input: ReportInput, look: PageLook, aspec
     read on each aspect, every aspect's cost in one form."""
     arms = [arm.id for arm in report_input.arms]
     places = [(aspect, arm) for aspect in aspects for arm in arms]
-    passing = {(aspect.id, arm): _aspect_pass_rate(report_input, aspect.id, arm) for aspect, arm in places}
+    passing = {(aspect.id, arm): pass_rate_cell(report_input, arm, aspect.id) for aspect, arm in places}
 
     def held(table: Measure | Judged, key: str, *, kind: str | None = None) -> bool:
         return any(
-            _stated(report_input, key, _on_aspect(report_input, table, aspect.id).get(arm), kind=kind).value is not None
+            _stated(report_input, key, on_aspect(report_input, table, aspect.id).get(arm), kind=kind).value is not None
             for aspect, arm in places
         )
 
@@ -364,16 +301,16 @@ def _arms_by_aspect_and_measure(report_input: ReportInput, look: PageLook, aspec
             cells["pass_rate"] = passing[aspect.id, arm]
         for key in judged:
             cells[f"judged:{key}"] = _stated(
-                report_input, key, _on_aspect(report_input, report_input.judged[key], aspect.id).get(arm), kind="judged"
+                report_input, key, on_aspect(report_input, report_input.judged[key], aspect.id).get(arm), kind="judged"
             )
         for key in measures:
             cells[f"measure:{key}"] = _stated(
-                report_input, key, _on_aspect(report_input, report_input.measures[key], aspect.id).get(arm)
+                report_input, key, on_aspect(report_input, report_input.measures[key], aspect.id).get(arm)
             )
         if costed:
             cost = costs[aspect.id].get(arm)
             cells["cost_per_1k"] = (
-                TableCell(value=ruler.drawn(cost), unit=MONEY, flag=_aspect_priced_in_part(report_input, aspect, arm))
+                TableCell(value=ruler.drawn(cost), unit=MONEY, flag=priced_in_part(report_input, arm, aspect.id))
                 if cost is not None
                 else TableCell(value=None)
             )
