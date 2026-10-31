@@ -47,6 +47,21 @@ serving process reading the store, its DuckDB copy compressed, and the workers i
 less: about 0.3 GiB more). A one-state change publishes in 0.10-0.15 s; its checkpoint (0.01-0.21 s) runs off the
 change's path (`scripts/measure-shared-arrow.py`, `docs/shared-arrow.md`).
 
+### nats: a credential renewal hands a subscription over without losing a message
+
+**Fixed:** a renewal could lose messages routed to a moved subscription, found by the live renewal stress test.
+
+- The old half of a subscription was forgotten at the round trip that proved its `UNSUB`; a message the server
+  delivered to it just after was dropped. It now keeps receiving until its connection is retired.
+- nats-server (2.14 and 2.15) drops a message whose matched queue-group members have all left by its delivery, though
+  a successor joined meanwhile. The old half now stays in its group for `retire_after` before it leaves.
+- A renewal that failed after subscribing its successor closed the successor with what had been routed to it --
+  thousands of messages under load. A successor's subscription now receives from its `SUB`, and a renewal that will
+  not complete stops routing to it and drains it (logged as a WARNING).
+
+The live stress test holds every one of 100 renewals to going through and nothing to be lost, its auth callout
+answering off the test's own loop; a variant forces renewals that fail after subscribing their successor.
+
 ### observe, tools: a tool pod counts every call it finishes, with its duration, by tool and outcome
 
 **Fixed:** a tool pod's `/metrics` carried only `threetears_tools_inflight_requests`, a gauge read once per scrape.
