@@ -528,6 +528,30 @@ def test_a_floor_added_at_adoption_reads_as_declared_after_the_evidence_only_onc
     assert ("aspect", None) not in _late(adopted, "tone"), "the adopted aspect keeps its own standing"
 
 
+def test_a_late_floor_carries_its_aspect_and_reading_beside_its_key() -> None:
+    """A floor's key joins its aspect, kind and reading with slashes, and a goal check's text may hold one, so the
+    late criterion carries the floor's aspect and reading as they were declared, and no reader splits the key."""
+    storage, _ = _store()
+    tone = _source(storage, "tone", "tpl-tone")
+    check = "ratio/total >= 0.5"
+    later = tone.model_copy(
+        update={
+            "floors": [
+                Floor(
+                    aspect="tone",
+                    clause=RateDrop(max_points=4.0, reading=check),
+                    declared_at="2026-03-01T00:00:00+00:00",
+                )
+            ]
+        }
+    )
+
+    declared = aspect_view(later, "tone").declared
+    (floor,) = [late for late in late_criteria(declared, _RAN["tpl-tone"]) if late.criterion == "floor"]
+    assert floor.name == f"tone/rate_drop/{check}"
+    assert (floor.aspect, floor.reading) == ("tone", check)
+
+
 def test_an_arm_named_at_adoption_is_dated_now_and_one_the_source_already_named_keeps_its_time() -> None:
     storage, _ = _store()
     tone, untold = _source(storage, "tone", "tpl-tone"), _source(storage, "tools", "tpl-tools", control=None)

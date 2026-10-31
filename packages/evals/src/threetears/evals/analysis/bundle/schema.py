@@ -55,7 +55,7 @@ from threetears.evals.analysis.stats import (
 )
 from threetears.evals.kernel.analysis_measures import BarAdjudication, MeasureCollection
 from threetears.evals.kernel.campaign import CampaignWindow, EvalInsight, VariantIndexEntry
-from threetears.evals.kernel.declaration import ARM_PRESENTATION_FIELDS, ASPECT_PRESENTATION_FIELDS
+from threetears.evals.kernel.declaration import ARM_PRESENTATION_FIELDS, ASPECT_PRESENTATION_FIELDS, RateDrop
 from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.result_condition import ExclusionCause
@@ -1778,6 +1778,16 @@ class FamilyComparison(EvalDocumentModel):
             "`bounded`). None when no test ran."
         ),
     )
+    # Left out of the document when unset, so a comparison no test ran on serializes as it did before the field.
+    interval_basis: Literal["t", "bounded"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Which method `interval` was drawn by: `bounded` = the bounded test's on the declared range (a rate's, "
+            "or a reading whose values have no spread), so `interval` is `bounded_interval`; `t` = the t interval "
+            "of the test `p_raw` came from. None where `interval` is."
+        ),
+    )
     bounded_interval: tuple[float, float] | None = Field(
         default=None,
         description=(
@@ -1892,7 +1902,9 @@ class FamilyComparison(EvalDocumentModel):
         description=(
             "Set when `verdict` is not_separated with no test run: every shared case moved by the same amount (or "
             "each side is constant) on a reading that declares no `value_range`, where no test of the mean can call "
-            "the gap, or a value lies outside the declared range. The sentence names the remedy. None otherwise."
+            "the gap, or a value lies outside the declared range; the sentence names the remedy. Set too where "
+            "`p_adjusted` is below the family's alpha but `interval` reaches zero, or a rate has none, which "
+            "withholds the separation; the sentence says so. None otherwise."
         ),
     )
     materiality: Materiality | None = Field(
@@ -2091,6 +2103,20 @@ class LateCriterion(EvalDocumentModel):
             "control and the margin."
         ),
     )
+    # The two below are left out of the document when unset, so a criterion that is no floor serializes as before.
+    aspect: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="A floor's aspect (`Floor.aspect`), what its key names first. None for any other criterion.",
+    )
+    reading: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The reading a floor's clause names (`RateDrop.reading`), as its key spells it. None for a floor reading "
+            "every pass rate or none, and for any other criterion."
+        ),
+    )
     set_at: str | None = Field(
         description=(
             "When it was set (ISO-8601), later than the aspect's first stored result (`first_result_at`). None when "
@@ -2279,6 +2305,11 @@ def late_criteria(declared: AspectDeclaration | None, first_result_at: str | Non
     visible = _instant(first_result_at, "the aspect's first result")
     asked = declared.asked_at
     timed: list[tuple[CriterionKind, str | None, str | None]] = []
+    # A floor's aspect and reading, by its key: carried beside the key so no reader parses them back out of it.
+    floor_parts = {
+        floor.key: (floor.aspect, floor.clause.reading if isinstance(floor.clause, RateDrop) else None)
+        for floor in declared.floors
+    }
     # The aspect and its control bear only on what a question confirms and on recommending a candidate, which needs an
     # asked aspect: where none is asked every reading is a lead and the control is kept whenever they were chosen, so
     # they are timed only under a question. An eval's campaign asks none, so one filed once its arms had run (as every
@@ -2301,7 +2332,16 @@ def late_criteria(declared: AspectDeclaration | None, first_result_at: str | Non
     for kind, name, stamp in timed:
         instant = _ordered(stamp)
         if instant is None or instant > visible:
-            late.append(LateCriterion(criterion=kind, name=name, set_at=stamp if instant is not None else None))
+            aspect, reading = floor_parts.get(name or "", (None, None)) if kind == "floor" else (None, None)
+            late.append(
+                LateCriterion(
+                    criterion=kind,
+                    name=name,
+                    aspect=aspect,
+                    reading=reading,
+                    set_at=stamp if instant is not None else None,
+                )
+            )
     return late
 
 
@@ -2769,7 +2809,10 @@ class AnalysisContextBundle(EvalDocumentModel):
     # 65: a rate's family contrast (the overall pass rate, a check's, a goal check's or accuracy's rate, a pass/fail
     # judged dimension) is drawn on its bounded interval, so its `interval` is its `bounded_interval` and its verdict
     # needs that interval to exclude zero (owner ruling, 2026-10-31); its p's are the t test's still, so no adjusted p
-    # moves, but a rate's interval and verdict move over unchanged runs.
+    # moves, but a rate's interval and verdict move over unchanged runs. Each corrected comparison names the method
+    # its interval was drawn by (`interval_basis`), and a rate whose adjusted p clears alpha while its bounded interval
+    # reaches zero says so (`not_separated_reason`). A late floor names its aspect and reading
+    # (`reading_scope.late_criteria[].aspect`, `.reading`).
     # Unmoved by declared names: `short_name`, `goal_check_names` and `stratum_names` are written only when declared and are no part of
     # the fingerprint, so a bundle naming nothing is this shape byte for byte and every fingerprint stays put.
     # Unmoved by the run apparatus and the unanswered calls: each run summary's `apparatus` and each arm's

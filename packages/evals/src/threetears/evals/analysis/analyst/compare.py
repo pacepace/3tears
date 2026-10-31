@@ -57,7 +57,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from threetears.evals.analysis.analyst.cited import CitedFigure, cite
+from threetears.evals.analysis.analyst.cited import CitedFigure, cite, contrast_key
 from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import ASSUMED_SHARE, assumable, pairing_contrast, separation_wheres
 from threetears.evals.analysis.report_input import Contrast, ReportInput
@@ -311,11 +311,8 @@ def _contrast_cases(report_input: ReportInput, contrast: Contrast) -> list[Cited
     the contrast states its cases; else empty."""
     if contrast.n_cases is None:
         return []
-    # Keyed as the contrast family keys it: by its aspect only where the input holds its arm and measure more than once.
-    held = [c for c in report_input.contrasts if (c.arm, c.measure) == (contrast.arm, contrast.measure)]
-    stem = f"contrast.{contrast.arm}.{contrast.measure}"
-    if len(held) > 1 and contrast.aspect is not None:
-        stem = f"aspects.{contrast.aspect}.{stem}"
+    # Keyed as the contrast family keys it, so this cites the keys contrasts_list cites.
+    stem = contrast_key(report_input, contrast)
     keys = [f"{stem}.n_cases"]
     if contrast.paired is not None:
         keys.append(f"{stem}.paired")

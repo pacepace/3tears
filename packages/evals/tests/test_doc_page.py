@@ -54,7 +54,7 @@ from threetears.evals.analysis.report.doc_page.words import (
     SEVERITY_WORDS,
 )
 from threetears.evals.analysis.report.figure_keys import format_figure, resolve
-from threetears.evals.analysis.report_decision import every_caveat
+from threetears.evals.analysis.report_decision import every_caveat, late_subject
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding, Story
@@ -502,3 +502,47 @@ def test_a_single_aspects_one_late_floor_keeps_its_bare_label() -> None:
     """One aspect and one late floor: nothing to tell apart, so the line names the floor alone, as before."""
     page = _page("prototype3/kairo")
     assert CAVEAT_LABELS["late"].format(name="floor") in [line.label for line in page.confidence.caveats]
+
+
+#: A goal check whose text holds a slash, as a floor's reading names it: its key is ``arrival/rate_drop/<check>``.
+_SLASHED_CHECK = "ratio/total >= 0.5"
+
+
+def _late_floor_on_a_slashed_check(name: str) -> tuple[ReportDoc, ReportInput]:
+    """Kairo's input with a second aspect, ``arrival``, whose floor on a goal check holding a slash was set late too,
+    the late criterion carrying the floor's aspect and reading beside its key."""
+    held = _input(name)
+    first = next(late for late in held.caveats.late_criteria if late.criterion == "floor")
+    aspect = held.aspects[0]
+    key = f"arrival/rate_drop/{_SLASHED_CHECK}"
+    late = first.model_copy(update={"name": key, "aspect": "arrival", "reading": _SLASHED_CHECK})
+    second = held.model_copy(
+        update={
+            "aspects": [*held.aspects, aspect.model_copy(update={"id": "arrival", "name": "arrival", "asked": False})],
+            "floors": [
+                *held.floors,
+                *(
+                    r.model_copy(update={"floor": key, "aspect": "arrival"})
+                    for r in held.floors
+                    if r.floor == first.name
+                ),
+            ],
+            "caveats": held.caveats.model_copy(update={"late_criteria": [*held.caveats.late_criteria, late]}),
+        }
+    )
+    data = converted_doc(name)
+    at = next(i for i, c in enumerate(data["confidence"]["caveats"]) if c["id"] == f"late:floor:{first.name}")
+    data["confidence"]["caveats"].insert(at + 1, {**data["confidence"]["caveats"][at], "id": f"late:floor:{key}"})
+    return ReportDoc.model_validate(data), second
+
+
+def test_a_late_floor_on_a_check_holding_a_slash_names_its_own_aspect_and_check() -> None:
+    """The floor's aspect and reading are read off the criterion, never split out of its key, whose check holds a
+    slash: the line names ``arrival`` and the whole check."""
+    doc, held = _late_floor_on_a_slashed_check("prototype3/kairo")
+    late = next(late for late in held.caveats.late_criteria if late.reading == _SLASHED_CHECK)
+    assert late_subject(held, late) == ("arrival", _SLASHED_CHECK)
+
+    page = build(doc, held, strict=True)
+    (label,) = [line.label for line in page.confidence.caveats if "arrival" in line.label]
+    assert "arrival/" not in label and "total >= 0.5" in label and "ratio" in label

@@ -49,7 +49,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
+from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if, contrast_key
 from threetears.evals.analysis.cell_mean import NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import NamedKind, reader_names
@@ -68,7 +68,6 @@ from threetears.evals.analysis.report_decision import (
 from threetears.evals.analysis.report_input import (
     Aspect,
     BarRead,
-    Contrast,
     Disclosure,
     Example,
     FloorRead,
@@ -1068,24 +1067,6 @@ class ContrastListing(_Fact):
     next_offset: int | None = Field(description="The next page's offset; none on the last page.")
 
 
-def contrast_key(report_input: ReportInput, contrast: Contrast) -> str:
-    """The key a contrast's figures are read under: unqualified, or by its aspect where the input holds its arm and
-    measure more than once. ``contrasts_list`` cites a contrast's figures under it, and the editor's
-    ``caveat_not_carried`` fact (``analysis/report_doc_facts.py``) names them alike.
-
-    :param report_input: The snapshot's frozen report input.
-    :ptype report_input: ReportInput
-    :param contrast: One of its contrasts.
-    :ptype contrast: Contrast
-    :return: The key's path, before its statistic (``contrast.<arm>.<measure>``).
-    :rtype: str
-    """
-    held = [c for c in report_input.contrasts if (c.arm, c.measure) == (contrast.arm, contrast.measure)]
-    if len(held) > 1 and contrast.aspect is not None:
-        return f"aspects.{contrast.aspect}.contrast.{contrast.arm}.{contrast.measure}"
-    return f"contrast.{contrast.arm}.{contrast.measure}"
-
-
 def confound_caveat_id(caveats: Iterable[Caveat], dimension: str) -> str:
     """A confound's caveat id: its apparatus or confound caveat where the input lists one, else the dimension.
 
@@ -1707,7 +1688,7 @@ def _late_touch(report_input: ReportInput, late: LateCriterion) -> _Touch:
     or the measure it names), and when it was set."""
     criterion, name = late.criterion, late.name
     # Named by what it applies to, never by its key alone: two aspects' floors would otherwise read alike.
-    on = " in ".join(part for part in reversed(late_subject(criterion, name)) if part) or name
+    on = " in ".join(part for part in reversed(late_subject(report_input, late)) if part) or name
     said = f"the {criterion}{' on ' + on if on else ''} was set after the results"
     keys = [f"late_criteria.{_late_name(late)}.set_at"]
     if criterion == "aspect":

@@ -2328,7 +2328,7 @@ def _contrast_reason(comparison: FamilyComparison) -> tuple[VerdictReason, str |
         return "margin_untested", comparison.not_separated_reason or comparison.equivalence_untested_reason or (
             "the test was unpaired, and the equivalence test reads only cases both arms ran"
         )
-    return "not_inside_margin", None
+    return "not_inside_margin", comparison.not_separated_reason
 
 
 def contrast_verdicts(

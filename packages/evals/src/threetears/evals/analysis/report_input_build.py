@@ -993,7 +993,7 @@ class _Builder:
 
     def caveats(self) -> Caveats:
         """Every disclosure the flag and the method section may need, each said once across the aspects."""
-        late: dict[tuple[str, str | None, str], None] = {}
+        late: dict[tuple[str, str | None, str, str | None, str | None], None] = {}
         tiers: dict[str, str] = {}
         confounds: dict[str, str] = {}
         apparatus: dict[str, ApparatusConfound] = {}
@@ -1002,7 +1002,15 @@ class _Builder:
         unreported: dict[str, None] = {}
         for aspect in self.ordered:
             for criterion in aspect.reading_scope.late_criteria:
-                late.setdefault((criterion.criterion, criterion.name, criterion.page_date() or "not recorded"))
+                late.setdefault(
+                    (
+                        criterion.criterion,
+                        criterion.name,
+                        criterion.page_date() or "not recorded",
+                        criterion.aspect,
+                        criterion.reading,
+                    )
+                )
             for tier in aspect.judge_evidence_tiers:
                 tiers.setdefault(tier.rubric_dim, tier.tier)
             for dimension in _confounds_named(aspect):
@@ -1031,7 +1039,8 @@ class _Builder:
             unreported.setdefault(note)
         return Caveats(
             late_criteria=[
-                LateCriterion(criterion=criterion, name=name, set_at=set_at) for criterion, name, set_at in late
+                LateCriterion(criterion=criterion, name=name, set_at=set_at, aspect=aspect, reading=reading)
+                for criterion, name, set_at, aspect, reading in late
             ],
             judge_tiers=tiers,
             confounds=confounds,

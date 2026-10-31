@@ -20,8 +20,8 @@ rate and each check's, or the one reading it names) is in one of three states, a
   control lies wholly past the margin: the drop nearest zero it allows is still more than the margin, as is the drop
   with every lost trial given its best outcome. Only this reads as a regression.
 - **Held.** Every arm is at the case floor, and the bounded interval bounds the drop at or below the margin, as does the
-  bound over lost trials. A non-inferiority claim never reads the t interval the page's contrasts print: on a rate's
-  coarse per-case shares it holds too often (``docs/measuring-soundly.md``).
+  bound over lost trials. A non-inferiority claim never reads a t interval, the one a contrast on a reading that is no
+  rate prints: on a rate's coarse per-case shares it holds too often (``docs/measuring-soundly.md``).
 - **Unclear**, with the reason in plain words. That includes a drop past the margin on the point estimate alone, whose
   interval reaches back within it: its reason says the point estimate is past and gives the interval, so it never reads
   as a measured regression. A rate both arms pass on every trial, or on none, and that no interval reads either way,
@@ -74,7 +74,7 @@ from threetears.evals.analysis.stats import (
 from threetears.evals.analysis.style import code, declared_check_name, humanize, measure_name
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.declaration import CostLower, DecisionClause, Floor, RateDrop
-from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of, rule_rates
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of, reads_as_rate, rule_rates
 from threetears.evals.schema.base import EvalDocumentModel
 
 #: Where one floor stands on one candidate, and where each rate it reads does: the values of :data:`FloorState`.
@@ -656,9 +656,10 @@ def floor_readings(
 ) -> FloorReadings:
     """The figures a floor is read against for one candidate on the bundle's aspect, from the bundle alone.
 
-    The pass rates are every trial's, then each check's pass rate the arms' cells carry, counted on its better end (a
-    goal check's and a pass/fail scorer's as its mean times its observations, a lower-is-better boolean's as its false
-    count: :func:`_held` over :func:`~threetears.evals.kernel.metrics.rule_rates`, the list
+    The pass rates are the readings :func:`~threetears.evals.kernel.metrics.reads_as_rate` names a rate, the one
+    predicate a family contrast's interval reads too: every trial's, then each check's pass rate the arms' cells carry,
+    counted on its better end (a goal check's and a pass/fail scorer's as its mean times its observations, a
+    lower-is-better boolean's as its false count: :func:`_held` over :func:`~threetears.evals.kernel.metrics.rule_rates`, the list
     :func:`~threetears.evals.kernel.declaration.decision_readings` offers), then each pass/fail judged dimension on
     the capability axis, read the same way from its scores; each arm's lost trials are trials it could still add.
     Each rate carries the bounded interval computed again at ``confidence`` from its per-case values: the overall pass
@@ -704,6 +705,8 @@ def floor_readings(
     measures: dict[str, dict[str, tuple[int, int]]] = {}
     for cell in bundle.cell_measures:
         for summary in cell.measures.measures:
+            if not reads_as_rate("measure", summary.name, descriptor=bundle.measure_catalog.get(summary.name)):
+                continue
             if (held := _held(summary, oriented.get(summary.name))) is None:
                 continue
             # An arm over several rigs is counted over all of them, as its trials are.
@@ -730,7 +733,11 @@ def floor_readings(
     # its scores. A boundary dimension is a guardrail, held on its own, never a floor's reading.
     for judged in sorted(bundle.judged_measures, key=lambda measure: measure.name):
         read = any(rate.measure == judged.name for rate in rates)
-        if read or judged.value_range != (0.0, 1.0) or judged.axis != "capability":
+        if (
+            read
+            or not reads_as_rate("judged", judged.name, value_range=judged.value_range)
+            or judged.axis != "capability"
+        ):
             continue
         counts: dict[str, tuple[int, int]] = {}
         for scored in judged.arms:

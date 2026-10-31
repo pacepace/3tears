@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a late criterion names what it applies to; a paired compare row states its cases
+
+**Changed:** on a page with more than one aspect, or more than one late criterion of a kind, a late criterion's caveat
+label reads `<criterion> on <measure> in <aspect>`, `<criterion> on <aspect>` or `<criterion> on <measure>`, where it
+read the criterion alone. A late floor carries its aspect and reading (`LateCriterion.aspect` and `.reading`, on the
+bundle and the report input, left out when unset), so a reading holding a slash is named whole. A report input built
+before them names a late floor's aspect by its floors' reads. `arms_compare` rows gain `ComparisonRow.cases`: the
+cases a paired row's contrast read, whether it paired them and an unpaired test's control cases, as cited figures. A
+paired row whose contrast states its cases has `counted_unstated` False and is never marked `may_be_narrow`. Its basis
+text says it is paired over that many cases, or unpaired over each side's. A host pinning these rendered lines sees
+them change.
+
 ### evals: a rate's contrast is drawn on its bounded interval
 
 **Changed:** a comparison on a rate carries the bounded interval at its family's corrected level. A rate is the pass
@@ -14,6 +26,11 @@ test's, so no adjusted p moves and the family's error rate holds. A campaign's r
 method, so its 95% interval now sits inside its contrast's. A rate the t test separated may now read not separated.
 Other measures keep the t interval. The aspect bundle shape moves from 64 to 65, so every stored analysis at 64 reads
 as needing regeneration, and `report_read` serves the code-only page until it is generated again.
+
+**Added:** each corrected comparison names how its interval was drawn (`FamilyComparison.interval_basis`, `bounded` or
+`t`). A comparison whose adjusted p is under alpha while its interval reaches zero says why it is not separated
+(`not_separated_reason`), and the report's verdict carries that reason. One predicate says what a rate is
+(`threetears.evals.kernel.metrics.reads_as_rate`), read by the contrasts, the floors and the readings a floor may name.
 
 ### evals: a directed boolean measure is compared between arms on its rate per case
 

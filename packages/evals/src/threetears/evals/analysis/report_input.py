@@ -600,6 +600,15 @@ class LateCriterion(_Part):
     criterion: str = Field(description="What was set: aspect, control, margin, floor, gate.")
     name: str | None = Field(default=None, description="Which one, where several could be.")
     set_at: str = Field(description="When it was set.")
+    # The two below are left out of the document when unset, so an input built before they existed digests as it did.
+    aspect: str | None = Field(
+        default=None, exclude_if=lambda value: value is None, description="A floor's aspect, by its id."
+    )
+    reading: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The reading a floor names; none for a floor on every pass rate.",
+    )
 
 
 class ApparatusConfound(_Part):

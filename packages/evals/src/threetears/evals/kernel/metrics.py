@@ -185,6 +185,7 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "containment_defects",
     "describe_rubric_dim",
     "list_metrics",
+    "reads_as_rate",
     "rule_rates",
     "strictest_class",
 ]
@@ -2607,8 +2608,8 @@ MATCH_MEASURE = "match"
 #: :data:`MATCH_MEASURE` and never landed by a kind. It is the classifier's reading on the ``quality`` merit
 #: axis, so it is what a bar, a verdict tier and a family of comparisons rank a classifier on. Derived rather
 #: than carried because a host carrying both would put one comparison into every family twice — the duplicate
-#: that made hosts mint their own ``<thing>_accuracy`` while ``match`` had no axis. A boolean has no per-case
-#: mean for a family to test, so the axis lives on the numeric reading, as a goal check's does.
+#: that made hosts mint their own ``<thing>_accuracy`` while ``match`` had no axis. ``match`` is declared on no
+#: merit axis, so the axis lives on the numeric reading, as a goal check's does.
 ACCURACY_MEASURE = "accuracy"
 
 #: The separator between the two labels of a confusion cell — the expected one, then the predicted one.
@@ -3150,6 +3151,46 @@ def describe_measure(name: str, measures: MeasureRegistry) -> MetricDescriptor:
     )
 
 
+#: A rate's range: each value the share of a case's trials or observations that passed.
+_RATE_RANGE = (0.0, 1.0)
+
+
+def reads_as_rate(
+    kind: Literal["trial", "measure", "judged"],
+    name: str,
+    *,
+    descriptor: MetricDescriptor | None = None,
+    value_range: tuple[float, float] | None = None,
+) -> bool:
+    """Whether a reading is a rate: each case's value the share of its trials or observations that passed, on 0 to 1.
+
+    The overall pass rate (``trial``) is one. A measure is one where it is a check (:attr:`MetricDescriptor.is_check`:
+    a boolean with a better end, or a measure declared ``pass_fail``), a goal check's pass rate, or a classifier's
+    accuracy (its labels' matches, one for one). A judged dimension is one where it is scored pass or fail, its scale
+    0 to 1. A numeric score that merely lies on 0 to 1 is not: its per-case value is a mean of scores, not a share.
+    The one definition every reader of a rate reads: a family contrast's interval, a floor's rates and the readings a
+    floor may name, so the three never disagree on what a rate is.
+
+    :param kind: Whether ``name`` is the overall pass rate (``trial``), a measure or a judged dimension.
+    :ptype kind: Literal['trial', 'measure', 'judged']
+    :param name: The reading's name, as the bundle spells it.
+    :ptype name: str
+    :param descriptor: A measure's descriptor; None where the catalog describes none, or for any other kind.
+    :ptype descriptor: MetricDescriptor | None
+    :param value_range: A judged dimension's scale; None where it declares none, or for any other kind.
+    :ptype value_range: tuple[float, float] | None
+    :return: Whether the reading is a rate.
+    :rtype: bool
+    """
+    if kind == "trial":
+        return True
+    if kind == "judged":
+        return value_range == _RATE_RANGE
+    return (
+        goal_check_of(name) is not None or name == ACCURACY_MEASURE or (descriptor is not None and descriptor.is_check)
+    )
+
+
 def rule_rates(descriptors: Iterable[MetricDescriptor]) -> dict[str, bool]:
     """Every measure a floor may read as a pass rate, oriented: its name -> whether its higher end passes.
 
@@ -3166,7 +3207,13 @@ def rule_rates(descriptors: Iterable[MetricDescriptor]) -> dict[str, bool]:
     return {
         descriptor.name: bool(descriptor.higher_is_better)
         for descriptor in descriptors
-        if descriptor.is_check and not descriptor.name.startswith(CLASSIFIER_LABEL_MEASURE_PREFIX)
+        if reads_as_rate("measure", descriptor.name, descriptor=descriptor)
+        and descriptor.higher_is_better is not None
+        # A goal check's rate is named by its text and accuracy's by the ``match`` it is derived from, so neither is a
+        # rate under its own key; a label's match is read through its classifier's.
+        and goal_check_of(descriptor.name) is None
+        and descriptor.name != ACCURACY_MEASURE
+        and not descriptor.name.startswith(CLASSIFIER_LABEL_MEASURE_PREFIX)
     }
 
 

@@ -288,30 +288,29 @@ def _late_id(late: LateCriterion) -> str:
     return f"late:{late.criterion}" if late.name is None else f"late:{late.criterion}:{late.name}"
 
 
-def late_subject(criterion: str, name: str | None) -> tuple[str | None, str | None]:
-    """What a late criterion applies to, as its name says it: the aspect a floor's key names and the reading it reads,
-    or the measure a bar or a guardrail names.
+def late_subject(report_input: ReportInput, late: LateCriterion) -> tuple[str | None, str | None]:
+    """What a late criterion applies to: the aspect a floor is read on and the reading it names, or the measure a bar
+    or a guardrail names.
 
-    A floor's key is ``<aspect>/<kind>/<reading>``, its reading ``*`` where the floor reads every pass rate or none;
-    an aspect's label may hold a slash, so the key is split from its end.
+    A floor carries its aspect and reading beside its key, so nothing is parsed out of the key, whose parts may hold a
+    slash. An input built before a floor carried them names the floor's aspect by the aspect its reads are on, and no
+    reading.
 
-    :param criterion: What was set (``floor``, ``bar``, ``guardrail``, ...).
-    :ptype criterion: str
-    :param name: Which one, as :class:`~threetears.evals.analysis.report_input.LateCriterion` names it.
-    :ptype name: str | None
-    :return: The aspect and the measure it names, each None where its name says none; both None for an unnamed
-        criterion or a name of another shape.
+    :param report_input: The input the criterion is in, whose floors' reads name an older floor's aspect.
+    :ptype report_input: ReportInput
+    :param late: The criterion.
+    :ptype late: LateCriterion
+    :return: The aspect and the measure it names, each None where it names none; both None for an unnamed criterion.
     :rtype: tuple[str | None, str | None]
     """
-    if not name:
+    if not late.name:
         return None, None
-    if criterion == "floor":
-        parts = name.rsplit("/", 2)
-        if len(parts) != 3 or not parts[0]:
-            return None, None
-        return parts[0], None if parts[2] in ("", "*") else parts[2]
-    if criterion in ("bar", "guardrail"):
-        return None, name
+    if late.criterion == "floor":
+        if late.aspect is not None:
+            return late.aspect, late.reading
+        return next((read.aspect for read in report_input.floors if read.floor == late.name), None), None
+    if late.criterion in ("bar", "guardrail"):
+        return None, late.name
     return None, None
 
 

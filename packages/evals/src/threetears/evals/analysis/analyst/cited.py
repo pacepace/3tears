@@ -27,7 +27,7 @@ from threetears.evals.analysis.report.figure_keys import (
     resolve,
 )
 from threetears.evals.analysis.report.words import arm_tags
-from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_input import Contrast, ReportInput
 
 
 class CitedFigure(BaseModel):
@@ -174,4 +174,22 @@ def cite_written(key: str, filters: tuple[str, ...], report_input: ReportInput) 
     )
 
 
-__all__ = ["CitedFigure", "WrittenFigure", "cite", "cite_if", "cite_written"]
+def contrast_key(report_input: ReportInput, contrast: Contrast) -> str:
+    """The key a contrast's figures are read under: unqualified, or by its aspect where the input holds its arm and
+    measure more than once. ``contrasts_list`` cites a contrast's figures under it, ``arms_compare`` its cases, and the
+    editor's ``caveat_not_carried`` fact (``analysis/report_doc_facts.py``) names them alike.
+
+    :param report_input: The snapshot's frozen report input.
+    :ptype report_input: ReportInput
+    :param contrast: One of its contrasts.
+    :ptype contrast: Contrast
+    :return: The key's path, before its statistic (``contrast.<arm>.<measure>``).
+    :rtype: str
+    """
+    held = [c for c in report_input.contrasts if (c.arm, c.measure) == (contrast.arm, contrast.measure)]
+    if len(held) > 1 and contrast.aspect is not None:
+        return f"aspects.{contrast.aspect}.contrast.{contrast.arm}.{contrast.measure}"
+    return f"contrast.{contrast.arm}.{contrast.measure}"
+
+
+__all__ = ["CitedFigure", "WrittenFigure", "cite", "cite_if", "cite_written", "contrast_key"]

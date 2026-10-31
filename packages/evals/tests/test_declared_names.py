@@ -284,10 +284,10 @@ PINNED: dict[str, str] = {
         "c8030ab220f21fa1422945cfff2cfa7e62ca5159aa595e5b93112d321c9"
     ),
     "Queue discipline under a full queue evidence_digest": (
-        "v2:5028269e542226d384d532943019fc2c56c8314d1721f1563d77e103a3eae857"
+        "v2:ae08e872539934d92f712c731a269e019eb911f6ea7215b095f3c8ca3655d46c"
     ),
     "Queue discipline under a full queue fingerprint": (
-        "v2:5028269e542226d384d532943019fc2c56c8314d1721f1563d77e103a3eae857"
+        "v2:ae08e872539934d92f712c731a269e019eb911f6ea7215b095f3c8ca3655d46c"
     ),
     "Queue discipline under a full queue measure_catalog": (
         "be7db1240bcd8149ba17c91f78963c8632823d88d0f99674952fa7eb408d3141"
@@ -298,19 +298,19 @@ PINNED: dict[str, str] = {
         "c8030ab220f21fa1422945cfff2cfa7e62ca5159aa595e5b93112d321c9"
     ),
     "Queue discipline under an empty queue evidence_digest": (
-        "v2:36097c2f3424273600f794a31e7f1748310e992e871ae1c6520495c295447a90"
+        "v2:cbd5ca58814d12968a0907c5617cef112ff65c7335205a2d57926c9dd52d4c47"
     ),
     "Queue discipline under an empty queue fingerprint": (
-        "v2:36097c2f3424273600f794a31e7f1748310e992e871ae1c6520495c295447a90"
+        "v2:cbd5ca58814d12968a0907c5617cef112ff65c7335205a2d57926c9dd52d4c47"
     ),
     "Queue discipline under an empty queue measure_catalog": (
         "be7db1240bcd8149ba17c91f78963c8632823d88d0f99674952fa7eb408d3141"
     ),
     "bundle schema_version": "65",
-    "campaign fingerprint": "v2:a57ea7ebab4848a30fa8c20b524168f920e7b8f0129be4dcc0f65d9014bef251",
-    "campaign_evidence_digest": "v2:a57ea7ebab4848a30fa8c20b524168f920e7b8f0129be4dcc0f65d9014bef251",
-    "campaign fingerprint v3": "v3:16cf447e76171e584d42634605c429e2e889569ff67a411cfe51950cfe51cc8e",
-    "campaign_evidence_digest v3": "v3:16cf447e76171e584d42634605c429e2e889569ff67a411cfe51950cfe51cc8e",
+    "campaign fingerprint": "v2:2b80af43835a82314c267998aa876931b91fd5260c500ce88a39b62d9289235d",
+    "campaign_evidence_digest": "v2:2b80af43835a82314c267998aa876931b91fd5260c500ce88a39b62d9289235d",
+    "campaign fingerprint v3": "v3:9708743c9b0a267dee330b57cf812934d63e3cb80d49fd3e6ebdda8f7c4c91a8",
+    "campaign_evidence_digest v3": "v3:9708743c9b0a267dee330b57cf812934d63e3cb80d49fd3e6ebdda8f7c4c91a8",
     "case content hash": "2427afda4a091bccfdeffbdc0ef058b06862b1c310f68df406edf30604604ae2",
     # The one entry that moves with the durable minor: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
     # arm names 16.4, stratum names 16.5, plan reporter cases 16.6, the analyst's gap notes 16.7. It is no part of what
@@ -357,11 +357,11 @@ PINNED_WRITER_MESSAGES: dict[bool, str] = {
 #: digests to the value ``00107a5b7`` wrote, so the names still move nothing.
 #: The two bundles, and in :data:`PINNED` each aspect's fingerprint and the campaign's, were re-pinned at bundle shape 65
 #: by building this fixture on this tree: the shape-64 bundles, moved to 65 by
-#: ``fixtures/report_plans/migrate_bundle_shape_65.py`` (the shape and each rate contrast's interval, and nothing
-#: else), are these bundles leaf for leaf, so the names still move nothing.
+#: ``fixtures/report_plans/migrate_bundle_shape_65.py`` (the shape, each rate contrast's interval and each corrected
+#: comparison's interval basis, and nothing else), are these bundles leaf for leaf, so the names still move nothing.
 PINNED_DOCUMENTS: dict[str, str] = {
-    "Queue discipline under a full queue bundle": "a67c18603bf4e2ae83ad756cdfe39d5931da1ad067c5bdbb70a48065736b3b8e",
-    "Queue discipline under an empty queue bundle": "c6b322fcde806e23cc4b965e05093fd434caa2c0568c615f1062528f6b038825",
+    "Queue discipline under a full queue bundle": "a9b41f1e36f3b4d67bc92132849081a1fa6636ab647b3200fe90f241fc4eb7e4",
+    "Queue discipline under an empty queue bundle": "7f7c71067e3b43231ef35c53cf3774f95c30e2612ed2344353e39c03af8ef3ab",
     "campaign": "6c2b383b36fc2664a2457021aac7d61d330ed17119760d15694105bb2a99c215",
     "template": "ebdd07699d7ce094a952d8f66505439368260a790589e08f69ae10ad3c10c755",
 }

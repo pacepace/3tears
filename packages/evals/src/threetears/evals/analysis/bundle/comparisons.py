@@ -47,15 +47,14 @@ from threetears.evals.kernel.declaration import (
 )
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
-    ACCURACY_MEASURE,
     MeritAxis,
     MetricDescriptor,
     classifier_label_of,
     describe_reported_measure,
     describe_rubric_dim,
-    goal_check_of,
     is_latency_measure,
     materiality,
+    reads_as_rate,
     summary_population,
 )
 from threetears.evals.kernel.result_reading import ResultView
@@ -382,19 +381,10 @@ def _is_rate(
     catalog: Mapping[str, MetricDescriptor],
     judged_ranges: Mapping[str, tuple[float, float]],
 ) -> bool:
-    """Whether a family reading is a rate: each case's value the share of its trials or observations that passed, on
-    0 to 1, the readings a floor reads as pass rates
-    (:func:`~threetears.evals.analysis.report.decision.floor_readings`). The overall pass rate is one; so is a check
-    (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.is_check`: a directed boolean read on its rate per case,
-    or a measure declared ``pass_fail``), a goal check's pass rate, a classifier's accuracy (its labels' matches), and
-    a judged dimension scored pass or fail. A numeric score that merely lies on 0 to 1 is not: its per-case value is a
-    mean of scores, not a share."""
+    """Whether a family reading is a rate (:func:`~threetears.evals.kernel.metrics.reads_as_rate`), by the bundle's
+    measure catalog and its judged dimensions' scales."""
     kind, name = reading
-    if kind == "trial":
-        return True
-    if kind == "judged":
-        return judged_ranges.get(name) == _TRIAL_PASS_RANGE
-    return catalog[name].is_check or goal_check_of(name) is not None or name == ACCURACY_MEASURE
+    return reads_as_rate(kind, name, descriptor=catalog.get(name), value_range=judged_ranges.get(name))
 
 
 def _measure_range(descriptor: MetricDescriptor) -> tuple[float, float] | None:
@@ -654,6 +644,18 @@ def _family_disclosure(
     return f"{_NO_QUESTION_FAMILY} {sentence}" if campaign_wide else sentence
 
 
+def _interval_withholds(interval: tuple[float, float] | None, *, rate: bool) -> str:
+    """Why a comparison whose adjusted p is below the family's alpha is not separated: its interval reaches zero, or a
+    rate has no bounded interval at all."""
+    if interval is None:
+        return (
+            "the adjusted p is below the family's alpha, but no bounded interval exists on this rate, so no difference "
+            "is shown"
+        )
+    drawn = "the bounded interval on this rate" if rate else "the interval on the difference"
+    return f"the adjusted p is below the family's alpha, but {drawn} reaches zero, so no difference is shown"
+
+
 def _corrected_family(aspect: str | None, axes: list[MeritAxis], tested: list[_Tested]) -> ComparisonFamily:
     """Correct one family's tests together, and read each comparison's verdict and interval off the result.
 
@@ -665,12 +667,12 @@ def _corrected_family(aspect: str | None, axes: list[MeritAxis], tested: list[_T
 
     **A separation is read off its interval as well as its adjusted p** (#597): ``improved`` or ``regressed``
     needs the interval, where one exists, to exclude zero. Holm's later steps reject some comparisons whose
-    Bonferroni interval still reaches zero, and a reader must never see a separation beside an interval that
-    includes no change. An interval that excludes zero has ``m · p_raw < α``, which Holm always rejects, so the
-    rule is Bonferroni's wherever an interval exists: a subset of Holm's rejections, so the family's error stays
-    at α, at the cost of the separations Holm alone would add. Where every case moved by one amount no t
-    interval exists, and the interval is the bounded test's on the declared range, the test whose p was
-    corrected (#597); with no range that comparison was never tested and is not in the family.
+    interval still reaches zero, and a reader must never see a separation beside an interval that includes no
+    change. The rule only removes Holm's rejections, so the family's error stays at α; a comparison it withholds
+    says so (``not_separated_reason``). Where every case moved by one amount no t interval exists, and the interval
+    is the bounded test's on the declared range, the test whose p was corrected (#597); with no range that comparison
+    was never tested and is not in the family. Each comparison names the method its interval was drawn by
+    (``interval_basis``).
 
     **A claim of no worse by more than a margin reads the bounded interval** (``bounded_interval``), the bounded
     test's on the declared range at the same level, valid at every n; the t interval is not. Read for non-inferiority
@@ -738,11 +740,17 @@ def _corrected_family(aspect: str | None, axes: list[MeritAxis], tested: list[_T
                 verdict = "improved" if (comparison.delta > 0) == comparison.higher_is_better else "regressed"
             elif equivalence_p_adjusted is not None and equivalence_p_adjusted < SIGNIFICANCE_ALPHA:
                 verdict = "equivalent"
+            # A p the interval withholds says why, or a reader sees a p under alpha beside "not separated" and no cause.
+            withheld = verdict == "not_separated" and p_adjusted < SIGNIFICANCE_ALPHA and bool(comparison.delta)
             comparison = comparison.model_copy(
                 update={
+                    "not_separated_reason": (
+                        _interval_withholds(interval, rate=one.rate) if withheld else comparison.not_separated_reason
+                    ),
                     "p_adjusted": p_adjusted,
                     "equivalence_p_adjusted": equivalence_p_adjusted,
                     "interval": interval,
+                    "interval_basis": None if interval is None else ("bounded" if on_bounded else "t"),
                     "bounded_interval": bounded,
                     # What the bounded interval read, so a projection can read it again at more cases.
                     "case_values": None if bounded is None else (list(control_sample), list(contrast_sample)),

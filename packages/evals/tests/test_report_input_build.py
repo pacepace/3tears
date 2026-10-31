@@ -243,6 +243,35 @@ def test_every_caveat_the_bundle_holds_reaches_the_input(bundles: dict[str, Camp
     assert unreported <= set(caveats.unreported)
 
 
+def test_a_late_floor_reaches_the_input_with_its_aspect_and_its_reading_whole(
+    bundles: dict[str, CampaignBundle],
+) -> None:
+    """A late floor's aspect and reading reach the input as the bundle carries them, a reading holding a slash whole;
+    two aspects' late floors under one key stay two entries, since each names its own aspect."""
+    bundle = bundles["s1"]
+    first, second, *rest = bundle.aspects
+    check = "ratio/total >= 0.5"
+    key = f"{first.aspect}/rate_drop/{check}"
+    at = "2026-10-02T09:00:00+00:00"
+
+    def floor(aspect: str) -> BundleLateCriterion:
+        return BundleLateCriterion(criterion="floor", name=key, aspect=aspect, reading=check, set_at=at)
+
+    aspects = [
+        aspect.model_copy(
+            update={"reading_scope": aspect.reading_scope.model_copy(update={"late_criteria": [floor(aspect.aspect)]})}
+        )
+        for aspect in (first, second)
+    ]
+    built = report_input(bundle.model_copy(update={"aspects": [*aspects, *rest]}))
+
+    floors = [late for late in built.caveats.late_criteria if late.criterion == "floor"]
+    assert [(late.name, late.aspect, late.reading) for late in floors] == [
+        (key, first.aspect, check),
+        (key, second.aspect, check),
+    ]
+
+
 def test_examples_show_the_candidates_failures_first(bundles: dict[str, CampaignBundle]) -> None:
     built = report_input(bundles["s1"])
     control = next(arm.id for arm in built.arms if arm.role == "control")

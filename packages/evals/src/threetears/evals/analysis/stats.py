@@ -1278,10 +1278,11 @@ def difference_interval(
 def interval_permits_separation(interval: tuple[float, float] | None) -> bool:
     """Whether a separation may stand beside this interval on the difference: it excludes zero, or there is none.
 
-    A family's verdict is read off a Holm-adjusted p and its interval is Bonferroni's at ``1 − α/m``; Holm's
-    later steps reject some comparisons whose Bonferroni interval still reaches zero. A separation is never
-    shown beside an interval that includes no change (#597), so a caller requires this as well as the p. Where
-    no interval exists (no t: every case moved by one amount) nothing is shown to contradict the p.
+    A family's verdict is read off a Holm-adjusted p, and its interval is drawn at ``1 − α/m``: a rate's by the bounded
+    test, another reading's by the t test. Holm's later steps reject some comparisons whose interval still reaches
+    zero, and a rate's bounded interval can reach zero where its t test's p clears. A separation is never shown beside
+    an interval that includes no change (#597), so a caller requires this as well as the p. Where no interval exists
+    nothing is shown to contradict the p; a caller that requires an interval, as a rate's contrast does, says so.
 
     :param interval: The interval on the difference the verdict is shown beside, or None.
     :ptype interval: tuple[float, float] | None

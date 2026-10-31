@@ -186,7 +186,11 @@ def _late_name(rest: str, look: PageLook, report_input: ReportInput) -> str:
     kin = sum(late.criterion == criterion for late in report_input.caveats.late_criteria)
     if not name or (len(report_input.aspects) < 2 and kin < 2):
         return word
-    aspect, measure = late_subject(criterion, name)
+    late = next(
+        (late for late in report_input.caveats.late_criteria if (late.criterion, late.name or "") == (criterion, name)),
+        None,
+    )
+    aspect, measure = late_subject(report_input, late) if late is not None else (None, None)
     measure_kind: NamedKind = "judged" if measure in report_input.judged else "measure"
     if aspect is not None and measure is not None:
         return LATE_NAMED["both"].format(

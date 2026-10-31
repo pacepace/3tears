@@ -10,7 +10,7 @@ later. This module is the dataset's one reader:
   changes from what the bundle holds, and refuses when any other field moves. At shape 65 that was
   ``migrate_bundle_shape_65.py kairo-round2-bundle.json.gz``, which moved eight rate contrasts' intervals (the pass
   rate, a goal check and two pass/fail judged dimensions, two arms each) onto their stored bounded intervals, every
-  verdict holding, and the shape.
+  verdict holding, named each corrected comparison's interval basis, and moved the shape.
 - **Plans.** ``rN/anchor.plan.json`` is a hand-written plan for that input; ``anchors/weak/*.plan.json`` are copies
   weakened on one plan-check rule or one rubric item (``weaken_anchors.py`` writes them). ``anchors/LABELS.json`` says
   what each anchor is expected to be and who labeled it: every anchor starts ``pending_owner`` and counts as a label

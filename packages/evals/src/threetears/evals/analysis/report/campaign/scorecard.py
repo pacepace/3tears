@@ -504,8 +504,9 @@ def _reconciled_lines(readings: CampaignReadings, reports: Mapping[str, Report],
     """Where a contrast in an aspect's fold reads the very per-case values a row reads and reaches another verdict, one
     line naming both and the interval each was read on, so the disagreement is explained where it is seen.
 
-    A row's gain is read on a bounded interval corrected across its arm's aspects; a contrast on a t interval (or a
-    bounded one where its values have no spread) corrected as its aspect's family says: a bundle's family is always
+    A row's gain is read on a bounded interval corrected across its arm's aspects; a contrast on the interval its
+    comparison was drawn by (``FamilyComparison.interval_basis``: a rate's bounded one, another reading's t interval
+    unless its values have no spread) corrected as its aspect's family says: a bundle's family is always
     Holm-corrected (``ComparisonFamily.correction``), so the page line says corrected. A contrast reading a drop past
     zero where the row reads none past the margin is said too, with the margin. An untested contrast reads nothing."""
     control = readings.control
@@ -571,10 +572,7 @@ def _reconciled(
         reading = measure_name_of(bundle, comparison.name)
     own = "on its own" if round(level, 4) <= round(INTERVAL_LEVEL, 4) else f"corrected across {row.arm_label}'s aspects"
     # The interval the contrast is drawn on, which is not always the test its p came from: a rate's is its bounded one.
-    bounded = comparison.basis != "t" or (
-        comparison.interval is not None and comparison.interval == comparison.bounded_interval
-    )
-    basis = "bounded" if bounded else "t"
+    basis = comparison.interval_basis or ("t" if comparison.basis == "t" else "bounded")
     said = (
         f"On {aspect}, {row.arm_label}'s row reads {READING_WORDS[row.reading]} and its contrast on {reading} reads "
         f"{_CONTRAST_WORDS[comparison.verdict]}, over the same per-case values. The row reads a bounded interval at "

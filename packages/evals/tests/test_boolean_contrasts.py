@@ -13,6 +13,11 @@ Mutations that turn this file red (each run against a saved copy and restored fr
   contrast, and the family is one smaller.
 - ``_measure_range``: reading a boolean's declared range (none) instead of a share's, so the comparison carries no
   bounded interval or case values.
+- ``_guardrail_readings``: leaving booleans out of the guardrails, so a boolean declared one is never checked.
+- ``_is_rate``: dropping the check branch (``is_check``), so the directed boolean is drawn on its t interval.
+
+A directed boolean declared a guardrail is held the same way, on its rate per case: its check reads each case's share
+held True, on the share's 0 to 1 range, and is held or breached against its declared margin.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ import pytest
 
 from threetears.evals.analysis import AnalysisContextBundle, ComparisonFamily, assemble_context_bundle
 from threetears.evals.analysis.bundle.comparisons import planning_readings
+from threetears.evals.analysis.stats import guardrail_decision
 from threetears.evals.kernel import CampaignArm
 from threetears.evals.kernel.host import HostProfile, MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor
@@ -175,6 +181,14 @@ def test_a_directed_boolean_is_contrasted_on_its_rate_per_case_paired_by_case(bu
     assert comparison.verdict == "regressed"
 
 
+def test_a_directed_boolean_is_drawn_on_its_bounded_interval(bundle: AnalysisContextBundle) -> None:
+    (comparison,) = [c for c in _family(bundle).comparisons if c.name == "top_up_never"]
+
+    assert comparison.basis == "t", "its p is the t test's"
+    assert comparison.interval is not None and comparison.interval == comparison.bounded_interval
+    assert comparison.interval_basis == "bounded"
+
+
 def test_the_cell_s_rate_and_the_contrast_s_arm_values_agree(bundle: AnalysisContextBundle) -> None:
     (comparison,) = [c for c in _family(bundle).comparisons if c.name == "top_up_never"]
     rates = {
@@ -223,3 +237,119 @@ def test_the_planning_read_plans_the_boolean_on_a_share_s_range() -> None:
     assert (planned.higher_is_better, planned.value_range) == (False, (0.0, 1.0))
     control_run = runs[0].id
     assert planned.repeats[control_run]["tc-01"] == [1.0, 0.0, 0.0], "one repeat's rate is its own 1 or 0"
+
+
+# --- a directed boolean declared a guardrail ------------------------------------------------------------------------
+
+#: The guardrail's margin: how far its rate may fall, in points of a share, before it is breached.
+_GUARDRAIL_MARGIN = 0.25
+
+#: Each case's repeats that kept quiet, of ``K``: the control and an arm that matches it, then an arm far below it.
+_QUIET_CONTROL = (3, 2, 3, 3, 3, 2, 3, 3, 3, 3, 2, 3) * 2
+_QUIET_HELD = (3, 3, 2, 3, 3, 3, 3, 2, 3, 3, 3, 3) * 2
+_QUIET_BREACHED = (1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1) * 2
+
+
+def _guardrail_profile() -> HostProfile:
+    profile = toyhost_profile()
+    quiet = _boolean("kept_quiet", higher_is_better=True, guardrail=True, materiality_threshold=_GUARDRAIL_MARGIN)
+    return replace(profile, measures=MeasureRegistry((*TOYHOST_MEASURES, quiet), families=profile.measures.families))
+
+
+def _guardrail_bundle(contrast_quiet: tuple[int, ...]) -> AnalysisContextBundle:
+    """The control and one arm over ``len(_QUIET_CONTROL)`` cases at ``K`` repeats, every result carrying the
+    guardrail, the arm keeping quiet on each case as often as ``contrast_quiet`` says."""
+    runs = []
+    results: dict[str, list[EvalResult]] = {}
+    for model, quiet in ((CONTROL, _QUIET_CONTROL), (CONTRAST, contrast_quiet)):
+        run = make_eval_run(status="completed", candidate_model=model)
+        runs.append(run)
+        results[run.id] = [
+            make_eval_result(
+                id=f"{model}-{case}-{k}",
+                eval_run_id=run.id,
+                scope_id=run.scope_id,
+                model=model,
+                test_case_id=f"tc-{case:02d}",
+                k_iteration=k,
+                goal_state_outcomes=[],
+                rubric_scores=[],
+                cost_usd=None,
+                host_measures={"kept_quiet": k <= quiet[case]},
+            )
+            for case in range(len(quiet))
+            for k in range(1, K + 1)
+        ]
+    asked = min(run.created_at for run in runs)
+    campaign = make_aspect_campaign(
+        label="arrival",
+        run_ids=[run.id for run in runs],
+        design=minimal_aspect_design(merit_axes=["reliability"]),
+        question="does the contrast keep quiet as often?",
+        asked_at=asked,
+        control=CampaignArm(label="control", role="control", variant_key=fixture_variant_key(CONTROL), named_at=asked),
+        scope_id=runs[0].scope_id,
+        name="boolean guardrail",
+        subject_id=runs[0].subject_snapshot.subject_id,
+        subject_kind="s",
+    )
+    return assemble_context_bundle(campaign, storage=ToyhostStorage(runs, results), profile=_guardrail_profile())
+
+
+@pytest.fixture(scope="module")
+def guardrail_held() -> AnalysisContextBundle:
+    return _guardrail_bundle(_QUIET_HELD)
+
+
+@pytest.fixture(scope="module")
+def guardrail_breached() -> AnalysisContextBundle:
+    return _guardrail_bundle(_QUIET_BREACHED)
+
+
+def test_a_boolean_guardrail_is_checked_on_its_rate_per_case_on_a_share_s_range(
+    guardrail_held: AnalysisContextBundle,
+) -> None:
+    assert guardrail_held.guardrails.measures == ["kept_quiet"]
+    (check,) = guardrail_held.guardrails.checks
+
+    assert (check.reading, check.name, check.higher_is_better) == ("measure", "kept_quiet", True)
+    assert check.test == "paired"
+    # Its per-case samples are the shares of each case's repeats that kept quiet: their means are the shares' means.
+    assert check.control.n_cases == check.contrast.n_cases == len(_QUIET_CONTROL)
+    assert check.control.mean == pytest.approx(sum(q / K for q in _QUIET_CONTROL) / len(_QUIET_CONTROL))
+    assert check.contrast.mean == pytest.approx(sum(q / K for q in _QUIET_HELD) / len(_QUIET_HELD))
+    expected = guardrail_decision(
+        [q / K for q in _QUIET_CONTROL],
+        [q / K for q in _QUIET_HELD],
+        paired=True,
+        margin=_GUARDRAIL_MARGIN,
+        higher_is_better=True,
+        value_range=(0.0, 1.0),
+    )
+    # Its interval is the bounded test's on the shares' 0 to 1 range, the boolean declaring no range of its own.
+    assert check.interval_basis == "bounded"
+    assert check.interval == expected.interval
+    assert check.interval is not None and -1.0 <= check.interval[0] <= check.interval[1] <= 1.0
+    assert (check.margin, check.margin_declared) == (_GUARDRAIL_MARGIN, True)
+
+
+def test_a_boolean_guardrail_within_its_margin_is_held(guardrail_held: AnalysisContextBundle) -> None:
+    (check,) = guardrail_held.guardrails.checks
+
+    assert check.interval is not None and check.interval[0] > -_GUARDRAIL_MARGIN
+    assert check.decision == "held"
+
+
+def test_a_boolean_guardrail_past_its_margin_is_breached(guardrail_breached: AnalysisContextBundle) -> None:
+    (check,) = guardrail_breached.guardrails.checks
+
+    assert check.interval is not None and check.interval[1] < -_GUARDRAIL_MARGIN
+    assert check.decision == "breached"
+
+
+def test_a_boolean_guardrail_joins_no_family(guardrail_held: AnalysisContextBundle) -> None:
+    assert all(
+        comparison.name != "kept_quiet"
+        for family in guardrail_held.multiple_comparisons.families
+        for comparison in family.comparisons
+    )
