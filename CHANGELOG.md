@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: served chart data, SVG coordinates and interval glyphs round computed floats to twelve figures
+
+**Changed:** a served page's chart data (the JSON in each chart's `data-chart` attribute) gives every float to 12
+significant figures (`round_floats`), as the page's JSON form and every fingerprint already did. The static page's
+chart SVG and every interval glyph round each coordinate to 12 figures before writing it to a tenth of a px. So none
+of them varies any more with the last bits of a computed value, which differ between platforms' maths libraries. The
+numbers a reader sees are unchanged. A coordinate that sat exactly on a twentieth of a px now rounds the same way on
+every platform. A page can still differ between platforms in the bundle fingerprint it prints, where a value falls on
+a 12th-figure rounding boundary (#1062).
+
 ### evals: each reader's read budget is measured; the bundle and pivot refuse sooner
 
 **Changed:** the read tier's one budget of 50,000 results is replaced by one per reader, each the bytes per result

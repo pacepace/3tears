@@ -19,6 +19,25 @@ import html
 
 from threetears.evals.analysis.report.blocks import interval_text
 from threetears.evals.analysis.quantities import PERCENT, is_money, with_unit
+from threetears.evals.schema.hashing import round_figures
+
+
+def tenth_px(value: float) -> str:
+    """A coordinate a page's SVG writes, to a tenth of a px, from the value to twelve significant figures
+    (:func:`~threetears.evals.schema.hashing.round_figures`).
+
+    A coordinate is computed from a figure whose last bits differ between platforms' maths libraries, and one that
+    lands on a twentieth of a px (a 45% rate on a round axis) would round to either tenth by those bits alone. Rounded
+    to twelve figures first, the bits past them no longer reach the drawing. Every SVG coordinate the package serves is
+    written through here: the interval glyph's and, through ``chart_svg``, the static page's charts'.
+
+    :param value: The coordinate, in px.
+    :ptype value: float
+    :return: It to one decimal place.
+    :rtype: str
+    """
+    return f"{round_figures(value):.1f}"
+
 
 #: The interval glyph's own coordinates: its width, its height, the track's inset from either edge, and the dot.
 _GLYPH_WIDTH = 120
@@ -82,22 +101,22 @@ def interval_glyph_svg(
     if margin is not None:
         said += f", margin ±{with_unit(margin, unit)}"
     marks = [
-        f'<line class="viz-track" x1="{x_of(first):.1f}" y1="{middle}" x2="{x_of(last):.1f}" y2="{middle}"></line>'
+        f'<line class="viz-track" x1="{tenth_px(x_of(first))}" y1="{middle}" x2="{tenth_px(x_of(last))}" y2="{middle}"></line>'
     ]
     if margin is not None:
         band_low, band_high = x_of(max(-margin, first)), x_of(min(margin, last))
         marks.append(
-            f'<rect class="viz-band" x="{band_low:.1f}" y="1" width="{max(band_high - band_low, 0.0):.1f}" '
+            f'<rect class="viz-band" x="{tenth_px(band_low)}" y="1" width="{tenth_px(max(band_high - band_low, 0.0))}" '
             f'height="{_GLYPH_HEIGHT - 2}"></rect>'
         )
     if first <= 0.0 <= last:
         marks.append(
-            f'<line class="viz-zero" x1="{x_of(0.0):.1f}" y1="0" x2="{x_of(0.0):.1f}" y2="{_GLYPH_HEIGHT}"></line>'
+            f'<line class="viz-zero" x1="{tenth_px(x_of(0.0))}" y1="0" x2="{tenth_px(x_of(0.0))}" y2="{_GLYPH_HEIGHT}"></line>'
         )
     marks.append(
-        f'<line class="viz-whisker" x1="{x_of(low):.1f}" y1="{middle}" x2="{x_of(high):.1f}" y2="{middle}"></line>'
+        f'<line class="viz-whisker" x1="{tenth_px(x_of(low))}" y1="{middle}" x2="{tenth_px(x_of(high))}" y2="{middle}"></line>'
     )
-    marks.append(f'<circle class="viz-point" cx="{x_of(value):.1f}" cy="{middle}" r="{_GLYPH_DOT}"></circle>')
+    marks.append(f'<circle class="viz-point" cx="{tenth_px(x_of(value))}" cy="{middle}" r="{_GLYPH_DOT}"></circle>')
     return (
         f'<svg class="viz-glyph" viewBox="0 0 {_GLYPH_WIDTH} {_GLYPH_HEIGHT}" role="img">'
         f"<title>{_escape(said)}</title>" + "".join(marks) + "</svg>"
@@ -121,4 +140,5 @@ def _escape(text: str) -> str:
 __all__ = [
     "GLYPH_STYLE",
     "interval_glyph_svg",
+    "tenth_px",
 ]

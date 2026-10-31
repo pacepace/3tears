@@ -59,6 +59,7 @@ from threetears.evals.analysis.report.charts import (
     ScatterChart,
     ScatterPanel,
 )
+from threetears.evals.analysis.report.svg import tenth_px
 
 #: The widths every chart is drawn at, in the kit's px, each with its class: the narrow one under every narrow rule
 #: the kit has (480 px for bars, 560 px for a scatter's labels), as a phone draws it, then the kit's desktop measure
@@ -314,8 +315,9 @@ def _escape(text: str) -> str:
 
 
 def _n(value: float) -> str:
-    """A coordinate, to a tenth of a px."""
-    text = f"{value:.1f}"
+    """A coordinate, to a tenth of a px as :func:`~threetears.evals.analysis.report.svg.tenth_px` writes it (from its
+    value to twelve significant figures), with no trailing ``.0`` and no sign on zero."""
+    text = tenth_px(value)
     if text.endswith(".0"):
         text = text[:-2]
     return "0" if text == "-0" else text

@@ -293,6 +293,19 @@ def test_a_glyph_is_ink_on_one_scale_with_its_numbers_in_its_title() -> None:
     assert "svg.viz-glyph .viz-whisker { stroke: var(--ink)" in GLYPH_STYLE
 
 
+@pytest.mark.parametrize("toward", [math.inf, -math.inf], ids=["up", "down"])
+def test_a_glyph_on_a_twentieth_of_a_px_draws_the_same_at_its_one_ulp_neighbours(toward: float) -> None:
+    """On a 4..116 scale a figure is its own x, so 44.45, 20.05 and 50.15 fall exactly between two tenths of a px:
+    a computed figure's last bit (which differs between platforms) would pick the tenth. Each coordinate is rounded to
+    twelve figures before it is written, so the neighbours draw the same glyph."""
+    figures = (44.45, 20.05, 50.15)
+    drawn = interval_glyph_svg(*figures, unit="", scale=(4.0, 116.0))
+    moved = interval_glyph_svg(*(math.nextafter(figure, toward) for figure in figures), unit="", scale=(4.0, 116.0))
+
+    assert moved == drawn
+    assert 'cx="44.5"' in drawn and 'x1="20.1"' in drawn and 'x2="50.1"' in drawn, drawn
+
+
 def test_a_glyph_off_zero_draws_no_zero_line_and_no_band() -> None:
     svg = interval_glyph_svg(0.92, 0.85, 0.99, unit="s", scale=(0.8, 1.5))
     assert 'class="viz-zero"' not in svg and 'class="viz-band"' not in svg
