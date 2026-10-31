@@ -30,6 +30,7 @@ __all__ = [
     "EXPLORE_HEADERS",
     "EXPLORE_TITLE",
     "FINDINGS_TITLE",
+    "LATE_NAMED",
     "LEVEL_WORDS",
     "METHOD_TITLE",
     "NEXT_TITLE",
@@ -80,6 +81,14 @@ CAVEAT_LABELS: Final[dict[str, str]] = {
     "point_estimate": "{name} is cleared on a point estimate",
     "borderline": "{name} is cleared on a borderline reading",
     "best_of_n": "The pick is the best of several candidates",
+}
+
+#: A late criterion's ``{name}`` where its page holds more than one aspect, or another late criterion of its kind:
+#: what was set, then the aspect and the measure its id names, by their reader names, so no two lines read alike.
+LATE_NAMED: Final[dict[str, str]] = {
+    "aspect": "{criterion} on {aspect}",
+    "measure": "{criterion} on {measure}",
+    "both": "{criterion} on {measure} in {aspect}",
 }
 
 #: The caveats a claim or a Method item names, by their labels, as the line beside it says them: each distinct label

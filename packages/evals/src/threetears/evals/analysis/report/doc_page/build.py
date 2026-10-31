@@ -74,6 +74,7 @@ from threetears.evals.analysis.report.doc_page.words import (
     DEGRADED_TABLE,
     EXPLORE_HEADERS,
     EXPLORE_TITLE,
+    LATE_NAMED,
     PAGE_WORD,
     SET_APART,
     SEVERITY_WORDS,
@@ -99,6 +100,7 @@ from threetears.evals.analysis.report_decision import (
     Materiality,
     caveat_materiality,
     every_caveat,
+    late_subject,
 )
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_facts import fact_arms, plan_facts
@@ -176,14 +178,36 @@ def _masthead(reader: _Reader) -> PageMasthead:
     )
 
 
-def _code_label(caveat: Caveat | ImpliedCaveat, look: PageLook) -> str:
+def _late_name(rest: str, look: PageLook, report_input: ReportInput) -> str:
+    """A late criterion as its label names it: what was set, and, where the page holds more than one aspect or another
+    late criterion of its kind, the aspect and the measure its id names, so each line says which one it is."""
+    criterion, _, name = rest.partition(":")
+    word = humanize("dimension", criterion)
+    kin = sum(late.criterion == criterion for late in report_input.caveats.late_criteria)
+    if not name or (len(report_input.aspects) < 2 and kin < 2):
+        return word
+    aspect, measure = late_subject(criterion, name)
+    measure_kind: NamedKind = "judged" if measure in report_input.judged else "measure"
+    if aspect is not None and measure is not None:
+        return LATE_NAMED["both"].format(
+            criterion=word, aspect=look.reader("aspect", aspect), measure=look.reader(measure_kind, measure)
+        )
+    if aspect is not None:
+        return LATE_NAMED["aspect"].format(criterion=word, aspect=look.reader("aspect", aspect))
+    return LATE_NAMED["measure"].format(
+        criterion=word,
+        measure=look.reader(measure_kind, measure) if measure is not None else look.reader("criterion", name),
+    )
+
+
+def _code_label(caveat: Caveat | ImpliedCaveat, look: PageLook, report_input: ReportInput) -> str:
     """A caveat code assigns, labelled by its kind, naming what its id names as a reader is shown it."""
     rest = caveat.id.partition(":")[2]
     named = _READER_NAMED.get(caveat.kind)
     if named is not None:
         name = look.reader(named, rest)
     elif caveat.kind == "late":
-        name = humanize("dimension", rest.partition(":")[0])
+        name = _late_name(rest, look, report_input)
     else:
         name = humanize("dimension", rest.rsplit(":", 1)[-1])
     label = CAVEAT_LABELS.get(caveat.kind, humanize("dimension", caveat.kind)).format(name=name)
@@ -207,7 +231,7 @@ class _Labels:
         """
         assigned = self.code.get(caveat_id)
         if assigned is not None:
-            return _code_label(assigned, self.look)
+            return _code_label(assigned, self.look, self.reader.report_input)
         own = self.declared.get(caveat_id)
         if is_analyst_caveat(caveat_id) and own is not None:
             return own

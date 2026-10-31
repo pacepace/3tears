@@ -61,6 +61,7 @@ from threetears.evals.analysis.report_decision import (
     caveat_materiality,
     every_caveat,
     implied_caveats,
+    late_subject,
     report_caveats,
     unsettled_arms,
 )
@@ -1705,7 +1706,9 @@ def _late_touch(report_input: ReportInput, late: LateCriterion) -> _Touch:
     """What a late criterion touches (the asked aspects, the control, the margined aspects, its floor's or bar's reads,
     or the measure it names), and when it was set."""
     criterion, name = late.criterion, late.name
-    said = f"the {criterion}{' ' + name if name else ''} was set after the results"
+    # Named by what it applies to, never by its key alone: two aspects' floors would otherwise read alike.
+    on = " in ".join(part for part in reversed(late_subject(criterion, name)) if part) or name
+    said = f"the {criterion}{' on ' + on if on else ''} was set after the results"
     keys = [f"late_criteria.{_late_name(late)}.set_at"]
     if criterion == "aspect":
         return _Touch(aspects=[a.id for a in report_input.aspects if a.asked], says=said, keys=keys)
