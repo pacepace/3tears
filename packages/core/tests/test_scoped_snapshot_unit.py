@@ -888,6 +888,85 @@ async def test_a_versioned_read_opened_during_a_long_swap_waits_for_it_and_reads
     await snapshot.stop()
 
 
+async def test_a_versioned_read_during_a_staged_swap_reads_the_previous_version_at_once() -> None:
+    """a backend that stages its change apart from its publish (StagedPartitions) is staged outside the swap
+    lock: a read opened while the change is staged answers the previous version, rows and epochs together, at
+    once; once it publishes, a read sees the new one."""
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    inside, release = threading.Event(), threading.Event()
+    backend = snapshot.backend
+    replace = backend.replace_partitions
+    published: list[str] = []
+
+    @contextlib.contextmanager
+    def stage(replacements: Any) -> Any:
+        inside.set()
+        release.wait(5)  # a worker process applying a large change
+
+        def publish() -> None:
+            replace(replacements)
+            published.append("published")
+
+        yield publish
+
+    backend.stage_partitions = stage  # type: ignore[attr-defined]
+    publishing = asyncio.ensure_future(
+        snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 20}]})
+    )
+    await asyncio.to_thread(inside.wait, 5)
+
+    def read() -> tuple[dict[str, int], Any]:
+        with snapshot.read_versioned() as versioned:
+            rows = versioned.cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall()
+            return dict(versioned.epochs), rows
+
+    began = time.monotonic()
+    epochs, rows = await asyncio.wait_for(asyncio.to_thread(read), 2)
+    assert time.monotonic() - began < 1.0, "the read waited on the staging"
+    assert (epochs["TX"], rows) == (1, [(1,)]), "a read during the staging reads the previous version"
+    release.set()
+    await publishing
+    assert published == ["published"]
+    epochs, rows = await asyncio.to_thread(read)
+    assert (epochs["TX"], rows) == (2, [(20,)])
+    await snapshot.stop()
+
+
+async def test_staged_swaps_run_one_at_a_time() -> None:
+    """a second swap is staged only once the first has published: each is staged over the version before it."""
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    backend = snapshot.backend
+    replace = backend.replace_partitions
+    staging = 0
+    overlapped: list[int] = []
+    guard = threading.Lock()
+
+    @contextlib.contextmanager
+    def stage(replacements: Any) -> Any:
+        nonlocal staging
+        with guard:
+            staging += 1
+            overlapped.append(staging)
+        time.sleep(0.05)
+        try:
+            yield lambda: replace(replacements)
+        finally:
+            with guard:
+                staging -= 1
+
+    backend.stage_partitions = stage  # type: ignore[attr-defined]
+    await asyncio.gather(
+        snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 20}]}),
+        snapshot.publish("DE", 2, {"results": [{"county": "c9", "state": "DE", "votes": 30}]}),
+    )
+    assert overlapped and max(overlapped) == 1, f"two swaps were staged at once: {overlapped}"
+    await snapshot.stop()
+
+
 async def test_a_dropped_scope_leaves_the_versioned_reads_epochs() -> None:
     """a scope L3 no longer holds is dropped by the catch-up, in the same step as its epoch."""
     snapshot, pointers, _, l3 = _snapshot()
@@ -1509,8 +1588,8 @@ def test_what_any_thread_may_call_reads_only_the_shared_state_each_once_and_runs
 
 # what the snapshot may hand a worker thread: the backend, and the versioned L1, whose state is its own
 _OFF_LOOP = frozenset({"_backend", "_versioned"})
-# the versioned L1's own state: its backend and lock, set once, and the epochs, rebound under the lock
-_VERSIONED_SET_AT_START = frozenset({"_backend", "_lock"})
+# the versioned L1's own state: its backend and its two locks, set once, and the epochs, rebound under the lock
+_VERSIONED_SET_AT_START = frozenset({"_backend", "_lock", "_writing"})
 _VERSIONED_REBOUND = frozenset({"_held"})
 
 
@@ -1904,6 +1983,42 @@ async def test_a_pointer_never_moves_onto_a_staged_chunk_that_is_gone() -> None:
 
     assert (moved, skipped) == ([], ["TX"])
     assert pointers.entries["enr.s.TX"][0] == before, "a pointer was moved onto a missing chunk"
+    await snapshot.stop()
+
+
+async def test_a_publish_of_many_scopes_retires_their_older_chunks_in_one_pass_over_the_names() -> None:
+    """a load's publish moves every state at once and retires each one's older chunks: each name listed is read once,
+    by its own scope, not once per scope moved -- the per-scope pass held the event loop 50-60 ms a publish on
+    cobalt prod (51 states). Chunks of scopes not moved, and those the pointers serve, stay."""
+    snapshot, pointers, store, l3 = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    scopes = [f"S{n:02d}" for n in range(51)]
+    staged = []
+    for scope in scopes:
+        staged.append(await snapshot.stage(scope, 7, {"results": [{"county": "c1", "state": scope, "votes": 7}]}))
+        l3.epochs[scope] = 7
+    digest = next(iter(staged[0].objects.values())).rsplit(".", 1)[1]
+    old = {f"enr/{scope}/{epoch}/results.{digest}" for scope in scopes for epoch in range(1, 7)}
+    old |= {
+        f"enr.p/{scope}/{epoch}/results.{digest}.{piece}"
+        for scope in scopes
+        for epoch in range(1, 7)
+        for piece in range(40)
+    }
+    kept = {f"enr/OTHER{n}/1/results.{digest}" for n in range(500)}
+    for name in old | kept:
+        store.objects[name] = b"x"
+
+    began = time.perf_counter()
+    moved, skipped = await snapshot.publish_staged(staged, carry_at=dict.fromkeys(scopes, 0), whole=True)
+    spent = time.perf_counter() - began
+
+    assert (sorted(moved), skipped) == (scopes, [])
+    assert not old & set(store.objects), "an older chunk of a moved scope was left"
+    assert kept <= set(store.objects), "a chunk of a scope not moved was retired"
+    assert _served(pointers) <= set(store.objects)
+    # the fakes answer at once, so this is the publish's own work on the loop: one pass over ~13k names
+    assert spent < 0.25, f"the publish's retire held the loop {spent:.3f} s"
     await snapshot.stop()
 
 
