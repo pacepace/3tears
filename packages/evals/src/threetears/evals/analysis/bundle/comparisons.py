@@ -92,6 +92,7 @@ from threetears.evals.analysis.bundle.measures import (
     _measure_walk_memo,
     _pool_measures,
     _pooled_means,
+    _pooled_rates,
     _miss_counts,
 )
 from threetears.evals.analysis.bundle.mechanisms import (
@@ -129,13 +130,14 @@ _NO_CONTROL_TO_COMPARE_AGAINST = (
 def _per_case_values(
     members: list[ResultView], judged_rows: dict[str, list[ScoreRecord]], *, profile: HostProfile
 ) -> dict[tuple[ReadingKind, str], dict[str, float]]:
-    """Every numeric reading of one cell, as one mean per case — the unit a family comparison tests.
+    """Every numeric or boolean reading of one cell, as one value per case — the unit a family comparison tests.
 
     A case is the independent draw (rule: count cases, not attempts), so repeats of one case are
     averaged before any test sees them. A measure's per-case value is read off the same walk the
-    cell's own collection is (:func:`_pool_measures`, each measure over its own population, its mean the summary's
-    own, :func:`_pooled_means`), so the value tested and the value the cell reports are one computation; a judged dimension's, off the
-    non-faulted results' scores, as :func:`_bar_reading` reads one.
+    cell's own collection is (:func:`_pool_measures`, each measure over its own population), so the value tested and
+    the value the cell reports are one computation: a numeric measure's is the summary's mean (:func:`_pooled_means`),
+    a boolean's the summary's rate, a share on 0 to 1 (:func:`_pooled_rates`). A judged dimension's is read off the
+    non-faulted results' scores, as :func:`_bar_reading` reads one. A text or categorical measure has none.
 
     :param members: One cell's results, faulted ones included.
     :ptype members: list[ResultView]
@@ -143,7 +145,7 @@ def _per_case_values(
     :ptype judged_rows: dict[str, list[ScoreRecord]]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
-    :return: ``{(reading, name): {test_case_id: per-case mean}}`` for every reading with a numeric value.
+    :return: ``{(reading, name): {test_case_id: per-case value}}`` for every reading with a per-case value.
     :rtype: dict[tuple[ReadingKind, str], dict[str, float]]
     """
     by_case: dict[str, list[ResultView]] = defaultdict(list)
@@ -158,6 +160,10 @@ def _per_case_values(
         pooled = _pool_measures(by_case[case_id], profile=profile, undeclared="scored")
         for name, mean in _pooled_means(pooled).items():
             values[("measure", name)][case_id] = mean
+        # A boolean's per-case value is its rate, the share of the case's observations held True: the cell's own
+        # ``rate`` over that case alone (:func:`_pooled_rates`), as the pass rate is a case's share of trials passed.
+        for name, rate in _pooled_rates(pooled).items():
+            values[("measure", name)][case_id] = rate
     scores: dict[tuple[str, str], list[float]] = defaultdict(list)
     for result in _non_faulted(members):
         for dimension, record in _judged_values(judged_rows.get(result.id, [])):
@@ -307,7 +313,7 @@ def planning_readings(
                 or not axis_in_question_scope(descriptor.merit_axis, [])
             ):
                 continue
-            higher, value_range = descriptor.higher_is_better, descriptor.value_range
+            higher, value_range = descriptor.higher_is_better, _measure_range(descriptor)
         else:
             if name in boundary:
                 continue
@@ -325,9 +331,11 @@ def _family_readings(
     """The readings a question with these axes could draw a verdict from, each with its better direction.
 
     A measure qualifies when it has a better end (a reading with none cannot improve or regress) and
-    sits on one of the axes; a per-label classifier statistic does not, because it is computed from a
-    whole cell's confusion counts and has no per-case value to test. A capability judged dimension sits on
-    the quality axis. A guardrail — a boundary judged dimension, or a measure declared one, which serves no
+    sits on one of the axes. A boolean one is tested on its rate per case, the share of a case's observations held
+    True, as the pass rate is tested on a case's share of trials passed; a text or categorical one has no value with
+    an order to test, whatever it declares, so it is in no family. A per-label classifier statistic does not qualify
+    either, because it is computed from a whole cell's confusion counts and has no per-case value to test. A
+    capability judged dimension sits on the quality axis. A guardrail — a boundary judged dimension, or a measure declared one, which serves no
     axis — is in no family: it is held, never traded against a gain, and is decided on its own
     (:func:`_guardrails`). An unscoped question (no axes) asks about every axis — every axis, not every measure:
     a measure that serves no merit axis contributes to no verdict (:data:`MeritAxis`), scoped or not
@@ -348,7 +356,11 @@ def _family_readings(
     """
     readings: dict[tuple[ComparisonReading, str], bool] = {}
     for name, descriptor in catalog.items():
-        if descriptor.higher_is_better is None or classifier_label_of(name) is not None:
+        if (
+            descriptor.higher_is_better is None
+            or descriptor.data_type in ("text", "categorical")
+            or classifier_label_of(name) is not None
+        ):
             continue
         if axis_in_question_scope(descriptor.merit_axis, axes):
             readings[("measure", name)] = descriptor.higher_is_better
@@ -361,6 +373,12 @@ def _family_readings(
 
 #: The overall pass rate's range: a share of a case's usable trials.
 _TRIAL_PASS_RANGE = (0.0, 1.0)
+
+
+def _measure_range(descriptor: MetricDescriptor) -> tuple[float, float] | None:
+    """The range a measure's per-case values lie on: a boolean's is its rate's, a share on 0 to 1 as the pass rate's
+    is, whatever it declares; any other measure's is its declared range, or None where it declares none."""
+    return _TRIAL_PASS_RANGE if descriptor.data_type == "boolean" else descriptor.value_range
 
 
 def _trial_pass_counts(
@@ -876,7 +894,7 @@ def _multiple_comparisons(
                     threshold=threshold,
                     margin_source=margin_source,
                     value_range=(
-                        catalog[reading[1]].value_range
+                        _measure_range(catalog[reading[1]])
                         if reading[0] == "measure"
                         else _TRIAL_PASS_RANGE
                         if reading[0] == "trial"
@@ -1066,7 +1084,7 @@ def _guardrail_readings(
     judged_margins = {entry.dimension: entry.margin for entry in declared.guardrail_margins} if declared else {}
     readings: dict[tuple[ReadingKind, str], _Guardrail] = {
         ("measure", name): _Guardrail(
-            descriptor.higher_is_better, descriptor.materiality_threshold, descriptor.value_range
+            descriptor.higher_is_better, descriptor.materiality_threshold, _measure_range(descriptor)
         )
         for name, descriptor in catalog.items()
         if descriptor.guardrail and descriptor.higher_is_better is not None
