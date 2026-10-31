@@ -121,7 +121,7 @@ class TestTimezoneConverterTool:
         carried by the tool, never inferred by the caller.
         """
         target = "Asia/Tokyo"
-        expected_date = datetime.now(ZoneInfo(target)).strftime("%A, %B %d, %Y")
+        expected_date = datetime.now(ZoneInfo(target)).strftime("%A, %B %-d, %Y")
         result = _converted("now", "America/Los_Angeles", target)
         assert not result.startswith("[TOOL ERROR]")
         # output is "<source> = <target>"; the target side carries the real date
