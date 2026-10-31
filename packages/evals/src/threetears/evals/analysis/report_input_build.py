@@ -86,6 +86,7 @@ from threetears.evals.analysis.report_input import (
     Meta,
     PairRead,
     PassK,
+    PassRule,
     Precision,
     Pricing,
     PriorInsight,
@@ -104,8 +105,15 @@ from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.errors import RefusedInput
+from threetears.evals.kernel.host.bars import PassCriterion, pass_threshold_label
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
-from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, MetricDescriptor, goal_check_of
+from threetears.evals.kernel.metrics import (
+    ACCURACY_MEASURE,
+    MATCH_MEASURE,
+    RUBRIC_FAMILY,
+    MetricDescriptor,
+    goal_check_of,
+)
 from threetears.evals.kernel.surface import CellFacts
 
 __all__ = ["planner_view", "report_input"]
@@ -380,6 +388,8 @@ class _Builder:
             for subject in depth.subjects
             if subject.compared and subject.common_depth is not None
         ]
+        # The depth pass^k is read at, compared across arms or not: the rule's label names it as every surface does.
+        rule = self.pass_rule(aspect, k=next((subject.k for subject in depth.subjects), None))
         return Aspect(
             id=label,
             name=aspect.short_name or label,
@@ -399,6 +409,35 @@ class _Builder:
             pass_k=pass_k or None,
             pairs=[self.pair(pair) for pair in self.bundle.readings.pairs if pair.aspect == label],
             scoreboard=None if aspect is self.lead else self.scoreboard(aspect),
+            description=_pass_rule_sentence(rule),
+            graded_by="judged" if rule.dimensions else "checked" if rule.checks else None,
+            pass_rule=rule,
+        )
+
+    def pass_rule(self, aspect: AnalysisContextBundle, *, k: int | None) -> PassRule:
+        """How a trial on the aspect passes, as the bundle's census decided it (``read_trial``): every check, every
+        capability dimension at the behavior's threshold, a boundary dimension apart; and the trials that passed with
+        nothing to fail them."""
+        threshold = aspect.frontier.rubric_threshold
+        judged = [measure for measure in aspect.judged_measures if measure.family == RUBRIC_FAMILY]
+        dimensions = sorted(measure.name for measure in judged if measure.axis == "capability")
+        checks = sorted(
+            name
+            for name, descriptor in aspect.measure_catalog.items()
+            if goal_check_of(name) is not None or name == MATCH_MEASURE or descriptor.is_check
+        )
+        criteria: list[PassCriterion] = [
+            *(["goal_checks"] if any(goal_check_of(name) is not None for name in checks) else []),
+            *(["rubric"] if dimensions else []),
+        ]
+        return PassRule(
+            criteria=criteria,
+            threshold=threshold,
+            label=pass_threshold_label(k, threshold, criteria=criteria),
+            dimensions=dimensions,
+            boundary=sorted(measure.name for measure in judged if measure.axis == "boundary"),
+            checks=checks,
+            no_criterion=sum(row.no_criterion for row in aspect.scoreboard),
         )
 
     def reading(self, row: AspectReading) -> Reading:
@@ -992,6 +1031,19 @@ def _grade(facts: MetricDescriptor) -> Literal["pass_fail", "class_label"] | Non
     if facts.family == "goal_state" or facts.is_check:
         return "pass_fail"
     return None
+
+
+def _pass_rule_sentence(rule: PassRule) -> str:
+    """How a trial on an aspect passes, in one plain sentence built from its pass rule."""
+    judged = "every judged dimension, guardrails aside," if rule.boundary else "every judged dimension"
+    held = [
+        "its candidate did not fail",
+        *(["every check passed"] if rule.checks else []),
+        *([f"{judged} scored at least {rule.threshold} of 5"] if rule.dimensions else []),
+    ]
+    if len(held) == 1:
+        return "A trial passes when its candidate did not fail: nothing else checks or judges it."
+    return f"A trial passes when {', '.join(held[:-1])} and {held[-1]}."
 
 
 def _level(level: float | None) -> str | None:

@@ -39,6 +39,11 @@ never inside it; a row no role counted them for carries none, which reads as not
 left out of the document when unset, so an input built before they existed digests as it did. So is a row's
 ``pricing`` (:class:`Pricing`): the price sources, serving providers and priced share of the calls its cost counts,
 which the options table prints beside the cost.
+
+**How a trial passes.** Each aspect built from a bundle states its pass rule (``Aspect.pass_rule``: the criteria in
+force, the rubric threshold, the judged dimensions that count and the checks that fail a trial, with the trials that
+passed with nothing to fail them), and says how it is graded (``graded_by`` and a one-sentence ``description``). The
+pass rule is left out of the document when unset, so an input built before it existed digests as it did.
 """
 
 from __future__ import annotations
@@ -46,6 +51,8 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from threetears.evals.kernel.host.bars import PassCriterion
 
 __all__ = ["ReportInput"]
 
@@ -265,6 +272,35 @@ class PairRead(_Part):
     precision: Precision | None = Field(default=None, description="What limits the interval.")
 
 
+class PassRule(_Part):
+    """How code decides whether one trial on an aspect passed, read off the bundle it was decided in.
+
+    A trial passes when its candidate did not fail, every check in ``checks`` passed, and every judged dimension in
+    ``dimensions`` scored at least ``threshold`` (a pass/fail dimension's bar is its pass). A boundary dimension is a
+    guardrail, decided apart, so it never fails a trial. A trial with nothing to fail passes, and ``no_criterion``
+    counts those.
+    """
+
+    criteria: list[PassCriterion] = Field(
+        description="What a trial is held to: goal_checks (every goal check), rubric (every counted judged dimension at "
+        "the threshold), both, or neither."
+    )
+    threshold: int = Field(description="The 1 to 5 level a counted judged dimension must reach.")
+    label: str = Field(description="The pass^k label every surface prints for this rule.")
+    dimensions: list[str] = Field(
+        default_factory=list, description="The judged dimensions that count, by key: the capability ones."
+    )
+    boundary: list[str] = Field(
+        default_factory=list, description="The judged dimensions that do not count, by key: guardrails, decided apart."
+    )
+    checks: list[str] = Field(
+        default_factory=list,
+        description="The checks that fail a trial on their own, by measure key: goal checks, a label match and "
+        "pass/fail scorers.",
+    )
+    no_criterion: int = Field(description="Trials that passed with nothing to fail them, across every arm.")
+
+
 class Aspect(_Part):
     """One aspect the campaign read: its question and each candidate's reading against the control."""
 
@@ -286,7 +322,15 @@ class Aspect(_Part):
     )
     description: str | None = Field(default=None, description="How the aspect is graded, in a sentence or two.")
     graded_by: Literal["judged", "checked"] | None = Field(
-        default=None, description="Whether a judge grades the aspect or a check in code does."
+        default=None,
+        description="Whether a judge grades the aspect (with any checks beside it) or checks in code alone do.",
+    )
+    # Left out of the document when unset, so an input built before the field existed digests as it did.
+    pass_rule: PassRule | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="How a trial on the aspect passes: its criteria, threshold, counted dimensions and checks; none "
+        "where the input does not say.",
     )
 
 

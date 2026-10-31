@@ -204,6 +204,27 @@ def _two_aspects() -> ReportInput:
 # =============================================================================
 
 
+def test_the_overview_cites_each_aspects_pass_rule_by_its_keys() -> None:
+    """Kairo's pass rule reads off the overview with every figure under an `aspects.<aspect>.` key; an input frozen
+    before the rule existed (r4, four aspects) states none, and its overview leaves the row out."""
+    snapshot, held = _held(KAIRO)
+    (row,) = campaign_overview(held, snapshot.id).aspects
+    rule = row.pass_rule
+    assert rule is not None
+    keyed = f"aspects.{row.aspect}"
+    assert [figure.key for figure in (rule.rule, rule.threshold, rule.no_criterion)] == [
+        f"{keyed}.pass_rule",
+        f"{keyed}.pass_threshold",
+        f"{keyed}.no_criterion",
+    ]
+    assert (rule.threshold.reads, rule.no_criterion.reads) == ("3", "0")
+    assert rule.sentence is not None and rule.sentence.key == f"{keyed}.description"
+    assert rule.criteria == ["goal_checks", "rubric"] and row.graded_by == "judged"
+    _, r4 = _held("r4")
+    assert r4.aspects and all(aspect.pass_rule is None for aspect in r4.aspects)
+    assert all("pass_rule" not in aspect for aspect in campaign_overview(r4, "s").model_dump()["aspects"])
+
+
 @pytest.mark.parametrize("name", FIXTURES)
 def test_the_overview_lists_the_inputs_own_arms_aspects_measures_criteria_and_caveats(name: str) -> None:
     snapshot, held = _held(name)
@@ -239,6 +260,23 @@ def test_the_overview_lists_the_inputs_own_arms_aspects_measures_criteria_and_ca
         assert (aspect_row.cases.value if aspect_row.cases else None) == cases
         assert (aspect_row.repeats.value if aspect_row.repeats else None) == repeats
         assert [(figure.key, figure.value) for figure in aspect_row.depth] == per_arm
+        rule = aspect.pass_rule
+        if rule is None:
+            assert aspect_row.pass_rule is None
+            continue
+        assert aspect_row.pass_rule is not None
+        row_rule = aspect_row.pass_rule
+        assert (row_rule.rule.value, row_rule.threshold.value, row_rule.no_criterion.value) == (
+            rule.label,
+            rule.threshold,
+            rule.no_criterion,
+        )
+        assert (row_rule.criteria, row_rule.dimensions, row_rule.boundary, row_rule.checks) == (
+            rule.criteria,
+            rule.dimensions,
+            rule.boundary,
+            rule.checks,
+        )
 
     assert [(row.key, row.source) for row in overview.measures] == [
         *((key, "measure") for key in held.measures),

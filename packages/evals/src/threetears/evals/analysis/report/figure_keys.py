@@ -73,6 +73,11 @@ them, with ``.retried``, ``.lost``, ``.calls`` (the answered ones), ``.share`` (
 ``.uncounted`` (trials whose calls counted none) beside it. Copied where one role counted them; a share over several
 roles is computed here and marked derived. An arm no role counted for is no key at all: not counted is never none.
 
+**How a trial passes.** ``aspects.<aspect>.pass_rule`` reads the label of the aspect's pass rule, ``.pass_threshold``
+the level a judged dimension must reach, ``.no_criterion`` the trials that passed with nothing to fail them,
+``.graded_by`` judged or checked, and ``.description`` the rule in a sentence. An input that states no rule refuses
+them as unstated.
+
 **A figure held on more than one aspect is named by its aspect.** Every figure that sits on an aspect has an
 ``aspects.<aspect>.`` form. Where the input holds a contrast's arm and measure, a stratum id or a contrast family on
 more than one aspect, the unqualified form is refused, naming the qualified key for each aspect, rather than reading
@@ -612,7 +617,7 @@ def _n_candidates(report_input: ReportInput, _: tuple[str, ...], path: str) -> F
     return Figure(path=path, kind="number", value=float(len(_candidates(report_input))), scale="count")
 
 
-_ASPECT_FIELDS = ("id", "name", "margin", "description")
+_ASPECT_FIELDS = ("id", "name", "margin", "description", "graded_by", "pass_rule", "pass_threshold", "no_criterion")
 
 
 def _aspect_field(aspect: Aspect, field: str, path: str) -> Figure:
@@ -620,6 +625,17 @@ def _aspect_field(aspect: Aspect, field: str, path: str) -> Figure:
         return _text(path, aspect.name or humanize("dimension", aspect.id), "the aspect's name")
     if field == "margin":
         return _number(path, aspect.margin, "the aspect's margin", "points")
+    rule = aspect.pass_rule
+    if field == "pass_rule":
+        return _text(path, rule.label if rule is not None else None, "the aspect's pass rule")
+    if field == "pass_threshold":
+        return _number(path, rule.threshold if rule is not None else None, "the aspect's pass threshold", "plain")
+    if field == "no_criterion":
+        if rule is None:
+            raise _unstated(
+                path, "names the trials that passed with nothing to fail them, which the input does not state"
+            )
+        return _count(path, rule.no_criterion)
     return _text(path, getattr(aspect, field), f"the aspect's {field}")
 
 
