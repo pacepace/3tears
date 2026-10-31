@@ -85,6 +85,10 @@ from threetears.core.utils.atomic_write import atomic_write_sync
 try:
     import duckdb
     import pyarrow as pa
+
+    # DuckDB scans a registered Arrow table through pyarrow.dataset's Scanner, importing the module (and what it
+    # imports) at the first scan in the process, 25-70 ms inside a serving thread's read; imported here, at boot
+    import pyarrow.dataset  # noqa: F401
     import pyarrow.ipc as ipc
 
     _SNAPSHOT_EXTRA: ImportError | None = None
@@ -503,16 +507,53 @@ def _write_tables(directory: Path, tables: Mapping[str, Any], room: Callable[[],
     return written
 
 
+def _shared_files(path: Path, mapped: Mapping[tuple[int, int], Any]) -> dict[tuple[int, int], Any]:
+    """the mapped files (by device and inode) that the directory ``path`` holds too: what a mapping of it may take.
+
+    :param path: a version's directory
+    :ptype path: Path
+    :param mapped: files mapped already, by (device, inode)
+    :ptype mapped: Mapping[tuple[int, int], pa.Table]
+    :return: those of them ``path`` holds; empty when it is gone
+    :rtype: dict[tuple[int, int], pa.Table]
+    """
+    try:
+        device = path.stat().st_dev
+        with os.scandir(path) as listing:
+            held = {(device, entry.inode()) for entry in listing}
+    except FileNotFoundError:
+        # NOSILENT: the version is gone already: nothing to lend its first read
+        return {}
+    return {inode: table for inode, table in mapped.items() if inode in held}
+
+
 class MappedTables:
     """Arrow tables memory-mapped read-only from a directory: every process mapping it shares its pages, and no row
     is copied into this one. Close it when done; a table kept past :meth:`close` keeps its pages mapped, never its
     lock or its files' place in the store.
 
-    :ivar name: the directory's name (a version's, a result's slot)
+    A version made from another (``base=``) holds most of its files as hard links to the other's: given the other's
+    mapped files (``reuse``, its :attr:`by_inode`), a file that is the same file (device and inode) is taken from it as
+    it is, never mapped again, so a version's first read maps only what changed. The pages are the same either way: a
+    file is never written once it is in place. The caller keeps every file it lends linked or mapped while this is
+    made (a lease, a lock, or the mapping itself, which keeps an unlinked file's inode, and so its number, in use).
+
+    :param name: the directory's name (a version's, a result's slot)
+    :ptype name: str
+    :param path: the directory
+    :ptype path: Path
+    :param lock: whether to hold a shared lock on the directory while mapped
+    :ptype lock: bool
+    :param reuse: another mapping's files by (device, inode) (:attr:`by_inode`), taken as they are where they are
+        the same files
+    :ptype reuse: Mapping[tuple[int, int], pa.Table] | None
+    :ivar name: the directory's name
     :ivar tables: table name -> the mapped table
     """
 
-    def __init__(self, name: str, path: Path, *, lock: bool) -> None:
+    def __init__(
+        self, name: str, path: Path, *, lock: bool, reuse: Mapping[tuple[int, int], Any] | None = None
+    ) -> None:
         self.name = name
         self._descriptor: int | None = None
         if lock:
@@ -520,21 +561,42 @@ class MappedTables:
             if self._descriptor is None:
                 raise LookupError(f"shared Arrow {name!r} is gone")
         self._maps: list[Any] = []
+        #: each file's table, by the file's device and inode, for a later version's mapping to take (``reuse``)
+        self._by_inode: dict[tuple[int, int], Any] = {}
+        held = reuse or {}
         pieces: dict[str, list[Any]] = {}
         try:
+            # every file of a directory is on its device; a directory entry carries its inode (no stat a file)
+            device = path.stat().st_dev
+            with os.scandir(path) as listing:
+                entries = sorted(listing, key=lambda each: each.name)
             # sorted, so a table's schema file (``{table}@.arrow``) comes before its parts, and parts in name order
-            for entry in sorted(path.iterdir(), key=lambda each: each.name):
+            for entry in entries:
                 table = _table_of(entry.name)
                 if table is not None:
-                    mapped = pa.memory_map(str(entry), "r")
-                    self._maps.append(mapped)
-                    pieces.setdefault(table, []).append(ipc.open_file(mapped).read_all())
+                    inode = (device, entry.inode())
+                    piece = held.get(inode)
+                    if piece is None:
+                        mapped = pa.memory_map(entry.path, "r")
+                        self._maps.append(mapped)
+                        piece = ipc.open_file(mapped).read_all()
+                    self._by_inode[inode] = piece
+                    pieces.setdefault(table, []).append(piece)
         except BaseException:
             self._unmap()
             raise
         # a table in parts is its parts' chunks side by side: concatenating tables copies no buffer
         tables = {name: held[0] if len(held) == 1 else pa.concat_tables(held) for name, held in pieces.items()}
         self.tables: Mapping[str, Any] = MappingProxyType(tables)
+
+    @property
+    def by_inode(self) -> Mapping[tuple[int, int], Any]:
+        """each mapped file's table by the file's device and inode: what a later version's mapping takes (``reuse``).
+
+        :return: (device, inode) -> the file's table; empty once closed
+        :rtype: Mapping[tuple[int, int], pa.Table]
+        """
+        return MappingProxyType(self._by_inode)
 
     def connect(self, *, schema: str | None = None, config: Mapping[str, Any] | None = None) -> Any:
         """a new in-memory DuckDB connection with every table as a view over its mapped Arrow, no row copied.
@@ -563,6 +625,7 @@ class MappedTables:
         :rtype: None
         """
         self.tables = MappingProxyType({})
+        self._by_inode = {}
         for mapped in self._maps:
             mapped.close()
         self._maps = []
@@ -594,12 +657,14 @@ class MappedVersion(MappedTables):
     :ptype root: Path | str
     :param version: the version
     :ptype version: str
+    :param reuse: another version's mapped files by (device, inode), taken where they are the same files
+    :ptype reuse: Mapping[tuple[int, int], pa.Table] | None
     :raises LookupError: when the version is gone
     """
 
-    def __init__(self, root: Path | str, version: str) -> None:
+    def __init__(self, root: Path | str, version: str, *, reuse: Mapping[tuple[int, int], Any] | None = None) -> None:
         name = _valid_name(version, "version")
-        super().__init__(name, Path(root) / _VERSIONS_DIR / name, lock=True)
+        super().__init__(name, Path(root) / _VERSIONS_DIR / name, lock=True, reuse=reuse)
 
 
 class _KeptVersions:
@@ -623,8 +688,11 @@ class _KeptVersions:
         with self._lock:
             kept = self._kept.pop(root, None)
         if kept is not None and kept.name != version:
-            kept.close()
-            kept = None
+            # the new version's files that are the kept one's are taken from it, never mapped again
+            try:
+                return MappedVersion(root, version, reuse=kept.by_inode)
+            finally:
+                kept.close()
         return kept if kept is not None else MappedVersion(root, version)
 
     def give_back(self, root: str, mapped: MappedVersion) -> None:
@@ -1601,11 +1669,12 @@ class _HeldVersion:
         schema: str | None,
         config: Mapping[str, Any] | None,
         prepare: Callable[[Any], Any] | None,
+        reuse: Mapping[tuple[int, int], Any] | None = None,
     ) -> None:
         self.lease = lease
         self.name = lease.version.name
         try:
-            self.mapped = MappedTables(self.name, lease.version.path, lock=False)
+            self.mapped = MappedTables(self.name, lease.version.path, lock=False, reuse=reuse)
             try:
                 self.connection = self.mapped.connect(schema=schema, config=config)
                 try:
@@ -1687,6 +1756,9 @@ class SharedArrowReader:
         self._prepare = prepare
         self._lock = threading.Lock()
         self._held: _HeldVersion | None = None
+        #: the files of the version let go that the current one shares, by (device, inode), for its first read to take
+        #: (:class:`MappedTables`): mapped already, so keeping them keeps no page the current version does not hold
+        self._lend: Mapping[tuple[int, int], Any] = {}
         self._closed = False
         self._reads = 0
         self._mapped = 0
@@ -1727,7 +1799,11 @@ class SharedArrowReader:
                 raise LookupError("no shared Arrow version is published yet")
             held = self._held
             if held is None or held.name != current.name:
-                held = _HeldVersion(self._store.lease(), self._schema, self._config, self._prepare)
+                # the version it replaces (or what it left to lend) gives it every file the two share: only what
+                # changed is mapped
+                reuse = self._lend if held is None else held.mapped.by_inode
+                held = _HeldVersion(self._store.lease(), self._schema, self._config, self._prepare, reuse)
+                self._lend = {}
                 self._mapped += 1
                 let_go = self._supersede()
                 self._held = held
@@ -1760,7 +1836,11 @@ class SharedArrowReader:
             current = self._store.current
             let_go = None
             if self._held is not None and (current is None or self._held.name != current.name):
+                if current is not None:
+                    self._lend = _shared_files(current.path, {**self._lend, **self._held.mapped.by_inode})
                 let_go = self._supersede()
+            elif self._held is None and self._lend and current is not None:
+                self._lend = _shared_files(current.path, self._lend)
         if let_go is not None:
             let_go.close()
 
@@ -1772,6 +1852,7 @@ class SharedArrowReader:
         """
         with self._lock:
             self._closed = True
+            self._lend = {}
             let_go = self._supersede()
         if let_go is not None:
             let_go.close()
