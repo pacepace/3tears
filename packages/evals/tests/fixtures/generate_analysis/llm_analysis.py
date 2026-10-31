@@ -20,7 +20,8 @@ The campaign's two classifiers are keyword rules, so the campaign always runs of
 answers only the prompt it was made for, and the prompt is the bundle, which names this run's ids and times, and the
 writer's instructions: so a replay hands the writer the bundle and the instructions the recording was made from,
 ``recordings/llm_analysis.bundle.json`` and ``recordings/llm_analysis.prompt.txt``, not this run's.
-``RECORD=1 python llm_analysis.py``, with the key set, records all three again.
+``RECORD=1 python llm_analysis.py``, with the key set, records all three again, as it was at bundle shape 65,
+where the accuracy contrast is drawn on its bounded interval, which the writer is shown.
 """
 
 import asyncio

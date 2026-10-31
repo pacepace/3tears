@@ -332,9 +332,10 @@ cases most verdicts are undecided, and that is the finding: the bank cannot tell
 **"No worse by more than the margin" is a claim of safety, so it reads an interval that holds its error rate on
 coarse values.** A rate floor (`RateDrop(max_points=10)`: no pass rate drops by more than 10 points) reads `held`
 only where each rate's bounded interval (the bounded test's, on the 0-1 range, at the nominal 95% and uncorrected)
-keeps the drop within the margin, as a guardrail's `held` does. The t interval the Contrasts table prints overstates
-its confidence on a pass rate's few coarse per-case shares: a candidate that breaks one case in ten leaves most small
-samples agreeing with the control. The price is honest: on seven cases nothing short of a sweep shows a 10-point
+keeps the drop within the margin, as a guardrail's `held` does. A t interval overstates its confidence on a pass
+rate's few coarse per-case shares: a candidate that breaks one case in ten leaves most small samples agreeing with the
+control. So the Contrasts table draws a rate on the bounded interval too, at its family's corrected level, and
+separates it only where that interval excludes zero. The price is honest: on seven cases nothing short of a sweep shows a 10-point
 floor held, and an unclear floor's `To show the floors hold` table says how many cases would.
 *Evidence:* simulated at a true drop of exactly the 10-point margin, 3 repeats per case, 20,000 replicates per row,
 2026-10; how often the t interval read held, against the one tail it states (`tests/test_simulated_switch.py`

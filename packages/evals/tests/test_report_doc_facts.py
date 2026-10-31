@@ -518,9 +518,10 @@ def test_a_confidence_that_does_not_read_high_over_open_caveats_is_no_fact(form:
 #: - r2 with its gates read in each task fires nothing: two options are undecided on the p95 gate read in each task,
 #:   their p95 over every case missing it, and the document cites that very figure for each, which answers it.
 #: - s1: the document keeps production where code reads a tradeoff (no option dominates). True; whether the call and
-#:   Watch are argued well is the editor's. Its weakest margin is no longer a fact: read on the corrected interval, v4's
-#:   billing reading (99.55%) sits past the margin, which is the very reading Watch discusses (it was v2's tone floor
-#:   on the plain interval, which Watch did not name).
+#:   Watch are argued well is the editor's. Its weakest margin is v2's tone floor, on the plain interval, an arm the
+#:   document does not recommend, and Watch does not name it. True since bundle shape 65: v4's billing reading is read
+#:   on its pass-rate contrast's corrected interval, which is now the bounded one and no longer the weakest, so the
+#:   weakest is the tone floor again.
 #: - s2: the document recommends beta, at low confidence, where code reads a tradeoff. True.
 #: - Kairo: the weakest margin is qwen3.8-flash's reading against the margin, a candidate the call does not pick, and
 #:   Watch does not name it. True; the editor weighs whether it matters to keeping September.
@@ -536,7 +537,7 @@ _EXPECTED: dict[str, list[str]] = {
     "prototype2/r2-with-its-gates-read-in-each-task": [_SERVED, "high_over_open"],
     "prototype2/r2-with-one-gate": [_SERVED, "high_over_open"],
     "prototype2/r3-without-its-configs": [_SERVED, "high_over_open"],
-    "prototype2/s1": ["call_vs_dominance", _SERVED, "high_over_open"],
+    "prototype2/s1": ["call_vs_dominance", "weakest_not_in_watch", _SERVED, "high_over_open"],
     "prototype2/s2": ["call_vs_dominance", _SERVED],
     "prototype2/s3": ["high_over_open"],
     "prototype3/kairo": ["weakest_not_in_watch", _SERVED, "high_over_open"],

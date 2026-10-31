@@ -570,7 +570,11 @@ def _reconciled(
     else:
         reading = measure_name_of(bundle, comparison.name)
     own = "on its own" if round(level, 4) <= round(INTERVAL_LEVEL, 4) else f"corrected across {row.arm_label}'s aspects"
-    basis = "t" if comparison.basis == "t" else "bounded"
+    # The interval the contrast is drawn on, which is not always the test its p came from: a rate's is its bounded one.
+    bounded = comparison.basis != "t" or (
+        comparison.interval is not None and comparison.interval == comparison.bounded_interval
+    )
+    basis = "bounded" if bounded else "t"
     said = (
         f"On {aspect}, {row.arm_label}'s row reads {READING_WORDS[row.reading]} and its contrast on {reading} reads "
         f"{_CONTRAST_WORDS[comparison.verdict]}, over the same per-case values. The row reads a bounded interval at "

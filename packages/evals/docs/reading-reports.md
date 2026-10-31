@@ -166,7 +166,9 @@ row read one interval and say one thing. Where a floor and a row still part, on 
 a check's rate the floor also reads, the cell is marked with the floor's status. Where a contrast in an aspect's fold
 reads the very per-case values a row reads and reaches another verdict (a row shown better, its contrast not
 separated), one line under the matrix names both and the interval each was read on: the row's is bounded and
-corrected across its arm's aspects, the contrast's a t interval corrected within the aspect's family.
+corrected across its arm's aspects, the contrast's corrected within the aspect's family. A rate's contrast (the pass
+rate, a check's rate, accuracy, or a pass/fail judged dimension) is drawn on the bounded interval too, so the two are one method at two levels and the
+looser one sits inside the stricter.
 
 **To settle.** One table, **To settle**, says for each unclear reading of a change how many cases would settle it, if
 no difference and if as observed, with the cost: a row left unclear against its margin, read on the pass rate, and
@@ -290,10 +292,9 @@ heading.
   the arms (both 16 of 16)`; a drop past the margin on its point estimate alone is unclear, and says so with its
   interval). One line under the table: `A floor warns and never decides: a broken one warns on the first screen. A floor reads
   its own interval, uncorrected, which can differ from the contrasts table's.` A rate floor reads the bounded
-  interval at the nominal 95%, wider than the t interval the Contrasts table prints: it holds its error rate on a
-  few coarse cases, where the t interval does not
-  ([why](measuring-soundly.md#a-floor-is-held-only-on-the-bounded-interval)). So a floor can read unclear beside a
-  contrast that is not separated. A campaign that asks a question and declares no floor gets one line, `No floor
+  interval at the nominal 95%: it holds its error rate on a few coarse cases, where a t interval does not
+  ([why](measuring-soundly.md#a-floor-is-held-only-on-the-bounded-interval)). The Contrasts table draws a rate on
+  the same bounded interval, at its family's corrected level, so the floor's interval sits inside the contrast's. A campaign that asks a question and declares no floor gets one line, `No floor
   was declared on routing.`; an exploratory comparison, which asks nothing and so declares no floor, gets none.
   **An unclear floor says what would show it holds**, computed, never the memo's guess: a `To show the floors hold`
   table gives each unclear floor's two counts with their cost, `If no difference` and `If as observed` (`121 cases,

@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a rate's contrast is drawn on its bounded interval
+
+**Changed:** a comparison on a rate carries the bounded interval at its family's corrected level. A rate is the pass
+rate, a check's or a goal check's pass rate, accuracy, or a judged dimension scored pass or fail. It reads improved or regressed only where that interval excludes zero. Its p values are still the t
+test's, so no adjusted p moves and the family's error rate holds. A campaign's reading of the pass rate uses the same
+method, so its 95% interval now sits inside its contrast's. A rate the t test separated may now read not separated.
+Other measures keep the t interval. The aspect bundle shape moves from 64 to 65, so every stored analysis at 64 reads
+as needing regeneration, and `report_read` serves the code-only page until it is generated again.
+
 ### evals: a directed boolean measure is compared between arms on its rate per case
 
 **Changed:** a boolean measure with a better end on a merit axis is in its comparison family now. It is tested on its

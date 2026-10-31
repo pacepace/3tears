@@ -148,10 +148,11 @@ class TestHowManyCasesEquivalenceTakes:
 
 class TestAPassFailInterval:
     async def test_stays_inside_the_differences_a_pass_rate_allows(self) -> None:
-        """Half of six cases flip to right: the t interval on the delta runs to 1.075, past any pass-rate difference.
+        """Half of six cases flip to right: a t interval on the delta runs to 1.075, past any pass-rate difference.
 
         No margin is declared, so only the scorer's ``bool`` annotation says the values are 0 or 1 (the
-        cassettes example printed ``[-0.0748, 1.075]`` before it did).
+        cassettes example printed ``[-0.0748, 1.075]`` before it did). A pass rate is drawn on the bounded interval
+        on that range, which never leaves the differences a share allows.
         """
         six = CASES[:6]
 
@@ -165,8 +166,8 @@ class TestAPassFailInterval:
         row = _row(comparison, "correct")
         # A pass rate is a share, so its change reads in points on the percent ruler.
         assert row["delta"] == pytest.approx(50.0)
-        assert row["interval"] == "[-7.5, 100] pts at 95%", (
-            "the t interval's lower end; its upper clipped where a pass-rate difference ends"
+        assert row["interval"] == "[-27.9, 100] pts at 95%", (
+            "the bounded interval on the 0-1 range, its upper end where a pass-rate difference ends"
         )
 
 

@@ -6,7 +6,7 @@ stratum is stored as durable v16.4 stored it, and a v16.4 document reads. It is 
 leaves the template's ``updated_at``, so naming a stratum stales no analysis and cuts no run off from its criteria.
 
 It rides ``AnalysisContextBundle.stratum_names``, written only when declared (an aspect bundle of a template naming no
-stratum is shape 64 byte for byte), and prints where a stratum is named: the report input's ``Stratum.name``, so a
+stratum is shape 65 byte for byte), and prints where a stratum is named: the report input's ``Stratum.name``, so a
 figure key's ``strata.<id>.name`` and a plan's stratum labels, and an aspect page's stratum columns and cases table.
 Undeclared, a stratum prints as its id on an aspect page, and a figure key prints its reader name (the id with its
 underscores as spaces, :func:`~threetears.evals.analysis.report.figure_keys.reader_name`), so a plan's prose never
@@ -141,10 +141,10 @@ class TestNamingAStratumMovesNoIdentity:
         assert named.fingerprint() == unnamed.fingerprint() == renamed.fingerprint()
         assert evidence_digest(named.to_dict()) == evidence_digest(unnamed.to_dict())
 
-    def test_a_bundle_naming_nothing_is_shape_64_with_no_key_and_naming_adds_only_that_key(self) -> None:
+    def test_a_bundle_naming_nothing_is_shape_65_with_no_key_and_naming_adds_only_that_key(self) -> None:
         unnamed = self._assembled(self._templates({})).to_dict()
         named = self._assembled(self._templates(dict(NAMES))).to_dict()
-        assert unnamed["schema_version"] == 64 == AnalysisContextBundle.model_fields["schema_version"].default
+        assert unnamed["schema_version"] == 65 == AnalysisContextBundle.model_fields["schema_version"].default
         assert "stratum_names" not in unnamed
         assert named.pop("stratum_names") == NAMES
         assert named == unnamed

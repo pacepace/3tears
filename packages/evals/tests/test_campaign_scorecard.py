@@ -651,27 +651,38 @@ def _lines(page: CampaignReport) -> list[str]:
     ]
 
 
+def _on(lines: list[str], prefix: str) -> list[str]:
+    return [line for line in lines if line.startswith(prefix)]
+
+
+#: How tone's v2 row and its pass-rate contrast read the same per-case values: the row shown better on its bounded
+#: interval corrected across v2's aspects, the contrast on the same method at its family's stricter level.
+_TONE_PASS_RATE = "On tone, v2's row reads shown better and its contrast on the pass rate reads not separated"
+
+
 def test_a_contrast_reading_a_row_s_own_values_to_another_verdict_is_reconciled_in_one_line() -> None:
-    """A19: tone's v2 row is shown better; were its fold's pass-rate contrast, over the very same per-case values, not
-    separated, the scorecard says both and how each interval was read. S1 as built has no such disagreement."""
-    shape = s1_change()
-    assert _lines(shape.page()) == []
-    reports = _with_trial_contrast(shape, "tone", "v2", lambda c: c.model_copy(update={"verdict": "not_separated"}))
-    page = build_campaign_report(shape.campaign, shape.readings, reports, None)
-    (line,) = _lines(page)
+    """A19: tone's v2 row is shown better, and its fold's pass-rate contrast, over the very same per-case values, is not
+    separated: both read the bounded interval, the contrast at its family's stricter level, which reaches zero. The
+    scorecard says both and how each interval was read, once for the pass rate and once for the check that decides it."""
+    page = s1_change().page()
+    lines = _lines(page)
+    (line,) = _on(lines, _TONE_PASS_RATE)
     assert line.startswith(
-        "On tone, v2's row reads shown better and its contrast on the pass rate reads not separated, over the same "
-        "per-case values. The row reads a bounded interval at 98.33%, corrected across v2's aspects; the contrast a t "
-        "interval at "
+        f"{_TONE_PASS_RATE}, over the same per-case values. The row reads a bounded interval at 98.33%, corrected "
+        "across v2's aspects; the contrast a bounded interval at "
     )
     assert line.endswith(", corrected within the aspect's family.")
     assert line in _scorecard(page)
+    (check,) = _on(lines, "On tone, v2's row reads shown better and its contrast on `reply.total == case.total`")
+    assert len(lines) == 2, "no other row and contrast part"
+    assert check in _scorecard(page)
 
 
 def test_a_contrast_showing_a_drop_the_row_does_not_say_the_row_counts_one_only_past_its_margin() -> None:
     shape = s1_change()
+    assert _on(_lines(shape.page()), "On refunds") == []
     reports = _with_trial_contrast(shape, "refunds", "v2", lambda c: c.model_copy(update={"verdict": "regressed"}))
-    (line,) = _lines(build_campaign_report(shape.campaign, shape.readings, reports, None))
+    (line,) = _on(_lines(build_campaign_report(shape.campaign, shape.readings, reports, None)), "On refunds")
     assert line.startswith(
         "On refunds, v2's row reads no worse than the margin and its contrast on the pass rate reads regressed"
     )
@@ -688,8 +699,9 @@ def test_a_contrast_over_other_values_is_not_reconciled_whatever_its_verdict() -
         )
 
     shape = s1_change()
+    assert len(_on(_lines(shape.page()), _TONE_PASS_RATE)) == 1
     reports = _with_trial_contrast(shape, "tone", "v2", elsewhere)
-    assert _lines(build_campaign_report(shape.campaign, shape.readings, reports, None)) == []
+    assert _on(_lines(build_campaign_report(shape.campaign, shape.readings, reports, None)), _TONE_PASS_RATE) == []
 
 
 # =============================================================================

@@ -5,15 +5,15 @@
   "withhold": [
     "kairo-round2.md"
   ],
-  "ending": "stored",
-  "reason": "",
+  "ending": "stored_with_findings",
+  "reason": "the review of round 3 did not clear the report, and its 2 revisions are used",
   "stored": true,
   "analyst_rounds": 3,
   "editor_rounds": 3,
   "tally": {
-    "turns": 34,
-    "tool_calls": 55,
+    "turns": 36,
+    "tool_calls": 60,
     "bounces": 0,
-    "cost_usd": 3.0497832000000002
+    "cost_usd": 3.676775
   }
 }
