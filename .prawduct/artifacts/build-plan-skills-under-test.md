@@ -19,6 +19,7 @@ partition: 01 then 02 serial (02 builds on 01's seam); 03 and 04 delegated in is
 - Scope: gate first, then search. The search must cover **arm settings** (model, reasoning effort, quantization and so on) as well as skill text: "self improving evals as a system", not "evolutionary skill writing". So the gate is generic over a kind's levers, and the report writer is its first subject, not its only one.
 - Judge: a **fixed scoring judge**. Its rubric text and model hold for the whole campaign, from a different model family than the writer. The in-loop editor stays part of the arm under test. Its scores carry the existing uncalibrated-judge disclosure.
 - Model: the A/B campaigns run the writer on **claude-haiku-5-5** (provider anthropic, ANTHROPIC_API_KEY from env, no temperature).
+- Infra first (2026-10-31): "we need to do the infra first, and not try to use our limited data for actual changes to the eval system." No skill or setting is changed on today's cases. More cases and diversity come from integrating evals into metallm, so cases arrive from hosts, not only from fixtures.
 - Promotion: **package files plus a recorded decision**. The skill files stay the source of truth. Promotion is a commit that changes them and cites the campaign decision, and a test checks that the shipped digest has a recorded decision. Hosts get an override seam only to run candidates.
 
 **Inferred (not owner words):**
@@ -40,7 +41,14 @@ partition: 01 then 02 serial (02 builds on 01's seam); 03 and 04 delegated in is
 - Small case set, so low power. Revisit when hosts contribute writer cases (Discodon snapshots).
 - The scoring judge is uncalibrated until humans label pages (an app's job, per the 2026-10-14 ruling). Its scores are disclosed as uncalibrated, never hidden.
 
-**Decisions made mid-build:** (append here)
+**Decisions made mid-build:**
+- 01: both roles' texts are built before the freeze, so a withheld note the skill lacks is refused with nothing frozen (this was also true of the shipped skill before).
+- 02 step 0: the recorded Opus runs took 682–985 s of turn time over 36–44 turns, past the engine's 600 s default cell deadline. The kind sets its own deadline (`writer_cell_timeout_s`, from the writer's worst case plus the judge phase).
+- 02: the kind lives in `ops/report_writer/`, since `analysis` may not import `ops`.
+- 02: an arm with no skill named records the shipped skill's digest, not None, so two builds with different shipped files never pool. This departs from the brief, which said None.
+- 02: effort is in, through a host model factory (`WriterModels`) called with the effort word. Levers: `skill`, `reasoning_effort`, `revisions`.
+- 02: a `WriterCase` embeds the whole snapshot and restores it into the run's scope. Snapshot ids come from content, so the restored snapshot is the frozen one. Caveat: analyst tools that read other stored documents still read the host's store.
+- 02: `invoke` drives `write_rounds` directly; a cell stores no report document and no gap.
 
 **Level:** Medium. The kind's shape is clear from `analysis_reporter`. Unknown: whether a full writer run (a multi-session tool loop) fits a single cell's invoke under the existing cell timeout and cost seats. Chunk 02's first step checks that against one replayed prototype5 case.
 
@@ -71,6 +79,7 @@ Type: code
 
 ### 04 — Writer case bank, dev and held-out sets (delegated)
 Type: code
+- The mechanism is the product: any host (Discodon, then metallm) mints a writer case from one of its own campaigns, and the case joins a named set. The fixtures are only the first seed.
 - A builder freezes writer cases from Kairo, the six misfits and r1–r5, each recording its withheld note.
 - The cases are minted into two named `CaseSet`s, `writer-dev` and `writer-held-out`. The split is fixed and recorded, and a case never sits in both.
 - Done when: both sets resolve; a case in both is refused; withholding is per case with no CLI choice.
@@ -79,15 +88,15 @@ Type: code
 Type: code
 - `skill_promotion(campaign)` reads the held-out campaign's corrected family verdicts through `gate_verdicts`. It answers `promote`, `keep` or `undecided`, with the candidate's variant key, the per-measure verdicts, the cost and the case count.
 - A promotion is recorded as a `CampaignCall`, and in a new package ledger, `analysis/analyst/skill/PROMOTIONS.toml` (skill digest, campaign id, decision, date). The current skill is the baseline entry.
-- An enforcement test fails when the shipped analyst or editor digest has no ledger entry. Editing a skill file then needs a recorded decision, or an explicit owner-waived entry that says so.
+- Every shipped analyst and editor digest has a ledger entry, and the entry states its basis: `measured` (a campaign decision) or `unmeasured` (an edit shipped without one, with the reason). An enforcement test fails on a shipped digest with no entry. It does not block edits while the case set is too small to measure: an unmeasured entry is the honest record. Inferred: the owner may want a later switch that requires `measured` once host cases exist.
 - Done when: the ledger test trips on an edited skill file and passes on a recorded one; `undecided` never promotes.
 
-### 06 — Live A/B on Haiku (main session, owner-capped)
+### 06 — Live mechanism smoke on Haiku (main session, owner-capped)
 Type: code
-- Run one real A/B on claude-haiku-5-5: the shipped skill against one real candidate edit, on `writer-held-out`, scored by the fixed judge.
+- This proves the pipeline end to end; it is not a decision. Run one small campaign on claude-haiku-5-5: the shipped skill against a deliberately inert variant, over two or three dev cases, scored by the fixed judge.
 - First quote it with `ArmQuote`, and get the owner's cap before sending a turn.
-- Record the decision in the ledger whatever it is, `keep` included.
-- Done when: the decision and its cost are recorded; the run's page is readable; the cumulative Critic is clean.
+- Nothing is promoted and nothing is changed on its result. The ledger is untouched.
+- Done when: every arm has results with the objective and judged measures; the promotion read answers (expected: `undecided`); the cumulative Critic is clean.
 Critic mode: cumulative
 
 ## Verification strategy
