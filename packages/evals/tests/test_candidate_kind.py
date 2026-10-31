@@ -1614,6 +1614,58 @@ def test_a_host_declared_boolean_measure_refuses_every_number_and_names_each_mis
     )
 
 
+def test_the_assembly_every_completed_cell_passes_through_refuses_a_misfit_host_measure_itself() -> None:
+    """Held where every completed cell is built, not only by the callers that refuse it before their judge pays."""
+    from threetears.evals.kernel import MetricDescriptor
+    from threetears.evals.kernel.host import MeasureRegistry
+    from threetears.evals.run.runner import assemble_completed_cell
+    from threetears.evals.schema.models import JudgedArtifact
+
+    measures = MeasureRegistry(
+        (
+            MetricDescriptor(
+                name="top_up_never",
+                reader_name="top up never",
+                data_type="boolean",
+                family="mechanical",
+                transferability_class="mechanical",
+                attribution_scope="end_to_end",
+                description="top_up_never, for the test.",
+                higher_is_better=True,
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError, match=r"'top_up_never' \(declared boolean, recorded as a number\)"):
+        assemble_completed_cell(
+            scope_id="u",
+            eval_run_id="run-1",
+            test_case_id="case-1",
+            model="test/model",
+            candidate_kind=_FAKE_KIND,
+            k_iteration=1,
+            subject_id="subj-1",
+            variant=DerivedVariantIdentity(
+                variant_key=compute_variant_key(_MODEL_ONLY), identity_version=IDENTITY_VERSION, levers=_MODEL_ONLY
+            ),
+            judge_model=None,
+            output=CandidateOutput(output=[], host_measures={"top_up_never": 1.0}),
+            measures=measures,
+            goal_checks=(),
+            judged_artifact=JudgedArtifact.TRANSCRIPT,
+            rate_table=None,
+            result_id="result-1",
+            scored_at="2026-10-31T00:00:00+00:00",
+            judged=None,
+            judge_ms=None,
+            spans=None,
+            concurrent_eval_jobs=None,
+            metered_cell=None,
+            world_events=None,
+            end_state=None,
+        )
+
+
 def test_a_host_measure_declaring_no_data_type_is_read_as_numeric_and_refuses_text_and_bools() -> None:
     """The bundle summarises an untyped measure as a distribution of numbers, so only a number fits one."""
     from threetears.evals.kernel import MetricDescriptor

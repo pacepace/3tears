@@ -1689,6 +1689,7 @@ async def _run_one_result(
         variant=variant,
         judge_model=judge_model,
         output=candidate,
+        measures=host.profile.measures,
         goal_checks=template.goal_state_checks,
         judged_artifact=judged_artifact,
         rate_table=options.external_rates,
@@ -2020,7 +2021,8 @@ def refuse_misfit_host_measures(host_measures: Mapping[str, bool | float | str],
     measure is refused, never read as ``True``. Refused rather than dropped, for
     :func:`refuse_engine_derived_host_measures`'s reason: a kind's measures are its own code, so every cell would carry
     the misfit, and a stored misfit is dropped from every statistic of its measure. Called by the runner before its
-    judge phase pays for anything, and by a witnessed cell's recording before its judge does. A name no registry
+    judge phase pays for anything, by a witnessed cell's recording before its judge does, and again by
+    :func:`assemble_completed_cell`, which every completed cell passes through. A name no registry
     describes (neither a data type nor a family) declares nothing and passes; the analysis names a number under one as
     an undescribed measurement and leaves text alone, as an identifier. A described measure declaring no data type is
     read as numeric, so text or a ``bool`` under one is refused.
@@ -2086,6 +2088,7 @@ def assemble_completed_cell(
     variant: DerivedVariantIdentity,
     judge_model: str | None,
     output: CandidateOutput,
+    measures: MeasureRegistry,
     goal_checks: Sequence[str],
     judged_artifact: JudgedArtifact,
     rate_table: ExternalRateTable | None,
@@ -2129,6 +2132,8 @@ def assemble_completed_cell(
     :ptype judge_model: str | None
     :param output: What the candidate produced.
     :ptype output: CandidateOutput
+    :param measures: The host's measure registry, which types each of the output's ``host_measures``.
+    :ptype measures: MeasureRegistry
     :param goal_checks: The template's goal checks the cell is held to (:func:`hold_to_goal_checks`), so the
         stored result carries a failed, not-evaluated outcome for each one a failed candidate's kind
         never graded; empty for a cell no template set.
@@ -2158,12 +2163,13 @@ def assemble_completed_cell(
     :ptype end_state: dict[str, Any] | None
     :return: The cell.
     :rtype: CellOutcome
-    :raises ValueError: The output lands a measure the engine derives, or a clean cell left one of
-        ``goal_checks`` ungraded.
+    :raises ValueError: The output lands a measure the engine derives or a value its measure's declared data type
+        does not fit, or a clean cell left one of ``goal_checks`` ungraded.
     """
     if judged is None:
         judged = _unjudged_record()
     refuse_engine_derived_host_measures(output.host_measures)
+    refuse_misfit_host_measures(output.host_measures, measures)
     # Held HERE, the one point every completed cell passes through, so what is STORED counts a failed
     # candidate against every check its template declares: a per-check rate counts a candidate failure
     # only over the checks a result carries, so a cell that failed before its kind graded anything would

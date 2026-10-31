@@ -44,6 +44,7 @@ from typing import Any, Literal
 from threetears.evals.kernel.candidate_kind import CandidateOutput
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.kernel.host.measures import MeasureRegistry
 from threetears.evals.schema.traces import CellTrace
 from threetears.evals.kernel.identity import resolve_variant_identity
 from threetears.evals.schema.models import (
@@ -386,7 +387,7 @@ async def record_witnessed_cell(
     hold_to_declaration(candidate_kind, judged_artifact, output)
     # Every refusal the assembly would make of this output, made BEFORE the judge is paid for — as the
     # runner makes them before its judge phase — so no judgement is bought for a record that cannot be
-    # built. The assembly makes the two kind refusals again; the variant is handed to it, not re-derived.
+    # built. The assembly makes these three refusals again; the variant is handed to it, not re-derived.
     refuse_inner_agent_usage(output.telemetry.usage)
     refuse_engine_derived_host_measures(output.host_measures)
     refuse_misfit_host_measures(output.host_measures, host.profile.measures)
@@ -398,6 +399,7 @@ async def record_witnessed_cell(
             run,
             test_case,
             output,
+            measures=host.profile.measures,
             goal_checks=goal_checks,
             candidate_kind=candidate_kind,
             k_iteration=k_iteration,
@@ -489,6 +491,7 @@ def _assembled(
     test_case: EvalTestCase,
     output: CandidateOutput,
     *,
+    measures: MeasureRegistry,
     goal_checks: Sequence[str],
     candidate_kind: str,
     k_iteration: int,
@@ -511,6 +514,8 @@ def _assembled(
     :ptype test_case: EvalTestCase
     :param output: What the candidate produced.
     :ptype output: CandidateOutput
+    :param measures: The host's measure registry, which types each of the output's ``host_measures``.
+    :ptype measures: MeasureRegistry
     :param goal_checks: The goal checks of the template the run is judged against; empty for an unjudged run.
     :ptype goal_checks: Sequence[str]
     :param candidate_kind: The kind the run stamped.
@@ -551,6 +556,7 @@ def _assembled(
         variant=variant,
         judge_model=run.judge_model,
         output=output,
+        measures=measures,
         goal_checks=goal_checks,
         judged_artifact=judged_artifact,
         rate_table=external_rates,
