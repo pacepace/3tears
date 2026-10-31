@@ -128,6 +128,8 @@ from threetears.evals.analysis.report.cost_unit import (
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import (
+    ANALYST_ASPECT_FIELDS,
+    ANALYST_CONTRAST_FIELDS,
     Arm,
     Aspect,
     Cell,
@@ -625,8 +627,14 @@ def _n_candidates(report_input: ReportInput, _: tuple[str, ...], path: str) -> F
 
 _ASPECT_FIELDS = ("id", "name", "margin", "description", "graded_by", "pass_rule", "pass_threshold", "no_criterion")
 
-#: The aspect fields only an analyst's input states: how a trial on it passes.
-_ANALYST_ASPECT_FIELDS = frozenset({"graded_by", "pass_rule", "pass_threshold", "no_criterion"})
+#: The aspect fields read off its pass rule, which an input states where it states the rule.
+_PASS_RULE_FIELDS = frozenset({"pass_threshold", "no_criterion"})
+
+#: The aspect fields a planner's grammar leaves out: those only an analyst's input states (the input contract's
+#: ``ANALYST_ASPECT_FIELDS``) and those read off its pass rule, but ``description``, which the planner's grammar still
+#: lists though a planner's input never states it. Leaving it out changes the planner's prompt, which the recorded
+#: planner runs pin, so it waits on a re-recording of them.
+_ANALYST_ASPECT_FIELDS = (ANALYST_ASPECT_FIELDS | _PASS_RULE_FIELDS) - {"description"}
 
 
 def _aspect_field(aspect: Aspect, field: str, path: str) -> Figure:
@@ -720,9 +728,6 @@ _CONTRAST_STATISTICS = (
     "paired",
     "pairing_r",
 )
-
-#: The contrast statistics only an analyst's input states: what its test counted.
-_ANALYST_CONTRAST_STATISTICS = frozenset({"n_cases", "control_n_cases", "paired", "pairing_r"})
 
 
 def _contrasted(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
@@ -5275,7 +5280,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("contrast"),
         _keyed("<arm>", lambda ri: dict.fromkeys(c.arm for c in ri.contrasts)),
         _Ids("<measure>", _contrasted),
-        _Statistic(_CONTRAST_STATISTICS, analyst_only=_ANALYST_CONTRAST_STATISTICS),
+        _Statistic(_CONTRAST_STATISTICS, analyst_only=ANALYST_CONTRAST_FIELDS),
         what="a corrected contrast of an arm against the control on a measure or judged dimension",
         resolve=_contrast,
         compares=lambda ri, values: _means_of(ri, values[1]),
@@ -5441,7 +5446,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("contrast"),
         _Ids("<arm>", _aspect_contrast_arms),
         _Ids("<measure>", _aspect_contrasted),
-        _Statistic(_CONTRAST_STATISTICS, analyst_only=_ANALYST_CONTRAST_STATISTICS),
+        _Statistic(_CONTRAST_STATISTICS, analyst_only=ANALYST_CONTRAST_FIELDS),
         what="a corrected contrast on one aspect, where `contrast.` reads an arm and measure the input holds on more "
         "than one",
         resolve=_aspect_contrast,

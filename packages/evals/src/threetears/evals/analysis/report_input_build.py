@@ -56,7 +56,8 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from functools import partial
 from typing import Any, Literal
 
 from threetears.evals.analysis.arms import writer_arms
@@ -72,9 +73,11 @@ from threetears.evals.analysis.campaign_bundle import CAMPAIGN_MESSAGE_CHARS_PER
 from threetears.evals.analysis.campaign_readings import AspectReading, PairReading
 from threetears.evals.analysis.depth import REPEATS_FLOOR
 from threetears.evals.analysis.depth import Precision as BundlePrecision
-from threetears.evals.analysis.depth_reading import aspect_depth
+from threetears.evals.analysis.depth_reading import AspectDepth, aspect_depth
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report_input import (
+    ANALYST_ASPECT_FIELDS,
+    ANALYST_CONTRAST_FIELDS,
     ApparatusConfound,
     Arm,
     Aspect,
@@ -398,10 +401,6 @@ class _Builder:
             for subject in depth.subjects
             if subject.compared and subject.common_depth is not None
         ]
-        # The depth pass^k is read at, compared across arms or not: the rule's label names it as every surface does.
-        rule = self.pass_rule(aspect, k=next((subject.k for subject in depth.subjects), None))
-        # Only an analyst's input states the rule, so a planner's input and its recorded prompts are unchanged.
-        stated = rule if counted else None
         return Aspect(
             id=label,
             name=aspect.short_name or label,
@@ -421,10 +420,15 @@ class _Builder:
             pass_k=pass_k or None,
             pairs=[self.pair(pair) for pair in self.bundle.readings.pairs if pair.aspect == label],
             scoreboard=None if aspect is self.lead else self.scoreboard(aspect),
-            description=_pass_rule_sentence(stated) if stated is not None else None,
-            graded_by=_graded_by(stated) if stated is not None else None,
-            pass_rule=stated,
+            **_analyst_only(ANALYST_ASPECT_FIELDS, counted, lambda: self.how_trials_pass(aspect, depth)),
         )
+
+    def how_trials_pass(self, aspect: AnalysisContextBundle, depth: AspectDepth) -> dict[str, Any]:
+        """How a trial on the aspect passes, as an analyst's input states it: its pass rule, who grades it and the
+        rule in a sentence."""
+        # The depth pass^k is read at, compared across arms or not: the rule's label names it as every surface does.
+        rule = self.pass_rule(aspect, k=next((subject.k for subject in depth.subjects), None))
+        return {"description": _pass_rule_sentence(rule), "graded_by": _graded_by(rule), "pass_rule": rule}
 
     def pass_rule(self, aspect: AnalysisContextBundle, *, k: int | None) -> PassRule:
         """How a trial on the aspect passes, as the bundle's census decided it (``read_trial``): every check, every
@@ -831,7 +835,7 @@ class _Builder:
                                 materiality=comparison.materiality,
                                 confounds=[confound.dimension for confound in comparison.mechanism_confounds],
                                 reason=comparison.untested_reason or comparison.not_separated_reason,
-                                **(_test_counts(comparison) if counted else {}),
+                                **_analyst_only(ANALYST_CONTRAST_FIELDS, counted, partial(_test_counts, comparison)),
                             ),
                         )
                     )
@@ -1046,6 +1050,23 @@ def _grade(facts: MetricDescriptor) -> Literal["pass_fail", "class_label"] | Non
     if facts.family == "goal_state" or facts.is_check:
         return "pass_fail"
     return None
+
+
+def _analyst_only(declared: frozenset[str], counted: bool, fields: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """The fields only an analyst's input states (``declared``, the input contract's one list of them): ``fields()``
+    on an analyst's (``counted``) input, none on a planner's.
+
+    :raises RuntimeError: ``fields()`` fills other fields than the contract declares, which would teach a planner a
+        key its input never states, or hand it one it was never meant to read.
+    """
+    if not counted:
+        return {}
+    filled = fields()
+    if set(filled) != declared:
+        raise RuntimeError(
+            f"the analyst-only fields built {sorted(filled)} are not the ones declared {sorted(declared)}"
+        )
+    return filled
 
 
 def _test_counts(comparison: FamilyComparison) -> dict[str, Any]:

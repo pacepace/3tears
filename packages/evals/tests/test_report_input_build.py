@@ -41,7 +41,14 @@ from threetears.evals.analysis.campaign_bundle import (
     CampaignBundle,
     build_campaign_bundle,
 )
-from threetears.evals.analysis.report_input import Example, ReportInput, Stat, Stratum
+from threetears.evals.analysis.report_input import (
+    ANALYST_ASPECT_FIELDS,
+    ANALYST_CONTRAST_FIELDS,
+    Example,
+    ReportInput,
+    Stat,
+    Stratum,
+)
 from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS, planner_view, report_input
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.kernel.errors import RefusedInput
@@ -510,6 +517,32 @@ def test_a_snapshot_stored_before_the_pass_rule_digests_as_it_was_stored() -> No
     built = report_input(kairo_bundle(), counted=True)
     bare = built.model_copy(update={"aspects": [a.model_copy(update={"pass_rule": None}) for a in built.aspects]})
     assert all("pass_rule" not in aspect for aspect in bare.model_dump(mode="json", by_alias=True)["aspects"])
+
+
+def _listed(grammar: str, family: str) -> set[str]:
+    """The options a grammar lists for one family's last slot (``- `<family>`: ... (<slot>: a, b, c).``)."""
+    (line,) = [line for line in grammar.splitlines() if line.startswith(f"- `{family}`")]
+    return set(line.rpartition(": ")[2].rstrip(").").split(", "))
+
+
+def test_the_fields_only_an_analysts_input_states_are_declared_once_and_the_planners_grammar_lists_none() -> None:
+    """The input contract's one list: a planner's input leaves each unset, and the planner's grammar teaches none of
+    them but ``description``, which its pinned prompt still lists."""
+    from threetears.evals.analysis.report.figure_keys import figure_key_grammar
+
+    bundle = kairo_bundle()
+    planner, analyst = report_input(bundle), report_input(bundle, counted=True)
+
+    assert all(getattr(aspect, field) is None for aspect in planner.aspects for field in ANALYST_ASPECT_FIELDS)
+    assert all(getattr(c, field) is None for c in planner.contrasts for field in ANALYST_CONTRAST_FIELDS)
+    assert all(getattr(aspect, field) is not None for aspect in analyst.aspects for field in ANALYST_ASPECT_FIELDS)
+    assert any(contrast.n_cases is not None for contrast in analyst.contrasts)
+    taught = figure_key_grammar(planner=True)
+    assert _listed(taught, "aspects.<aspect>.<field>") & ANALYST_ASPECT_FIELDS == {"description"}
+    assert not _listed(taught, "contrast.<arm>.<measure>.<statistic>") & ANALYST_CONTRAST_FIELDS
+    whole = figure_key_grammar()
+    assert ANALYST_ASPECT_FIELDS <= _listed(whole, "aspects.<aspect>.<field>")
+    assert ANALYST_CONTRAST_FIELDS <= _listed(whole, "contrast.<arm>.<measure>.<statistic>")
 
 
 # --- what a contrast counted ----------------------------------------------------------------------------------------

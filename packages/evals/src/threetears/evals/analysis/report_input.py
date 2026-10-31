@@ -59,7 +59,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.kernel.host.bars import PassCriterion
 
-__all__ = ["ReportInput"]
+__all__ = ["ANALYST_ASPECT_FIELDS", "ANALYST_CONTRAST_FIELDS", "ReportInput"]
 
 
 class _Part(BaseModel):
@@ -339,6 +339,11 @@ class Aspect(_Part):
     )
 
 
+#: The aspect fields only an analyst's input states: how a trial on the aspect passes, read off the bundle's census.
+#: A planner's input leaves each unset.
+ANALYST_ASPECT_FIELDS: frozenset[str] = frozenset({"description", "graded_by", "pass_rule"})
+
+
 class FloorRead(_Part):
     """One floor on one candidate: held, broken or unclear, as the pipeline read it."""
 
@@ -511,6 +516,10 @@ class Contrast(_Part):
         exclude_if=lambda value: value is None,
         description="The arms' correlation across the paired cases: how much pairing narrowed the interval.",
     )
+
+
+#: The contrast fields only an analyst's input states: what its test counted. A planner's input leaves each unset.
+ANALYST_CONTRAST_FIELDS: frozenset[str] = frozenset({"n_cases", "control_n_cases", "paired", "pairing_r"})
 
 
 class ContrastFamily(_Part):
