@@ -8,6 +8,29 @@ packages (bumped in lock-step).
 
 ## v0.87.0 -- 2026-10-31
 
+### models: a tool call's provider fields come back on the next request (Gemini 3 thought signatures)
+
+**Fixed:** a tool-using agent on Gemini 3 behind an OpenAI-compatible provider failed on its second turn. Google
+answered HTTP 400 "Function call is missing a thought_signature", seen on the aibots cobalt-dev gateway on
+2026-10-30. Gemini attaches `extra_content.google.thought_signature` to a signed tool call and requires it back,
+unchanged, on that call in the next request. `langchain-openai` keeps only `id`, `type` and `function`, in both
+directions (1.6.7, and 1.7.3, the newest).
+
+**Added:** `threetears.models.providers.TOOL_CALL_PROVIDER_EXTRA_KEY` (`"tool_call_provider_extra"`). The
+OpenAI-compatible chat wrapper from `create_openai_chat` now:
+
+- keeps every non-standard top-level field of each tool call on the answer, as
+  `additional_kwargs[TOOL_CALL_PROVIDER_EXTRA_KEY] = {tool_call_id: {field: value}}`, verbatim, for non-streamed and
+  streamed answers alike. A streamed answer carries each call's fields exactly once once its chunks are summed,
+  where a repeat would otherwise be concatenated into an invalid signature. The key is absent when no call had any;
+- writes those fields back onto the matching assistant tool calls of the next request, by tool-call id. A request
+  with nothing to send back is byte-identical to before.
+
+Code that relays an answer across a process boundary (a gateway, a NATS chat model) has to carry the entry and put
+it back on the `AIMessage` it replays. The Anthropic and OpenRouter wrappers are unchanged. Anthropic signatures
+already ride `thinking` content blocks, which LangChain sends back. Gemini reached through OpenRouter is a separate
+SDK and a separate follow-up.
+
 ### agent.tools: a held replica answers its control tools
 
 **Added:** `ToolServer.hold_calls(answering=...)` names the tools a held replica answers while its copy loads, and
