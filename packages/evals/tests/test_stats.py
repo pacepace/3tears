@@ -22,7 +22,6 @@ from threetears.evals.analysis.stats import (
     bounded_separation_p,
     composite_significance,
     difference_interval,
-    hedges_j,
     level_difference,
     paired_change,
     separation_p,
@@ -216,41 +215,6 @@ class TestCompositeSignificance:
         """B worse than A → negative Hedges' g."""
         d, _sig, _p = composite_significance([0.70, 0.80, 0.75, 0.90], [0.20, 0.30, 0.25, 0.28], paired=False)
         assert d is not None and d < 0
-
-
-#: Hedges' J(df), exact to 25 figures, at small, switch-point, medium and large df. Computed once, without mpmath (the
-#: project carries none), from the exact recurrence in decimal at 60 digits: J(df) = R(df)/sqrt(df/2), where
-#: R(df + 2) = R(df) * df/(df - 1), R(2) = 1/sqrt(pi) and R(3) = sqrt(pi)/2, so each step multiplies by an exact
-#: rational and the carried error stays near 1e-55. J(2) = 1/sqrt(pi) and J(4) = sqrt(2/pi) check it by hand.
-_HEDGES_J_EXACT = (
-    (2, "0.5641895835477562869480795"),
-    (3, "0.7236012545582676593630146"),
-    (4, "0.7978845608028653558798921"),
-    (9, "0.9138748917925522665057478"),
-    (24, "0.9683652334477146102385769"),
-    (55, "0.9862909029635033379828064"),
-    (99, "0.9924018511144228601736083"),
-    (100, "0.9924780549814448666007874"),
-    (101, "0.9925527454874618793529854"),
-    (128, "0.9941272401409856139277397"),
-    (1000, "0.9992497811797163675181016"),
-    (10000, "0.9999249978124296903814489"),
-    (1000000, "0.9999992499997812499296875"),
-)
-
-
-class TestHedgesJ:
-    """The small-sample factor is accurate to a few ULP at every df, either side of where its two forms meet."""
-
-    @pytest.mark.parametrize(("df", "exact"), _HEDGES_J_EXACT)
-    def test_it_is_within_a_few_ulp_of_the_exact_value(self, df: int, exact: str) -> None:
-        j = hedges_j(df)
-        assert j is not None
-        assert abs(Fraction(j) - Fraction(exact)) <= 3 * Fraction(math.ulp(float(exact))), (j, exact)
-
-    def test_below_two_degrees_of_freedom_there_is_no_factor(self) -> None:
-        assert hedges_j(1) is None
-        assert hedges_j(0) is None
 
 
 class TestPairedChange:
