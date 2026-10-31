@@ -143,7 +143,7 @@ def test_text_or_a_bool_stored_under_a_measure_declaring_no_data_type_never_reac
     profile = HostProfile(
         host_id="untyped",
         host_sweepables=SHARED_CORE,
-        measures=MeasureRegistry((_measure("queue_jumps", None, higher_is_better=False),)),  # type: ignore[arg-type]
+        measures=MeasureRegistry((_measure("queue_jumps", None),)),  # type: ignore[arg-type]
     )
     results = [_result("c1", queue_jumps=value), _result("c2", queue_jumps=value)]
 
