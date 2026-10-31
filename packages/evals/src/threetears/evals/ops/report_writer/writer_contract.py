@@ -10,7 +10,11 @@ key, and which skill versions a launch may run. Everything else is the same for 
 - :data:`WRITER_KIND_CONTRACT`, the kind's :class:`~threetears.evals.kernel.host.KindContract`, and
   :func:`writer_kind_contract` for a host that seats apparatus of its own;
 - :data:`WRITER_KIND_MEASURES`, the measures a writer run lands on ``host_measures``, for a host to declare on its
-  measure registry, as it declares the judge kind's.
+  measure registry, as it declares the judge kind's;
+- :func:`writer_scoring_rubric`, the rubric a writer template's judge scores, and
+  :func:`refuse_undeliverable_writer_template`, a template asking for what a writer cannot honour or giving its judge
+  nothing to score;
+- :func:`refuse_unfixed_scoring_judge`, a campaign whose arms were not scored by one judge on one rubric.
 
 **The skill lever is the skill's content digest, defaults included.** An arm naming no skill runs the shipped one, and
 the frozen overlays record the shipped skill's digest (:attr:`AnalystSkill.digest
@@ -22,19 +26,31 @@ older build reads as departing from the current skill, which it does.
 reasoning effort is a lever here, honoured by the host's model factory (:data:`WriterModels`), which builds the
 arm's model at the effort the lever names; a lever a host declares of its own (a quantization, a served route) rides
 on its own sweepables beside these, so nothing here assumes the lever under test is text.
+
+**The scoring judge is fixed; the editor is the arm's.** The editor reviews each report inside the loop, from the
+arm's own ``editor.md``, so it is part of what an arm runs. The page an arm stores is then scored by the template's
+judge on the editor rubric's seven items, as the shipped skill states them when the template is created
+(:func:`writer_scoring_rubric`): the dimensions are copied into the stored template, so neither an arm's ``editor.md``
+nor a later build's moves what a campaign's judge asks. Its model is the run's judge pin, which the launch resolves
+once for every arm it starts. A campaign whose arms were scored by another judge or rubric is no comparison of arms,
+and :func:`refuse_unfixed_scoring_judge` refuses it. Until people rate pages, the judge's scores read as
+uncalibrated through the engine's judge evidence tiers, as any judge's do.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Annotated, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.analyst.skill import load_skill
+from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host.kinds import KindContract, Ordinal
 from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.ops.report_writer.loop import TurnModel, WriterEnding
+from threetears.evals.ops.report_writer.rubric import shipped_rubric
+from threetears.evals.schema.models import EvalRun, EvalTemplate, RubricDim
 
 #: The ``candidate_kind`` a report writer template declares.
 WRITER_KIND: Final = "report_writer"
@@ -227,6 +243,117 @@ WRITER_KIND_MEASURES: tuple[MetricDescriptor, ...] = (
 )
 
 
+def writer_scoring_rubric() -> list[RubricDim]:
+    """The rubric a report writer template's judge scores: the editor rubric's items, as the shipped skill states them.
+
+    One ordinal dimension per item, ``report_writer.<item name>``, its description the item's name and definition,
+    and its scoring guide what the editor's 2, 1 and 0 mean, at 5, 3 and 1. Read from the shipped ``editor.md``
+    (:func:`~threetears.evals.ops.report_writer.rubric.shipped_rubric`), never from an arm's skill. A host seeds a
+    writer template's ``rubric`` from it when it creates the template; from then on the stored template holds the
+    text, and a campaign's runs freeze it (``EvalRun.template_digest``).
+
+    Each dimension declares the engine's built-in judge prompt for its scale, so a judge config authored for it is
+    refused at launch rather than scoring in its place: the prompt is held fixed with the rubric.
+
+    :return: The dimensions, in the rubric's order.
+    :rtype: list[RubricDim]
+    """
+    rubric = shipped_rubric()
+    guide = {"5": rubric.top, "3": rubric.middle, "1": rubric.bottom}
+    return [
+        RubricDim(
+            name=f"{WRITER_KIND}.{item.name.lower().replace(' ', '_')}",
+            description=f"{item.name}. {item.definition}",
+            scale="ordinal",
+            scoring_guide=dict(guide),
+            judge="builtin",
+        )
+        for item in rubric.items
+    ]
+
+
+#: A writer template's fields no report writer honours, each with what it would ask of one.
+_UNDELIVERABLE: Mapping[str, str] = {
+    "conversation": "a simulated conversation (a writer writes one report per case)",
+    "goal_state_checks": "goal checks (a writer acts on no world; its page is judged)",
+    "preconditions": "preconditions (a writer acts on no world)",
+    "tools_allowed": "tools (a writer's tools are its own, mounted by the kind)",
+    "tools_required": "tools (a writer's tools are its own, mounted by the kind)",
+    "variation_axes": "variation axes (a writer case is frozen from a report snapshot, never generated)",
+}
+
+
+def refuse_undeliverable_writer_template(template: EvalTemplate) -> None:
+    """Refuse a report writer template that asks for apparatus a writer cannot honour, or gives its judge nothing to
+    score.
+
+    A writer cell is one report over a frozen snapshot, its final page judged on the template's rubric. So a
+    conversation, goal checks, preconditions, tools, variation axes or a world seed would each be declared and
+    silently never run; and a template with no rubric would have every report written and paid for with nothing to
+    judge it on. For a host's ``refuse_undeliverable_template`` check on a writer template, and at every writer launch.
+
+    :param template: A template declaring the report writer kind.
+    :ptype template: EvalTemplate
+    :raises ValidationFailedError: The template declares any of those, or no rubric; every defect is named at once.
+    """
+    asked = [why for name, why in _UNDELIVERABLE.items() if getattr(template, name)]
+    if template.world_seed.namespaces:
+        asked.append("a world seed (a writer acts on no world)")
+    if not template.rubric:
+        asked.append("no rubric (a writer's page is judged, so its template must say on what: writer_scoring_rubric)")
+    if asked:
+        raise ValidationFailedError(
+            f"report writer template {template.name!r} declares " + "; ".join(asked),
+            remedy="author the template with what each of those names",
+        )
+
+
+def _judged_by(run: EvalRun) -> tuple[str, ...]:
+    """The judge a run's scores were asked of, as one level: its pin, its configs and its temperature."""
+    configs = ", ".join(f"{dim}={config}" for dim, config in sorted((run.judge_config_ids or {}).items()))
+    return (f"model {run.judge_model}", f"configs {{{configs}}}", f"temperature {run.judge_temperature}")
+
+
+def refuse_unfixed_scoring_judge(runs: Sequence[EvalRun]) -> None:
+    """Refuse a writer campaign whose arms were not all scored by one judge on one rubric.
+
+    The arms of a writer campaign differ in their levers, and their judged scores compare them only while the judge
+    holds still: a page scored by another model, prompt or temperature, or on a rubric edited between launches, would
+    move with the instrument and read as the arm's. The engine records each as it happens (the judge's pins on each
+    run, what its template measured as ``template_digest``) and reports a judge change as a confound; a promotion is
+    a decision, so it is refused instead. A run that recorded no judge or no template digest is refused too: nothing
+    shows it was scored as its siblings were.
+
+    :param runs: The campaign's member runs.
+    :ptype runs: Sequence[EvalRun]
+    :raises ValidationFailedError: The runs name more than one template, rubric revision or judge, or a run recorded
+        none; each is named with its runs.
+    """
+    faults = [
+        f"run {run.id} recorded no {what}"
+        for run in runs
+        for what, recorded in (("judge", run.judge_model), ("template digest", run.template_digest))
+        if recorded is None
+    ]
+    for what, level_of in (
+        ("templates", lambda run: (f"template {run.template_id}",)),
+        ("rubric revisions", lambda run: (f"template digest {run.template_digest}",)),
+        ("judges", _judged_by),
+    ):
+        levels: dict[tuple[str, ...], list[str]] = {}
+        for run in runs:
+            levels.setdefault(level_of(run), []).append(run.id)
+        if len(levels) > 1:
+            named = "; ".join(f"{', '.join(level)} ({', '.join(sorted(ids))})" for level, ids in sorted(levels.items()))
+            faults.append(f"the arms were scored under {len(levels)} {what}: {named}")
+    if faults:
+        raise ValidationFailedError(
+            "a writer campaign's arms are compared on one scoring judge and one rubric, and " + "; ".join(faults),
+            remedy="launch every arm against one writer template with one judge pin, and edit the template only "
+            "between campaigns",
+        )
+
+
 __all__ = [
     "ANALYST_ROUNDS_MEASURE",
     "EDITOR_ROUNDS_MEASURE",
@@ -242,4 +369,7 @@ __all__ = [
     "WRITER_KIND",
     "WriterModels",
     "WriterOverlays",
+    "refuse_undeliverable_writer_template",
+    "refuse_unfixed_scoring_judge",
+    "writer_scoring_rubric",
 ]
