@@ -405,8 +405,8 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bo
     The chart is a ``div.chart`` whose ``data-chart`` is its JSON, escaped into the attribute: the kit's script draws
     it at the chart's real width, every string in it as text. Every float in that JSON is served to twelve significant
     figures (:func:`~threetears.evals.schema.hashing.round_floats`), as the page's JSON form is: a point's position is
-    a figure code computed, whose bits past that differ between Python builds, so one campaign serves one page on every
-    platform. The table follows it. While the kit has drawn the chart
+    a figure code computed, whose bits past that differ between Python builds, so a chart's data does not vary with
+    them. The table follows it. While the kit has drawn the chart
     the table is visually hidden, read by a screen reader; where the chart is empty (no script ran, or the kit refused
     the data) or there is no chart to draw, the table is the figure, in its own scrolling frame.
 
