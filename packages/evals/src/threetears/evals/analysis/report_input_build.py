@@ -22,7 +22,9 @@ how many it was kept from; each example's case input and every judged dimension'
 where an example's ``reason`` is the primary dimension's alone; and, for each two aspects, the cases both ran and those only
 one ran, by stored case id. A tally is left out where the bundle's trials cannot give it whole: an aspect the bundle
 capped before every failure was kept, a pair of aspects either of which left trials out. Left out reads as not
-counted, never as none.
+counted, never as none. Each contrast also states what its test counted, copied off its comparison: the cases each
+side read, whether it paired them and the arms' correlation across them, so an analyst can say "paired over 60
+cases"; a planner's input carries none of them, so its view is unchanged.
 
 **Every arm, reading, contrast and caveat the bundle holds reaches the input.** An arm is named by its campaign label
 everywhere, and carries the short name it declares (``Arm.short_name``), which ``{arm:<id>}`` prints. A choice's pair readings sit on their aspect, a measurement's readings on its measures, and a contrast
@@ -58,7 +60,13 @@ from typing import Any, Literal
 
 from threetears.evals.analysis.arms import writer_arms
 from threetears.evals.analysis.bundle.caps import capped_text
-from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS, AnalysisContextBundle, ArmPricing, TrialRow
+from threetears.evals.analysis.bundle.schema import (
+    SEPARATED_VERDICTS,
+    AnalysisContextBundle,
+    ArmPricing,
+    FamilyComparison,
+    TrialRow,
+)
 from threetears.evals.analysis.campaign_bundle import CAMPAIGN_MESSAGE_CHARS_PER_ASPECT, KIND_MEANS, CampaignBundle
 from threetears.evals.analysis.campaign_readings import AspectReading, PairReading
 from threetears.evals.analysis.depth import REPEATS_FLOOR
@@ -86,6 +94,7 @@ from threetears.evals.analysis.report_input import (
     Meta,
     PairRead,
     PassK,
+    PassRule,
     Precision,
     Pricing,
     PriorInsight,
@@ -104,8 +113,15 @@ from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.errors import RefusedInput
+from threetears.evals.kernel.host.bars import PassCriterion, pass_threshold_label
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
-from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, MetricDescriptor, goal_check_of
+from threetears.evals.kernel.metrics import (
+    ACCURACY_MEASURE,
+    MATCH_MEASURE,
+    RUBRIC_FAMILY,
+    MetricDescriptor,
+    goal_check_of,
+)
 from threetears.evals.kernel.surface import CellFacts
 
 __all__ = ["planner_view", "report_input"]
@@ -246,7 +262,7 @@ class _Builder:
                 "measures": self.measures(),
                 "judged": judged,
                 "primary_judged": primary,
-                "contrasts": self.contrasts(),
+                "contrasts": self.contrasts(counted=counted),
                 "contrast_families": self.families(),
                 "strata": strata,
                 "examples": shown,
@@ -380,6 +396,8 @@ class _Builder:
             for subject in depth.subjects
             if subject.compared and subject.common_depth is not None
         ]
+        # The depth pass^k is read at, compared across arms or not: the rule's label names it as every surface does.
+        rule = self.pass_rule(aspect, k=next((subject.k for subject in depth.subjects), None))
         return Aspect(
             id=label,
             name=aspect.short_name or label,
@@ -399,6 +417,36 @@ class _Builder:
             pass_k=pass_k or None,
             pairs=[self.pair(pair) for pair in self.bundle.readings.pairs if pair.aspect == label],
             scoreboard=None if aspect is self.lead else self.scoreboard(aspect),
+            description=_pass_rule_sentence(rule),
+            graded_by="judged" if rule.dimensions else "checked" if rule.checks else None,
+            pass_rule=rule,
+        )
+
+    def pass_rule(self, aspect: AnalysisContextBundle, *, k: int | None) -> PassRule:
+        """How a trial on the aspect passes, as the bundle's census decided it (``read_trial``): every check, every
+        capability dimension at the behavior's threshold, a boundary dimension apart; and the trials that passed with
+        nothing to fail them."""
+        threshold = aspect.frontier.rubric_threshold
+        judged = [measure for measure in aspect.judged_measures if measure.family == RUBRIC_FAMILY]
+        dimensions = sorted(measure.name for measure in judged if measure.axis == "capability")
+        checks = sorted(
+            name
+            for name, descriptor in aspect.measure_catalog.items()
+            if goal_check_of(name) is not None or name == MATCH_MEASURE or descriptor.is_check
+        )
+        criteria: list[PassCriterion] = []
+        if any(goal_check_of(name) is not None for name in checks):
+            criteria.append("goal_checks")
+        if dimensions:
+            criteria.append("rubric")
+        return PassRule(
+            criteria=criteria,
+            threshold=threshold,
+            label=pass_threshold_label(k, threshold, criteria=criteria),
+            dimensions=dimensions,
+            boundary=sorted(measure.name for measure in judged if measure.axis == "boundary"),
+            checks=checks,
+            no_criterion=sum(row.no_criterion for row in aspect.scoreboard),
         )
 
     def reading(self, row: AspectReading) -> Reading:
@@ -750,8 +798,9 @@ class _Builder:
 
     # ------------------------------------------------------------------ contrasts
 
-    def contrasts(self) -> list[Contrast]:
-        """Every corrected contrast against the control, aspect by aspect, each aspect's separated ones first."""
+    def contrasts(self, *, counted: bool) -> list[Contrast]:
+        """Every corrected contrast against the control, aspect by aspect, each aspect's separated ones first; an
+        analyst's (``counted``) with the cases each test read and whether it paired them."""
         contrasts: list[Contrast] = []
         for aspect in self.bundle.aspects:
             rows: list[tuple[tuple[int, float], Contrast]] = []
@@ -778,6 +827,7 @@ class _Builder:
                                 materiality=comparison.materiality,
                                 confounds=[confound.dimension for confound in comparison.mechanism_confounds],
                                 reason=comparison.untested_reason or comparison.not_separated_reason,
+                                **(_test_counts(comparison) if counted else {}),
                             ),
                         )
                     )
@@ -992,6 +1042,31 @@ def _grade(facts: MetricDescriptor) -> Literal["pass_fail", "class_label"] | Non
     if facts.family == "goal_state" or facts.is_check:
         return "pass_fail"
     return None
+
+
+def _test_counts(comparison: FamilyComparison) -> dict[str, Any]:
+    """What a contrast's test counted: the cases each side read, one mean per case (the control's only where they
+    differ), whether it paired them, and the arms' correlation across the paired cases."""
+    control, arm = comparison.control.n_cases, comparison.contrast.n_cases
+    return {
+        "n_cases": arm,
+        "control_n_cases": control if control != arm else None,
+        "paired": None if comparison.test is None else comparison.test == "paired",
+        "pairing_r": comparison.pairing_correlation.r if comparison.pairing_correlation is not None else None,
+    }
+
+
+def _pass_rule_sentence(rule: PassRule) -> str:
+    """How a trial on an aspect passes, in one plain sentence built from its pass rule."""
+    judged = "every judged dimension, guardrails aside," if rule.boundary else "every judged dimension"
+    held = [
+        "its candidate did not fail",
+        *(["every check passed"] if rule.checks else []),
+        *([f"{judged} scored at least {rule.threshold} of 5"] if rule.dimensions else []),
+    ]
+    if len(held) == 1:
+        return "A trial passes when its candidate did not fail: nothing else checks or judges it."
+    return f"A trial passes when {', '.join(held[:-1])} and {held[-1]}."
 
 
 def _level(level: float | None) -> str | None:

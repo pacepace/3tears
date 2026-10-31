@@ -218,7 +218,11 @@
     "graded_by": {
      "type": ["string", "null"],
      "enum": ["judged", "checked", null],
-     "description": "Whether a judge grades the aspect or a check in code does."
+     "description": "Whether a judge grades the aspect (with any checks beside it) or checks in code alone do."
+    },
+    "pass_rule": {
+     "anyOf": [{"$ref": "#/$defs/PassRule"}, {"type": "null"}],
+     "description": "How a trial on the aspect passes: its criteria, threshold, counted dimensions and checks; none where the input does not say."
     }
    },
    "additionalProperties": false,
@@ -408,6 +412,22 @@
     "reason": {
      "type": ["string", "null"],
      "description": "Why it is untested or not separated, in one sentence."
+    },
+    "n_cases": {
+     "type": ["integer", "null"],
+     "description": "The cases the test read on the arm's side, each one mean over its repeats: when paired, the cases both arms ran."
+    },
+    "control_n_cases": {
+     "type": ["integer", "null"],
+     "description": "The cases the test read on the control's side, where they differ from n_cases (an unpaired test)."
+    },
+    "paired": {
+     "type": ["boolean", "null"],
+     "description": "Whether the test paired the arms case by case; none where it was not tested."
+    },
+    "pairing_r": {
+     "type": ["number", "null"],
+     "description": "The arms' correlation across the paired cases: how much pairing narrowed the interval."
     }
    },
    "additionalProperties": false,
@@ -796,6 +816,37 @@
    },
    "additionalProperties": false,
    "description": "Two arms of a choice on one aspect: the difference between them, and which one is shown ahead."
+  },
+  "PassRule": {
+   "type": "object",
+   "required": ["criteria", "threshold", "label", "no_criterion"],
+   "properties": {
+    "criteria": {
+     "type": "array",
+     "items": {"type": "string", "enum": ["goal_checks", "rubric"]},
+     "description": "What a trial is held to: goal_checks (every goal check), rubric (every counted judged dimension at the threshold), both, or neither."
+    },
+    "threshold": {"type": "integer", "description": "The 1 to 5 level a counted judged dimension must reach."},
+    "label": {"type": "string", "description": "The pass^k label every surface prints for this rule."},
+    "dimensions": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "The judged dimensions that count, by key: the capability ones."
+    },
+    "boundary": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "The judged dimensions that do not count, by key: guardrails, decided apart."
+    },
+    "checks": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "The checks that fail a trial on their own, by measure key: goal checks, a label match and pass/fail scorers."
+    },
+    "no_criterion": {"type": "integer", "description": "Trials that passed with nothing to fail them, across every arm."}
+   },
+   "additionalProperties": false,
+   "description": "How code decides whether one trial on an aspect passed, read off the bundle it was decided in."
   },
   "PassK": {
    "type": "object",

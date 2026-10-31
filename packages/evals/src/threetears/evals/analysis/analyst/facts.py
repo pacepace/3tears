@@ -172,7 +172,19 @@ _FLOOR = (
 _BAR = ("status", "value", "bar", "interval", "why")
 
 #: A contrast's figures.
-_CONTRAST = ("delta", "interval", "verdict", "p_adjusted", "level", "materiality", "reason")
+_CONTRAST = (
+    "delta",
+    "interval",
+    "verdict",
+    "p_adjusted",
+    "level",
+    "materiality",
+    "reason",
+    "n_cases",
+    "control_n_cases",
+    "paired",
+    "pairing_r",
+)
 
 #: A contrast family's figures.
 _FAMILY = ("disclosure", "correction", "alpha", "family_size", "level")
@@ -211,6 +223,24 @@ class _Fact(BaseModel):
 
 
 # --- shared ---------------------------------------------------------------------------------------------------------
+
+
+def _pass_rule(report_input: ReportInput, aspect: Aspect) -> PassRuleRow | None:
+    """How a trial on the aspect passes, each figure cited by its key; None where the input states no pass rule."""
+    rule = aspect.pass_rule
+    if rule is None:
+        return None
+    keyed = f"aspects.{aspect.id}"
+    return PassRuleRow(
+        rule=cite(f"{keyed}.pass_rule", report_input),
+        sentence=cite_if(f"{keyed}.description", report_input),
+        threshold=cite(f"{keyed}.pass_threshold", report_input),
+        no_criterion=cite(f"{keyed}.no_criterion", report_input),
+        criteria=list(rule.criteria),
+        dimensions=rule.dimensions,
+        boundary=rule.boundary,
+        checks=rule.checks,
+    )
 
 
 def _figures(keys: Iterable[str], report_input: ReportInput) -> list[CitedFigure]:
@@ -294,12 +324,37 @@ class ArmRow(_Fact):
     )
 
 
+class PassRuleRow(_Fact):
+    """How a trial on one aspect passes, as code decides it: what it is held to, and at what level."""
+
+    rule: CitedFigure = Field(
+        description="The pass^k label the pages print for it (`aspects.<aspect>.pass_rule`): its depth and criteria."
+    )
+    sentence: CitedFigure | None = Field(description="The rule in one sentence (`aspects.<aspect>.description`).")
+    threshold: CitedFigure = Field(
+        description="The 1 to 5 level a counted judged dimension must reach (`aspects.<aspect>.pass_threshold`)."
+    )
+    no_criterion: CitedFigure = Field(
+        description="Trials that passed with nothing to fail them, every arm's (`aspects.<aspect>.no_criterion`)."
+    )
+    criteria: list[str] = Field(description="What a trial is held to: goal_checks, rubric, both, or neither.")
+    dimensions: list[str] = Field(description="The judged dimensions that count, by key.")
+    boundary: list[str] = Field(description="The judged dimensions that do not count, by key: guardrails.")
+    checks: list[str] = Field(description="The checks that fail a trial on their own, by measure key.")
+
+
 class AspectRow(_Fact):
     """One aspect: whether it is asked, how it is graded, its margin, and which rows it holds."""
 
     aspect: str = Field(description="The aspect's id, as every `aspects.<aspect>.` key names it.")
     asked: bool | None = Field(description="Whether the campaign's question asks about it.")
-    graded_by: str | None = Field(description="judged or checked.")
+    graded_by: str | None = Field(description="judged (a judge, with any checks beside it) or checked (checks alone).")
+    # Left out where the input states no pass rule, so an older snapshot's overview reads as it did.
+    pass_rule: PassRuleRow | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="How a trial on it passes: the criteria, the threshold, the dimensions and checks that count.",
+    )
     margin: CitedFigure | None = Field(description="Its non-inferiority margin, in points, where one is declared.")
     cases: CitedFigure | None = Field(
         description="The cases it ran: the control's, else the count every arm agrees on; none where they differ."
@@ -685,6 +740,7 @@ def campaign_overview(
             aspect=aspect.id,
             asked=aspect.asked,
             graded_by=aspect.graded_by,
+            pass_rule=_pass_rule(report_input, aspect),
             margin=cite_if(f"aspects.{aspect.id}.margin", report_input),
             cases=cite_if(f"aspects.{aspect.id}.cases", report_input),
             repeats=cite_if(f"aspects.{aspect.id}.repeats", report_input),
@@ -1007,7 +1063,10 @@ class ContrastRow(_Fact):
     measure: str = Field(description="The measure or judged dimension, by key.")
     aspect: str | None = Field(description="The aspect it is read on, where it names one.")
     confounds: list[str] = Field(description="Its confounds, by caveat id (caveats_list says what each touches).")
-    figures: list[CitedFigure] = Field(description="Its delta, interval, verdict, adjusted p, level, materiality, why.")
+    figures: list[CitedFigure] = Field(
+        description="Its delta, interval, verdict, adjusted p, level, materiality, why, and where the input states them, "
+        "the cases its test read, whether it paired them and the arms' correlation across them."
+    )
 
 
 class FamilyRow(_Fact):

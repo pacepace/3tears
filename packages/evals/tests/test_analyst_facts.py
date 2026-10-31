@@ -204,6 +204,27 @@ def _two_aspects() -> ReportInput:
 # =============================================================================
 
 
+def test_the_overview_cites_each_aspects_pass_rule_by_its_keys() -> None:
+    """Kairo's pass rule reads off the overview with every figure under an `aspects.<aspect>.` key; an input frozen
+    before the rule existed (r4, four aspects) states none, and its overview leaves the row out."""
+    snapshot, held = _held(KAIRO)
+    (row,) = campaign_overview(held, snapshot.id).aspects
+    rule = row.pass_rule
+    assert rule is not None
+    keyed = f"aspects.{row.aspect}"
+    assert [figure.key for figure in (rule.rule, rule.threshold, rule.no_criterion)] == [
+        f"{keyed}.pass_rule",
+        f"{keyed}.pass_threshold",
+        f"{keyed}.no_criterion",
+    ]
+    assert (rule.threshold.reads, rule.no_criterion.reads) == ("3", "0")
+    assert rule.sentence is not None and rule.sentence.key == f"{keyed}.description"
+    assert rule.criteria == ["goal_checks", "rubric"] and row.graded_by == "judged"
+    _, r4 = _held("r4")
+    assert r4.aspects and all(aspect.pass_rule is None for aspect in r4.aspects)
+    assert all("pass_rule" not in aspect for aspect in campaign_overview(r4, "s").model_dump()["aspects"])
+
+
 @pytest.mark.parametrize("name", FIXTURES)
 def test_the_overview_lists_the_inputs_own_arms_aspects_measures_criteria_and_caveats(name: str) -> None:
     snapshot, held = _held(name)
@@ -239,6 +260,23 @@ def test_the_overview_lists_the_inputs_own_arms_aspects_measures_criteria_and_ca
         assert (aspect_row.cases.value if aspect_row.cases else None) == cases
         assert (aspect_row.repeats.value if aspect_row.repeats else None) == repeats
         assert [(figure.key, figure.value) for figure in aspect_row.depth] == per_arm
+        rule = aspect.pass_rule
+        if rule is None:
+            assert aspect_row.pass_rule is None
+            continue
+        assert aspect_row.pass_rule is not None
+        row_rule = aspect_row.pass_rule
+        assert (row_rule.rule.value, row_rule.threshold.value, row_rule.no_criterion.value) == (
+            rule.label,
+            rule.threshold,
+            rule.no_criterion,
+        )
+        assert (row_rule.criteria, row_rule.dimensions, row_rule.boundary, row_rule.checks) == (
+            rule.criteria,
+            rule.dimensions,
+            rule.boundary,
+            rule.checks,
+        )
 
     assert [(row.key, row.source) for row in overview.measures] == [
         *((key, "measure") for key in held.measures),
@@ -449,6 +487,13 @@ def test_contrasts_list_every_contrast_its_confounds_by_caveat_id_and_the_famili
         figures = _by_stat(row.figures)
         assert (figures.get("delta"), figures["verdict"]) == (contrast.delta, contrast.verdict)
         assert figures.get("interval") == _pair(contrast.interval)
+        assert (figures.get("n_cases"), figures.get("control_n_cases"), figures.get("pairing_r")) == (
+            contrast.n_cases,
+            contrast.control_n_cases,
+            contrast.pairing_r,
+        )
+        paired = None if contrast.paired is None else "paired" if contrast.paired else "unpaired"
+        assert figures.get("paired") == paired
         for named, dimension in zip(row.confounds, contrast.confounds, strict=True):
             assert named in {f"confound:{dimension}", f"apparatus:{dimension}"} & caveat_ids or named == dimension
     assert [family.aspect for family in listing.families] == [family.aspect for family in held.contrast_families]
@@ -489,6 +534,21 @@ def test_a_kairo_contrasts_confound_is_named_by_its_caveat() -> None:
     assert {name.partition(":")[2] for name in named} == {
         dimension for contrast in held.contrasts for dimension in contrast.confounds
     }, "each confound a contrast names, by its caveat"
+
+
+def test_a_kairo_contrast_says_how_many_cases_its_test_read_and_that_it_paired_them() -> None:
+    """Each Kairo contrast is a paired test over the cases both arms ran, its count and correlation cited by key."""
+    _snapshot, held = _held(KAIRO)
+    rows = contrasts_list(held, limit=200).contrasts
+    assert rows
+    for row in rows:
+        figures = {figure.key.rsplit(".", 1)[1]: figure for figure in row.figures}
+        assert figures["paired"].reads == "paired"
+        assert figures["n_cases"].value > 1 and figures["n_cases"].scale == "count"
+        assert "control_n_cases" not in figures, "a paired test reads the same cases on both sides"
+        # A correlation is stated where both arms' per-case values vary; a constant side has none.
+        assert "pairing_r" not in figures or -1 <= figures["pairing_r"].value <= 1
+    assert any("pairing_r" in {figure.key.rsplit(".", 1)[1] for figure in row.figures} for row in rows)
 
 
 def test_contrasts_list_keeps_only_the_arm_measure_and_aspect_named() -> None:
