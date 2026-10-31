@@ -75,7 +75,7 @@ def _views(connection: object) -> None:
     connection.execute("CREATE VIEW by_key AS SELECT k, sum(v) AS v FROM long GROUP BY k")  # type: ignore[attr-defined]
 
 
-@pytest.mark.xdist_group("loop_timing")
+@pytest.mark.loop_timing
 class TestTheLoopRunsWhileThreadsQueryTheCopy:
     async def test_a_ticker_is_never_late_while_threads_query_dev_sized_versions(
         self, tmp_path: Path, parts: dict[str, pa.Table]

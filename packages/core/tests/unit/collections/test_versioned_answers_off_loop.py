@@ -300,7 +300,7 @@ async def _late_while(work: Callable[..., Any], *args: Any) -> tuple[float, floa
     return late, took, given
 
 
-@pytest.mark.xdist_group("loop_timing")
+@pytest.mark.loop_timing
 class TestTheLoopRunsWhileALargeAnswerIsWritten:
     @pytest.mark.parametrize(
         "answer",

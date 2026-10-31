@@ -267,7 +267,7 @@ class TestTheHandOffIsBounded:
         assert store.hand({"t": reader}, max_bytes=1 << 20).tables == ("t",)
 
 
-@pytest.mark.xdist_group("loop_timing")
+@pytest.mark.loop_timing
 class TestTheLoopRunsWhileALargeTableIsHanded:
     async def test_a_ticker_is_never_late_while_100mb_is_handed_to_a_worker(
         self, store: SharedArrowStore, single: SharedArrowPool, big: tuple[pa.Table, str]

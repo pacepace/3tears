@@ -416,6 +416,10 @@ markers = [
     # had no test that could fail when it regressed.
     "real_robots_fetch: exercise the real robots default fetcher rather than the offline stub",
     "enforcement: a structural rule over the source tree rather than a behaviour",
+    # A wall-clock bound on the event loop is a bound on the machine as much as the code: beside three busy xdist
+    # workers on a four-core runner the kernel preempts the thread holding the interpreter lock and the loop waits
+    # on it. scripts/ci-unit-tests.sh runs these apart, one process, after every parallel session.
+    "loop_timing: asserts the event loop's responsiveness by wall clock; CI runs it apart and serially",
     "memory_probe: measures a run's peak heap with tracemalloc; deselect with -m 'not memory_probe' if slow",
     "paid: spends money at a model provider; skipped unless opted in (THREETEARS_EVALS_PAID=1) with a provider key",
 ]
