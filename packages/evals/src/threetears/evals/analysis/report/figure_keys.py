@@ -96,8 +96,8 @@ number a reader sees is code's.
 module's own families, statistics and filters, with examples rendered on a synthetic input, so the prompt can never
 teach a form this parser refuses. A reader that takes the grammar a page at a time reads the same lines:
 :func:`figure_key_index` (the rules and filters, and a line per group of families) and :func:`figure_key_pages` (each
-group's forms). The planner's section leaves out the statistics only an analyst's input states (a pass rule's, a
-contrast's counts), which a planner's input never holds.
+group's forms). The planner's section (``planner=True``) leaves out the statistics only an analyst's input states (a
+pass rule's, a contrast's counts), which a planner's input never holds.
 """
 
 from __future__ import annotations
@@ -7252,13 +7252,17 @@ def _grammar_filters(example: ReportInput, names: Mapping[str, str]) -> list[str
 _EXAMPLE_NAMES: Mapping[str, str] = {"base": "Baseline", "fast.v2": "fast.v2"}
 
 
-def figure_key_grammar() -> str:
-    """Write the planner prompt's section that teaches figure keys, from this module's own families and filters.
+def figure_key_grammar(*, planner: bool = False) -> str:
+    """Write the section that teaches figure keys, from this module's own families and filters: the whole grammar, as
+    the analyst's reference pages hold it, or the planner prompt's.
 
     Each family's form and statistics, each filter and every example come from the code that parses and renders
     them; the examples are rendered on a made-up input, so a change to a family, a filter or a spelling reaches the
     planner with the code.
 
+    :param planner: Write the planner prompt's section, without the statistics only an analyst's input states (a pass
+        rule's, a contrast's counts), which a planner's input never holds.
+    :ptype planner: bool
     :return: The section, heading first.
     :rtype: str
     :raises UnresolvableReference: An example no longer resolves: the grammar changed under this function, and every
@@ -7266,7 +7270,7 @@ def figure_key_grammar() -> str:
     """
     example = _example_input()
     lines = [f"## {GRAMMAR_HEADING}", *_grammar_rules(), "Paths:"]
-    lines += [_family_line(family, example, _EXAMPLE_NAMES, planner=True) for family in _FAMILIES]
+    lines += [_family_line(family, example, _EXAMPLE_NAMES, planner=planner) for family in _FAMILIES]
     lines += _grammar_filters(example, _EXAMPLE_NAMES)
     return "\n".join(lines)
 

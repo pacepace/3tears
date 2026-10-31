@@ -203,7 +203,7 @@ def _modes(allowed_modes: Sequence[str] | None, facts: PlanFacts) -> tuple[str, 
 
 
 def _system(prompt: str, profile: HostProfile, call: str) -> str:
-    return f"{prompt}\n\n{figure_key_grammar()}\n\nVOICE: {prompt_fragment(profile.style)}\n\n{call}"
+    return f"{prompt}\n\n{figure_key_grammar(planner=True)}\n\nVOICE: {prompt_fragment(profile.style)}\n\n{call}"
 
 
 def _compact(node: Any) -> str:
