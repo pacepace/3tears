@@ -8,6 +8,15 @@ packages (bumped in lock-step).
 
 ## v0.86.0 -- 2026-10-29
 
+### nats: a bucket's live keys by name, for a caller holding only the client
+
+**Added:** `threetears.nats.live_kv_keys(client, bucket)` lists a KV bucket's live keys with no consumer and no bucket
+handle: the same listing `NatsKvBucket.list_keys` makes (`STREAM.INFO` paged past the server's subject cap, a
+subject-carried `DIRECT.GET` per key, delete and purge markers left out). For a caller sweeping buckets it never opened,
+such as the hub's restore flush, in place of nats-py's `KeyValue.keys`, which replays the bucket through a consumer that
+stalls under load. A gone bucket raises `KvBucketNotFoundError`; a refused or unanswered `STREAM.INFO` raises
+`KvError`; a key's read failing for any reason but absence raises as it came, never taken for an absent key.
+
 ### agent.audit: the hub's invitation status is classified
 
 **Changed:** the hub's `user.create` and `user.invite` audit events record `invitation` (emailed / not_emailed /
