@@ -3415,9 +3415,12 @@ class ScopedSnapshot:
         is at ``carry_at[scope]`` -- the epoch the writer saw before its write, so the carried chunk
         holds what L3 held then. A scope with no pointer and ``carry_at`` 0 is new: its missing
         tables are empty, when the snapshot is known whole (``whole``, or a whole index that does not
-        name it). Any other scope is skipped and left to :meth:`catch_up_from_l3`, which republishes
-        it from L3 because its L3 epoch is now ahead of its pointer. Every replica applies the moved
-        scopes from its pointer watch, this one included.
+        name it). A scope whose pointer is elsewhere below the stage's epoch (behind the writer's, a
+        stage of an earlier write skipped) has the tables it left out, and those it appended to, read
+        whole from L3, only while L3 holds it exactly at the stage's epoch (:meth:`_filled_from_l3`).
+        Any other scope is skipped and left to :meth:`catch_up_from_l3`, which republishes it from L3
+        because its L3 epoch is now ahead of its pointer. Every replica applies the moved scopes from
+        its pointer watch, this one included.
 
         A stage whose write claim is lost, checked before the scope is completed and again the moment
         before its pointer moves, is skipped and left to the catch-up. Every way out, a raise part way
