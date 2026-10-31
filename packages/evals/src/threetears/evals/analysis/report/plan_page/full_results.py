@@ -207,7 +207,10 @@ def _arms_by_measure(report_input: ReportInput, look: PageLook) -> list[TableBlo
     if len(aspects := _measured_aspects(report_input)) > 1:
         return _arms_by_aspect_and_measure(report_input, look, aspects)
     arms = [arm.id for arm in report_input.arms]
-    passing = any(pass_rate_cell(report_input, arm).value is not None for arm in arms)
+    # The scoreboard's own column, drawn where it counts passes: where it counts none, the ``pass_rate`` measure the
+    # lead aspect's cell falls back to is already a measure column below, and one figure takes one column.
+    board = aspect_board(report_input, None)
+    passing = any((row := board.get(arm)) is not None and row.passed is not None and row.usable for arm in arms)
 
     judged = [key for key, held in report_input.judged.items() if any(arm in held.per_arm for arm in arms)]
     measures = [

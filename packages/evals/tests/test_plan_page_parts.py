@@ -274,6 +274,19 @@ def test_arms_by_measure_is_every_arm_and_each_figure_it_holds(name: str, path: 
                 assert math.isclose(_number(row[f"judged:{key}"].value), float(stat.mean) * scale, rel_tol=0.01)
 
 
+@pytest.mark.parametrize(("name", "path"), _PLANS, ids=_IDS)
+def test_arms_by_measure_states_each_figure_in_one_column(name: str, path: Path) -> None:
+    headers = [column.header for column in _full(_page(name, path), "arms_by_measure").columns]
+    assert len(headers) == len(set(headers)), headers
+
+
+def test_r2_arms_by_measure_reads_its_pass_rate_off_its_measure_once() -> None:
+    """r2's arms count no passes and its input holds a ``pass_rate`` measure: the measure's column is the one."""
+    (path,) = [path for name, path in _PLANS if name == "r2"]
+    keys = [column.key for column in _full(_page("r2", path), "arms_by_measure").columns]
+    assert "pass_rate" not in keys and keys.count("measure:pass_rate") == 1, keys
+
+
 @pytest.mark.parametrize(("name", "path"), [(n, p) for n, p in _PLANS if "contrasts" in _plan(p).full_results])
 def test_every_corrected_comparison_is_a_row_its_change_the_input_s_on_its_scale(name: str, path: Path) -> None:
     report_input, page = _input(name), _page(name, path)
