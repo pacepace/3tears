@@ -39,6 +39,8 @@ __all__ = [
     "APPENDIX_TITLE",
     "ALL_PRICED_TEMPLATE",
     "ARM_HEADERS",
+    "ASPECT_HEADER_TEMPLATE",
+    "ASPECTS_TABLE_ORDER",
     "ARM_ROLE_WORDS",
     "ARMS_EYEBROW",
     "ARMS_TABLE_ORDER",
@@ -202,6 +204,13 @@ OPTION_HEADERS: dict[str, str] = {
 #: The cost column's head, wherever a table states the page's one cost: what it is per, as the input states it
 #: (:func:`~threetears.evals.analysis.report.cost_unit.per_count`, ``per 1,000 conversations``).
 COST_HEADER = "Cost {per}"
+
+#: A column of one aspect's figures, where a table lays out more than one aspect: the aspect's name, then what the
+#: column holds (``Speed pass rate``, ``Speed cost per 1,000 replies``).
+ASPECT_HEADER_TEMPLATE = "{aspect} {header}"
+
+#: The by-measure table's row order where it lays out more than one aspect.
+ASPECTS_TABLE_ORDER = "by aspect in the campaign's aspect order, then in the campaign's arm order"
 
 #: A count out of a total, as a cell's marker reads it: passes over usable trials, usable trials over those run.
 PASSES_TEMPLATE = "{passed} of {usable}"

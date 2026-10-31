@@ -48,11 +48,21 @@ It reads no plan: which arms and columns it shows is the input's, and only the m
 **The arms key** (GENERATOR §2.8, §6.1): each arm's full configuration once: its chip, its role, its settings as the
 campaign declared them, its served model, the share of its output spent reasoning, and its usable trials, each column
 present where some arm holds it.
+
+**More than one aspect.** The input's scoreboard holds the lead aspect's trials alone, so where more than one aspect
+counts usable trials, each table lays out one column group per aspect, in the input's aspect order, each head naming
+its aspect (``Speed pass rate``): the arms table each aspect's pass rate, its cost and its usable trials; the options
+table each aspect's pass rate and cost where the plan places the family (every other family reads the lead aspect, as
+the plan's checks do); the arms key each aspect's usable trials. Each aspect's figures are its keys'
+(``aspects.<aspect>.scoreboard.<arm>.*``, ``aspects.<aspect>.calls.unanswered.<arm>``), and its cost the one cost
+rule read on it (:func:`~threetears.evals.analysis.report.figure_keys.aspect_costs_per_thousand`), every aspect's cost
+in one form. An aspect's cost carries no uplift against the control's: that ratio's key reads the lead aspect alone.
+An input of one aspect, or whose other aspects count no trials of their own, is laid out as above.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
@@ -65,15 +75,23 @@ from threetears.evals.analysis.report.cost_unit import (
     per_one,
     priced_in_part,
 )
-from threetears.evals.analysis.report.figure_keys import Figure, cost_basis, cost_ruler, format_figure, resolve
+from threetears.evals.analysis.report.figure_keys import (
+    Figure,
+    aspect_costs_per_thousand,
+    cost_basis,
+    cost_ruler,
+    format_figure,
+    resolve,
+)
 from threetears.evals.analysis.report.plan_page.charting import figure_stat, measure_words, stat_value
-from threetears.evals.analysis.report.plan_page.look import GATE_STATUS, ArmLook, PageLook
+from threetears.evals.analysis.report.plan_page.look import GATE_STATUS, ArmLook, PageLook, figure_text, quantity
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION, PageArmsKey, PageOptions
 from threetears.evals.analysis.report.plan_page.words import (
     ALL_PRICED_TEMPLATE,
     ARM_HEADERS,
     ARM_ROLE_WORDS,
     ARMS_EYEBROW,
+    ASPECT_HEADER_TEMPLATE,
     ARMS_TABLE_ORDER,
     ARMS_TAKEAWAY,
     COST_HEADER,
@@ -90,7 +108,8 @@ from threetears.evals.analysis.report.plan_page.words import (
     reading_words,
 )
 from threetears.evals.analysis.report_gates import gate_check
-from threetears.evals.analysis.report_input import Pricing, ReportInput
+from threetears.evals.analysis.report_input import Aspect, Pricing, ReportInput, ScoreboardRow
+from threetears.evals.analysis.report_margins import lead_aspect
 from threetears.evals.analysis.report_plan_checks import OPTION_COLUMN_FAMILIES
 from threetears.evals.analysis.report_rows import query_aspect
 from threetears.evals.analysis.style import lever_reader_name
@@ -207,13 +226,14 @@ def _cost(column: str, arm: str, report_input: ReportInput, look: PageLook) -> T
     return TableCell(value=said, flag="; ".join(marks) or None)
 
 
-def _unanswered_marks(arm: str, report_input: ReportInput) -> list[str]:
+def _unanswered_marks(arm: str, report_input: ReportInput, where: str = "") -> list[str]:
     """How many of the arm's calls went unanswered, where any did: retried and lost together, else each kind a role
-    counted alone (the two together are not counted there)."""
-    together = _figure(f"calls.unanswered.{arm}", report_input)
+    counted alone (the two together are not counted there). ``where`` is the keys' aspect prefix
+    (``aspects.<aspect>.``), empty for the lead aspect's."""
+    together = _figure(f"{where}calls.unanswered.{arm}", report_input)
     if together is not None:
         return [_calls(together, "unanswered")] if together.value else []
-    kinds = ((kind, _figure(f"calls.unanswered.{arm}.{kind}", report_input)) for kind in ("lost", "retried"))
+    kinds = ((kind, _figure(f"{where}calls.unanswered.{arm}.{kind}", report_input)) for kind in ("lost", "retried"))
     return [_calls(held, f"{kind} unanswered") for kind, held in kinds if held is not None and held.value]
 
 
@@ -290,18 +310,36 @@ def options_table(plan: ReportPlan, report_input: ReportInput, look: PageLook) -
             f"{list(OPTION_COLUMN_FAMILIES)}"
         )
     described = any(_runs(report_input, row.option) for row in plan.options.rows)
+    aspects = _laid_out_aspects(report_input)
+    # With more than one aspect, the pass rate and the cost are each aspect's, a column per aspect where the plan
+    # places the family; every other family reads the lead aspect as the plan's checks do.
+    grouped = {
+        column: _aspect_groups(report_input, aspects, (column,), per=1000)
+        for column in plan.options.columns
+        if aspects and column in (_PASS_RATE, _COST)
+    }
     columns = [
         TableColumn(key="option", header=OPTION_HEADERS["option"]),
         TableColumn(key="role", header=OPTION_HEADERS["role"]),
         *([TableColumn(key=_RUNS, header=ARM_HEADERS["settings"])] if described else []),
-        *(TableColumn(key=column, header=_header(column, report_input)) for column in plan.options.columns),
     ]
+    for column in plan.options.columns:
+        columns += (
+            grouped[column][0] if column in grouped else [TableColumn(key=column, header=_header(column, report_input))]
+        )
     rows = []
     for row in plan.options.rows:
         cells = {"option": _option_cell(row.option, look), "role": TableCell(value=ROLE_WORDS[row.role])}
         if described:
             cells[_RUNS] = TableCell(value=_runs(report_input, row.option) or None)
         for column in plan.options.columns:
+            if column in grouped:
+                group_columns, by_arm = grouped[column]
+                held = by_arm.get(row.option, {})
+                cells |= {
+                    held_column.key: held.get(held_column.key, TableCell(value=None)) for held_column in group_columns
+                }
+                continue
             cells[column] = (
                 _RENDERERS[_family(column)](column, row.option, report_input, look)
                 if row.option in look.arms
@@ -352,11 +390,13 @@ def arms_table(report_input: ReportInput, look: PageLook, recommends: Collection
     """
     arms = [arm.id for arm in report_input.arms]
     described = any(_runs(report_input, arm) for arm in arms)
+    aspects = _laid_out_aspects(report_input)
     quality = {arm: _pass_rate(_PASS_RATE, arm, report_input, look) for arm in arms}
-    rated = any(cell.value is not None for cell in quality.values())
+    rated = not aspects and any(cell.value is not None for cell in quality.values())
     header, cells = _arm_costs(report_input, look)
-    costed = any(cell.value is not None for cell in cells.values())
+    costed = not aspects and any(cell.value is not None for cell in cells.values())
     cells = {arm: _unknown_cost(cell) for arm, cell in cells.items()} if costed else cells
+    grouped, by_aspect = _aspect_groups(report_input, aspects, (_PASS_RATE, _COST, "usable"), per=1)
     priced = {arm: _priced_by(_pricing(report_input, arm)) for arm in arms}
     sourced = any(cell.value is not None or cell.flag is not None for cell in priced.values())
     columns = [
@@ -365,6 +405,7 @@ def arms_table(report_input: ReportInput, look: PageLook, recommends: Collection
         *([TableColumn(key=_RUNS, header=ARM_HEADERS["settings"])] if described else []),
         *([TableColumn(key=_PASS_RATE, header=OPTION_HEADERS[_PASS_RATE])] if rated else []),
         *([TableColumn(key=_COST, header=header)] if costed else []),
+        *grouped,
         *([TableColumn(key=_PRICED, header=PRICED_HEADER)] if sourced else []),
     ]
     rows = []
@@ -379,6 +420,7 @@ def arms_table(report_input: ReportInput, look: PageLook, recommends: Collection
             row[_PASS_RATE] = quality[arm.id]
         if costed:
             row[_COST] = cells[arm.id]
+        row |= by_aspect[arm.id]
         if sourced:
             row[_PRICED] = priced[arm.id]
         rows.append(row)
@@ -513,6 +555,152 @@ def _priced_by(pricing: Pricing | None) -> TableCell:
     return TableCell(value=", ".join(pricing.sources) or None, flag="; ".join(said) or None)
 
 
+# --- more than one aspect ----------------------------------------------------------------------------------------
+#
+# The by-arm maps hold the lead aspect's figures alone, so a table of an input with several aspects lays out each
+# aspect's figures in a column group of its own, read through each aspect's keys (``aspects.<aspect>.scoreboard.*``,
+# ``aspects.<aspect>.calls.unanswered.*``) and the one cost rule read on the aspect.
+
+
+def _board(report_input: ReportInput, aspect: Aspect) -> Mapping[str, ScoreboardRow]:
+    """How each arm's trials came out on one aspect: its own scoreboard, else, on the lead aspect, the input's."""
+    if aspect.scoreboard is not None:
+        return aspect.scoreboard
+    return report_input.scoreboard if aspect.id == lead_aspect(report_input) else {}
+
+
+def _laid_out_aspects(report_input: ReportInput) -> list[Aspect]:
+    """The aspects a table lays out a column group each, in the input's order: every aspect some arm's trials count
+    usable on, where more than one is; none otherwise, and the table is laid out for the one aspect it reads."""
+    held = [
+        aspect for aspect in report_input.aspects if any(row.usable for row in _board(report_input, aspect).values())
+    ]
+    return held if len(held) > 1 else []
+
+
+def _aspect_key(family: str, aspect: Aspect) -> str:
+    """The key of one aspect's column of a family (``pass_rate@speed``)."""
+    return f"{family}@{aspect.id}"
+
+
+def _aspect_header(aspect: Aspect, header: str) -> str:
+    """One aspect's column head: its name, then what the column holds (``Speed pass rate``)."""
+    name = aspect.name or aspect.id
+    return ASPECT_HEADER_TEMPLATE.format(aspect=name[:1].upper() + name[1:], header=header[:1].lower() + header[1:])
+
+
+def _count(key: str, report_input: ReportInput) -> int | None:
+    """A count a key names, or None where the input holds none."""
+    figure = _figure(key, report_input)
+    return int(figure.value) if figure is not None and isinstance(figure.value, float) else None
+
+
+def _aspect_pass_rate(aspect: Aspect, arm: str, report_input: ReportInput) -> TableCell:
+    """An arm's pass rate on one aspect, its passes over its usable trials beside it."""
+    passed = _count(f"aspects.{aspect.id}.scoreboard.{arm}.passed", report_input)
+    usable = _count(f"aspects.{aspect.id}.scoreboard.{arm}.usable", report_input)
+    if passed is None or not usable:
+        return TableCell(value=None)
+    drawn = quantity("share")
+    return TableCell(
+        value=figure_text(passed / usable * drawn.factor, drawn),
+        flag=PASSES_TEMPLATE.format(passed=passed, usable=usable),
+    )
+
+
+def _aspect_trials(aspect: Aspect, arm: str, report_input: ReportInput) -> TableCell:
+    """An arm's usable trials on one aspect, over those it ran there."""
+    usable = _count(f"aspects.{aspect.id}.scoreboard.{arm}.usable", report_input)
+    ran = _count(f"aspects.{aspect.id}.scoreboard.{arm}.ran", report_input)
+    if usable is None or not ran:
+        return TableCell(value=None)
+    return TableCell(value=PASSES_TEMPLATE.format(passed=usable, usable=ran))
+
+
+def _aspect_costs(
+    report_input: ReportInput, aspects: list[Aspect], *, per: int
+) -> tuple[str, dict[tuple[str, str], float], MoneyRuler]:
+    """Every laid-out aspect's arms' costs, per ``per`` of what the cost counts, the part-priced arms left out, with
+    the one form they share and the head's count: one form for every aspect's column, so the aspects' costs read side
+    by side."""
+    noun = cost_basis(report_input).noun
+    arms = [arm.id for arm in report_input.arms]
+    costs: dict[tuple[str, str], float] = {}
+    for aspect in aspects:
+        board = _board(report_input, aspect)
+        held = aspect_costs_per_thousand(report_input, aspect.id)
+        if noun == REPLIES:
+            # As the one-aspect column reads it: the scoreboard's cost per reply is the same cost over the same count.
+            held = {
+                **{
+                    arm: float(row.reply_cost_usd) * 1000
+                    for arm, row in board.items()
+                    if row.reply_cost_usd is not None
+                },
+                **held,
+            }
+        for arm in arms:
+            row = board.get(arm)
+            if arm in held and not _part_priced(row.pricing if row is not None else None):
+                costs[aspect.id, arm] = held[arm] * per / 1000
+    ruler = money_ruler(costs.values(), per=per, start=per)
+    words = per_one(noun) if ruler.counted == 1 else ruler.words(noun)
+    return COST_HEADER.format(per=words), costs, ruler
+
+
+def _aspect_cost(
+    aspect: Aspect, arm: str, report_input: ReportInput, costs: Mapping[tuple[str, str], float], ruler: MoneyRuler
+) -> TableCell:
+    """An arm's cost on one aspect in the columns' one form, its priced share and unanswered calls beside it; a
+    partly priced arm states its share in place of a cost, and an arm none of whose calls were priced reads
+    ``unpriced``."""
+    row = _board(report_input, aspect).get(arm)
+    pricing = row.pricing if row is not None else None
+    share = _priced_share(pricing)
+    unanswered = _unanswered_marks(arm, report_input, f"aspects.{aspect.id}.")
+    if pricing is not None and pricing.priced_calls == 0 and pricing.calls:
+        return TableCell(value=UNPRICED, flag="; ".join([share or "", *unanswered]).strip("; ") or None)
+    if _part_priced(pricing):
+        return TableCell(value=share, flag="; ".join(unanswered) or None)
+    if (aspect.id, arm) not in costs:
+        return TableCell(value=None)
+    return TableCell(
+        value=ruler.spell(costs[aspect.id, arm]), flag="; ".join([*([share] if share else []), *unanswered]) or None
+    )
+
+
+def _aspect_groups(
+    report_input: ReportInput, aspects: list[Aspect], families: Collection[str], *, per: int
+) -> tuple[list[TableColumn], dict[str, dict[str, TableCell]]]:
+    """Each laid-out aspect's column group, in the input's aspect order, of the families asked (``pass_rate``,
+    ``cost_per_1k``, ``usable``, in that order within a group), and each arm's cells, by arm; a column no arm fills is
+    left out, and a cost column that some arm fills says ``unpriced`` for an arm it states no cost for."""
+    if not aspects:
+        return [], {arm.id: {} for arm in report_input.arms}
+    cost_header, costs, ruler = _aspect_costs(report_input, aspects, per=per)
+    readers: dict[str, tuple[str, Callable[[Aspect, str], TableCell]]] = {
+        _PASS_RATE: (OPTION_HEADERS[_PASS_RATE], lambda aspect, arm: _aspect_pass_rate(aspect, arm, report_input)),
+        _COST: (cost_header, lambda aspect, arm: _aspect_cost(aspect, arm, report_input, costs, ruler)),
+        "usable": (ARM_HEADERS["usable"], lambda aspect, arm: _aspect_trials(aspect, arm, report_input)),
+    }
+    columns: list[TableColumn] = []
+    cells: dict[str, dict[str, TableCell]] = {arm.id: {} for arm in report_input.arms}
+    for aspect in aspects:
+        for family, (header, read) in readers.items():
+            if family not in families:
+                continue
+            column = {arm.id: read(aspect, arm.id) for arm in report_input.arms}
+            if not any(cell.value is not None for cell in column.values()):
+                continue
+            if family == _COST:
+                column = {arm: _unknown_cost(cell) for arm, cell in column.items()}
+            key = _aspect_key(family, aspect)
+            columns.append(TableColumn(key=key, header=_aspect_header(aspect, header)))
+            for arm, cell in column.items():
+                cells[arm][key] = cell
+    return columns, cells
+
+
 def _setting_name(report_input: ReportInput, setting: str) -> str:
     """A setting as a reader is shown it (:func:`~threetears.evals.analysis.style.lever_reader_name`, the one source
     a computed arm name reads too): the name the input declares for it (the factor its id keys, ``Reasoning budget``),
@@ -542,17 +730,21 @@ def arms_key(report_input: ReportInput, look: PageLook) -> PageArmsKey:
     :rtype: PageArmsKey
     """
     arms = report_input.arms
+    aspects = _laid_out_aspects(report_input)
     present = {
         "settings": any(arm.settings for arm in arms),
         "served_model": any(arm.served_model for arm in arms),
         "reasoning": any(arm.reasoning_ratio is not None for arm in arms),
-        "usable": any(
+        "usable": not aspects
+        and any(
             (row := report_input.scoreboard.get(arm.id)) is not None and row.usable is not None and row.ran
             for arm in arms
         ),
     }
     keys = ["arm", "role", *(key for key, shown in present.items() if shown)]
-    columns = [TableColumn(key=key, header=ARM_HEADERS[key]) for key in keys]
+    # With more than one aspect, each aspect's usable trials, a column per aspect.
+    grouped, by_aspect = _aspect_groups(report_input, aspects, ("usable",), per=1)
+    columns = [*(TableColumn(key=key, header=ARM_HEADERS[key]) for key in keys), *grouped]
     rows = []
     for arm in arms:
         board = report_input.scoreboard.get(arm.id)
@@ -569,7 +761,7 @@ def arms_key(report_input: ReportInput, look: PageLook) -> PageArmsKey:
                 else None
             ),
         }
-        rows.append({key: cells[key] for key in keys})
+        rows.append({**{key: cells[key] for key in keys}, **by_aspect[arm.id]})
     table = TableBlock(
         section=PLANNED_SECTION,
         name="arms_key",

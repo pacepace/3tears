@@ -960,6 +960,39 @@ def cost_ruler(report_input: ReportInput) -> MoneyRuler:
     return money_ruler(_costs_per_thousand(report_input).values(), per=1000, start=1000)
 
 
+def aspect_costs_per_thousand(report_input: ReportInput, aspect_id: str) -> dict[str, float]:
+    """Each arm's cost per 1,000 of what it counts on one aspect, by the one cost rule's source read on that aspect.
+
+    On the lead aspect it is the page's cost (``cost_per_1k.<arm>``). On another, it is the same source's figures
+    there: the cost measure's ``by_aspect`` means, in the same units, or the aspect's own scoreboard's cost per reply,
+    so every aspect's cost counts what :func:`cost_basis` names. A source blended over the tasks holds no aspect's
+    figures, and neither does an aspect that does not carry the source: none, which a table prints as a dash.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param aspect_id: The aspect, by id.
+    :ptype aspect_id: str
+    :return: Each arm's cost per 1,000, by arm; empty where the aspect holds none.
+    :rtype: dict[str, float]
+    """
+    if _is_lead(report_input, aspect_id):
+        return _costs_per_thousand(report_input)
+    source = _cost_source(report_input)[0]
+    if source == _SCOREBOARD_COST:
+        return {
+            arm: row.reply_cost_usd * 1000
+            for arm, row in _aspect_board(report_input, aspect_id).items()
+            if row.reply_cost_usd is not None
+        }
+    measure = report_input.measures.get(source)
+    if measure is None:
+        return {}
+    factor = _PER_THOUSAND_FACTORS[measure.unit or ""]
+    return {
+        arm: stat.mean * factor for arm, stat in measure.by_aspect.get(aspect_id, {}).items() if stat.mean is not None
+    }
+
+
 def _money_per(report_input: ReportInput, values: tuple[str, ...]) -> str:
     """What a money figure read by a path counts: the money measure the path names, else the page's cost basis."""
     for value in values:
@@ -7339,6 +7372,7 @@ def figure_key_pages() -> dict[str, str]:
 
 
 __all__ = [
+    "aspect_costs_per_thousand",
     "cost_arms",
     "cost_ruler",
     "FILTER_SPELLINGS",
