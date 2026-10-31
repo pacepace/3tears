@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from typing import Any, get_args
 
 import pytest
+from pydantic import ValidationError
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
 from packages.evals.tests.factories import make_eval_run
@@ -32,6 +33,7 @@ from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyh
 from packages.evals.tests.report_writer_support import (
     MODEL,
     FakeToolTurnClient,
+    FakeTurnModel,
     call,
     reply,
     review,
@@ -41,6 +43,7 @@ from threetears.evals.actions.report_writing import report_writer_kind
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.judge_profiles import judges_tiers
 from threetears.evals.analysis.reads import bisect_runs
+from threetears.evals.kernel.candidate_kind import CandidatePreparationFailed, VariantConfig
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host.kinds import freeze
 from threetears.evals.kernel.host.measures import MeasureRegistry
@@ -49,8 +52,10 @@ from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.negotiation.settings import EFFORT_LADDER
 from threetears.evals.ops import OpsHost
 from threetears.evals.ops.report_writer.rubric import shipped_rubric
-from threetears.evals.ops.report_writer.tally import ReportBudget
+from threetears.evals.ops.report_writer.loop import MOST_REVISIONS, WriterLimits
+from threetears.evals.ops.report_writer.tally import BounceKind, ReportBudget, Tally
 from threetears.evals.ops.report_writer.writer_contract import (
+    BOUNCE_MEASURES,
     ENDING_MEASURE,
     FINISHED_MEASURE,
     MUST_FIX_OPEN_MEASURE,
@@ -68,13 +73,16 @@ from threetears.evals.ops.report_writer.writer_contract import (
     writer_scoring_rubric,
 )
 from threetears.evals.ops.report_writer.writer_kind import (
+    WRITER_CASE_KEY,
     WriterCase,
     writer_case_payload,
     writer_subject_components,
 )
 from threetears.evals.run.definition_digests import measured_template_digest
 from threetears.evals.run.judge_service import JudgeService
+from threetears.evals.run.budget import AccountExhaustedError
 from threetears.evals.run.runner import NothingMeasuredError, RunnerOptions, execute_run
+from threetears.evals.schema.completion import FailureOwner, ProviderFailure
 from threetears.evals.schema.models import EvalRun, EvalTemplate, EvalTestCase
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.schema.turns import ToolTurnClient, TurnText
@@ -225,9 +233,11 @@ async def _execute(
     subject_skill: AnalystSkill | None = None,
     template: EvalTemplate = _TEMPLATE,
     judge_service: JudgeService | None = None,
+    cases: list[EvalTestCase] | None = None,
+    overlays: WriterOverlays | None = None,
 ) -> EvalRun:
-    """Run one arm over both cases; the run, as it was executed."""
-    overlays = WriterOverlays.model_validate(run.overlays)
+    """Run one arm over both cases, or over ``cases``; the run, as it was executed."""
+    overlays = overlays if overlays is not None else WriterOverlays.model_validate(run.overlays)
     kind = report_writer_kind(
         host, CALLER, overlays=overlays, models=models, budget=ReportBudget(usd=5.0), skills=skills
     )
@@ -243,7 +253,7 @@ async def _execute(
         host.eval_host,
         run=run,
         template=template,
-        test_cases=_cases(),
+        test_cases=cases if cases is not None else _cases(),
         judge_service=judge_service,
         options=RunnerOptions(candidate_kinds={WRITER_KIND: lambda _cell: kind}),
     )
@@ -580,3 +590,209 @@ async def test_the_engine_reads_a_judge_change_between_writer_arms_as_a_differen
     assert "judge_model" in bisected["differs"], bisected["unknown"]
     with pytest.raises(ValidationFailedError, match="2 judges"):
         refuse_unfixed_scoring_judge(runs)
+
+
+# =============================================================================
+# Every bounce kind is a measure; the revisions cap has one source
+# =============================================================================
+
+
+async def test_every_bounce_kind_lands_as_a_count_and_r1s_unparsed_replies_are_counted() -> None:
+    host, models = off_loop(_host), _Models()
+    run = _arm(load_skill())
+
+    await _execute(host, run, models, skills={})
+
+    kairo, r1 = _results(host, run)
+    for result in (kairo, r1):
+        assert {name for name in BOUNCE_MEASURES.values()} <= set(result.host_measures), result.host_measures
+    # r1's analyst answered with no document four times: three bounces as unparsed, then refused.
+    assert r1.host_measures[BOUNCE_MEASURES["unparsed"]] == 3.0
+    assert {r1.host_measures[BOUNCE_MEASURES[kind]] for kind in get_args(BounceKind) if kind != "unparsed"} == {0.0}
+    assert {kairo.host_measures[name] for name in BOUNCE_MEASURES.values()} == {0.0}
+
+
+def test_each_bounce_kind_the_analyst_records_has_a_declared_measure() -> None:
+    assert tuple(BOUNCE_MEASURES) == get_args(BounceKind)
+    assert set(BOUNCE_MEASURES.values()) <= {descriptor.name for descriptor in WRITER_KIND_MEASURES}
+    tally = Tally()
+    tally.record_bounce("analyst", 1, "shape")
+    tally.record_bounce("analyst", 2, "shape")
+    tally.record_bounce("analyst", 2, "max_tokens")
+    assert tally.bounces() == {"unparsed": 0, "shape": 2, "validity": 0, "invariant": 0, "max_tokens": 1}
+
+
+def test_an_arms_revisions_are_bounded_where_the_writing_loop_bounds_them() -> None:
+    assert WriterOverlays().revisions == WriterLimits().revisions == MOST_REVISIONS
+    WriterLimits(revisions=MOST_REVISIONS)
+    with pytest.raises(ValidationError, match="less than or equal to"):
+        WriterOverlays(revisions=MOST_REVISIONS + 1)
+
+
+# =============================================================================
+# prepare's refusals, invoke's exclusions, and a failed turn's routing
+# =============================================================================
+
+
+@dataclass
+class _ScriptedFactory:
+    """A model factory whose cells' models are built as a test says: renamed, unpriced, refusing, or failing."""
+
+    name: str = MODEL
+    unpriced: str | None = None
+    refuses: str | None = None
+    fails: Exception | None = None
+    built: list[FakeTurnModel] = field(default_factory=list)
+
+    def __call__(self, effort: EffortWord | None) -> FakeTurnModel:
+        if self.refuses is not None:
+            raise ValueError(self.refuses)
+        failing = FakeToolTurnClient(*([self.fails] if self.fails is not None else []))
+        model = FakeTurnModel(unpriced=self.unpriced, analyst=failing)
+        model.model_name = self.name
+        self.built.append(model)
+        return model
+
+
+@pytest.mark.parametrize(
+    ("factory", "refused"),
+    [
+        (
+            _ScriptedFactory(name="another-model"),
+            f"recorded against model {MODEL!r} but the model factory built 'another-model'",
+        ),
+        (
+            _ScriptedFactory(refuses="no route takes effort 'max'"),
+            "the host's model factory refused the arm's settings: no route takes effort 'max'",
+        ),
+        (
+            _ScriptedFactory(unpriced="report-writer-model has no rate"),
+            "budget admits each turn on its price ceiling, and report-writer-model has no rate",
+        ),
+    ],
+)
+async def test_a_cell_whose_model_would_not_be_the_arms_or_could_not_be_priced_is_refused_before_any_turn(
+    factory: _ScriptedFactory, refused: str
+) -> None:
+    host = off_loop(_host)
+    run = _arm(load_skill())
+
+    with pytest.raises(NothingMeasuredError, match=re.escape(refused)):
+        await _execute(host, run, factory, skills={})  # type: ignore[arg-type]
+
+    results = _results(host, run)
+    assert {result.termination for result in results} == {"factory_failed"}
+    assert all(refused in (result.runner_error or "") for result in results)
+    assert all(not model.asked for model in factory.built), "no session was opened"
+
+
+async def test_a_cell_whose_subject_carries_no_skill_is_refused_by_the_kind() -> None:
+    host, models = off_loop(_host), _Models()
+    kind = report_writer_kind(host, CALLER, overlays=WriterOverlays(), models=models, budget=ReportBudget(usd=5.0))
+    bare = SubjectSnapshot(subject_id="report writer", subject_label="report writer", components={}, state={})
+
+    with pytest.raises(CandidatePreparationFailed, match="its subject carries no skill"):
+        await kind.prepare(
+            subject_snapshot=bare,
+            variant_config=VariantConfig(candidate_model=MODEL),
+            world_seed=None,
+            span_window=None,
+            cassettes=None,
+            world=None,
+        )
+    assert models.built == []
+
+
+async def test_a_cell_whose_revisions_the_loop_does_not_run_is_refused_before_any_turn() -> None:
+    host, models = off_loop(_host), _Models()
+    beyond = WriterOverlays.model_construct(
+        skill=load_skill().digest, reasoning_effort=None, revisions=MOST_REVISIONS + 1
+    )
+    kind = report_writer_kind(host, CALLER, overlays=beyond, models=models, budget=ReportBudget(usd=5.0))
+
+    with pytest.raises(CandidatePreparationFailed, match="not ones the writing loop runs"):
+        await kind.prepare(
+            subject_snapshot=_arm(load_skill()).subject_snapshot,
+            variant_config=VariantConfig(candidate_model=MODEL),
+            world_seed=None,
+            span_window=None,
+            cassettes=None,
+            world=None,
+        )
+    assert models.built == []
+
+
+def _case(case_id: str, payload: dict[str, Any]) -> EvalTestCase:
+    return EvalTestCase(id=case_id, template_id=_TEMPLATE.id, scope_id=CALLER.scope_id, host_payload=payload)
+
+
+@pytest.mark.parametrize(
+    ("payload", "excluded"),
+    [
+        ({}, "carries no writer case under host_payload['writer_case']"),
+        ({WRITER_CASE_KEY: {"snapshot": "not a document"}}, "carries an unreadable writer case"),
+        (
+            {WRITER_CASE_KEY: {"snapshot": {"id": "report-snapshot:none"}, "withhold": []}},
+            "frozen snapshot does not read under this build",
+        ),
+    ],
+)
+async def test_a_case_the_cell_cannot_write_over_is_excluded_as_the_harnesss_before_any_turn(
+    payload: dict[str, Any], excluded: str
+) -> None:
+    host, models = off_loop(_host), _Models()
+    run = _arm(load_skill()).model_copy(update={"test_case_ids": ["writer-broken"]})
+
+    with pytest.raises(NothingMeasuredError):
+        await _execute(host, run, models, skills={}, cases=[_case("writer-broken", payload)])
+
+    (result,) = _results(host, run)
+    assert result.candidate_error is None, "the case's fault is the harness's, never the candidate's"
+    assert excluded in (result.infra_error or ""), result.infra_error
+    assert all(not model.sessions for model in models.built), "no session was opened"
+
+
+class _Overloaded(Exception):
+    """What the host's client raised: a provider's answer the describer reads."""
+
+
+def _describing(owner: FailureOwner) -> OpsHost:
+    """The writer's host, its describer reading every failure as ``owner``'s."""
+    host = _host()
+    eval_host = replace(
+        host.eval_host,
+        failure_describer=lambda exc: ProviderFailure(f"{owner} said no", payload_withheld=False, owner=owner),
+    )
+    return replace(host, launch=replace(host.launch, eval_host=eval_host))
+
+
+@pytest.mark.parametrize(
+    ("owner", "infra", "candidate", "refused"),
+    [
+        (
+            "account",
+            "apparatus: report_writer: a turn was refused for the calling account: account said no",
+            None,
+            True,
+        ),
+        ("provider", "apparatus: report_writer: a turn was declined by the provider: provider said no", None, False),
+        ("candidate", None, "report_writer: a turn failed: candidate said no", False),
+    ],
+)
+async def test_a_turn_whose_client_failed_is_routed_by_whose_failure_the_host_says_it_was(
+    owner: FailureOwner, infra: str | None, candidate: str | None, refused: bool
+) -> None:
+    host = off_loop(_describing, owner)
+    factory = _ScriptedFactory(fails=_Overloaded("overloaded"))
+    run = _arm(load_skill()).model_copy(update={"test_case_ids": ["writer-kairo round 2"]})
+
+    stopped: type[Exception] | None = None
+    try:
+        await _execute(host, run, factory, skills={}, cases=_cases()[:1])  # type: ignore[arg-type]
+    except (AccountExhaustedError, NothingMeasuredError) as raised:
+        stopped = type(raised)
+
+    (result,) = _results(host, run)
+    assert (result.infra_error, result.candidate_error) == (infra, candidate)
+    assert result.host_measures[ENDING_MEASURE] == "failed"
+    assert (stopped is AccountExhaustedError) is refused, "only the account's refusal stops the run"

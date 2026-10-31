@@ -11,6 +11,7 @@ from its own campaigns, so minting is the mechanism, and a package fixture is on
   version of that set (:func:`~threetears.evals.run.case_sets.mint_case_set`).
 - :func:`writer_case_bank` reads a template's stored writer cases once, for every decision the mint makes.
 - :func:`writer_split` resolves both sets of a split, refusing a case listed on both sides.
+- :func:`writer_case_archive` retires a case, or restores one: how a source whose evidence moved is minted again.
 
 **One source is one case.** A case is keyed by what it froze (:attr:`WriterCase.source_key`): the campaign, or the
 report input of a snapshot with no campaign behind it. A mint matching the key's live case (the same snapshot, the
@@ -18,6 +19,9 @@ same notes withheld) returns it, so minting again is idempotent and the case kee
 differs (the campaign's evidence moved since, or other notes withheld) is refused: a stored case is immutable, and a
 run measured against it would otherwise be read against evidence it never had. Deduplicating rather than refusing
 the exact repeat lets a host mint every campaign it holds on a schedule without first asking which it has minted.
+To take the moved evidence instead, the host retires the source's case (:func:`writer_case_archive`) and mints again:
+the new case joins the set's next version, which no longer lists the retired one, and every run already measured
+against the retired case still resolves it.
 
 **The split is by group, by digest, and recorded.** A case's group is the host's name for a family of related
 campaigns (a campaign and its re-runs), or the case's own source key when the host names none, so related cases
@@ -39,7 +43,7 @@ from pydantic import Field, ValidationError, model_validator
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.kernel.remedies import FIND_TEMPLATE
+from threetears.evals.kernel.remedies import FIND_TEMPLATE, FIND_TEST_CASE
 from threetears.evals.kernel.report_snapshot import FIND_SNAPSHOT, EvalReportSnapshot
 from threetears.evals.ops.analyst import report_snapshot_freeze, snapshot_input
 from threetears.evals.ops.host import OpsHost
@@ -389,12 +393,11 @@ def _mint_blocking(
     if latest is not None and stored.id in latest.test_case_ids:
         listed = latest
     else:
+        # A retired case leaves the set at its next version: no launch over the set runs it again.
+        retired = {case.id for case, _ in bank.cases if case.archived}
+        kept = [case_id for case_id in (latest.test_case_ids if latest is not None else ()) if case_id not in retired]
         listed = mint_case_set(
-            storage,
-            scope_id=scope_id,
-            name=name,
-            template_id=template.id,
-            test_case_ids=[*(latest.test_case_ids if latest is not None else ()), stored.id],
+            storage, scope_id=scope_id, name=name, template_id=template.id, test_case_ids=[*kept, stored.id]
         )
     return MintedWriterCase(
         test_case_id=stored.id,
@@ -442,6 +445,90 @@ async def writer_case_mint(host: OpsHost, mint: WriterCaseMint, scope_id: str, *
     return await run_blocking(
         host.eval_host.blocking_executor,
         lambda: _mint_blocking(host, mint, template, snapshot, scope_id, created_by=created_by, skill=skill),
+    )
+
+
+def _archive_blocking(
+    host: OpsHost, test_case_id: str, scope_id: str, *, archived: bool, reason: str | None
+) -> EvalTestCase:
+    """Set a writer case's retirement, refusing what no bank honours or a restore that makes two live cases. Blocking."""
+    storage = host.eval_host.storage
+    current = storage.load_test_case(test_case_id, scope_id)
+    if current is None:
+        raise NotFoundError("test case", test_case_id, remedy=FIND_TEST_CASE)
+    try:
+        case = writer_case_of(current)
+    except ValidationError as unread:
+        raise ValidationFailedError(
+            f"test case {test_case_id!r} carries a writer case this build cannot read ({unread.error_count()} "
+            "fault(s)), so whether it is live cannot be decided here",
+            remedy="read it with the build that wrote it",
+        ) from unread
+    if case is None or current.template_id is None:
+        raise ValidationFailedError(
+            f"test case {test_case_id!r} carries no writer case under a template, and only a writer case is retired "
+            "here: a writer template's bank is what reads a case's retirement",
+            remedy="name a writer case of a writer template",
+        )
+    target_reason = reason if archived else None
+    if current.archived == archived and current.archived_reason == target_reason:
+        return current
+    if not archived:
+        bank = writer_case_bank(storage.query_test_cases(scope_id, template_id=current.template_id))
+        if rivals := [stored.id for stored, _ in bank.live_of(case.source_key) if stored.id != test_case_id]:
+            raise ValidationFailedError(
+                f"restoring case {test_case_id!r} would make a second live case of {case.source_key}, beside "
+                f"{', '.join(repr(rival) for rival in rivals)}: a source is one case",
+                remedy="retire that case first, or leave this one retired",
+            )
+    storage.save_test_case(
+        EvalTestCase.from_dict({**current.to_dict(), "archived": archived, "archived_reason": target_reason})
+    )
+    log.info(
+        "eval.writer_case_archive case=%s template=%s source=%s archived=%s reason=%s",
+        test_case_id,
+        current.template_id,
+        case.source_key,
+        archived,
+        target_reason or "(none given)",
+    )
+    persisted = storage.load_test_case(test_case_id, scope_id)
+    if persisted is None:
+        raise NotFoundError("test case", test_case_id, remedy=FIND_TEST_CASE)
+    return persisted
+
+
+async def writer_case_archive(
+    host: OpsHost, test_case_id: str, scope_id: str, *, archived: bool, reason: str | None = None
+) -> EvalTestCase:
+    """Retire a writer case, or restore one: a retired case is never launched again, and stays readable.
+
+    Retiring is how a source whose evidence moved is minted again: :func:`writer_case_mint` refuses a mint differing
+    from the source's live case, and a retired case is not live, so the next mint stores the new case and lists it in
+    its side's next set version, without the retired one. Every run already measured against the retired case still
+    resolves it. A restore is refused when the source has another live case, since a source is one case. Idempotent:
+    the state and reason the case already carries write nothing. The reason is cleared on restore.
+
+    :param host: The host whose store holds the case.
+    :ptype host: OpsHost
+    :param test_case_id: The case.
+    :ptype test_case_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param archived: ``True`` retires it, ``False`` restores it.
+    :ptype archived: bool
+    :param reason: Why it is retired, in the operator's words; cleared on restore.
+    :ptype reason: str | None
+    :return: The case as persisted.
+    :rtype: EvalTestCase
+    :raises NotFoundError: No such case in the scope.
+    :raises ValidationFailedError: It carries no writer case, or one this build cannot read, or names no template; or
+        restoring it would make a second live case of its source.
+    :raises StorageError: The write failed.
+    """
+    return await run_blocking(
+        host.eval_host.blocking_executor,
+        lambda: _archive_blocking(host, test_case_id, scope_id, archived=archived, reason=reason),
     )
 
 
@@ -506,6 +593,6 @@ def writer_split(
     return WriterSplitSets(dev=dev_set, held_out=held_out_set)
 
 
-#: A host's mint (Discodon, then metallm) is this module's caller; none is in this repo yet, so every public name
-#: waits for one (``tests/test_report_writer_exports.py``).
-__all__: list[str] = []
+#: The writer's launch reads a bank (``writer_case_bank``); a host's mint and retirement (Discodon, then metallm) are
+#: the callers of the rest, none in this repo yet, so each waits for one (``tests/test_report_writer_exports.py``).
+__all__ = ["writer_case_bank"]

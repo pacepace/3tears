@@ -46,7 +46,7 @@ from pydantic import ValidationError
 from threetears.evals.analysis.analyst.skill import SkillText
 from threetears.evals.kernel.report_doc import ReportDoc, report_doc_json_schema
 from threetears.evals.ops.report_writer.session import SessionLimits, SessionStop, ToolMount, ToolSession
-from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
+from threetears.evals.ops.report_writer.tally import BounceKind, ReportBudget, Tally
 from threetears.evals.schema.turns import ToolTurnClient
 
 #: The names the writing loop calls. ``InvariantVerdict`` joins them with its first production caller outside this
@@ -132,13 +132,12 @@ InvariantCheck = Callable[[ReportDoc], Sequence[InvariantVerdict]]
 class SubmissionFault:
     """One fault a submission is sent back for.
 
-    :ivar kind: Which check found it: ``unparsed`` (no single fenced JSON object), ``shape`` (the document's model),
-        ``validity`` (what the snapshot holds), ``invariant`` (the invariants), or ``max_tokens`` (the reply was cut).
+    :ivar kind: Which check found it (:data:`~threetears.evals.ops.report_writer.tally.BounceKind`).
     :ivar path: The field it is in, or ``""`` for the submission as a whole.
     :ivar fault: What is wrong, and how to fix it where the check says.
     """
 
-    kind: Literal["unparsed", "shape", "validity", "invariant", "max_tokens"]
+    kind: BounceKind
     path: str
     fault: str
 

@@ -30,7 +30,6 @@ through the ordinary run path, beside the analysis reporter.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -54,6 +53,7 @@ from threetears.evals.kernel.candidate_kind import (
 )
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.inner_ceilings import judge_phase_ceiling_s, writer_ceiling_s
+from threetears.evals.kernel.failed_call import failed_call_output
 from threetears.evals.kernel.provider import describe_failure, log_provider_failure
 from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
@@ -66,16 +66,15 @@ from threetears.evals.ops.report_writer.session import ToolMount
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.ops.report_writer.writer_contract import (
     ANALYST_ROUNDS_MEASURE,
+    BOUNCE_MEASURES,
     EDITOR_ROUNDS_MEASURE,
     ENDING_MEASURE,
     FINISHED_MEASURE,
-    INVARIANT_BOUNCES_MEASURE,
     MUST_FIX_OPEN_MEASURE,
     SHOULD_FIX_OPEN_MEASURE,
     SKILL_LEVER,
     TURNS_MEASURE,
     UNPRICED_TURNS_MEASURE,
-    VALIDITY_BOUNCES_MEASURE,
     WriterModels,
     WriterOverlays,
 )
@@ -283,13 +282,15 @@ def writer_cell_timeout_s(
 
 @dataclass
 class PreparedWriter:
-    """One cell's writer: the model its sessions run on, the skill they start from, and the cell's tracing windows.
+    """One cell's writer: the model its sessions run on, the skill they start from, the limits its loop is held to and
+    the cell's tracing windows.
 
     Per cell rather than on the kind, because one kind instance drives every cell of an arm.
     """
 
     model: TurnModel
     skill: AnalystSkill
+    limits: WriterLimits
     span_window: CellSpanWindow
 
 
@@ -383,10 +384,14 @@ class ReportWriterKind:
         :ptype world: Any
         :return: The cell's model, skill and windows.
         :rtype: PreparedWriter
-        :raises CandidatePreparationFailed: The arm's skill is not one the launch was given; the subject does not
-            carry it; the factory's model is not the cell's; or, under a dollar budget, the model's turns cannot be
-            priced. Each before anything is sent.
+        :raises CandidatePreparationFailed: The arm's revisions are not ones the loop runs; the arm's skill is not one
+            the launch was given; the subject does not carry it; the factory's model is not the cell's; or, under a
+            dollar budget, the model's turns cannot be priced. Each before anything is sent.
         """
+        try:
+            limits = WriterLimits(revisions=self._overlays.revisions)
+        except ValueError as refused:
+            raise _refused(f"the arm's settings are not ones the writing loop runs: {refused}") from refused
         digest = self._overlays.skill
         skill = self._skills.get(digest)
         if skill is None:
@@ -413,7 +418,7 @@ class ReportWriterKind:
             )
         if self._budget.usd is not None and (unpriced := await model.turn_pricing_refusal()) is not None:
             raise _refused(f"its {self._budget.spelled} budget admits each turn on its price ceiling, and {unpriced}")
-        return PreparedWriter(model=model, skill=skill, span_window=span_window)
+        return PreparedWriter(model=model, skill=skill, limits=limits, span_window=span_window)
 
     async def invoke(self, instance: PreparedWriter, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Write one report over the case's snapshot, and hand the judge its final page.
@@ -459,7 +464,7 @@ class ReportWriterKind:
                     check=check,
                     tally=tally,
                     budget=ReportBudget(usd=self._budget.usd, tokens=self._budget.tokens, turns=self._budget.turns),
-                    limits=WriterLimits(revisions=self._overlays.revisions),
+                    limits=instance.limits,
                 )
         return self._output(outcome, tally, instance, report_input, analyst_skill, editor_skill)
 
@@ -548,32 +553,13 @@ class ReportWriterKind:
         described = describe_failure(
             self._host.eval_host.failure_describer, failure, logger=log, where="Report writer turn"
         )
-        if described.owner == "account":
-            log_provider_failure(log, described, failure, "Report writer's turn was refused for the calling account")
-            return CandidateOutput(
-                infra_errors=[
-                    f"apparatus: report_writer: a turn was refused for the calling account: {described.description}"
-                ],
-                account_refused=True,
-                telemetry=telemetry,
-                host_measures=measures,
-                kind_payload=payload,
-            )
-        if described.owner == "provider":
-            log_provider_failure(
-                log, described, failure, "Report writer's turn was declined by the provider", level=logging.WARNING
-            )
-            return CandidateOutput(
-                infra_errors=[
-                    f"apparatus: report_writer: a turn was declined by the provider: {described.description}"
-                ],
-                telemetry=telemetry,
-                host_measures=measures,
-                kind_payload=payload,
-            )
-        log_provider_failure(log, described, failure, "Report writer's turn failed", level=logging.WARNING)
-        return CandidateOutput(
-            candidate_errors=[f"report_writer: a turn failed: {described.description}"],
+        return failed_call_output(
+            described.owner,
+            described.description,
+            refused="report_writer: a turn was refused for the calling account",
+            declined="report_writer: a turn was declined by the provider",
+            failed="report_writer: a turn failed",
+            log=lambda what, level: log_provider_failure(log, described, failure, "%s", what, level=level),
             telemetry=telemetry,
             host_measures=measures,
             kind_payload=payload,
@@ -610,12 +596,10 @@ def _telemetry(tally: Tally, model: str) -> CandidateTelemetry:
 def _measures(outcome: WritingOutcome, tally: Tally) -> dict[str, bool | float | str]:
     """The run's measures, read off the loop's outcome and the tally; the open findings only where a document was
     stored, since a run that stored none has no findings open on anything."""
-    bounces: Mapping[str, int] = tally.to_json()["total"]["bounce_kinds"]
     measures: dict[str, bool | float | str] = {
         ENDING_MEASURE: outcome.ending,
         FINISHED_MEASURE: outcome.ending == "stored",
-        VALIDITY_BOUNCES_MEASURE: float(bounces.get("validity", 0)),
-        INVARIANT_BOUNCES_MEASURE: float(bounces.get("invariant", 0)),
+        **{BOUNCE_MEASURES[kind]: float(count) for kind, count in tally.bounces().items()},
         ANALYST_ROUNDS_MEASURE: float(outcome.analyst_rounds),
         EDITOR_ROUNDS_MEASURE: float(outcome.editor_rounds),
         TURNS_MEASURE: float(tally.sent),
@@ -635,4 +619,6 @@ __all__ = [
     "WriterSide",
     "writer_case_of",
     "writer_case_payload",
+    "writer_cell_timeout_s",
+    "writer_subject_components",
 ]

@@ -1,11 +1,11 @@
 """The report writer's modules export a name once production code outside them calls it, and not before.
 
 ``ops/report_writer/analyst.py`` exports what the writing loop calls and leaves ``InvariantVerdict`` out (the loop
-names the checker, not its verdicts). ``actions/report_writing.py``, the report writer's entry point, exports nothing
-yet: its caller is the analysis job of plan §9 (W4), which Discodon's factory runs; the dev command line that writes a
-report today is a test fixture, not production code. The writer kind's modules (``writer_kind.py``,
-``writer_contract.py``) export what the kind's factory, the kind and its case bank call; the rest awaits its launcher
-and a host's profile. The case bank (``writer_bank.py``) exports nothing yet: a host's mint is its caller.
+names the checker, not its verdicts). ``actions/report_writing.py``, the report writer's entry point, leaves out the
+writer's launch registry entry and what only it builds, whose caller is a host's registry. The writer kind's modules
+(``writer_kind.py``, ``writer_contract.py``, ``writer_launch.py``) export what the kind's factory, the kind, its
+launcher and its case bank call; the rest awaits a host's profile. The case bank (``writer_bank.py``) exports what the
+launch reads; a host's mint and retirement are the callers of the rest.
 ``CLAUDE.md`` holds that no public API exists only for a test, and the caller gate
 (``tests/enforcement/test_public_api_has_a_caller.py``) reads a module's surface from its ``__all__``, so it cannot
 see the names left out. This test keeps the promise checkable: :data:`_AWAITING_A_CALLER` lists every public name
@@ -26,6 +26,7 @@ import threetears.evals.ops.report_writer.analyst as analyst
 import threetears.evals.ops.report_writer.writer_bank as writer_bank
 import threetears.evals.ops.report_writer.writer_contract as writer_contract
 import threetears.evals.ops.report_writer.writer_kind as writer_kind
+import threetears.evals.ops.report_writer.writer_launch as writer_launch
 
 #: Every workspace member's ``src`` tree.
 _REPO = Path(__file__).resolve().parents[3]
@@ -34,20 +35,14 @@ _SOURCES = sorted([*_REPO.glob("packages/*/src"), *_REPO.glob("packages/agent/*/
 #: Per module, the public names it defines and leaves out of its ``__all__`` until a production caller imports them.
 _AWAITING_A_CALLER: dict[ModuleType, frozenset[str]] = {
     analyst: frozenset({"InvariantVerdict"}),
-    report_writing: frozenset({"report_writer_kind", "write_report"}),
-    # The writer kind's launcher, its case bank and a host's profile are their callers, none written yet.
+    # A host's launch registry is the launcher's caller; the kind's factory is called only by the launcher, here.
+    report_writing: frozenset({"launchable_report_writer_kind", "report_writer_kind", "write_report"}),
+    # A host's profile declares the contract and the measures, outside this repo and not written yet.
     writer_contract: frozenset({"EffortWord", "WRITER_KIND_CONTRACT", "WRITER_KIND_MEASURES", "writer_kind_contract"}),
-    writer_kind: frozenset(
-        {
-            "PreparedWriter",
-            "WRITER_CASE_KEY",
-            "WRITER_CASE_VERSION",
-            "log",
-            "writer_cell_timeout_s",
-            "writer_subject_components",
-        }
-    ),
-    # A host's mint (Discodon, then metallm) is the bank's caller, outside this repo and not written yet.
+    writer_kind: frozenset({"PreparedWriter", "WRITER_CASE_KEY", "WRITER_CASE_VERSION", "log"}),
+    writer_launch: frozenset({"log"}),
+    # A host's mint and retirement (Discodon, then metallm) are the bank's callers, outside this repo and not written
+    # yet.
     writer_bank: frozenset(
         {
             "HELD_OUT_FRACTION",
@@ -57,7 +52,7 @@ _AWAITING_A_CALLER: dict[ModuleType, frozenset[str]] = {
             "WriterSplit",
             "WriterSplitSets",
             "log",
-            "writer_case_bank",
+            "writer_case_archive",
             "writer_case_mint",
             "writer_group_side",
             "writer_split",

@@ -30,6 +30,7 @@ from threetears.evals.ops.report_writer.writer_bank import (
     MintedWriterCase,
     WriterCaseMint,
     WriterSplit,
+    writer_case_archive,
     writer_case_mint,
     writer_split,
 )
@@ -42,7 +43,7 @@ from threetears.evals.ops.report_writer.writer_contract import (
 from threetears.evals.ops.report_writer.writer_kind import writer_case_of, writer_subject_components
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.runner import RunnerOptions, execute_run
-from threetears.evals.schema.models import EvalTestCase
+from threetears.evals.schema.models import CaseSetRef, EvalTestCase
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.schema.turns import ToolTurnClient, TurnText
 
@@ -120,6 +121,56 @@ async def test_a_mint_differing_from_its_sources_case_is_refused_and_stores_noth
         await _mint(host, snapshot_id=kairo.snapshot_id, withhold=[])
 
     assert len(_stored(host)) == len(SEED)
+
+
+async def test_a_retired_case_lets_its_source_be_minted_again_and_leaves_its_set() -> None:
+    host = off_loop(writer_host).host
+    kairo = (await seed_writer_cases(host))["kairo round 2"]
+
+    retired = await writer_case_archive(
+        host, kairo.test_case_id, CALLER.scope_id, archived=True, reason="minted again without its note withheld"
+    )
+    again = await writer_case_archive(
+        host, kairo.test_case_id, CALLER.scope_id, archived=True, reason="minted again without its note withheld"
+    )
+    minted = await _mint(host, snapshot_id=kairo.snapshot_id, withhold=[], group="kairo")
+
+    assert retired.archived and retired.archived_reason == "minted again without its note withheld"
+    assert again == retired, "retiring a retired case writes nothing"
+    assert not minted.reused and minted.test_case_id != kairo.test_case_id
+    assert (minted.side, minted.case_set.name) == (kairo.side, kairo.case_set.name), "its group keeps its side"
+    assert kairo.test_case_id not in _listed(host, minted.case_set)
+    assert minted.test_case_id in _listed(host, minted.case_set)
+    assert kairo.test_case_id in {case.id for case in _stored(host)}, "the retired case still resolves"
+
+
+async def test_restoring_a_case_whose_source_has_another_live_case_is_refused() -> None:
+    host = off_loop(writer_host).host
+    kairo = (await seed_writer_cases(host))["kairo round 2"]
+    await writer_case_archive(host, kairo.test_case_id, CALLER.scope_id, archived=True)
+    minted = await _mint(host, snapshot_id=kairo.snapshot_id, withhold=[], group="kairo")
+
+    with pytest.raises(ValidationFailedError, match=f"second live case of .*{minted.test_case_id}"):
+        await writer_case_archive(host, kairo.test_case_id, CALLER.scope_id, archived=False)
+
+    await writer_case_archive(host, minted.test_case_id, CALLER.scope_id, archived=True)
+    restored = await writer_case_archive(host, kairo.test_case_id, CALLER.scope_id, archived=False)
+    assert not restored.archived and restored.archived_reason is None
+
+
+async def test_retiring_a_case_that_carries_no_writer_case_is_refused() -> None:
+    fixture: OpsFixture = off_loop(writer_host)
+    other = EvalTestCase(id="an-invoice", template_id=toyhost_template().id, scope_id=CALLER.scope_id)
+    off_loop(fixture.host.eval_host.storage.save_test_case, other)
+
+    with pytest.raises(ValidationFailedError, match="carries no writer case"):
+        await writer_case_archive(fixture.host, other.id, CALLER.scope_id, archived=True)
+
+
+def _listed(host: OpsHost, ref: CaseSetRef) -> list[str]:
+    """The cases the latest version of the named set lists."""
+    (latest, *_) = off_loop(host.eval_host.storage.query_case_sets, CALLER.scope_id, name=ref.name)
+    return list(latest.test_case_ids)
 
 
 async def test_a_withheld_note_the_shipped_skill_lacks_is_refused_before_anything_is_frozen() -> None:

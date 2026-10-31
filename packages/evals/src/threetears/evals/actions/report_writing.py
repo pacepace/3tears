@@ -16,7 +16,7 @@ from the key it holds. Nothing here reads an environment variable.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal, cast
@@ -31,12 +31,33 @@ from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.ops.report_writer.write import ReportNotStored as ReportNotStored
 from threetears.evals.ops.report_writer.write import ReportWritten as ReportWritten
 from threetears.evals.ops.report_writer.write import AnalystSkill, report_write
-from threetears.evals.ops.report_writer.writer_contract import WriterModels, WriterOverlays
-from threetears.evals.ops.report_writer.writer_kind import ReportWriterKind
+from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, WriterModels, WriterOverlays
+from threetears.evals.ops.report_writer.writer_kind import ReportWriterKind, writer_subject_components
+from threetears.evals.ops.report_writer.writer_launch import (
+    WRITER_UNHONOURED_LAUNCH_ARGUMENTS,
+    ModelFamily,
+    WriterAdmitted,
+    admit_writer_launch,
+    plan_writer_arm,
+    writer_launch_deadline,
+)
+from threetears.evals.run.launch import (
+    ArmPlan,
+    KindWiring,
+    LaunchableKind,
+    LaunchRequest,
+    UnknownSubject,
+    build_judge_service,
+    launch_run,
+)
+from threetears.evals.schema.completion import RequestCeiling
+from threetears.evals.schema.models import EvalRun, JudgedArtifact
+from threetears.evals.schema.subject import SubjectSnapshot
 
-#: What ``analysis_generate``'s action hands its job (actions/engine.py). ``write_report`` and ``report_writer_kind``
-#: stay out until a caller outside this module imports them; ``tests/test_report_writer_exports.py`` lists each as
-#: awaiting one.
+#: What ``analysis_generate``'s action hands its job (actions/engine.py). ``write_report``, ``report_writer_kind``
+#: and ``launchable_report_writer_kind`` stay out until a caller outside this module imports them (a host's launch
+#: registry); ``tests/test_report_writer_exports.py`` lists each as awaiting one.
 __all__ = ["campaign_report_writer"]
 
 
@@ -193,6 +214,118 @@ def report_writer_kind(
         analyst_mount=_mount(host, caller, prefix=prefix, role="analyst"),
         editor_mount=_mount(host, caller, prefix=prefix, role="editor"),
         skills=skills,
+    )
+
+
+def _writer_subject(subject_id: str, _scope_id: str) -> UnknownSubject | None:
+    """A writer arm's subject is a label for the writer measured, which the launch names; only a blank one is
+    refused."""
+    if subject_id.strip():
+        return None
+    return UnknownSubject(remedy="name the writer being measured with a non-blank label, such as 'the report writer'")
+
+
+def launchable_report_writer_kind(
+    ops_host: Callable[[], OpsHost],
+    *,
+    identity: str,
+    models: Callable[[str], WriterModels],
+    budget: ReportBudget,
+    request_s: RequestCeiling,
+    model_family: ModelFamily,
+    skills: Mapping[str, AnalystSkill] = MappingProxyType({}),
+    prefix: str = DEFAULT_PREFIX,
+) -> LaunchableKind:
+    """The report writer's entry in a host's launch registry: each arm one writer over frozen writer cases.
+
+    A host launching writer campaigns through :func:`~threetears.evals.run.start_run` registers this under
+    ``report_writer`` and declares the writer's contract and measures on its profile. Every arm is admitted by
+    :func:`~threetears.evals.ops.report_writer.writer_launch.admit_writer_launch`, in its plan and again in its
+    launcher; its cells run :func:`report_writer_kind`, its pages are scored by the judge the launch names, and every
+    cell runs under the writer's own deadline
+    (:func:`~threetears.evals.ops.report_writer.writer_launch.writer_launch_deadline`), never the engine's default,
+    which a whole report outlasts.
+
+    :param ops_host: Returns the host the entry is registered on; a callable because the host is built with its
+        registry, this entry in it.
+    :ptype ops_host: Callable[[], OpsHost]
+    :param identity: Who the cells' tool calls run as, as the host names its campaign runner.
+    :ptype identity: str
+    :param models: The host's model factory for an arm's candidate model, by the id the launch names.
+    :ptype models: Callable[[str], WriterModels]
+    :param budget: Each report's budget.
+    :ptype budget: ReportBudget
+    :param request_s: The host's ceiling for one request on its client, by output cap.
+    :ptype request_s: RequestCeiling
+    :param model_family: The host's reading of a model's family, which holds the judge to another than the writer's.
+    :ptype model_family: ModelFamily
+    :param skills: The skill versions a launch may run, by digest; the shipped skill is always one.
+    :ptype skills: Mapping[str, AnalystSkill]
+    :param prefix: The host's prefix for its eval tools.
+    :ptype prefix: str
+    :return: The registry entry.
+    :rtype: LaunchableKind
+    """
+
+    def admitted(request: LaunchRequest) -> WriterAdmitted:
+        storage = ops_host().eval_host.storage
+        stored = (
+            []
+            if request.case_set is not None
+            else storage.query_test_cases(request.scope_id, template_id=request.template.id)
+        )
+        return admit_writer_launch(request, stored, skills=skills, model_family=model_family)
+
+    def plan(request: LaunchRequest) -> ArmPlan:
+        return plan_writer_arm(ops_host().eval_host, request, admitted(request))
+
+    async def launch(request: LaunchRequest) -> EvalRun:
+        host = ops_host()
+        eval_host = host.eval_host
+        arm = await run_blocking(eval_host.blocking_executor, admitted, request)
+        kind = report_writer_kind(
+            host,
+            Caller(scope_id=request.scope_id, identity=identity),
+            overlays=arm.overlays,
+            models=models(arm.candidate_model),
+            budget=budget,
+            skills=skills,
+            prefix=prefix,
+        )
+        judge = await run_blocking(
+            eval_host.blocking_executor,
+            lambda: build_judge_service(
+                eval_host,
+                request.template,
+                arm.judge_model,
+                request.judge_config_ids,
+                judged_artifact=JudgedArtifact.DOCUMENT,
+            ),
+        )
+        return await launch_run(
+            host.launch,
+            request,
+            KindWiring(
+                kind_factory=lambda _cell: kind,
+                subject=SubjectSnapshot(
+                    subject_id=request.subject_id,
+                    subject_label=request.subject_id,
+                    components=writer_subject_components(arm.skill),
+                    state={},
+                ),
+                test_cases=list(arm.cases),
+                judge=judge,
+                cell_timeout_s=writer_launch_deadline(request, arm, budget=budget, request_s=request_s),
+                max_concurrent_cells=kind.max_concurrent_cells,
+                payload={WRITER_KIND: {"judge_family": arm.judge_family}},
+            ),
+        )
+
+    return LaunchableKind(
+        launch=launch,
+        resolve_subject=_writer_subject,
+        unhonoured_launch_arguments=WRITER_UNHONOURED_LAUNCH_ARGUMENTS,
+        plan_arm=plan,
     )
 
 

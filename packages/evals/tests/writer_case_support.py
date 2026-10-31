@@ -14,6 +14,7 @@ from dataclasses import replace
 from typing import Final
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
+from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 from packages.evals.tests.ops_support import CALLER, OpsFixture, ops_fixture
 from threetears.evals.kernel.host.measures import MeasureRegistry
@@ -26,6 +27,7 @@ from threetears.evals.ops.report_writer.writer_bank import (
     writer_case_mint,
 )
 from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, WRITER_KIND_MEASURES, writer_kind_contract
+from threetears.evals.run import LaunchSettings
 from threetears.evals.schema.models import EvalTemplate
 
 #: The writer template every seeded case is minted into.
@@ -55,16 +57,22 @@ SEED: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
 }
 
 
-def writer_host() -> OpsFixture:
+def writer_host(*, settings: LaunchSettings = TOYHOST_LAUNCH_SETTINGS) -> OpsFixture:
     """The toy host with the writer's contract on its kinds and its measures on its registry, the writer template
-    saved."""
+    saved.
+
+    :param settings: The host's launch settings.
+    :ptype settings: LaunchSettings
+    :return: The fixture.
+    :rtype: OpsFixture
+    """
     profile = toyhost_profile()
     profile = replace(
         profile,
         kinds=(*profile.kinds, writer_kind_contract(host_seats=("reviewer_pool",))),
         measures=MeasureRegistry((*TOYHOST_MEASURES, *WRITER_KIND_MEASURES), families=profile.measures.families),
     )
-    fixture = ops_fixture(generation=False, profile=profile)
+    fixture = ops_fixture(generation=False, profile=profile, settings=settings)
     fixture.host.eval_host.storage.save_template(WRITER_TEMPLATE)
     return fixture
 

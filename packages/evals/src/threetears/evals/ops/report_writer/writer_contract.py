@@ -40,7 +40,7 @@ uncalibrated through the engine's judge evidence tiers, as any judge's do.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Annotated, Final, Literal
+from typing import Annotated, Final, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -48,8 +48,9 @@ from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host.kinds import KindContract, Ordinal
 from threetears.evals.kernel.metrics import MetricDescriptor
-from threetears.evals.ops.report_writer.loop import TurnModel, WriterEnding
+from threetears.evals.ops.report_writer.loop import MOST_REVISIONS, TurnModel, WriterEnding
 from threetears.evals.ops.report_writer.rubric import shipped_rubric
+from threetears.evals.ops.report_writer.tally import BounceKind
 from threetears.evals.schema.models import EvalRun, EvalTemplate, RubricDim
 
 #: The ``candidate_kind`` a report writer template declares.
@@ -66,9 +67,6 @@ EffortWord = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 #: The host's model factory: the arm's candidate model, built at the reasoning effort the arm's lever names, or at the
 #: model's own default for ``None``. Called once per cell, so each cell's sessions start from a model of their own.
 WriterModels = Callable[[EffortWord | None], TurnModel]
-
-#: The most revisions a report is given, as the writing loop holds it (``WriterLimits.revisions``).
-_MOST_REVISIONS: Final = 2
 
 
 def _shipped_skill() -> str:
@@ -97,9 +95,9 @@ class WriterOverlays(BaseModel):
         "none sends the model's own default",
     )
     revisions: int = Field(
-        default=_MOST_REVISIONS,
+        default=MOST_REVISIONS,
         ge=0,
-        le=_MOST_REVISIONS,
+        le=MOST_REVISIONS,
         description="the revisions the analyst is given after a review that does not clear its report",
     )
 
@@ -128,10 +126,12 @@ WRITER_KIND_CONTRACT = writer_kind_contract()
 ENDING_MEASURE: Final = f"{WRITER_KIND}.ending"
 #: Whether a review cleared the report, so it is stored finished.
 FINISHED_MEASURE: Final = f"{WRITER_KIND}.finished"
-#: Submissions sent back for the document's validity on the snapshot.
-VALIDITY_BOUNCES_MEASURE: Final = f"{WRITER_KIND}.validity_bounces"
-#: Submissions sent back for an invariant.
-INVARIANT_BOUNCES_MEASURE: Final = f"{WRITER_KIND}.invariant_bounces"
+#: Submissions sent back, one measure per check that sent them (``report_writer.<kind>_bounces``), read off the
+#: tally's typed counts (:meth:`~threetears.evals.ops.report_writer.tally.Tally.bounces`): every kind the analyst
+#: bounces for is measured, and a kind added to :data:`BounceKind` is measured with it.
+BOUNCE_MEASURES: Final[Mapping[BounceKind, str]] = {
+    kind: f"{WRITER_KIND}.{kind}_bounces" for kind in get_args(BounceKind)
+}
 #: ``must_fix`` findings open on the stored document.
 MUST_FIX_OPEN_MEASURE: Final = f"{WRITER_KIND}.must_fix_open"
 #: ``should_fix`` findings open on the stored document.
@@ -154,6 +154,19 @@ _ENDINGS: tuple[WriterEnding, ...] = (
     "review_failed",
     "failed",
 )
+
+
+#: Each bounce kind's measure, in words: its reader name, and why the submissions it counts were sent back.
+_BOUNCES: Final[Mapping[BounceKind, tuple[str, str]]] = {
+    "unparsed": ("Unparsed", "Submissions sent back to the analyst because they held no single fenced JSON document."),
+    "shape": ("Shape", "Submissions sent back to the analyst because the document did not fit the report's model."),
+    "validity": (
+        "Validity",
+        "Submissions sent back to the analyst because the document was not valid on its snapshot.",
+    ),
+    "invariant": ("Invariant", "Submissions sent back to the analyst because the document broke an invariant."),
+    "max_tokens": ("Cut-off", "Submissions sent back to the analyst because the reply was cut at its output cap."),
+}
 
 
 def _count(name: str, reader_name: str, description: str, *, fewer_is_better: bool) -> MetricDescriptor:
@@ -197,17 +210,9 @@ WRITER_KIND_MEASURES: tuple[MetricDescriptor, ...] = (
         higher_is_better=True,
         description="Whether a review cleared the report, so it is stored finished rather than as a draft or not at all.",
     ),
-    _count(
-        VALIDITY_BOUNCES_MEASURE,
-        "Validity bounces",
-        "Submissions sent back to the analyst because the document was not valid on its snapshot.",
-        fewer_is_better=True,
-    ),
-    _count(
-        INVARIANT_BOUNCES_MEASURE,
-        "Invariant bounces",
-        "Submissions sent back to the analyst because the document broke an invariant.",
-        fewer_is_better=True,
+    *(
+        _count(BOUNCE_MEASURES[kind], f"{reader} bounces", why, fewer_is_better=True)
+        for kind, (reader, why) in _BOUNCES.items()
     ),
     _count(
         MUST_FIX_OPEN_MEASURE,
@@ -356,16 +361,15 @@ def refuse_unfixed_scoring_judge(runs: Sequence[EvalRun]) -> None:
 
 __all__ = [
     "ANALYST_ROUNDS_MEASURE",
+    "BOUNCE_MEASURES",
     "EDITOR_ROUNDS_MEASURE",
     "ENDING_MEASURE",
     "FINISHED_MEASURE",
-    "INVARIANT_BOUNCES_MEASURE",
     "MUST_FIX_OPEN_MEASURE",
     "SHOULD_FIX_OPEN_MEASURE",
     "SKILL_LEVER",
     "TURNS_MEASURE",
     "UNPRICED_TURNS_MEASURE",
-    "VALIDITY_BOUNCES_MEASURE",
     "WRITER_KIND",
     "WriterModels",
     "WriterOverlays",
