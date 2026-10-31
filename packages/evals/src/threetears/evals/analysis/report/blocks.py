@@ -946,7 +946,10 @@ class ChartBlock(_Block):
         return self
 
     def kit_chart(self) -> tuple[str, dict[str, JsonValue]] | None:
-        """The chart as the eval report kit draws it: its kind and its ``data-chart`` JSON.
+        """The chart as the eval report kit draws it: its kind and its data, as computed.
+
+        A page serves the data in ``data-chart`` with every float to twelve significant figures (``chart_html``), and the
+        static page's SVG rounds its coordinates the same way, so this is the one form both are drawn from.
 
         A kit kind is its data. An outcome bar is ``bars``, each arm's census stacked from zero, a look per outcome
         named in the legend, each arm's tag in its colour beside its label. A cost/quality chart is

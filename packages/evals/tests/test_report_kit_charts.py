@@ -28,6 +28,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import KIT_CHARTS, ChartBlock, report_html
+from threetears.evals.schema.hashing import round_floats
 from packages.evals.tests.report_kit_support import KIT, chromium_unavailable, rendered, report_of, report_page
 
 #: Each reference's built page, by name.
@@ -109,7 +110,9 @@ def test_a_package_page_hands_the_kit_the_data_its_blocks_carry(tmp_path: Path) 
     page.write_text(report_page(blocks), encoding="utf-8")
     drawn, errors = rendered(page, _CHARTS)
     assert errors == []
-    assert [(chart["kind"], chart["data"]) for chart in drawn] == [block.kit_chart() for block in blocks]
+    # The page serves each chart's data with every float to twelve significant figures, so the kit draws that form.
+    served = [(kind, round_floats(data)) for kind, data in (block.kit_chart() or (None, None) for block in blocks)]
+    assert [(chart["kind"], chart["data"]) for chart in drawn] == served
     assert all(chart["drawn"] for chart in drawn)
 
 
