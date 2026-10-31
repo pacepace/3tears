@@ -5770,19 +5770,27 @@ class NatsClient:
     ) -> bytes:
         """raw-bytes request/reply round-trip.
 
+        The deadline covers the whole request, not only the wait for the reply: nats-py bounds only
+        that wait, after its publish, and the publish itself can wait with no bound -- on a renewal's
+        publish gate, or on a flush when the pending buffer is past its size (``flush_timeout`` is
+        unset). A request stuck there waited for ever, with nothing in the log; bounded here it is a
+        :class:`RequestTimeoutError` like any lost reply, which a caller sends again and says so.
+
         :param subject: target subject (point only)
         :ptype subject: Subject
         :param payload: pre-serialized request bytes
         :ptype payload: bytes
-        :param timeout: max wait for reply
+        :param timeout: max wait for the whole request
         :ptype timeout: timedelta
         :return: response payload bytes
         :rtype: bytes
         :raises RequestError: on timeout, no responders, transport failure
         """
+        seconds = timeout.total_seconds()
         try:
-            connection = await self._lifecycle.publishing_connection()
-            msg = await connection.request(subject.path, payload, timeout=timeout.total_seconds())
+            async with asyncio.timeout(seconds):
+                connection = await self._lifecycle.publishing_connection()
+                msg = await connection.request(subject.path, payload, timeout=seconds)
         except (_NatsTimeoutError, asyncio.TimeoutError, TimeoutError) as exc:
             raise RequestTimeoutError(
                 f"request timed out: subject={subject.path} timeout={timeout.total_seconds():.1f}s"

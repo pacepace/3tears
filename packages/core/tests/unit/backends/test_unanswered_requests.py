@@ -192,3 +192,65 @@ class TestAnUnansweredRollback:
         with pytest.raises(DataLayerUnavailableError, match="tx.commit"):
             async with proxy.transaction():
                 pass
+
+
+class TestARequestNeverWedges:
+    """a lost reply costs seconds and says so: no wait on the way to L3 is without a deadline."""
+
+    async def test_a_read_whose_reply_never_arrives_is_sent_again_with_a_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import asyncio  # noqa: PLC0415 -- local to the one test that waits on it
+        import logging  # noqa: PLC0415
+
+        from threetears.nats import NatsClient  # noqa: PLC0415
+
+        class _Msg:
+            def __init__(self, data: bytes) -> None:
+                self.data = data
+                self.headers = None
+
+        class _Raw:
+            """a connection whose first request is never answered: its reply was lost."""
+
+            is_closed = False
+            is_connected = True
+
+            def __init__(self) -> None:
+                self.requests = 0
+
+            async def request(self, subject: str, payload: bytes, timeout: float) -> _Msg:
+                self.requests += 1
+                if self.requests == 1:
+                    await asyncio.Event().wait()
+                return _Msg(json.dumps(_rows(5)).encode("utf-8"))
+
+        raw = _Raw()
+        nats = NatsClient(raw=raw, namespace="test", client_name="t")  # type: ignore[arg-type]
+        # a 5 ms statement bound: each attempt waits it and the two seconds' grace
+        proxy = NatsProxyL3Backend(
+            nats_client=nats, namespace_prefix="test", agent_id="agent-123", identity_token=lambda: "t", timeout_ms=5
+        )
+
+        with caplog.at_level(logging.WARNING, logger="threetears.core.backends.nats_proxy"):
+            assert await asyncio.wait_for(proxy.fetch("SELECT count(*) AS n FROM items"), timeout=10) == [{"n": 5}]
+
+        assert raw.requests == 2
+        assert any("got no answer; sending it again" in record.getMessage() for record in caplog.records)
+
+    async def test_an_offloaded_encode_that_never_runs_is_a_lost_request_not_a_wedge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio  # noqa: PLC0415
+
+        proxy, sent = _proxy(_rows(1))
+        monkeypatch.setattr(proxy, "timeout_ms", 5)
+
+        async def never(*_args: Any, **_kwargs: Any) -> Any:
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr("threetears.core.backends.nats_proxy.asyncio.to_thread", never)
+        # a write's offloaded encode: it is not sent again, and it raises within the bound
+        with pytest.raises(DataLayerUnavailableError, match="encoding it on a thread"):
+            await asyncio.wait_for(proxy.nats_request("test.l3.query", {"query": "x"}, offload_encode=True), timeout=10)
+        assert sent == []

@@ -10,11 +10,15 @@ Provider wire quirks are owned here too, so nothing above the provider
 layer has to know a provider's request shape:
 :func:`structured_output_kwargs` translates a json-schema into the
 provider-native structured-output directive, alongside the tool-name
-translation handled by the per-provider chat wrappers.
+translation handled by the per-provider chat wrappers. So is a tool call's
+provider-specific fields (Gemini 3's thought signature): the OpenAI-compatible
+wrapper keeps them on the answer under :data:`TOOL_CALL_PROVIDER_EXTRA_KEY` and
+sends them back on the next request.
 """
 
 from __future__ import annotations
 
+from threetears.models.providers._tool_call_provider_extra import TOOL_CALL_PROVIDER_EXTRA_KEY
 from threetears.models.providers.structured_output import (
     StructuredOutputError,
     StructuredOutputSchemaError,
@@ -23,6 +27,7 @@ from threetears.models.providers.structured_output import (
 )
 
 __all__ = [
+    "TOOL_CALL_PROVIDER_EXTRA_KEY",
     "StructuredOutputError",
     "StructuredOutputSchemaError",
     "StructuredOutputUnsupportedError",

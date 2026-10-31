@@ -888,6 +888,85 @@ async def test_a_versioned_read_opened_during_a_long_swap_waits_for_it_and_reads
     await snapshot.stop()
 
 
+async def test_a_versioned_read_during_a_staged_swap_reads_the_previous_version_at_once() -> None:
+    """a backend that stages its change apart from its publish (StagedPartitions) is staged outside the swap
+    lock: a read opened while the change is staged answers the previous version, rows and epochs together, at
+    once; once it publishes, a read sees the new one."""
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    inside, release = threading.Event(), threading.Event()
+    backend = snapshot.backend
+    replace = backend.replace_partitions
+    published: list[str] = []
+
+    @contextlib.contextmanager
+    def stage(replacements: Any) -> Any:
+        inside.set()
+        release.wait(5)  # a worker process applying a large change
+
+        def publish() -> None:
+            replace(replacements)
+            published.append("published")
+
+        yield publish
+
+    backend.stage_partitions = stage  # type: ignore[attr-defined]
+    publishing = asyncio.ensure_future(
+        snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 20}]})
+    )
+    await asyncio.to_thread(inside.wait, 5)
+
+    def read() -> tuple[dict[str, int], Any]:
+        with snapshot.read_versioned() as versioned:
+            rows = versioned.cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall()
+            return dict(versioned.epochs), rows
+
+    began = time.monotonic()
+    epochs, rows = await asyncio.wait_for(asyncio.to_thread(read), 2)
+    assert time.monotonic() - began < 1.0, "the read waited on the staging"
+    assert (epochs["TX"], rows) == (1, [(1,)]), "a read during the staging reads the previous version"
+    release.set()
+    await publishing
+    assert published == ["published"]
+    epochs, rows = await asyncio.to_thread(read)
+    assert (epochs["TX"], rows) == (2, [(20,)])
+    await snapshot.stop()
+
+
+async def test_staged_swaps_run_one_at_a_time() -> None:
+    """a second swap is staged only once the first has published: each is staged over the version before it."""
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    backend = snapshot.backend
+    replace = backend.replace_partitions
+    staging = 0
+    overlapped: list[int] = []
+    guard = threading.Lock()
+
+    @contextlib.contextmanager
+    def stage(replacements: Any) -> Any:
+        nonlocal staging
+        with guard:
+            staging += 1
+            overlapped.append(staging)
+        time.sleep(0.05)
+        try:
+            yield lambda: replace(replacements)
+        finally:
+            with guard:
+                staging -= 1
+
+    backend.stage_partitions = stage  # type: ignore[attr-defined]
+    await asyncio.gather(
+        snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 20}]}),
+        snapshot.publish("DE", 2, {"results": [{"county": "c9", "state": "DE", "votes": 30}]}),
+    )
+    assert overlapped and max(overlapped) == 1, f"two swaps were staged at once: {overlapped}"
+    await snapshot.stop()
+
+
 async def test_a_dropped_scope_leaves_the_versioned_reads_epochs() -> None:
     """a scope L3 no longer holds is dropped by the catch-up, in the same step as its epoch."""
     snapshot, pointers, _, l3 = _snapshot()
@@ -1509,8 +1588,8 @@ def test_what_any_thread_may_call_reads_only_the_shared_state_each_once_and_runs
 
 # what the snapshot may hand a worker thread: the backend, and the versioned L1, whose state is its own
 _OFF_LOOP = frozenset({"_backend", "_versioned"})
-# the versioned L1's own state: its backend and lock, set once, and the epochs, rebound under the lock
-_VERSIONED_SET_AT_START = frozenset({"_backend", "_lock"})
+# the versioned L1's own state: its backend and its two locks, set once, and the epochs, rebound under the lock
+_VERSIONED_SET_AT_START = frozenset({"_backend", "_lock", "_writing"})
 _VERSIONED_REBOUND = frozenset({"_held"})
 
 
@@ -1904,6 +1983,42 @@ async def test_a_pointer_never_moves_onto_a_staged_chunk_that_is_gone() -> None:
 
     assert (moved, skipped) == ([], ["TX"])
     assert pointers.entries["enr.s.TX"][0] == before, "a pointer was moved onto a missing chunk"
+    await snapshot.stop()
+
+
+async def test_a_publish_of_many_scopes_retires_their_older_chunks_in_one_pass_over_the_names() -> None:
+    """a load's publish moves every state at once and retires each one's older chunks: each name listed is read once,
+    by its own scope, not once per scope moved -- the per-scope pass held the event loop 50-60 ms a publish on
+    cobalt prod (51 states). Chunks of scopes not moved, and those the pointers serve, stay."""
+    snapshot, pointers, store, l3 = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    scopes = [f"S{n:02d}" for n in range(51)]
+    staged = []
+    for scope in scopes:
+        staged.append(await snapshot.stage(scope, 7, {"results": [{"county": "c1", "state": scope, "votes": 7}]}))
+        l3.epochs[scope] = 7
+    digest = next(iter(staged[0].objects.values())).rsplit(".", 1)[1]
+    old = {f"enr/{scope}/{epoch}/results.{digest}" for scope in scopes for epoch in range(1, 7)}
+    old |= {
+        f"enr.p/{scope}/{epoch}/results.{digest}.{piece}"
+        for scope in scopes
+        for epoch in range(1, 7)
+        for piece in range(40)
+    }
+    kept = {f"enr/OTHER{n}/1/results.{digest}" for n in range(500)}
+    for name in old | kept:
+        store.objects[name] = b"x"
+
+    began = time.perf_counter()
+    moved, skipped = await snapshot.publish_staged(staged, carry_at=dict.fromkeys(scopes, 0), whole=True)
+    spent = time.perf_counter() - began
+
+    assert (sorted(moved), skipped) == (scopes, [])
+    assert not old & set(store.objects), "an older chunk of a moved scope was left"
+    assert kept <= set(store.objects), "a chunk of a scope not moved was retired"
+    assert _served(pointers) <= set(store.objects)
+    # the fakes answer at once, so this is the publish's own work on the loop: one pass over ~13k names
+    assert spent < 0.25, f"the publish's retire held the loop {spent:.3f} s"
     await snapshot.stop()
 
 
@@ -3682,3 +3797,169 @@ async def test_a_staged_publish_of_many_scopes_lists_the_store_once_and_asks_one
     assert store.listings == 1, f"the publish listed the store {store.listings} times"
     assert len(asks) == 1, f"the publish asked the declarer {len(asks)} times"
     await snapshot.stop()
+
+
+async def test_a_write_that_begins_mid_rebuild_stops_its_reads_and_the_copy_opens_on_what_the_write_published(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A reset's clear while a replica rebuilds its copy (cobalt prod, 2026-10-31): the rebuild must stop reading what
+    the clear empties -- not read on for the rest of a scope of millions of rows -- and the copy opens on the cleared
+    scopes the clear publishes."""
+    snapshot, pointers, _, l3 = _snapshot(l3_concurrency=1, write_check=timedelta(0))
+    began: list[str] = []
+
+    def a_clear_begins(scope: str) -> None:
+        # the write begins while the first scope's rows are read
+        if not began:
+            began.append(scope)
+            l3.writing = True
+
+    l3.after_read = a_clear_begins
+    with caplog.at_level(logging.INFO, logger=scoped_snapshot_module.__name__):
+        await snapshot.start()
+        await _until(lambda: snapshot.status().phase is SnapshotPhase.WAITING, what="the rebuild waits on the write")
+    reads = l3.statements
+    assert began == ["DE"]
+    assert not snapshot.is_ready
+    assert any("the rebuild stops reading" in r.getMessage() for r in caplog.records)
+    await asyncio.sleep(0.2)
+    assert l3.statements - reads <= 4, "the rebuild went on reading rows while the write ran"
+
+    # the clear: every row gone, every scope at its epoch, staged empty and published
+    l3.rows.clear()
+    l3.epochs = {"TX": 2, "DE": 2}
+    staged = [await snapshot.stage(scope, 2, {"results": []}) for scope in ("DE", "TX")]
+    l3.writing = False
+    await snapshot.publish_staged(staged, carry_at={"DE": 0, "TX": 0}, whole=True)
+
+    await snapshot.wait_ready(timeout=5)
+    assert _held_votes(snapshot, "TX") == [] and _held_votes(snapshot, "DE") == []
+    assert snapshot.status().phase is SnapshotPhase.READY
+    await snapshot.stop()
+
+
+async def test_a_rebuild_says_each_scope_it_publishes_with_its_rows_and_seconds(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    snapshot, pointers, _, _ = _snapshot()
+    with caplog.at_level(logging.INFO, logger=scoped_snapshot_module.__name__):
+        await snapshot.start()
+        await snapshot.wait_ready(timeout=5)
+    lines = [r for r in caplog.records if "rebuilt scope" in r.getMessage()]
+    assert [r.extra_data["scope"] for r in lines] == ["DE", "TX"]  # type: ignore[attr-defined]
+    assert [(r.extra_data["done"], r.extra_data["total"], r.extra_data["rows"]) for r in lines] == [  # type: ignore[attr-defined]
+        (1, 2, 1),
+        (2, 2, 1),
+    ]
+    assert all("read_seconds" in r.extra_data and "publish_seconds" in r.extra_data for r in lines)  # type: ignore[attr-defined]
+    await snapshot.stop()
+
+
+# ----------------------------------------------------------------------
+# two side writes on one scope, each changing its own tables (cobalt prod, 2026-10-31): AP's whole tables and
+# LSF's appended ones, loaded as separate writes into one snapshot. Every write's data reaches the pointer, with
+# nothing left for a catch-up that writes back to back keep from running
+# ----------------------------------------------------------------------
+
+
+async def _side_writer() -> tuple[ScopedSnapshot, ScopedSnapshot, _Pointers, _TwoTableL3]:
+    """a writer and a second replica over the append-only results and the whole-chunk totals, both ready at epoch 1."""
+    tables = (*_APPEND, SnapshotTable(name="totals", scope_column="state", key=("state",)))
+    pointers, store, l3 = _Pointers(), _Store(), _TwoTableL3()
+    writer, _, _, _ = _snapshot(tables=tables, pointers=pointers, store=store, backend=_two_table_backend(), l3=l3)
+    replica, _, _, _ = _snapshot(tables=tables, pointers=pointers, store=store, backend=_two_table_backend(), l3=l3)
+    await _started(writer, pointers)
+    await replica.start()
+    await replica.wait_ready(timeout=5)
+    return writer, replica, pointers, l3
+
+
+def _tx_totals(snapshot: ScopedSnapshot) -> list[tuple[str, int]]:
+    with snapshot.read() as cursor:
+        return cursor.execute("SELECT state, total FROM totals WHERE state = 'TX'").fetchall()
+
+
+async def _serves(replica: ScopedSnapshot, epoch: int, counties: list[tuple[str, int]], total: int) -> None:
+    await _until(lambda: replica.applied_epoch("TX") == epoch, what=f"the replica applied epoch {epoch}")
+    assert _tx_counties(replica) == counties
+    assert _tx_totals(replica) == [("TX", total)]
+
+
+async def test_two_side_writes_whose_commits_interleave_both_reach_the_pointer() -> None:
+    """the LSF write took its epochs before the AP write committed: by its publish the AP write had moved the pointer
+    past the epoch it carries from, and its stage was left for a catch-up that never ran."""
+    writer, replica, pointers, l3 = await _side_writer()
+    ap = await writer.stage("TX", 2, {"totals": [{"state": "TX", "total": 4}]})
+    lsf = await writer.stage("TX", 3, {}, added={"results": [_county("c3", 3)]})
+    # L3 after both commits: the AP write's totals at 2, the LSF write's row at 3
+    l3.totals[0]["total"] = 4
+    l3.rows.append(_county("c3", 3))
+    l3.epochs["TX"] = 3
+
+    assert await writer.publish_staged([ap], carry_at={"TX": 1}) == (["TX"], [])
+    moved, skipped = await writer.publish_staged([lsf], carry_at={"TX": 1})
+
+    assert (moved, skipped) == (["TX"], []), "the second side's stage was left for the catch-up"
+    assert json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 3
+    await _serves(replica, 3, [("c1", 1), ("c3", 3)], 4)
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_write_after_one_left_behind_still_moves_the_scope_with_l3s_rows_for_what_it_left_out() -> None:
+    """a scope whose pointer is behind its L3 epoch (a write's stage was skipped) is not left behind by every write
+    after: each one's untouched tables come from L3, which holds the scope at the write's epoch."""
+    writer, replica, pointers, l3 = await _side_writer()
+    # a write at 2 changed the totals and its pointer never moved
+    l3.totals[0]["total"] = 4
+    l3.epochs["TX"] = 2
+    lsf = await writer.stage("TX", 3, {}, added={"results": [_county("c3", 3)]})
+    l3.rows.append(_county("c3", 3))
+    l3.epochs["TX"] = 3
+
+    moved, skipped = await writer.publish_staged([lsf], carry_at={"TX": 2})
+
+    assert (moved, skipped) == (["TX"], []), "a scope behind its L3 epoch was left behind again"
+    await _serves(replica, 3, [("c1", 1), ("c3", 3)], 4)
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_scope_behind_is_left_for_the_catch_up_while_a_write_in_progress_has_touched_it() -> None:
+    """L3 is read for the tables a stage left out only when it holds the scope at the stage's epoch: never while a
+    later write has rows there, so the pointer never claims an epoch's data it does not hold."""
+    writer, replica, pointers, l3 = await _side_writer()
+    before = pointers.entries["enr.s.TX"][0]
+    l3.totals[0]["total"] = 4
+    l3.epochs["TX"] = 2
+    lsf = await writer.stage("TX", 3, {}, added={"results": [_county("c3", 3)]})
+    l3.rows.append(_county("c3", 3))
+    l3.epochs["TX"] = 3
+    # the next write has begun, and has already written TX's totals
+    l3.writing, l3.pending = True, {"TX"}
+    l3.totals[0]["total"] = 9
+
+    moved, skipped = await writer.publish_staged([lsf], carry_at={"TX": 2})
+
+    assert (moved, skipped) == ([], ["TX"])
+    assert pointers.entries["enr.s.TX"][0] == before, "a pointer took rows of a write that has not committed"
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_scope_already_past_the_stage_is_not_moved_back() -> None:
+    writer, replica, pointers, l3 = await _side_writer()
+    l3.totals[0]["total"] = 4
+    l3.epochs["TX"] = 2
+    lsf = await writer.stage("TX", 3, {}, added={"results": [_county("c3", 3)]})
+    l3.rows.append(_county("c3", 3))
+    # a later write committed at 4 before this publish
+    l3.epochs["TX"] = 4
+    before = pointers.entries["enr.s.TX"][0]
+
+    moved, _ = await writer.publish_staged([lsf], carry_at={"TX": 2})
+
+    assert moved == []
+    assert pointers.entries["enr.s.TX"][0] == before, "a pointer took L3's rows of a later epoch as the stage's"
+    await writer.stop()
+    await replica.stop()

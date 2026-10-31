@@ -5,6 +5,7 @@ Each takes the job's context first, as :class:`~threetears.core.shared_arrow.Sha
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from collections.abc import Iterator
@@ -14,7 +15,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from threetears.core.shared_arrow import JobContext, MappedVersion
+from threetears.core.shared_arrow import HandedTables, JobContext, MappedTables, MappedVersion
 
 #: how long a job waits on the test's signal file before it gives up
 _WAIT_SECONDS = 60.0
@@ -225,3 +226,84 @@ def write_on_signal(context: JobContext, signals: str) -> None:
     (where / "started").touch()
     _wait_for(where / "go")
     context.result.write({"t": pa.table({"a": [1]})})
+
+
+def _digest(mapped: MappedTables, table: str) -> dict[str, Any]:
+    """what a handed table holds, read from its mapping: its rows, a digest of its first column's values, and the bytes
+    this process's Arrow pool allocated meanwhile (none, when every column is the mapped file's bytes).
+
+    :return: ``rows``, ``sha256`` and ``allocated``
+    :rtype: dict[str, Any]
+    """
+    before = pa.total_allocated_bytes()
+    held = mapped.tables[table]
+    digest = hashlib.sha256()
+    for chunk in held.column(0).chunks:
+        digest.update(memoryview(chunk.buffers()[1])[: len(chunk) * 8])
+    return {"rows": held.num_rows, "sha256": digest.hexdigest(), "allocated": pa.total_allocated_bytes() - before}
+
+
+def handed_digest(context: JobContext, table: str) -> dict[str, Any]:
+    """:func:`_digest` of a table the pool handed the job.
+
+    :return: as :func:`_digest`
+    :rtype: dict[str, Any]
+    """
+    assert context.tables is not None
+    return _digest(context.tables, table)
+
+
+def digest_of_handed(handed: HandedTables, table: str) -> dict[str, Any]:
+    """:func:`_digest` of a table handed to a plain executor's job, mapped here.
+
+    :return: as :func:`_digest`
+    :rtype: dict[str, Any]
+    """
+    with handed.mapped() as mapped:
+        return _digest(mapped, table)
+
+
+def hold_handed_on_signal(handed: HandedTables, signals: str) -> int:
+    """map a hand-off, say so, and hold it until the test's go: a worker still reading after its hand-off is released.
+
+    :return: the first table's rows
+    :rtype: int
+    """
+    where = Path(signals)
+    with handed.mapped() as mapped:
+        (where / "mapped").touch()
+        _wait_for(where / "go")
+        return next(iter(mapped.tables.values())).num_rows
+
+
+def handed_on_signal(context: JobContext, signals: str) -> int:
+    """say the handed tables are mapped, wait for the go, then answer their rows.
+
+    :return: the rows
+    :rtype: int
+    """
+    assert context.tables is not None
+    where = Path(signals)
+    (where / "started").touch()
+    _wait_for(where / "go")
+    return sum(table.num_rows for table in context.tables.tables.values())
+
+
+def die_holding_handed(context: JobContext) -> None:
+    """die (no clean-up of any kind) with the handed tables mapped.
+
+    :return: never
+    :rtype: None
+    """
+    assert context.tables is not None
+    os._exit(19)
+
+
+def handed_rows(context: JobContext) -> int:
+    """the rows of every table the job was handed.
+
+    :return: the rows
+    :rtype: int
+    """
+    assert context.tables is not None
+    return sum(table.num_rows for table in context.tables.tables.values())

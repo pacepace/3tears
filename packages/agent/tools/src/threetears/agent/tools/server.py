@@ -7,11 +7,12 @@ handles graceful shutdown. each tool pod runs one ToolServer.
 from __future__ import annotations
 
 import asyncio
+import enum
 import os
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, Iterable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Final, Iterable
 from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 
 from datetime import timedelta
@@ -224,6 +225,40 @@ LEAVE_CALLS_SECONDS: float = 10.0
 
 #: how long a replica that could not join its call queue group waits before it tries again
 JOIN_CALLS_RETRY_SECONDS: float = 1.0
+
+#: how many calls a replica takes off its call subject at once, by default (:class:`ToolServer`'s
+#: ``max_calls_in_flight``). The subscription was serial: each call was taken only once the one before it was
+#: answered, so one slow call held every call behind it on that replica -- on cobalt prod, 2026-10-31, a reader's
+#: favorites read that touched nothing slow waited 9 s behind an ``lsf_ready`` call. Bounds what a replica holds
+#: in hand at once; ``max_concurrent_calls`` still bounds how many tools run at once inside it
+CALLS_IN_FLIGHT: Final = 64
+
+#: the queue group a held replica answers its control tools in, after the call subject's path
+#: (:meth:`ToolServer.hold_calls`): a group of its own, so NATS hands every call to one member of the
+#: pod's call group AND one held replica, and only the tools named for it are answered there
+HELD_QUEUE_SUFFIX: Final = ".held"
+
+#: which of a replica's two subscriptions on the call subject handed it a call: the pod's call group, or the held
+#: group (:data:`HELD_QUEUE_SUFFIX`). A control call is claimed once per group (:meth:`ToolServer._claim_delivery`)
+_CALL_GROUP: Final = "call"
+_HELD_GROUP: Final = "held"
+
+
+class _CallState(enum.Enum):
+    """where a replica stands in its call subject's queue groups: the one state its lifecycle moves through.
+
+    ``STARTING`` (not held, not yet subscribed) -> ``OPEN`` at :meth:`ToolServer.serve`; a held replica
+    (:meth:`ToolServer.hold_calls`) ``HELD`` -> ``ANSWERING_HELD`` (:meth:`ToolServer.answer_while_held`) ->
+    ``OPEN`` (:meth:`ToolServer.open_calls`, also straight from ``HELD``); and any state -> ``LEFT``
+    (:meth:`ToolServer.leave_calls`), which is final. ``serving_calls`` is ``OPEN``.
+    """
+
+    STARTING = "starting"
+    HELD = "held"
+    ANSWERING_HELD = "answering_held"
+    OPEN = "open"
+    LEFT = "left"
+
 
 if TYPE_CHECKING:
     from threetears.core.coordination.replay_anchor import ReplayAnchor
@@ -977,6 +1012,19 @@ class _AssertionGateRefusal:
     reason: str
 
 
+@dataclass(frozen=True)
+class _AnsweredBySibling:
+    """the proxy-assertion gate's verdict on a control call this replica was handed beside a sibling: no refusal,
+    the sibling answers it (:meth:`ToolServer._claim_delivery`)."""
+
+
+#: the outcome of a control call this replica was handed beside a sibling (a held replica and a member of the call
+#: group, :data:`HELD_QUEUE_SUFFIX`) whose nonce the sibling recorded first. The sibling runs, answers, counts and
+#: audits the call; this replica stays silent and counts it under this outcome on /metrics, apart from ``failure``,
+#: and publishes no audit row: the call happened once.
+_OUTCOME_ANSWERED_BY_SIBLING: Final = "answered_by_sibling"
+
+
 class HardCallTimeout(Exception):
     """the pod's hard per-call execution limit elapsed before the tool returned.
 
@@ -1085,6 +1133,7 @@ class ToolServer:
         object_resolver: "ObjectResolver | None" = None,
         engagement_resolver: "EngagementScopeResolver | None" = None,
         max_concurrent_calls: int | None = None,
+        max_calls_in_flight: int = CALLS_IN_FLIGHT,
         max_call_seconds: float | None = None,
         result_delivery_retry_seconds: float = _RESULT_DELIVERY_RETRY_SECONDS,
         registration_key: "Callable[[], RegistrationKey | None] | None" = None,
@@ -1222,6 +1271,10 @@ class ToolServer:
             backstop against a burst of memory- or cpu-heavy tools (e.g. several
             scanners) overrunning the pod's resources at once. Must be >= 1.
         :ptype max_concurrent_calls: int | None
+        :param max_calls_in_flight: how many calls this replica takes off its call subject at once
+            (:data:`CALLS_IN_FLIGHT`): each runs as its own task, so a slow call never holds the calls behind it.
+            ``1`` takes them one at a time, in arrival order, as the server once did. Must be >= 1.
+        :ptype max_calls_in_flight: int
         :param max_call_seconds: a HARD ceiling on the wall-clock a single
             ``tool.run`` may take, counted from when it acquires its slot. ``None``
             (default) applies no server ceiling -- each tool is bounded only by its
@@ -1258,7 +1311,7 @@ class ToolServer:
         :ptype assertion_replay_guard: ReplayGuard | None
         :raises ValueError: when neither ``nats_url`` nor
             ``nats_client`` carries a usable value, ``max_concurrent_calls`` /
-            ``max_call_seconds`` is set to a non-positive value,
+            ``max_call_seconds`` is set to a non-positive value, ``max_calls_in_flight`` is below 1,
             ``result_delivery_retry_seconds`` is negative, an injected
             ``assertion_replay_guard`` was sized for a smaller verifier future tolerance than the
             pod's assertion leeway, ``pod_id`` is dotted -- an agent's shape -- but names no
@@ -1269,6 +1322,9 @@ class ToolServer:
             raise ValueError("ToolServer requires either nats_url or nats_client; neither was supplied")
         if max_concurrent_calls is not None and max_concurrent_calls < 1:
             raise ValueError(f"max_concurrent_calls must be >= 1 when set, got {max_concurrent_calls}")
+        if max_calls_in_flight < 1:
+            raise ValueError(f"max_calls_in_flight must be >= 1, got {max_calls_in_flight}")
+        self._max_calls_in_flight = max_calls_in_flight
         if max_call_seconds is not None and max_call_seconds <= 0:
             raise ValueError(f"max_call_seconds must be > 0 when set, got {max_call_seconds}")
         self._max_call_seconds = max_call_seconds
@@ -1412,13 +1468,20 @@ class ToolServer:
         self._calls_idle.set()
         self._shutdown_event = asyncio.Event()
         self._ready_event = asyncio.Event()
-        # the call subject's queue-group membership, which decides whether NATS routes calls here. see
-        # :meth:`hold_calls`, :meth:`open_calls` and :meth:`leave_calls`.
-        self._calls_held = False
+        # the call subject's queue-group membership, which decides whether NATS routes calls here: one state
+        # (:class:`_CallState`), the owner's two asks (:meth:`open_calls`, :meth:`answer_while_held`), and the two
+        # subscriptions the states stand for. see :meth:`hold_calls`, :meth:`open_calls` and :meth:`leave_calls`.
+        self._call_state = _CallState.STARTING
         self._calls_opened = asyncio.Event()
-        self._calls_left = False
         self._call_subscription: Any = None
         self._joining_calls: asyncio.Task[None] | None = None
+        # the tools a held replica answers, in a queue group of its own, once its owner says they can answer.
+        self._held_answering: frozenset[str] = frozenset()
+        self._answering_held = asyncio.Event()
+        self._held_subscription: Any = None
+        self._joining_held: asyncio.Task[None] | None = None
+        # a subscription that completed after the task awaiting it was cancelled, being drained
+        self._dropping_subscriptions: set[asyncio.Task[Any]] = set()
         # lifecycle hooks the OWNER of this server registers before ``serve()``, run once the
         # connection exists and before anything is subscribed or registered. see
         # :meth:`add_connected_callback`.
@@ -1771,7 +1834,7 @@ class ToolServer:
         resolved = get_serve_ready_timeout() if timeout is None else timeout
         await asyncio.wait_for(self._ready_event.wait(), timeout=resolved)
 
-    def hold_calls(self) -> None:
+    def hold_calls(self, *, answering: Iterable[str] = ()) -> None:
         """keep this replica out of its call queue group until :meth:`open_calls`.
 
         A pod identity runs as N replicas that share one queue group on the call subject, and NATS hands each
@@ -1785,13 +1848,41 @@ class ToolServer:
 
         A pod that never calls this joins at once, before it registers, exactly as before.
 
+        **Control tools are answered while held** (``answering``). A held replica answers nothing, so a
+        pod whose every replica is held -- each rebuilding its copy for hours -- could not be told to
+        reset, asked how far it is, or have a setting changed (cobalt prod, 2026-10-31). The tools named
+        here, which answer from the pod's shared state rather than from the replica's copy, are answered
+        while held once the owner calls :meth:`answer_while_held`: the replica subscribes the call subject
+        in a queue group of its own (:data:`HELD_QUEUE_SUFFIX`), so NATS hands each call to one member of
+        the call group and to one held replica; the held replica answers only these tools and drops
+        every other call, which its siblings answer. A control call handed to both is run once: each
+        replica claims the call for the group that handed it (:meth:`_claim_delivery`), and the one whose
+        claim is its group's first but finds the proxy assertion's nonce consumed is the sibling of the one
+        that answers, and says nothing. A genuine replay is still refused and audited by every replica a
+        group hands it to a second time. With no member in the call group (every replica held), a reader's
+        call goes unanswered until the caller's deadline, where it would have found no responder at once.
+
+        :param answering: the tools (``mcp_name``) answered while held; none keeps every call held
+        :ptype answering: Iterable[str]
         :return: nothing
         :rtype: None
         :raises RuntimeError: when :meth:`serve` has already started
         """
         if self._running:
             raise RuntimeError("hold_calls must be called before serve()")
-        self._calls_held = True
+        self._call_state = _CallState.HELD
+        self._held_answering = frozenset(answering)
+
+    def answer_while_held(self) -> None:
+        """answer the tools :meth:`hold_calls` named, while held: they can answer now.
+
+        Callable at any time and more than once; before :meth:`serve` reaches it the replica subscribes as
+        soon as it does, and once the calls are opened or left it does nothing.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._answering_held.set()
 
     def open_calls(self) -> None:
         """let this replica join its call queue group: the counterpart of :meth:`hold_calls`.
@@ -1814,7 +1905,7 @@ class ToolServer:
         :return: true while the call subject is subscribed and not being left
         :rtype: bool
         """
-        return self._call_subscription is not None and not self._calls_left
+        return self._call_state is _CallState.OPEN
 
     async def _subscribe_calls(self) -> None:
         """subscribe the call subject in the pod's queue group: from here NATS routes calls to this replica.
@@ -1841,10 +1932,23 @@ class ToolServer:
         # subject already is both -- it carries the pod id, so two DIFFERENT tool
         # pods never share a group and a restarted replica rejoins its own.
         call_subject = Subjects.tools_internal(self._pod_id)
-        # sender-posture: signed-envelope -- hub token plus a registry assertion bound to pod, body, expiry, jti
-        self._call_subscription = await self._nc.subscribe(
-            subject=call_subject, queue=call_subject.path, cb=self.handle_call
+        # concurrent: a slow call never holds the calls behind it (:data:`CALLS_IN_FLIGHT`)
+        assert self._nc is not None  # serve() connected first
+        subscription = await self._subscribe_or_drop(
+            # sender-posture: signed-envelope -- hub token plus a registry assertion bound to pod, body, expiry, jti
+            self._nc.subscribe(
+                subject=call_subject,
+                queue=call_subject.path,
+                cb=self.handle_call,
+                max_in_flight=self._max_calls_in_flight,
+            )
         )
+        if self._call_state is _CallState.LEFT:
+            # left while the subscribe was in flight: never routed here
+            self._drop_subscription(subscription)
+            return
+        self._call_subscription = subscription
+        self._call_state = _CallState.OPEN
         log.info(
             "subscribed to call subject",
             extra={"extra_data": {"subject": call_subject.path, "queue": call_subject.path}},
@@ -1857,7 +1961,7 @@ class ToolServer:
         :rtype: None
         """
         await self._calls_opened.wait()
-        while not self._calls_left and self._running and self._call_subscription is None:
+        while self._call_state in (_CallState.HELD, _CallState.ANSWERING_HELD) and self._running:
             try:
                 await self._subscribe_calls()
             except SubscribeError as exc:
@@ -1865,6 +1969,128 @@ class ToolServer:
                 # for good, not ready, while nothing said why
                 contain(exc, log=log, what="could not join the call queue group; trying again", level="error")
                 await asyncio.sleep(JOIN_CALLS_RETRY_SECONDS)
+        # in the call group now, which takes every call: the held group is left (a call handed to both meanwhile is
+        # answered once, by the nonce)
+        if self._call_subscription is not None:
+            await self._leave_held(timeout=LEAVE_CALLS_SECONDS)
+
+    async def _join_held_when_asked(self) -> None:
+        """wait for :meth:`answer_while_held`, then answer the control tools in the held group until the calls open.
+
+        :return: nothing
+        :rtype: None
+        """
+        await self._answering_held.wait()
+        call_subject = Subjects.tools_internal(self._pod_id)
+        queue = f"{call_subject.path}{HELD_QUEUE_SUFFIX}"
+        while self._call_state is _CallState.HELD and self._running:
+            try:
+                assert self._nc is not None  # serve() connected first
+                subscription = await self._subscribe_or_drop(
+                    # sender-posture: signed-envelope -- the call subject's own envelope, verified as every call is
+                    self._nc.subscribe(
+                        subject=call_subject,
+                        queue=queue,
+                        cb=self.handle_held_call,
+                        max_in_flight=self._max_calls_in_flight,
+                    )
+                )
+            except SubscribeError as exc:
+                # NOSILENT: logged, and asked again: a held replica that could not subscribe answers no control
+                # call, which is what this subscription exists to fix
+                contain(exc, log=log, what="could not answer control calls while held; trying again", level="error")
+                await asyncio.sleep(JOIN_CALLS_RETRY_SECONDS)
+                continue
+            if self._call_state is not _CallState.HELD:
+                # opened or left while the subscribe was in flight: the call group (or nobody) answers now
+                self._drop_subscription(subscription)
+                return
+            self._held_subscription = subscription
+            self._call_state = _CallState.ANSWERING_HELD
+            log.info(
+                "held: this replica answers its control tools while its siblings answer the rest",
+                extra={"extra_data": {"queue": queue, "tools": sorted(self._held_answering)}},
+            )
+
+    async def _leave_held(self, *, timeout: float) -> bool:
+        """stop answering control calls in the held group; the calls already handed here are answered.
+
+        :param timeout: longest to wait for them, in seconds
+        :ptype timeout: float
+        :return: ``True`` when the held group was drained within ``timeout``, or never joined
+        :rtype: bool
+        """
+        joining, self._joining_held = self._joining_held, None
+        if joining is not None and joining is not asyncio.current_task():
+            await cancel_and_wait(joining)
+        subscription, self._held_subscription = self._held_subscription, None
+        if subscription is None or self._nc is None:
+            return True
+        drained = await self._nc.drain(subscription, timeout=timeout)
+        log.info("left the held queue group", extra={"extra_data": {"pod_id": self._pod_id, "drained": drained}})
+        return bool(drained)
+
+    async def _subscribe_or_drop(self, subscribe: Coroutine[Any, Any, Any]) -> Any:
+        """await a subscribe of the call subject; a subscription that completes after this task is cancelled is
+        drained, never left standing unowned (a replica that left would be routed calls it never answers).
+
+        :param subscribe: the subscribe (:meth:`NatsClient.subscribe`), not yet awaited
+        :ptype subscribe: Coroutine[Any, Any, Any]
+        :return: the subscription
+        :rtype: Any
+        """
+        subscribing = asyncio.ensure_future(subscribe)
+        try:
+            return await asyncio.shield(subscribing)
+        except asyncio.CancelledError:
+            subscribing.add_done_callback(self._drop_late_subscription)
+            raise
+
+    def _drop_late_subscription(self, subscribing: asyncio.Future[Any]) -> None:
+        """drain a subscription whose awaiting task was cancelled before it completed.
+
+        :param subscribing: the subscribe, done
+        :ptype subscribing: asyncio.Future[Any]
+        :return: nothing
+        :rtype: None
+        """
+        if not subscribing.cancelled() and subscribing.exception() is None:
+            self._drop_subscription(subscribing.result())
+
+    def _drop_subscription(self, subscription: Any) -> None:
+        """drain a subscription nothing owns, in a task of its own (kept until it ends).
+
+        :param subscription: the subscription
+        :ptype subscription: Any
+        :return: nothing
+        :rtype: None
+        """
+        if self._nc is None:
+            return
+        dropping = asyncio.ensure_future(self._nc.drain(subscription, timeout=LEAVE_CALLS_SECONDS))
+        self._dropping_subscriptions.add(dropping)
+        dropping.add_done_callback(self._dropping_subscriptions.discard)
+
+    async def handle_held_call(self, msg: IncomingMessage) -> None:
+        """a call handed to the held group: answered when it names a control tool, else left to the call group.
+
+        The NATS callback of the held subscription (:meth:`answer_while_held`), public for the reason
+        :meth:`handle_call` is: production binds it as the subscription's ``cb``, and a test delivers a call
+        through the same door NATS does. The name and single-``msg`` shape are part of that contract.
+
+        :param msg: the call
+        :ptype msg: IncomingMessage
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            tool_name = CallRequest.model_validate_json(msg.data).tool_name
+        except ValidationError:
+            # NOSILENT: the call group's member refuses and logs a malformed envelope; answered here too, it would
+            # be answered twice
+            return
+        if tool_name in self._held_answering:
+            await self._handle_call(msg, group=_HELD_GROUP)
 
     async def leave_calls(self, *, timeout: float = LEAVE_CALLS_SECONDS) -> bool:
         """leave the call queue group gracefully: NATS routes no new call here, and those already routed are
@@ -1881,21 +2107,29 @@ class ToolServer:
         :return: ``True`` when every routed call was answered within ``timeout``
         :rtype: bool
         """
-        self._calls_left = True
+        self._call_state = _CallState.LEFT
         joining, self._joining_calls = self._joining_calls, None
         if joining is not None:
             await cancel_and_wait(joining)
+        started = time.monotonic()
+        # a held replica answering its control tools leaves that group too, within the same bound
+        had_held = self._held_subscription is not None
+        held_drained = await self._leave_held(timeout=timeout)
         subscription, self._call_subscription = self._call_subscription, None
         if subscription is None or self._nc is None:
-            return True
-        started = time.monotonic()
-        drained = await self._nc.drain(subscription, timeout=timeout)
+            if not had_held:
+                return True
+            answered_held = await self.await_sync_replies(timeout=max(0.0, timeout - (time.monotonic() - started)))
+            return held_drained and answered_held
+        drained = await self._nc.drain(
+            subscription, timeout=max(0.0, timeout - (time.monotonic() - started)) if had_held else timeout
+        )
         answered = await self.await_sync_replies(timeout=max(0.0, timeout - (time.monotonic() - started)))
         log.info(
             "left the call queue group",
             extra={"extra_data": {"pod_id": self._pod_id, "drained": drained, "answered": answered}},
         )
-        return drained and answered
+        return held_drained and drained and answered
 
     def register(self, tool: TearsTool) -> None:
         """register tool for serving via NATS.
@@ -2173,7 +2407,7 @@ class ToolServer:
         # the call subject first, so a call routed the moment the registry marks this pod available finds a
         # member -- unless the owner holds calls (hold_calls): then siblings answer until it opens them.
         # Heartbeat publishes are write-only and need no queue group.
-        if not self._calls_held:
+        if self._call_state is _CallState.STARTING:
             await self._subscribe_calls()
 
         probe_subject = Subjects.tools_probe(self._pod_id)
@@ -2189,8 +2423,10 @@ class ToolServer:
         await self.publish_registration(await_reply=True)
 
         self._ready_event.set()
-        if self._calls_held:
+        if self._call_state is _CallState.HELD:
             self._joining_calls = asyncio.create_task(self._join_calls_when_opened(), name="tool-server-join-calls")
+            if self._held_answering:
+                self._joining_held = asyncio.create_task(self._join_held_when_asked(), name="tool-server-join-held")
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         hold_tier_reads_timer()
@@ -3074,7 +3310,9 @@ class ToolServer:
             result = (request.model_copy(update={"context": verified_context}), None, principal.is_tool_pod)
         return result
 
-    async def _verify_proxy_assertion(self, request: CallRequest) -> _AssertionGateRefusal | None:
+    async def _verify_proxy_assertion(
+        self, request: CallRequest, *, group: str = _CALL_GROUP
+    ) -> _AssertionGateRefusal | _AnsweredBySibling | None:
         """verify the registry proxy's body-bound assertion (the pod's PRIMARY identity gate).
 
         The proxy signs an assertion binding the verified caller identity + the call body + a
@@ -3103,11 +3341,14 @@ class ToolServer:
 
         :param request: the parsed inbound call request
         :ptype request: CallRequest
-        :return: ``None`` when the call may proceed; the refusal -- its code, its one message, and
-            the server-side reason for the log and the audit -- when it MUST be rejected
-        :rtype: _AssertionGateRefusal | None
+        :param group: the queue group that handed the call (:meth:`_claim_delivery`)
+        :ptype group: str
+        :return: ``None`` when the call may proceed; :class:`_AnsweredBySibling` when a sibling replica handed
+            the same publish answers it; the refusal -- its code, its one message, and the server-side reason for
+            the log and the audit -- when it MUST be rejected
+        :rtype: _AssertionGateRefusal | _AnsweredBySibling | None
         """
-        refusal: _AssertionGateRefusal | None = None
+        refusal: _AssertionGateRefusal | _AnsweredBySibling | None = None
         try:
             assertion = request.proxy_assertion
             if assertion is None:
@@ -3134,12 +3375,18 @@ class ToolServer:
                 body_hash=body_hash,
                 leeway_seconds=_ASSERTION_LEEWAY_SECONDS,
             )
+            issued_at = datetime.fromtimestamp(claims.iat, UTC)
             try:
-                fresh = await guard.record_unique(claims.jti, issued_at=datetime.fromtimestamp(claims.iat, UTC))
+                sibling_may_answer = await self._claim_delivery(guard, request.tool_name, claims.jti, group, issued_at)
+                fresh = await guard.record_unique(claims.jti, issued_at=issued_at)
             except NatsClientError as exc:
                 refusal = self._assertion_ledger_unavailable(request, guard.bucket_name, exc)
             else:
-                if not fresh:
+                if not fresh and sibling_may_answer:
+                    # this publish's other delivery (the call group's, or the held group's) recorded the nonce and
+                    # answers it; a re-publish finds its own group's claim taken and is refused below
+                    refusal = _AnsweredBySibling()
+                elif not fresh:
                     raise IdentityTokenError("proxy assertion nonce replay")
         except (IdentityTokenError, ValueError) as exc:
             kind = type(exc).__name__
@@ -3153,6 +3400,38 @@ class ToolServer:
                 reason=f"proxy assertion verification failed ({kind})",
             )
         return refusal
+
+    async def _claim_delivery(self, guard: Any, tool_name: str, jti: str, group: str, issued_at: datetime) -> bool:
+        """claim a control call for the queue group that handed it here: whether a sibling handed the same publish may
+        be the one answering it (this is the group's first delivery of the assertion).
+
+        Only a control tool (:meth:`hold_calls`'s ``answering``) is handed to two groups by one publish: one member
+        of the call group and one held replica each get it. The claim tells that apart from a replay. Each group
+        delivers a publish once, so its claim is taken once per publish: a delivery that takes its group's claim and
+        finds the nonce consumed is the sibling of the delivery that consumed it, and a delivery whose group's claim
+        is already taken is a second publish of the assertion, a replay, refused and audited as any is. The claims
+        are kept in the replay ledger's bucket, so they last as long as the nonce could be presented, under keys of
+        their own (the ``jti`` and the group, hashed by the ledger), apart from the nonce itself. Any other tool is
+        handed to the call group alone, claims nothing, and has no sibling: ``False``.
+
+        :param guard: the proxy-assertion replay guard
+        :ptype guard: Any
+        :param tool_name: the tool called
+        :ptype tool_name: str
+        :param jti: the assertion's nonce
+        :ptype jti: str
+        :param group: the group that handed it (:data:`_CALL_GROUP` or :data:`_HELD_GROUP`)
+        :ptype group: str
+        :param issued_at: the assertion's issue time
+        :ptype issued_at: datetime
+        :return: whether this is a control call and its group's first delivery of the assertion
+        :rtype: bool
+        :raises NatsClientError: when the ledger cannot be reached (the caller refuses the call)
+        """
+        if tool_name not in self._held_answering:
+            return False
+        first: bool = await guard.record_unique(f"{jti}:delivered-by:{group}", issued_at=issued_at)
+        return first
 
     def _assertion_ledger_unavailable(
         self, request: CallRequest, bucket_name: str, exc: NatsClientError
@@ -3265,6 +3544,18 @@ class ToolServer:
         :param msg: incoming wrapper envelope carrying the call request
         :ptype msg: IncomingMessage
         """
+        await self._handle_call(msg, group=_CALL_GROUP)
+
+    async def _handle_call(self, msg: IncomingMessage, *, group: str) -> None:
+        """:meth:`handle_call`, for a call handed by ``group`` (the call group, or the held group).
+
+        :param msg: incoming wrapper envelope carrying the call request
+        :ptype msg: IncomingMessage
+        :param group: the queue group that handed it (:data:`_CALL_GROUP` or :data:`_HELD_GROUP`)
+        :ptype group: str
+        :return: nothing
+        :rtype: None
+        """
         # bracket the whole dispatch in the in-flight gauge: increment on entry,
         # decrement on exit even when dispatch raises (try/finally inside
         # ``track``), so KEDA's prometheus scaler reads the true concurrent-call
@@ -3289,7 +3580,7 @@ class ToolServer:
             self._calls_in_flight += 1
             self._calls_idle.clear()
             try:
-                await self._dispatch_incoming_call(msg, owes_sync_reply)
+                await self._dispatch_incoming_call(msg, owes_sync_reply, group=group)
             finally:
                 if owes_sync_reply[0]:
                     self._settle_sync_reply()
@@ -3449,7 +3740,9 @@ class ToolServer:
                     extra={"error": str(exc)},
                 )
 
-    async def _dispatch_incoming_call(self, msg: IncomingMessage, owes_sync_reply: list[bool]) -> None:
+    async def _dispatch_incoming_call(
+        self, msg: IncomingMessage, owes_sync_reply: list[bool], *, group: str = _CALL_GROUP
+    ) -> None:
         """dispatch one in-flight-tracked tool call (body of :meth:`handle_call`).
 
         split out of :meth:`handle_call` so the public NATS callback can
@@ -3622,7 +3915,15 @@ class ToolServer:
             # attribution when the pod overrode a forged or absent identity.
             bind_log_context(request.context)
 
-            assertion_refusal = await self._verify_proxy_assertion(request)
+            assertion_refusal = await self._verify_proxy_assertion(request, group=group)
+            if isinstance(assertion_refusal, _AnsweredBySibling):
+                # not a failure: the call ran once, on the sibling, which counts and audits it
+                outcome = _OUTCOME_ANSWERED_BY_SIBLING
+                log.info(
+                    "a call handed to this replica and a sibling is answered by the sibling",
+                    extra={"extra_data": {"tool_key": tool_key, "correlation_id": correlation_id_log}},
+                )
+                return
             if assertion_refusal is not None:
                 # the identity verified; what did not is the call's proof that it came through the
                 # registry for this body and this pod -- or the ledger that makes that proof single
@@ -3790,14 +4091,16 @@ class ToolServer:
         finally:
             duration_ms = (time.monotonic() - start_monotonic) * 1000.0
             self._count_call(tool_name=tool_name, tool_version=tool_version, outcome=outcome, duration_ms=duration_ms)
-            await self._publish_baseline_audit(
-                request=request,
-                tool_name=tool_name,
-                tool_version=tool_version,
-                outcome=outcome,
-                duration_ms=duration_ms,
-                failure_reason=failure_reason,
-            )
+            if outcome != _OUTCOME_ANSWERED_BY_SIBLING:
+                # the sibling that answers the call audits it; a second row would record one call twice
+                await self._publish_baseline_audit(
+                    request=request,
+                    tool_name=tool_name,
+                    tool_version=tool_version,
+                    outcome=outcome,
+                    duration_ms=duration_ms,
+                    failure_reason=failure_reason,
+                )
             clear_context()
 
     def _validated_result_subject(self, candidate: str) -> Subject | None:
@@ -3967,7 +4270,7 @@ class ToolServer:
         :ptype tool_name: str
         :param tool_version: the version the call named
         :ptype tool_version: str
-        :param outcome: ``success`` / ``failure`` / ``error``
+        :param outcome: ``success`` / ``failure`` / ``error``, or :data:`_OUTCOME_ANSWERED_BY_SIBLING`
         :ptype outcome: str
         :param duration_ms: milliseconds from the call's arrival to its end
         :ptype duration_ms: float

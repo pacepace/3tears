@@ -54,6 +54,26 @@ _SRC_ROOTS = (
 _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="MappedTables",
+        attr_name="_by_inode",
+        rationale=(
+            "each memory-mapped file's Arrow table by device and inode, lent to the next version's mapping so it "
+            "maps only changed files; tables over this process's own address space, which no backend can hold, "
+            "and gone with the mapping"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowReader",
+        attr_name="_lend",
+        rationale=(
+            "the mapped tables of a let-go version that the current version shares, kept for its first read to "
+            "take instead of mapping again; memory maps of this process, which no backend can hold, and a "
+            "restart maps afresh"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
         class_name="_KeptVersions",
         attr_name="_kept",
         rationale=(
@@ -82,6 +102,26 @@ _ALLOWLIST = (
             "the sweep removes its files; it counts this pod's own files against this process's byte cap, so "
             "another pod has nothing to do with it, and a restart takes the directory over and removes every "
             "result in it, as _slots"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowStore",
+        attr_name="_handing",
+        rationale=(
+            "the hand-offs this process is writing now into its own memory-backed directory for its own worker "
+            "processes, each with the bytes it may take; another pod has nothing to do with them, and a restart "
+            "takes the directory over and removes every hand-off in it, as _slots"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowStore",
+        attr_name="_handed_bytes",
+        rationale=(
+            "the bytes each hand-off this process wrote still holds in its own memory-backed directory, until the "
+            "sweep removes its files; it counts this pod's own files against this process's byte cap, as "
+            "_claimed_bytes"
         ),
     ),
     DictStateAllowlistEntry(

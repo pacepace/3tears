@@ -81,7 +81,10 @@ members = [
     "3tears-search",
     "3tears-tool-schema",
 ]
-constraints = [{ name = "lxml", specifier = ">=6.1.0,<7" }]
+constraints = [
+    { name = "lxml", specifier = ">=6.1.0,<7" },
+    { name = "pytest", specifier = "!=9.1.*" },
+]
 
 [manifest.dependency-groups]
 dev = [
@@ -134,7 +137,7 @@ dev = [
 
 [[package]]
 name = "3tears"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "3tears-nats" },
@@ -212,7 +215,7 @@ provides-extras = ["security", "http", "nats", "tracing", "socks", "duckdb", "sn
 
 [[package]]
 name = "3tears-agent-acl"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/agent/acl" }
 dependencies = [
     { name = "3tears" },
@@ -240,7 +243,7 @@ provides-extras = ["follow"]
 
 [[package]]
 name = "3tears-agent-audit"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/agent/audit" }
 dependencies = [
     { name = "3tears", extra = ["security"] },
@@ -259,7 +262,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-identity"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/agent/identity" }
 dependencies = [
     { name = "3tears" },
@@ -286,7 +289,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-intention"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/agent/intention" }
 dependencies = [
     { name = "3tears" },
@@ -315,7 +318,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-knowledge"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/agent/knowledge" }
 dependencies = [
     { name = "3tears" },
@@ -346,7 +349,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-memory"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/agent/memory" }
 dependencies = [
     { name = "3tears" },
@@ -381,7 +384,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-skills"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/agent/skills" }
 dependencies = [
     { name = "3tears" },
@@ -404,7 +407,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-tools"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/agent/tools" }
 dependencies = [
     { name = "3tears", extra = ["http", "security"] },
@@ -510,7 +513,7 @@ provides-extras = ["calculator", "units", "fetch", "pdf", "docx", "xlsx", "visio
 
 [[package]]
 name = "3tears-agent-wake"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/agent/wake" }
 dependencies = [
     { name = "3tears" },
@@ -548,7 +551,7 @@ provides-extras = ["prometheus"]
 
 [[package]]
 name = "3tears-agent-workspace"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/agent/workspace" }
 dependencies = [
     { name = "3tears" },
@@ -581,7 +584,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-backup"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/backup" }
 dependencies = [
     { name = "3tears" },
@@ -602,7 +605,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-channels"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/channels" }
 dependencies = [
     { name = "3tears" },
@@ -650,7 +653,7 @@ provides-extras = ["slack", "discord", "websocket", "webhook"]
 
 [[package]]
 name = "3tears-conversations"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/conversations" }
 dependencies = [
     { name = "3tears" },
@@ -671,7 +674,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-datasources"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/datasources" }
 dependencies = [
     { name = "3tears", extra = ["security"] },
@@ -727,7 +730,7 @@ provides-extras = ["redshift", "tracing", "snowflake", "bigquery", "export", "de
 
 [[package]]
 name = "3tears-enforcement"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/enforcement" }
 dependencies = [
     { name = "3tears" },
@@ -749,7 +752,7 @@ provides-extras = ["test"]
 
 [[package]]
 name = "3tears-epoch"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/epoch" }
 dependencies = [
     { name = "3tears" },
@@ -770,7 +773,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-evals"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/evals" }
 dependencies = [
     { name = "httpx" },
@@ -794,7 +797,7 @@ provides-extras = ["fastmcp"]
 
 [[package]]
 name = "3tears-geo"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/geo" }
 dependencies = [
     { name = "3tears" },
@@ -815,7 +818,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-iam"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/iam" }
 dependencies = [
     { name = "3tears", extra = ["security"] },
@@ -863,7 +866,7 @@ provides-extras = ["saml", "webauthn"]
 
 [[package]]
 name = "3tears-langgraph"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/langgraph" }
 dependencies = [
     { name = "3tears" },
@@ -901,7 +904,7 @@ provides-extras = ["nats"]
 
 [[package]]
 name = "3tears-mcp"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/mcp" }
 dependencies = [
     { name = "3tears-observe" },
@@ -939,12 +942,12 @@ provides-extras = ["grants"]
 
 [[package]]
 name = "3tears-media-contracts"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/media-contracts" }
 
 [[package]]
 name = "3tears-models"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/models" }
 dependencies = [
     { name = "3tears-media-contracts" },
@@ -1014,7 +1017,7 @@ provides-extras = ["claude-cli", "tracing", "voyageai", "whisper", "image", "pro
 
 [[package]]
 name = "3tears-nats"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/nats" }
 dependencies = [
     { name = "3tears-observe" },
@@ -1038,7 +1041,7 @@ provides-extras = ["client"]
 
 [[package]]
 name = "3tears-object-store"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/object-store" }
 dependencies = [
     { name = "3tears" },
@@ -1063,7 +1066,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-observe"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/observe" }
 
 [package.optional-dependencies]
@@ -1109,7 +1112,7 @@ provides-extras = ["otel", "otel-http", "prometheus", "asgi"]
 
 [[package]]
 name = "3tears-registry"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/registry" }
 dependencies = [
     { name = "3tears", extra = ["security"] },
@@ -1140,7 +1143,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-scheduled-jobs"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/scheduled-jobs" }
 dependencies = [
     { name = "3tears" },
@@ -1170,7 +1173,7 @@ provides-extras = ["prometheus"]
 
 [[package]]
 name = "3tears-scrape"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/scrape" }
 dependencies = [
     { name = "3tears", extra = ["http", "security"] },
@@ -1224,7 +1227,7 @@ provides-extras = ["reprobe", "hitl"]
 
 [[package]]
 name = "3tears-search"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/search" }
 dependencies = [
     { name = "3tears-media-contracts" },
@@ -1258,7 +1261,7 @@ provides-extras = ["standalone", "extract"]
 
 [[package]]
 name = "3tears-tool-schema"
-version = "0.86.0"
+version = "0.87.0"
 source = { editable = "packages/tool-schema" }
 
 [[package]]
@@ -5016,7 +5019,7 @@ wheels = [
 
 [[package]]
 name = "pytest"
-version = "9.1.1"
+version = "9.0.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "colorama", marker = "sys_platform == 'win32'" },
@@ -5025,9 +5028,9 @@ dependencies = [
     { name = "pluggy" },
     { name = "pygments" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa3c9d3fe98a76a1d14c74a9e266d397cf6eb64be5e01/pytest-9.1.1.tar.gz", hash = "sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313", size = 1636369, upload-time = "2026-06-19T10:58:32.857Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7d/0d/549bd94f1a0a402dc8cf64563a117c0f3765662e2e668477624baeec44d5/pytest-9.0.3.tar.gz", hash = "sha256:b86ada508af81d19edeb213c681b1d48246c1a91d304c6c81a427674c17eb91c", size = 1572165, upload-time = "2026-04-07T17:16:18.027Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl", hash = "sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c", size = 386536, upload-time = "2026-06-19T10:58:31.347Z" },
+    { url = "https://files.pythonhosted.org/packages/d4/24/a372aaf5c9b7208e7112038812994107bc65a84cd00e0354a88c2c77a617/pytest-9.0.3-py3-none-any.whl", hash = "sha256:2c5efc453d45394fdd706ade797c0a81091eccd1d6e4bccfcd476e2b8e0ab5d9", size = 375249, upload-time = "2026-04-07T17:16:16.13Z" },
 ]
 
 [[package]]
