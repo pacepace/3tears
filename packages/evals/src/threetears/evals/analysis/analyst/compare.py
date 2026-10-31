@@ -28,15 +28,17 @@ interval excludes zero, and, where it does and the measure states which way is b
 either arm states no spread is listed with why, and no interval.
 
 **What the interval counts, and when it may be too narrow.** An independent row says what each arm's count counts
-(``counts``: cases, trials, or observations), as the ``spread.`` keys read it; a paired row says its contrast states
-no count, so the input does not say whether its interval counts cases or trials. Where what the interval counts is
-trials, observations or unstated, the spread was not read on distinct cases, and the arm ran more trials than cases
-(its scoreboard's usable or ran trials above its cases: replies of one conversation, or repeats of one case), the
-interval may be too narrow if it counts trials nested in cases, since trials of one case are not independent: the row
-says so (``may_be_narrow``, a paired row's unstated unit ``counted_unstated``), cites each such arm's trials and cases
-(``nested``), and the page's notes say why, once, as a may: a paired row's unit is unstated, so its interval may
-already be read over the cases (Kairo's per-case contrasts are), and the note never says it would be wider. It never widens the interval itself *(inferred: the snapshot holds no
-per-case outcomes to read a clustered interval from)*.
+(``counts``: cases, trials, or observations), as the ``spread.`` keys read it. A paired row reads its contrast's: where
+the contrast states the cases its test read (``n_cases``, one mean per case), the row cites them (``cases``), with
+whether the test paired them and, on an unpaired test, the control's cases; its interval counts cases, so trials
+nested in them do not narrow it. A paired row whose contrast states no count says so (``counted_unstated``): the input
+does not say whether its interval counts cases or trials. Where what the interval counts is trials, observations or
+unstated, the spread was not read on distinct cases, and the arm ran more trials than cases (its scoreboard's usable
+or ran trials above its cases: replies of one conversation, or repeats of one case), the interval may be too narrow if
+it counts trials nested in cases, since trials of one case are not independent: the row says so (``may_be_narrow``),
+cites each such arm's trials and cases (``nested``), and the page's notes say why, once, as a may: an unstated unit
+may already be read over the cases, and the note never says it would be wider. It never widens the interval itself
+*(inferred: the snapshot holds no per-case outcomes to read a clustered interval from)*.
 
 **What it refuses**, teaching the next call: anything but two distinct arms of the snapshot; a measure the snapshot
 holds no figure of for both; and a measure on which neither arm states a spread anywhere both hold it (no interval,
@@ -58,7 +60,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite
 from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import ASSUMED_SHARE, assumable, pairing_contrast, separation_wheres
-from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_input import Contrast, ReportInput
 from threetears.evals.kernel.errors import RefusedInput
 
 __all__ = ["COMPARE_PAGE", "ArmsComparison", "arms_compare"]
@@ -213,7 +215,13 @@ class ComparisonRow(BaseModel):
     counts: list[CitedFigure] = Field(
         default_factory=list,
         description="What each arm's count counts on an independent row (cases, trials or observations), as its "
-        "spread.<arm>.<measure>.<where>.counts key reads it; empty on a paired row, whose contrast states no count.",
+        "spread.<arm>.<measure>.<where>.counts key reads it; empty on a paired row, which reads its contrast's cases.",
+    )
+    cases: list[CitedFigure] = Field(
+        default_factory=list,
+        description="On a paired row whose contrast states the cases its test read: those cases (one mean per case), "
+        "whether the test paired them, and, on an unpaired test, the control's cases, each by its contrast.* key; "
+        "its interval counts cases. Empty elsewhere.",
     )
     nested: list[CitedFigure] = Field(
         default_factory=list,
@@ -222,8 +230,8 @@ class ComparisonRow(BaseModel):
     )
     counted_unstated: bool = Field(
         default=False,
-        description="True on a paired row: its contrast states no count, so the input does not say whether its "
-        "interval counts cases or trials (notes says so once).",
+        description="True on a paired row whose contrast states no count, so the input does not say whether its "
+        "interval counts cases or trials (notes says so once); False where its contrast states its cases.",
     )
     may_be_narrow: bool = Field(
         default=False,
@@ -263,19 +271,27 @@ class ArmsComparison(BaseModel):
     notes: list[str] = Field(description="What could not be read, and why.")
 
 
-#: What a paired row's interval counts, in words: the contrast says nothing of it.
+#: What a paired row's interval counts, in words, where its contrast says nothing of it.
 _PAIRED_COUNT = (
     "a paired row's contrast states no count (counted_unstated), so the input does not say whether its interval "
     "counts cases or trials"
 )
 
-#: Why an interval may be too narrow, in words.
+#: What a paired row's interval counts, in words, where its contrast states its cases.
+_PAIRED_CASES = (
+    "a paired row's cases are what its contrast's test read, one mean per case: its interval counts cases, so trials "
+    "nested in them do not narrow it"
+)
+
+#: Why an interval may be too narrow, in words; the unstated unit's clause only where a marked row's is unstated.
 _MAY_BE_NARROW = (
     "rows marked may_be_narrow may be too narrow if these intervals count trials nested in cases: the arms their "
     "nested figures name ran more trials than cases (replies of one conversation, or repeats of one case), and trials "
-    "of one case are not independent. An independent row's counts say what its interval counts; a paired row's unit "
-    "is unstated, so it may already be read over the cases and be no narrower. Say so, as a may, "
-    "wherever it is cited"
+    "of one case are not independent. An independent row's counts say what its interval counts.{unstated} Say so, as "
+    "a may, wherever it is cited"
+)
+_MAY_BE_NARROW_UNSTATED = (
+    " A paired row's unit is unstated, so it may already be read over the cases and be no narrower."
 )
 
 
@@ -290,14 +306,34 @@ def _trials_over_cases(report_input: ReportInput, arm: str) -> list[CitedFigure]
     return [cite(f"scoreboard.{arm}.{field}", report_input), cite(f"scoreboard.{arm}.cases", report_input)]
 
 
+def _contrast_cases(report_input: ReportInput, contrast: Contrast) -> list[CitedFigure]:
+    """The cases a pairing contrast's test read, whether it paired them, and an unpaired test's control cases, where
+    the contrast states its cases; else empty."""
+    if contrast.n_cases is None:
+        return []
+    # Keyed as the contrast family keys it: by its aspect only where the input holds its arm and measure more than once.
+    held = [c for c in report_input.contrasts if (c.arm, c.measure) == (contrast.arm, contrast.measure)]
+    stem = f"contrast.{contrast.arm}.{contrast.measure}"
+    if len(held) > 1 and contrast.aspect is not None:
+        stem = f"aspects.{contrast.aspect}.{stem}"
+    keys = [f"{stem}.n_cases"]
+    if contrast.paired is not None:
+        keys.append(f"{stem}.paired")
+    if contrast.paired is False and contrast.control_n_cases is not None:
+        keys.append(f"{stem}.control_n_cases")
+    return [cite(key, report_input) for key in keys]
+
+
 def _what_it_counts(
-    report_input: ReportInput, arms: tuple[str, str], key: str, where: str, head: str, paired: bool
-) -> tuple[list[CitedFigure], list[CitedFigure]]:
-    """What a row's interval counts (each arm's count, on an independent row), and each arm whose trials may make it
-    too narrow, by its trials and cases (this module's What the interval counts)."""
+    report_input: ReportInput, arms: tuple[str, str], key: str, where: str, head: str, paired: Contrast | None
+) -> tuple[list[CitedFigure], list[CitedFigure], list[CitedFigure]]:
+    """What a row's interval counts (each arm's count, on an independent row; its contrast's cases, on a paired row
+    whose contrast states them), and each arm whose trials may make it too narrow, by its trials and cases (this
+    module's What the interval counts)."""
     counts: list[CitedFigure] = []
-    loose: list[str] = list(arms) if paired else []
-    if not paired:
+    read = _contrast_cases(report_input, paired) if paired is not None else []
+    loose: list[str] = list(arms) if paired is not None and not read else []
+    if paired is None:
         for arm in arms:
             counted, _why = cite_or_why(f"{head}spread.{arm}.{key}.{where}.counts", report_input)
             if counted is None:
@@ -306,7 +342,7 @@ def _what_it_counts(
             cases, _why = cite_or_why(f"{head}spread.{arm}.{key}.{where}.cases", report_input)
             if counted.value in ("trials", "observations") and cases is None:
                 loose.append(arm)
-    return counts, [figure for arm in loose for figure in _trials_over_cases(report_input, arm)]
+    return counts, read, [figure for arm in loose for figure in _trials_over_cases(report_input, arm)]
 
 
 def _row(
@@ -320,9 +356,10 @@ def _row(
     excludes: bool | None = None
     ahead: str | None = None
     counts: list[CitedFigure] = []
+    cases: list[CitedFigure] = []
     nested: list[CitedFigure] = []
     if interval is not None:
-        counts, nested = _what_it_counts(report_input, (first, second), key, where, head, paired is not None)
+        counts, cases, nested = _what_it_counts(report_input, (first, second), key, where, head, paired)
     if interval is not None and isinstance(interval.value, tuple):
         low, high = interval.value
         excludes = low > 0 or high < 0
@@ -341,8 +378,9 @@ def _row(
         basis=cite(f"{prefix}.basis", report_input) if interval is not None else None,
         paired_with=_arm(paired.arm) if interval is not None and paired is not None else None,
         counts=counts,
+        cases=cases,
         nested=nested,
-        counted_unstated=interval is not None and paired is not None,
+        counted_unstated=interval is not None and paired is not None and not cases,
         may_be_narrow=bool(nested),
         excludes_zero=excludes,
         ahead=ahead,
@@ -443,7 +481,18 @@ def arms_compare(
         next_offset=end if end < len(rows) else None,
         notes=[
             *([_PAIRED_COUNT] if any(row.counted_unstated for row in page) else []),
-            *([_MAY_BE_NARROW] if any(row.may_be_narrow for row in page) else []),
+            *([_PAIRED_CASES] if any(row.cases for row in page) else []),
+            *(
+                [
+                    _MAY_BE_NARROW.format(
+                        unstated=_MAY_BE_NARROW_UNSTATED
+                        if any(row.may_be_narrow and row.counted_unstated for row in page)
+                        else ""
+                    )
+                ]
+                if any(row.may_be_narrow for row in page)
+                else []
+            ),
             *unkeyed_strata(report_input),
         ],
     )

@@ -13,6 +13,7 @@ __all__ = [
     "CASES_WORD",
     "COMPUTED_REPEATS_NOTE",
     "PAIRED_BASIS_TEMPLATE",
+    "PAIRED_CASES",
     "SETTLE_FLOOR_TEMPLATE",
     "SETTLE_MARGIN_TEMPLATE",
     "SETTLE_EACH",
@@ -431,7 +432,7 @@ COMPARE_NARROW_NOTE = (
 COMPARE_NESTED_TEMPLATE = "{arm} ({trials} trials of {cases} cases)"
 #: Where the input states what an arm's spread counts, on a row that may be too narrow: each unit it names.
 COMPARE_STATED_COUNT = " The input states what an unpaired interval's arms count: {units}."
-#: Where a paired row may be too narrow: its contrast states no unit.
+#: Where a paired row may be too narrow: its contrast states no count, so no unit.
 COMPARE_UNSTATED_COUNT = (
     " A paired interval's unit is unstated: the input does not say whether it counts cases or trials."
 )
@@ -442,10 +443,20 @@ SETTLE_NO_SIZE = "none settles it at today's estimate"
 #: How a compare chart's intervals were read, in the analysis's own words.
 BASIS_NOTE = "The interval is {basis}."
 
-#: How a compare row's interval reads where a contrast pairs the two arms, in reader names, then whether it is
-#: corrected as the contrast's family says (``corrected``: :func:`~threetears.evals.analysis.report.figure_keys.
-#: correction_words`), never asserted.
-PAIRED_BASIS_TEMPLATE = "paired: the contrast of {arm} against the control on {measure}, its own interval, {corrected}"
+#: How a compare row's interval reads where a contrast pairs the two arms: how its test read the cases (``paired``,
+#: one of :data:`PAIRED_CASES`), in reader names, then whether it is corrected as the contrast's family says
+#: (``corrected``: :func:`~threetears.evals.analysis.report.figure_keys.correction_words`), never asserted.
+PAIRED_BASIS_TEMPLATE = (
+    "{paired}: the contrast of {arm} against the control on {measure}, its own interval, {corrected}"
+)
+
+#: How a paired row's contrast read its cases, as the contrast states them: paired over its cases, unpaired over each
+#: side's, or, where it states no count, paired alone (its unit unstated, which the narrow note says where it matters).
+PAIRED_CASES = {
+    "paired": "paired over {cases} cases",
+    "unpaired": "unpaired, over {cases} cases of {arm} and {control_cases} of the control",
+    "unstated": "paired",
+}
 
 #: What a settle table's sizes count on a repeated design: the distinct cases.
 CASES_WORD = "cases"

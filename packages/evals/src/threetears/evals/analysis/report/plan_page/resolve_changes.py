@@ -99,6 +99,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     LEVERS_READ_NOTE,
     OVERALL_WORD,
     PAIRED_BASIS_TEMPLATE,
+    PAIRED_CASES,
     UNCORRECTED_NOTE,
     change_words,
 )
@@ -691,7 +692,9 @@ def narrow_notes(context: ChartContext) -> tuple[str, ...]:
     """What a compare chart or table says, once, where a row's interval may be too narrow (``may_be_narrow``): each
     arm that ran more trials than cases, by its reader name and the trials and cases its key reads, said as a may,
     since a marked row's interval may count cases; then the unit only where the input states it (an unpaired row's
-    ``counts``: trials or observations), and that a paired row's unit is unstated. Empty where no row is marked.
+    ``counts``: trials or observations), and that a paired row's unit is unstated where its contrast states no count.
+    A paired row whose contrast states its cases counts cases, is never marked, and says its cases in its basis
+    (:func:`compare_basis`). Empty where no row is marked.
 
     :param context: The chart being resolved, over the compare source.
     :ptype context: ChartContext
@@ -751,10 +754,27 @@ def compare_basis(context: ChartContext, row: ComparisonRow, key: str) -> str:
     if contrast is None:
         return str(row.basis.value)
     return PAIRED_BASIS_TEMPLATE.format(
+        paired=_paired_cases(context, row, candidate),
         arm=_arm_name(context, candidate),
         measure=measure_words(context.report_input, key),
         corrected=correction_words(context.report_input, contrast),
     )
+
+
+def _paired_cases(context: ChartContext, row: ComparisonRow, candidate: str) -> str:
+    """How a paired row's contrast read its cases, from the counts the row cites (``cases``): paired over them,
+    unpaired over each side's, or paired alone where the contrast states none."""
+    said = {figure.key.rpartition(".")[2]: figure for figure in row.cases}
+    cases = said.get("n_cases")
+    if cases is None:
+        return PAIRED_CASES["unstated"]
+    paired = said.get("paired")
+    if paired is not None and paired.value == "unpaired":
+        control = said.get("control_n_cases", cases)
+        return PAIRED_CASES["unpaired"].format(
+            cases=cases.reads, arm=_arm_name(context, candidate), control_cases=control.reads
+        )
+    return PAIRED_CASES["paired"].format(cases=cases.reads)
 
 
 def setting_value(report_input: ReportInput, setting: str, arm: str) -> str | None:
