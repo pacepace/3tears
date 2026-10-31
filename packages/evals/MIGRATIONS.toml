@@ -58,6 +58,14 @@
 # callers.
 
 [[release]]
+version = "0.87.0"
+since = "v0.86.0"
+summary = """
+A held tool server answers its control tools, and tables reach a worker process through a shared-memory hand-off: no
+3tears-evals name has moved or been removed since 0.86.0, and no judge wording changed.
+"""
+
+[[release]]
 version = "0.86.0"
 since = "v0.85.0"
 summary = """
