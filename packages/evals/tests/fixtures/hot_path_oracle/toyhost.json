@@ -1,74 +1,4 @@
 {
- "@captured_on": "Linux-x86_64-glibc-2.41",
- "@confirmed": {
-  "Linux-aarch64-glibc-2.39": [
-   "body:html:all",
-   "body:html:table",
-   "body:html_static:all",
-   "body:html_static:table",
-   "body:json:all",
-   "body:json:table",
-   "body:markdown:all",
-   "body:markdown:table",
-   "campaign_fingerprint",
-   "fingerprint:extract_invoice_fields",
-   "planning",
-   "read:html:all",
-   "read:html:table",
-   "read:html_static:all",
-   "read:html_static:table",
-   "read:json:all",
-   "read:json:table",
-   "read:markdown:all",
-   "read:markdown:table"
-  ],
-  "Linux-aarch64-glibc-2.41": [
-   "body:html:all",
-   "body:html:table",
-   "body:html_static:all",
-   "body:html_static:table",
-   "body:json:all",
-   "body:json:table",
-   "body:markdown:all",
-   "body:markdown:table",
-   "bundle:extract_invoice_fields",
-   "campaign_fingerprint",
-   "fingerprint:extract_invoice_fields",
-   "frame",
-   "planning",
-   "read:html:all",
-   "read:html:table",
-   "read:html_static:all",
-   "read:html_static:table",
-   "read:json:all",
-   "read:json:table",
-   "read:markdown:all",
-   "read:markdown:table"
-  ],
-  "Linux-x86_64-glibc-2.39": [
-   "body:html:all",
-   "body:html:table",
-   "body:html_static:all",
-   "body:html_static:table",
-   "body:json:all",
-   "body:json:table",
-   "body:markdown:all",
-   "body:markdown:table",
-   "bundle:extract_invoice_fields",
-   "campaign_fingerprint",
-   "fingerprint:extract_invoice_fields",
-   "frame",
-   "planning",
-   "read:html:all",
-   "read:html:table",
-   "read:html_static:all",
-   "read:html_static:table",
-   "read:json:all",
-   "read:json:table",
-   "read:markdown:all",
-   "read:markdown:table"
-  ]
- },
  "body:html:all": {
   "bytes": 147355,
   "head": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>256tok vs 1024tok · extract_invoice_fields (chunk width sweep)</title>\n<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\"><link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap\">\n<style>/* Layout: decision-memo column (68ch prose) with charts breaking out to a wide band.\n   Host apps override the --host-* tokens only; everything else derives from them. */\n:root{\n  --host-accent:#1f5fbf;\n  --bg:#f5f6f8; --surface:#ffffff; --sunk:#eef0f3;\n  --ink:#11151b; --ink-2:#465061; --muted:#7f8896;\n  --line:#e1e5eb; --base:#c3cad4;\n  --accent:var(--host-accent); --accent-wash:#e6eefa; --on-fill:#ffffff;\n  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#c98500; --s",
@@ -118,16 +48,10 @@
   "tail": " against an arm.\n- **failed by check**: A trial that broke a rule code checks, such as a required tool call.\n- **failed by judge**: A trial the judge model scored below the bar on some dimension.\n- **cost per reply**: What production would spend per reply on the models the arm runs, as its runs were routed.\n- **decision**: What the guardrail or bar came to on this arm: held or breached, cleared or missed, else undecided.\n- **case**: One input the eval feeds every arm; repeats of a case are not independent.\n- **flag**: Regression marks a case a candidate passed on a smaller share of its usable trials than the control; a tie or a gain never flags.\n- **marks**: ✓ passed, ✗ failed, – lost to the test setup; one mark per repeat.\n- **trial**: One case run once on one arm.\n- **outcome**: How a trial ended: passed, failed, or lost to the test setup.\n- **why**: Which check or judged dimension failed the trial, or what the test setup broke.\n- **calibrated**: A judge whose scores have been shown to agree with people's.\n"
  },
  "bundle:extract_invoice_fields": {
-  "bytes": 90200,
-  "head": "{\"schema_version\": 64, \"campaign_id\": \"2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03\", \"subject_id\": \"extractor-config-7\", \"subject_kind\": \"extractor_config\", \"behavior\": \"extract_invoice_fields\", \"aspect\": \"extract_invoice_fields\", \"template_id\": \"\", \"scope_id\": \"toyhost-scope\", \"run_ids\": [\"383ac446-ed59-5edb-940a-a9f2c7ea0b12\", \"69390405-f834-534a-93bd-36b126c67642\"], \"unresolved_run_ids\": [], \"archived_run_ids\": [], \"model_versions\": {\"candidate\": \"extractor-v2\"}, \"window\": {\"start\": \"2026-03-14T09:30:00+00:00\", \"end\": \"2026-03-14T09:30:00+00:00\"}, \"run_summaries\": [{\"run_id\": \"383ac446-ed59-5edb-940a-a9f2c7ea0b12\", \"status\": \"completed\", \"created_at\": \"2026-03-14T09:30:00+00:00\", \"candidate_model\": \"extractor-v2\", \"k_runs\": 3, \"config\": {\"chunk_tokens\": \"1024\"}, \"config_provenance\": {\"chunk_tokens\": \"overridden\"}, \"n_results\": 36, \"n_errors\": 0, \"cost_usd\": 1.08, \"n_cost_unpriced\": 0, \"prod_cost_usd\": 1.08, \"mean_prod_cost_usd\": 0.030000000000000002, \"n_prod_cost_usd\": 36, \"production_footing\": {\"moved\": {}, \"unc",
-  "sha256": "ce2fb1e1253fda0a10d6dace573ab0bfbfd3460806272f8e1dd7e0a4d31648bf",
-  "tail": "elivered\", \"n\": 36, \"n_independent\": 12, \"n_zero\": 0, \"mean\": 920.0, \"p05\": 741.5, \"p50\": 920.0, \"p95\": 1098.5, \"max\": 1110.0, \"sem\": 29.079045876557043, \"ci_low\": 855.997451556074, \"ci_high\": 984.002548443926, \"case_means\": null, \"categories\": {}, \"rate\": null, \"n_true\": null, \"texts\": []}], \"absent_scopes\": [\"subsystem\"], \"unreported_observations\": [\"orchestration_ms (llm_ms, tool_ms were not measured, so the parts cannot account for the whole.)\"]}, \"judged\": [{\"dimension\": \"extraction.layout_fidelity\", \"mean\": 3.3333333333333335, \"sem\": 4.463264492478967e-17, \"n\": 36, \"n_independent\": 12, \"case_means\": null, \"n_infra_excluded\": 0, \"n_cannot_tell\": 0, \"evidence_tier\": \"undetermined\", \"prediction_powered\": null}], \"short_runs\": {}, \"incomplete_runs\": {}, \"strata\": []}], \"time_axis\": null, \"time_axis_withheld\": \"every run started on one day (2026-03-14) and the host labels no build\", \"confound_catalog\": {}, \"prior_insights\": [], \"prior_insights_omitted\": 0, \"retracted_insights\": {}, \"question_declared\": true}"
- },
- "bundle:extract_invoice_fields@Linux-aarch64-glibc-2.39": {
-  "bytes": 90200,
-  "head": "{\"schema_version\": 64, \"campaign_id\": \"2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03\", \"subject_id\": \"extractor-config-7\", \"subject_kind\": \"extractor_config\", \"behavior\": \"extract_invoice_fields\", \"aspect\": \"extract_invoice_fields\", \"template_id\": \"\", \"scope_id\": \"toyhost-scope\", \"run_ids\": [\"383ac446-ed59-5edb-940a-a9f2c7ea0b12\", \"69390405-f834-534a-93bd-36b126c67642\"], \"unresolved_run_ids\": [], \"archived_run_ids\": [], \"model_versions\": {\"candidate\": \"extractor-v2\"}, \"window\": {\"start\": \"2026-03-14T09:30:00+00:00\", \"end\": \"2026-03-14T09:30:00+00:00\"}, \"run_summaries\": [{\"run_id\": \"383ac446-ed59-5edb-940a-a9f2c7ea0b12\", \"status\": \"completed\", \"created_at\": \"2026-03-14T09:30:00+00:00\", \"candidate_model\": \"extractor-v2\", \"k_runs\": 3, \"config\": {\"chunk_tokens\": \"1024\"}, \"config_provenance\": {\"chunk_tokens\": \"overridden\"}, \"n_results\": 36, \"n_errors\": 0, \"cost_usd\": 1.08, \"n_cost_unpriced\": 0, \"prod_cost_usd\": 1.08, \"mean_prod_cost_usd\": 0.030000000000000002, \"n_prod_cost_usd\": 36, \"production_footing\": {\"moved\": {}, \"unc",
-  "sha256": "bd7387441e43cd59a7f720f44a9042adefde59d0531e2ef4c287b93adab9b3f9",
-  "tail": "elivered\", \"n\": 36, \"n_independent\": 12, \"n_zero\": 0, \"mean\": 920.0, \"p05\": 741.5, \"p50\": 920.0, \"p95\": 1098.5, \"max\": 1110.0, \"sem\": 29.079045876557043, \"ci_low\": 855.997451556074, \"ci_high\": 984.002548443926, \"case_means\": null, \"categories\": {}, \"rate\": null, \"n_true\": null, \"texts\": []}], \"absent_scopes\": [\"subsystem\"], \"unreported_observations\": [\"orchestration_ms (llm_ms, tool_ms were not measured, so the parts cannot account for the whole.)\"]}, \"judged\": [{\"dimension\": \"extraction.layout_fidelity\", \"mean\": 3.3333333333333335, \"sem\": 4.463264492478967e-17, \"n\": 36, \"n_independent\": 12, \"case_means\": null, \"n_infra_excluded\": 0, \"n_cannot_tell\": 0, \"evidence_tier\": \"undetermined\", \"prediction_powered\": null}], \"short_runs\": {}, \"incomplete_runs\": {}, \"strata\": []}], \"time_axis\": null, \"time_axis_withheld\": \"every run started on one day (2026-03-14) and the host labels no build\", \"confound_catalog\": {}, \"prior_insights\": [], \"prior_insights_omitted\": 0, \"retracted_insights\": {}, \"question_declared\": true}"
+  "bytes": 83204,
+  "head": "{\"aliased_factors\":[],\"all_failed\":null,\"all_failed_cells\":[],\"apparatus_confounds\":[],\"archived_run_ids\":[],\"arm_mechanisms\":[{\"covariate\":\"reasoning_ratio\",\"mean\":null,\"n_measured\":0,\"n_results\":36,\"variant_key\":\"4b8240d7a853b161e1dfc2b1ee0bae7c8cd6cdece4c61fb95711c6e272e872b1\"},{\"covariate\":\"reasoning_ratio\",\"mean\":null,\"n_measured\":0,\"n_results\":36,\"variant_key\":\"8e0032bccaca6a9cb6693607cc862ae8ad732ea02fc993fc8d3d82c39707fee6\"}],\"arm_production_footings\":{\"4b8240d7a853b161e1dfc2b1ee0bae7c8cd6cdece4c61fb95711c6e272e872b1\":{\"runs\":{\"69390405-f834-534a-93bd-36b126c67642\":{\"held\":[\"candidate_kind\",\"extraction_prompt\",\"model\"],\"moved\":{},\"unchecked\":{\"chunk_tokens\":\"256\",\"extraction_schema\":\"v1\",\"extractor.field_aliases\":\"unrecorded\",\"extractor.instructions\":\"unrecorded\",\"extractor.page_limit\":\"unrecorded\",\"extractor.prompt_style\":\"unrecorded\",\"retriever_top_k\":\"3\"}}}},\"8e0032bccaca6a9cb6693607cc862ae8ad732ea02fc993fc8d3d82c39707fee6\":{\"runs\":{\"383ac446-ed59-5edb-940a-a9f2c7ea0b12\":{\"held\":[\"candidate_kind\",\"",
+  "sha256": "dee2c1a25ae77259a6ee4e8ac6d385190191de5f28ac117ebcc77146bd820f2a",
+  "tail": "ne)\",\"raw\":null,\"scale\":{\"kind\":\"nominal\"}},\"extractor.page_limit\":{\"content_hash\":\"74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b\",\"display\":\"(none)\",\"raw\":null,\"scale\":{\"kind\":\"nominal\"}},\"extractor.prompt_style\":{\"content_hash\":\"74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b\",\"display\":\"(none)\",\"raw\":null,\"scale\":{\"kind\":\"nominal\"}},\"model\":{\"content_hash\":\"379accc0115a12d78366760a61bd6c08a74dc6ad5f2652781bc9ab432eb53943\",\"display\":\"extractor-v2\",\"raw\":null,\"scale\":{\"kind\":\"nominal\"}},\"retriever_top_k\":{\"content_hash\":\"4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce\",\"display\":\"3\",\"raw\":null,\"scale\":{\"kind\":\"interval\",\"unit\":null,\"value\":3.0}}},\"swept\":{},\"variant_key\":\"8e0032bccaca6a9cb6693607cc862ae8ad732ea02fc993fc8d3d82c39707fee6\"}],\"verdict_order\":{\"merit_priority\":[],\"question\":null,\"tiers\":[],\"unranked_bar_measure_ids\":[\"cost_usd\",\"field_accuracy\"]},\"whole_swings\":[],\"window\":{\"end\":\"2026-03-14T09:30:00+00:00\",\"start\":\"2026-03-14T09:30:00+00:00\"}}"
  },
  "campaign_fingerprint": {
   "text": "v3:4e910c65de7293f82a61c4840d55c8e499dcfc0e4ab0829f9d27b80ffea9ab64"
@@ -136,16 +60,10 @@
   "text": "v2:d62f039526232f1f7b12e9d89df7b64dccb7ff4c0db9595ae04fd64eb79cd5bc"
  },
  "frame": {
-  "bytes": 9913,
-  "head": "{\"schema_version\": 3, \"campaign_id\": \"2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03\", \"scope_id\": \"toyhost-scope\", \"name\": \"chunk width sweep\", \"subject_id\": \"extractor-config-7\", \"subject_kind\": \"extractor_config\", \"behavior\": \"extract_invoice_fields\", \"declaration\": {\"question\": \"is the wider chunk worth what it costs to retrieve?\", \"declared_at\": \"2026-03-14T09:30:00+00:00\", \"declared_by\": \"\", \"arms\": [], \"aspects\": [{\"label\": \"extract_invoice_fields\", \"template_id\": \"\", \"stratum\": null, \"margin\": null, \"design\": {\"axes\": [{\"axis_id\": \"chunk_tokens\", \"values\": [{\"content_hash\": \"51e8ea280b44e16934d4d611901f3d3afc41789840acdff81942c2f65009cd52\", \"display\": \"256tok\", \"scale\": {\"kind\": \"interval\", \"value\": 256.0, \"unit\": \"tok\"}, \"raw\": 256}, {\"content_hash\": \"e39eef82f61b21e2e7f762fcc4307358f165757f2e77ec855d6992f7e0191932\", \"display\": \"1024tok\", \"scale\": {\"kind\": \"interval\", \"value\": 1024.0, \"unit\": \"tok\"}, \"raw\": 1024}], \"rationale\": \"does a longer chunk carry the whole field or bury it among its neighbours\"}], \"bar",
-  "sha256": "5d8bec5f22bbafa02a3e12452085805719a5397709dc68f968b4caa6ab3be592",
-  "tail": "}], \"measures\": [], \"aggregate\": {\"weighting\": {\"basis\": \"equal\", \"weights\": {\"extract_invoice_fields\": 1.0}, \"intervals\": \"aspects_independent\"}, \"level\": 0.95, \"arms\": [{\"arm\": \"4b8240d7a853b161e1dfc2b1ee0bae7c8cd6cdece4c61fb95711c6e272e872b1\", \"arm_label\": \"256tok\", \"pass_rate\": {\"value\": 0.0, \"interval\": [0.0, 12.124700332762039], \"missing\": []}, \"change\": null, \"cost\": {\"value\": 0.02, \"interval\": [0.018733469275048004, 0.021266530724951997], \"missing\": []}, \"cheaper_on\": null, \"dearer_on\": null}, {\"arm\": \"8e0032bccaca6a9cb6693607cc862ae8ad732ea02fc993fc8d3d82c39707fee6\", \"arm_label\": \"1024tok\", \"pass_rate\": {\"value\": 44.44444444444444, \"interval\": [19.93800545958558, 68.9508834293033], \"missing\": []}, \"change\": null, \"cost\": {\"value\": 0.030000000000000002, \"interval\": [0.02810020391257201, 0.031899796087427996], \"missing\": []}, \"cheaper_on\": null, \"dearer_on\": null}]}}, \"aspects\": [{\"aspect\": \"extract_invoice_fields\", \"fingerprint\": \"v2:d62f039526232f1f7b12e9d89df7b64dccb7ff4c0db9595ae04fd64eb79cd5bc\"}]}"
- },
- "frame@Linux-aarch64-glibc-2.39": {
-  "bytes": 9913,
-  "head": "{\"schema_version\": 3, \"campaign_id\": \"2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03\", \"scope_id\": \"toyhost-scope\", \"name\": \"chunk width sweep\", \"subject_id\": \"extractor-config-7\", \"subject_kind\": \"extractor_config\", \"behavior\": \"extract_invoice_fields\", \"declaration\": {\"question\": \"is the wider chunk worth what it costs to retrieve?\", \"declared_at\": \"2026-03-14T09:30:00+00:00\", \"declared_by\": \"\", \"arms\": [], \"aspects\": [{\"label\": \"extract_invoice_fields\", \"template_id\": \"\", \"stratum\": null, \"margin\": null, \"design\": {\"axes\": [{\"axis_id\": \"chunk_tokens\", \"values\": [{\"content_hash\": \"51e8ea280b44e16934d4d611901f3d3afc41789840acdff81942c2f65009cd52\", \"display\": \"256tok\", \"scale\": {\"kind\": \"interval\", \"value\": 256.0, \"unit\": \"tok\"}, \"raw\": 256}, {\"content_hash\": \"e39eef82f61b21e2e7f762fcc4307358f165757f2e77ec855d6992f7e0191932\", \"display\": \"1024tok\", \"scale\": {\"kind\": \"interval\", \"value\": 1024.0, \"unit\": \"tok\"}, \"raw\": 1024}], \"rationale\": \"does a longer chunk carry the whole field or bury it among its neighbours\"}], \"bar",
-  "sha256": "61a1cd6a86db72b00218b95ce266ce3ca7664e25f24fe4d56e727268abf9434d",
-  "tail": "}], \"measures\": [], \"aggregate\": {\"weighting\": {\"basis\": \"equal\", \"weights\": {\"extract_invoice_fields\": 1.0}, \"intervals\": \"aspects_independent\"}, \"level\": 0.95, \"arms\": [{\"arm\": \"4b8240d7a853b161e1dfc2b1ee0bae7c8cd6cdece4c61fb95711c6e272e872b1\", \"arm_label\": \"256tok\", \"pass_rate\": {\"value\": 0.0, \"interval\": [0.0, 12.124700332762037], \"missing\": []}, \"change\": null, \"cost\": {\"value\": 0.02, \"interval\": [0.018733469275048004, 0.021266530724951997], \"missing\": []}, \"cheaper_on\": null, \"dearer_on\": null}, {\"arm\": \"8e0032bccaca6a9cb6693607cc862ae8ad732ea02fc993fc8d3d82c39707fee6\", \"arm_label\": \"1024tok\", \"pass_rate\": {\"value\": 44.44444444444444, \"interval\": [19.93800545958558, 68.9508834293033], \"missing\": []}, \"change\": null, \"cost\": {\"value\": 0.030000000000000002, \"interval\": [0.02810020391257201, 0.031899796087427996], \"missing\": []}, \"cheaper_on\": null, \"dearer_on\": null}]}}, \"aspects\": [{\"aspect\": \"extract_invoice_fields\", \"fingerprint\": \"v2:d62f039526232f1f7b12e9d89df7b64dccb7ff4c0db9595ae04fd64eb79cd5bc\"}]}"
+  "bytes": 9139,
+  "head": "{\"arms\":[{\"identity_version\":25,\"label\":\"256tok\",\"levers\":{\"candidate_kind\":{\"content_hash\":\"763b1cdf2de78a27d306b44ca3033177a6aa7dd6a2b5ed7c2ba71b938dba4cde\",\"display\":\"toy-extractor\",\"raw\":null,\"scale\":{\"kind\":\"nominal\"}},\"chunk_tokens\":{\"content_hash\":\"51e8ea280b44e16934d4d611901f3d3afc41789840acdff81942c2f65009cd52\",\"display\":\"256tok\",\"raw\":null,\"scale\":{\"kind\":\"interval\",\"unit\":\"tok\",\"value\":256.0}},\"extraction_prompt\":{\"content_hash\":\"2260d39bce7901b5e2a5f13bd570490b590483ddd523e03698a33c7816cc24a9\",\"display\":\"extraction prompt, rev 3\",\"raw\":null,\"scale\":{\"kind\":\"nominal\"}},\"extraction_schema\":{\"content_hash\":\"3bfc269594ef649228e9a74bab00f042efc91d5acc6fbee31a382e80d42388fe\",\"display\":\"field schema v1\",\"raw\":null,\"scale\":{\"kind\":\"nominal\"}},\"extractor.field_aliases\":{\"content_hash\":\"74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b\",\"display\":\"(none)\",\"raw\":null,\"scale\":{\"kind\":\"nominal\"}},\"extractor.instructions\":{\"content_hash\":\"74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f9",
+  "sha256": "a0fa6691336647a7cb4c2cdf2bd9e4decc4538d1d151bd437ae36baf15163daf",
+  "tail": "_median\":3.0,\"repeats_min\":3,\"trials\":36},\"first_label\":\"256tok\",\"first_passed\":0,\"first_trials\":36,\"interval\":[-78.3736154437,1.64445671253],\"p\":1.0,\"p_holm\":1.0,\"precision\":{\"between_case\":0.210437710438,\"between_share\":0.919117647059,\"half_width\":40.0090360781,\"half_widths\":{\"4b8240d7a853b161e1dfc2b1ee0bae7c8cd6cdece4c61fb95711c6e272e872b1\":14.2827043193,\"8e0032bccaca6a9cb6693607cc862ae8ad732ea02fc993fc8d3d82c39707fee6\":31.4988264581},\"limited_by\":\"8e0032bccaca6a9cb6693607cc862ae8ad732ea02fc993fc8d3d82c39707fee6\",\"within_case\":0.0277777777778},\"reason\":\"no separation: the interval between 256tok and 1024tok reaches zero\",\"rig\":null,\"second\":\"8e0032bccaca6a9cb6693607cc862ae8ad732ea02fc993fc8d3d82c39707fee6\",\"second_cases\":12,\"second_depth\":{\"cases\":12,\"repeats_max\":3,\"repeats_median\":3.0,\"repeats_min\":3,\"trials\":36},\"second_label\":\"1024tok\",\"second_passed\":16,\"second_trials\":36}],\"readings\":[]},\"schema_version\":3,\"scope_id\":\"toyhost-scope\",\"subject_id\":\"extractor-config-7\",\"subject_kind\":\"extractor_config\"}"
  },
  "planning": {
   "text": "{\"n_cases\":12,\"k_runs\":3,\"family_size\":1,\"alpha\":0.05,\"per_comparison_alpha\":0.05,\"power\":0.8,\"run_ids\":[],\"cannot_estimate\":\"no earlier run of template 'toyhost-template-extract-invoice-fields' with results is in scope 'toyhost-scope', so no variance is measured to plan from\",\"effects\":[],\"assumptions\":\"the planned arms run the same cases and are compared paired, as a family compares them; one case's difference of means is near normal (the paired t-test's own assumption — on a coarse pass/fail or 1-5 reading over few cases it is only approximate); the earlier runs' variance holds for the planned arms; only the one comparison differs, so Holm's correction asks it to clear α/m (more real differences make each easier to find); and the variance is an estimate from the earlier runs, whose own error is not in the figure\"}"

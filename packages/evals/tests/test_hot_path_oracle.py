@@ -1,12 +1,15 @@
-"""The report and planning reads give byte-identical output across every change that makes them faster.
+"""The report and planning reads give the same output across every change that makes them faster.
 
-Each campaign below is read the way a host reads it, and every output is compared, byte for byte and unrounded, with
-the golden captured from the code before any of that work began:
+Each campaign below is read the way a host reads it, and every output is compared with its golden as the house rule
+compares it (:func:`~threetears.evals.schema.hashing.round_figures`: a computed float is compared or served to twelve
+significant figures):
 
-- every aspect's assembled bundle as JSON, and its ``fingerprint()``;
-- the campaign bundle's frame (what a stored analysis keeps of it), and the campaign fingerprint;
+- every aspect's assembled bundle through :func:`~threetears.evals.schema.hashing.identity_json`, the pre-image its
+  fingerprint hashes, and its ``fingerprint()``;
+- the campaign bundle's frame (what a stored analysis keeps of it) through ``identity_json``, and the campaign
+  fingerprint;
 - every ``report_read`` body: markdown, html, the static html page and json, each with ``trials="table"`` and
-  ``trials="all"``, and the read's other fields beside its body;
+  ``trials="all"``, byte for byte as served, and the read's other fields beside its body;
 - the planning block a launch estimate carries (``detectable_effects``), for a campaign with a template.
 
 The campaigns:
@@ -31,22 +34,21 @@ locally, on one process: ``TESTAMENT=off HOT_PATH_ORACLE_REGEN=1 ./scripts/test.
 capture under ``inputs/`` is written only when it is missing; it is the campaign read, not an output, so it is never
 rewritten by a regeneration.
 
-**Every platform is held to its own golden.** The last unrounded digits of some statistics (a t interval's bounds and
-everything computed from them, read through the platform's maths library) differ between platforms: the same code
-reads ``21.28666989160534`` on the pool and ``21.28666989160533`` in the aarch64 dev container on glibc 2.39, while
-GitHub CI's x86_64 runner on glibc 2.39 reads it as the pool does. Neither the C library nor the machine alone decides
-it, so a platform is both. A golden file's generic entries were captured on the platform it names under
-``@captured_on`` (a pool runner, glibc 2.41). Every other platform (:data:`PLATFORM`: the system, the machine and its C
-library) is compared against its own ``<entry>@<PLATFORM>``, or against the generic entry where the file lists it under
-``@confirmed`` for that platform, never silently against another platform's. A platform with no golden for an entry is a red that says so, carrying the record it read (between
-:data:`OBSERVED` marks) to add once the base commit is confirmed to give it there. Every entry has a golden on every
-platform in :data:`DECLARED_PLATFORMS`, which a test checks. One red lists every entry of its test that moved or has
-no golden. A regeneration (local only: it refuses in CI, on xdist and on testament's runners, and every regenerating
-test fails, naming what it wrote) writes its own platform's goldens; on the capture platform it drops the other
-platforms' overrides and confirmations of each entry it rewrites, so they read as having none until confirmed again.
+**One golden set holds on every platform.** The last digits of some statistics (a t interval's bounds and everything
+computed from them, read through the platform's maths library) differ between platforms: the same code reads
+``21.28666989160534`` on the pool and ``21.28666989160533`` in the aarch64 dev container on glibc 2.39. By house rule
+those digits are not a difference: a bundle is compared through ``identity_json``, as its fingerprint is, and a served
+page rounds every computed float it serializes (its JSON, the kit's ``data-chart``, the static page's SVG
+coordinates), so a body is compared as served, byte for byte. A value that falls on a twelfth-figure rounding boundary
+is the rule's one stated exception. One red lists every entry of its test that moved, carrying the record it read
+(between :data:`OBSERVED` marks). A regeneration is local only: it refuses in CI, on xdist and on testament's runners,
+and every regenerating test fails, naming what it wrote.
 
-Floats are not compared at a tolerance, not even those a maths library computes: a tolerance would also pass a sum
-whose order moved its last place, which is what this oracle exists to catch.
+**Where a reordered fold is caught.** Comparing past twelve figures no longer catches a fold whose float order moved
+its last place. That is guarded where it is exact: ``test_readings_match_results.py``,
+``test_aggregates_both_paths.py`` and ``test_bundle_both_paths.py`` compare the fast and the reference paths for exact equality, and the scaling counts
+(``test_hot_path_scaling.py``) hold the work each read does. Floats are never compared at a tolerance here: twelve
+figures is the form the house rule compares and serves, not a tolerance.
 
 The report's clock is pinned (:data:`REPORT_NOW`), the one wall-clock value a code-only page prints.
 """
@@ -71,6 +73,7 @@ from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops import report_read
 from threetears.evals.ops.lenses import detectable_effects
+from threetears.evals.schema.hashing import identity_json
 from packages.evals.tests.fixtures.courierhost import COURIER_SCOPE, COURIER_TEMPLATE_ID, courier_cases
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.hot_path_support import (
@@ -103,28 +106,9 @@ WHOLE_UP_TO = 4096
 #: How much of a long body's start and end its golden keeps.
 EDGE = 1024
 
-#: The platform a read ran on, as far as its floats' last digits go: the system, the machine and its C library. The C
-#: library alone does not decide them: the aarch64 dev container on glibc 2.39 reads some entries apart from the pool,
-#: while GitHub CI's x86_64 runner on glibc 2.39 reads every entry as the pool does. The Python build does not move them.
-PLATFORM = f"{platform.system()}-{platform.machine()}-{'-'.join(platform.libc_ver())}"
-
-#: The platform in full, for a red's message: the Python build too.
-PLATFORM_DETAIL = f"{PLATFORM}-py{platform.python_version()}"
-
-#: Every platform the oracle is held on, each with a golden for every entry: the pool's x86_64 and aarch64 runners,
-#: GitHub CI's x86_64 runner, and the aarch64 development container a coordinator may read it in.
-DECLARED_PLATFORMS = (
-    "Linux-x86_64-glibc-2.41",
-    "Linux-aarch64-glibc-2.41",
-    "Linux-x86_64-glibc-2.39",
-    "Linux-aarch64-glibc-2.39",
-)
-
-#: The key under which a golden file names the platform its generic entries were captured on.
-CAPTURED_ON = "@captured_on"
-
-#: The key under which a golden file lists, per platform, the entries that platform reads exactly as the generic one.
-CONFIRMED = "@confirmed"
+#: The platform a read ran on, for a red's message: the system, the machine, its C library and the Python build. Every
+#: platform is held to the same goldens; a red names where it was read so a platform-only one is seen as such.
+PLATFORM = f"{platform.system()}-{platform.machine()}-{'-'.join(platform.libc_ver())}-py{platform.python_version()}"
 
 #: What brackets the observed record in a red's message, so a pool run's report carries the record it read.
 OBSERVED = "<<observed-record>>"
@@ -243,15 +227,11 @@ def refuse_unattended_regeneration() -> None:
 
 
 class Goldens:
-    """One campaign's goldens, read as this platform holds them, and every entry a test compares against them.
+    """One campaign's goldens, and every entry a test compares against them.
 
-    Every entry a test compares is checked before it fails, so one red names every entry that moved, and every
-    entry this platform has no golden for, each with the record it read.
-
-    The file's generic entries were captured on the platform it names under :data:`CAPTURED_ON`. Another platform is
-    compared against its own override, ``<entry>@<PLATFORM>``, or against the generic entry where the file lists the
-    entry as confirmed for that platform (:data:`CONFIRMED`): never silently against a golden of a platform whose
-    floats may read differently in their last place.
+    Every entry a test compares is checked before it fails, so one red names every entry that moved, and every entry
+    the file has no golden for, each with the record it read. The file holds one golden per entry, the same on every
+    platform.
     """
 
     def __init__(self, name: str) -> None:
@@ -261,41 +241,23 @@ class Goldens:
         self.problems: list[str] = []
         self.written: list[str] = []
 
-    def golden(self, entry: str, on: str = PLATFORM) -> dict[str, Any] | None:
-        """Platform ``on``'s golden of ``entry``: its override, else the generic entry where it holds there."""
-        override = self.stored.get(f"{entry}@{on}")
-        if override is not None:
-            return dict(override)
-        holds = self.stored.get(CAPTURED_ON) == on or entry in self.stored.get(CONFIRMED, {}).get(on, [])
-        return dict(self.stored[entry]) if holds and entry in self.stored else None
-
     def entries(self) -> list[str]:
-        """The generic entries the file holds."""
-        return sorted(key for key in self.stored if not key.startswith("@") and "@" not in key)
+        """The entries the file holds."""
+        return sorted(self.stored)
 
     def check(self, entry: str, text: str) -> None:
-        """Compare ``text`` with ``entry``'s golden on this platform, or write it under :data:`REGENERATE`."""
+        """Compare ``text`` with ``entry``'s golden, or write it under :data:`REGENERATE`."""
         observed = record(text)
         if REGENERATE:
             self.regenerate(entry, observed)
             return
         carried = json.dumps(
-            {
-                "campaign": self.name,
-                "entry": entry,
-                "platform": PLATFORM,
-                "detail": PLATFORM_DETAIL,
-                "record": observed,
-            },
-            ensure_ascii=False,
+            {"campaign": self.name, "entry": entry, "platform": PLATFORM, "record": observed}, ensure_ascii=False
         )
-        golden = self.golden(entry)
+        golden = self.stored.get(entry)
         if golden is None:
             self.problems.append(
-                f"{self.name} {entry}: no golden for this platform ({PLATFORM}; the generic goldens were captured on "
-                f"{self.stored.get(CAPTURED_ON)}): add {entry}@{PLATFORM} = the record below, or list the entry as "
-                f"confirmed for it, after confirming the base commit gives it on this platform "
-                f"{OBSERVED}{carried}{OBSERVED}"
+                f"{self.name} {entry}: no golden; a regeneration writes it {OBSERVED}{carried}{OBSERVED}"
             )
             return
         if observed != golden:
@@ -314,36 +276,17 @@ class Goldens:
             )
 
     def regenerate(self, entry: str, observed: dict[str, Any]) -> None:
-        """Write ``observed`` as this platform's golden of ``entry``.
-
-        On the capture platform it replaces the generic entry, and every other platform's override and confirmation of
-        it is dropped: they described the output it replaces, so each reads as having no golden until confirmed again.
-        On another platform it confirms the generic entry where it is equal, and is written as this platform's
-        override where it is not.
-        """
+        """Write ``observed`` as ``entry``'s golden."""
         refuse_unattended_regeneration()
-        captured = self.stored.setdefault(CAPTURED_ON, PLATFORM)
-        confirmed: dict[str, list[str]] = self.stored.setdefault(CONFIRMED, {})
-        if captured == PLATFORM:
-            self.stored[entry] = observed
-            for key in [key for key in self.stored if key.startswith(f"{entry}@")]:
-                del self.stored[key]
-            for listed in confirmed.values():
-                if entry in listed:
-                    listed.remove(entry)
-        elif self.stored.get(entry) == observed:
-            self.stored.pop(f"{entry}@{PLATFORM}", None)
-            confirmed[PLATFORM] = sorted({*confirmed.get(PLATFORM, []), entry})
-        else:
-            self.stored[f"{entry}@{PLATFORM}"] = observed
-            confirmed[PLATFORM] = [listed for listed in confirmed.get(PLATFORM, []) if listed != entry]
+        self.stored = {key: value for key, value in self.stored.items() if "@" not in key}
+        self.stored[entry] = observed
         GOLDENS.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self.stored, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
         self.written.append(entry)
 
     def assert_unchanged(self) -> None:
-        """Fail naming every entry that moved or has no golden on this platform; under :data:`REGENERATE`, fail naming
-        what was written, so a regenerating run never reads as green."""
+        """Fail naming every entry that moved or has no golden; under :data:`REGENERATE`, fail naming what was written,
+        so a regenerating run never reads as green."""
         if self.written:
             pytest.fail(f"{self.name}: goldens written on {PLATFORM} for {', '.join(self.written)}: review the diff")
         assert not self.problems, "\n".join(self.problems)
@@ -372,9 +315,9 @@ def test_every_aspect_s_bundle_and_the_campaign_frame_are_unchanged(name: str, p
         pinned = sorted(entry.removeprefix("bundle:") for entry in goldens.entries() if entry.startswith("bundle:"))
         assert sorted(aspect.aspect for aspect in bundle.aspects) == pinned, f"{name}'s aspects are not the pinned ones"
     for aspect in bundle.aspects:
-        goldens.check(f"bundle:{aspect.aspect}", _json(aspect.to_dict()))
+        goldens.check(f"bundle:{aspect.aspect}", identity_json(aspect.to_dict()))
         goldens.check(f"fingerprint:{aspect.aspect}", aspect.fingerprint())
-    goldens.check("frame", _json(bundle.frame()))
+    goldens.check("frame", identity_json(bundle.frame()))
     goldens.check("campaign_fingerprint", bundle.fingerprint())
     goldens.assert_unchanged()
 
@@ -428,17 +371,15 @@ def test_the_scaled_page_states_how_many_trials_it_lists_of_how_many_ran(pinned_
 
 
 @pytest.mark.parametrize("name", CAMPAIGNS)
-def test_every_golden_entry_has_a_golden_on_every_declared_platform(name: str) -> None:
-    """Coverage is checked here, not found by which runner a read lands on: every entry a campaign's goldens hold has
-    a golden on every platform in :data:`DECLARED_PLATFORMS`."""
-    goldens = Goldens(name)
-    entries = goldens.entries()
+def test_every_campaign_holds_one_golden_per_form_for_every_platform(name: str) -> None:
+    """Every form of every campaign's page has its golden, and none is held for one platform alone: one golden set is
+    valid everywhere (see the module docstring)."""
+    entries = set(Goldens(name).entries())
     expected = {f"body:{form}:{trials}" for form in ("markdown", "html", "html_static", "json") for trials in TRIALS}
     expected |= {entry.replace("body:", "read:", 1) for entry in expected}
 
-    assert expected <= set(entries), f"{name} lacks goldens for {sorted(expected - set(entries))}"
-    missing = {on: [entry for entry in entries if goldens.golden(entry, on) is None] for on in DECLARED_PLATFORMS}
-    assert not any(missing.values()), f"{name}: entries with no golden, by platform: {missing}"
+    assert expected <= entries, f"{name} lacks goldens for {sorted(expected - entries)}"
+    assert not [entry for entry in entries if "@" in entry], f"{name} holds a golden keyed to a platform"
 
 
 @pytest.mark.parametrize("variable", ["CI", "PYTEST_XDIST_WORKER", "TESTAMENT_RUNNER"])

@@ -1,76 +1,4 @@
 {
- "@captured_on": "Linux-x86_64-glibc-2.41",
- "@confirmed": {
-  "Linux-aarch64-glibc-2.39": [
-   "body:html:all",
-   "body:html:table",
-   "body:html_static:all",
-   "body:html_static:table",
-   "body:json:all",
-   "body:json:table",
-   "body:markdown:all",
-   "body:markdown:table",
-   "bundle:plan_delivery_round",
-   "campaign_fingerprint",
-   "fingerprint:plan_delivery_round",
-   "frame",
-   "planning",
-   "read:html:all",
-   "read:html:table",
-   "read:html_static:all",
-   "read:html_static:table",
-   "read:json:all",
-   "read:json:table",
-   "read:markdown:all",
-   "read:markdown:table"
-  ],
-  "Linux-aarch64-glibc-2.41": [
-   "body:html:all",
-   "body:html:table",
-   "body:html_static:all",
-   "body:html_static:table",
-   "body:json:all",
-   "body:json:table",
-   "body:markdown:all",
-   "body:markdown:table",
-   "bundle:plan_delivery_round",
-   "campaign_fingerprint",
-   "fingerprint:plan_delivery_round",
-   "frame",
-   "planning",
-   "read:html:all",
-   "read:html:table",
-   "read:html_static:all",
-   "read:html_static:table",
-   "read:json:all",
-   "read:json:table",
-   "read:markdown:all",
-   "read:markdown:table"
-  ],
-  "Linux-x86_64-glibc-2.39": [
-   "body:html:all",
-   "body:html:table",
-   "body:html_static:all",
-   "body:html_static:table",
-   "body:json:all",
-   "body:json:table",
-   "body:markdown:all",
-   "body:markdown:table",
-   "bundle:plan_delivery_round",
-   "campaign_fingerprint",
-   "fingerprint:plan_delivery_round",
-   "frame",
-   "planning",
-   "read:html:all",
-   "read:html:table",
-   "read:html_static:all",
-   "read:html_static:table",
-   "read:json:all",
-   "read:json:table",
-   "read:markdown:all",
-   "read:markdown:table"
-  ]
- },
  "body:html:all": {
   "bytes": 89617,
   "head": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>planner-lite vs planner-pro · plan_delivery_round (planner model bake-off)</title>\n<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\"><link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap\">\n<style>/* Layout: decision-memo column (68ch prose) with charts breaking out to a wide band.\n   Host apps override the --host-* tokens only; everything else derives from them. */\n:root{\n  --host-accent:#1f5fbf;\n  --bg:#f5f6f8; --surface:#ffffff; --sunk:#eef0f3;\n  --ink:#11151b; --ink-2:#465061; --muted:#7f8896;\n  --line:#e1e5eb; --base:#c3cad4;\n  --accent:var(--host-accent); --accent-wash:#e6eefa; --on-fill:#ffffff;\n  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:",
@@ -114,10 +42,10 @@
   "tail": "ratory**: No question was declared, so the page offers leads, not decisions.\n- **ran**: Every trial the arm ran, usable or not.\n- **usable**: A trial the test setup did not spoil; only usable trials count for or against an arm.\n- **failed by check**: A trial that broke a rule code checks, such as a required tool call.\n- **failed by judge**: A trial the judge model scored below the bar on some dimension.\n- **cost per reply**: What production would spend per reply on the models the arm runs, as its runs were routed.\n- **case floor**: Five independent cases per arm: below it a gap has no interval; from there an interval says whether the gap would hold on more cases.\n- **case**: One input the eval feeds every arm; repeats of a case are not independent.\n- **flag**: Regression marks a case a candidate passed on a smaller share of its usable trials than the control; a tie or a gain never flags.\n- **marks**: ✓ passed, ✗ failed, – lost to the test setup; one mark per repeat.\n- **trial**: One case run once on one arm.\n"
  },
  "bundle:plan_delivery_round": {
-  "bytes": 39929,
-  "head": "{\"schema_version\": 64, \"campaign_id\": \"01a18d24-a2ee-759f-8fc0-5704aa866d2e\", \"subject_id\": \"depot-north-planner\", \"subject_kind\": \"route_planner_config\", \"behavior\": \"plan_delivery_round\", \"aspect\": \"plan_delivery_round\", \"template_id\": \"plan-delivery-round\", \"scope_id\": \"courier-depot-north\", \"run_ids\": [\"01a18d24-a2de-7352-a637-5d35c2c84d82\", \"01a18d24-a2e8-7401-a443-0a3d53ceda02\"], \"unresolved_run_ids\": [], \"archived_run_ids\": [], \"model_versions\": {\"candidate\": \"planner-lite, planner-pro\"}, \"window\": {\"start\": \"2026-10-30T14:09:10.878430+00:00\", \"end\": \"2026-10-30T14:09:10.888087+00:00\"}, \"run_summaries\": [{\"run_id\": \"01a18d24-a2de-7352-a637-5d35c2c84d82\", \"status\": \"completed\", \"created_at\": \"2026-10-30T14:09:10.878430+00:00\", \"candidate_model\": \"planner-lite\", \"k_runs\": 2, \"config\": {\"model\": \"planner-lite\"}, \"config_provenance\": {\"model\": \"inherited\"}, \"n_results\": 6, \"n_errors\": 0, \"cost_usd\": 0.012, \"n_cost_unpriced\": 0, \"prod_cost_usd\": 0.012, \"mean_prod_cost_usd\": 0.002, \"n_prod_cost_usd\": 6, \"pro",
-  "sha256": "2fec7be3e5914948c42424978d6514f2017129a08cc01ac77988ac3a64cf6f52",
-  "tail": " null, \"texts\": []}], \"absent_scopes\": [\"subsystem\"], \"unreported_observations\": []}, \"judged\": [], \"short_runs\": {}, \"incomplete_runs\": {}, \"strata\": []}], \"time_axis\": null, \"time_axis_withheld\": \"every run started on one day (2026-10-30) and the host labels no build\", \"confound_catalog\": {\"traffic_feed\": \"a different traffic feed priced the roads, so a faster route may be a kinder feed\", \"served_model:candidate\": \"not recorded on every run in this campaign, so whether it varied cannot be established; if it did, the candidate was asked for one model id and the provider's responses named more than one model as having answered it — a floating alias (a 'latest' pointer) resolves on the provider's side and can move between runs or within one — so the numbers recorded under that id are a mixture of models, and a difference between arms may belong to which model answered rather than to anything the arms set\"}, \"prior_insights\": [], \"prior_insights_omitted\": 0, \"retracted_insights\": {}, \"question_declared\": false}"
+  "bytes": 37050,
+  "head": "{\"aliased_factors\":[{\"factors\":[\"model\",\"traffic_feed\"],\"n_levels\":2,\"n_runs\":2,\"sentence\":\"model and traffic_feed move together across all 2 runs, splitting them into the same 2 groups; no comparison separates them, so a difference across them belongs to all 2 at once.\"}],\"all_failed\":null,\"all_failed_cells\":[],\"apparatus_confounds\":[{\"dimension\":\"traffic_feed\",\"kind\":\"apparatus\",\"level_values\":{},\"status\":\"varied\",\"threshold\":null}],\"archived_run_ids\":[],\"arm_mechanisms\":[{\"covariate\":\"reasoning_ratio\",\"mean\":null,\"n_measured\":0,\"n_results\":6,\"variant_key\":\"45bbd9683e14a1d9f83600b2984e40811a28902fc0a03b8408c507cffae59a1c\"},{\"covariate\":\"reasoning_ratio\",\"mean\":null,\"n_measured\":0,\"n_results\":6,\"variant_key\":\"7bc3d84de64ee94e10646a34abc8c56a56ee7df4815b0530f286ab668f481af5\"}],\"arm_production_footings\":{\"45bbd9683e14a1d9f83600b2984e40811a28902fc0a03b8408c507cffae59a1c\":{\"runs\":{\"01a18d24-a2e8-7401-a443-0a3d53ceda02\":{\"held\":[\"candidate_kind\"],\"moved\":{},\"unchecked\":{\"model\":\"planner-pro\",\"search_depth\":\"3\"}}}",
+  "sha256": "b186899a8ea629bf72f943b0321babbb66e2726f3505bddf309d90320a2fbecf",
+  "tail": "ce\",\"display\":\"3\",\"raw\":null,\"scale\":{\"kind\":\"interval\",\"unit\":null,\"value\":3.0}}},\"swept\":{},\"variant_key\":\"45bbd9683e14a1d9f83600b2984e40811a28902fc0a03b8408c507cffae59a1c\"},{\"folded\":[],\"levels_unavailable\":null,\"levers\":{\"candidate_kind\":{\"content_hash\":\"1cad34776ecaeffa4972e0fff77bab8f0c483ac5d791f4c120c5c2c705af0ae4\",\"display\":\"route_planner\",\"raw\":null,\"scale\":{\"kind\":\"nominal\"}},\"model\":{\"content_hash\":\"093465646965d2298e14f060bd3adae1ceda6afbbfb54ee57c72d104a5066f3a\",\"display\":\"planner-lite\",\"raw\":null,\"scale\":{\"kind\":\"nominal\"}},\"search_depth\":{\"content_hash\":\"4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce\",\"display\":\"3\",\"raw\":null,\"scale\":{\"kind\":\"interval\",\"unit\":null,\"value\":3.0}}},\"swept\":{},\"variant_key\":\"7bc3d84de64ee94e10646a34abc8c56a56ee7df4815b0530f286ab668f481af5\"}],\"verdict_order\":{\"merit_priority\":[],\"question\":null,\"tiers\":[],\"unranked_bar_measure_ids\":[]},\"whole_swings\":[],\"window\":{\"end\":\"2026-10-30T14:09:10.888087+00:00\",\"start\":\"2026-10-30T14:09:10.878430+00:00\"}}"
  },
  "campaign_fingerprint": {
   "text": "v3:3a731d5500ed1e3adf2187d91466b3a897a3722a092d14159ed81f1150a54490"
@@ -126,10 +54,7 @@
   "text": "v2:86af7c8b81186e57b2262d53025c6eed5fddfe7f688d4419cd56cbdaf69ea7e5"
  },
  "frame": {
-  "bytes": 4116,
-  "head": "{\"schema_version\": 3, \"campaign_id\": \"01a18d24-a2ee-759f-8fc0-5704aa866d2e\", \"scope_id\": \"courier-depot-north\", \"name\": \"planner model bake-off\", \"subject_id\": \"depot-north-planner\", \"subject_kind\": \"route_planner_config\", \"behavior\": \"plan_delivery_round\", \"declaration\": {\"question\": \"\", \"declared_at\": null, \"declared_by\": \"\", \"arms\": [], \"aspects\": [{\"label\": \"plan_delivery_round\", \"template_id\": \"plan-delivery-round\", \"stratum\": null, \"margin\": null, \"design\": null, \"run_ids\": [\"01a18d24-a2de-7352-a637-5d35c2c84d82\", \"01a18d24-a2e8-7401-a443-0a3d53ceda02\"], \"declared_at\": null, \"asked_at\": null, \"margin_declared_at\": null}], \"floors\": []}, \"arms\": [{\"label\": \"planner-lite\", \"role\": \"candidate\", \"variant_key\": \"7bc3d84de64ee94e10646a34abc8c56a56ee7df4815b0530f286ab668f481af5\", \"levers\": {\"model\": {\"content_hash\": \"093465646965d2298e14f060bd3adae1ceda6afbbfb54ee57c72d104a5066f3a\", \"display\": \"planner-lite\", \"scale\": {\"kind\": \"nominal\"}, \"raw\": null}, \"candidate_kind\": {\"content_hash\": \"1cad34776ecaeffa4972e0",
-  "sha256": "a74e1fe498fb4a4246b22c8ce4e686508a15abd4072e999e7178b4989408a6ef",
-  "tail": "ats_median\": 2.0, \"repeats_max\": 2}, \"depth_differs\": null, \"precision\": null}], \"bars\": [], \"measures\": [], \"aggregate\": {\"weighting\": {\"basis\": \"equal\", \"weights\": {\"plan_delivery_round\": 1.0}, \"intervals\": \"aspects_independent\"}, \"level\": 0.95, \"arms\": [{\"arm\": \"7bc3d84de64ee94e10646a34abc8c56a56ee7df4815b0530f286ab668f481af5\", \"arm_label\": \"planner-lite\", \"pass_rate\": {\"value\": 100.0, \"interval\": [71.92514841224772, 100.0], \"missing\": []}, \"change\": null, \"cost\": {\"value\": 0.002, \"interval\": [0.002, 0.002], \"missing\": []}, \"cheaper_on\": null, \"dearer_on\": null}, {\"arm\": \"45bbd9683e14a1d9f83600b2984e40811a28902fc0a03b8408c507cffae59a1c\", \"arm_label\": \"planner-pro\", \"pass_rate\": {\"value\": 100.0, \"interval\": [71.92514841224772, 100.0], \"missing\": []}, \"change\": null, \"cost\": {\"value\": 0.002, \"interval\": [0.002, 0.002], \"missing\": []}, \"cheaper_on\": null, \"dearer_on\": null}]}}, \"aspects\": [{\"aspect\": \"plan_delivery_round\", \"fingerprint\": \"v2:86af7c8b81186e57b2262d53025c6eed5fddfe7f688d4419cd56cbdaf69ea7e5\"}]}"
+  "text": "{\"arms\":[{\"identity_version\":25,\"label\":\"planner-lite\",\"levers\":{\"candidate_kind\":{\"content_hash\":\"1cad34776ecaeffa4972e0fff77bab8f0c483ac5d791f4c120c5c2c705af0ae4\",\"display\":\"route_planner\",\"raw\":null,\"scale\":{\"kind\":\"nominal\"}},\"model\":{\"content_hash\":\"093465646965d2298e14f060bd3adae1ceda6afbbfb54ee57c72d104a5066f3a\",\"display\":\"planner-lite\",\"raw\":null,\"scale\":{\"kind\":\"nominal\"}},\"search_depth\":{\"content_hash\":\"4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce\",\"display\":\"3\",\"raw\":null,\"scale\":{\"kind\":\"interval\",\"unit\":null,\"value\":3.0}}},\"named_at\":null,\"role\":\"candidate\",\"variant_key\":\"7bc3d84de64ee94e10646a34abc8c56a56ee7df4815b0530f286ab668f481af5\"},{\"identity_version\":25,\"label\":\"planner-pro\",\"levers\":{\"candidate_kind\":{\"content_hash\":\"1cad34776ecaeffa4972e0fff77bab8f0c483ac5d791f4c120c5c2c705af0ae4\",\"display\":\"route_planner\",\"raw\":null,\"scale\":{\"kind\":\"nominal\"}},\"model\":{\"content_hash\":\"2406726ec84d0b5d1385e5f843bd37bf1872dc283778aba72af1c56526c62b80\",\"display\":\"planner-pro\",\"raw\":null,\"scale\":{\"kind\":\"nominal\"}},\"search_depth\":{\"content_hash\":\"4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce\",\"display\":\"3\",\"raw\":null,\"scale\":{\"kind\":\"interval\",\"unit\":null,\"value\":3.0}}},\"named_at\":null,\"role\":\"candidate\",\"variant_key\":\"45bbd9683e14a1d9f83600b2984e40811a28902fc0a03b8408c507cffae59a1c\"}],\"aspects\":[{\"aspect\":\"plan_delivery_round\",\"fingerprint\":\"v2:86af7c8b81186e57b2262d53025c6eed5fddfe7f688d4419cd56cbdaf69ea7e5\"}],\"behavior\":\"plan_delivery_round\",\"campaign_id\":\"01a18d24-a2ee-759f-8fc0-5704aa866d2e\",\"declaration\":{\"arms\":[],\"aspects\":[{\"asked_at\":null,\"declared_at\":null,\"design\":null,\"label\":\"plan_delivery_round\",\"margin\":null,\"margin_declared_at\":null,\"run_ids\":[\"01a18d24-a2de-7352-a637-5d35c2c84d82\",\"01a18d24-a2e8-7401-a443-0a3d53ceda02\"],\"stratum\":null,\"template_id\":\"plan-delivery-round\"}],\"declared_at\":null,\"declared_by\":\"\",\"floors\":[],\"question\":\"\"},\"name\":\"planner model bake-off\",\"readings\":{\"aggregate\":{\"arms\":[{\"arm\":\"7bc3d84de64ee94e10646a34abc8c56a56ee7df4815b0530f286ab668f481af5\",\"arm_label\":\"planner-lite\",\"change\":null,\"cheaper_on\":null,\"cost\":{\"interval\":[0.002,0.002],\"missing\":[],\"value\":0.002},\"dearer_on\":null,\"pass_rate\":{\"interval\":[71.9251484122,100.0],\"missing\":[],\"value\":100.0}},{\"arm\":\"45bbd9683e14a1d9f83600b2984e40811a28902fc0a03b8408c507cffae59a1c\",\"arm_label\":\"planner-pro\",\"change\":null,\"cheaper_on\":null,\"cost\":{\"interval\":[0.002,0.002],\"missing\":[],\"value\":0.002},\"dearer_on\":null,\"pass_rate\":{\"interval\":[71.9251484122,100.0],\"missing\":[],\"value\":100.0}}],\"level\":0.95,\"weighting\":{\"basis\":\"equal\",\"intervals\":\"aspects_independent\",\"weights\":{\"plan_delivery_round\":1.0}}},\"alpha\":0.05,\"aspects\":[\"plan_delivery_round\"],\"bars\":[],\"campaign_id\":\"01a18d24-a2ee-759f-8fc0-5704aa866d2e\",\"control\":null,\"control_label\":\"\",\"floors\":[],\"kind\":\"choice\",\"measures\":[],\"pairs\":[{\"ahead\":null,\"ahead_label\":null,\"aspect\":\"plan_delivery_round\",\"change\":0.0,\"confidence\":null,\"confirmatory\":false,\"depth_differs\":null,\"first\":\"7bc3d84de64ee94e10646a34abc8c56a56ee7df4815b0530f286ab668f481af5\",\"first_cases\":3,\"first_depth\":{\"cases\":3,\"repeats_max\":2,\"repeats_median\":2.0,\"repeats_min\":2,\"trials\":6},\"first_label\":\"planner-lite\",\"first_passed\":6,\"first_trials\":6,\"interval\":null,\"p\":null,\"p_holm\":null,\"precision\":null,\"reason\":\"no interval could be read: planner-lite and planner-pro ran under no test setup in common\",\"rig\":null,\"second\":\"45bbd9683e14a1d9f83600b2984e40811a28902fc0a03b8408c507cffae59a1c\",\"second_cases\":3,\"second_depth\":{\"cases\":3,\"repeats_max\":2,\"repeats_median\":2.0,\"repeats_min\":2,\"trials\":6},\"second_label\":\"planner-pro\",\"second_passed\":6,\"second_trials\":6}],\"readings\":[]},\"schema_version\":3,\"scope_id\":\"courier-depot-north\",\"subject_id\":\"depot-north-planner\",\"subject_kind\":\"route_planner_config\"}"
  },
  "planning": {
   "text": "{\"n_cases\":3,\"k_runs\":2,\"family_size\":4,\"alpha\":0.05,\"per_comparison_alpha\":0.0125,\"power\":0.8,\"run_ids\":[\"01a18d24-a2de-7352-a637-5d35c2c84d82\",\"01a18d24-a2e8-7401-a443-0a3d53ceda02\"],\"cannot_estimate\":null,\"effects\":[{\"reading\":\"measure\",\"name\":\"detour_km\",\"delta\":null,\"cannot_estimate\":\"the earlier runs show no spread on this reading, case to case or repeat to repeat, so no test's power can be planned from them\",\"basis\":\"paired_runs\",\"within_case_sd\":0.0,\"between_case_sd\":0.0,\"difference_sd\":0.0,\"n_history_cases\":3,\"run_ids\":[\"01a18d24-a2de-7352-a637-5d35c2c84d82\",\"01a18d24-a2e8-7401-a443-0a3d53ceda02\"]},{\"reading\":\"measure\",\"name\":\"field_accuracy\",\"delta\":null,\"cannot_estimate\":\"the earlier runs show no spread on this reading, case to case or repeat to repeat, so no test's power can be planned from them\",\"basis\":\"paired_runs\",\"within_case_sd\":0.0,\"between_case_sd\":0.0,\"difference_sd\":0.0,\"n_history_cases\":3,\"run_ids\":[\"01a18d24-a2de-7352-a637-5d35c2c84d82\",\"01a18d24-a2e8-7401-a443-0a3d53ceda02\"]},{\"reading\":\"measure\",\"name\":\"on_time_rate\",\"delta\":0.8332709564016728,\"cannot_estimate\":null,\"basis\":\"paired_runs\",\"within_case_sd\":0.0,\"between_case_sd\":0.1272937693043289,\"difference_sd\":0.1272937693043289,\"n_history_cases\":3,\"run_ids\":[\"01a18d24-a2de-7352-a637-5d35c2c84d82\",\"01a18d24-a2e8-7401-a443-0a3d53ceda02\"]},{\"reading\":\"measure\",\"name\":\"production_replicating_cost\",\"delta\":null,\"cannot_estimate\":\"the earlier runs show no spread on this reading, case to case or repeat to repeat, so no test's power can be planned from them\",\"basis\":\"paired_runs\",\"within_case_sd\":0.0,\"between_case_sd\":0.0,\"difference_sd\":0.0,\"n_history_cases\":3,\"run_ids\":[\"01a18d24-a2de-7352-a637-5d35c2c84d82\",\"01a18d24-a2e8-7401-a443-0a3d53ceda02\"]}],\"assumptions\":\"the planned arms run the same cases and are compared paired, as a family compares them; one case's difference of means is near normal (the paired t-test's own assumption — on a coarse pass/fail or 1-5 reading over few cases it is only approximate); the earlier runs' variance holds for the planned arms; only the one comparison differs, so Holm's correction asks it to clear α/m (more real differences make each easier to find); and the variance is an estimate from the earlier runs, whose own error is not in the figure\"}"
