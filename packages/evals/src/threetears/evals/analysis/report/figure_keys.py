@@ -631,10 +631,8 @@ _ASPECT_FIELDS = ("id", "name", "margin", "description", "graded_by", "pass_rule
 _PASS_RULE_FIELDS = frozenset({"pass_threshold", "no_criterion"})
 
 #: The aspect fields a planner's grammar leaves out: those only an analyst's input states (the input contract's
-#: ``ANALYST_ASPECT_FIELDS``) and those read off its pass rule, but ``description``, which the planner's grammar still
-#: lists though a planner's input never states it. Leaving it out changes the planner's prompt, which the recorded
-#: planner runs pin, so it waits on a re-recording of them.
-_ANALYST_ASPECT_FIELDS = (ANALYST_ASPECT_FIELDS | _PASS_RULE_FIELDS) - {"description"}
+#: ``ANALYST_ASPECT_FIELDS``) and those read off its pass rule.
+_ANALYST_ASPECT_FIELDS = ANALYST_ASPECT_FIELDS | _PASS_RULE_FIELDS
 
 
 def _aspect_field(aspect: Aspect, field: str, path: str) -> Figure:

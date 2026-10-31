@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261031-925c6cf80a45",
+  "input": "r4",
+  "input_digest": "96d0986057f2da9a09c4bccebf74c51e8c2731a2aab3e4e833b09505ff1fd5a8",
+  "plan_digest": "62f41ab60e3b0b2ce6e64c44e38d7bdd8fb1b9d40ea628798ddd9e2146c51cc9",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+    "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "The headline is a trade that gives both sides and puts the loss in persona consistency, matching the lean row and the forest chart.",
+      "quote": "Trade f64 (A)'s -$0.63 savings per 1,000 replies for 6.1 points lower persona consistency.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: the supporting fact (guardrails held, drift in deeper turns), then the trade threshold that decides the answer.",
+      "quote": "An explicit threshold on acceptable persona loss determines whether to adopt it or stay on Production (P).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "fail",
+      "reason": "The section caption repeats the uncorrected-interval caveat its takeaway already states, and the flag never says which findings survive the missing trade rule.",
+      "quote": "Differences are uncorrected across challengers.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "pass",
+      "reason": "Each section headline is a finding with a subject and a direction that its chart shows (the contrast drops, faster drift with depth, banter and corrections largest).",
+      "quote": "Banter and user corrections drive the largest consistency drops",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Arms use their declared names, and strata and measures use reader words above Full results.",
+      "quote": "f64 (A) remains near Production (P) during early turns but falls to 70% beyond ten turns.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "In tradeoff mode, Where the answer flips names the flip point, $0.103 per persona point per 1,000 replies.",
+      "quote": "f64 (A) wins if a point of character consistency is worth under $0.103 per 1,000 replies; above that price, keep Production (P).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure goes by many names: persona consistency, character consistency, Stays in character, and Stays in character adherence.",
+      "quote": "Trade f64 (A)'s -$0.63 savings per 1,000 replies for 6.1 points lower persona consistency.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The first screen gives the lean, the reason (savings with guardrails held), the risk (the persona loss) and the flip price.",
+      "quote": "Lean toward f64 (A): it clears both guardrails and preserves tone on early turns while delivering substantial cost and latency gains.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "What would settle it names a concrete human evaluation whose decisive direction is clear: if users notice the drift, keep Production.",
+      "quote": "Human evaluation on live long-context dialogs to confirm whether users notice the persona drift after five turns.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence is plain high and has no caveat clauses.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "The saving is printed as a negative figure, so the text reads that f64 saves -$0.63, which says the opposite of a saving.",
+      "quote": "f64 (A) saves -$0.63 per 1,000 replies (-$7,560 per month) against a loss of 6.1 points (-7.3 to -4.9) on Stays in character.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-31T16:00:54.353038+00:00"
+}

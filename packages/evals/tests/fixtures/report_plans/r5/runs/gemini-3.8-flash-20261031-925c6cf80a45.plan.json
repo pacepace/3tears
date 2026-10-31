@@ -1,0 +1,360 @@
+{
+  "mode": "decide",
+  "headline_kind": "decision",
+  "headline": "Keep {arm:September}: both candidates regress on character adherence and raise production cost.",
+  "lede": "{arm:September} achieves the highest pass rate and lowest spend, while {arm:1017} and {arm:qwen3.8-flash} degrade character adherence without offering savings. Switching models requires a candidate that delivers measurable cost reductions or beats {arm:September} on character adherence.",
+  "decision": {
+    "slots": [
+      {
+        "key": "recommendation",
+        "text": "Retain {arm:September} in production. It leads on character adherence (v2) at {pass_rate.September|pct} and incurs {cost_per_1k.September|usd_per_1k}.",
+        "caveats": []
+      },
+      {
+        "key": "why_not",
+        "text": "{arm:1017} regresses on character adherence by {contrast.1017.persona.holds_character.delta|abs|pts} points ({contrast.1017.persona.holds_character.interval|pts}) and adds cost. {arm:qwen3.8-flash} regresses by {contrast.qwen3.8-flash.persona.holds_character.delta|abs|pts} points ({contrast.qwen3.8-flash.persona.holds_character.interval|pts}) and also increases cost.",
+        "caveats": []
+      },
+      {
+        "key": "watch",
+        "text": "The weakest margin is {arm:qwen3.8-flash} at {weakest.value} against {weakest.threshold} on {weakest.criterion} (gap {weakest.margin}, interval {weakest.interval}). Note that {arm:1017} varied in reasoning ratio ({reasoning_ratio.1017|pct} vs {reasoning_ratio.September|pct}), and {arm:qwen3.8-flash} had two degraded harness runs totaling two dropped cells.",
+        "caveats": [
+          "confound:observed:reasoning_ratio",
+          "confound:model",
+          "short_run:01a170ab-d2da-750d-a1e3-f4b43716844d",
+          "short_run:01a17121-6e85-732d-ab3a-cf86aed8cdc6"
+        ]
+      },
+      {
+        "key": "next",
+        "text": "Test a candidate that reduces reasoning overhead without collapsing character adherence in the off lane stratum.",
+        "caveats": []
+      }
+    ],
+    "confidence": {
+      "form": "high_if_immaterial",
+      "caveats": [
+        {
+          "id": "late:aspect",
+          "material_if": "The aspect was declared post hoc; material only if another evaluative dimension was suppressed."
+        },
+        {
+          "id": "late:control",
+          "material_if": "The control arm was designated post hoc; material only if another arm served as the real production reference."
+        },
+        {
+          "id": "judge_uncalibrated",
+          "material_if": "The judge tier is undetermined; material only if relative judgment bias fails to cancel across arms."
+        }
+      ]
+    }
+  },
+  "method": [
+    {
+      "term": "Sample size",
+      "text": "{cases} cases evaluated with {repeats} repeats per case across arms.",
+      "caveats": []
+    },
+    {
+      "term": "Passing criterion",
+      "text": "A trial passes character adherence (v2) if the primary judged dimension persona holds character passes without fatal checks.",
+      "caveats": []
+    },
+    {
+      "term": "Multiplicity correction",
+      "text": "{family.family_size} contrast comparisons corrected via Holm's method at alpha {family.alpha}.",
+      "caveats": []
+    },
+    {
+      "term": "Judge model",
+      "text": "{judge.model} under an undetermined tier with insufficient calibration.",
+      "caveats": []
+    },
+    {
+      "term": "Simulator settings",
+      "text": "Simulator sent settings were unrecorded across runs and could introduce unmeasured variance.",
+      "caveats": [
+        "apparatus:simulator_sent_settings"
+      ]
+    },
+    {
+      "term": "Latency omission",
+      "text": "Latency is omitted because runs were executed concurrently.",
+      "caveats": [
+        "latency"
+      ]
+    },
+    {
+      "term": "Unreported telemetry",
+      "text": "Input tokens, output tokens, and LLM call counts were not recorded.",
+      "caveats": [
+        "unreported:input_tokens",
+        "unreported:llm_calls",
+        "unreported:output_tokens"
+      ]
+    }
+  ],
+  "schema": "report-plan/1",
+  "signals": {
+    "candidate_structure": "control_plus_candidates",
+    "baseline": "control",
+    "score_type": "mixed",
+    "strata": "many_strata",
+    "criteria": "margin",
+    "cross_cutting": [],
+    "log_cost_axis": false
+  },
+  "shape": "D",
+  "masthead": {
+    "kind": "Change · control vs candidates",
+    "system": "Kairo's character across persona models",
+    "counts": "{control.name} vs {n_candidates} candidates · {aspect.name} · {cases} cases × {repeats} repeats",
+    "run_date": "{meta.run_date}",
+    "synthetic": false
+  },
+  "arms": [
+    {
+      "id": "September",
+      "color_slot": -1
+    },
+    {
+      "id": "qwen3.8-flash",
+      "color_slot": 0
+    },
+    {
+      "id": "1017",
+      "color_slot": 1
+    }
+  ],
+  "show_arms_key": true,
+  "flag": [],
+  "options": {
+    "rows": [
+      {
+        "option": "September",
+        "role": "recommended"
+      },
+      {
+        "option": "1017",
+        "role": "near_miss"
+      },
+      {
+        "option": "qwen3.8-flash",
+        "role": "alternative"
+      }
+    ],
+    "columns": [
+      "pass_rate",
+      "reading.change",
+      "reading.verdict",
+      "judged:persona.holds_character",
+      "cost_per_1k"
+    ]
+  },
+  "summary": [
+    {
+      "kind": "bars",
+      "title": "Production replicating cost per 1,000 replies",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "production_replicating_cost"
+        ],
+        "arms": [
+          "September",
+          "1017",
+          "qwen3.8-flash"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "per_1k",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "September",
+      "level": "95%",
+      "unit": "usd",
+      "domain": []
+    },
+    {
+      "kind": "dot_interval",
+      "title": "Persona holds character rate",
+      "query": {
+        "source": "judged",
+        "aspect": "",
+        "measures": [
+          "persona.holds_character"
+        ],
+        "arms": [
+          "September",
+          "1017",
+          "qwen3.8-flash"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "September",
+      "level": "95% computed",
+      "unit": "percent",
+      "domain": []
+    }
+  ],
+  "sections": [
+    {
+      "id": "aspect_reading",
+      "eyebrow": "Gating aspect",
+      "headline": "Both challengers stay within the {aspect.margin|int}-point margin but regress against {arm:September}.",
+      "takeaway": "Negative values indicate drop in pass rate relative to {arm:September}; intervals crossing the left dashed boundary fail the margin.",
+      "chart": {
+        "kind": "forest",
+        "title": "",
+        "query": {
+          "source": "readings",
+          "aspect": "character adherence (v2)",
+          "measures": [],
+          "arms": [
+            "qwen3.8-flash",
+            "1017"
+          ],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [
+          {
+            "kind": "margin",
+            "key": "aspect.margin"
+          }
+        ],
+        "emphasis": "",
+        "level": "95%",
+        "unit": "points",
+        "domain": [
+          -16.0,
+          3.0
+        ]
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "strata_loss",
+      "eyebrow": "Stratum breakdown",
+      "headline": "Character adherence drops most sharply on off lane prompts.",
+      "takeaway": "Bars show difference in persona holds character mean relative to {arm:September}.",
+      "chart": {
+        "kind": "diverging_bars",
+        "title": "",
+        "query": {
+          "source": "strata",
+          "aspect": "",
+          "measures": [
+            "persona.holds_character"
+          ],
+          "arms": [
+            "1017",
+            "qwen3.8-flash"
+          ],
+          "strata": [
+            "off_lane",
+            "machinery",
+            "about",
+            "superlative",
+            "small_talk",
+            "multi"
+          ],
+          "limit": 6,
+          "transform": "arm_minus_control",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "95% uncorrected",
+        "unit": "points",
+        "domain": []
+      },
+      "caption": "Differences by stratum are uncorrected descriptive leads.",
+      "caveats": []
+    },
+    {
+      "id": "failure_examples",
+      "eyebrow": "Qualitative inspection",
+      "headline": "Failures stem from out-of-lane practical advice and behind-the-scenes mechanical disclosures.",
+      "takeaway": "Representative failure cases captured across challenger evaluations.",
+      "chart": {
+        "kind": "examples",
+        "title": "",
+        "query": {
+          "source": "examples",
+          "aspect": "",
+          "measures": [],
+          "arms": [
+            "1017",
+            "qwen3.8-flash"
+          ],
+          "strata": [],
+          "limit": 4,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    }
+  ],
+  "explore": [
+    {
+      "title": "Margin sensitivity",
+      "controls": [
+        {
+          "id": "margin_slider",
+          "kind": "slider",
+          "title": "Non-inferiority margin",
+          "binds": "margin",
+          "min": 0.0,
+          "max": 20.0,
+          "step": 1.0,
+          "default": 15.0,
+          "options": []
+        }
+      ],
+      "recomputes": "Adjusting the margin slider recalculates non-inferiority status. Neither candidate ever dominates {arm:September}."
+    }
+  ],
+  "full_results": [
+    "arms_by_measure",
+    "contrasts",
+    "strata"
+  ],
+  "durable_claims": [
+    {
+      "text": "On persona holds character, {arm:1017} drops by {contrast.1017.persona.holds_character.delta|abs|pts} points ({contrast.1017.persona.holds_character.interval|pts}) and {arm:qwen3.8-flash} drops by {contrast.qwen3.8-flash.persona.holds_character.delta|abs|pts} points ({contrast.qwen3.8-flash.persona.holds_character.interval|pts}).",
+      "confidence": "high",
+      "keys": [
+        "contrast.1017.production_replicating_cost.delta",
+        "contrast.1017.persona.holds_character.delta",
+        "contrast.qwen3.8-flash.production_replicating_cost.delta",
+        "contrast.qwen3.8-flash.persona.holds_character.delta"
+      ]
+    },
+    {
+      "text": "{arm:September} costs {cost_per_1k.September|usd_per_1k}, below {arm:qwen3.8-flash} at {cost_per_1k.qwen3.8-flash|usd_per_1k}.",
+      "confidence": "medium",
+      "keys": [
+        "cost_per_1k.September",
+        "cost_per_1k.qwen3.8-flash"
+      ]
+    }
+  ],
+  "answers": []
+}

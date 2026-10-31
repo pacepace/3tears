@@ -1,0 +1,350 @@
+{
+  "mode": "tradeoff",
+  "headline_kind": "trade",
+  "headline": "Trade {arm:f64}'s {cost.gap.f64.prod.per_1k|usd} savings per 1,000 replies for {contrast.f64.persona.delta|abs|pts} points lower persona consistency.",
+  "lede": "{arm:f64} cuts cost by {cost.gap.f64.prod.per_1k|usd} per 1,000 replies while maintaining both guardrails, but drops character consistency across deeper turns. An explicit threshold on acceptable persona loss determines whether to adopt it or stay on {arm:prod}.",
+  "decision": {
+    "slots": [
+      {
+        "key": "the_trade",
+        "text": "{arm:f64} saves {cost.gap.f64.prod.per_1k|usd} per 1,000 replies ({price.prod.f64.persona.monthly_cost_gap|usd_whole} per month) against a loss of {contrast.f64.persona.delta|abs|pts} points ({contrast.f64.persona.interval|pts}) on Stays in character.",
+        "caveats": []
+      },
+      {
+        "key": "where_it_flips",
+        "text": "{arm:f64} wins if a point of character consistency is worth under {price.prod.f64.persona.per_point|usd} per 1,000 replies; above that price, keep {arm:prod}.",
+        "caveats": []
+      },
+      {
+        "key": "our_lean",
+        "text": "Lean toward {arm:f64}: it clears both guardrails and preserves tone on early turns while delivering substantial cost and latency gains.",
+        "caveats": []
+      },
+      {
+        "key": "what_settles_it",
+        "text": "Human evaluation on live long-context dialogs to confirm whether users notice the persona drift after five turns.",
+        "caveats": []
+      }
+    ],
+    "confidence": {
+      "form": "high",
+      "caveats": []
+    }
+  },
+  "method": [
+    {
+      "term": "Sample size",
+      "text": "{scoreboard.prod.cases} cases evaluated with {scoreboard.prod.ran} trials per arm across synthetic persona dialogs.",
+      "caveats": []
+    },
+    {
+      "term": "Primary judge",
+      "text": "Evaluated by a {judged.persona.calibration} judge with agreement {judged.persona.agreement} across {judged.persona.calibration_ratings} calibration ratings.",
+      "caveats": []
+    },
+    {
+      "term": "Guardrails",
+      "text": "Music facts correct bounded at {criteria.facts.threshold|pct}; Declines to speculate bounded at {criteria.specul.threshold|pct}.",
+      "caveats": []
+    },
+    {
+      "term": "Intervals",
+      "text": "{family.level} intervals based on paired differences against {arm:prod} without multi-test correction.",
+      "caveats": []
+    },
+    {
+      "term": "Cost basis",
+      "text": "Measured token usage multiplied by standard list prices per 1,000 replies.",
+      "caveats": []
+    },
+    {
+      "term": "Volume projection",
+      "text": "Monthly savings calculated on declared traffic volume of {meta.volume_per_month|int} replies.",
+      "caveats": []
+    }
+  ],
+  "schema": "report-plan/1",
+  "signals": {
+    "candidate_structure": "control_plus_candidates",
+    "baseline": "control",
+    "score_type": "pass_fail",
+    "strata": "many_strata",
+    "criteria": "margin",
+    "cross_cutting": [],
+    "log_cost_axis": false
+  },
+  "shape": "D",
+  "masthead": {
+    "kind": "Change · control vs candidates",
+    "system": "Persona chat model",
+    "counts": "{control.name} vs {n_candidates} candidates · 4 aspects",
+    "run_date": "{meta.run_date}",
+    "synthetic": true
+  },
+  "arms": [
+    {
+      "id": "prod",
+      "color_slot": -1
+    },
+    {
+      "id": "f64",
+      "color_slot": 0
+    },
+    {
+      "id": "f16",
+      "color_slot": 1
+    },
+    {
+      "id": "cor",
+      "color_slot": 2
+    }
+  ],
+  "show_arms_key": true,
+  "flag": [
+    {
+      "title": "No trade rule declared",
+      "text": "The campaign set no explicit exchange rate between reply cost and persona adherence; the product team must choose whether the monthly savings justify the drop.",
+      "discloses": [
+        "no_rule"
+      ],
+      "weakens": [],
+      "survives": [
+        "judged:persona",
+        "task",
+        "judged:facts",
+        "specul"
+      ]
+    }
+  ],
+  "options": {
+    "rows": [
+      {
+        "option": "prod",
+        "role": "control"
+      },
+      {
+        "option": "f64",
+        "role": "lean"
+      },
+      {
+        "option": "f16",
+        "role": "cheapest"
+      },
+      {
+        "option": "cor",
+        "role": "alternative"
+      }
+    ],
+    "columns": [
+      "judged:persona",
+      "judged:facts",
+      "measure:specul",
+      "cost_per_1k"
+    ]
+  },
+  "summary": [
+    {
+      "kind": "bars",
+      "title": "Reply cost across candidates",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "cost_per_1k"
+        ],
+        "arms": [
+          "prod",
+          "f64",
+          "f16",
+          "cor"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "f64",
+      "level": "",
+      "unit": "usd_per_1k",
+      "domain": []
+    },
+    {
+      "kind": "dot_interval",
+      "title": "Stays in character adherence",
+      "query": {
+        "source": "judged",
+        "aspect": "",
+        "measures": [
+          "persona"
+        ],
+        "arms": [
+          "prod",
+          "f64",
+          "f16",
+          "cor"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "f64",
+      "level": "95% computed",
+      "unit": "percent",
+      "domain": []
+    }
+  ],
+  "sections": [
+    {
+      "id": "contrasts",
+      "eyebrow": "Candidate differences",
+      "headline": "Challengers drop character adherence while meeting or breaching secondary criteria",
+      "takeaway": "Points show paired differences against {arm:prod} with {family.level} uncorrected intervals; zero represents no difference.",
+      "chart": {
+        "kind": "forest",
+        "title": "",
+        "query": {
+          "source": "contrasts",
+          "aspect": "",
+          "measures": [],
+          "arms": [],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "f64",
+        "level": "95%",
+        "unit": "points",
+        "domain": []
+      },
+      "caption": "Differences are uncorrected across challengers.",
+      "caveats": []
+    },
+    {
+      "id": "depth",
+      "eyebrow": "Turn depth breakdown",
+      "headline": "Character drift accelerates as conversation length increases",
+      "takeaway": "{arm:f64} remains near {arm:prod} during early turns but falls to {strata.depth:11+.f64.persona.mean|pct} beyond ten turns.",
+      "chart": {
+        "kind": "lines",
+        "title": "",
+        "query": {
+          "source": "strata",
+          "aspect": "",
+          "measures": [
+            "persona"
+          ],
+          "arms": [
+            "prod",
+            "f64",
+            "f16",
+            "cor"
+          ],
+          "strata": [
+            "depth:1-2",
+            "depth:3-5",
+            "depth:6-10",
+            "depth:11+"
+          ],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "f64",
+        "level": "",
+        "unit": "percent",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "scenarios",
+      "eyebrow": "Scenario sensitivity",
+      "headline": "Banter and user corrections drive the largest consistency drops",
+      "takeaway": "Simpler intents like song intros show minimal drift across all evaluated models.",
+      "chart": {
+        "kind": "diverging_bars",
+        "title": "",
+        "query": {
+          "source": "strata",
+          "aspect": "",
+          "measures": [
+            "persona"
+          ],
+          "arms": [
+            "f64",
+            "f16",
+            "cor"
+          ],
+          "strata": [
+            "scenario:intro",
+            "scenario:rec",
+            "scenario:deflect",
+            "scenario:banter",
+            "scenario:correct"
+          ],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "f64",
+        "level": "",
+        "unit": "percent",
+        "domain": []
+      },
+      "caption": "Scenario figures are descriptive uncorrected sub-slices.",
+      "caveats": []
+    }
+  ],
+  "explore": [
+    {
+      "title": "Explore trade valuation",
+      "controls": [
+        {
+          "id": "price_per_point",
+          "kind": "slider",
+          "title": "Willingness to pay per consistency point per 1,000 replies",
+          "binds": "price_per_point",
+          "min": 0.05,
+          "max": 0.3,
+          "step": 0.01,
+          "default": 0.1,
+          "options": []
+        }
+      ],
+      "recomputes": "Adjusting the value per persona point recalculates net utility and flips the preference between {arm:prod} and {arm:f64} at {price.prod.f64.persona.per_point|usd}."
+    }
+  ],
+  "full_results": [
+    "arms_by_measure",
+    "contrasts",
+    "strata"
+  ],
+  "durable_claims": [
+    {
+      "text": "{arm:f64} regresses Stays in character by {contrast.f64.persona.delta|abs|pts} points ({contrast.f64.persona.interval|pts}) while reducing cost by {cost.gap.f64.prod.per_1k|usd} per 1,000 replies.",
+      "confidence": "high",
+      "keys": [
+        "contrast.f64.persona.delta",
+        "contrast.f64.persona.interval",
+        "cost.gap.f64.prod.per_1k"
+      ]
+    },
+    {
+      "text": "{arm:f64} drops from {strata.depth:1-2.f64.persona.mean|pct} in early turns to {strata.depth:11+.f64.persona.mean|pct} past ten turns on Stays in character.",
+      "confidence": "high",
+      "keys": [
+        "strata.depth:1-2.f64.persona.mean",
+        "strata.depth:11+.f64.persona.mean"
+      ]
+    }
+  ],
+  "answers": []
+}

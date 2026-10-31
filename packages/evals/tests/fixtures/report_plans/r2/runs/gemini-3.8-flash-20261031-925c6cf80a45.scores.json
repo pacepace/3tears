@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261031-925c6cf80a45",
+  "input": "r2",
+  "input_digest": "3b825233f6120f9deb81f63c4a9c2849c6ba2d388a1db0be780cbe5395add19d",
+  "plan_digest": "9b43fb04bf036da2a3588e52a1bec3c02cb17796607c62ac142cebfe7f09953e",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+    "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "The headline is a decision with an instruction and a reason, naming the table's recommended configuration, which the gate scatter shows as the only one inside both gates.",
+      "quote": "Adopt Brisk-S · reasoning low · 1 retry (J) as the query planner. It is the cheapest configuration to clear both accuracy and latency gates.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The second sentence argues against the alternatives instead of saying what would change the answer, and the first sentence largely restates the headline.",
+      "quote": "Moving to larger models or higher reasoning budgets inflates cost and latency without necessary accuracy gains.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "There is no flag and the input has no caveats, so nothing is stated twice.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The task section's headline says performance holds above threshold on math, but its chart shows date math at exactly 97.0%, and Ambiguous entity, also below the gate, goes unmentioned.",
+      "quote": "Performance holds above threshold on lookups and math but softens on multi-hop tasks",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Configurations, measures and tasks use reader names above Full results.",
+      "quote": "Nano-XS · reasoning off · no retry (M) fails Pass rate at 81%.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin (+0.1 points on Pass rate), then the scoped multi-hop weakness.",
+      "quote": "The weakest margin sits at Brisk-S · reasoning low · 1 retry (J), which clears Pass rate at 97.1% against the threshold of 97%, leaving a margin of +0.1 points.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure carries two names, accuracy in the headline and lede and Pass rate in the decision block.",
+      "quote": "Only Brisk-S · reasoning low · 1 retry (J) meets the accuracy gate while maintaining tail latency under the budget.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The first screen gives what to do, why (the only cheap configuration inside both gates), and the main risk (the +0.1-point margin).",
+      "quote": "leaving a margin of +0.1 points",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Next proposes improving the chosen configuration's multi-hop accuracy, an experiment that could not overturn adopting it, rather than one that tests the thin Pass rate margin.",
+      "quote": "Evaluate targeted prompt instructions on multi-hop query decomposition to raise complex task accuracy before increasing model size.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence is plain high and has no caveat clauses.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "The explore text pins Atlas-M's admission to 900 ms, the p95 of an Atlas-M variant that fails the Pass rate gate at 94%, and Brisk-S high with 1 retry also misses the 600 ms budget, so neither figure supports its claim.",
+      "quote": "Adjusting the pass gate above 97.1% forces a trade to Brisk-S · reasoning high · 1 retry (L), while loosening the latency budget past 900 ms admits Atlas-M variants.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-31T16:00:53.127183+00:00"
+}
