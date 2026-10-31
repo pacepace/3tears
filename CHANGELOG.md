@@ -52,15 +52,34 @@ change's path (`scripts/measure-shared-arrow.py`, `docs/shared-arrow.md`).
 **Fixed:** a renewal could lose messages routed to a moved subscription, found by the live renewal stress test.
 
 - The old half of a subscription was forgotten at the round trip that proved its `UNSUB`; a message the server
-  delivered to it just after was dropped. It now keeps receiving until its connection is retired.
+  delivered to it just after was dropped. It now keeps receiving until its connection is retired, a full
+  `retire_after` after it left its group. `NatsClient.drain` and a durable push consumer's release keep the
+  subscription received for a grace after that round trip too, before nats-py forgets it.
 - nats-server (2.14 and 2.15) drops a message whose matched queue-group members have all left by its delivery, though
   a successor joined meanwhile. The old half now stays in its group for `retire_after` before it leaves.
 - A renewal that failed after subscribing its successor closed the successor with what had been routed to it --
   thousands of messages under load. A successor's subscription now receives from its `SUB`, and a renewal that will
-  not complete stops routing to it and drains it (logged as a WARNING).
+  not complete stops routing to it and drains it a full `retire_after` later (logged as a WARNING).
 
 The live stress test holds every one of 100 renewals to going through and nothing to be lost, its auth callout
 answering off the test's own loop; a variant forces renewals that fail after subscribing their successor.
+
+### nats: no listing replays a growing stream through a consumer
+
+**Fixed:** under load a named push consumer's replay stalls part way (`stalled after N of M`). On cobalt dev on
+2026-10-30 every one of six scoped-snapshot retirements failed so: the orphan sweep replayed all 2345 object metadata
+messages. `NatsKvBucket.list_keys`, `purge_removal_markers`, `NatsObjectStore.list_objects`, `list_names` and
+`purge_orphan_chunks` now read the subjects from `STREAM.INFO` (paged by offset past the server's cap of 100,000)
+and each subject's latest message by request: the KV handle's own read, a subject-carried `DIRECT.GET` for object
+metadata. A key whose latest message is a delete or purge marker is still not listed. Both verbs are a bucket
+grant's own; a listing needs no consumer grant.
+
+### observe: a tree removal that fails says so
+
+**Added:** `threetears.observe.remove_tree(path, log=, what=)` removes a directory tree and contains each part that
+will not go; a path already gone says nothing. `shutil.rmtree(..., ignore_errors=True)`, which hid a failed removal
+from everyone, is gone from the workspace, and the no-silent-swallow walker flags a call passing
+`ignore_errors=True` with no `onexc`/`onerror`.
 
 ### observe, tools: a tool pod counts every call it finishes, with its duration, by tool and outcome
 
@@ -74,7 +93,8 @@ operation) and the gauge read 0 at every scrape. The gauge itself is right: a ca
   tool pod's `/metrics`, beside the gauge. `outcome` is `success`, `failure` or `error`, as the baseline
   `tool.call` audit records it. `tool` is the tool's name when the pod serves it, and `""` for a call naming
   anything else (a caller cannot grow the pod's series). The rate of the duration's `_sum` is the mean number of
-  calls in flight, which a scrape interval cannot hide.
+  calls in flight, which a scrape interval cannot hide. A call cancelled mid-dispatch (a shutdown or a rollout), or
+  ended by any raise the dispatch did not record, is an `error`, here and in the audit.
 - `threetears.observe.CallMetrics(prefix, label=..., registry=...)`: that counter and histogram for any RPC pod,
   a no-op without `prometheus_client` like `InflightRequestsGauge`.
 - `InflightRequestsGauge.registry`: the registry the gauge is served from, for other metrics to share its
@@ -88,16 +108,19 @@ enr.reload@1.0 has no available endpoints` during a platform rollout. A new regi
 persisted catalog with every copy unavailable until its pod's next heartbeat, and it joined the call queue group at
 once, so it refused calls every other replica could route.
 
-- **registry:** a replica joins the call queue group only once every copy it warm-loaded is available again or gone
-  from the catalog, and at most the heartbeat timeout after the load (a pod that died never announces again). Its
-  health server starts first, and the new `catalog_revived` readiness check reads not-ready while it waits, so a
-  rollout keeps the replicas that can route.
+- **registry:** a replica joins the call queue group only once its catalog's warm load has landed and every copy it
+  brought in is available again or gone from the catalog, each wait at most the heartbeat timeout (a pod that died
+  never announces again). Its health server starts first, and the new `catalog_revived` readiness check reads
+  not-ready while it waits, so a rollout keeps the replicas that can route. It logs what it waits on and how the
+  wait ended, naming the copies whose pods never came back. A shutdown during start-up stops it.
 - **scheduled-jobs:** a dispatcher that returns `JobFireResult(status="failed", retry_after_seconds=N)` has the same
-  fire run once more after `N` seconds. The second result is recorded, whatever it asks. A failure with no retry
-  asked is recorded at once, as before. It is there for the hub's tool-call dispatcher to ask on `TOOL_UNAVAILABLE`.
+  fire run once more after `N` seconds, capped by the engine. The retry runs off the tick, which goes on to its
+  other due fires; the row stays `dispatching` until the retry settles it. The second result is recorded, whatever
+  it asks. A failure with no retry asked is recorded at once, as before. The hub's scheduled tool call asks for it
+  on `TOOL_UNAVAILABLE` (hub branch `fix/stream-listings`, riding the release that adopts 0.86).
 
 **Added:** `JobFireResult.retry_after_seconds`; `ToolCatalog.loaded_copies_settled(window)` and
-`ToolCatalog.wait_for_loaded_copies(window)`.
+`ToolCatalog.loaded_copies_pending()`; `PersistedCopyBucket.wait_loaded(timeout=)`.
 
 ## v0.85.0 -- 2026-10-29
 

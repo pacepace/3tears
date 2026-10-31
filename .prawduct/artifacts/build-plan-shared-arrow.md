@@ -2,7 +2,7 @@
 artifact: build-plan
 version: 1
 scope: shared-arrow
-branch: feature/shared-memory-snapshots
+branch: feature/0.86-bundle
 depends_on: []
 governed_by: []
 last_validated: 2026-10-30
@@ -78,6 +78,25 @@ during a publish takes its room from it; the sweep removes files outside the sto
 names; one naming rule (`plain_name`) and one query helper (`query_batches`) shared with `SharedSnapshot`; refused
 slots and dead workers logged; the checkpointer sees a stop set at any moment and holds its backend weakly. Done.
 
+### Chunk 07: The 0.86 bundle's Critic findings
+
+Built on `feature/0.86-bundle`, which carries this branch (first built on `feature/shared-memory-snapshots`) with
+the renewal, tool-call-metrics and registry-readiness branches. Fixed, each with a test that fails without it:
+
+- shared Arrow: a slot claimed mid-publish counts its result against the publish; a failed job's discard runs off
+  the loop; counters are read-only, one owner each; the DuckDB checkpointer is private, tested through the backend.
+- `shutil.rmtree(ignore_errors=True)` is gone (`threetears.observe.remove_tree`), and the no-silent-swallow walker
+  flags it.
+- nats: a leaving member stays received a full grace after its round trip (renewal retirement, a discarded
+  successor, `NatsClient.drain`, a durable's release); no listing replays a growing stream through a consumer
+  (`STREAM.INFO`, paged, plus reads by request), found as six failed retirements on cobalt dev.
+- tool calls: a cancelled or unanswered call is an error on the metric and in the audit.
+- scheduled-jobs: a fire's one retry is capped and runs off the tick.
+- registry: readiness is read-only, waits for the warm load itself, logs how the wait ended; a shutdown stops a
+  start-up still holding its calls. Pinned live.
+
+Done.
+
 ## Evidence
 
 Tests fail first: each guard was mutated and the suite run (scratch runs, not committed):
@@ -144,5 +163,5 @@ off the path; publish of the state 0.10-0.15 s, on the path. Every state publish
 ## Where this stands (2026-10-30)
 
 - Merge-ready. Critic rev-20261030T131014Z-138eb296: R-2..R-13 fixed (verify rev-20261030T133120Z-1cc9aecb, 0 findings), R-14..R-16 informational, O-1..O-3 accepted on the record; R-1 closed (test evidence recorded).
-- CI on `d05e955f2` (the head before this note): every step exits 0; integration 499 passed on re-run. Its one earlier failure, the nats credential-renewal stress test losing a message, is a real nats client bug, not this branch's: fixed in its own PR (`fix/renewal-late-queue-message`).
+- CI on `d05e955f2` (the head before this note): every step exits 0, integration included on re-run. Its one earlier failure, the nats credential-renewal stress test losing a message, is a real nats client bug, not this branch's: fixed in its own PR (`fix/renewal-late-queue-message`).
 - 0.86.0 is held until Pace says go; the tool-call metrics and registry-readiness changes join that release. The reports branch `feature/report-computes-in-workers` waits on it for its re-pin.
