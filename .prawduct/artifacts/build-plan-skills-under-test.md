@@ -52,6 +52,8 @@ partition: 01 then 02 serial (02 builds on 01's seam); 03 and 04 delegated in is
 - 04: `writer_case_mint` takes a campaign, an analysis or a frozen snapshot. A case is keyed on its source: an exact re-mint returns the stored case, and a different one is refused, because stored cases never change.
 - 04: the split goes by group. A host names a group for related campaigns, or the source key is the group. A group keeps its recorded side; a new group's side comes from the sha256 of `writer-split:<group>` against `held_out_fraction` (default 0.3). Seed: 5 held-out (Kairo, the four r2 cases), 7 dev. Inferred defaults (the fraction and the prefix), not owner words.
 - 04: `WriterCase.case_version = 1` with `origin` (host, minted_by, source, campaign or analysis, group, side, set, fraction, the skill digest the notes were checked against).
+- 02b: the engine knows models only by id, so the judge-family rule takes a host hook (`ModelFamily`: model id → family or None). It refuses the same family, and records "unchecked" on the run when either model can't be placed. A writer launch must name its judge model. The failure-owner routing is one helper (`kernel/failed_call.py`) for the writer, reporter and judge kinds. Each of the five bounce kinds is a measure, read through `Tally.bounces()`.
+- 05: `writer_promotion(host, campaign_id, scope_id, *, candidate)` reads `campaign_verdicts` through `gate_verdicts`: a failing gate → keep, any undecided → undecided, everything decided with an improvement → promote. It refuses a moved judge, a run with no case set, and any non-held-out case, and it never writes (a person records the call). The ledger is `analysis/analyst/skill/PROMOTIONS.toml`, read by `skill_ledger.py`; the shipped skill is seeded unmeasured. A measured entry also records `scope`, since a campaign id can't be looked up without it.
 - 03: the scoring rubric's one source is the shipped editor.md, read once (`ops/report_writer/rubric.py`, `shipped_rubric()`); editor.py's item names come from the same read. `writer_scoring_rubric()` makes seven 1–5 dims `report_writer.<item>` on the built-in judge prompt (editor 2/1/0 → 5/3/1). A host seeds the template from it at creation, and the stored template then holds the text, frozen per run in `template_digest`. Consequence: promoting a new editor.md moves the scoring rubric for templates created after it; campaigns already created keep theirs.
 - 03: the engine reports a judge change between arms but does not refuse one, so `refuse_unfixed_scoring_judge(runs)` refuses a campaign whose arms differ in template, rubric revision, judge model, configs or temperature.
 
@@ -86,6 +88,11 @@ Type: code
 - A writer-case retire op, so a moved campaign can be re-minted (chunk 04's refusal names it).
 - New tests: the failure routing, prepare's refusals, and the launcher's deadline.
 - Done when: rev-20261031T213525Z-a63c4302's warnings R-2, R-3, R-4, R-6, R-7, R-8, R-9 and R-10 are fixed, and a scripted launch through the launcher runs under the writer's own deadline.
+
+### Chunk 05b: Writer actions for hosts
+Type: code
+- Writer case mint, retire and restore, writer template create, and the promotion read become engine actions in the catalogue, so a host (Discodon, metallm) calls them as it calls the reporter's. Each refusal's remedy names a real action (`test_refusal_remedies`).
+- Done when: test_refusal_remedies passes, the awaiting-a-caller lists for these names are empty, and an action-level test mints a case, creates a template and reads a decision.
 
 ### Chunk 03: Fixed scoring judge (delegated)
 Type: code
