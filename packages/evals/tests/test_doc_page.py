@@ -347,6 +347,40 @@ def test_the_findings_left_open_and_the_made_line_close_the_appendix_in_every_fo
     assert not any(said in above for said in (FINDINGS_TITLE, must, should, _MADE))
 
 
+def test_a_finished_page_with_findings_open_counts_them_near_its_top_in_every_form() -> None:
+    """Under the masthead, before the headline: how many findings are open, from the page's findings, the HTML line
+    linked to where Method's list of them is; the list itself stays last in the appendix."""
+    name = "prototype3/kairo"
+    page = build(_doc(name), _input(name), strict=True, findings=_FINDINGS, made=_MADE)
+    line = "2 review findings open, listed at the end."
+    written, markdown, text = doc_page_html(page), doc_page_markdown(page), doc_page_text(page)
+
+    assert f'<p class="callout" data-part="open"><a href="#findings">{line}</a></p>' in written
+    assert '<section data-part="findings" id="findings">' in written
+    assert written.index('class="mast"') < written.index(line) < written.index("<h1>")
+    assert markdown.splitlines()[2] == f"_{line}_" and markdown.index(line) < markdown.index("\n# ")
+    assert [said for said in text.splitlines() if said][1] == line
+    for form in (written, markdown, text):
+        assert form.count(line) == 1 and form.index(line) < form.index(FINDINGS_TITLE)
+    one = build(_doc(name), _input(name), strict=True, findings=_FINDINGS[1:])
+    assert "1 review finding open, listed at the end." in doc_page_markdown(one)
+
+
+@pytest.mark.parametrize(
+    ("findings", "draft"), [((), False), (_FINDINGS, True)], ids=["no finding open", "a draft, which says so itself"]
+)
+def test_the_open_findings_line_is_absent_with_none_open_and_on_a_draft(
+    findings: tuple[ReportFinding, ...], draft: bool
+) -> None:
+    name = "prototype3/kairo"
+    page = build(_doc(name), _input(name), strict=True, findings=findings, draft=draft)
+    written = doc_page_html(page)
+
+    assert 'data-part="open"' not in written and 'href="#findings"' not in written
+    for form in (written, doc_page_markdown(page), doc_page_text(page)):
+        assert "open, listed at the end" not in form
+
+
 def _landed(doc: ReportDoc) -> ReportDoc:
     """Kairo's document with a code caveat landed on its second claim and an analyst caveat on its first Method term."""
     data = doc.model_dump(mode="json", by_alias=True)

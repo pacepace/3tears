@@ -177,20 +177,25 @@ class Review:
 
     @property
     def blocking(self) -> tuple[ReportFinding, ...]:
-        """The findings that keep the report from clearing (owner ruling 2026-10-29, option 3): in round 1, every
-        finding; after it, every ``must_fix``, and every finding carried over from an earlier review
-        (``since`` before this round), of any severity. A ``should_fix`` first raised in this review blocks nothing:
-        it is stored and listed open, and alone it neither sends a revision nor makes the report a draft."""
-        if self.round <= 1:
-            return self.findings
-        return tuple(
-            finding for finding in self.findings if finding.severity == "must_fix" or finding.since < self.round
-        )
+        """The findings that keep the report from being stored finished (owner rulings 2026-10-29 and 2026-10-31):
+        every ``must_fix``, and every finding first raised in round 1, where every finding blocks, while a review
+        carries it. A ``should_fix`` first raised in a later review blocks nothing, new or carried: it sends the
+        report back while revisions remain (:attr:`settles`), and then it is stored listed open, never a draft."""
+        return tuple(finding for finding in self.findings if finding.severity == "must_fix" or finding.since <= 1)
 
     @property
     def clears(self) -> bool:
         """Whether the report may be stored as finished: the scores pass and no finding blocks (:attr:`blocking`)."""
         return self.passes and not self.blocking
+
+    @property
+    def settles(self) -> bool:
+        """Whether the report is done with: it clears and no finding is open, so a revision has nothing to resolve.
+
+        A review that clears with a finding open sends the report back while revisions remain, and stores it
+        finished, its findings listed open, once they are used.
+        """
+        return self.clears and not self.findings
 
     def to_json(self) -> dict[str, Any]:  # Any: a JSON object
         """The review as the stored record keeps it, the total and the pass as code computed them.
