@@ -54,14 +54,14 @@ partition: 01 then 02 serial (02 builds on 01's seam); 03 and 04 delegated in is
 
 ## Chunks
 
-### 01 — Skill seam: a skill version is a value
+### Chunk 01: Skill seam: a skill version is a value
 Type: code
 - `AnalystSkill` can be built from files and published (today only `load_skill` and `SkillText` are exported).
 - `report_write` and `write_report` take an optional skill; `None` keeps the shipped one.
 - A skill version's identity is its content digest. The generation record already stores it; a run under a supplied skill records it the same way.
 - Done when: a write with a supplied skill records that skill's digests; the default write is unchanged (replay tests green); an incomplete skill is refused before anything is frozen or spent.
 
-### 02 — The `report_writer` candidate kind
+### Chunk 02: The `report_writer` candidate kind
 Type: code
 - new `analysis/writer_kind.py` and new `analysis/writer_contract.py`, mirroring `reporter_kind.py` and `reporter_contract.py`.
 - Overlays: `analyst_skill` and `editor_skill` (content-addressed), `reasoning_effort`, `limits`. The skill texts travel as subject components.
@@ -70,28 +70,37 @@ Type: code
 - Step 0: replay one prototype5 case through the kind and check that it fits the cell timeout and the spend seat.
 - Done when: a replayed campaign of two arms (shipped skill against a one-line-edited skill) over two recorded cases produces runs, both arms keyed apart by the skill lever, and the objective measures land on results.
 
-### 03 — Fixed scoring judge (delegated)
+### Chunk 02b: Writer launcher and the review fixes
+Type: code
+- A launcher for the writer kind, the counterpart of `ops/reporter.py`. It wires `KindWiring.cell_timeout_s` from `writer_cell_timeout_s`, so a real-speed cell is never cut off at the 600 s default.
+- Every bounce kind the analyst records (unparsed, shape, validity, invariant, max_tokens) is a measure, read through a typed accessor on `Tally`, not bare strings.
+- The revisions cap has one public source.
+- One shared failure-owner mapping replaces the three copies (reporter, judge and writer kinds).
+- New tests: the failure routing, prepare's refusals, and the launcher's deadline.
+- Done when: rev-20261031T213525Z-a63c4302's warnings R-2, R-3, R-4, R-6, R-7, R-8, R-9 and R-10 are fixed, and a scripted launch through the launcher runs under the writer's own deadline.
+
+### Chunk 03: Fixed scoring judge (delegated)
 Type: code
 - The editor rubric's seven items become rubric dims of a writer template's judge. That judge reads the final page and the snapshot facts the editor reads.
 - Its rubric text and model are fixed per campaign. A launch whose arms differ in the scoring rubric or judge model is refused.
 - Its scores disclose that the judge is uncalibrated, through the existing judge-profile path.
 - Done when: a replayed campaign carries all seven judged dims per result, and the refusal is tested.
 
-### 04 — Writer case bank, dev and held-out sets (delegated)
+### Chunk 04: Writer case bank, dev and held-out sets (delegated)
 Type: code
 - The mechanism is the product: any host (Discodon, then metallm) mints a writer case from one of its own campaigns, and the case joins a named set. The fixtures are only the first seed.
 - A builder freezes writer cases from Kairo, the six misfits and r1–r5, each recording its withheld note.
 - The cases are minted into two named `CaseSet`s, `writer-dev` and `writer-held-out`. The split is fixed and recorded, and a case never sits in both.
 - Done when: both sets resolve; a case in both is refused; withholding is per case with no CLI choice.
 
-### 05 — Promotion decision and the shipped-digest check
+### Chunk 05: Promotion decision and the shipped-digest check
 Type: code
 - `skill_promotion(campaign)` reads the held-out campaign's corrected family verdicts through `gate_verdicts`. It answers `promote`, `keep` or `undecided`, with the candidate's variant key, the per-measure verdicts, the cost and the case count.
 - A promotion is recorded as a `CampaignCall`, and in a new package ledger, `analysis/analyst/skill/PROMOTIONS.toml` (skill digest, campaign id, decision, date). The current skill is the baseline entry.
 - Every shipped analyst and editor digest has a ledger entry, and the entry states its basis: `measured` (a campaign decision) or `unmeasured` (an edit shipped without one, with the reason). An enforcement test fails on a shipped digest with no entry. It does not block edits while the case set is too small to measure: an unmeasured entry is the honest record. Inferred: the owner may want a later switch that requires `measured` once host cases exist.
 - Done when: the ledger test trips on an edited skill file and passes on a recorded one; `undecided` never promotes.
 
-### 06 — Live mechanism smoke on Haiku (main session, owner-capped)
+### Chunk 06: Live mechanism smoke on Haiku (main session, owner-capped)
 Type: code
 - This proves the pipeline end to end; it is not a decision. Run one small campaign on claude-haiku-5-5: the shipped skill against a deliberately inert variant, over two or three dev cases, scored by the fixed judge.
 - First quote it with `ArmQuote`, and get the owner's cap before sending a turn.
