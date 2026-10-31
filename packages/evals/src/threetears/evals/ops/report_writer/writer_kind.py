@@ -34,7 +34,7 @@ import logging
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
@@ -92,6 +92,48 @@ WRITER_CASE_KEY: Final = "writer_case"
 #: Why a turn counted as sent has no usage: its reply never came.
 _UNRETURNED = "the turn was sent and its reply never came"
 
+#: The writer case's payload version: a snapshot frozen whole, the notes withheld, and where the case came from. A
+#: later shape takes the next version, and a case of a version this build does not know does not read.
+WRITER_CASE_VERSION: Final = 1
+
+#: Which side of a case bank's split a case sits on: the cases a change is tuned on, or the ones it is decided on.
+WriterSide = Literal["dev", "held_out"]
+
+#: Where a minted case's snapshot came from: a campaign's evidence frozen at mint, a stored analysis's frozen bundle,
+#: or a snapshot the host had already frozen.
+WriterCaseSource = Literal["campaign", "analysis", "snapshot"]
+
+
+class WriterCaseOrigin(BaseModel):
+    """Where a writer case came from, and the side of the split it was put on: what its mint recorded.
+
+    A case's evidence is its snapshot; this is everything else a reader of a bank asks of one: which host minted it
+    and who, from what, and on which side of the split, under which rule. Recorded once, since a stored case never
+    changes.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    host_id: str = Field(min_length=1, description="The minting host, as its profile names it (``host_id``).")
+    minted_by: str = Field(min_length=1, description="Who minted it, as the host names the caller.")
+    source: WriterCaseSource = Field(description="What the mint named: a campaign, a stored analysis or a snapshot.")
+    campaign_id: str | None = Field(description="The campaign the mint named; None when it named another source.")
+    analysis_id: str | None = Field(description="The analysis the mint named; None when it named another source.")
+    group: str = Field(
+        min_length=1,
+        description="The split group: cases of one group sit on one side. The host's name for it, or the case's "
+        "source key when it named none.",
+    )
+    side: WriterSide = Field(description="The side of the split the case was put on.")
+    case_set: str = Field(min_length=1, description="The named case set the mint put it in, the side's.")
+    held_out_fraction: float = Field(
+        gt=0, lt=1, description="The share of groups the split rule put on the held-out side when it placed this one."
+    )
+    skill: str = Field(
+        pattern=r"^[0-9a-f]{64}$",
+        description="The digest of the shipped skill the withheld notes were checked against at mint.",
+    )
+
 
 class WriterCase(BaseModel):
     """What one writer case pins: the report snapshot it is written over, whole, and the notes its analyst is not given.
@@ -101,6 +143,9 @@ class WriterCase(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    case_version: Literal[1] = Field(
+        default=WRITER_CASE_VERSION, description="The payload's version (:data:`WRITER_CASE_VERSION`)."
+    )
     snapshot: dict[str, Any] = Field(  # Any: the snapshot document's JSON
         description="The report snapshot, frozen whole: ``EvalReportSnapshot.model_dump(mode='json')``."
     )
@@ -109,22 +154,43 @@ class WriterCase(BaseModel):
         description="The exemplar notes, by file name, the analyst is not given: the note reasoned on this case's own "
         "campaign, for a blind run. Fixed per case, never chosen at launch.",
     )
+    origin: WriterCaseOrigin | None = Field(
+        default=None,
+        description="Where the case came from and the split side its mint put it on; None for a case no mint wrote, "
+        "which no bank's split holds.",
+    )
 
     @classmethod
-    def of(cls, snapshot: EvalReportSnapshot, *, withhold: Collection[str] = ()) -> WriterCase:
+    def of(
+        cls, snapshot: EvalReportSnapshot, *, withhold: Collection[str] = (), origin: WriterCaseOrigin | None = None
+    ) -> WriterCase:
         """Freeze a stored snapshot into a case.
 
         :param snapshot: The snapshot the report is written over.
         :ptype snapshot: EvalReportSnapshot
         :param withhold: The notes the analyst is not given.
         :ptype withhold: Collection[str]
+        :param origin: Where the case came from, as its mint records it; ``None`` for a case no mint writes.
+        :ptype origin: WriterCaseOrigin | None
         :return: The case.
         :rtype: WriterCase
         :raises TypeError: ``withhold`` is a single string rather than a collection of names.
         """
         if isinstance(withhold, str):
             raise TypeError(f"withhold takes a collection of note file names: pass [{withhold!r}], not {withhold!r}")
-        return cls(snapshot=snapshot.model_dump(mode="json"), withhold=tuple(withhold))
+        return cls(snapshot=snapshot.model_dump(mode="json"), withhold=tuple(withhold), origin=origin)
+
+    @property
+    def source_key(self) -> str:
+        """What makes two mints one case: the campaign the snapshot froze, or its report input for a bare one.
+
+        :return: ``campaign:<id>``, or ``report-input:<digest>`` for a snapshot with no campaign behind it.
+        :rtype: str
+        """
+        campaign_id = self.snapshot.get("campaign_id")
+        if isinstance(campaign_id, str) and campaign_id:
+            return f"campaign:{campaign_id}"
+        return f"report-input:{self.snapshot.get('report_input_digest')}"
 
 
 def writer_case_payload(case: WriterCase) -> dict[str, Any]:  # Any: the case's JSON
@@ -561,4 +627,12 @@ def _measures(outcome: WritingOutcome, tally: Tally) -> dict[str, bool | float |
     return measures
 
 
-__all__ = ["ReportWriterKind"]
+__all__ = [
+    "ReportWriterKind",
+    "WriterCase",
+    "WriterCaseOrigin",
+    "WriterCaseSource",
+    "WriterSide",
+    "writer_case_of",
+    "writer_case_payload",
+]

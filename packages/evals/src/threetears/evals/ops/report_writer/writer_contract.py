@@ -239,6 +239,7 @@ __all__ = [
     "TURNS_MEASURE",
     "UNPRICED_TURNS_MEASURE",
     "VALIDITY_BOUNCES_MEASURE",
+    "WRITER_KIND",
     "WriterModels",
     "WriterOverlays",
 ]
