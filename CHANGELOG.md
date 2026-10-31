@@ -8,6 +8,23 @@ packages (bumped in lock-step).
 
 ## v0.87.0 -- 2026-10-31
 
+### core: an answer's JSON never holds the interpreter lock past one short call, whatever its shape
+
+**Fixed:** `answer_json` writes each encoder call within a work budget (about a millisecond) and never more than 256
+list items. It wrote a short list whole and a mapping keyed by numbers whole:
+a short list of long series held the lock 0.5 s in one call, a numbered mapping 50 ms. A mapping or list too large for
+one call is now written a run at a time, and an item too large for a run is opened, however deep it sits. The text is
+byte-for-byte what it was. No API changes.
+
+### core: a shared Arrow version's first read maps only what changed
+
+**Changed:** A version published with `base=` holds its base's unchanged files as hard links; the serving process's
+`SharedArrowReader` and a worker's kept version now take those files from the mapping they had (by device and inode)
+and map only the changed ones: 2.7 ms for a version of 2,400 files that changed one, 160 ms before. `MappedTables` and
+`MappedVersion` take `reuse=` (a mapping's new `by_inode`). `threetears.core.shared_arrow` imports `pyarrow.dataset`,
+which DuckDB scans a registered Arrow table through and otherwise imported at a process's first scan (25-70 ms inside
+a serving thread's read).
+
 ### object-store and datasources: two event-loop holds at a load's first export read
 
 **Fixed:** `S3ObjectStore` reads the s3 and sts service models and endpoint data its first client is built from on a

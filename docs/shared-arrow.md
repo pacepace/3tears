@@ -83,7 +83,9 @@ async def on_change(snapshot) -> None:
 
 A table given as `Parts` is one file per part (a state's rows, say). Publish the next version from the current one
 with `base=`, naming only the parts that changed: every other part, and every table not named, is the base's own file,
-hard-linked, so a change costs one part's write and one part's memory.
+hard-linked, so a change costs one part's write and one part's memory. Its first read maps only those parts too: the
+serving process's reader and a worker's kept version take every file the two versions share from the mapping they
+had.
 
 ```python
 import pyarrow as pa

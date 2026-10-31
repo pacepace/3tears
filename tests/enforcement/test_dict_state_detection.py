@@ -54,6 +54,26 @@ _SRC_ROOTS = (
 _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="MappedTables",
+        attr_name="_by_inode",
+        rationale=(
+            "each memory-mapped file's Arrow table by device and inode, lent to the next version's mapping so it "
+            "maps only changed files; tables over this process's own address space, which no backend can hold, "
+            "and gone with the mapping"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowReader",
+        attr_name="_lend",
+        rationale=(
+            "the mapped tables of a let-go version that the current version shares, kept for its first read to "
+            "take instead of mapping again; memory maps of this process, which no backend can hold, and a "
+            "restart maps afresh"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
         class_name="_KeptVersions",
         attr_name="_kept",
         rationale=(
