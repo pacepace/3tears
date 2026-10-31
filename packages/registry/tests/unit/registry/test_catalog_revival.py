@@ -9,7 +9,6 @@ readiness on.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from unittest.mock import AsyncMock
 
@@ -86,12 +85,12 @@ async def test_a_copy_swept_from_the_catalog_settles() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_replica_waits_for_its_loaded_copies_then_returns() -> None:
-    """Flips if the wait returns before the copies are routable, or does not return once they are."""
+async def test_asking_whether_the_copies_settled_changes_nothing() -> None:
+    """Flips if the readiness probe edits what the catalog waits on: a copy whose window passed is still named as
+    unrouted, so the replica can say which pods never came back."""
     catalog = ToolCatalog()
-    await catalog.load_from_kv(_bucket(_entry("pod-a")))
-    waiting = asyncio.create_task(catalog.wait_for_loaded_copies(60.0, poll_seconds=0.01))
-    await asyncio.sleep(0.05)
-    assert not waiting.done()
+    await catalog.load_from_kv(_bucket(_entry("pod-a", "pod-gone")))
     catalog.mark_pod_endpoints_available("pod-a")
-    await asyncio.wait_for(waiting, 1.0)
+    assert catalog.loaded_copies_settled(window=0.0) is True
+    assert catalog.loaded_copies_settled(window=60.0) is False
+    assert catalog.loaded_copies_pending() == {(_FULL, "pod-gone")}

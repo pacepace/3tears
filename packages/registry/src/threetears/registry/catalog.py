@@ -12,7 +12,6 @@ what a caller is shown and where its call may be routed, for discovery and the p
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import time
@@ -883,7 +882,7 @@ class ToolCatalog:
         self._written: dict[str, str] = {}
         # the copies the last warm load brought in unavailable, by (full name, pod id), and when it
         # landed: a replica routes nothing to them until their pods announce again, so it holds its
-        # calls until they have (loaded_copies_settled)
+        # calls until they have (loaded_copies_settled); replaced whole by each load, never pruned
         self._awaiting_revival: set[tuple[str, str]] = set()
         self._loaded_at: float | None = None
         self._write_health = CopyWriteHealth(
@@ -902,37 +901,31 @@ class ToolCatalog:
         scheduled job on cobalt dev on 2026-10-30, during a platform rollout). A copy settles when it is
         available again or no longer in the catalog; all of them settle once ``window`` has passed since
         the load, since a pod that died never announces again. ``True`` before any load: a catalog with
-        nothing loaded has nothing to wait for.
+        nothing loaded has nothing to wait for. Read-only: the readiness probe and the start-up wait both ask
+        it, so asking changes nothing.
 
         :param window: seconds after the load past which nothing is waited for (one heartbeat round)
         :ptype window: float
         :return: whether the replica may answer calls
         :rtype: bool
         """
-        if self._loaded_at is None or not self._awaiting_revival:
+        if self._loaded_at is None or time.monotonic() - self._loaded_at >= window:
             return True
-        if time.monotonic() - self._loaded_at >= window:
-            self._awaiting_revival.clear()
-            return True
-        self._awaiting_revival = {
+        return not self.loaded_copies_pending()
+
+    def loaded_copies_pending(self) -> frozenset[tuple[str, str]]:
+        """the copies the last warm load brought in that are neither routable again nor gone, however long ago.
+
+        Read-only. Empty before any load.
+
+        :return: each such copy, as (tool full name, pod id)
+        :rtype: frozenset[tuple[str, str]]
+        """
+        return frozenset(
             (full_name, pod_id)
             for full_name, pod_id in self._awaiting_revival
             if self._copy_status(full_name, pod_id) not in (None, "available")
-        }
-        return not self._awaiting_revival
-
-    async def wait_for_loaded_copies(self, window: float, *, poll_seconds: float = 0.25) -> None:
-        """return once :meth:`loaded_copies_settled` holds, at most ``window`` after the load.
-
-        :param window: as :meth:`loaded_copies_settled` takes it
-        :ptype window: float
-        :param poll_seconds: how often to look
-        :ptype poll_seconds: float
-        :return: nothing
-        :rtype: None
-        """
-        while not self.loaded_copies_settled(window):
-            await asyncio.sleep(poll_seconds)
+        )
 
     def _copy_status(self, full_name: str, pod_id: str) -> str | None:
         """the status of one copy, or ``None`` when the catalog no longer holds it.
@@ -995,6 +988,7 @@ class ToolCatalog:
         """
         self._kv = kv
         self._written.clear()
+        awaiting: set[tuple[str, str]] = set()
         keys = await kv.list_keys()
         for key in keys:
             raw = await kv.get(key=key)
@@ -1007,7 +1001,8 @@ class ToolCatalog:
             for endpoint in entry.endpoints:
                 endpoint.status = "unavailable"
             if self._entries.setdefault(entry.full_name, entry) is entry:
-                self._awaiting_revival.update((entry.full_name, endpoint.pod_id) for endpoint in entry.endpoints)
+                awaiting.update((entry.full_name, endpoint.pod_id) for endpoint in entry.endpoints)
+        self._awaiting_revival = awaiting
         self._loaded_at = time.monotonic()
         _logger.info(
             "loaded catalog from KV",

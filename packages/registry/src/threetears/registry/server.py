@@ -16,6 +16,7 @@ import importlib.metadata
 import inspect
 import os
 import signal
+import time
 from collections.abc import Awaitable, Callable
 from typing import cast
 
@@ -48,6 +49,7 @@ from threetears.observe import (
     HealthServer,
     HealthTier,
     InflightRequestsGauge,
+    cancel_and_wait,
     configure_logging,
     get_logger,
 )
@@ -111,6 +113,9 @@ _logger = get_logger(__name__)
 # so this covers it with room to spare. it is not the wipe-refusal reach, which follows the
 # future tolerance alone.
 _POP_NONCE_TTL_SECONDS = 120
+
+#: how often a starting replica looks whether the copies its catalog warm-loaded are routable again
+_LOADED_COPIES_POLL_SECONDS = 0.25
 
 
 def build_heartbeat_collection_registry(
@@ -425,6 +430,8 @@ class RegistryServer:
         self._health_server: HealthServer | None = None
         self._inflight_gauge: InflightRequestsGauge | None = None
         self._shutdown_event = asyncio.Event()
+        #: the handlers' start-up, which a shutdown stops when it lands first (it can wait a heartbeat timeout)
+        self._starting: asyncio.Task[None] | None = None
 
     async def open_collections_bucket(self, nc: "NatsClient") -> None:
         """bind the shared L2 collections bucket before any collection is wired against it.
@@ -682,7 +689,13 @@ class RegistryServer:
             "registry.result_stream_declare",
         )
 
-        await self._start_handlers()
+        self._starting = asyncio.create_task(self._start_handlers(), name="registry-start-handlers")
+        await asyncio.wait({self._starting})
+        if self._starting.cancelled():
+            # a shutdown landed while the handlers were starting: it stopped them and closes what was started
+            await self._shutdown_event.wait()
+            return
+        self._starting.result()
 
         self._install_signal_handlers()
 
@@ -902,11 +915,61 @@ class RegistryServer:
         # was refused TOOL_UNAVAILABLE while every other replica could route it. The other replicas take
         # the calls meanwhile, and a pod that died is waited for no longer than a live pod's heartbeat
         # could take (the heartbeat timeout).
-        await self._catalog.wait_for_loaded_copies(self._heartbeat_timeout)
+        await self._hold_calls_for_loaded_copies()
         await retry_with_backoff(
             lambda: call_proxy.start(nc),
             "registry.call_proxy.start",
         )
+
+    async def _hold_calls_for_loaded_copies(self) -> None:
+        """return once the catalog's warm load has landed, and the copies it brought in are routable again, gone, or
+        past waiting for (each wait bounded by the heartbeat timeout).
+
+        Says what it waits on when it starts, and how it ended: settled, or the heartbeat timeout passed with the
+        copies still unrouted (named -- their pods never came back), so a replica held not-ready for the whole
+        window is explained in its own log.
+
+        :return: nothing
+        :rtype: None
+        """
+        window = self._heartbeat_timeout
+        # the warm load runs in the background (catalog_persistence): a replica that looked before it landed
+        # would find nothing loaded, nothing to wait for, and join with its copies about to arrive unavailable
+        bucket = self._catalog_bucket
+        if bucket is not None and not await bucket.wait_loaded(timeout=window):
+            _logger.warning(
+                "registry joins its call group before its catalog bucket could be loaded",
+                extra={"extra_data": {"bucket": bucket.name, "waited_seconds": window}},
+            )
+            return
+        pending = self._catalog.loaded_copies_pending()
+        if self._catalog.loaded_copies_settled(window):
+            return
+        started = time.monotonic()
+        _logger.info(
+            "registry holds its calls until the copies its catalog warm-loaded are routable again",
+            extra={"extra_data": {"copies_waiting": len(pending), "window_seconds": window}},
+        )
+        while not self._catalog.loaded_copies_settled(window):
+            await asyncio.sleep(_LOADED_COPIES_POLL_SECONDS)
+        unrouted = sorted(self._catalog.loaded_copies_pending())
+        waited = round(time.monotonic() - started, 3)
+        if unrouted:
+            _logger.warning(
+                "registry joins its call group with warm-loaded copies whose pods never announced again",
+                extra={
+                    "extra_data": {
+                        "waited_seconds": waited,
+                        "window_seconds": window,
+                        "unrouted": [f"{full_name}@{pod_id}" for full_name, pod_id in unrouted],
+                    }
+                },
+            )
+        else:
+            _logger.info(
+                "registry joins its call group: every warm-loaded copy is routable again or gone",
+                extra={"extra_data": {"waited_seconds": waited}},
+            )
 
     def _build_health_server(self, inflight_gauge: InflightRequestsGauge) -> HealthServer:
         """build the registry's canonical health server, NOT yet started.
@@ -1004,6 +1067,11 @@ class RegistryServer:
         closes NATS connection.
         """
         _logger.info("shutting down registry server")
+
+        # a start-up still under way (holding its calls for the warm-loaded copies, say) is stopped first, or it
+        # keeps starting handlers on the connection being closed below
+        if self._starting is not None:
+            await cancel_and_wait(self._starting)
 
         if self._health_server is not None:
             await self._health_server.stop()
